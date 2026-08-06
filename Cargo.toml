@@ -13,7 +13,6 @@ members = [
     "utils",
     "server",
     "oci",
-    "backup",
     "flow",
     "agent-proxy",
     "llm-router",
