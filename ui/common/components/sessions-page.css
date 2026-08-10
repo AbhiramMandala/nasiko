@@ -109,11 +109,6 @@
     padding: var(--space-sm) var(--space-md);
     border-bottom: 1px solid var(--color-border);
     vertical-align: middle;
-    /* Uniform rows. `.session-preview` only renders when the session has a
-       last_message, so without a floor the list alternated tall and short rows
-       depending on the data and read as broken rather than as a table. On a
-       table cell `height` behaves as a minimum, so a two-line row still grows. */
-    height: 56px;
   }
   .sessions-table tbody tr:last-child td { border-bottom: none; }
 
@@ -198,8 +193,8 @@
     cursor: pointer;
     color: var(--color-text-muted);
     line-height: 1;
-    width: var(--control-h-sm);
-    height: var(--control-h-sm);
+    width: 28px;
+    height: 28px;
     display: inline-grid;
     place-items: center;
     vertical-align: middle;
@@ -274,20 +269,5 @@
   .skeleton-line--time {
     width: 90px;
     flex-shrink: 0;
-  }
-
-  /* ── Pager ─────────────────────────────────────────────────────────────── */
-  .sessions-more {
-    display: flex;
-    align-items: center;
-    gap: var(--space-md);
-    justify-content: center;
-    margin-top: var(--space-md);
-
-    &[hidden] { display: none; }
-  }
-  .sessions-count {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
   }
 }

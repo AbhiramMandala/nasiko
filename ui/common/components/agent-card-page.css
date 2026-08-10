@@ -105,9 +105,8 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    min-height: var(--control-h-lg);
-    padding: 0 var(--space-lg);
-    border-radius: var(--r-10);
+    padding: 10px var(--space-lg);
+    border-radius: var(--r-8);
     background: light-dark(var(--sand-800), var(--neutral-100));
     color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
@@ -116,7 +115,6 @@
     white-space: nowrap;
     flex-shrink: 0;
     transition: background var(--transition-fast);
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .acp-start-btn svg { flex-shrink: 0; }
   .acp-start-btn:hover {
@@ -349,37 +347,6 @@
     color: var(--color-text-main);
     margin-top: var(--space-xs);
   }
-  /* Secondary line under a stat value — the denominator a percentage is of, or
-     the per-core detail behind a normalised CPU figure. */
-  .acp-stat-sub {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    margin-top: var(--space-2xs);
-  }
-  /* Meter for a single ratio against a limit. Track is a lighter step of the
-     fill's own ramp so state reads across the whole bar. Colour is never the only
-     signal — the value sits directly above it. */
-  .acp-meter {
-    height: 6px;
-    border-radius: var(--r-4);
-    overflow: hidden;
-    margin-top: var(--space-xs);
-    /* Same dilution as .meter in resources-page.css: the light tint ramp is too
-       saturated on a white surface, so an empty bar reads as a full one. */
-    background: light-dark(
-      color-mix(in oklab, var(--track, var(--color-border)) 40%, var(--color-bg-surface)),
-      var(--track, var(--color-border)));
-  }
-  .acp-meter > i {
-    display: block;
-    height: 100%;
-    border-radius: var(--r-4);
-    background: var(--fill, var(--fg-secondary));
-  }
-  .acp-meter.is-ok { --track: var(--bg-success); --fill: var(--fg-success); }
-  .acp-meter.is-warn { --track: var(--bg-warning); --fill: var(--fg-warning); }
-  .acp-meter.is-crit { --track: var(--bg-error); --fill: var(--fg-error); }
-
   .acp-stats-empty {
     grid-column: 1 / -1;
   }
@@ -528,8 +495,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    min-height: var(--control-h-sm);
-    padding: 0 var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius-sm);
     border: 1px solid var(--color-border);
     background: var(--color-bg-surface);
@@ -631,8 +597,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: var(--control-h-sm);
-    height: var(--control-h-sm);
+    width: 28px;
+    height: 28px;
     border: none;
     border-radius: var(--r-6);
     background: transparent;
@@ -762,18 +728,6 @@
     border-radius: 999px;
   }
   #acp-access-table { overflow-x: auto; }
-  /* Versions tab: title block on the left, Re-upload action on the right. */
-  .acp-versions-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-md);
-    margin-bottom: var(--space-md);
-  }
-  .acp-versions-head .acp-section-title,
-  .acp-versions-head .acp-section-sub { margin-bottom: 0; }
-  /* Long image tags must scroll inside the table, never widen the page. */
-  #acp-versions-body { overflow-x: auto; }
   .acp-table {
     width: 100%;
     border-collapse: collapse;

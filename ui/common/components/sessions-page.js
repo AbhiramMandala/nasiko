@@ -1,21 +1,13 @@
 import styles from './sessions-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import './app-button.js';
+import './app-module-nav.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
-
-/// Rows requested per page. `/api/chat/sessions` is keyset-paginated — it
-/// previously asked for 50 sessions in one shot and had no way to reach the
-/// 51st.
-const PAGE_SIZE = 25;
 
 class SessionsPage extends HTMLElement {
   #initialized = false;
-  /// Every session loaded so far, across pages.
   #sessions = [];
-  /// Opaque keyset cursor for the next page; null once the list is exhausted.
-  #nextCursor = null;
-  #loadingMore = false;
-  #filter = '';
+  #obsStats = new Map();
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -26,6 +18,7 @@ class SessionsPage extends HTMLElement {
 
   #render() {
     this.innerHTML = `
+      <app-module-nav module="observability"></app-module-nav>
       <div class="sessions-header">
         <div class="sessions-header-info">
           <h1 class="title-page">Execution history</h1>
@@ -40,10 +33,6 @@ class SessionsPage extends HTMLElement {
       <div class="session-list" id="session-list">
         ${this.#renderSkeletons()}
       </div>
-      <div class="sessions-more" id="sessions-more" hidden>
-        <app-button variant="secondary" size="sm" id="btn-more">Load more</app-button>
-        <span class="sessions-count" id="sessions-count"></span>
-      </div>
     `;
 
     this.querySelector('#btn-new')?.addEventListener('click', () => {
@@ -53,11 +42,8 @@ class SessionsPage extends HTMLElement {
     });
 
     this.querySelector('.sessions-search')?.addEventListener('input', (e) => {
-      this.#filter = e.target.value;
-      this.#applyFilter();
+      this.#filterSessions(e.target.value);
     });
-
-    this.querySelector('#btn-more')?.addEventListener('click', () => this.#load({ more: true }));
   }
 
   #renderSkeletons() {
@@ -74,33 +60,31 @@ class SessionsPage extends HTMLElement {
     </div>`;
   }
 
-  /// Loads one page. `more: true` appends the next page instead of replacing.
-  async #load({ more = false } = {}) {
+  async #load() {
     const list = this.querySelector('#session-list');
-    const moreBtn = this.querySelector('#btn-more');
-    if (more && (this.#loadingMore || !this.#nextCursor)) return;
-    this.#loadingMore = more;
-    if (more) moreBtn?.setAttribute('loading', '');
-
     try {
-      // One request for the whole page. The stats columns used to come from
-      // `/api/observability/session/list`, which costs a trace-store lookup per
-      // row and gated the render on the slowest one; they now ride along on the
-      // session rows themselves, aggregated in the same SQL query.
-      const res = await window.fetchSessions('', PAGE_SIZE, more ? this.#nextCursor : null);
+      // Chat sessions are the primary source; observability stats (traces,
+      // tokens, latency) are joined in by session id — best-effort, the page
+      // works without them.
+      const [chatRes, obsRes] = await Promise.allSettled([
+        window.fetchSessions('', 1, 50),
+        window.fetchObservabilitySessions?.() ?? Promise.reject(),
+      ]);
+      if (chatRes.status === 'rejected') throw chatRes.reason;
+      const sessions = chatRes.value?.data || [];
 
-      const page = res?.data || [];
-      this.#nextCursor = res?.next_cursor || null;
-
-      this.#sessions = more ? [...this.#sessions, ...page] : page;
-      this.#applyFilter();
-    } catch {
-      // A failed "load more" must not discard the pages already on screen.
-      if (more) {
-        const { showToast } = await import('/common/utils/toast.js');
-        showToast('Could not load more sessions.');
-        return;
+      this.#obsStats = new Map();
+      if (obsRes.status === 'fulfilled') {
+        const obsSessions = obsRes.value?.data?.sessions || obsRes.value?.sessions || [];
+        for (const o of obsSessions) {
+          const id = o.session_id || o.id;
+          if (id) this.#obsStats.set(id, o);
+        }
       }
+
+      this.#sessions = sessions;
+      this.#renderSessions(sessions);
+    } catch {
       list.innerHTML = `<app-empty-state
         title="Failed to load sessions"
         description="Something went wrong while loading your chat sessions."
@@ -111,42 +95,21 @@ class SessionsPage extends HTMLElement {
         list.innerHTML = this.#renderSkeletons();
         this.#load();
       });
-    } finally {
-      this.#loadingMore = false;
-      moreBtn?.removeAttribute('loading');
-      this.#renderPager();
     }
   }
 
-  /// The search box filters the pages already loaded — it is not a server-side
-  /// query, so say so in the footer rather than implying the whole history was
-  /// searched.
-  #applyFilter() {
-    const q = this.#filter.toLowerCase().trim();
-    const visible = !q ? this.#sessions : this.#sessions.filter(s => {
+  #filterSessions(query) {
+    const q = (query || '').toLowerCase().trim();
+    if (!q) {
+      this.#renderSessions(this.#sessions);
+      return;
+    }
+    const filtered = this.#sessions.filter(s => {
       const agent = (s.agent_name || 'Orchestrator').toLowerCase();
       const msg = (s.last_message || '').toLowerCase();
       return agent.includes(q) || msg.includes(q);
     });
-    this.#renderSessions(visible);
-    this.#renderPager();
-  }
-
-  #renderPager() {
-    const wrap = this.querySelector('#sessions-more');
-    const count = this.querySelector('#sessions-count');
-    if (!wrap || !count) return;
-
-    const loaded = this.#sessions.length;
-    if (!loaded) {
-      wrap.hidden = true;
-      return;
-    }
-    wrap.hidden = false;
-    this.querySelector('#btn-more').hidden = !this.#nextCursor;
-    count.textContent = this.#nextCursor
-      ? `Showing ${loaded} sessions`
-      : `Showing all ${loaded} session${loaded === 1 ? '' : 's'}`;
+    this.#renderSessions(filtered);
   }
 
   #renderSessions(sessions) {
@@ -176,7 +139,7 @@ class SessionsPage extends HTMLElement {
           <tr>
             <th>Sessions</th>
             <th>Traces count</th>
-            <th title="Platform-paid tokens. “—” means no usage was recorded for this session — an agent using its own API key, or messages from before usage tracking. Open the session's traces for the full picture.">Tokens (billed)</th>
+            <th>Tokens</th>
             <th>Latency P50</th>
             <th>Date</th>
             <th class="col-actions">Actions</th>
@@ -216,13 +179,10 @@ class SessionsPage extends HTMLElement {
     const sessionId = s.session_id;
     const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
     const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
-    // `total_tokens` is null when no usage was recorded at all (a BYO-key agent,
-    // or messages predating usage tracking) and reads as "—"; a recorded 0 is a
-    // real value and must render as "0", hence the null check rather than a
-    // truthiness test. Same for p50 — a sub-millisecond turn is not "no data".
-    const traces = s.trace_count ?? '—';
-    const tokens = s.total_tokens != null ? this.#fmtCount(s.total_tokens) : '—';
-    const p50 = s.latency_p50_ms != null ? this.#fmtMs(s.latency_p50_ms) : '—';
+    const o = this.#obsStats.get(sessionId);
+    const traces = o?.num_traces ?? '—';
+    const tokens = o?.token_usage?.total ? this.#fmtCount(o.token_usage.total) : '—';
+    const p50 = o?.trace_latency_ms_p50 ? this.#fmtMs(o.trace_latency_ms_p50) : '—';
 
     return `<tr data-href="${href}" tabindex="0">
       <td class="col-session">
@@ -277,7 +237,8 @@ class SessionsPage extends HTMLElement {
         await window.deleteSession(sessionId);
       }
       this.#sessions = this.#sessions.filter(s => s.session_id !== sessionId);
-      this.#applyFilter();
+      const query = this.querySelector('.sessions-search')?.value || '';
+      this.#filterSessions(query);
     } catch {
       if (card) card.style.opacity = '1';
     }

@@ -92,11 +92,6 @@ pub struct ResolvedConfig {
     /// `user_secrets` key). Recorded on usage rows so platform-paid spend can be
     /// metered separately from bring-your-own-key spend.
     pub platform_paid: bool,
-    /// Whether this agent is a coding-agent CLI integration. The chat handler uses this
-    /// to derive model-routing boundary signals from the transcript instead of the
-    /// (permanently unreachable, for these agents) `flows`-table lookup — see
-    /// [`crate::routing::BoundarySignals::for_coding_agent`].
-    pub is_coding_agent: bool,
 }
 
 /// What the incoming request itself asked for, used **only** when the agent has no
@@ -122,12 +117,6 @@ pub struct AgentConfigResult {
     pub config: Option<LLMConfig>,
     /// Agent-level model pin (`agents.pinned_model`). Overrides config-level pinning.
     pub agent_pinned_model: Option<String>,
-    /// Whether this agent is a coding-agent CLI integration (`agents.coding_agent_integration_id
-    /// IS NOT NULL`, set by `nasiko connect` — see `cli::commands::coding_agent_router`). These
-    /// agents are never dispatched through the orchestrator, so they never have a `flows` row;
-    /// the chat handler uses this to derive boundary signals from the transcript instead
-    /// ([`crate::routing::BoundarySignals::for_coding_agent`]).
-    pub is_coding_agent: bool,
 }
 
 /// Storage seam for the resolver — mockable in tests.
@@ -224,18 +213,15 @@ impl RegistryStore for PgRegistry {
         &self,
         agent_id: Uuid,
     ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
-        // The agent's attached config id, owner, agent-level pin, and server-managed
-        // coding-agent identity. Generic agent metadata must never grant this exemption.
-        // A missing row → NoRegistryEntry upstream.
-        let agent: Option<(Option<Uuid>, Uuid, Option<String>, bool)> = sqlx::query_as(
-            "SELECT llm_config_id, owner_id, pinned_model, \
-                    coding_agent_integration_id IS NOT NULL \
-             FROM agents WHERE id = $1",
+        // The agent's attached config id, owner, and agent-level pin. A missing row →
+        // NoRegistryEntry upstream.
+        let agent: Option<(Option<Uuid>, Uuid, Option<String>)> = sqlx::query_as(
+            "SELECT llm_config_id, owner_id, pinned_model FROM agents WHERE id = $1",
         )
         .bind(agent_id)
         .fetch_optional(&self.db)
         .await?;
-        let Some((config_id, owner_id, agent_pinned_model, is_coding_agent)) = agent else {
+        let Some((config_id, owner_id, agent_pinned_model)) = agent else {
             return Ok(None);
         };
 
@@ -251,7 +237,6 @@ impl RegistryStore for PgRegistry {
         Ok(Some(AgentConfigResult {
             config,
             agent_pinned_model,
-            is_coding_agent,
         }))
     }
 
@@ -287,7 +272,6 @@ pub async fn resolve(
     let agent_result = load_llm_config(store, cache, agent_uuid, agent_id).await?;
     let llm_config = agent_result.config;
     let agent_pinned_model = agent_result.agent_pinned_model;
-    let is_coding_agent = agent_result.is_coding_agent;
     let has_llm_config = llm_config.is_some();
     let secret_name = plan_secret_name(&llm_config);
     let plan = plan_config(llm_config, cfg, hint, agent_pinned_model.as_deref());
@@ -302,7 +286,7 @@ pub async fn resolve(
 
     // Mirrors resolve_api_key: a secret name + non-empty owner uses the owner's key
     // (or errors) — everything else is the platform key.
-    let platform_paid = secret_name.is_none() || owner_id.is_empty();
+    let platform_paid = !(secret_name.is_some() && !owner_id.is_empty());
     let resolved = ResolvedConfig {
         litellm_model: format!("{}/{}", plan.provider, plan.model),
         provider: plan.provider,
@@ -317,7 +301,6 @@ pub async fn resolve(
         tier2_model: plan.tier2_model,
         tier3_model: plan.tier3_model,
         platform_paid,
-        is_coding_agent,
     };
     tracing::info!(
         target: "nasiko::llm_router::resolver",
@@ -349,8 +332,7 @@ fn plan_secret_name(llm_config: &Option<LLMConfig>) -> Option<String> {
 
 /// Load `llm_config` via the cache (for the config part), falling back to the store.
 /// A missing agent row is an error (not cached); a present row is cached. The agent-level
-/// pin and the coding-agent flag are always read from the store (not cached) so changes
-/// (a re-pin, a fresh `nasiko connect`) take effect immediately.
+/// pin is always read from the store (not cached) so changes take effect immediately.
 async fn load_llm_config(
     store: &dyn RegistryStore,
     cache: &ConfigCache,
@@ -369,17 +351,17 @@ async fn load_llm_config(
             pinned_model = ?hit.as_ref().and_then(|c| c.pinned_model.clone()),
             "resolver: llm_config cache HIT (agent pin resolved from store)"
         );
-        // Config is cached, but we still need the agent-level pin and coding-agent flag
-        // from the store. Re-fetch just the agent row; fall back to safe defaults on error.
-        let agent_row = store.fetch_llm_config(agent_uuid).await.ok().flatten();
-        let agent_pin = agent_row
-            .as_ref()
-            .and_then(|r| r.agent_pinned_model.clone());
-        let is_coding_agent = agent_row.is_some_and(|r| r.is_coding_agent);
+        // Config is cached, but we still need the agent-level pin from the store.
+        // Re-fetch just the agent row for the pin; fall back to None on error.
+        let agent_pin = store
+            .fetch_llm_config(agent_uuid)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| r.agent_pinned_model);
         return Ok(AgentConfigResult {
             config: hit,
             agent_pinned_model: agent_pin,
-            is_coding_agent,
         });
     }
     tracing::debug!(
@@ -548,7 +530,6 @@ mod tests {
         config: Option<Option<LLMConfig>>,
         secret: Option<String>,
         agent_pinned_model: Option<String>,
-        is_coding_agent: bool,
     }
 
     #[async_trait]
@@ -560,7 +541,6 @@ mod tests {
             Ok(self.config.as_ref().map(|c| AgentConfigResult {
                 config: c.clone(),
                 agent_pinned_model: self.agent_pinned_model.clone(),
-                is_coding_agent: self.is_coding_agent,
             }))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
@@ -609,7 +589,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let r = resolve(
             &store,
@@ -635,7 +614,6 @@ mod tests {
             config: None,
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let err = resolve(
             &store,
@@ -660,7 +638,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let err = resolve(
             &store,
@@ -690,7 +667,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let r = resolve(
             &store,
@@ -720,7 +696,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let err = resolve(
             &store,
@@ -747,7 +722,6 @@ mod tests {
             ))),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let hint = RequestHint {
             provider: Some("openai"),
@@ -787,7 +761,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let hint = RequestHint {
             provider: Some("anthropic"),
@@ -811,7 +784,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let hint = RequestHint {
             provider: Some("openai"),
@@ -841,7 +813,6 @@ mod tests {
             ))),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let err = resolve(
             &store,
@@ -882,7 +853,6 @@ mod tests {
             ))),
             secret: Some(ciphertext),
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let r = resolve(
             &store,
@@ -907,7 +877,6 @@ mod tests {
             config: Some(Some(c)),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let r = resolve(
             &store,
@@ -933,7 +902,6 @@ mod tests {
             config: Some(Some(c)),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let r = resolve(
             &store,
@@ -954,7 +922,6 @@ mod tests {
             config: Some(Some(llm_config("anthropic", "claude-x", None))),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let r = resolve(
             &store,
@@ -978,7 +945,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            is_coding_agent: false,
         };
         let cache = cache();
         let cfg = cfg("openai", "gpt-4o-mini", "platform-key");

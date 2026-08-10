@@ -23,25 +23,19 @@ const baseAgent = {
   },
   skills: [
     {
-      id: "cluster-provisioning",
       name: "Cluster Provisioning",
       description: "Create new vClusters with specified resource blueprints, networking policies, and storage configurations.",
-      tags: ["cluster", "provisioning"],
-      examples: ["Create a new vCluster with 4 GPU nodes for team-ml"],
+      sample_query: "Create a new vCluster with 4 GPU nodes for team-ml",
     },
     {
-      id: "cluster-scaling",
       name: "Cluster Scaling",
       description: "Scale cluster resources up or down based on workload demands with pre-flight safety checks.",
-      tags: ["cluster", "scaling"],
-      examples: ["Scale gpu-cluster-prod to 8 GPU nodes"],
+      sample_query: "Scale gpu-cluster-prod to 8 GPU nodes",
     },
     {
-      id: "cluster-readiness",
       name: "Cluster Readiness Scoring",
       description: "Compute a readiness score (0-100) for clusters based on node health, networking, storage, and GPU accessibility.",
-      tags: ["cluster", "health"],
-      examples: ["What is the readiness score for gpu-cluster-prod?"],
+      sample_query: "What is the readiness score for gpu-cluster-prod?",
     },
   ],
 };
@@ -59,55 +53,6 @@ const gotoAgent = async (page, id) => {
 
 export default {
   fetch: [
-    // Version history → GET /api/agents/{id}/versions, enveloped as {data:[…]}.
-    // Field names mirror `AgentVersion` (oss/server/src/catalog/models.rs).
-    [{ method: "GET", path: /^\/api\/agents\/[^/]+\/versions$/ }, {
-      data: [
-        {
-          id: "v-003", agent_id: "a-001", version: "0.1.2",
-          image_tag: "nasiko/devops-cluster:0.1.2", changelog: "Add readiness scoring for GPU nodes",
-          is_active: true, can_rollback: false, previous_version: "0.1.1",
-          status: "active", created_at: "2026-08-08T09:12:00Z",
-        },
-        {
-          id: "v-002", agent_id: "a-001", version: "0.1.1",
-          image_tag: "nasiko/devops-cluster:0.1.1", changelog: "Retry upstream LLM timeouts",
-          is_active: false, can_rollback: true, previous_version: "0.1.0",
-          status: "archived", created_at: "2026-07-29T16:40:00Z",
-        },
-        {
-          id: "v-001", agent_id: "a-001", version: "0.1.0",
-          image_tag: "nasiko/devops-cluster:0.1.0", changelog: null,
-          is_active: false, can_rollback: true, previous_version: null,
-          status: "archived", created_at: "2026-07-14T11:05:00Z",
-        },
-      ],
-      status_code: 200,
-      message: "version history retrieved successfully",
-    }],
-    // Owner-scoped container usage → GET /api/observability/agent/{ref}/resources.
-    // Registered as a fetch fixture, not a window one: navigation.js loads after
-    // the fixtures and would clobber a window.fetchAgentResourceStats override.
-    [{ method: "GET", path: /^\/api\/observability\/agent\/[^/]+\/resources$/ }, {
-      data: {
-        agent_id: "a-001",
-        agent_name: "devops-cluster-lifecycle",
-        usage: {
-          name: "nasiko-agent-a-001",
-          display_name: "devops-cluster-lifecycle",
-          group: "agent_runtime",
-          state: "running",
-          cpu_percent: 42.6,
-          mem_used_bytes: 281018368,
-          mem_limit_bytes: 3972844748,
-          net_rx_bytes: 23068672,
-          net_tx_bytes: 14680064,
-          block_read_bytes: 0,
-          block_write_bytes: 0,
-        },
-        collected_at: "2026-08-09T11:20:00Z",
-      },
-    }],
     [{ method: "GET", path: /^\/api\/me$/ }, {
       sub: "u-owner-1", username: "akhil", is_superuser: false,
     }],
@@ -206,7 +151,7 @@ export default {
     [{ method: "GET", path: /^\/api\/mcp\/agents\/[^/]+\/connectors\/mc-github\/tools$/ }, mcpEnvelope({
       tools: [
         { name: "create_issue", description: "Open a new issue in a repository.", stance: "allow", last_synced_at: null },
-        { name: "merge_pull_request", description: "Merge an open pull request.", stance: "block", last_synced_at: null },
+        { name: "merge_pull_request", description: "Merge an open pull request.", stance: "deny", last_synced_at: null },
         { name: "list_repos", description: "List repositories visible to the connected account.", stance: "allow", last_synced_at: null },
       ],
     })],
@@ -223,7 +168,7 @@ export default {
     })],
     [{ method: "GET", path: /^\/api\/mcp\/agents\/[^/]+\/tools$/ }, mcpEnvelope({
       rules: [
-        { connector_id: "mc-github", tool_pattern: "merge_pull_request", stance: "block" },
+        { connector_id: "mc-github", tool_pattern: "merge_pull_request", stance: "deny" },
       ],
     })],
     [{ method: "PUT", path: /^\/api\/mcp\/agents\// }, mcpEnvelope({})],
@@ -272,14 +217,6 @@ export default {
     ]],
   ],
   scenarios: {
-    // Container CPU / memory / network — sits below Quick performance, so scroll
-    // it into view or the capture stops at the fold.
-    "resource-usage": async (page) => {
-      await gotoAgent(page, 'a-001');
-      await page.waitForSelector('#acp-resources .acp-stat-value', { timeout: 5000 });
-      await page.$eval('#acp-resources', (el) => el.scrollIntoView({ block: 'center' }));
-      await page.waitForTimeout(300);
-    },
     "overview": async (page) => {
       await gotoAgent(page, 'a-001');
       await page.waitForSelector('.acp-stat-value', { timeout: 5000 });
@@ -298,11 +235,6 @@ export default {
       await gotoAgent(page, 'a-001');
       await page.click('[data-tab="access"]');
       await page.waitForSelector('.acp-table', { timeout: 5000 });
-    },
-    "versions": async (page) => {
-      await gotoAgent(page, 'a-001');
-      await page.click('[data-tab="versions"]');
-      await page.waitForSelector('#acp-versions-body .acp-table', { timeout: 5000 });
     },
     "owner-access-grant-modal": async (page) => {
       await gotoAgent(page, 'a-001');

@@ -43,7 +43,7 @@
   }
 
   .kpi-value {
-    font-size: var(--font-size-lg);
+    font-size: var(--font-size-xl);
     font-weight: 500;
     color: var(--color-text-main);
     overflow: hidden;
@@ -85,9 +85,14 @@
     gap: var(--space-md);
   }
 
-  /* Surface: common/styles/surface.css */
   .config-card {
+    background: var(--bg-surface);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
     padding: var(--space-md);
+    transition: border-color var(--transition-fast);
+
+    &:hover { border-color: var(--color-border); }
 
     & .config-head {
       display: flex;
@@ -162,8 +167,8 @@
   .badge.is-mono { font-family: var(--font-mono); }
 
   .icon-btn {
-    width: var(--control-h-sm);
-    height: var(--control-h-sm);
+    width: 28px;
+    height: 28px;
     border-radius: var(--r-8);
     color: var(--color-text-muted);
     background: transparent;
@@ -226,10 +231,15 @@
     gap: var(--space-md);
   }
 
-  /* Surface + hover lift: common/styles/surface.css */
   .provider-card {
+    background: var(--bg-surface);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
     padding: var(--space-md);
     cursor: pointer;
+    transition: border-color var(--transition-fast);
+
+    &:hover { border-color: var(--color-border); }
 
     &:focus-visible {
       outline: 2px solid var(--color-primary);
@@ -290,15 +300,15 @@
   }
 
   .back-btn {
-    width: var(--control-h-lg);
-    height: var(--control-h-lg);
-    border-radius: var(--r-10);
+    width: 36px;
+    height: 36px;
+    border-radius: var(--r-8);
     background: var(--bg-surface);
     color: var(--color-text-main);
     flex-shrink: 0;
 
     &:hover { background: var(--bg-surface-hover); }
-    & svg { width: 20px; height: 20px; }
+    & svg { width: 16px; height: 16px; }
   }
 
   .config-form {

@@ -90,7 +90,7 @@ async fn chat_core(
     format: InboundFormat,
     force_stream: Option<bool>,
 ) -> Result<Response, GatewayError> {
-    let authz = agent_credential(headers);
+    let authz = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
     let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
     tracing::info!(
         target: "nasiko::llm_router::chat",
@@ -123,25 +123,10 @@ async fn chat_core(
 
     // Model routing: the resolver fixed the provider/key/params; the router may override
     // the *model* at a conversation boundary (else it stays the resolved model). Signals are
-    // normally derived at the gateway from the agent-forwarded traceparent; no trace context
-    // ⇒ inert, so the resolved model is used (behaviour identical to before this layer).
-    //
-    // A coding-agent CLI (Claude Code, Codex, OpenCode, Cursor) is never dispatched through
-    // the orchestrator, so it never has a `flows` row — the traceparent lookup above is a
-    // permanent dead end for it, not a transient miss. That would otherwise pin every
-    // request to Level 4 (the agent's configured `llm_config`) and make the prompt
-    // classifier (Level 3) unreachable. Derive signals from the transcript itself instead.
+    // derived at the gateway from the agent-forwarded traceparent; no trace context ⇒ inert,
+    // so the resolved model is used (behaviour identical to before this layer).
+    let signals = derive_boundary_signals(headers, &ctx.db).await;
     let query = routing::latest_user_query(&req.messages);
-    let signals = if resolved.is_coding_agent {
-        BoundarySignals::for_coding_agent(
-            &agent_id,
-            routing::user_turn_ordinal(&req.messages),
-            query.as_deref(),
-            routing::is_tool_continuation(&req.messages),
-        )
-    } else {
-        derive_boundary_signals(headers, &ctx.db).await
-    };
     let decision = routing::route_model(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
@@ -250,13 +235,6 @@ async fn chat_core(
     );
 
     Ok(Json(inbound.render_chat_response(resp)).into_response())
-}
-
-fn agent_credential(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(AUTHORIZATION)
-        .or_else(|| headers.get("x-api-key"))
-        .and_then(|value| value.to_str().ok())
 }
 
 /// Derive the model-routing [`BoundarySignals`] for this request (S5).
@@ -482,7 +460,6 @@ mod tests {
 
     struct Store {
         config: Option<LLMConfig>,
-        is_coding_agent: bool,
     }
     #[async_trait]
     impl RegistryStore for Store {
@@ -493,7 +470,6 @@ mod tests {
             Ok(Some(AgentConfigResult {
                 config: self.config.clone(),
                 agent_pinned_model: None,
-                is_coding_agent: self.is_coding_agent,
             }))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
@@ -531,21 +507,6 @@ mod tests {
 
     fn token() -> String {
         crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap()
-    }
-
-    #[test]
-    fn accepts_anthropic_api_key_header() {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-api-key", "agent-token".parse().unwrap());
-        assert_eq!(agent_credential(&headers), Some("agent-token"));
-    }
-
-    #[test]
-    fn authorization_header_takes_precedence() {
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, "Bearer auth-token".parse().unwrap());
-        headers.insert("x-api-key", "api-key-token".parse().unwrap());
-        assert_eq!(agent_credential(&headers), Some("Bearer auth-token"));
     }
 
     /// An llm_config pinning the destination to OpenAI `gpt-4o-mini` — used by the format-
@@ -597,10 +558,7 @@ mod tests {
             .await;
 
         let ctx = ctx_with(server.url());
-        let store = Store {
-            config: None,
-            is_coding_agent: false,
-        };
+        let store = Store { config: None };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
         let resp = chat_core(
             &ctx,
@@ -617,82 +575,6 @@ mod tests {
         assert_eq!(v["model"], "gpt-4o");
         assert_eq!(v["choices"][0]["message"]["content"], "hello");
         assert_eq!(v["usage"]["total_tokens"], 7);
-    }
-
-    #[tokio::test]
-    async fn coding_agent_with_no_traceparent_still_gets_classified_not_pinned_to_config() {
-        // The bug this fixes: a coding-agent CLI (Claude Code, Codex, ...) never has a
-        // traceparent tied to a `flows` row, so `derive_boundary_signals` alone always goes
-        // inert for it — which pins every request to Level 4 (the attached llm_config) and
-        // makes the prompt classifier (Level 3) unreachable. `is_coding_agent: true` must
-        // make chat_core derive signals from the transcript instead, so the classifier
-        // actually gets to run.
-        let mut server = mockito::Server::new_async().await;
-        // No body matcher — the provider reports back whatever model chat_core resolved to
-        // (`OpenAiProvider::chat` overwrites the response `model` with the bare resolved
-        // model id), so the response itself proves which model was actually selected.
-        server
-            .mock("POST", "/chat/completions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                json!({
-                    "id": "chatcmpl-z", "object": "chat.completion", "model": "irrelevant",
-                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
-                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
-                })
-                .to_string(),
-            )
-            .create_async()
-            .await;
-
-        let ctx = ctx_with(server.url());
-        let store = Store {
-            // A configured model that is NOT one of openai's seeded tier models
-            // (gpt-5.5 / gpt-5.4 / gpt-4o-mini) — if the classifier never fires, the
-            // resolved model will be exactly this. If it does fire, it will be one of the
-            // seeded tier models instead.
-            config: Some(LLMConfig {
-                provider: "openai".into(),
-                model: Some("static-configured-model".into()),
-                fallback_models: vec![],
-                temperature: None,
-                max_tokens: None,
-                api_key_secret_name: None,
-                pinned: false,
-                pinned_model: None,
-                tier1_model: None,
-                tier2_model: None,
-                tier3_model: None,
-            }),
-            is_coding_agent: true,
-        };
-        // No traceparent header at all — a coding-agent CLI never sends one.
-        let body = json!({
-            "model": "static-configured-model",
-            "messages": [{ "role": "user", "content": "fix the bug" }]
-        });
-        let resp = chat_core(
-            &ctx,
-            &store,
-            &auth_headers(&token()),
-            body,
-            InboundFormat::OpenAi,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
-        let model = v["model"].as_str().unwrap();
-        assert_ne!(
-            model, "static-configured-model",
-            "classifier never fired — request stayed pinned to Level 4 (config)"
-        );
-        assert!(
-            matches!(model, "gpt-5.5" | "gpt-5.4" | "gpt-4o-mini"),
-            "expected one of openai's seeded tier models, got {model}"
-        );
     }
 
     #[tokio::test]
@@ -720,7 +602,6 @@ mod tests {
         let ctx = ctx_with(server.url());
         let store = Store {
             config: Some(openai_config()),
-            is_coding_agent: false,
         };
         // Anthropic Messages request shape: top-level system + max_tokens.
         let body = json!({
@@ -775,7 +656,6 @@ mod tests {
         let ctx = ctx_with(server.url());
         let store = Store {
             config: Some(openai_config()),
-            is_coding_agent: false,
         };
         // Gemini Messages request shape: systemInstruction + contents.
         let body = json!({
@@ -818,10 +698,7 @@ mod tests {
             .await;
 
         let ctx = ctx_with(server.url());
-        let store = Store {
-            config: None,
-            is_coding_agent: false,
-        };
+        let store = Store { config: None };
         let body = json!({ "model": "gpt-4o", "stream": true, "messages": [{ "role": "user", "content": "hi" }] });
         let resp = chat_core(
             &ctx,
@@ -848,10 +725,7 @@ mod tests {
     #[tokio::test]
     async fn missing_auth_is_401_before_any_provider_call() {
         let ctx = ctx_with("http://unused".into());
-        let store = Store {
-            config: None,
-            is_coding_agent: false,
-        };
+        let store = Store { config: None };
         let body = json!({ "model": "gpt-4o", "messages": [] });
         let err = chat_core(
             &ctx,
@@ -892,7 +766,6 @@ mod tests {
                 tier2_model: None,
                 tier3_model: None,
             }),
-            is_coding_agent: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
         let err = chat_core(

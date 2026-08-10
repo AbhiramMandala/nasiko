@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Multipart, Path, Query, State, rejection::JsonRejection},
+    extract::{Multipart, Path, Query, State},
     http::{StatusCode, header},
     response::IntoResponse,
     routing::get,
@@ -15,7 +15,6 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
-use super::external_turn::{PersistExternalTurnError, persist_external_turn};
 use super::models::*;
 
 const MAX_FILES_PER_UPLOAD: usize = 10;
@@ -31,10 +30,6 @@ pub fn router() -> Router<AppState> {
         .route(
             "/chat/sessions/{session_id}/messages",
             get(list_messages).post(send_message),
-        )
-        .route(
-            "/chat/sessions/{session_id}/external-turns",
-            axum::routing::post(save_external_turn),
         )
         .route(
             "/chat/sessions/{session_id}/files",
@@ -80,58 +75,6 @@ fn default_session_limit() -> i64 {
     50
 }
 
-/// `SELECT`/`FROM` prefix shared by the four keyset variants below; each appends
-/// its own `WHERE`/`ORDER BY`/`LIMIT`. No user input is interpolated — the
-/// variants differ only in fixed predicates and bind-parameter numbering.
-///
-/// The second `LATERAL` is what keeps the sessions page off the trace store:
-/// message/trace counts, billed tokens and p50 latency all come from
-/// `chat_messages` columns (migration 041), covered by
-/// `idx_messages_session(session_id, timestamp)`.
-const SESSION_LIST_SELECT: &str = r#"
-    SELECT cs.*,
-           CASE
-             WHEN a.coding_agent_integration_id IS NOT NULL
-                  AND u.username IS NOT NULL
-                  AND a.name NOT LIKE u.username || '-%'
-               THEN u.username || '-' || a.name
-             ELSE a.name
-           END AS agent_name,
-           (a.coding_agent_integration_id IS NOT NULL) AS is_coding_agent,
-           lm.content AS last_message,
-           agg.message_count,
-           agg.trace_count,
-           agg.total_tokens,
-           agg.latency_p50_ms
-    FROM chat_sessions cs
-    LEFT JOIN agents a ON a.id = cs.agent_id
-    LEFT JOIN users u ON u.id = cs.user_id
-    LEFT JOIN LATERAL (
-        SELECT content FROM chat_messages
-        WHERE session_id = cs.session_id
-        ORDER BY timestamp DESC LIMIT 1
-    ) lm ON true
-    LEFT JOIN LATERAL (
-        SELECT COUNT(*) AS message_count,
-               COUNT(DISTINCT m.trace_id) AS trace_count,
-               -- Aggregate only rows that actually carry usage, so NULL means
-               -- "nothing recorded" (BYO-key agent, or a message predating
-               -- migration 041) and a genuine 0 stays 0. `NULLIF(SUM(...), 0)`
-               -- would conflate those two, since SUM over all-NULL columns
-               -- coalesces to 0.
-               SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0))
-                   FILTER (
-                       WHERE m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL
-                   ) AS total_tokens,
-               -- percentile_cont ignores NULL inputs, so messages written
-               -- before migration 041 are skipped rather than counted as 0ms.
-               percentile_cont(0.5) WITHIN GROUP (ORDER BY m.duration_ms)
-                   AS latency_p50_ms
-        FROM chat_messages m
-        WHERE m.session_id = cs.session_id
-    ) agg ON true
-"#;
-
 async fn list_sessions(
     State(state): State<AppState>,
     claims: Claims,
@@ -150,12 +93,21 @@ async fn list_sessions(
 
     let query_result: Result<Vec<ChatSessionView>, _> = match (cursor_anchor, params.agent_id) {
         (None, None) => {
-            sqlx::query_as::<_, ChatSessionView>(&format!(
-                "{SESSION_LIST_SELECT}
-                 WHERE cs.user_id = $1
-                 ORDER BY cs.updated_at DESC, cs.session_id DESC
-                 LIMIT $2"
-            ))
+            sqlx::query_as::<_, ChatSessionView>(
+                r#"SELECT cs.*,
+                      a.name as agent_name,
+                      lm.content as last_message
+               FROM chat_sessions cs
+               LEFT JOIN agents a ON a.id = cs.agent_id
+               LEFT JOIN LATERAL (
+                   SELECT content FROM chat_messages
+                   WHERE session_id = cs.session_id
+                   ORDER BY timestamp DESC LIMIT 1
+               ) lm ON true
+               WHERE cs.user_id = $1
+               ORDER BY cs.updated_at DESC, cs.session_id DESC
+               LIMIT $2"#,
+            )
             .bind(user_id)
             .bind(fetch)
             .fetch_all(&state.db)
@@ -163,12 +115,21 @@ async fn list_sessions(
         }
 
         (None, Some(agent_id)) => {
-            sqlx::query_as::<_, ChatSessionView>(&format!(
-                "{SESSION_LIST_SELECT}
-                 WHERE cs.user_id = $1 AND cs.agent_id = $2
-                 ORDER BY cs.updated_at DESC, cs.session_id DESC
-                 LIMIT $3"
-            ))
+            sqlx::query_as::<_, ChatSessionView>(
+                r#"SELECT cs.*,
+                      a.name as agent_name,
+                      lm.content as last_message
+               FROM chat_sessions cs
+               LEFT JOIN agents a ON a.id = cs.agent_id
+               LEFT JOIN LATERAL (
+                   SELECT content FROM chat_messages
+                   WHERE session_id = cs.session_id
+                   ORDER BY timestamp DESC LIMIT 1
+               ) lm ON true
+               WHERE cs.user_id = $1 AND cs.agent_id = $2
+               ORDER BY cs.updated_at DESC, cs.session_id DESC
+               LIMIT $3"#,
+            )
             .bind(user_id)
             .bind(agent_id)
             .bind(fetch)
@@ -177,13 +138,22 @@ async fn list_sessions(
         }
 
         (Some((cursor_ts, cursor_sid)), None) => {
-            sqlx::query_as::<_, ChatSessionView>(&format!(
-                "{SESSION_LIST_SELECT}
-                 WHERE cs.user_id = $1
-                   AND (cs.updated_at < $2 OR (cs.updated_at = $2 AND cs.session_id < $3))
-                 ORDER BY cs.updated_at DESC, cs.session_id DESC
-                 LIMIT $4"
-            ))
+            sqlx::query_as::<_, ChatSessionView>(
+                r#"SELECT cs.*,
+                      a.name as agent_name,
+                      lm.content as last_message
+               FROM chat_sessions cs
+               LEFT JOIN agents a ON a.id = cs.agent_id
+               LEFT JOIN LATERAL (
+                   SELECT content FROM chat_messages
+                   WHERE session_id = cs.session_id
+                   ORDER BY timestamp DESC LIMIT 1
+               ) lm ON true
+               WHERE cs.user_id = $1
+                 AND (cs.updated_at < $2 OR (cs.updated_at = $2 AND cs.session_id < $3))
+               ORDER BY cs.updated_at DESC, cs.session_id DESC
+               LIMIT $4"#,
+            )
             .bind(user_id)
             .bind(cursor_ts)
             .bind(cursor_sid)
@@ -193,13 +163,22 @@ async fn list_sessions(
         }
 
         (Some((cursor_ts, cursor_sid)), Some(agent_id)) => {
-            sqlx::query_as::<_, ChatSessionView>(&format!(
-                "{SESSION_LIST_SELECT}
-                 WHERE cs.user_id = $1 AND cs.agent_id = $2
-                   AND (cs.updated_at < $3 OR (cs.updated_at = $3 AND cs.session_id < $4))
-                 ORDER BY cs.updated_at DESC, cs.session_id DESC
-                 LIMIT $5"
-            ))
+            sqlx::query_as::<_, ChatSessionView>(
+                r#"SELECT cs.*,
+                      a.name as agent_name,
+                      lm.content as last_message
+               FROM chat_sessions cs
+               LEFT JOIN agents a ON a.id = cs.agent_id
+               LEFT JOIN LATERAL (
+                   SELECT content FROM chat_messages
+                   WHERE session_id = cs.session_id
+                   ORDER BY timestamp DESC LIMIT 1
+               ) lm ON true
+               WHERE cs.user_id = $1 AND cs.agent_id = $2
+                 AND (cs.updated_at < $3 OR (cs.updated_at = $3 AND cs.session_id < $4))
+               ORDER BY cs.updated_at DESC, cs.session_id DESC
+               LIMIT $5"#,
+            )
             .bind(user_id)
             .bind(agent_id)
             .bind(cursor_ts)
@@ -1198,120 +1177,4 @@ async fn delete_file(
     }
 
     StatusCode::NO_CONTENT.into_response()
-}
-
-#[derive(serde::Serialize)]
-struct ExternalTurnResponse {
-    inserted: bool,
-    user_message: ChatMessage,
-    assistant_message: ChatMessage,
-}
-
-async fn save_external_turn(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(session_id): Path<String>,
-    body: Result<Json<ExternalTurn>, JsonRejection>,
-) -> impl IntoResponse {
-    let body = match body {
-        Ok(Json(body)) => body,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("invalid external turn: {}", error.body_text()),
-            )
-                .into_response();
-        }
-    };
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
-
-    let turn_id = body.turn_id.trim();
-    if turn_id.is_empty()
-        || body.user_content.trim().is_empty()
-        || body.assistant_content.trim().is_empty()
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            "turn_id and content must be nonempty",
-        )
-            .into_response();
-    }
-
-    if let Some(usage) = &body.assistant_usage {
-        let invalid = usage.input_tokens.is_some_and(|v| v < 0)
-            || usage.output_tokens.is_some_and(|v| v < 0)
-            || usage.duration_ms.is_some_and(|v| v < 0)
-            || usage.cost_usd.is_some_and(|v| v.is_sign_negative());
-        if invalid {
-            return (StatusCode::BAD_REQUEST, "usage values must be nonnegative").into_response();
-        }
-    }
-
-    let mut tx = match state.db.begin().await {
-        Ok(tx) => tx,
-        Err(e) => {
-            tracing::error!(%e, session_id, "save_external_turn: begin transaction failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-
-    let owns = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
-    )
-    .bind(&session_id)
-    .bind(user_id)
-    .fetch_one(&mut *tx)
-    .await;
-    match owns {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
-        Err(e) => {
-            tracing::error!(%e, session_id, "save_external_turn: ownership lookup failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    }
-
-    let persisted = match persist_external_turn(&mut tx, &session_id, &body, Utc::now(), true).await
-    {
-        Ok(persisted) => persisted,
-        Err(PersistExternalTurnError::Incomplete) => {
-            let _ = tx.rollback().await;
-            return (StatusCode::CONFLICT, "external turn is incomplete").into_response();
-        }
-        Err(PersistExternalTurnError::Conflict) => {
-            let _ = tx.rollback().await;
-            return (
-                StatusCode::CONFLICT,
-                "turn_id already exists with a different payload",
-            )
-                .into_response();
-        }
-        Err(PersistExternalTurnError::Database(e)) => {
-            tracing::error!(%e, session_id, turn_id, "save_external_turn: persistence failed");
-            let _ = tx.rollback().await;
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-
-    if let Err(e) = tx.commit().await {
-        tracing::error!(%e, session_id, turn_id, "save_external_turn: commit failed");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-
-    (
-        if persisted.inserted {
-            StatusCode::CREATED
-        } else {
-            StatusCode::OK
-        },
-        Json(ExternalTurnResponse {
-            inserted: persisted.inserted,
-            user_message: persisted.user_message,
-            assistant_message: persisted.assistant_message,
-        }),
-    )
-        .into_response()
 }

@@ -1,121 +1,66 @@
 import { fetchApi } from '/common/services/api.js';
 import '/common/components/app-skeleton.js';
-import '/common/components/app-modal.js';
-import '/common/components/app-button.js';
 import { showToast } from '/common/utils/toast.js';
+import { withLoading } from '/common/utils/async-button.js';
 
-// Agent LLM routing — summary card + model pin/revert UX.
-// Reads GET /api/agents/{id}/llm-config and GET /api/llm-router/providers.
-// Writes PATCH /api/agents/{id}/llm-config with { pinned_model }.
+// Self-service LLM routing config for an agent (Phase 2, P2.7). Reads/writes
+// GET|PATCH /api/agents/{id}/llm-config and lists the owner's secrets for the key picker.
+
+const PROVIDERS = ['openai', 'anthropic', 'gemini'];
+const INBOUND_FORMATS = ['openai', 'anthropic', 'gemini'];
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (agent-llm-config) {
   :scope { display: block; max-width: 560px; }
-
-  .subtitle {
+  .row { margin-bottom: var(--space-md); }
+  .row label {
+    display: block;
     font-size: var(--font-size-sm);
-    color: var(--color-text-muted);
-    margin-bottom: var(--space-md);
+    font-weight: 600;
+    color: var(--color-text-main);
+    margin-bottom: var(--space-xs);
   }
-
-  /* Summary card */
-  .summary-card {
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: var(--bg-surface);
-    padding: var(--space-sm) var(--space-md);
-    margin-bottom: var(--space-md);
-  }
-  .summary-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: var(--space-sm);
-    padding: var(--space-xs) 0;
-    font-size: var(--font-size-sm);
-  }
-  .summary-row + .summary-row { border-top: 1px solid var(--color-border); }
-  .summary-label { color: var(--color-text-muted); }
-  .summary-value {
-    font-family: var(--font-mono);
+  .row .hint {
     font-size: var(--font-size-xs);
-    color: var(--color-text-main);
-    text-align: right;
+    color: var(--color-text-muted);
+    margin-top: 2px;
+    font-weight: 400;
   }
-
-  /* Action buttons */
-  .actions { display: flex; gap: var(--space-sm); flex-wrap: wrap; align-items: center; }
-  .btn-override {
-    min-height: var(--control-h-md);
-    padding: 0 var(--s-16);
-    border: 1px solid var(--color-border);
+  /* DS form controls: 32px flat sand wells, hairline only on focus.
+     background-color (not the shorthand) so the global select chevron survives. */
+  .row input, .row select {
+    width: 100%;
+    height: var(--control-h-md);
+    padding: 0 var(--s-12);
+    border: 1px solid transparent;
     border-radius: var(--r-8);
-    background: transparent;
+    background-color: var(--bg-input);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: border-color 0.15s, background 0.15s;
+    font-family: inherit;
   }
-  .btn-override:hover {
-    border-color: var(--border-hover);
-    background: var(--bg-surface-hover);
-  }
-  .btn-override:focus-visible {
+  .row select { padding-right: 30px; }
+  .row input:focus, .row select:focus {
     outline: none;
+    border-color: var(--border-hover);
     box-shadow: 0 0 0 2px var(--color-primary-ring);
   }
-  .btn-revert {
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-md); }
+  .actions { display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-lg); }
+  /* Dark primary per DS (sand-800 fill), not the legacy gold-on-white. */
+  .btn-save {
     min-height: var(--control-h-md);
     padding: 0 var(--s-16);
-    border: 1px solid var(--color-border);
+    border: none;
     border-radius: var(--r-8);
-    background: var(--bg-surface);
-    color: var(--color-text-main);
+    background: light-dark(var(--sand-800), var(--neutral-200));
+    color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
-    transition: border-color 0.15s, background 0.15s;
   }
-  .btn-revert:hover {
-    border-color: var(--border-hover);
-    background: var(--bg-surface-hover);
-  }
-
-  /* Modal form fields */
-  .modal-desc {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-muted);
-    margin-bottom: var(--space-md);
-  }
-  .radio-row {
-    display: flex; align-items: center; gap: var(--space-xs);
-    margin-bottom: var(--space-sm); font-size: var(--font-size-sm);
-  }
-  .radio-row input[type="radio"] { accent-color: var(--yellow-600); }
-  .radio-row label { margin: 0; font-weight: 400; cursor: pointer; }
-  .radio-sub {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    margin: -4px 0 var(--space-sm) 22px;
-  }
-  .pin-fields { margin-top: var(--space-sm); padding-left: 22px; }
-  .field { margin-bottom: var(--space-md); }
-  .field label {
-    display: block; font-size: var(--font-size-sm); font-weight: 600;
-    color: var(--color-text-main); margin-bottom: var(--space-xs);
-  }
-  .field select {
-    width: 100%; height: var(--control-h-md); padding: 0 var(--s-12);
-    border: 1px solid transparent; border-radius: var(--r-8);
-    background-color: var(--bg-input); color: var(--color-text-main);
-    font-size: var(--font-size-sm); font-family: inherit; padding-right: 30px;
-  }
-  .field select:focus {
-    outline: none; border-color: var(--border-hover);
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
-  }
-
+  .btn-save:hover { opacity: 0.9; }
+  .btn-save:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--color-primary-ring); }
   .msg { color: var(--color-text-muted); font-style: italic; }
   .msg.error { color: var(--color-error); font-style: normal; }
 }`);
@@ -123,13 +68,6 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class AgentLlmConfig extends HTMLElement {
   #agentId = null;
-  #configId = null;   // attached llm_config_id (or null)
-  #config = null;     // resolved llm_config object (or null)
-  #configSource = 'none'; // 'attached' | 'owner-default' | 'none'
-  #pinnedModel = null;
-  #providers = [];
-  #configs = [];      // user's reusable configs from GET /api/llm-configs
-  #busy = false;
 
   connectedCallback() {
     this.#agentId = this.getAttribute('agent-id');
@@ -142,280 +80,128 @@ class AgentLlmConfig extends HTMLElement {
   }
 
   async #load() {
-    const [configRes, providersRes, configsRes] = await Promise.all([
+    // Config requires owner access; secrets are the caller's own. Tolerate either failing.
+    const [config, secrets] = await Promise.all([
       fetchApi(`/agents/${this.#agentId}/llm-config`).catch((e) => ({ __error: e.message })),
-      fetchApi('/llm-router/providers').catch(() => ({ data: [] })),
-      fetchApi('/llm-configs').catch(() => ({ data: [] })),
+      fetchApi('/secrets').catch(() => []),
     ]);
 
-    if (configRes.__error) {
-      const denied = /not the agent owner|403/i.test(configRes.__error);
+    if (config.__error) {
+      const denied = /not the agent owner|403/i.test(config.__error);
       this.innerHTML = `<p class="msg${denied ? '' : ' error'}">${
-        denied ? 'Only the agent owner can manage its LLM config.' : `Failed to load: ${configRes.__error}`
+        denied ? 'Only the agent owner can manage its LLM config.' : `Failed to load: ${config.__error}`
       }</p>`;
       return;
     }
-
-    const payload = configRes?.data ?? configRes;
-    this.#configId = payload?.llm_config_id ?? null;
-    this.#config = payload?.llm_config || null;
-    this.#configSource = payload?.source ?? 'none';
-    this.#pinnedModel = payload?.pinned_model ?? null;
-    this.#providers = providersRes?.data ?? [];
-    this.#configs = configsRes?.data ?? (Array.isArray(configsRes) ? configsRes : []);
-    this.#render();
+    // GET /api/secrets answers with the ApiResponse envelope ({data:[…]});
+    // tolerate a bare array too so older servers keep working.
+    this.#render(config, Array.isArray(secrets) ? secrets : (secrets?.data ?? []));
   }
 
-  #render() {
-    const pinned = this.#pinnedModel;
-    const cfg = this.#config;
-    const pinnedProvider = pinned ? this.#providerOf(pinned) : null;
+  #render(config, secrets) {
+    const llm = config.llm_config || {};
+    const inboundFormat = config.inbound_format || 'openai';
+    const provider = llm.provider || '';
+    const model = llm.model || '';
+    const temperature = llm.temperature ?? '';
+    const maxTokens = llm.max_tokens ?? '';
+    const fallbacks = (llm.fallback_models || []).join(', ');
+    const secretName = llm.api_key_secret_name || '';
 
-    // Subtitle line
-    let subtitle;
-    if (pinned) {
-      const provLabel = pinnedProvider ? `${this.#cap(pinnedProvider)} \u00b7 ` : '';
-      subtitle = `Uses a pinned model \u00b7 ${provLabel}${this.#esc(pinned)}`;
-    } else if (cfg) {
-      subtitle = `Uses the workspace configuration \u00b7 ${this.#esc(this.#cap(cfg.provider || ''))}`;
-    } else {
-      subtitle = 'No configuration resolved for this agent';
-    }
-
-    // Summary card rows
-    let cardHtml;
-    if (pinned) {
-      cardHtml = this.#summaryCard([
-        ['Current configuration', 'Pinned model'],
-        ...(pinnedProvider ? [['Provider', this.#cap(pinnedProvider)]] : []),
-        ['Model', pinned],
-      ]);
-    } else if (cfg) {
-      cardHtml = this.#summaryCard([
-        ['Current configuration', cfg.name || '—'],
-        ['Provider', this.#cap(cfg.provider || '')],
-        ['Advanced reasoning', cfg.tier1_model || '—'],
-        ['Balanced', cfg.tier2_model || '—'],
-        ['Fast responses', cfg.tier3_model || '—'],
-      ]);
-    } else {
-      cardHtml = '';
-    }
+    const opts = (values, selected) =>
+      values.map((v) => `<option value="${v}"${v === selected ? ' selected' : ''}>${v}</option>`).join('');
+    const secretOpts = [
+      `<option value="">— Platform default key —</option>`,
+      ...secrets.map((s) => {
+        const name = s.name ?? s.key ?? '';
+        return `<option value="${name}"${name === secretName ? ' selected' : ''}>${name}</option>`;
+      }),
+    ].join('');
 
     this.innerHTML = `
-      <p class="subtitle">${subtitle}</p>
-      ${cardHtml}
+      <div class="grid-2">
+        <div class="row">
+          <label>Provider</label>
+          <select id="provider"><option value="">— select —</option>${opts(PROVIDERS, provider)}</select>
+          <div class="hint">Where the call is routed (outbound).</div>
+        </div>
+        <div class="row">
+          <label>Model</label>
+          <input id="model" type="text" value="${model}" placeholder="e.g. gpt-4o-mini" />
+          <div class="hint">Provider-native model id. The request's model is ignored.</div>
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Inbound SDK format</label>
+        <select id="inbound_format">${opts(INBOUND_FORMATS, inboundFormat)}</select>
+        <div class="hint">Which SDK the agent's code speaks. Takes effect on the next deploy.</div>
+      </div>
+
+      <div class="grid-2">
+        <div class="row">
+          <label>Temperature</label>
+          <input id="temperature" type="number" step="0.1" min="0" max="2" value="${temperature}" placeholder="default" />
+        </div>
+        <div class="row">
+          <label>Max tokens</label>
+          <input id="max_tokens" type="number" min="1" value="${maxTokens}" placeholder="default" />
+        </div>
+      </div>
+
+      <div class="row">
+        <label>Fallback models</label>
+        <input id="fallback_models" type="text" value="${fallbacks}" placeholder="provider/model, provider/model" />
+        <div class="hint">Comma-separated, tried in order on failure (e.g. <code>openai/gpt-4o-mini</code>).</div>
+      </div>
+
+      <div class="row">
+        <label>API key secret</label>
+        <select id="api_key_secret_name">${secretOpts}</select>
+        <div class="hint">A secret you've stored; leave on platform default to use the shared key.</div>
+      </div>
+
       <div class="actions">
-        ${pinned ? `<button class="btn-revert" data-action="revert" type="button">Revert to default</button>` : ''}
-        <button class="btn-override" data-action="override" type="button">${pinned ? 'Change model' : 'Override model'}</button>
+        <button class="btn-save" id="btn-save">Save config</button>
       </div>
     `;
 
-    this.querySelector('[data-action="override"]')?.addEventListener('click', () => this.#openOverrideModal());
-    this.querySelector('[data-action="revert"]')?.addEventListener('click', () => this.#revert());
+    const saveBtn = this.querySelector('#btn-save');
+    saveBtn.addEventListener('click', withLoading(saveBtn, 'Saving…', () => this.#save()));
   }
 
-  #summaryCard(rows) {
-    return `<div class="summary-card">${rows.map(([label, value]) => `
-      <div class="summary-row">
-        <span class="summary-label">${this.#esc(label)}</span>
-        <span class="summary-value">${this.#esc(value)}</span>
-      </div>`).join('')}</div>`;
-  }
-
-  /* ── Override modal ──────────────────────────────────────────────────── */
-
-  #openOverrideModal() {
-    // Draft state — only committed on Save.
-    let mode = this.#pinnedModel ? 'pin' : 'config'; // 'config' | 'pin'
-    let draftConfigId = this.#configId || '';          // '' = owner default
-    let draftProvider = this.#pinnedModel ? this.#providerOf(this.#pinnedModel) : null;
-    let draftModel = this.#pinnedModel || null;
-
-    // Remove any existing modal
-    this.querySelector('app-modal')?.remove();
-
-    const modal = document.createElement('app-modal');
-    modal.setAttribute('heading', 'Override model');
-
-    const body = document.createElement('div');
-    const footer = document.createElement('div');
-    footer.dataset.slot = 'footer';
-
-    const renderBody = () => {
-      const modelsHtml = draftProvider
-        ? this.#providers.find((p) => p.provider === draftProvider)?.models
-            ?.map((m) => `<option value="${this.#esc(m.model)}" ${m.model === draftModel ? 'selected' : ''}>${this.#esc(m.model)}</option>`)
-            .join('') || ''
-        : '';
-
-      const defaultCfg = this.#configs.find((c) => c.is_default);
-      const configOptions = this.#configs.map((c) => {
-        const label = c.is_default ? `${this.#esc(c.name)} (default)` : this.#esc(c.name);
-        const selected = c.id === draftConfigId ? 'selected' : '';
-        return `<option value="${c.id}" ${selected}>${label}</option>`;
-      }).join('');
-
-      body.innerHTML = `
-        <p class="modal-desc">Choose how this agent selects an LLM.</p>
-        <div class="radio-row">
-          <input type="radio" id="pin-mode-config" name="pin-mode" value="config" ${mode === 'config' ? 'checked' : ''} />
-          <label for="pin-mode-config">Use workspace configuration</label>
-        </div>
-        ${mode === 'config' ? `
-          <div class="pin-fields">
-            <div class="field">
-              <label for="pick-config">Configuration</label>
-              <select id="pick-config">
-                <option value="" ${!draftConfigId ? 'selected' : ''}>Workspace default${defaultCfg ? ` (${this.#esc(defaultCfg.name)})` : ''}</option>
-                ${configOptions}
-              </select>
-            </div>
-          </div>` : ''}
-        <div class="radio-row">
-          <input type="radio" id="pin-mode-pin" name="pin-mode" value="pin" ${mode === 'pin' ? 'checked' : ''} />
-          <label for="pin-mode-pin">Pin a model</label>
-        </div>
-        ${mode === 'pin' ? `
-          <div class="pin-fields">
-            <div class="field">
-              <label for="pin-provider">Provider</label>
-              <select id="pin-provider">
-                <option value="" disabled ${draftProvider ? '' : 'selected'}>Choose provider</option>
-                ${this.#providers.map((p) => `
-                  <option value="${this.#esc(p.provider)}" ${p.provider === draftProvider ? 'selected' : ''}>
-                    ${this.#esc(this.#cap(p.provider))}
-                  </option>`).join('')}
-              </select>
-            </div>
-            ${draftProvider ? `
-            <div class="field">
-              <label for="pin-model">Model</label>
-              <select id="pin-model">
-                <option value="" disabled ${draftModel ? '' : 'selected'}>Choose model</option>
-                ${modelsHtml}
-              </select>
-            </div>` : ''}
-          </div>` : ''}
-      `;
-
-      // Wire radio toggles
-      body.querySelectorAll('input[name="pin-mode"]').forEach((r) => {
-        r.addEventListener('change', () => {
-          mode = r.value;
-          renderBody();
-        });
-      });
-
-      // Wire config picker
-      body.querySelector('#pick-config')?.addEventListener('change', (e) => {
-        draftConfigId = e.target.value;
-      });
-
-      // Wire provider change
-      body.querySelector('#pin-provider')?.addEventListener('change', (e) => {
-        draftProvider = e.target.value;
-        draftModel = null;
-        renderBody();
-      });
-
-      // Wire model change
-      body.querySelector('#pin-model')?.addEventListener('change', (e) => {
-        draftModel = e.target.value;
-      });
+  async #save() {
+    const val = (id) => this.querySelector(`#${id}`).value.trim();
+    const provider = val('provider');
+    const model = val('model');
+    if (!provider || !model) {
+      showToast('Provider and model are required');
+      return;
+    }
+    const num = (id) => {
+      const v = val(id);
+      return v === '' ? null : Number(v);
+    };
+    const body = {
+      provider,
+      model,
+      inbound_format: val('inbound_format'),
+      temperature: num('temperature'),
+      max_tokens: num('max_tokens'),
+      fallback_models: val('fallback_models').split(',').map((s) => s.trim()).filter(Boolean),
+      api_key_secret_name: val('api_key_secret_name') || null,
     };
 
-    footer.innerHTML = `
-      <app-button variant="secondary" data-action="modal-cancel">Cancel</app-button>
-      <app-button variant="primary" data-action="modal-save">Save changes</app-button>
-    `;
-
-    renderBody();
-    modal.appendChild(body);
-    modal.appendChild(footer);
-    this.appendChild(modal);
-
-    // Wire footer buttons
-    footer.querySelector('[data-action="modal-cancel"]').addEventListener('click', () => modal.close());
-    footer.querySelector('[data-action="modal-save"]').addEventListener('click', async () => {
-      if (mode === 'pin' && (!draftProvider || !draftModel)) {
-        showToast('Choose a provider and model');
-        return;
-      }
-      modal.close();
-      if (mode === 'pin') {
-        await this.#setPinnedModel(draftModel);
-      } else {
-        await this.#attachConfig(draftConfigId || null);
-      }
-    });
-
-    // Open after next frame so the dialog element is in the DOM
-    requestAnimationFrame(() => modal.open());
-  }
-
-  /* ── API calls ───────────────────────────────────────────────────────── */
-
-  async #setPinnedModel(model) {
-    if (this.#busy) return;
-    this.#busy = true;
     try {
       await fetchApi(`/agents/${this.#agentId}/llm-config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pinned_model: model }),
+        body: JSON.stringify(body),
       });
-      showToast(model ? `Pinned ${model}` : 'Reverted to the workspace configuration');
-      // Reload fresh state
-      await this.#load();
+      showToast('LLM config saved');
     } catch (e) {
       showToast(`Failed: ${e.message}`);
-    } finally {
-      this.#busy = false;
     }
-  }
-
-  async #revert() {
-    await this.#setPinnedModel(null);
-  }
-
-  async #attachConfig(configId) {
-    if (this.#busy) return;
-    this.#busy = true;
-    try {
-      await fetchApi(`/agents/${this.#agentId}/llm-config`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ llm_config_id: configId }),
-      });
-      const cfg = configId ? this.#configs.find((c) => c.id === configId) : null;
-      showToast(cfg ? `Attached "${cfg.name}"` : 'Using workspace default');
-      await this.#load();
-    } catch (e) {
-      showToast(`Failed: ${e.message}`);
-    } finally {
-      this.#busy = false;
-    }
-  }
-
-  /* ── Helpers ─────────────────────────────────────────────────────────── */
-
-  /// Find which provider a model belongs to by scanning the catalog.
-  #providerOf(model) {
-    if (!model) return null;
-    for (const p of this.#providers) {
-      if (p.models?.some((m) => m.model === model)) return p.provider;
-    }
-    return null;
-  }
-
-  #cap(s) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
-
-  #esc(str) {
-    if (str == null) return '';
-    return String(str).replace(/[&<>"']/g, (m) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
-    })[m]);
   }
 }
 

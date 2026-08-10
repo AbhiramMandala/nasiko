@@ -1,15 +1,20 @@
 import { apiFetch } from '/common/services/api.js';
 import "./voice-input.js";
 import "./agent-steps.js";
-import "./app-module-nav.js";
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
 import { usageChipsHtml, usageFromMessage } from '/common/utils/usage-chips.js';
-import { transcribeBlob } from '/common/utils/voice-utils.js';
 
 if (!window.transcribeAudio) {
-  window.transcribeAudio = transcribeBlob;
+  window.transcribeAudio = async (blob) => {
+    const form = new FormData();
+    form.append('file', blob, 'audio.webm');
+    const res = await apiFetch('/transcribe', { method: 'POST', body: form });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    return data.text;
+  };
 }
 
 import styles from './chat-page.css' with { type: 'css' };
@@ -22,8 +27,6 @@ class ChatPage extends HTMLElement {
   #agentId = null;
   #agentLabel = null;
   #lastUserContent = null;
-  #sampleQueries = [];
-  #sending = false;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -36,13 +39,6 @@ class ChatPage extends HTMLElement {
     this.#agentLabel = params.get("agent_name") || "Agent";
 
     if (this.#agentId) document.title = `Nasiko — Chat with ${this.#agentLabel}`;
-
-    // chat.html is not in the nav, so the rail has no way to work out which
-    // module it belongs to — without this, opening a session leaves the rail
-    // with nothing selected. Same split as the module nav below: no agent_id
-    // means this is an orchestrator session.
-    document.querySelector("app-header")
-      ?.setAttribute("active-module", this.#agentId ? "agents" : "orchestrator");
 
     this.#render();
     this.#bindEvents();
@@ -63,8 +59,6 @@ class ChatPage extends HTMLElement {
         </div></div>
       `;
       this.#loadMessages(messagesEl);
-    } else if (this.#agentId) {
-      this.#loadSampleQueries();
     }
   }
 
@@ -73,7 +67,6 @@ class ChatPage extends HTMLElement {
     const agentCardUrl = this.#agentId ? `/agent-card.html?id=${encodeURIComponent(this.#agentId)}` : null;
 
     this.innerHTML = `
-      ${this.#agentId ? '' : '<app-module-nav module="orchestrator"></app-module-nav>'}
       <div class="chat-header">
         <div class="chat-header-avatar" aria-hidden="true">${initial}</div>
         <div class="chat-header-info">
@@ -95,48 +88,31 @@ class ChatPage extends HTMLElement {
     `;
   }
 
-  #renderWelcome(prompts) {
-    const chips = (prompts || []).length
-      ? prompts
-      : ["Help me debug a failing deployment", "Explain how container networking works", "Generate a Dockerfile for my service"];
+  #renderWelcome() {
+    const prompts = [
+      "Help me debug a failing deployment",
+      "Explain how container networking works",
+      "Generate a Dockerfile for my service",
+    ];
     return `
       <div class="welcome-state">
         <div class="welcome-avatar" aria-hidden="true">${this.#agentLabel.charAt(0).toUpperCase()}</div>
         <h2 class="welcome-title">${this.#esc(this.#agentLabel)}</h2>
         <p class="welcome-subtitle">Ask me anything</p>
         <div class="welcome-prompts">
-          ${chips.map(p => `<button type="button" class="welcome-chip">${this.#esc(p)}</button>`).join('')}
+          ${prompts.map(p => `<button type="button" class="welcome-chip">${this.#esc(p)}</button>`).join('')}
         </div>
       </div>
     `;
   }
 
-  async #loadSampleQueries() {
-    try {
-      const res = await apiFetch(`/agents/${encodeURIComponent(this.#agentId)}`);
-      if (!res.ok) { console.warn('loadSampleQueries: fetch failed', res.status); return; }
-      const body = await res.json();
-      const agent = body.data || body;
-      if (agent.display_name) {
-        this.#agentLabel = agent.display_name;
-      }
-      const skills = agent.skills || [];
-      const queries = skills
-        .map(s => s.sample_query || (Array.isArray(s.examples) && s.examples[0]) || null)
-        .filter(Boolean)
-        .slice(0, 3);
-      if (!queries.length) { console.warn('loadSampleQueries: no examples found in skills', skills); return; }
-      this.#sampleQueries = queries;
-      const welcome = this.querySelector('.welcome-state');
-      if (!welcome) { console.warn('loadSampleQueries: .welcome-state not found in DOM'); return; }
-      welcome.outerHTML = this.#renderWelcome(queries);
-      this.#bindWelcomeChips();
-    } catch (err) { console.warn('loadSampleQueries failed:', err); }
-  }
-
-  #bindWelcomeChips() {
+  #bindEvents() {
+    const messagesEl = this.querySelector("#messages");
     const chatInput = this.querySelector("#chat-input");
-    for (const chip of this.querySelectorAll(".welcome-chip")) {
+
+    // Welcome prompt chips
+    const chips = this.querySelectorAll(".welcome-chip");
+    for (const chip of chips) {
       chip.addEventListener("click", () => {
         const textarea = chatInput.querySelector('#textarea');
         if (textarea) {
@@ -145,14 +121,6 @@ class ChatPage extends HTMLElement {
         }
       });
     }
-  }
-
-  #bindEvents() {
-    const messagesEl = this.querySelector("#messages");
-    const chatInput = this.querySelector("#chat-input");
-
-    // Welcome prompt chips
-    this.#bindWelcomeChips();
 
     // Copy code blocks (delegated)
     messagesEl.addEventListener("click", (e) => {
@@ -198,8 +166,6 @@ class ChatPage extends HTMLElement {
   }
 
   async #sendMessage(content) {
-    if (this.#sending) return;
-    this.#sending = true;
     const messagesEl = this.querySelector("#messages");
     const chatInput = this.querySelector("#chat-input");
 
@@ -305,7 +271,6 @@ class ChatPage extends HTMLElement {
       this.#appendMsg(messagesEl, "assistant", `Error: ${err.message}`);
       this.#updateRetryButtons(messagesEl);
     } finally {
-      this.#sending = false;
       chatInput.setLoading(false);
     }
   }

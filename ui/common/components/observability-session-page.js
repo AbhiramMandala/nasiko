@@ -173,15 +173,10 @@ class ObservabilitySessionPage extends HTMLElement {
     const meta = this.querySelector('.chat-meta');
     if (!meta) return;
     const s = this.#session;
-    // `?? 0` used to render every absent metric as a confident 0 / $ 0.00 /
-    // 0.0 s. When the trace backend is unconfigured or hasn't ingested the
-    // session yet these are *unknown*, and asserting a zero cost is worse than
-    // admitting we don't know — an em dash is the convention elsewhere.
-    const num = (v, fmt) => (v == null ? '—' : fmt(v));
     meta.innerHTML = `
-      <span class="chip">${icons.layers('', 12)} ${num(s?.token_usage?.total, (v) => v.toLocaleString())}</span>
-      <span class="chip">${num(s?.cost_summary?.total?.cost, (v) => `$ ${v.toFixed(2)}`)}</span>
-      <span class="chip">${icons.clock('', 12)} ${num(s?.latency_p50, (v) => `${(v / 1000).toFixed(1)} s`)}</span>
+      <span class="chip">${icons.layers('', 12)} ${(s?.token_usage?.total ?? 0).toLocaleString()}</span>
+      <span class="chip">$ ${(s?.cost_summary?.total?.cost ?? 0).toFixed(2)}</span>
+      <span class="chip">${icons.clock('', 12)} ${((s?.latency_p50 ?? 0) / 1000).toFixed(1)} s</span>
     `;
   }
 
@@ -338,32 +333,8 @@ class ObservabilitySessionPage extends HTMLElement {
 
   #infoTabHtml() {
     const s = this.#span;
-    // tempo.rs builds a flat dotted-key attribute map, but the span-detail API
-    // re-nests it before serializing (`unflatten_attrs` in
-    // oss/server/src/observability/service.rs), so the wire shape is
-    // `attributes.gen_ai.input.messages` — a flat `attrs['gen_ai.input.messages']`
-    // lookup can never match. The server also resolves the raw content into
-    // `input.value`/`output.value` (preferring the `input.value` attribute, then
-    // `gen_ai.input.messages`), so that field is the primary source here.
-    //
-    // `gen_ai.input/output.messages` is what the official GenAI instrumentation
-    // emits once OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental is set
-    // (the injector always sets it — see oss/observability/src/injector.rs). Its
-    // value is a JSON *string*, not an array, so it is passed as the `rawValue`
-    // argument: that branch JSON.parses and understands the semconv `parts[]`
-    // shape. `llm.*` is the older OpenInference convention, kept first for spans
-    // recorded before the opt-in — a fallback chain rather than a version check,
-    // matching how this repo handles A2A payload drift. `||` not `??`: the
-    // server serializes "no content" as an empty string, which must fall through.
-    const attrs = s.attributes ?? {};
-    const inputMsgs = this.#extractMessages(
-      attrs.llm?.input_messages,
-      s.input?.value || attrs.gen_ai?.input?.messages || s.input_content,
-    );
-    const outputMsgs = this.#extractMessages(
-      attrs.llm?.output_messages,
-      s.output?.value || attrs.gen_ai?.output?.messages || s.output_content,
-    );
+    const inputMsgs = this.#extractMessages(s.attributes?.llm?.input_messages, s.input?.value);
+    const outputMsgs = this.#extractMessages(s.attributes?.llm?.output_messages, s.output?.value);
     const section = (title, msgs, emptyText) => `
       <div class="detail-section-title">${title}</div>
       ${msgs.length

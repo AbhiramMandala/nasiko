@@ -286,7 +286,6 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             litellm_model: entry.clone(),
             api_key,
             fallback_models: Vec::new(),
-            is_coding_agent: primary.is_coding_agent,
             temperature: primary.temperature,
             max_tokens: primary.max_tokens,
             has_llm_config: primary.has_llm_config,
@@ -337,7 +336,6 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            is_coding_agent: false,
         }
     }
 
@@ -417,7 +415,6 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            is_coding_agent: false,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
@@ -470,7 +467,6 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            is_coding_agent: false,
         };
         let req: EmbeddingsRequest =
             serde_json::from_value(json!({ "model": "x", "input": "hi" })).unwrap();
@@ -547,7 +543,6 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            is_coding_agent: false,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
@@ -622,7 +617,6 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            is_coding_agent: false,
         };
         let req: ChatRequest = serde_json::from_value(json!({
             "temperature": 0.7,
@@ -670,7 +664,6 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            is_coding_agent: false,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))

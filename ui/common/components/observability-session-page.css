@@ -14,17 +14,17 @@
   }
 
   .back-btn {
-    width: var(--control-h-lg);
-    height: var(--control-h-lg);
+    width: 36px;
+    height: 36px;
     border: 1px solid transparent;
-    border-radius: var(--r-10);
+    border-radius: var(--r-8);
     background: var(--color-bg-base);
     color: var(--color-text-main);
     flex-shrink: 0;
     cursor: pointer;
 
     &:hover { border-color: var(--color-border); }
-    & svg { width: 20px; height: 20px; }
+    & svg { width: 16px; height: 16px; }
   }
 
   .page-title {
@@ -175,10 +175,9 @@
   }
 
   /* ── Chat history pane ────────────────────────────────────────────────── */
-  /* Surface: common/styles/surface.css. The brand stroke is the one deliberate
-     override — this pane is the page's focal object, not another card. */
   .chat-card {
-    border-color: var(--fg-brand-highlight, var(--yellow-400));
+    border: 1px solid var(--fg-brand-highlight, var(--yellow-400));
+    border-radius: var(--r-12);
     padding: var(--space-md);
     display: flex;
     flex-direction: column;

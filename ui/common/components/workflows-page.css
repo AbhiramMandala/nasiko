@@ -57,16 +57,21 @@
     align-content: start;
   }
 
-  /* ── Workflow card — surface + hover lift: common/styles/surface.css ── */
+  /* ── Workflow card — strokeless sand well (mockup: pad 20, gap 12, r8) ── */
   .wf-card {
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: var(--space-sm);
-    padding: var(--space-md);
+    gap: var(--s-12);
+    padding: var(--s-20);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
     cursor: pointer;
+    transition: border-color 0.15s ease;
   }
-  .wf-card.is-skeleton { cursor: default; min-height: 160px; }
+  .wf-card:hover { border-color: var(--color-border); }
+  .wf-card.is-skeleton { cursor: default; min-height: 176px; }
 
   .wf-card-top {
     display: flex;
@@ -80,9 +85,6 @@
     font-weight: 500;
     line-height: 20px;
     color: var(--color-text-main);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   /* Keep the per-card menu inside the card's right edge */
   app-action-menu .aam-menu { left: auto; right: 0; }
@@ -123,6 +125,7 @@
     align-items: center;
     gap: var(--s-8);
     margin-top: auto;
+    padding-top: var(--s-4);
   }
   .wf-dot {
     width: 6px;

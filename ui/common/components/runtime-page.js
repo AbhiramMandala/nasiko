@@ -1,8 +1,6 @@
 import { icons } from '/common/utils/icons.js';
-import { connectSSE } from '/common/services/sse.js';
 import '/common/components/app-module-nav.js';
 import { showToast } from '/common/utils/toast.js';
-import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import { timeAgo } from '/common/utils/date-utils.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
@@ -53,16 +51,16 @@ class RuntimePage extends HTMLElement {
 
   #render() {
     this.innerHTML = `
-      <app-module-nav module="observability"></app-module-nav>
+      <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Agent runtime</h1>
-        <p class="page-sub">Kubernetes agent runtime clusters provisioned by <code>nasiko-ee init</code>. Watch provisioning status and live logs here</p>
+        <p class="page-sub">Kubernetes agent-runtime clusters provisioned by <code>nasiko-ee init</code>. Provisioning runs in the background on the control plane — watch status and live logs here.</p>
       </div>
       <smart-table id="clusters-table" limit="15"></smart-table>
       <div id="clusters-empty" hidden>
         <app-empty-state
-          title="No agent runtime clusters yet"
-          description="Run nasiko-ee init with the Kubernetes agent runtime to provision your first cluster"
+          title="No agent-runtime clusters yet"
+          description="Run nasiko-ee init with the Kubernetes agent runtime to provision one — it will show up here while the control plane provisions it in the background."
         ></app-empty-state>
       </div>
 
@@ -264,15 +262,11 @@ class RuntimePage extends HTMLElement {
     this.#closeLogs();
     const viewer = this.querySelector('#detail-log');
     viewer.innerHTML = '';
-    // connectSSE (not raw EventSource) so the multi-tenant dashboard streams from
-    // the workspace control plane via apiBase. #appendLog already tolerates both
-    // the plain-text lines the server sends and JSON-unwrapped strings.
-    const es = connectSSE(`/infra/clusters/${id}/logs`, {
-      onMessage: (data) => this.#appendLog(viewer, data),
-      // The stream ends when the provisioning job finishes (or immediately with
-      // a one-shot status line when no job is active) — don't auto-reconnect.
-      onError: () => es.close(),
-    });
+    const es = new EventSource(`/api/infra/clusters/${id}/logs`);
+    es.onmessage = (e) => this.#appendLog(viewer, e.data);
+    // The stream ends when the provisioning job finishes (or immediately with
+    // a one-shot status line when no job is active) — don't auto-reconnect.
+    es.onerror = () => es.close();
     this.#eventSource = es;
   }
 
@@ -299,13 +293,7 @@ class RuntimePage extends HTMLElement {
   // ── Destroy ───────────────────────────────────────────────────────────────
 
   async #destroy(id, name) {
-    const confirmed = await confirmDialog({
-      title: `Destroy ${name}`,
-      message: 'Its cloud resources will be removed. This cannot be undone.',
-      confirmLabel: 'Destroy',
-      danger: true,
-    });
-    if (!confirmed) return;
+    if (!confirm(`Destroy cluster "${name}"? Its cloud resources will be removed. This cannot be undone.`)) return;
     try {
       const res = await window.destroyInfraCluster(id);
       if (!res.ok) throw new Error((await res.text()) || res.statusText);

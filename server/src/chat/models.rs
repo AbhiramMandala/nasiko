@@ -32,24 +32,13 @@ pub struct ChatSessionView {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub agent_name: Option<String>,
-    pub is_coding_agent: bool,
     pub last_message: Option<String>,
-    // Per-session rollups computed in the list query itself, so the sessions
-    // page renders its stats columns without a trace-store round-trip.
-    // `total_tokens` covers **platform-paid** spend only (migration 041), so a
-    // NULL means "nothing billed here", not "no data" — BYO-key agent spend is
-    // visible on the session detail page, which reads Tempo.
-    pub message_count: Option<i64>,
-    pub trace_count: Option<i64>,
-    pub total_tokens: Option<i64>,
-    pub latency_p50_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ChatMessage {
     pub id: Uuid,
     pub session_id: String,
-    pub external_turn_id: Option<String>,
     pub role: String,
     pub content: String,
     pub file_parts: Option<sqlx::types::Json<serde_json::Value>>,
@@ -65,7 +54,6 @@ pub struct ChatMessage {
     pub cost_usd: Option<rust_decimal::Decimal>,
     pub usage_estimated: Option<bool>,
     pub trace_id: Option<String>,
-    pub metadata: Option<sqlx::types::Json<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,31 +110,4 @@ pub struct MessageUsage {
     pub cost_usd: Option<rust_decimal::Decimal>,
     pub estimated: Option<bool>,
     pub trace_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ExternalTurn {
-    pub turn_id: String,
-    pub user_content: String,
-    pub assistant_content: String,
-    pub assistant_usage: Option<MessageUsage>,
-    #[serde(default, deserialize_with = "deserialize_optional_object")]
-    pub assistant_metadata: Option<serde_json::Map<String, serde_json::Value>>,
-}
-
-fn deserialize_optional_object<'de, D>(
-    deserializer: D,
-) -> Result<Option<serde_json::Map<String, serde_json::Value>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::Error;
-
-    match Option::<serde_json::Value>::deserialize(deserializer)? {
-        None => Ok(None),
-        Some(serde_json::Value::Object(object)) => Ok(Some(object)),
-        Some(_) => Err(D::Error::custom(
-            "assistant_metadata must be null or a JSON object",
-        )),
-    }
 }

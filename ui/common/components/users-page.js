@@ -1,7 +1,7 @@
 import { apiFetch } from '/common/services/api.js';
+import '/common/components/app-module-nav.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
-import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import { withLoading } from '/common/utils/async-button.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
@@ -58,6 +58,7 @@ class UsersPage extends HTMLElement {
         const stats = await window.fetchUserStats();
         if (stats && stats.available === false) {
           this.innerHTML = `
+      <app-module-nav module="org"></app-module-nav>
             <div class="users-unavailable">
               <app-empty-state
                 title="Not available for your role"
@@ -103,6 +104,7 @@ class UsersPage extends HTMLElement {
 
   #render() {
     this.innerHTML = `
+      <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Users</h1>
         <span class="count-chips" id="users-stats"><span class="pre-chip" style="--pre-chip-w:70px"></span><span class="pre-chip" style="--pre-chip-w:69px"></span></span>
@@ -541,13 +543,7 @@ class UsersPage extends HTMLElement {
         filterTeamsByDepartment();
         reassignModal.open();
       } else if (action === 'delete') {
-        const confirmed = await confirmDialog({
-          title: `Delete ${name}`,
-          message: 'This will permanently remove the user. This cannot be undone.',
-          confirmLabel: 'Delete',
-          danger: true,
-        });
-        if (!confirmed) return;
+        if (!confirm(`Delete user "${name}"? This cannot be undone.`)) return;
         try {
           const res = await apiFetch(`/users/${id}`, { method: 'DELETE' });
           if (!res.ok) throw new Error(res.statusText);

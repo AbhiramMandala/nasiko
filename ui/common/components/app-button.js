@@ -3,7 +3,7 @@
  *
  * @element app-button
  * @attr {string} variant - Visual style: `primary` (default) | `secondary` | `ghost` | `danger` | `dark`
- * @attr {string} size - Size modifier: `sm` (--control-h-sm) | (default) --control-h-lg
+ * @attr {string} size - Size modifier: `sm` | (default medium)
  * @attr {boolean} disabled - Disables the button
  * @attr {boolean} loading - Shows a spinner and disables the button
  * @attr {string} type - HTML button type: `button` (default) | `submit` | `reset`
@@ -23,7 +23,7 @@ styles.replaceSync(`@scope (app-button) {
   .btn {
     width: 100%;
     padding: 0 var(--s-16);
-    border-radius: var(--r-10);
+    border-radius: var(--r-8);
     font: 500 var(--font-size-sm)/1 inherit;
     border: 1px solid transparent;
     display: inline-flex;
@@ -34,18 +34,16 @@ styles.replaceSync(`@scope (app-button) {
     min-height: var(--control-h-lg);
     transition: background var(--transition-fast), color var(--transition-fast);
 
-    /* DS icon scale is 12/16/20/24/28; a button takes the step matching its
-       size (button_layout.dart) — large 20, medium 16, small 12. Radius
-       likewise: large r10, everything below r8 (primary_button.dart). */
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
-
     &.is-sm {
       min-height: var(--control-h-sm);
       padding: 0 var(--s-12);
       font-size: 13px;
-      border-radius: var(--r-8);
+    }
 
-      & svg { width: 12px; height: 12px; }
+    &.is-lg {
+      min-height: 44px;
+      padding: 0 var(--space-lg);
+      font-size: var(--font-size-base);
     }
 
     &.is-primary {
@@ -106,16 +104,14 @@ styles.replaceSync(`@scope (app-button) {
     }
 
     &.is-icon {
-      width: var(--control-h-md);
-      height: var(--control-h-md);
+      width: 2rem;
+      height: 2rem;
       min-height: unset;
       padding: 0;
       background: transparent;
       color: var(--color-text-muted);
       border-color: transparent;
-      border-radius: var(--r-8);
-
-      & svg { width: 16px; height: 16px; }
+      border-radius: var(--radius-sm);
 
       &:hover:not(:disabled) {
         background: var(--color-bg-base);
@@ -167,18 +163,6 @@ export class AppButton extends HTMLElement {
   set disabled(val) { val ? this.setAttribute('disabled', '') : this.removeAttribute('disabled'); }
   connectedCallback() { this.render(); }
   attributeChangedCallback() { if (this.isConnected) this.render(); }
-
-  /// Replace the button's text.
-  ///
-  /// Assigning to `element.textContent` directly would wipe the rendered
-  /// `<button>` wrapper and leave a bare text node — the button keeps its box
-  /// in the layout but loses all of its styling. Callers that relabel a button
-  /// (e.g. a Create/Save-changes modal) should use this instead.
-  set label(text) {
-    const content = this.querySelector('.content');
-    if (content) content.textContent = text;
-    else this.textContent = text; // not rendered yet; render() picks this up
-  }
 
   render() {
     const variant  = this.getAttribute('variant') || 'primary';

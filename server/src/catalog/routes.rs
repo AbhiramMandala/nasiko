@@ -2,7 +2,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::IntoResponse,
     routing::{get, post, put},
 };
 use chrono::{DateTime, Utc};
@@ -22,8 +22,6 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/agents", post(create))
         .route("/agents", get(list))
-        .route("/agents/coding-integrations", post(register_coding_agent))
-        .route("/agents/{id}/llm-token", post(issue_coding_agent_llm_token))
         .route("/agents/{id}", get(get_one))
         .route("/agents/{id}", put(update))
         .route("/agents/{id}", axum::routing::delete(delete))
@@ -37,262 +35,6 @@ pub fn router() -> Router<AppState> {
         .route("/search/users", get(search_users))
         .route("/registry/user/agents", get(registry_user_agents))
         .route("/registries/{id}", get(get_by_registry_id))
-}
-
-const CODING_AGENT_TOKEN_TTL_SECONDS: u64 = 60 * 60;
-
-#[derive(Debug, Serialize, ToSchema)]
-struct CodingAgentLlmToken {
-    token: String,
-    expires_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-struct CodingAgentLlmTokenResponse {
-    data: CodingAgentLlmToken,
-}
-
-async fn issue_coding_agent_llm_token(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(agent_id): Path<Uuid>,
-) -> Response {
-    let owner_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(error) => return error.into_response(),
-    };
-    let owned_integration = sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS(
-               SELECT 1 FROM agents
-               WHERE id = $1 AND owner_id = $2 AND coding_agent_integration_id IS NOT NULL
-                 AND deleted_at IS NULL
-           )"#,
-    )
-    .bind(agent_id)
-    .bind(owner_id)
-    .fetch_one(&state.db)
-    .await;
-    match owned_integration {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
-        Err(error) => {
-            tracing::error!(%error, %agent_id, %owner_id, "coding-agent LLM token lookup failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    }
-
-    let gateway = nasiko_llm_router::GatewayConfig::from_env();
-    if gateway.agent_jwt_secret.is_empty() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "LLM router credentials are not configured",
-        )
-            .into_response();
-    }
-    let token = match nasiko_llm_router::auth::mint_agent_token(
-        &agent_id.to_string(),
-        &owner_id.to_string(),
-        &gateway.agent_jwt_secret,
-        CODING_AGENT_TOKEN_TTL_SECONDS,
-        nasiko_llm_router::auth::parse_algorithm(&gateway.agent_jwt_algorithm),
-    ) {
-        Ok(token) => token,
-        Err(error) => {
-            tracing::error!(%error, %agent_id, "failed to mint coding-agent LLM token");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-    let expires_at = Utc::now() + chrono::Duration::seconds(CODING_AGENT_TOKEN_TTL_SECONDS as i64);
-    Json(CodingAgentLlmTokenResponse {
-        data: CodingAgentLlmToken { token, expires_at },
-    })
-    .into_response()
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub(crate) struct RegisterCodingAgentRequest {
-    integration_id: String,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub(crate) struct RegisterCodingAgentResponse {
-    id: Uuid,
-    name: String,
-    owner_id: Uuid,
-    coding_agent_integration_id: String,
-    created: bool,
-}
-
-fn coding_agent_spec(integration_id: &str) -> Option<(&'static str, &'static str)> {
-    match integration_id {
-        "claude" => Some(("claude-code", "Claude Code")),
-        "opencode" => Some(("opencode", "OpenCode")),
-        "codex" => Some(("codex", "Codex")),
-        "cursor" => Some(("cursor", "Cursor")),
-        _ => None,
-    }
-}
-
-fn coding_agent_name(username: &str, base_name: &str) -> Option<String> {
-    let mut normalized = String::new();
-    let mut pending_separator = false;
-    for character in username.chars().flat_map(char::to_lowercase) {
-        if character.is_ascii_alphanumeric() {
-            if pending_separator && !normalized.is_empty() {
-                normalized.push('-');
-            }
-            normalized.push(character);
-            pending_separator = false;
-        } else {
-            pending_separator = true;
-        }
-    }
-    (!normalized.is_empty()).then(|| format!("{normalized}-{base_name}"))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/agents/coding-integrations",
-    tag = "catalog",
-    request_body = RegisterCodingAgentRequest,
-    responses(
-        (status = 200, description = "Existing coding-agent registration", body = RegisterCodingAgentResponse),
-        (status = 201, description = "Coding-agent registration created", body = RegisterCodingAgentResponse),
-        (status = 409, description = "Canonical name or integration identity conflict"),
-    ),
-)]
-pub(crate) async fn register_coding_agent(
-    State(state): State<AppState>,
-    claims: Claims,
-    Json(body): Json<RegisterCodingAgentRequest>,
-) -> impl IntoResponse {
-    let owner_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(error) => return error.into_response(),
-    };
-    let integration_id = body.integration_id.trim();
-    let Some((base_name, display_name)) = coding_agent_spec(integration_id) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            "unsupported coding-agent integration",
-        )
-            .into_response();
-    };
-    let profile =
-        sqlx::query_as::<_, (String, String)>("SELECT username, email FROM users WHERE id = $1")
-            .bind(owner_id)
-            .fetch_optional(&state.db)
-            .await;
-    let (username, email) = match profile {
-        Ok(Some(profile)) => profile,
-        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
-        Err(error) => {
-            tracing::error!(%error, %owner_id, "coding-agent profile lookup failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-    let Some(name) = coding_agent_name(&username, base_name) else {
-        return (
-            StatusCode::CONFLICT,
-            "account username cannot form an agent name",
-        )
-            .into_response();
-    };
-    let label = format!("{display_name} ({email})");
-    let description = format!("Local {display_name} sessions and LLM traffic managed by Nasiko");
-    let metadata = serde_json::json!({
-        "source": "nasiko-cli-integration",
-        "integration_id": integration_id,
-    });
-
-    #[derive(sqlx::FromRow)]
-    struct RegistrationRow {
-        id: Uuid,
-        name: String,
-        owner_id: Uuid,
-        coding_agent_integration_id: Option<String>,
-    }
-
-    let inserted = sqlx::query_as::<_, RegistrationRow>(
-        r#"INSERT INTO agents
-               (name, display_name, description, owner_id, tags, metadata,
-                coding_agent_integration_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           ON CONFLICT DO NOTHING
-           RETURNING id, name, owner_id, coding_agent_integration_id"#,
-    )
-    .bind(&name)
-    .bind(&label)
-    .bind(&description)
-    .bind(owner_id)
-    .bind(vec!["local", "coding-agent"])
-    .bind(metadata)
-    .bind(integration_id)
-    .fetch_optional(&state.db)
-    .await;
-
-    let (row, created) = match inserted {
-        Ok(Some(row)) => (row, true),
-        Ok(None) => {
-            let existing = sqlx::query_as::<_, RegistrationRow>(
-                r#"SELECT id, name, owner_id, coding_agent_integration_id
-                   FROM agents
-                   WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL"#,
-            )
-            .bind(owner_id)
-            .bind(&name)
-            .fetch_optional(&state.db)
-            .await;
-            match existing {
-                Ok(Some(row))
-                    if row.coding_agent_integration_id.as_deref() == Some(integration_id) =>
-                {
-                    (row, false)
-                }
-                Ok(Some(_)) => {
-                    return (
-                        StatusCode::CONFLICT,
-                        "agent name is already used by an unrelated agent",
-                    )
-                        .into_response();
-                }
-                Ok(None) => {
-                    return (
-                        StatusCode::CONFLICT,
-                        "coding-agent integration is already registered under another name",
-                    )
-                        .into_response();
-                }
-                Err(error) => {
-                    tracing::error!(%error, %owner_id, %name, "coding-agent conflict lookup failed");
-                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                }
-            }
-        }
-        Err(error) => {
-            tracing::error!(%error, %owner_id, %name, "coding-agent registration failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-
-    let Some(coding_agent_integration_id) = row.coding_agent_integration_id else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    (
-        if created {
-            StatusCode::CREATED
-        } else {
-            StatusCode::OK
-        },
-        Json(RegisterCodingAgentResponse {
-            id: row.id,
-            name: row.name,
-            owner_id: row.owner_id,
-            coding_agent_integration_id,
-            created,
-        }),
-    )
-        .into_response()
 }
 
 /// WHERE-clause fragment implementing the baseline catalog access predicate —
@@ -311,24 +53,24 @@ pub(crate) async fn register_coding_agent(
 /// site (bare table name or a query alias) and must resolve unambiguously from
 /// within the correlated `EXISTS` subquery.
 ///
-/// `org_bind` carries the ids of agents reachable through an org-hierarchy grant
-/// (`team`/`department`/`organization`), as resolved by
-/// `AuthService::org_granted_agent_ids`. `EeAuthService::can_access_agent`
-/// (ee/auth/src/lib.rs) grants access via team/department membership by joining on
+/// EDITION-AWARE GAP: `EeAuthService::can_access_agent` (ee/auth/src/lib.rs)
+/// additionally grants access via team/department membership, joining on
 /// `users.team_id` / `users.department_id` — columns that only exist after the EE
 /// `1002_org_hierarchy` migration. This file is compiled into and shared by both
 /// the OSS and EE server binaries (`ee/server` wraps this crate's router rather
 /// than forking it — see `nasiko_server::build_app_with_user_router`), so a single
-/// static SQL string here cannot reference those EE-only columns; the trait
-/// resolves them per edition and hands back plain ids instead, which is what
-/// closes the gap this comment used to describe. OSS returns an empty list, so
-/// the extra disjunct never matches there.
-fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> String {
+/// static SQL string here cannot reference those EE-only columns without breaking
+/// at runtime against an OSS-only-migrated database. Expressing the full
+/// edition-aware predicate would require extending the `AuthService` trait
+/// (oss/auth) with a listing-scoped method the EE impl can override, which is out
+/// of scope for this file. Left as a known, intentional gap: under EE, an agent
+/// granted to the caller only via team/department membership (not a direct
+/// user-grant) still will not appear in `list`/`by_skill`/`search`, even though
+/// `get_one`'s `can_access_agent` call allows fetching it directly by id.
+fn agent_access_predicate(user_bind: &str, table_ref: &str) -> String {
     format!(
-        r#"({user_bind}::uuid IS NULL
-             OR {table_ref}.owner_id = {user_bind}
+        r#"({table_ref}.owner_id = {user_bind}
              OR {table_ref}.is_public = TRUE
-             OR {table_ref}.id::text = ANY({org_bind})
              OR EXISTS (
                  SELECT 1 FROM agent_grants ag
                  WHERE ag.agent_id = {table_ref}.id
@@ -336,35 +78,6 @@ fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> S
                      OR (ag.grant_type = 'user'   AND ag.grantee_id = {user_bind}::text))
              ))"#
     )
-}
-
-/// The caller's id for scoping purposes, and the agents an org grant opens up.
-///
-/// `None` is the superuser bypass — [`agent_access_predicate`] short-circuits on
-/// it, which is what the helper has always documented but never actually did:
-/// every call site passed `Some(user_id)` unconditionally, so an admin saw
-/// exactly what a `member` saw.
-async fn listing_scope(state: &AppState, claims: &Claims) -> Result<ListingScope, Response> {
-    if claims.is_superuser {
-        return Ok(ListingScope {
-            user: None,
-            org_granted: Vec::new(),
-        });
-    }
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return Err(e.into_response()),
-    };
-    let identity: nasiko_auth::Identity = claims.clone().into();
-    Ok(ListingScope {
-        user: Some(user_id),
-        org_granted: state.auth.org_granted_agent_ids(&identity).await,
-    })
-}
-
-struct ListingScope {
-    user: Option<Uuid>,
-    org_granted: Vec<String>,
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -403,9 +116,9 @@ pub(crate) async fn by_skill(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    let scope = match listing_scope(&state, &claims).await {
-        Ok(s) => s,
-        Err(resp) => return resp,
+    let owner_filter: Option<Uuid> = match claims.user_uuid() {
+        Ok(id) => Some(id),
+        Err(e) => return e.into_response(),
     };
 
     // Normalise to lowercase before the GIN containment check.  Tags are
@@ -424,15 +137,14 @@ pub(crate) async fn by_skill(
              )
            ORDER BY a.created_at DESC
            LIMIT $2 OFFSET $3"#,
-        access = agent_access_predicate("$4", "$5", "a")
+        access = agent_access_predicate("$4", "a")
     );
 
     let result = sqlx::query_as::<_, AgentSummary>(&sql)
         .bind(&tag_lower)
         .bind(limit)
         .bind(offset)
-        .bind(scope.user)
-        .bind(&scope.org_granted)
+        .bind(owner_filter)
         .fetch_all(&state.db)
         .await;
 
@@ -554,23 +266,15 @@ pub(crate) async fn create(
     // separately (`agents/upload.rs`, `build/routes.rs`) once the build
     // completes; this covers the `push`/`deploy` path, which registers
     // before any build job exists.
-    //
-    // Skipped when the version isn't a plain `x.y.z` — the `agents.version`
-    // column itself stays free-form (some callers rely on creating an agent
-    // with a legacy/non-semver version and then getting a clear error from a
-    // later explicit-version-required update, rather than being blocked at
-    // creation), but `agent_versions` history must never carry that free-form
-    // text, which is the actual bug this seeding step must not reintroduce.
-    if crate::agents::versions::parse_plain_version(&agent.version).is_some()
-        && let Err(e) = sqlx::query(
-            "INSERT INTO agent_versions (agent_id, version, image_tag, is_active, status) \
-             VALUES ($1, $2, $3, true, 'active')",
-        )
-        .bind(agent.id)
-        .bind(&agent.version)
-        .bind(agent.image.clone().unwrap_or_default())
-        .execute(&mut *tx)
-        .await
+    if let Err(e) = sqlx::query(
+        "INSERT INTO agent_versions (agent_id, version, image_tag, is_active, status) \
+         VALUES ($1, $2, $3, true, 'active')",
+    )
+    .bind(agent.id)
+    .bind(&agent.version)
+    .bind(agent.image.clone().unwrap_or_default())
+    .execute(&mut *tx)
+    .await
     {
         tracing::error!(%e, agent_id = %agent.id, "create agent: seed initial version failed");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
@@ -616,9 +320,9 @@ pub(crate) async fn list(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    let scope = match listing_scope(&state, &claims).await {
-        Ok(s) => s,
-        Err(resp) => return resp,
+    let owner_filter: Option<Uuid> = match claims.user_uuid() {
+        Ok(id) => Some(id),
+        Err(e) => return e.into_response(),
     };
 
     let sql = format!(
@@ -629,16 +333,15 @@ pub(crate) async fn list(
              AND ($2::text IS NULL OR status = $2)
            ORDER BY created_at DESC
            LIMIT $4 OFFSET $5"#,
-        access = agent_access_predicate("$3", "$6", "agents")
+        access = agent_access_predicate("$3", "agents")
     );
 
     let agents = sqlx::query_as::<_, Agent>(&sql)
         .bind(q.owner)
         .bind(&q.status)
-        .bind(scope.user)
+        .bind(owner_filter)
         .bind(limit)
         .bind(offset)
-        .bind(&scope.org_granted)
         .fetch_all(&state.db)
         .await;
 
@@ -696,10 +399,6 @@ pub(crate) struct AgentDetailResponse {
     /// tabs without guessing.
     #[serde(rename = "can_manage")]
     can_manage: bool,
-    #[serde(rename = "is_coding_agent")]
-    is_coding_agent: bool,
-    #[serde(rename = "coding_agent_integration_id")]
-    coding_agent_integration_id: Option<String>,
     status: String,
     version: String,
     description: String,
@@ -793,19 +492,6 @@ pub(crate) async fn get_one(
     }
 
     let can_manage = crate::acl::can_manage_agent(&state, &claims, agent.id).await;
-    let coding_agent_integration_id = match sqlx::query_scalar::<_, Option<String>>(
-        "SELECT coding_agent_integration_id FROM agents WHERE id = $1",
-    )
-    .bind(agent.id)
-    .fetch_one(&state.db)
-    .await
-    {
-        Ok(value) => value,
-        Err(error) => {
-            tracing::error!(%error, agent_id = %agent.id, "coding-agent identity lookup failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
 
     let skills: Vec<serde_json::Value> = agent
         .skills
@@ -820,8 +506,6 @@ pub(crate) async fn get_one(
         display_name: agent.display_name.clone(),
         owner_id: agent.owner_id,
         can_manage,
-        is_coding_agent: coding_agent_integration_id.is_some(),
-        coding_agent_integration_id,
         status: agent.status.clone(),
         version: agent.version.clone(),
         description: agent.description.unwrap_or_default(),
@@ -853,107 +537,6 @@ pub(crate) async fn get_one(
     .into_response()
 }
 
-/// Records a version change if `body` includes a new version. This is what
-/// `nasiko deploy`/`push` call on every redeploy, so version history and
-/// rollback depend on it running here.
-///
-/// Runs inside the caller's transaction (`tx`) so the version-history write
-/// and the catalog `agents` row update below either both commit or both roll
-/// back — otherwise a later failure in the same request (e.g. the skills
-/// sync, or the commit itself) would leave a new version active in
-/// `agent_versions` while the `agents` row never changed to match.
-///
-/// Returns `Some(response)` to reject the request (bad/reused version, or a
-/// DB error) — the caller should return that immediately. Returns `None` to
-/// continue as normal.
-async fn record_version_change_if_needed(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    agent_id: Uuid,
-    body: &UpdateAgent,
-) -> Option<axum::response::Response> {
-    let new_version = body.version.as_ref()?;
-
-    let current: Option<(String, Option<String>)> =
-        sqlx::query_as("SELECT version, image FROM agents WHERE id = $1")
-            .bind(agent_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .ok()
-            .flatten();
-    let (current_version, current_image) = match current {
-        Some((v, img)) => (Some(v), img),
-        None => (None, None),
-    };
-
-    // Same version, same (or no) image requested: a harmless metadata edit,
-    // nothing version-related to do.
-    //
-    // Same version but a *different* image is not harmless — the caller below
-    // still applies `image = COALESCE($13, image)` regardless of what we
-    // return here, so silently allowing this would let this version's actual
-    // content change while its label stays the same. Reject it instead of
-    // skipping, the same way any other reuse of this version is rejected.
-    if current_version.as_deref() == Some(new_version.as_str()) {
-        let image_changed = match body.image.as_deref() {
-            Some(img) => Some(img) != current_image.as_deref(),
-            None => false,
-        };
-        if image_changed {
-            return Some(
-                (
-                    StatusCode::CONFLICT,
-                    format!(
-                        "version {new_version} already exists for this agent and versions are \
-                         immutable — its image cannot change without a new version"
-                    ),
-                )
-                    .into_response(),
-            );
-        }
-        return None;
-    }
-
-    // A version-only update (no `image`) must keep the agent's current image —
-    // an empty image_tag here would leave this history row's rollback target
-    // pointing at no image at all.
-    let image_tag = match body.image.as_deref() {
-        Some(img) => img,
-        None => current_image.as_deref().unwrap_or_default(),
-    };
-    let version_change = crate::agents::versions::VersionChange {
-        agent_id,
-        build_id: None,
-        version: new_version,
-        image_tag,
-        changelog: None,
-    };
-    // `nasiko deploy`/`update` activate the version (default); `nasiko push`
-    // sets `activate_version: false` — it only registers an image, so it
-    // must not claim to be live or archive whatever's genuinely running.
-    let result = if body.activate_version {
-        crate::agents::versions::record_version_change_in_tx(tx, version_change).await
-    } else {
-        crate::agents::versions::record_pushed_version_in_tx(tx, version_change).await
-    };
-    match result {
-        Ok(()) => None,
-        Err(crate::agents::versions::VersionChangeError::VersionAlreadyExists(v)) => Some(
-            (
-                StatusCode::CONFLICT,
-                format!("version {v} already exists for this agent — choose a distinct version"),
-            )
-                .into_response(),
-        ),
-        Err(e @ crate::agents::versions::VersionChangeError::InvalidVersion(_)) => {
-            Some((StatusCode::BAD_REQUEST, e.to_string()).into_response())
-        }
-        Err(e) => {
-            tracing::error!(%e, %agent_id, "update agent: record version change failed");
-            Some((StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response())
-        }
-    }
-}
-
 /// Update an agent's catalog metadata. Owner-or-superuser only.
 #[utoipa::path(
     put,
@@ -978,18 +561,6 @@ pub(crate) async fn update(
     // Mutation → owner-or-superuser only (an invoke/public grant must not confer edit).
     if !crate::acl::can_manage_agent(&state, &claims, id).await {
         return StatusCode::FORBIDDEN.into_response();
-    }
-
-    let mut tx = match state.db.begin().await {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!(%e, "update agent: begin tx");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
-        }
-    };
-
-    if let Some(resp) = record_version_change_if_needed(&mut tx, id, &body).await {
-        return resp;
     }
 
     let skills_changed = body.skills.is_some();
@@ -1022,13 +593,12 @@ pub(crate) async fn update(
             .map(|ts| ts.iter().map(|t| t.to_lowercase()).collect())
     };
 
-    // `push` (activate_version = false) must not move `agents.version`/`image` —
-    // those columns mean "what's currently deployed", and push never deploys
-    // anything. Only a real deploy/update advances them.
-    let (agent_version, agent_image) = if body.activate_version {
-        (body.version.clone(), body.image.clone())
-    } else {
-        (None, None)
+    let mut tx = match state.db.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(%e, "update agent: begin tx");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
     };
 
     let result = sqlx::query_as::<_, Agent>(
@@ -1054,7 +624,7 @@ pub(crate) async fn update(
     .bind(&body.description)
     .bind(&body.url)
     .bind(&body.icon_url)
-    .bind(&agent_version)
+    .bind(&body.version)
     .bind(&body.documentation_url)
     .bind(&body.capabilities)
     .bind(
@@ -1065,7 +635,7 @@ pub(crate) async fn update(
     .bind(&merged_tags)
     .bind(&body.metadata)
     .bind(&body.status)
-    .bind(&agent_image)
+    .bind(&body.image)
     .fetch_optional(&mut *tx)
     .await;
 
@@ -1128,36 +698,19 @@ pub(crate) async fn delete(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    // Claim the delete up front: one statement is both the existence check and
-    // the mutual exclusion, and it hands back the primary container name needed
-    // for teardown.
-    //
-    // This route soft-deletes, so `deleted_at IS NULL` is what makes a repeat
-    // delete 404 instead of re-stamping the row and reporting success forever.
-    // Doing it as a single `UPDATE ... RETURNING` rather than SELECT-then-UPDATE
-    // also means only the caller that actually flipped `deleted_at` proceeds —
-    // two concurrent deletes would otherwise both pass a separate SELECT and
-    // both run the whole container teardown below before one of them lost.
-    //
-    // Teardown therefore runs *after* the row is marked. A runtime failure
-    // still leaves the agent deleted, which is the pre-existing behavior: the
-    // errors are reported in `runtime_errors` rather than rolling the delete
-    // back.
-    let name: String = match sqlx::query_scalar(
-        "UPDATE agents SET deleted_at = NOW() \
-         WHERE id = $1 AND deleted_at IS NULL \
-         RETURNING name",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await
+    // Fetch agent name early — gives a clean 404 before touching the runtime,
+    // and provides the primary container name needed for teardown.
+    let name: String = match sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
     {
         Ok(Some(n)) => n,
         Ok(None) => {
             return StatusCode::NOT_FOUND.into_response();
         }
         Err(e) => {
-            tracing::error!(%e, %id, "delete agent: claim soft delete");
+            tracing::error!(%e, %id, "delete agent: fetch name");
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
         }
     };
@@ -1210,18 +763,28 @@ pub(crate) async fn delete(
         }
     }
 
-    // The row was already marked by the claiming UPDATE above, so reaching here
-    // means this caller owns the delete — nothing left to decide.
-    (
-        StatusCode::OK,
-        Json(DeletedAgent {
-            deleted: true,
-            agent_id: id,
-            containers_stopped,
-            runtime_errors,
-        }),
-    )
-        .into_response()
+    let result = sqlx::query("UPDATE agents SET deleted_at = NOW() WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await;
+
+    match result {
+        Ok(r) if r.rows_affected() > 0 => (
+            StatusCode::OK,
+            Json(DeletedAgent {
+                deleted: true,
+                agent_id: id,
+                containers_stopped,
+                runtime_errors,
+            }),
+        )
+            .into_response(),
+        Ok(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "delete agent: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
 }
 
 /// List an agent's build/version history.
@@ -1483,9 +1046,9 @@ pub(crate) async fn search(
         return (StatusCode::BAD_REQUEST, "q must be at least 2 characters").into_response();
     }
 
-    let scope = match listing_scope(&state, &claims).await {
-        Ok(s) => s,
-        Err(resp) => return resp,
+    let owner_filter: Option<Uuid> = match claims.user_uuid() {
+        Ok(id) => Some(id),
+        Err(e) => return e.into_response(),
     };
 
     // `COUNT(*) OVER()` yields the total match count (post-filter, pre-LIMIT) so
@@ -1501,14 +1064,13 @@ pub(crate) async fn search(
            WHERE _score > 0
            ORDER BY _score DESC, name ASC
            LIMIT $2"#,
-        access = agent_access_predicate("$3", "$4", "agents")
+        access = agent_access_predicate("$3", "agents")
     );
 
     let result = sqlx::query_as::<_, AgentSearchResult>(&sql)
         .bind(escape_like(&q))
         .bind(sq.limit.clamp(1, 50))
-        .bind(scope.user)
-        .bind(&scope.org_granted)
+        .bind(owner_filter)
         .fetch_all(&state.db)
         .await;
 

@@ -3,14 +3,14 @@ import { icons } from "/common/utils/icons.js";
 import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
-import { confirmDialog } from "/common/utils/confirm-dialog.js";
 import "/common/components/app-modal.js";
+import "/common/components/app-module-nav.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
 
 // your-agents-page.css is <link>ed by the host page, not imported here: a sheet
 // pulled in by this module only exists once the module does, which is too late
-// to style the static shell the page paints before then (see web/agents.html).
+// to style the static shell the page paints before then (see web/your-agents.html).
 
 function statusClass(status) {
   if (status === "running") return "is-running";
@@ -30,13 +30,12 @@ class YourAgentsPage extends HTMLElement {
   #agents = [];
   #statusFilter = "all";
   #sortBy = "name";
-  #pollTimer = null;
 
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
 
-    // The host page owns the shell (web/agents.html) so it paints styled
+    // The host page owns the shell (web/your-agents.html) so it paints styled
     // before this module arrives; here we only bind to it and fill the API-fed
     // regions. Fallback for hosts that don't supply it (element created in JS).
     if (!this.querySelector("#agents-grid")) this.insertAdjacentHTML("afterbegin", this.#shell());
@@ -78,144 +77,16 @@ class YourAgentsPage extends HTMLElement {
   async #load() {
     const result = await window.fetchContainers("", 1, 100);
     this.#agents = result.data || [];
-
-    // Fetch upload info so we can show upload source (GitHub/Upload) on all
-    // agent cards and granular progress for agents still deploying.
-    try {
-      const res = await apiFetch("/agents/my-uploads");
-      if (res.ok) {
-        const body = await res.json();
-        const uploads = body.data || [];
-        const uploadMap = new Map();
-        for (const u of uploads) uploadMap.set(u.agent_name, u.upload_info);
-        for (const a of this.#agents) {
-          a._uploadInfo = uploadMap.get(a.name) || null;
-        }
-      }
-    } catch { /* best-effort */ }
-
     this.#renderTabs();
     this.#renderGrid();
-    this.#schedulePoll();
-  }
-
-  #schedulePoll() {
-    clearTimeout(this.#pollTimer);
-    const hasSettingUp = this.#agents.some(
-      (a) => a.status === "deploying" || a.status === "starting",
-    );
-    if (hasSettingUp) {
-      this.#pollTimer = setTimeout(() => this.#pollSettingUp(), 5000);
-    }
-  }
-
-  async #pollSettingUp() {
-    const result = await window.fetchContainers("", 1, 100);
-    const freshAgents = result.data || [];
-    const freshMap = new Map();
-    for (const a of freshAgents) freshMap.set(a.id, a);
-
-    let tabsChanged = false;
-    for (const a of this.#agents) {
-      if (a.status !== "deploying" && a.status !== "starting") continue;
-      const fresh = freshMap.get(a.id);
-      if (!fresh || fresh.status === a.status) continue;
-      // Status changed — update in place, preserve upload info
-      const uploadInfo = a._uploadInfo;
-      Object.assign(a, fresh);
-      a._uploadInfo = uploadInfo;
-      tabsChanged = true;
-      // Re-render only this card
-      const card = this.querySelector(`[data-agent-id="${a.id}"]`);
-      if (card) {
-        const tmp = document.createElement("div");
-        tmp.innerHTML = this.#renderCard(a);
-        card.replaceWith(tmp.firstElementChild);
-      }
-    }
-
-    if (tabsChanged) this.#renderTabs();
-    this.#schedulePoll();
-  }
-
-  #renderCard(a) {
-    const name = a.display_name || a.name;
-    const isRunning = a.status === "running";
-    const isError = a.status === "error" || a.status === "failed";
-    const isSettingUp = a.status === "deploying" || a.status === "starting";
-    const { version: imgVersion } = parseImageTag(a.image);
-    const version = a.version || imgVersion;
-    const allTags = a.tags || [];
-    const shownTags = allTags.slice(0, 2);
-    const extraTags = allTags.length - shownTags.length;
-    const tagsHtml =
-      shownTags.map((t) => `<span class="tag">${this.#esc(t)}</span>`).join("") +
-      (extraTags > 0 ? `<span class="tag tag--more">+${extraTags}</span>` : "");
-
-    const cardClass = isError ? " agent-card--error" : isSettingUp ? " agent-card--setting-up" : "";
-    const sourceType = a._uploadInfo?.upload_type;
-    const sourceLabel = sourceType === "github" ? "GitHub" : sourceType === "zip" ? "Zip" : null;
-
-    let bodyHtml = "";
-    if (isError) {
-      bodyHtml = `<div class="agent-card-error"><span class="agent-card-error-title">Agent failed</span>Container exited with an error. <a href="/sessions.html?view=flows&agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a></div>`;
-    } else if (isSettingUp) {
-      const info = a._uploadInfo;
-      const statusMsg = info?.status_message || (a.status === "starting" ? "Starting container..." : "Building and deploying...");
-      bodyHtml = `
-        <div class="agent-card-setup">
-          <div class="setup-progress">
-            <span class="setup-spinner"></span>
-            <span class="setup-label">${this.#esc(statusMsg)}</span>
-          </div>
-          <p class="setup-hint">This may take a few minutes. Status updates automatically.</p>
-        </div>`;
-    } else if (a.description) {
-      bodyHtml = `<div class="agent-card-desc">${this.#esc(a.description)}</div>`;
-    }
-
-    let actionsHtml = "";
-    if (isRunning) {
-      actionsHtml = `
-        <button class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${this.#escAttr(a.name)}" aria-label="Restart ${this.#escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
-        <button class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${this.#escAttr(a.name)}" aria-label="Stop ${this.#escAttr(name)}" title="Stop">${icons.square("", 12)}</button>`;
-    } else if (!isSettingUp) {
-      actionsHtml = `
-        <button class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" data-image="${this.#escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>`;
-    }
-
-    return `
-    <div class="agent-card${cardClass}" data-agent-id="${this.#escAttr(a.id)}">
-      ${sourceLabel ? `<span class="agent-card-source">${sourceLabel}</span>` : ""}
-      <div class="agent-card-top">
-        <span class="status-dot ${statusClass(a.status)}" title="${this.#esc(a.status)}"></span>
-        <a class="agent-card-name" href="/agent-card.html?id=${this.#escAttr(a.id)}">${this.#esc(name)}</a>
-        ${version ? `<span class="agent-card-version">v${this.#esc(String(version).replace(/^v/, ""))}</span>` : ""}
-      </div>
-      ${tagsHtml ? `<div class="agent-card-tags">${tagsHtml}</div>` : ""}
-      ${bodyHtml}
-      <div class="agent-card-actions">
-        ${actionsHtml}
-        ${!isSettingUp ? `<button class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" aria-label="Delete ${this.#escAttr(name)}" title="Delete ${this.#escAttr(name)}">
-          ${icons.trash("", 14)}
-        </button>` : ""}
-      </div>
-    </div>`;
-  }
-
-  disconnectedCallback() {
-    clearTimeout(this.#pollTimer);
   }
 
   #renderTabs() {
     const running = this.#agents.filter((a) => a.status === "running").length;
-    const settingUp = this.#agents.filter(
-      (a) => a.status === "deploying" || a.status === "starting",
-    ).length;
     const failed = this.#agents.filter(
       (a) => a.status === "error" || a.status === "failed",
     ).length;
-    const stopped = this.#agents.length - running - settingUp - failed;
+    const stopped = this.#agents.length - running - failed;
 
     const tab = (key, label, n) =>
       `<button class="type-tab ${this.#statusFilter === key ? "active" : ""}" role="tab"
@@ -225,7 +96,6 @@ class YourAgentsPage extends HTMLElement {
     this.querySelector("#status-tabs").innerHTML =
       tab("all", "All", this.#agents.length) +
       tab("running", "Running", running) +
-      tab("setting-up", "Setting up", settingUp) +
       tab("stopped", "Stopped", stopped) +
       tab("failed", "Failed", failed);
   }
@@ -236,10 +106,10 @@ class YourAgentsPage extends HTMLElement {
     btn.style.display = input.value ? "" : "none";
   }
 
-  /** Fallback shell — mirrors the static markup in web/agents.html's
-   *  your-agents view. */
+  /** Fallback shell — mirrors the static markup in web/your-agents.html. */
   #shell() {
     return `
+      <app-module-nav module="agents"></app-module-nav>
       <div class="page-header">
         <div class="page-header-top">
           <div>
@@ -255,7 +125,6 @@ class YourAgentsPage extends HTMLElement {
           <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
         </div>
         <div class="sort-wrap">
-          <span class="sort-icon">${icons.sortBoth("", 16)}</span>
           <select id="sort-select" class="sort-select" aria-label="Sort agents">
             <option value="name">Sort: Name</option>
             <option value="status">Sort: Status</option>
@@ -324,17 +193,12 @@ class YourAgentsPage extends HTMLElement {
         );
       } else if (this.#statusFilter === "running") {
         filtered = filtered.filter((a) => a.status === "running");
-      } else if (this.#statusFilter === "setting-up") {
-        filtered = filtered.filter(
-          (a) => a.status === "deploying" || a.status === "starting",
-        );
       } else {
-        // "stopped" covers everything that isn't running, setting up, or failed.
+        // "stopped" covers everything that isn't running or failed
+        // (stopped, deploying, starting, unknown).
         filtered = filtered.filter(
           (a) =>
             a.status !== "running" &&
-            a.status !== "deploying" &&
-            a.status !== "starting" &&
             a.status !== "error" &&
             a.status !== "failed",
         );
@@ -360,7 +224,7 @@ class YourAgentsPage extends HTMLElement {
             description="Deploy your first agent from the catalog or add a new one."
             icon='${icons.layers("", 40)}'>
             <a href="/agents.html" class="empty-action-link">Browse catalog</a>
-            <a href="/agents.html?view=import" class="empty-action-link empty-action-link--secondary">Import agent</a>
+            <a href="/add-agent.html" class="empty-action-link empty-action-link--secondary">Add agent</a>
           </app-empty-state>
         </div>`;
       return;
@@ -378,7 +242,54 @@ class YourAgentsPage extends HTMLElement {
       return;
     }
 
-    grid.innerHTML = filtered.map((a) => this.#renderCard(a)).join("");
+    grid.innerHTML = filtered
+      .map((a) => {
+        const name = a.display_name || a.name;
+        const isRunning = a.status === "running";
+        const isError = a.status === "error" || a.status === "failed";
+        const { version: imgVersion } = parseImageTag(a.image);
+        const version = a.version || imgVersion;
+        const allTags = a.tags || [];
+        const shownTags = allTags.slice(0, 2);
+        const extraTags = allTags.length - shownTags.length;
+        const tagsHtml =
+          shownTags.map((t) => `<span class="tag">${this.#esc(t)}</span>`).join("") +
+          (extraTags > 0 ? `<span class="tag tag--more">+${extraTags}</span>` : "");
+
+        return `
+        <div class="agent-card${isError ? " agent-card--error" : ""}">
+          <div class="agent-card-top">
+            <span class="status-dot ${statusClass(a.status)}" title="${this.#esc(a.status)}"></span>
+            <a class="agent-card-name" href="/agent-card.html?id=${this.#escAttr(a.id)}">${this.#esc(name)}</a>
+            ${version ? `<span class="agent-card-version">v${this.#esc(String(version).replace(/^v/, ""))}</span>` : ""}
+          </div>
+          ${tagsHtml ? `<div class="agent-card-tags">${tagsHtml}</div>` : ""}
+          ${
+            isError
+              ? `<div class="agent-card-error"><span class="agent-card-error-title">Agent failed</span>Container exited with an error. <a href="/flows.html?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a></div>`
+              : a.description
+                ? `<div class="agent-card-desc">${this.#esc(a.description)}</div>`
+                : ""
+          }
+          <div class="agent-card-actions">
+            ${
+              isRunning
+                ? `
+              <button class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${this.#escAttr(a.name)}" aria-label="Restart ${this.#escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
+              <button class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${this.#escAttr(a.name)}" aria-label="Stop ${this.#escAttr(name)}" title="Stop">${icons.square("", 12)}</button>
+            `
+                : `
+              <button class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" data-image="${this.#escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>
+            `
+            }
+            <button class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" aria-label="Delete ${this.#escAttr(name)}" title="Delete ${this.#escAttr(name)}">
+              ${icons.trash("", 14)}
+            </button>
+          </div>
+        </div>
+      `;
+      })
+      .join("");
   }
 
   #sortAgents(agents) {
@@ -549,13 +460,8 @@ class YourAgentsPage extends HTMLElement {
       } else if (action === "restart" || action === "stop") {
         const name = btn.dataset.name;
         const original = btn.innerHTML;
-        // These are fixed-size icon buttons: swapping in a label overflows the
-        // square and lands on the card body. Swap the icon for a same-size
-        // spinner and lock the card's other lifecycle buttons instead.
-        const siblings = [...btn.closest(".agent-card-actions").querySelectorAll("[data-action]")];
-        for (const b of siblings) b.disabled = true;
-        btn.setAttribute("aria-busy", "true");
-        btn.innerHTML = `<span class="setup-spinner"></span>`;
+        btn.disabled = true;
+        btn.textContent = action === "restart" ? "Restarting..." : "Stopping...";
         try {
           const res = await apiFetch(
             `/containers/${encodeURIComponent(name)}/${action}`,
@@ -565,26 +471,21 @@ class YourAgentsPage extends HTMLElement {
           showToast(
             `${action === "restart" ? "Restarted" : "Stopped"} ${name}`,
           );
-          await this.#load();
+          this.#load();
         } catch (err) {
           showToast(`Failed to ${action}: ${err.message}`);
-        } finally {
-          // #load() usually replaces these nodes; restore anyway so a failed
-          // reload can't leave the card stuck on a spinner.
-          btn.removeAttribute("aria-busy");
+          btn.disabled = false;
           btn.innerHTML = original;
-          for (const b of siblings) b.disabled = false;
         }
       } else if (action === "delete") {
         const name = btn.dataset.name;
         const id = btn.dataset.id;
-        const confirmed = await confirmDialog({
-          title: `Delete ${name}`,
-          message: `This will stop the container and remove it from the registry. This action cannot be undone.`,
-          confirmLabel: 'Delete',
-          danger: true,
-        });
-        if (!confirmed) return;
+        if (
+          !confirm(
+            `Delete agent "${name}"? This will stop the container and remove it from the registry.`,
+          )
+        )
+          return;
         try {
           const res = await apiFetch(
             `/agents/${encodeURIComponent(id)}`,

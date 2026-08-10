@@ -192,19 +192,11 @@ impl ProviderClient for OpenAiProvider {
             .get("code")
             .and_then(|c| c.as_str())
             .unwrap_or_default();
-        let param = error.get("param").and_then(|p| p.as_str())?;
         // Only these codes mean "this param/value isn't accepted here" — safe to drop.
-        // `invalid_value` is broader (could mean many things), so it's only trusted
-        // for `max_tokens`/`max_completion_tokens` — a cross-provider routing hop
-        // commonly carries a source model's default that exceeds the destination
-        // model's completion-token cap (e.g. Claude Code's default vs. gpt-4o-mini's
-        // 16384 limit); dropping it lets OpenAI fall back to its own default instead
-        // of failing the whole request.
-        let droppable = matches!(code, "unsupported_value" | "unsupported_parameter")
-            || (code == "invalid_value" && matches!(param, "max_tokens" | "max_completion_tokens"));
-        if !droppable {
+        if !matches!(code, "unsupported_value" | "unsupported_parameter") {
             return None;
         }
+        let param = error.get("param").and_then(|p| p.as_str())?;
         Some(param.to_string())
     }
 }
@@ -229,7 +221,6 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            is_coding_agent: false,
         }
     }
 
@@ -285,44 +276,6 @@ mod tests {
             }),
             None
         );
-    }
-
-    #[test]
-    fn droppable_param_accepts_invalid_value_only_for_max_tokens() {
-        let provider = OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
-        // The exact error shape gpt-4o-mini returns for a cross-provider max_tokens
-        // default that exceeds its completion-token cap.
-        let too_large = ProviderError::Status {
-            status: 400,
-            message: json!({
-                "error": {
-                    "message": "max_tokens is too large: 32000. This model supports at \
-                                most 16384 completion tokens, whereas you provided 32000.",
-                    "type": "invalid_request_error",
-                    "param": "max_tokens",
-                    "code": "invalid_value"
-                }
-            })
-            .to_string(),
-            retryable: false,
-        };
-        assert_eq!(
-            provider.droppable_param(&too_large).as_deref(),
-            Some("max_tokens")
-        );
-
-        // `invalid_value` on any other param is NOT trusted as droppable — it can mean
-        // many things (wrong type, out-of-range, malformed) beyond a capability
-        // mismatch, so only max_tokens/max_completion_tokens get this treatment.
-        let other_param_invalid_value = ProviderError::Status {
-            status: 400,
-            message: json!({
-                "error": { "code": "invalid_value", "param": "temperature" }
-            })
-            .to_string(),
-            retryable: false,
-        };
-        assert_eq!(provider.droppable_param(&other_param_invalid_value), None);
     }
 
     #[tokio::test]
