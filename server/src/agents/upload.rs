@@ -86,15 +86,6 @@ pub(crate) struct UploadAndDeployForm {
     ports: Option<String>,
     /// JSON object of extra env vars, e.g. `{"FOO":"bar"}`.
     env: Option<String>,
-    /// `"true"`/`"false"` to mount / not mount a persistent, private-per-agent
-    /// directory at `/workspace`. Tri-state: omit the field to keep an existing
-    /// agent's stored setting (false for a new agent) — the CLI only sends it
-    /// when `--writable` was passed.
-    writable: Option<String>,
-    /// Container-side mount target for the writable volume (`--writable-path`).
-    /// Absolute path; implies `writable`. Omit to keep an existing agent's
-    /// stored path (`/workspace` for a new agent).
-    writable_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
@@ -133,11 +124,6 @@ pub enum BuildJobPayload {
         image_tag: String,
         ports: Vec<u16>,
         env: HashMap<String, String>,
-        writable: bool,
-        /// `--writable-path`; `None` = `/workspace`. `#[serde(default)]` so
-        /// job rows queued before this field existed still deserialize.
-        #[serde(default)]
-        writable_path: Option<String>,
     },
     /// In-place agent update (PUT /api/agents/{id}/update).
     Update {
@@ -160,12 +146,6 @@ pub enum BuildJobPayload {
         prev_version: String,
         prev_image: Option<String>,
         changelog: Option<String>,
-        /// Carried forward from `agents.writable` — this endpoint has no flag of
-        /// its own to set it (see `update_agent`'s fetch of the agent row).
-        writable: bool,
-        /// Carried forward from `agents.writable_path`, same reasoning.
-        #[serde(default)]
-        writable_path: Option<String>,
     },
     /// Rollback to a prior version (POST /api/agents/{id}/rollback).
     Rollback {
@@ -182,12 +162,6 @@ pub enum BuildJobPayload {
         target_version: String,
         target_image_tag: String,
         reason: Option<String>,
-        /// Carried forward from `agents.writable` — same reasoning as
-        /// `Update::writable`.
-        writable: bool,
-        /// Carried forward from `agents.writable_path`, same reasoning.
-        #[serde(default)]
-        writable_path: Option<String>,
     },
     /// Standalone image build without deploy (POST /api/build/builds).
     StandaloneBuild {
@@ -227,10 +201,6 @@ pub enum BuildJobPayload {
         image_tag: String,
         ports: Vec<u16>,
         env: HashMap<String, String>,
-        version_override: Option<String>,
-        prior_version: Option<String>,
-        prior_image: Option<String>,
-        prior_status: Option<String>,
     },
     /// MCP-server-upload build+deploy (POST /api/mcp/connectors/upload or
     /// /upload-github). `env` is encrypted (owner-scoped) at rest in this
@@ -320,35 +290,12 @@ pub(crate) async fn upload_and_deploy(
     let mut env: HashMap<String, String> = HashMap::new();
     // Which LLM SDK the agent's code speaks (drives gateway env injection). Default openai.
     let mut inbound_format: Option<String> = None;
-    // Mounts a persistent, private-per-agent directory at /workspace (see
-    // DeploymentSpec::writable's doc comment). Tri-state: the CLI omits the
-    // field entirely unless `--writable` was passed, and for an existing agent
-    // "not specified" must mean "keep the stored value" — collapsing it to
-    // false would silently detach the agent from its volume on every plain
-    // re-upload of a new version. None = carry forward (false for a new agent).
-    let mut writable: Option<bool> = None;
-    // Container-side mount target (--writable-path); implies `writable`.
-    // Tri-state for the same reason: an unspecified path must not move an
-    // existing agent's mount back to /workspace.
-    let mut writable_path: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
             "name" | "agent_name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
             "inbound_format" => inbound_format = field.text().await.ok(),
-            "writable" => {
-                // Anything other than an explicit true/false (unreadable field,
-                // junk value) counts as "not specified", not as false.
-                writable = match field.text().await.ok().as_deref() {
-                    Some("true") => Some(true),
-                    Some("false") => Some(false),
-                    _ => None,
-                };
-            }
-            "writable_path" => {
-                writable_path = field.text().await.ok().filter(|s| !s.is_empty());
-            }
             "source" | "file" => {
                 use crate::multipart_util::{StreamUploadError, stream_field_to_fresh_temp_file};
                 match stream_field_to_fresh_temp_file(
@@ -399,24 +346,10 @@ pub(crate) async fn upload_and_deploy(
         }
     }
 
-    // A path implies the mount (`--writable-path X` alone must not silently
-    // deploy without storage), and a bad path is a caller error — reject now
-    // with a 400 instead of surfacing it minutes later as a failed deploy.
-    if let Some(path) = &writable_path {
-        writable = Some(true);
-        if let Err(e) = nasiko_runtime::validate_writable_path(path) {
-            return (StatusCode::BAD_REQUEST, e).into_response();
-        }
-    }
-
     let name = match name {
         Some(n) if !n.is_empty() => n,
         _ => return (StatusCode::BAD_REQUEST, "name is required").into_response(),
     };
-    // `version_tag` isn't resolved here — it may still come from the zip's
-    // AgentCard.json/pyproject.toml/Cargo.toml, discovered during validation
-    // below. Resolved and validated as a plain x.y.z once that's known (no
-    // default to `"latest"` — that's the whole bug this PR exists to prevent).
     // Accept only the supported SDK formats; anything else falls back to openai.
     let inbound_format = match inbound_format.as_deref() {
         Some("anthropic") => "anthropic",
@@ -468,21 +401,13 @@ pub(crate) async fn upload_and_deploy(
         }
     };
 
-    // Version priority: explicit multipart field → extracted from the zip's
-    // AgentCard.json/pyproject.toml/Cargo.toml. No default here (used to be
-    // "latest", which broke version history) — the caller must end up with a
-    // real x.y.z version, whether they typed it or the zip declared it.
-    let version_tag = match version_tag.or(zip_meta.version) {
-        Some(v) if super::versions::parse_plain_version(&v).is_some() => v,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                "version_tag is required and must be in x.y.z format (e.g. 1.2.3) — pass it \
-                 explicitly or declare a \"version\" in AgentCard.json/pyproject.toml/Cargo.toml",
-            )
-                .into_response();
-        }
-    };
+    // Version priority: explicit multipart field → extracted from zip → "latest".
+    let version_tag = version_tag
+        .or(zip_meta.version)
+        .unwrap_or_else(|| "latest".to_string());
+    if let Err(e) = crate::build::routes::validate_version_tag(&version_tag) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
 
     let image_tag =
         crate::agents::build_image_tag(&state.config.agent_image_registry, &name, &version_tag);
@@ -508,39 +433,25 @@ pub(crate) async fn upload_and_deploy(
     // Atomic INSERT ... ON CONFLICT against the (owner_id, name) partial unique
     // index (migration 015) — closes the SELECT-then-INSERT TOCTOU that let two
     // concurrent same-name uploads create duplicate rows (SRV-2).
-    //
-    // `writable`/`writable_path` COALESCE on conflict, not overwrite: a NULL
-    // bind means the caller didn't specify them (the CLI omits both fields
-    // unless the flags were passed), and an unconditional `EXCLUDED.writable`
-    // would reset the flag to false on every plain re-upload — silently
-    // detaching a `--writable` agent from its volume, the exact drop the
-    // update/rollback/restart paths already guard against. RETURNING hands
-    // back the effective values so the deploy uses the DB's truth. (There is
-    // deliberately no way to clear a stored writable_path back to NULL here —
-    // pass an explicit new path instead; clearing would move the mount.)
-    let (agent_id, writable, writable_path) = {
-        match sqlx::query_as::<_, (Uuid, bool, Option<String>)>(
-            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format, writable, writable_path) \
-             VALUES ($1, $2, $3, $4, 'deploying', $5, COALESCE($6, false), $7) \
+    let agent_id = {
+        match sqlx::query_scalar::<_, Uuid>(
+            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format) \
+             VALUES ($1, $2, $3, $4, 'deploying', $5) \
              ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
              DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
                            inbound_format = EXCLUDED.inbound_format, \
-                           writable = COALESCE($6, agents.writable), \
-                           writable_path = COALESCE($7, agents.writable_path), \
                            status = 'deploying', updated_at = now() \
-             RETURNING id, writable, writable_path",
+             RETURNING id",
         )
         .bind(&name)
         .bind(owner_id)
         .bind(&version_tag)
         .bind(&image_tag)
         .bind(inbound_format)
-        .bind(writable)
-        .bind(&writable_path)
         .fetch_one(&mut *tx)
         .await
         {
-            Ok(row) => row,
+            Ok(id) => id,
             Err(e) => {
                 tracing::error!(%e, agent_name = %name, "upload: register agent db error");
                 let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
@@ -548,36 +459,6 @@ pub(crate) async fn upload_and_deploy(
             }
         }
     };
-
-    // Reject a version already recorded in this agent's history — otherwise the
-    // post-build write (below) silently overwrites that row via `ON CONFLICT`,
-    // the same collapse this PR fixes. Checked here (before the build even
-    // starts) rather than after, so a doomed upload fails fast.
-    let version_already_used: bool = match sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM agent_versions WHERE agent_id = $1 AND version = $2)",
-    )
-    .bind(agent_id)
-    .bind(&version_tag)
-    .fetch_one(&mut *tx)
-    .await
-    {
-        Ok(exists) => exists,
-        Err(e) => {
-            tracing::error!(%e, %agent_id, "upload: version history check db error");
-            let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-        }
-    };
-    if version_already_used {
-        let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-        return (
-            StatusCode::CONFLICT,
-            format!(
-                "version {version_tag} already exists in this agent's history — choose a new version"
-            ),
-        )
-            .into_response();
-    }
 
     // ── Persist build record ──────────────────────────────────────────────────
     let build_id = match sqlx::query_scalar::<_, Uuid>(
@@ -622,8 +503,6 @@ pub(crate) async fn upload_and_deploy(
         image_tag: image_tag.clone(),
         ports,
         env,
-        writable,
-        writable_path: writable_path.clone(),
     };
 
     let payload_value = match serde_json::to_value(&payload) {
@@ -669,14 +548,6 @@ pub(crate) async fn upload_and_deploy(
         Some(agent_id),
         None,
     )
-    .await;
-
-    // Tag this upload so the UI can show the source type.
-    let _ = sqlx::query(
-        "UPDATE upload_status SET metadata = jsonb_set(metadata, '{upload_type}', '\"zip\"') WHERE upload_id = $1",
-    )
-    .bind(&upload_id)
-    .execute(&state.db)
     .await;
 
     tracing::info!(
@@ -762,30 +633,34 @@ fn validate_agent_zip(
 fn detect_version_from_dir(dir: &std::path::Path) -> Option<String> {
     // 1. AgentCard.json
     let card_path = dir.join("AgentCard.json");
-    if card_path.exists()
-        && let Ok(s) = std::fs::read_to_string(&card_path)
-        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
-        && let Some(ver) = v.get("version").and_then(|v| v.as_str())
-    {
-        return Some(ver.strip_prefix('v').unwrap_or(ver).to_string());
+    if card_path.exists() {
+        if let Ok(s) = std::fs::read_to_string(&card_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                if let Some(ver) = v.get("version").and_then(|v| v.as_str()) {
+                    return Some(ver.strip_prefix('v').unwrap_or(ver).to_string());
+                }
+            }
+        }
     }
 
     // 2. pyproject.toml — [project] version or [tool.poetry] version
     let pyproject_path = dir.join("pyproject.toml");
-    if pyproject_path.exists()
-        && let Ok(s) = std::fs::read_to_string(&pyproject_path)
-        && let Some(ver) = parse_toml_version(&s, &["project", "tool.poetry"])
-    {
-        return Some(ver);
+    if pyproject_path.exists() {
+        if let Ok(s) = std::fs::read_to_string(&pyproject_path) {
+            if let Some(ver) = parse_toml_version(&s, &["project", "tool.poetry"]) {
+                return Some(ver);
+            }
+        }
     }
 
     // 3. Cargo.toml — [package] version
     let cargo_path = dir.join("Cargo.toml");
-    if cargo_path.exists()
-        && let Ok(s) = std::fs::read_to_string(&cargo_path)
-        && let Some(ver) = parse_toml_version(&s, &["package"])
-    {
-        return Some(ver);
+    if cargo_path.exists() {
+        if let Ok(s) = std::fs::read_to_string(&cargo_path) {
+            if let Some(ver) = parse_toml_version(&s, &["package"]) {
+                return Some(ver);
+            }
+        }
     }
 
     None
@@ -802,215 +677,19 @@ fn parse_toml_version(content: &str, sections: &[&str]) -> Option<String> {
             in_section = sections.contains(&header);
             continue;
         }
-        if in_section
-            && let Some(rest) = trimmed.strip_prefix("version")
-            && let Some(rest) = rest.trim().strip_prefix('=')
-        {
-            let ver = rest.trim().trim_matches('"').trim_matches('\'');
-            if !ver.is_empty() {
-                return Some(ver.to_string());
+        if in_section {
+            if let Some(rest) = trimmed.strip_prefix("version") {
+                let rest = rest.trim();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let ver = rest.trim().trim_matches('"').trim_matches('\'');
+                    if !ver.is_empty() {
+                        return Some(ver.to_string());
+                    }
+                }
             }
         }
     }
     None
-}
-
-/// Records a just-deployed build's version in history through the shared
-/// recorder — activates it, archiving whatever was running before and
-/// marking it rollback-eligible. Shared by `execute_upload_and_deploy` and
-/// `execute_clone_and_deploy`, whose build pipelines are otherwise
-/// identical from this point on.
-///
-/// `agent_builds.version_tag` (not the `image_tag` parameter callers already
-/// have) is the actual `x.y.z` version string `record_version_change` needs.
-async fn record_uploaded_version(
-    db: &sqlx::PgPool,
-    agent_id: Uuid,
-    build_id: Uuid,
-    image_tag: &str,
-) {
-    let version_tag: Option<String> =
-        sqlx::query_scalar("SELECT version_tag FROM agent_builds WHERE id = $1")
-            .bind(build_id)
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
-
-    let Some(version_tag) = version_tag else {
-        tracing::error!(
-            %agent_id, %build_id,
-            "upload: no version_tag found for build — version not recorded in history"
-        );
-        return;
-    };
-
-    super::versions::record_version_change_with_retry(db, || super::versions::VersionChange {
-        agent_id,
-        build_id: Some(build_id),
-        version: &version_tag,
-        image_tag,
-        changelog: None,
-    })
-    .await;
-}
-
-// ─── Build-time OTel patching ────────────────────────────────────────────────
-
-/// Python bootstrap script injected as `_nasiko_otel_boot.py` and loaded via
-/// `PYTHONSTARTUP`. Runs before the agent's own code, so the agent doesn't need
-/// to call `init_telemetry()` or install any OTel packages explicitly.
-///
-/// What it does:
-/// - Sets up W3C TraceContext propagation (`traceparent` on all outbound HTTP)
-/// - Auto-instruments httpx, requests, and the OpenAI/Anthropic SDKs
-/// - Exports traces + metrics to the OTLP collector if `OTEL_EXPORTER_OTLP_ENDPOINT` is set
-///
-/// Gracefully no-ops if the OTel packages aren't installed (shouldn't happen
-/// since `patch_otel_into_dockerfile` adds them to the Dockerfile).
-const OTEL_BOOTSTRAP_PY: &str = r#""""Auto-injected by the Nasiko build pipeline — DO NOT EDIT."""
-import os as _os, logging as _logging
-
-def _nasiko_otel_boot():
-    try:
-        from opentelemetry import trace, metrics
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.propagate import set_global_textmap
-        from opentelemetry.propagators.composite import CompositePropagator
-        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-    except ImportError:
-        return
-
-    name = _os.environ.get("OTEL_SERVICE_NAME", "nasiko-agent")
-    resource = Resource.create({"service.name": name})
-    set_global_textmap(CompositePropagator([TraceContextTextMapPropagator()]))
-    tp = TracerProvider(resource=resource)
-
-    endpoint = _os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-    if endpoint:
-        try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-            from opentelemetry.sdk.metrics import MeterProvider
-            from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-            tp.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, insecure=True)))
-            metrics.set_meter_provider(MeterProvider(
-                resource=resource,
-                metric_readers=[PeriodicExportingMetricReader(
-                    OTLPMetricExporter(endpoint=endpoint, insecure=True),
-                    export_interval_millis=10000,
-                )],
-            ))
-        except Exception:
-            pass
-
-    trace.set_tracer_provider(tp)
-
-    # Auto-instrument HTTP clients + LLM SDKs (best-effort per library).
-    for mod_path, cls in [
-        ("opentelemetry.instrumentation.httpx", "HTTPXClientInstrumentor"),
-        ("opentelemetry.instrumentation.requests", "RequestsInstrumentor"),
-        ("opentelemetry.instrumentation.openai_v2", "OpenAIInstrumentor"),
-        ("opentelemetry.instrumentation.openai", "OpenAIInstrumentor"),
-        ("opentelemetry.instrumentation.anthropic", "AnthropicInstrumentor"),
-    ]:
-        try:
-            import importlib
-            instrumentor = getattr(importlib.import_module(mod_path), cls)()
-            if not instrumentor.is_instrumented_by_opentelemetry:
-                instrumentor.instrument()
-        except Exception:
-            pass
-
-_nasiko_otel_boot()
-del _nasiko_otel_boot
-"#;
-
-/// OTel pip packages injected into the Dockerfile. Kept minimal — only what the
-/// bootstrap script actually imports. `--no-deps` would be ideal but some of
-/// these have transitive deps, so we let pip resolve.
-const OTEL_PIP_PACKAGES: &str = "\
-    opentelemetry-api \
-    opentelemetry-sdk \
-    opentelemetry-exporter-otlp-proto-grpc \
-    opentelemetry-instrumentation-httpx \
-    opentelemetry-instrumentation-requests \
-    opentelemetry-instrumentation-openai-v2";
-
-/// Patch a Python agent's Dockerfile to auto-install OTel packages and inject
-/// the bootstrap script. Skips non-Python Dockerfiles (no `python` base image).
-/// Best-effort: errors are logged and the build proceeds unpatched.
-fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::path::Path) {
-    let contents = match std::fs::read_to_string(dockerfile) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(%e, "otel patch: cannot read Dockerfile, skipping");
-            return;
-        }
-    };
-
-    // Only patch Python-based images. Matching bare `slim`/`alpine` here also
-    // catches `FROM node:20-slim`, `FROM ruby:3-alpine`, and friends — and since
-    // the injected `pip install` layer then fails on an image with no pip, that
-    // mismatch doesn't merely skip instrumentation, it fails the whole build for
-    // an agent that was never Python to begin with. Require `python` in the base
-    // image ref, matching this function's documented contract.
-    let is_python = contents
-        .lines()
-        .any(|l| l.trim().starts_with("FROM ") && l.contains("python"));
-    if !is_python {
-        tracing::debug!("otel patch: Dockerfile does not appear Python-based, skipping");
-        return;
-    }
-
-    // Don't double-patch if the agent already bundles the bootstrap.
-    if source_dir.join("_nasiko_otel_boot.py").exists() {
-        tracing::debug!("otel patch: _nasiko_otel_boot.py already exists, skipping");
-        return;
-    }
-
-    // Write the bootstrap script.
-    if let Err(e) = std::fs::write(source_dir.join("_nasiko_otel_boot.py"), OTEL_BOOTSTRAP_PY) {
-        tracing::warn!(%e, "otel patch: failed to write bootstrap script, skipping");
-        return;
-    }
-
-    // Append to Dockerfile: install OTel deps, copy bootstrap, set PYTHONSTARTUP.
-    // Inserted before the last CMD/ENTRYPOINT line so the layer order is correct.
-    // `PIP_BREAK_SYSTEM_PACKAGES=1` is scoped to this RUN layer (not a persistent
-    // ENV) and keeps the install working on a distro-managed interpreter, where
-    // PEP 668 otherwise aborts with `error: externally-managed-environment`.
-    // pip older than 23.1 doesn't know the flag and simply ignores the env var.
-    let patch = format!(
-        "\n# ── Nasiko OTel auto-instrumentation (injected at build time) ──\n\
-         RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip install --no-cache-dir {OTEL_PIP_PACKAGES}\n\
-         COPY _nasiko_otel_boot.py /opt/nasiko/_nasiko_otel_boot.py\n\
-         ENV PYTHONSTARTUP=/opt/nasiko/_nasiko_otel_boot.py\n"
-    );
-
-    // Find the last CMD or ENTRYPOINT line and insert before it.
-    let lines: Vec<&str> = contents.lines().collect();
-    let insert_pos = lines
-        .iter()
-        .rposition(|l| {
-            let t = l.trim();
-            t.starts_with("CMD ") || t.starts_with("ENTRYPOINT ")
-        })
-        .unwrap_or(lines.len());
-
-    let mut patched = lines[..insert_pos].join("\n");
-    patched.push_str(&patch);
-    patched.push_str(&lines[insert_pos..].join("\n"));
-    patched.push('\n');
-
-    if let Err(e) = std::fs::write(dockerfile, &patched) {
-        tracing::warn!(%e, "otel patch: failed to write patched Dockerfile");
-        return;
-    }
-
-    tracing::info!("otel patch: injected OTel auto-instrumentation into Dockerfile");
 }
 
 /// Execute the full upload-and-deploy pipeline: extract, OTel patch, docker build, deploy.
@@ -1036,9 +715,6 @@ pub async fn execute_upload_and_deploy(
     agent_runtime: String,
     agent_image_registry: String,
     max_replicas: u32,
-    writable: bool,
-    writable_path: Option<String>,
-    default_memory: String,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1066,13 +742,6 @@ pub async fn execute_upload_and_deploy(
             return Err("no Dockerfile found in source zip".into());
         }
 
-        // ── OTel patch ───────────────────────────────────────────────────────
-        // Inject traceparent propagation + GenAI instrumentation into Python
-        // agents so they get traces, LLM spans, and classifier support without
-        // any agent-side code changes. Best-effort: a non-Python Dockerfile is
-        // left untouched.
-        patch_otel_into_dockerfile(&tmp_dir, &dockerfile_path);
-
         // Build Docker image.
         let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
         runtime
@@ -1098,11 +767,8 @@ pub async fn execute_upload_and_deploy(
             image_tag.clone(),
             ports,
             env,
-            &default_memory,
+            None,
             max_replicas,
-            writable,
-            writable_path.clone(),
-            owner_id,
         );
         crate::agents::attach_pull_credential(
             &db,
@@ -1152,10 +818,51 @@ pub async fn execute_upload_and_deploy(
             )
             .await;
             // `upload` upserts by (owner_id, name) — a second `upload` against an
-            // already-deployed agent must land here too, which this activates and
-            // archives whatever was previously running for (mirroring `update.rs`'s
-            // redeploy path). A genuinely first upload has nothing to archive yet.
-            record_uploaded_version(&db, agent_id, build_id, &image_tag).await;
+            // already-deployed agent must land here too. Fetch the currently active
+            // version first: it becomes this new version's `previous_version` and,
+            // once archived, gets marked `can_rollback = true` — mirroring
+            // `update.rs`'s `redeploy_agent` three-step (archive / insert-with-
+            // previous_version / mark-old-rollback-eligible). `None` on a genuinely
+            // first upload (nothing to archive or roll back to yet).
+            let prev_version: Option<String> = sqlx::query_scalar(
+                "SELECT version FROM agent_versions WHERE agent_id = $1 AND is_active = true",
+            )
+            .bind(agent_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten();
+            let _ = sqlx::query(
+                "UPDATE agent_versions SET is_active = false, status = 'archived' \
+                 WHERE agent_id = $1 AND is_active = true",
+            )
+            .bind(agent_id)
+            .execute(&db)
+            .await;
+            let _ = sqlx::query(
+                "INSERT INTO agent_versions \
+                   (agent_id, build_id, version, image_tag, is_active, status, previous_version) \
+                 SELECT agent_id, $1, version_tag, image_reference, true, 'active', $2 \
+                 FROM agent_builds WHERE id = $1 \
+                 ON CONFLICT (agent_id, version) DO UPDATE \
+                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag, \
+                       is_active = true, status = 'active', \
+                       previous_version = EXCLUDED.previous_version",
+            )
+            .bind(build_id)
+            .bind(&prev_version)
+            .execute(&db)
+            .await;
+            if let Some(ref pv) = prev_version {
+                let _ = sqlx::query(
+                    "UPDATE agent_versions SET can_rollback = true \
+                     WHERE agent_id = $1 AND version = $2",
+                )
+                .bind(agent_id)
+                .bind(pv)
+                .execute(&db)
+                .await;
+            }
             let agent_url = crate::agents::resolve_agent_url(
                 &runtime,
                 &deploy_status,
@@ -1235,7 +942,6 @@ pub async fn execute_clone_and_deploy(
     agent_runtime: String,
     agent_image_registry: String,
     max_replicas: u32,
-    default_memory: String,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1248,7 +954,7 @@ pub async fn execute_clone_and_deploy(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-clone-{build_id}"));
 
-    let result: Result<(DeploymentStatus, String), String> = async {
+    let result: Result<DeploymentStatus, String> = async {
         // Read tar.gz bytes then extract on the blocking pool.
         let tp = tar_gz_path.clone();
         let td = tmp_dir.clone();
@@ -1261,52 +967,10 @@ pub async fn execute_clone_and_deploy(
 
         set_upload_status(&db, &upload_id, &name, owner_id, "processing", None, None).await;
 
-        // ── Extract version from project files (same logic as zip upload) ────
-        // Resolution order: AgentCard.json → pyproject.toml → Cargo.toml.
-        // If a valid x.y.z version is found, update the image tag and DB records
-        // so the clone path doesn't default everything to "latest".
-        let image_tag = {
-            let detected = detect_version_from_dir(&tmp_dir);
-            if let Some(ref ver) = detected {
-                if super::versions::parse_plain_version(ver).is_some() {
-                    let new_tag = crate::agents::build_image_tag(
-                        &agent_image_registry, &name, ver,
-                    );
-                    // Update agents.version + agent_builds.version_tag/image_reference
-                    // to reflect the real version instead of the placeholder.
-                    let _ = sqlx::query(
-                        "UPDATE agents SET version = $2, image = $3, updated_at = now() WHERE id = $1",
-                    )
-                    .bind(agent_id)
-                    .bind(ver)
-                    .bind(&new_tag)
-                    .execute(&db)
-                    .await;
-                    let _ = sqlx::query(
-                        "UPDATE agent_builds SET version_tag = $2, image_reference = $3 WHERE id = $1",
-                    )
-                    .bind(build_id)
-                    .bind(ver)
-                    .bind(&new_tag)
-                    .execute(&db)
-                    .await;
-                    tracing::info!(%build_id, %agent_id, version = %ver, "clone: detected version from source");
-                    new_tag
-                } else {
-                    image_tag
-                }
-            } else {
-                image_tag
-            }
-        };
-
         let dockerfile_path = tmp_dir.join("Dockerfile");
         if !dockerfile_path.exists() {
             return Err("no Dockerfile found in cloned repository".into());
         }
-
-        // OTel patch (same as upload path — see doc on `patch_otel_into_dockerfile`).
-        patch_otel_into_dockerfile(&tmp_dir, &dockerfile_path);
 
         // Build Docker image.
         let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
@@ -1333,12 +997,8 @@ pub async fn execute_clone_and_deploy(
             image_tag.clone(),
             ports,
             env,
-            &default_memory,
-            max_replicas,
-            // GitHub-clone deploys don't expose a --writable flag yet.
-            false,
             None,
-            owner_id,
+            max_replicas,
         );
         crate::agents::attach_pull_credential(
             &db,
@@ -1364,7 +1024,7 @@ pub async fn execute_clone_and_deploy(
         )
         .await;
 
-        Ok((deploy_status, image_tag))
+        Ok(deploy_status)
     }
     .await;
 
@@ -1375,7 +1035,7 @@ pub async fn execute_clone_and_deploy(
     }
 
     match result {
-        Ok((deploy_status, final_image_tag)) => {
+        Ok(deploy_status) => {
             set_build_status(&db, build_id, BuildStatus::Success).await;
             set_upload_status(
                 &db,
@@ -1388,10 +1048,51 @@ pub async fn execute_clone_and_deploy(
             )
             .await;
             // `upload` upserts by (owner_id, name) — a second `upload` against an
-            // already-deployed agent must land here too, which this activates and
-            // archives whatever was previously running for (mirroring `update.rs`'s
-            // redeploy path). A genuinely first upload has nothing to archive yet.
-            record_uploaded_version(&db, agent_id, build_id, &final_image_tag).await;
+            // already-deployed agent must land here too. Fetch the currently active
+            // version first: it becomes this new version's `previous_version` and,
+            // once archived, gets marked `can_rollback = true` — mirroring
+            // `update.rs`'s `redeploy_agent` three-step (archive / insert-with-
+            // previous_version / mark-old-rollback-eligible). `None` on a genuinely
+            // first upload (nothing to archive or roll back to yet).
+            let prev_version: Option<String> = sqlx::query_scalar(
+                "SELECT version FROM agent_versions WHERE agent_id = $1 AND is_active = true",
+            )
+            .bind(agent_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten();
+            let _ = sqlx::query(
+                "UPDATE agent_versions SET is_active = false, status = 'archived' \
+                 WHERE agent_id = $1 AND is_active = true",
+            )
+            .bind(agent_id)
+            .execute(&db)
+            .await;
+            let _ = sqlx::query(
+                "INSERT INTO agent_versions \
+                   (agent_id, build_id, version, image_tag, is_active, status, previous_version) \
+                 SELECT agent_id, $1, version_tag, image_reference, true, 'active', $2 \
+                 FROM agent_builds WHERE id = $1 \
+                 ON CONFLICT (agent_id, version) DO UPDATE \
+                   SET build_id = EXCLUDED.build_id, image_tag = EXCLUDED.image_tag, \
+                       is_active = true, status = 'active', \
+                       previous_version = EXCLUDED.previous_version",
+            )
+            .bind(build_id)
+            .bind(&prev_version)
+            .execute(&db)
+            .await;
+            if let Some(ref pv) = prev_version {
+                let _ = sqlx::query(
+                    "UPDATE agent_versions SET can_rollback = true \
+                     WHERE agent_id = $1 AND version = $2",
+                )
+                .bind(agent_id)
+                .bind(pv)
+                .execute(&db)
+                .await;
+            }
             let agent_url = crate::agents::resolve_agent_url(
                 &runtime,
                 &deploy_status,
@@ -1458,12 +1159,9 @@ pub async fn execute_github_clone_and_deploy(
     name: String,
     repo_full_name: String,
     branch: String,
+    image_tag: String,
     ports: Vec<u16>,
     env: HashMap<String, String>,
-    version_override: Option<String>,
-    prior_version: Option<String>,
-    prior_image: Option<String>,
-    prior_status: Option<String>,
 ) {
     // GitHub service must be configured for cloning to work.
     let github_svc = match state.github_svc.as_ref() {
@@ -1568,14 +1266,6 @@ pub async fn execute_github_clone_and_deploy(
         return;
     }
 
-    let version_tag = version_override.as_deref().unwrap_or("latest");
-    let image_tag =
-        crate::agents::build_image_tag(&state.config.agent_image_registry, &name, version_tag);
-
-    // If prior state was captured, restore on failure inside execute_clone_and_deploy
-    // (the prior_* fields are carried for future rollback support but unused today).
-    let _ = (&prior_version, &prior_image, &prior_status);
-
     let mut platform_env = state.agent_env(agent_id).await;
     platform_env.extend(env);
     execute_clone_and_deploy(
@@ -1596,7 +1286,6 @@ pub async fn execute_github_clone_and_deploy(
         state.config.agent_runtime.clone(),
         state.config.agent_image_registry.clone(),
         state.config.agent_max_replicas,
-        state.config.agent_default_memory.clone(),
     )
     .await;
 }
@@ -1962,12 +1651,11 @@ struct UploadAgentRow {
     icon_url: Option<String>,
     version: Option<String>,
     agent_status: Option<String>,
-    metadata: sqlx::types::Json<serde_json::Value>,
 }
 
 #[derive(Serialize, ToSchema)]
 pub(crate) struct UploadInfoResponse {
-    upload_type: String,
+    upload_type: &'static str,
     upload_status: String,
     status_message: Option<String>,
     error_detail: Option<String>,
@@ -2045,8 +1733,7 @@ pub(crate) async fn list_upload_agents(
                COALESCE(a.tags, '{}') AS tags,
                a.icon_url,
                a.version,
-               a.status AS agent_status,
-               us.metadata
+               a.status AS agent_status
            FROM upload_status us
            JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
            WHERE us.owner_id = $1
@@ -2073,12 +1760,7 @@ pub(crate) async fn list_upload_agents(
                         agent_name: r.agent_name,
                         icon_url: r.icon_url,
                         upload_info: UploadInfoResponse {
-                            upload_type: r
-                                .metadata
-                                .get("upload_type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("zip")
-                                .to_string(),
+                            upload_type: "zip",
                             upload_status: display_status.to_string(),
                             status_message,
                             error_detail: r.error_message,
@@ -2099,81 +1781,5 @@ pub(crate) async fn list_upload_agents(
             tracing::error!(%e, "list_upload_agents db error");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
-    }
-}
-
-#[cfg(test)]
-mod otel_patch_tests {
-    use super::*;
-
-    /// Write `dockerfile_contents` into a fresh temp dir, run the patch over it,
-    /// and hand back what the Dockerfile looks like afterwards.
-    fn patch(dockerfile_contents: &str, marker: &str) -> String {
-        let dir = std::env::temp_dir().join(format!("nasiko-otel-patch-test-{marker}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let dockerfile = dir.join("Dockerfile");
-        std::fs::write(&dockerfile, dockerfile_contents).unwrap();
-
-        patch_otel_into_dockerfile(&dir, &dockerfile);
-
-        let patched = std::fs::read_to_string(&dockerfile).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        patched
-    }
-
-    #[test]
-    fn node_slim_image_is_left_untouched() {
-        // `node:20-slim` matches neither "python" nor a Python toolchain, but it
-        // does contain "slim" — the old check patched it and the injected `pip`
-        // layer failed the build outright.
-        let original =
-            "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
-
-        assert_eq!(
-            patch(original, "node-slim"),
-            original,
-            "a Node base image must not receive the Python OTel patch"
-        );
-    }
-
-    #[test]
-    fn alpine_non_python_image_is_left_untouched() {
-        let original = "FROM ruby:3-alpine\nENTRYPOINT [\"./run.sh\"]\n";
-
-        assert_eq!(patch(original, "ruby-alpine"), original);
-    }
-
-    #[test]
-    fn python_image_is_patched_before_the_entrypoint() {
-        let patched = patch(
-            "FROM python:3.12-slim\nCOPY . /app\nENTRYPOINT [\"python\", \"main.py\"]\n",
-            "python-slim",
-        );
-
-        assert!(patched.contains("pip install"), "expected the pip layer");
-        assert!(patched.contains("ENV PYTHONSTARTUP=/opt/nasiko/_nasiko_otel_boot.py"));
-
-        let pip_at = patched.find("pip install").unwrap();
-        let entrypoint_at = patched.find("ENTRYPOINT").unwrap();
-        assert!(
-            pip_at < entrypoint_at,
-            "the pip layer must be inserted before ENTRYPOINT"
-        );
-    }
-
-    #[test]
-    fn pip_layer_tolerates_a_distro_managed_interpreter() {
-        let patched = patch(
-            "FROM python:3.12-slim\nENTRYPOINT [\"python\", \"main.py\"]\n",
-            "pep668",
-        );
-
-        // Without this, PEP 668 aborts the layer with
-        // `error: externally-managed-environment` on a distro-managed Python.
-        assert!(
-            patched.contains("PIP_BREAK_SYSTEM_PACKAGES=1 pip install"),
-            "pip install must be able to write to a distro-managed interpreter"
-        );
     }
 }

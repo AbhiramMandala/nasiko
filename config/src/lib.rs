@@ -1,4 +1,4 @@
-use nasiko_utils::{env_bool, env_or, env_parse, required_env};
+use nasiko_utils::{env_or, env_parse, required_env};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -44,9 +44,6 @@ pub struct Config {
     pub otel_sample_ratio: String,
     pub otel_collector_endpoint: String,
     pub otel_capture_content: bool,
-    /// OTLP/HTTP JSON base endpoint used only by the durable coding-agent
-    /// telemetry outbox. Unset leaves receipts pending and disables its worker.
-    pub coding_agent_otlp_endpoint: Option<String>,
     pub tempo_url: String,
     pub loki_url: String,
     /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
@@ -62,15 +59,6 @@ pub struct Config {
     /// multi-tenant deployment. This crate has no notion of what a "tenant"
     /// is; it only passes the value through.
     pub tenant_id: Option<String>,
-    /// When true, a background worker periodically mirrors LLM token pricing
-    /// from Portkey's public dataset (`configs.portkey.ai`) into the
-    /// `model_pricing` table. Fails soft — a fetch error leaves existing rows
-    /// untouched. See `nasiko_observability::pricing_sync`.
-    pub model_pricing_sync_enabled: bool,
-    /// How often the pricing sync runs, in seconds. Provider list prices change
-    /// rarely, so daily (86400) is the default; the sync also runs once ~10s
-    /// after boot. Floored at 60s.
-    pub model_pricing_sync_interval_secs: u64,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
@@ -98,22 +86,6 @@ pub struct Config {
     /// Stored as `user_identities.provider` for OIDC-authenticated users.
     /// Override if fronting a non-Entra OIDC provider.
     pub oidc_provider_label: String,
-    /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
-    /// multi-tenant BFF — it serves no UI (root 302s to the BFF) and enforces
-    /// the corporate-only admission gate below. Default off = ordinary
-    /// single-tenant behavior, unchanged.
-    pub multi_tenant_mode: bool,
-    /// Only consulted when `multi_tenant_mode` is on. Off (the default)
-    /// restricts logins to corporate identities (a Google `hd`, or a verified
-    /// email whose domain isn't a known personal provider). On also admits
-    /// personal emails, which may only ever *join* a workspace, never create
-    /// one. No effect outside multi-tenant mode.
-    pub allow_personal_emails: bool,
-    /// Base URL of the multi-tenant BFF/dashboard. Used only in
-    /// `multi_tenant_mode`: this headless control plane serves no UI, so browser
-    /// navigations are redirected here. `None` (the default) outside
-    /// multi-tenant mode.
-    pub nasiko_bff_url: Option<String>,
     pub router_shortlist_threshold: usize,
     pub router_shortlist_size: usize,
     pub max_router_history_messages: usize,
@@ -129,13 +101,6 @@ pub struct Config {
     /// cluster's tenant-id path suffix. Unset (the default, and always for
     /// standalone deployments) means GitHub calls this cluster back directly.
     pub github_central_callback_url: Option<String>,
-    /// The OIDC analogue of [`Self::github_central_callback_url`]: the fleet
-    /// relay callback used as the OIDC `redirect_uri` for both authorize and
-    /// token exchange (multi-tenant workspace CPs), so many clusters share one
-    /// Google/OIDC app whose single registered callback points at the relay.
-    /// Includes this cluster's tenant-id path suffix. Unset (default, and always
-    /// standalone) means the IdP calls this cluster back directly.
-    pub oidc_central_callback_url: Option<String>,
     /// Base URL to redirect to after a successful OAuth login. In production
     /// this is the same origin as the server. Override via `APP_BASE_URL` in
     /// dev when the server and app run on different ports.
@@ -220,27 +185,6 @@ pub struct Config {
     /// MCP connectors. AGENT_MAX_REPLICAS, default 1 (no autoscaling unless
     /// explicitly raised). Ignored by DockerRuntime.
     pub agent_max_replicas: u32,
-    /// Default memory limit for every agent container, Kubernetes notation
-    /// (`"512Mi"`, `"1Gi"`) — see `nasiko_runtime::ResourceLimits::memory`.
-    /// AGENT_DEFAULT_MEMORY, default `"1Gi"`. `nasiko_runtime::ResourceLimits`
-    /// itself still defaults to `"512Mi"` (its own hermetic fallback for
-    /// callers outside the server, e.g. tests) — this is the value the server
-    /// actually uses for every agent deploy unless a future per-agent
-    /// override is added. Raised from the runtime crate's original 512Mi
-    /// after opencode (3 concurrent Node/Bun processes) was repeatedly
-    /// OOM-killed under real chat load at that limit.
-    pub agent_default_memory: String,
-    /// Name of the single named Docker volume every `--writable` agent shares
-    /// (each mounted at its own `volume-subpath`) — see
-    /// `nasiko_runtime::DockerRuntimeConfig::agent_memory_volume`.
-    /// AGENT_MEMORY_VOLUME, default `"nasiko-agent-memory"`.
-    pub agent_memory_volume: String,
-    /// Image for the short-lived helper container that pre-creates a
-    /// `--writable` agent's subdirectory inside `agent_memory_volume` — see
-    /// `nasiko_runtime::DockerRuntimeConfig::agent_memory_init_image`.
-    /// AGENT_MEMORY_INIT_IMAGE, default `"alpine:3.21"` (override for
-    /// air-gapped or internal-mirror setups).
-    pub agent_memory_init_image: String,
     /// TTL (seconds) for the Redis-cached Composio toolkit tool count shown on
     /// unconnected catalog cards — changes rarely, so a much longer TTL than
     /// the permission/session caches.
@@ -296,10 +240,6 @@ impl Config {
             )
             .map(|v| v == "true")
             .unwrap_or(true),
-            coding_agent_otlp_endpoint: std::env::var("CODING_AGENT_OTLP_ENDPOINT")
-                .ok()
-                .map(|value| value.trim_end_matches('/').to_owned())
-                .filter(|value| !value.is_empty()),
             tempo_url: env_or("TEMPO_URL", ""),
             loki_url: env_or("LOKI_URL", ""),
             // Enabled only when BOTH backends are explicitly configured; a
@@ -308,8 +248,6 @@ impl Config {
             observability_enabled: std::env::var("TEMPO_URL").is_ok_and(|v| !v.is_empty())
                 && std::env::var("LOKI_URL").is_ok_and(|v| !v.is_empty()),
             tenant_id: std::env::var("TENANT_ID").ok(),
-            model_pricing_sync_enabled: env_bool("MODEL_PRICING_SYNC_ENABLED", true),
-            model_pricing_sync_interval_secs: env_parse("MODEL_PRICING_SYNC_INTERVAL_SECS", 86_400),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
@@ -336,15 +274,6 @@ impl Config {
                 .collect(),
             oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
             oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
-            multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")
-                .map(|v| v == "true")
-                .unwrap_or(false),
-            allow_personal_emails: std::env::var("ALLOW_PERSONAL_EMAILS")
-                .map(|v| v == "true")
-                .unwrap_or(false),
-            nasiko_bff_url: std::env::var("NASIKO_BFF_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
             max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
@@ -352,9 +281,6 @@ impl Config {
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_central_callback_url: std::env::var("OIDC_CENTRAL_CALLBACK_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
             app_base_url: env_or("APP_BASE_URL", ""),
@@ -410,9 +336,6 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
-            agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
-            agent_memory_volume: env_or("AGENT_MEMORY_VOLUME", "nasiko-agent-memory"),
-            agent_memory_init_image: env_or("AGENT_MEMORY_INIT_IMAGE", "alpine:3.21"),
             mcp_toolcount_ttl_seconds: env_parse("MCP_TOOLCOUNT_TTL_SECONDS", 3600),
             seed_toolkits: std::env::var("SEED_TOOLKITS")
                 .unwrap_or_default()
@@ -433,22 +356,6 @@ impl Config {
     pub fn validate_secrets_key(&self) -> Result<(), String> {
         validate_secrets_key_format(&self.secrets_encryption_key)
     }
-}
-
-/// Strips a trailing `/v1` (and any trailing slashes) from an OpenAI-compatible
-/// base URL, for callers that append their own `/v1/...` path segment.
-///
-/// `OPENAI_BASE_URL` is commonly written *with* the `/v1` — that is how
-/// `cp.nasiko.dev` and `ee/server/.env` have it — so appending `/v1/whatever`
-/// to the raw value doubles up into `.../v1/v1/whatever`, which 404s.
-///
-/// Deliberately a free function rather than normalization applied to
-/// [`Config::openai_base_url`] itself: `ee/artifact-registry` uses the opposite
-/// convention (base URL *includes* `/v1`, it appends bare `/embeddings`), so
-/// the stored value has to stay verbatim.
-pub fn openai_base_url_without_v1(base_url: &str) -> &str {
-    let trimmed = base_url.trim_end_matches('/');
-    trimmed.strip_suffix("/v1").unwrap_or(trimmed)
 }
 
 fn validate_secrets_key_format(key: &str) -> Result<(), String> {
@@ -492,44 +399,5 @@ mod tests {
     #[test]
     fn invalid_base64_fails() {
         assert!(validate_secrets_key_format("not base64 at all!!!").is_err());
-    }
-
-    #[test]
-    fn base_url_written_with_v1_is_stripped() {
-        // The cp.nasiko.dev form — appending `/v1/audio/transcriptions` to the
-        // raw value produced `.../v1/v1/audio/transcriptions` and 404'd.
-        assert_eq!(
-            openai_base_url_without_v1("https://api.openai.com/v1"),
-            "https://api.openai.com"
-        );
-        assert_eq!(
-            openai_base_url_without_v1("https://api.openai.com/v1/"),
-            "https://api.openai.com"
-        );
-    }
-
-    #[test]
-    fn base_url_written_without_v1_is_unchanged() {
-        assert_eq!(
-            openai_base_url_without_v1("https://api.deepseek.com"),
-            "https://api.deepseek.com"
-        );
-        assert_eq!(
-            openai_base_url_without_v1("http://localhost:11434/"),
-            "http://localhost:11434"
-        );
-    }
-
-    #[test]
-    fn only_a_trailing_v1_segment_is_stripped() {
-        // A host or path that merely contains "v1" must survive intact.
-        assert_eq!(
-            openai_base_url_without_v1("https://v1.example.com"),
-            "https://v1.example.com"
-        );
-        assert_eq!(
-            openai_base_url_without_v1("https://example.com/openai/v1/proxy"),
-            "https://example.com/openai/v1/proxy"
-        );
     }
 }

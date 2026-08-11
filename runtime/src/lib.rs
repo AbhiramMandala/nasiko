@@ -14,7 +14,6 @@ pub use stats::{
     ResourceStatsProvider, StatsGroup, UnsupportedStatsProvider,
 };
 pub use types::validate_build_inputs;
-pub use types::validate_writable_path;
 pub use types::{
     ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, ResourceLimits, RuntimeState,
     WorkloadKind,
