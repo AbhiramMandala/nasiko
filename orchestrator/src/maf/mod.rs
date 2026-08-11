@@ -1,15 +1,10 @@
 // ── MAF (Multi-Agent Flow) orchestrator ──────────────────────────────────────
+pub mod decomposer;
 pub mod executor;
 pub mod llm;
 pub mod planner;
 pub mod types;
 mod worker;
-
-/// The Redis stream key this crate's worker consumes from — re-exported so every producer
-/// (`oss/server/src/maf.rs`, `oss/server/src/hitl/mod.rs`) binds to the same constant instead of
-/// hardcoding the literal a second and third time (found in review — see `worker::STREAM_KEY`'s
-/// own doc comment).
-pub use worker::STREAM_KEY;
 
 use std::sync::Arc;
 
@@ -34,7 +29,6 @@ pub fn start_worker(
     http_client: reqwest::Client,
     observability: Arc<dyn ObservabilityProvider>,
     llm_config: LlmConfig,
-    hitl_store: Arc<dyn nasiko_hitl::HitlStore>,
 ) {
     let llm = LlmClient::new(
         http_client.clone(),
@@ -42,12 +36,5 @@ pub fn start_worker(
         llm_config.base_url,
         llm_config.model,
     );
-    tokio::spawn(worker::run(
-        db,
-        redis,
-        http_client,
-        observability,
-        llm,
-        hitl_store,
-    ));
+    tokio::spawn(worker::run(db, redis, http_client, observability, llm));
 }

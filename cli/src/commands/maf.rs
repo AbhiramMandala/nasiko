@@ -50,14 +50,28 @@ pub fn workflow_list(json_out: bool) -> Result<()> {
 /// `nasiko maf workflow create --step "..." [--step "..."] [--agent ...]` — define a new
 /// workflow. Steps run in the order given; an omitted (or "-") `--agent` for a step lets the
 /// routing engine auto-assign it.
+///
+/// `--instruction "..."` is the alternative, mutually-exclusive form: sends one compound
+/// sentence to the decomposer service, which splits it into atomic steps server-side (each
+/// then auto-assigned an agent) — see `POST /maf/workflow/from-instruction` in
+/// `oss/server/src/maf.rs`.
 pub fn workflow_create(
     name: Option<&str>,
     description: Option<&str>,
     steps: &[String],
     agents: &[String],
+    instruction: Option<&str>,
 ) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+
+    if let Some(instruction) = instruction {
+        let body = json!({ "instruction": instruction });
+        let resp: Value = unwrap_data(client.post_json("/maf/workflow/from-instruction", &body)?)?;
+        return print_created(&resp, None);
+    }
+
     if steps.is_empty() {
-        anyhow::bail!("at least one --step is required");
+        anyhow::bail!("at least one --step or --instruction is required");
     }
     let step_bodies = build_step_bodies(steps, agents)?;
     let body = json!({
@@ -66,14 +80,25 @@ pub fn workflow_create(
         "steps": step_bodies,
     });
 
-    let client = Client::from_active_cluster()?;
     let resp: Value = unwrap_data(client.post_json("/maf/workflows", &body)?)?;
+    print_created(&resp, Some(steps.len()))
+}
+
+/// Prints the `Created workflow '<name>' (<id>) with N step(s)` confirmation line.
+/// `known_step_count` is `None` when the step count isn't known client-side (the
+/// `--instruction` path — the decomposer decides it server-side), so it's read back
+/// from the response's `maf_json.steps` instead.
+fn print_created(resp: &Value, known_step_count: Option<usize>) -> Result<()> {
     let id = resp.get("id").and_then(Value::as_str).unwrap_or("?");
     let created_name = resp.get("name").and_then(Value::as_str).unwrap_or("?");
-    println!(
-        "Created workflow '{created_name}' ({id}) with {} step(s)",
-        steps.len()
-    );
+    let step_count = known_step_count.unwrap_or_else(|| {
+        resp.get("maf_json")
+            .and_then(|m| m.get("steps"))
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0)
+    });
+    println!("Created workflow '{created_name}' ({id}) with {step_count} step(s)");
     Ok(())
 }
 
@@ -230,13 +255,15 @@ pub fn workflow_delete(workflow: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
-/// `nasiko maf workflow run <name|id> [--wait]` — queue a run; with `--wait`, poll until it
-/// finishes and print the result.
-pub fn workflow_run(workflow: &str, wait: bool) -> Result<()> {
+/// `nasiko maf workflow run <name|id> [--wait] [--content "..."]` — queue a run; with `--wait`,
+/// poll until it finishes and print the result. `--content` is run-time data folded into step
+/// 0's task description before planning, so the same saved workflow can be re-run against
+/// different input each time instead of baking it in at creation.
+pub fn workflow_run(workflow: &str, wait: bool, content: Option<&str>) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let id = resolve_workflow_id(&client, workflow)?;
-    let resp: Value =
-        unwrap_data(client.post_json(&format!("/maf/workflow/{id}/run"), &json!({}))?)?;
+    let body = json!({ "content": content });
+    let resp: Value = unwrap_data(client.post_json(&format!("/maf/workflow/{id}/run"), &body)?)?;
     let exec_id = resp
         .get("execution_id")
         .and_then(Value::as_str)
@@ -496,30 +523,17 @@ fn print_execution(e: &Value) {
 }
 
 /// Polls `GET /maf/workflow/result/{exec_id}` every 2s until the execution reaches a terminal
-/// state (`success` | `failed`) or pauses (`awaiting_human`), mirroring
-/// [`Client::poll_mcp_build_status`]'s plain-polling loop. `awaiting_human` stops polling
-/// immediately rather than waiting out the rest of the budget: nothing about the execution
-/// changes until a human answers, so continuing to poll only delayed telling the caller what
-/// actually needs to happen — and previously produced the same "may not be running" timeout
-/// message a genuinely stalled execution gets, which is actively misleading for one that's
-/// paused and working exactly as designed.
+/// state (`success` | `failed`), mirroring [`Client::poll_mcp_build_status`]'s plain-polling loop.
 /// A stalled execution (e.g. the server has no `OPENAI_API_KEY` configured, so the MAF worker
 /// never started — jobs then sit at `pending` in Redis indefinitely; this is a documented,
 /// supported "degrades gracefully" server configuration, not a transient blip) must not hang
-/// `--wait` forever. Bounds the poll to ~5 minutes of actual polling before giving up with an
-/// actionable message — time spent blocked on a human answering an `awaiting_human` pause never
-/// counts against this budget, since that wait has nothing to do with whether the worker itself
-/// is alive.
+/// `--wait` forever. Bounds the poll to ~5 minutes before giving up with an actionable message.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const MAX_POLL_ATTEMPTS: u32 = 150;
 
 fn poll_execution(client: &Client, exec_id: &str) -> Result<()> {
     let mut last_status = String::new();
     let mut spin = Some(nasiko_utils::term::start_status("waiting for execution"));
-    // The one id we've already answered — `ExecWithHitlResponse` guarantees at most one
-    // `pending` row at a time, so a single slot is enough to tell "still the same pause,
-    // resume dispatcher just hasn't caught up yet" apart from "a genuinely new pause".
-    let mut resolved_hitl_id: Option<String> = None;
 
     for _ in 0..MAX_POLL_ATTEMPTS {
         let resp: Value =
@@ -529,29 +543,6 @@ fn poll_execution(client: &Client, exec_id: &str) -> Result<()> {
             .and_then(Value::as_str)
             .unwrap_or("pending")
             .to_string();
-
-        if status == "awaiting_human" {
-            match pending_hitl_pause(&resp) {
-                Some(pause) if resolved_hitl_id.as_deref() != Some(pause.id.as_str()) => {
-                    drop(spin.take());
-                    let id = pause.id.clone();
-                    crate::hitl::prompt_and_resolve_hitl(&pause)?;
-                    resolved_hitl_id = Some(id);
-                    spin = Some(nasiko_utils::term::start_status("resuming"));
-                }
-                // Either nothing `pending` right now, or it's the same id we already
-                // resolved: the resume dispatcher hasn't propagated that off
-                // `maf_executions.status` yet on its own ~2s cycle. Either way, not a new
-                // pause to re-answer — re-prompting here would force the user to redo the
-                // whole widget for a question they already answered.
-                _ => {
-                    spin.get_or_insert_with(|| nasiko_utils::term::start_status("resuming"));
-                }
-            }
-            last_status = status;
-            std::thread::sleep(POLL_INTERVAL);
-            continue;
-        }
 
         if status != last_status {
             last_status = status.clone();
@@ -571,31 +562,6 @@ fn poll_execution(client: &Client, exec_id: &str) -> Result<()> {
             }
             return Ok(());
         }
-        if status == nasiko_types::maf::AWAITING_HUMAN {
-            // Not a terminal state (the execution resumes once a human answers), but polling
-            // further is pointless: nothing changes until that happens, so burning the rest of
-            // the ~5-minute budget here just delayed telling the caller what actually needs to
-            // happen. `hitl` — already returned by this same endpoint, see
-            // `ExecWithHitlResponse`'s own doc comment — carries the pending request's id.
-            drop(spin);
-            print_execution(&resp);
-            let pending_id = resp
-                .get("hitl")
-                .and_then(Value::as_array)
-                .and_then(|rows| {
-                    rows.iter()
-                        .find(|r| r.get("status").and_then(Value::as_str) == Some("pending"))
-                })
-                .and_then(|r| r.get("id"))
-                .and_then(Value::as_str);
-            match pending_id {
-                Some(id) => println!(
-                    "  awaiting human input — resolve via POST /api/hitl/{id}/resolve (id: {id})"
-                ),
-                None => println!("  awaiting human input"),
-            }
-            return Ok(());
-        }
         std::thread::sleep(POLL_INTERVAL);
     }
 
@@ -606,34 +572,6 @@ running (e.g. OPENAI_API_KEY not configured on the server). Check again later wi
 nasiko maf execution result {exec_id}",
         MAX_POLL_ATTEMPTS as u64 * POLL_INTERVAL.as_secs()
     );
-}
-
-/// The one `hitl[]` entry still `status: "pending"` on this execution response, if any —
-/// `ExecWithHitlResponse`'s own doc comment guarantees at most one at a time, since MAF steps run
-/// strictly sequentially. `agent` is a step label (`execution.maf_step_index`), not an agent name —
-/// the response carries only the agent's id here, not its display name, and a step number is
-/// enough context for a human answering inline.
-fn pending_hitl_pause(resp: &Value) -> Option<crate::hitl::HitlPause> {
-    let hitl = resp.get("hitl")?.as_array()?;
-    let entry = hitl
-        .iter()
-        .find(|h| h.get("status").and_then(Value::as_str) == Some("pending"))?;
-    Some(crate::hitl::HitlPause {
-        id: entry.get("id")?.as_str()?.to_string(),
-        kind: entry
-            .get("kind")?
-            .as_str()
-            .unwrap_or("input_required")
-            .to_string(),
-        question: entry
-            .get("question")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null),
-        agent: entry
-            .pointer("/execution/maf_step_index")
-            .and_then(Value::as_i64)
-            .map(|i| format!("step {i}")),
-    })
 }
 
 /// Print `  <label>  <value>`, showing `-` for null/missing so the layout stays stable.

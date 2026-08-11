@@ -10,6 +10,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use nasiko_orchestrator::RouteRequest;
 use nasiko_orchestrator::maf::{
+    decomposer::DecomposerClient,
     llm::LlmClient,
     planner::{self, AgentInfo as PlannerAgentInfo},
     types::{MafDefinition, MafStep},
@@ -20,6 +21,10 @@ use uuid::Uuid;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/maf/workflows", get(list_mafs).post(create_maf))
+        .route(
+            "/maf/workflow/from-instruction",
+            post(create_maf_from_instruction),
+        )
         .route("/maf/generate", post(generate_maf))
         // Static segment "result" wins over {id} in matchit so this route is unambiguous
         .route("/maf/workflow/result/{exec_id}", get(get_result))
@@ -183,54 +188,6 @@ struct ExecResponse {
     step_results: Option<serde_json::Value>,
     error: Option<String>,
     created_at: DateTime<Utc>,
-}
-
-/// `GET /maf/workflow/result/{exec_id}` and `GET /maf/execution/{id}` only — additive on top of
-/// `ExecResponse` (`#[serde(flatten)]` keeps every existing field byte-identical). `hitl` is how
-/// the frontend recovers a paused step's `hitl_requests.id` directly from the execution it's
-/// already polling — see `hitl_rows_for_execution` — so it never has to call
-/// `GET /api/hitl/pending` to correlate a MAF pause. Not added to `ExecResponse` itself: doing so
-/// would also touch `list_executions`/`list_all_executions`, which return many rows at once and
-/// have no comparable "resume this one" use case to justify an extra query per row.
-#[derive(Serialize)]
-struct ExecWithHitlResponse {
-    #[serde(flatten)]
-    exec: ExecResponse,
-    /// Every HITL tied to this execution, pending or already resolved — oldest first, same shape
-    /// `GET /api/hitl/{id}` returns. At most one entry is ever `status: "pending"` at a time
-    /// (MAF steps run strictly sequentially); the rest are historical audit records.
-    hitl: Vec<serde_json::Value>,
-}
-
-/// Shared by `get_result`/`get_execution` — fetches this execution's HITL rows scoped by the
-/// SAME `user_id` the caller already validated against `maf_executions.user_id` (both call sites
-/// check `row.user_id == user_id` before reaching here), so a HITL row can never leak across
-/// owners even if `hitl_requests.owner_user_id` and `maf_executions.user_id` were ever to drift.
-/// A lookup failure surfaces as a real 500 (matching `chat/routes.rs::list_messages`'s own HITL
-/// lookup) rather than silently degrading to an empty array — an execution genuinely
-/// `awaiting_human` must never be misreported as having nothing pending.
-async fn hitl_rows_for_execution(
-    hitl_store: &std::sync::Arc<dyn nasiko_hitl::HitlStore>,
-    execution_id: Uuid,
-    owner_user_id: Uuid,
-) -> Result<Vec<serde_json::Value>, nasiko_hitl::HitlError> {
-    let rows = hitl_store
-        .list_for_maf_execution(execution_id, owner_user_id)
-        .await?;
-    // Each row goes through `resolve_display_row` before `to_response` — a no-op for the
-    // ordinary case, but substitutes the real row's id/kind/question when this row is a
-    // `maf`-origin mirror of a real `mcp_tool` block (a step's underlying agent call mapping an
-    // MCP tool-approval gate onto its own pause, the same dual-origin situation direct-chat's
-    // `chat/routes.rs::list_messages` already accounts for). The real `mcp_tool` row itself is
-    // never returned by `list_for_maf_execution` at all (it has no `maf_execution_id`), so
-    // without this the frontend would only ever see the mirror's own generic placeholder.
-    let mut hitl = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let display =
-            nasiko_hitl::resolve_display_row(hitl_store.as_ref(), row, owner_user_id).await;
-        hitl.push(crate::router::hitl::to_response(&display));
-    }
-    Ok(hitl)
 }
 
 fn maf_row_to_response(row: MafRow) -> MafResponse {
@@ -417,61 +374,6 @@ async fn list_mafs(
     }
 }
 
-/// Resolves a workflow step's auto-assigned agent (no explicit `agent_id`) — shared by
-/// `create_maf` and `update_maf` so the rule is encoded once, not twice: routes via the engine,
-/// requires a non-empty endpoint, and re-checks access on the result. That re-check is
-/// defense-in-depth against `agent_registry::get_agents_for_user`'s candidate query being (or
-/// becoming) too permissive — not the primary authorization mechanism, which is that query
-/// itself — since unlike the explicit-`agent_id` case, nothing else in this path validates the
-/// routing engine's pick before it's used. `None` on any failure (routing error, no endpoint, or
-/// access denied) so every caller falls through to the catalog fallback uniformly: an unusable
-/// or inaccessible routed candidate is not something the caller asked for by id, so there's
-/// nothing to explain to them — just try the next mechanism.
-/// `Ok(None)` is an ordinary miss — no route, no endpoint, or a result this caller cannot
-/// reach — and the caller falls through to the catalog fallback.
-///
-/// `Err(reason)` is an explicit refusal by the operator's routing policy, which must NEVER
-/// fall through: that fallback exists for "the router could not decide", and using it here
-/// would assign the step to an agent the policy just judged unable to do it, reinstating the
-/// exact behaviour the policy is there to remove. The two cannot share `None`, which is why
-/// this returns a `Result` rather than an `Option`.
-async fn route_with_access_check(
-    state: &AppState,
-    claims: &Claims,
-    user_id: Uuid,
-    task_description: &str,
-    policy: Option<&dyn nasiko_orchestrator::RoutingPolicy>,
-) -> Result<Option<(Uuid, String, String)>, String> {
-    let route_req = RouteRequest {
-        query: task_description.to_string(),
-        session_id: Uuid::new_v4().to_string(),
-        user_id,
-        file_parts: vec![],
-    };
-    let routed = match state
-        .routing_engine
-        .route(route_req, &state.db, policy)
-        .await
-    {
-        Ok(result) => match result.agent.url {
-            Some(endpoint) if !endpoint.is_empty() => {
-                Some((result.agent.id, result.agent.name, endpoint))
-            }
-            _ => None,
-        },
-        // Relayed verbatim rather than rephrased: this crate does not know what the policy
-        // checked for, so it cannot say what to do about it.
-        Err(nasiko_orchestrator::RouterError::PolicyRefused { reason }) => return Err(reason),
-        Err(_) => None,
-    };
-    Ok(match routed {
-        Some((id, name, endpoint)) if crate::acl::can_access_agent(state, claims, id).await => {
-            Some((id, name, endpoint))
-        }
-        _ => None,
-    })
-}
-
 // ─── 2. POST /maf/workflows ────────────────────────────────────────────────
 
 async fn create_maf(
@@ -484,16 +386,36 @@ async fn create_maf(
         None => return unauthorized(),
     };
 
-    if req.steps.is_empty() {
+    create_maf_from_steps(
+        &state,
+        &claims,
+        user_id,
+        req.name,
+        req.description,
+        req.steps,
+    )
+    .await
+}
+
+/// Shared by `create_maf` (caller gives steps directly) and
+/// `create_maf_from_instruction` (steps come from decomposing one sentence).
+/// Resolves any step lacking an `agent_id` via the routing engine, then
+/// persists the resulting `MafDefinition` as a new `mafs` row.
+async fn create_maf_from_steps(
+    state: &AppState,
+    claims: &Claims,
+    user_id: Uuid,
+    name: Option<String>,
+    description: Option<String>,
+    steps: Vec<CreateStepRequest>,
+) -> axum::response::Response {
+    if steps.is_empty() {
         return bad_request("steps must not be empty");
     }
 
-    // Resolve any steps that lack an agent_id via the routing engine. Resolved
-    // once here rather than once per step inside route(): the operator's policy
-    // is the same for every step of this request.
-    let policy = state.orchestrator_policy.routing_policy(&state.db).await;
-    let mut resolved_steps: Vec<MafStep> = Vec::with_capacity(req.steps.len());
-    for (idx, step) in req.steps.into_iter().enumerate() {
+    // Resolve any steps that lack an agent_id via the routing engine
+    let mut resolved_steps: Vec<MafStep> = Vec::with_capacity(steps.len());
+    for (idx, step) in steps.into_iter().enumerate() {
         if step.task_description.trim().is_empty() {
             return bad_request(&format!("step {idx}: task_description is required"));
         }
@@ -505,7 +427,7 @@ async fn create_maf(
             // inaccessible agents — matches a2a_dispatch.rs's enumeration-safe
             // pattern (a non-grantee can't distinguish "doesn't exist" from
             // "exists but you can't use it").
-            if !crate::acl::can_access_agent(&state, &claims, aid).await {
+            if !crate::acl::can_access_agent(state, claims, aid).await {
                 return forbidden(&format!("agent {aid} not found"));
             }
             match fetch_agent_info(&state.db, aid).await {
@@ -514,27 +436,27 @@ async fn create_maf(
                 Err(e) => return internal_err(e),
             }
         } else {
-            // Auto-assign via routing engine. An agent row with an empty `url` (registered but
-            // never deployed, or a seed whose URL was never backfilled) used to hard-fail the
-            // whole request with a 400, which is what made *every* workflow uncreatable on such
-            // a fleet — `route_with_access_check` treats that, a routing failure, and an
-            // inaccessible result all the same way: fall through to the catalog fallback below.
-            // An explicit policy refusal is the one case that must not: see the helper's docs.
-            let routed = match route_with_access_check(
-                &state,
-                &claims,
+            // Auto-assign via routing engine
+            let route_req = RouteRequest {
+                query: step.task_description.clone(),
+                session_id: Uuid::new_v4().to_string(),
                 user_id,
-                &step.task_description,
-                policy.as_deref(),
-            )
-            .await
-            {
-                Ok(routed) => routed,
-                Err(reason) => {
-                    return bad_request(&format!(
-                        "step {idx}: the routing policy refused every agent for this task. {reason}"
-                    ));
-                }
+                file_parts: vec![],
+            };
+            // A routed agent is only usable if it actually has an endpoint. An
+            // agent row with an empty `url` (registered but never deployed, or
+            // a seed whose URL was never backfilled) used to hard-fail the
+            // whole request with a 400, which is what made *every* workflow
+            // uncreatable on such a fleet. Treat it exactly like a routing
+            // failure and fall through to the catalog fallback below.
+            let routed = match state.routing_engine.route(route_req, &state.db).await {
+                Ok(result) => match result.agent.url {
+                    Some(endpoint) if !endpoint.is_empty() => {
+                        Some((result.agent.id, result.agent.name, endpoint))
+                    }
+                    _ => None,
+                },
+                Err(_) => None,
             };
 
             match routed {
@@ -585,8 +507,7 @@ async fn create_maf(
     }
 
     // Derive name from first task description if not provided
-    let name = req
-        .name
+    let name = name
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -606,8 +527,7 @@ async fn create_maf(
     };
     let maf_json = serde_json::to_value(&maf_def).unwrap_or_default();
     let maf_json_str = maf_json.to_string();
-    let description = req
-        .description
+    let description = description
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
@@ -633,6 +553,67 @@ async fn create_maf(
         ),
         Err(e) => internal_err(e),
     }
+}
+
+#[derive(Deserialize)]
+struct FromInstructionRequest {
+    /// The full compound sentence, e.g. "translate hello to japanese then
+    /// email to jordan" — handed to the decomposer as-is.
+    instruction: String,
+}
+
+// ─── 2b. POST /maf/workflow/from-instruction ───────────────────────────────
+//
+// Splits one compound instruction into atomic sub-queries via the external
+// decomposer service (MODEL_API_URL/MODEL_APIKEY), then creates the workflow
+// exactly like `create_maf` — same routing-engine auto-assign per step, same
+// persisted `mafs.maf_json` shape. No LLM planner involved.
+
+async fn create_maf_from_instruction(
+    State(state): State<AppState>,
+    claims: Claims,
+    Json(req): Json<FromInstructionRequest>,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&claims) {
+        Some(id) => id,
+        None => return unauthorized(),
+    };
+
+    if req.instruction.trim().is_empty() {
+        return bad_request("instruction is required");
+    }
+
+    let decomposer_url = match &state.config.decomposer_api_url {
+        Some(u) => u.clone(),
+        None => {
+            return err_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "MODEL_API_URL is not configured on this server",
+            );
+        }
+    };
+    let decomposer = DecomposerClient::new(
+        state.http_client.clone(),
+        decomposer_url,
+        state.config.decomposer_api_key.clone(),
+    );
+
+    let sub_queries = match decomposer.decompose(&req.instruction).await {
+        Ok(qs) => qs,
+        Err(e) => {
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, &format!("decomposer: {e}"));
+        }
+    };
+
+    let steps = sub_queries
+        .into_iter()
+        .map(|task_description| CreateStepRequest {
+            task_description,
+            agent_id: None,
+        })
+        .collect();
+
+    create_maf_from_steps(&state, &claims, user_id, None, Some(req.instruction), steps).await
 }
 
 // ─── 3. GET /maf/workflow/{id} ─────────────────────────────────────────────
@@ -685,9 +666,6 @@ async fn update_maf(
             return bad_request("steps must not be empty");
         }
 
-        // Resolved once here rather than once per step inside route() — see
-        // create_maf's own note.
-        let policy = state.orchestrator_policy.routing_policy(&state.db).await;
         let mut resolved: Vec<MafStep> = Vec::with_capacity(steps.len());
         for (idx, step) in steps.iter().enumerate() {
             if step.task_description.trim().is_empty() {
@@ -709,31 +687,25 @@ async fn update_maf(
                     Err(e) => return internal_err(e),
                 }
             } else {
-                // Auto-assign via routing engine — same helper as create_maf, so this stays in
-                // sync with it (this branch used to hard-400 on an empty endpoint instead of
-                // falling through to the catalog fallback like create_maf does, and never
-                // re-checked access on the routed result at all; both are now the same code).
-                // A policy refusal is propagated, not fallen back on — see the helper's docs.
-                let routed = match route_with_access_check(
-                    &state,
-                    &claims,
+                // Auto-assign via routing engine (same logic as create_maf)
+                let route_req = RouteRequest {
+                    query: step.task_description.clone(),
+                    session_id: Uuid::new_v4().to_string(),
                     user_id,
-                    &step.task_description,
-                    policy.as_deref(),
-                )
-                .await
-                {
-                    Ok(routed) => routed,
-                    Err(reason) => {
-                        return bad_request(&format!(
-                            "step {idx}: the routing policy refused every agent for this task. \
-                             {reason}"
-                        ));
-                    }
+                    file_parts: vec![],
                 };
-                match routed {
-                    Some(agent) => agent,
-                    None => {
+                match state.routing_engine.route(route_req, &state.db).await {
+                    Ok(result) => {
+                        let ep = result.agent.url.unwrap_or_default();
+                        if ep.is_empty() {
+                            return bad_request(&format!(
+                                "step {idx}: auto-assigned agent '{}' has no endpoint",
+                                result.agent.name
+                            ));
+                        }
+                        (result.agent.id, result.agent.name, ep)
+                    }
+                    Err(_) => {
                         let catalog = match fetch_user_agents(&state.db, user_id).await {
                             Ok(v) => v,
                             Err(e) => return internal_err(e),
@@ -768,7 +740,7 @@ async fn update_maf(
 
             resolved.push(MafStep {
                 step_id: Uuid::new_v4(),
-                step_index: idx as i32,
+                step_index: step.step_index,
                 agent_id,
                 agent_name: name,
                 agent_endpoint: endpoint,
@@ -865,16 +837,38 @@ async fn delete_maf(
     }
 }
 
+#[derive(Deserialize, Default)]
+struct RunWorkflowRequest {
+    /// Data for this run only — spliced into step 0's task description
+    /// (see `nasiko_orchestrator::maf::executor::run_maf`) before planning,
+    /// so the same saved workflow shape can be re-run with different input
+    /// each time instead of baking content in at creation.
+    #[serde(default)]
+    content: Option<String>,
+}
+
 // ─── 6. POST /maf/workflow/{id}/run ───────────────────────────────────────
 
 async fn run_workflow(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     claims: Claims,
+    body: axum::body::Bytes,
 ) -> impl IntoResponse {
     let user_id = match parse_user_id(&claims) {
         Some(u) => u,
         None => return unauthorized(),
+    };
+
+    // Body is optional — existing callers post none at all, so an empty body
+    // means "no run-time content", not a parse error.
+    let content = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<RunWorkflowRequest>(&body) {
+            Ok(r) => r.content,
+            Err(e) => return bad_request(&format!("invalid request body: {e}")),
+        }
     };
 
     let maf = match fetch_maf(&state.db, id).await {
@@ -889,19 +883,15 @@ async fn run_workflow(
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
 
-    // Create execution record. `maf_json` durably captures the exact snapshot this run executes
-    // against — needed so a HITL resume can carry the SAME snapshot forward without re-fetching
-    // the mutable `mafs.maf_json`, which may have changed since. The in-flight Redis message below
-    // carries the identical string for the worker's normal, non-resume path — unchanged.
+    // Create execution record
     let (exec_id, exec_number): (Uuid, i64) = match sqlx::query_as(
-        r#"INSERT INTO maf_executions (maf_id, user_id, status, max_attempts, maf_json)
-           VALUES ($1, $2, 'pending', $3, $4::jsonb)
+        r#"INSERT INTO maf_executions (maf_id, user_id, status, max_attempts)
+           VALUES ($1, $2, 'pending', $3)
            RETURNING id, execution_number"#,
     )
     .bind(id)
     .bind(user_id)
     .bind(max_attempts)
-    .bind(&maf.maf_json)
     .fetch_one(&state.db)
     .await
     {
@@ -915,17 +905,22 @@ async fn run_workflow(
         Err(e) => return internal_err(format!("redis connection failed: {e}")),
     };
 
-    let enqueue: redis::RedisResult<String> = redis::cmd("XADD")
-        .arg(nasiko_orchestrator::maf::STREAM_KEY)
+    let mut xadd = redis::cmd("XADD");
+    xadd.arg("nasiko:maf:execute")
         .arg("*")
         .arg("execution_id")
         .arg(exec_id.to_string())
         .arg("maf_json")
         .arg(&maf.maf_json)
         .arg("user_id")
-        .arg(user_id.to_string())
-        .query_async(&mut redis_conn)
-        .await;
+        .arg(user_id.to_string());
+    // Omit the field entirely when there's no run-time content, rather than
+    // writing an empty string — keeps worker.rs's parse_job()/Job.content
+    // distinguishing "no content given" from "content given but empty".
+    if let Some(content) = &content {
+        xadd.arg("content").arg(content);
+    }
+    let enqueue: redis::RedisResult<String> = xadd.query_async(&mut redis_conn).await;
 
     if let Err(e) = enqueue {
         // Roll back the execution row so the caller knows it wasn't queued
@@ -969,17 +964,11 @@ async fn get_result(
     };
 
     match fetch_exec(&state.db, exec_id).await {
-        Ok(Some(row)) if row.user_id == user_id => {
-            let exec = exec_row_to_response(row);
-            match hitl_rows_for_execution(&state.hitl_store, exec_id, user_id).await {
-                Ok(hitl) => ok_json(
-                    StatusCode::OK,
-                    ExecWithHitlResponse { exec, hitl },
-                    "Execution result retrieved successfully",
-                ),
-                Err(e) => internal_err(e),
-            }
-        }
+        Ok(Some(row)) if row.user_id == user_id => ok_json(
+            StatusCode::OK,
+            exec_row_to_response(row),
+            "Execution result retrieved successfully",
+        ),
         Ok(Some(_)) => forbidden("not owned by caller"),
         Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),
@@ -1100,17 +1089,11 @@ async fn get_execution(
     };
 
     match fetch_exec(&state.db, id).await {
-        Ok(Some(row)) if row.user_id == user_id => {
-            let exec = exec_row_to_response(row);
-            match hitl_rows_for_execution(&state.hitl_store, id, user_id).await {
-                Ok(hitl) => ok_json(
-                    StatusCode::OK,
-                    ExecWithHitlResponse { exec, hitl },
-                    "Execution retrieved successfully",
-                ),
-                Err(e) => internal_err(e),
-            }
-        }
+        Ok(Some(row)) if row.user_id == user_id => ok_json(
+            StatusCode::OK,
+            exec_row_to_response(row),
+            "Execution retrieved successfully",
+        ),
         Ok(Some(_)) => forbidden("not owned by caller"),
         Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),

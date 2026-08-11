@@ -28,25 +28,28 @@ pub struct Config {
     /// Empty string → no prefix (Docker local mode).
     /// TODO: this needs to be removed.
     pub agent_image_registry: String,
-    /// Username for authenticating agent-image pulls from a private registry
-    /// (e.g. a private Docker Hub repo). `None` (default) means anonymous
-    /// pulls only — unchanged behavior for public images. Only meaningful
-    /// together with `agent_registry_password`; `DockerRuntime` treats a
-    /// pair where only one is set as "not configured."
-    pub agent_registry_username: Option<String>,
-    /// Password or access token paired with `agent_registry_username`. Never
-    /// logged, never returned in any API response.
-    pub agent_registry_password: Option<String>,
     /// Shared credential the in-cluster BuildKit build Job presents (HTTP
     /// Basic auth, username `"build-service"`) to push freshly-built agent
     /// images into the built-in OCI registry — see
     /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
     /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
     pub build_push_token: String,
+    /// Base URL of the Weave generation service the control plane proxies
+    /// `POST /api/weave/surface` to. The browser never talks to it directly —
+    /// it holds the internal token, and the token must not leave the server.
+    pub weave_base_url: String,
+    /// Shared secret Weave requires on `x-weave-internal-token`, same pattern
+    /// as `build_push_token`. Empty means generation is not configured, and
+    /// the route answers 503 rather than proxying without it.
+    pub weave_internal_token: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
     pub openai_model: String,
+    /// MAF "decompose one instruction into atomic sub-queries" service.
+    /// `None` disables `/maf/workflow/from-instruction` (503).
+    pub decomposer_api_url: Option<String>,
+    pub decomposer_api_key: Option<String>,
     pub router_model: String,
     pub capability_generator_model: String,
     /// Model for the MCP-connector description LLM fallback — only called when
@@ -60,9 +63,6 @@ pub struct Config {
     pub otel_sample_ratio: String,
     pub otel_collector_endpoint: String,
     pub otel_capture_content: bool,
-    /// OTLP/HTTP JSON base endpoint used only by the durable coding-agent
-    /// telemetry outbox. Unset leaves receipts pending and disables its worker.
-    pub coding_agent_otlp_endpoint: Option<String>,
     pub tempo_url: String,
     pub loki_url: String,
     /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
@@ -92,20 +92,6 @@ pub struct Config {
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
     pub flow_timeout_secs: i32,
-    /// How long a HITL pause (`hitl_requests`) stays answerable before the dispatcher's poll
-    /// loop expires it. `oss/hitl`'s own store applies this at row-creation time — see
-    /// `PgHitlStore::with_ttl_days`.
-    pub hitl_request_ttl_days: i64,
-    /// `nasiko_hitl::dispatcher::DispatcherConfig`'s five tunables (the `mcp_tool`-origin resume
-    /// dispatcher, `oss/hitl/src/dispatcher.rs`) — every comparable tunable elsewhere in this
-    /// codebase goes through this single `Config` struct, and `hitl_request_ttl_days` right above
-    /// is the same feature's own TTL knob, so these were the odd ones out as compile-time
-    /// constants (found in review).
-    pub hitl_resume_poll_interval_secs: u64,
-    pub hitl_resume_recovery_interval_secs: u64,
-    pub hitl_resume_lease_minutes: i64,
-    pub hitl_resume_max_attempts: u32,
-    pub hitl_resume_retry_delay_secs: u64,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
@@ -126,46 +112,7 @@ pub struct Config {
     pub nasiko_bff_url: Option<String>,
     pub router_shortlist_threshold: usize,
     pub router_shortlist_size: usize,
-    /// How many of the most recent chat messages the PACMS context selector
-    /// draws candidates from (a wide pool for the selector to choose a
-    /// budget-fitting subset from). See `SessionHistory::fetch_pacms`.
-    pub pacms_history_pool_size: usize,
-    /// Structurally compress tool results as the ReAct loop stores them
-    /// (PRD §9 IP-3). Shrinks what the loop carries, which also defers the
-    /// context-compaction cliff. On by default — gated by the agent's own
-    /// switch, so this is a fleet kill switch rather than an enabler.
-    pub react_compress_enabled: bool,
-    /// Skip tool results below this size.
-    pub react_compress_min_bytes: usize,
-    /// Structurally compress each history message before context selection
-    /// (PRD §9 IP-4). On by default — gated by the agent's own switch, so this
-    /// is a fleet kill switch rather than an enabler.
-    pub history_compress_enabled: bool,
-    /// Skip history messages below this size. A short turn is mostly prose,
-    /// which does not compress, so the attempt is pure cost.
-    pub history_compress_min_bytes: usize,
-    /// Token budget for a user on the PACMS "low" tier (`users.pacms_budget_level`).
-    pub pacms_budget_low: usize,
-    /// Token budget for a user on the PACMS "medium" tier — the default tier
-    /// for a user who hasn't picked one.
-    pub pacms_budget_medium: usize,
-    /// Token budget for a user on the PACMS "high" tier.
-    pub pacms_budget_high: usize,
-    /// How many of the most-recent messages in the pool are force-included
-    /// (PACMS `mandatory` set) regardless of relevance/coverage score, so the
-    /// immediate conversational thread is never dropped.
-    pub pacms_history_mandatory_recent: usize,
-    /// Item count for a user on the "low" tier (`users.pacms_budget_level`),
-    /// shared by the `topk` strategy's query/answer-pair count
-    /// (`SessionHistory::fetch_topk`) and the `lastk` strategy's recency
-    /// window (`SessionHistory::fetch`) — same tier the PACMS token budget
-    /// above reads, resolved via `PacmsBudgetLevel::k`.
-    pub context_k_low: usize,
-    /// Item count for a user on the "medium" tier — the default tier for a
-    /// user who hasn't picked one.
-    pub context_k_medium: usize,
-    /// Item count for a user on the "high" tier.
-    pub context_k_high: usize,
+    pub max_router_history_messages: usize,
     /// OpenAI-compatible model used for Stage 1 vector embeddings.
     /// Default: `text-embedding-3-small`. Stage 1 is skipped if `openai_api_key` is unset.
     pub embedding_model: String,
@@ -319,13 +266,6 @@ pub struct Config {
     /// Comma-separated Composio toolkit names to auto-register at first boot.
     /// SEED_TOOLKITS, default empty. Requires COMPOSIO_API_KEY to be set.
     pub seed_toolkits: Vec<String>,
-    /// MCP tool search mode: `semantic` (embedding cosine, default), `keyword`
-    /// (BM25 fallback), or `none` (eager fan-out, no search — rollback).
-    pub mcp_tool_search_mode: String,
-    /// Max tools returned by query-aware `tools/list`.
-    pub mcp_tool_search_tool_limit: usize,
-    /// Max tools returned by the `nasiko_search_tools` meta-tool.
-    pub mcp_tool_search_meta_limit: usize,
 }
 
 impl Config {
@@ -355,17 +295,15 @@ impl Config {
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
-            agent_registry_username: std::env::var("AGENT_REGISTRY_USERNAME")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            agent_registry_password: std::env::var("AGENT_REGISTRY_PASSWORD")
-                .ok()
-                .filter(|s| !s.is_empty()),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
+            weave_base_url: env_or("WEAVE_BASE_URL", "http://localhost:8801"),
+            weave_internal_token: env_or("WEAVE_INTERNAL_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
             openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
+            decomposer_api_url: std::env::var("MODEL_API_URL").ok(),
+            decomposer_api_key: std::env::var("MODEL_APIKEY").ok(),
             router_model: env_or("ROUTER_MODEL", "gpt-4o-mini"),
             capability_generator_model: env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini"),
             mcp_description_model: env_or("MCP_DESCRIPTION_MODEL", "gpt-4o-mini"),
@@ -389,10 +327,6 @@ impl Config {
             )
             .map(|v| v == "true")
             .unwrap_or(true),
-            coding_agent_otlp_endpoint: std::env::var("CODING_AGENT_OTLP_ENDPOINT")
-                .ok()
-                .map(|value| value.trim_end_matches('/').to_owned())
-                .filter(|value| !value.is_empty()),
             tempo_url: env_or("TEMPO_URL", ""),
             loki_url: env_or("LOKI_URL", ""),
             // Enabled only when BOTH backends are explicitly configured; a
@@ -407,22 +341,6 @@ impl Config {
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
-            hitl_request_ttl_days: env_parse("HITL_REQUEST_TTL_DAYS", 7),
-            // Defaults match `nasiko_hitl::dispatcher::DispatcherConfig::default()` exactly, so
-            // an unset env var changes nothing.
-            hitl_resume_poll_interval_secs: env_parse("HITL_RESUME_POLL_INTERVAL_SECS", 5),
-            hitl_resume_recovery_interval_secs: env_parse(
-                "HITL_RESUME_RECOVERY_INTERVAL_SECS",
-                10 * 60,
-            ),
-            // Must outlast one whole delivery, not one request: the MCP resume dispatcher holds
-            // its claim across every in-process retry (3 attempts x the notifier's 300s timeout
-            // + backoff ~= 15 min). At the old default of 2 the recovery sweep quarantined
-            // deliveries that were still in flight. `DispatcherConfig::effective_lease_minutes`
-            // enforces the floor regardless, so this default only keeps the two in agreement.
-            hitl_resume_lease_minutes: env_parse("HITL_RESUME_LEASE_MINUTES", 16),
-            hitl_resume_max_attempts: env_parse("HITL_RESUME_MAX_ATTEMPTS", 3),
-            hitl_resume_retry_delay_secs: env_parse("HITL_RESUME_RETRY_DELAY_SECS", 2),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")
@@ -436,18 +354,7 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
-            pacms_history_pool_size: env_parse("PACMS_HISTORY_POOL_SIZE", 150),
-            react_compress_enabled: env_parse("TOKEN_COMPRESS_TOOL_RESULTS", true),
-            react_compress_min_bytes: env_parse("TOKEN_COMPRESS_TOOL_RESULTS_MIN_BYTES", 2048),
-            history_compress_enabled: env_parse("TOKEN_COMPRESS_HISTORY", true),
-            history_compress_min_bytes: env_parse("TOKEN_COMPRESS_HISTORY_MIN_BYTES", 2048),
-            pacms_budget_low: env_parse("PACMS_BUDGET_LOW", 500),
-            pacms_budget_medium: env_parse("PACMS_BUDGET_MEDIUM", 1000),
-            pacms_budget_high: env_parse("PACMS_BUDGET_HIGH", 5000),
-            pacms_history_mandatory_recent: env_parse("PACMS_HISTORY_MANDATORY_RECENT", 3),
-            context_k_low: env_parse("CONTEXT_K_LOW", 1),
-            context_k_medium: env_parse("CONTEXT_K_MEDIUM", 5),
-            context_k_high: env_parse("CONTEXT_K_HIGH", 20),
+            max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
@@ -545,9 +452,6 @@ impl Config {
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .collect(),
-            mcp_tool_search_mode: env_or("MCP_TOOL_SEARCH_MODE", "semantic"),
-            mcp_tool_search_tool_limit: env_parse("MCP_TOOL_SEARCH_TOOL_LIMIT", 15),
-            mcp_tool_search_meta_limit: env_parse("MCP_TOOL_SEARCH_META_LIMIT", 10),
         })
     }
 
