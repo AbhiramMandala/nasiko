@@ -7,17 +7,11 @@ import "/common/components/app-modal.js";
 import "/common/components/app-module-nav.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
+import "/common/components/app-card.js";
 
 // your-agents-page.css is <link>ed by the host page, not imported here: a sheet
 // pulled in by this module only exists once the module does, which is too late
 // to style the static shell the page paints before then (see web/your-agents.html).
-
-function statusClass(status) {
-  if (status === "running") return "is-running";
-  if (status === "error" || status === "failed") return "is-error";
-  if (status === "deploying" || status === "starting") return "is-pending";
-  return "is-stopped";
-}
 
 function parseImageTag(image) {
   if (!image) return { name: "", version: "" };
@@ -247,46 +241,39 @@ class YourAgentsPage extends HTMLElement {
         const name = a.display_name || a.name;
         const isRunning = a.status === "running";
         const isError = a.status === "error" || a.status === "failed";
+        const isPending = a.status === "deploying" || a.status === "starting";
+        // Maps to <app-card variant>: running -> the green "active" accent,
+        // error/failed -> the red "error" body, deploying/starting -> the
+        // brand "setting-up" accent (genuinely mid-provisioning), everything
+        // else (stopped) -> "normal" — no accent bar, same as nasiko_ui's
+        // NasikoCard default.
+        const variant = isError ? "error" : isRunning ? "active" : isPending ? "setting-up" : "normal";
         const { version: imgVersion } = parseImageTag(a.image);
         const version = a.version || imgVersion;
-        const allTags = a.tags || [];
-        const shownTags = allTags.slice(0, 2);
-        const extraTags = allTags.length - shownTags.length;
-        const tagsHtml =
-          shownTags.map((t) => `<span class="tag">${this.#esc(t)}</span>`).join("") +
-          (extraTags > 0 ? `<span class="tag tag--more">+${extraTags}</span>` : "");
+        const tags = (a.tags || []).map((t) => ({ label: t }));
+
+        const footerButtonsHtml = isRunning
+          ? `
+            <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${this.#escAttr(a.name)}" aria-label="Restart ${this.#escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
+            <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${this.#escAttr(a.name)}" aria-label="Stop ${this.#escAttr(name)}" title="Stop">${icons.square("", 12)}</button>`
+          : `<button type="button" slot="footer" class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" data-image="${this.#escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>`;
 
         return `
-        <div class="agent-card${isError ? " agent-card--error" : ""}">
-          <div class="agent-card-top">
-            <span class="status-dot ${statusClass(a.status)}" title="${this.#esc(a.status)}"></span>
-            <a class="agent-card-name" href="/agent-card.html?id=${this.#escAttr(a.id)}">${this.#esc(name)}</a>
-            ${version ? `<span class="agent-card-version">v${this.#esc(String(version).replace(/^v/, ""))}</span>` : ""}
-          </div>
-          ${tagsHtml ? `<div class="agent-card-tags">${tagsHtml}</div>` : ""}
-          ${
-            isError
-              ? `<div class="agent-card-error"><span class="agent-card-error-title">Agent failed</span>Container exited with an error. <a href="/flows.html?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a></div>`
-              : a.description
-                ? `<div class="agent-card-desc">${this.#esc(a.description)}</div>`
-                : ""
-          }
-          <div class="agent-card-actions">
-            ${
-              isRunning
-                ? `
-              <button class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${this.#escAttr(a.name)}" aria-label="Restart ${this.#escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
-              <button class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${this.#escAttr(a.name)}" aria-label="Stop ${this.#escAttr(name)}" title="Stop">${icons.square("", 12)}</button>
-            `
-                : `
-              <button class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" data-image="${this.#escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>
-            `
-            }
-            <button class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" aria-label="Delete ${this.#escAttr(name)}" title="Delete ${this.#escAttr(name)}">
-              ${icons.trash("", 14)}
-            </button>
-          </div>
-        </div>
+        <app-card
+          card-title="${this.#escAttr(name)}"
+          ${version ? `version="v${this.#escAttr(String(version).replace(/^v/, ""))}"` : ""}
+          variant="${variant}"
+          href="/agent-card.html?id=${this.#escAttr(a.id)}"
+          ${isError ? `error-title="Agent failed" error-body="Container exited with an error."` : ""}
+          ${!isError && a.description ? `description="${this.#escAttr(a.description)}"` : ""}
+          ${tags.length ? `tags="${this.#escAttr(JSON.stringify(tags))}"` : ""}
+        >
+          ${isError ? `<a slot="footer" data-action="view-logs" href="/flows.html?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
+          ${footerButtonsHtml}
+          <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" aria-label="Delete ${this.#escAttr(name)}" title="Delete ${this.#escAttr(name)}">
+            ${icons.trash("", 14)}
+          </button>
+        </app-card>
       `;
       })
       .join("");

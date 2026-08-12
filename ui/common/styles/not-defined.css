@@ -40,6 +40,19 @@ app-grid:not(:defined) {
 }
 
 /* Content placeholders */
+/* app-card — the unified entity-card primitive (mirrors nasiko_ui's
+   NasikoCard). Reserves the sand-well plane + hairline border so pages that
+   render it directly (no page-level .pre-card skeleton) don't shift on
+   upgrade. */
+app-card:not(:defined) {
+  display: block;
+  min-height: 140px;
+  background: var(--bg-group);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--r-8);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+
 app-stat-card:not(:defined) {
   display: block;
   flex: 1;
@@ -138,6 +151,7 @@ voice-input:not(:defined) {
 */
 
 @media (prefers-reduced-motion: reduce) {
+  app-card:not(:defined),
   app-stat-card:not(:defined),
   app-skeleton:not(:defined),
   smart-table:not(:defined) {
