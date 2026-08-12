@@ -1,5 +1,7 @@
 import styles from './sessions-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
+import { showToast } from '../utils/toast.js';
+import { userMessage } from '../core/errors.js';
 import './app-button.js';
 import './app-module-nav.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -114,7 +116,6 @@ class SessionsPage extends HTMLElement {
     } catch {
       // A failed "load more" must not discard the pages already on screen.
       if (more) {
-        const { showToast } = await import('/common/utils/toast.js');
         showToast('Could not load more sessions.');
         return;
       }
@@ -287,14 +288,19 @@ class SessionsPage extends HTMLElement {
     }
     if (card) card.style.opacity = '0.4';
     try {
-      if (window.deleteSession) {
-        await window.deleteSession(sessionId);
-      }
+      // No `if (window.deleteSession)` guard. That guard is why this button used
+      // to lie: the function was defined only in sessions.preview.js, so in the
+      // browser the branch was skipped, the row was removed locally, nothing was
+      // sent, and the session came back on reload. If the data function is
+      // missing we now fail — and the user sees why.
+      await window.deleteSession(sessionId);
       this.#sessions = this.#sessions.filter(s => s.session_id !== sessionId);
       this.#obsStats.delete(sessionId);
       this.#applyFilter();
-    } catch {
+    } catch (err) {
       if (card) card.style.opacity = '1';
+      console.error('[sessions-page] delete failed', err);
+      showToast(userMessage(err, 'Could not delete that session.'));
     }
   }
 

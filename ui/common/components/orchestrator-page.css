@@ -63,10 +63,6 @@
     transition: margin-bottom 0.3s;
     contain: layout style;
   }
-  .input-wrap voice-input:not(:defined) {
-    display: block;
-    height: 88px;
-  }
   /* ── Messages area ───────────────────────────────────────────────────── */
   .messages {
     width: min(100%, var(--orch-column-w));

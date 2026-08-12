@@ -3,7 +3,10 @@
  *
  * @element smart-table
  * @attr {number} limit - Rows per page (default: 10)
- * @attr {string} data-fn - Name of `window[data-fn](query, page, limit)` async function returning `{ items, total }`
+ * @attr {string} data-fn - Name of a registered data source (see core/data-sources.js),
+ *   called as `(query, page, limit, { signal })` and returning `{ data, total }` — or a bare
+ *   array. NOTE: `{ items, total }` is NOT read and never was, despite this line saying so
+ *   until now; the code has always read `response.data`. `page` is 1-based.
  * @attr {string} search-placeholder - Placeholder text for the search input
  * @attr {boolean} search - Show the search input
  * @attr {string} detail - CSS selector or element name to render a detail panel on row click
@@ -16,6 +19,7 @@ import '/common/components/app-modal.js';
 
 
 import { createEventTracker, debounce } from '../utils/data-component-utils.js';
+import { resolveOptional as resolveDataSource } from '../core/data-sources.js';
 import styles from './smart-table.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -167,9 +171,27 @@ export class SmartTable extends HTMLElement {
 
   async refresh() {
     if (!this.dataFn && this.#dataFnName) {
-      this.dataFn = window[this.#dataFnName] || null;
+      this.dataFn = resolveDataSource(this.#dataFnName) || null;
     }
-    if (!this.dataFn) return;
+    // Resolution is deliberately lazy and retried on every refresh — that is what
+    // lets a late-loading service module recover, and what makes a page-scoped
+    // override take effect. What changed is the failure branch: returning
+    // silently here was the single most common failure mode in this UI, and it
+    // was invisible — a permanent skeleton with nothing in the console. It is how
+    // `window.deleteSession` went unnoticed. Now it says so, on screen.
+    if (!this.dataFn) {
+      this.#showError(
+        this.#dataFnName
+          ? `No data source named "${this.#dataFnName}".`
+          : 'This table has no data-fn attribute.',
+      );
+      console.error(
+        `[smart-table] unresolved data-fn "${this.#dataFnName}" — register it with ` +
+          `dataSources.registerAll({ ${this.#dataFnName}: … }) in the page's service module. ` +
+          `Check the <script> order too: data functions must be defined before the page component.`,
+      );
+      return;
+    }
 
     this.#hideError();
     this.#showSkeletons();

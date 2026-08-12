@@ -408,21 +408,42 @@ class McpPage extends HTMLElement {
     }
   }
 
+  /** @type {number|null} */
+  #oauthPoll = null;
+
+  #onWindowFocus = () => this.#load();
+
+  /**
+   * mcp-page was the only component in the polling inventory with a timer and no
+   * teardown at all.
+   */
+  disconnectedCallback() {
+    clearInterval(this.#oauthPoll);
+    this.#oauthPoll = null;
+    window.removeEventListener('focus', this.#onWindowFocus);
+  }
+
   /** Connected → refresh; OAuth URL → popup, poll until it closes then reload. */
   #applyConnectOutcome(d) {
     const url = d?.oauth_url || d?.authorization_url;
     if (url) {
       const popup = window.open(url, 'mcp-oauth', 'width=600,height=720');
       if (popup) {
-        const poll = setInterval(() => {
+        // Tracked so teardown can clear it. The interval previously stopped only
+        // when the popup was actually closed, so navigating away with it still
+        // open left a 500ms timer calling #load() — a fetch plus a render into
+        // detached DOM — for as long as the tab lived.
+        clearInterval(this.#oauthPoll);
+        this.#oauthPoll = setInterval(() => {
           if (popup.closed) {
-            clearInterval(poll);
+            clearInterval(this.#oauthPoll);
+            this.#oauthPoll = null;
             this.#load();
           }
         }, 500);
       } else {
-        // Popup blocked — fall back to focus listener
-        window.addEventListener('focus', () => this.#load(), { once: true });
+        // Popup blocked — fall back to a one-shot focus listener, also tracked.
+        window.addEventListener('focus', this.#onWindowFocus, { once: true });
       }
       return;
     }

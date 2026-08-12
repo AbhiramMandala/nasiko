@@ -19,6 +19,9 @@ export default class AutoComplete extends HTMLElement {
   #dd = null;              // DropdownController
   #filteredOptions = [];
   #filterFn = null;
+  #onDocumentClick = (e) => {
+    if (!this.contains(e.target)) this.#dd?.close();
+  };
 
   static get observedAttributes() {
     return ['placeholder', 'aria-label', 'filter-function'];
@@ -30,6 +33,10 @@ export default class AutoComplete extends HTMLElement {
     this.#render();
     this.#setupEvents();
     this.#resolveFilterFn();
+  }
+
+  disconnectedCallback() {
+    document.removeEventListener('click', this.#onDocumentClick);
   }
 
   attributeChangedCallback(name, _old, val) {
@@ -98,9 +105,11 @@ export default class AutoComplete extends HTMLElement {
       }
     });
 
-    document.addEventListener('click', (e) => {
-      if (!this.contains(e.target)) this.#dd.close();
-    });
+    // Named, stored handler. An inline closure here was not merely un-removed,
+    // it was un-removable: nothing held a reference to it, so every auto-complete
+    // ever attached stayed subscribed to document clicks for the life of the
+    // page, retaining the element and its option list.
+    document.addEventListener('click', this.#onDocumentClick);
 
     this.#inputEl.addEventListener('keydown', (e) => {
       switch (e.key) {

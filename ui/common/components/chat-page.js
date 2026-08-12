@@ -1,4 +1,5 @@
 import { apiFetch } from '/common/services/api.js';
+import { isAbort, userMessage } from '/common/core/errors.js';
 import "./voice-input.js";
 import "./agent-steps.js";
 import { icons } from '/common/utils/icons.js';
@@ -21,6 +22,12 @@ class ChatPage extends HTMLElement {
   #agentId = null;
   #agentLabel = null;
   #lastUserContent = null;
+
+  /**
+   * Aborted on disconnect — see orchestrator-page for the same reasoning: an
+   * in-flight A2A stream used to outlive the element that started it.
+   */
+  #abort = new AbortController();
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -54,6 +61,10 @@ class ChatPage extends HTMLElement {
       `;
       this.#loadMessages(messagesEl);
     }
+  }
+
+  disconnectedCallback() {
+    this.#abort.abort();
   }
 
   #render() {
@@ -240,10 +251,15 @@ class ChatPage extends HTMLElement {
         },
       };
 
+      // `timeout: 0` disables the API funnel's default 30s deadline — this is a
+      // long-lived stream, not a request/response. `signal` lets
+      // disconnectedCallback cut it off on navigation.
       const res = await apiFetch("/orchestrator/a2a", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        timeout: 0,
+        signal: this.#abort.signal,
       });
       if (!res.ok) {
         const errBody = await res.text();
@@ -257,12 +273,20 @@ class ChatPage extends HTMLElement {
       }
 
       pendingRow.remove();
-      const { text: reply, traceId, usage } = await this.#readA2aStream(res, messagesEl);
+      const { text: reply, traceId, usage, aborted } = await this.#readA2aStream(res, messagesEl);
+      // An aborted stream returns normally (it is a cancellation, not a
+      // failure), so this guard is what stops a half-received reply from being
+      // written to the server as if the agent had finished saying it.
+      if (aborted) return;
       this.#persistMessage(this.#sessionId, "assistant", reply, { traceId, usage });
       this.#updateRetryButtons(messagesEl);
     } catch (err) {
       pendingRow.remove();
-      this.#appendMsg(messagesEl, "assistant", `Error: ${err.message}`);
+      // A cancellation is us, not a failure — see orchestrator-page. Also don't
+      // persist a partial reply: the stream was cut, not completed.
+      if (!isAbort(err)) {
+        this.#appendMsg(messagesEl, "assistant", `Error: ${userMessage(err)}`);
+      }
       this.#updateRetryButtons(messagesEl);
     } finally {
       chatInput.setLoading(false);
@@ -389,6 +413,7 @@ class ChatPage extends HTMLElement {
       showContent(renderMarkdown(text));
     });
     const out = await readA2aStream(res, {
+      signal: this.#abort.signal,
       onReply: renderReply,
       // Working prose goes to the activity timeline, not into the message
       // body: it is the agent's tool activity, and rendering it there as a
@@ -435,7 +460,7 @@ class ChatPage extends HTMLElement {
     `;
     streamArea.appendChild(actions);
 
-    return { text: fullText, traceId: out.traceId, usage: out.usage };
+    return { text: fullText, traceId: out.traceId, usage: out.usage, aborted: out.aborted };
   }
 
   // Opens the full Observability session view with this turn's trace

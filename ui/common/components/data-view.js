@@ -3,7 +3,9 @@
  *
  * @element data-view
  * @attr {number} limit - Items per page (default: 10)
- * @attr {string} data-fn - Name of `window[data-fn](query, page, limit)` async function that returns `{items, total}`
+ * @attr {string} data-fn - Name of a registered data source (see core/data-sources.js),
+ *   called as `(query, page, limit, { signal })` and returning `{ data, total }` — or a bare
+ *   array. NOTE: `{ items, total }` is NOT read and never was; the code reads `response.data`.
  * @attr {string} group-fn - Name of `window[group-fn](items)` function for grouping rows
  * @attr {string} item-component - Custom element tag name used to render each row
  * @attr {string} search-placeholder - Placeholder text for the search input
@@ -13,9 +15,10 @@
  * @method refresh() - Re-fetch data and re-render (preserves current page and query)
  * @fires loading-start - Fires before each fetch; `detail: { message }`
  * @fires loading-end - Fires after each fetch; `detail: { message }`
- * @note `window[data-fn]` is called with `(searchQuery, page, limit)` and must return `{ items, total }`.
+ * @note The data source is called with `(searchQuery, page, limit)` and must return `{ data, total }`.
  */
 import { createEventTracker, debounce } from '../utils/data-component-utils.js';
+import { resolveOptional as resolveDataSource } from '../core/data-sources.js';
 import { icons } from '../utils/icons.js';
 import './app-skeleton.js';
 import styles from './data-view.css' with { type: 'css' };
@@ -177,12 +180,29 @@ export class DataView extends HTMLElement {
 
   async refresh() {
     if (!this.dataFn && this.#dataFnName) {
-      this.dataFn = window[this.#dataFnName] || null;
+      this.dataFn = resolveDataSource(this.#dataFnName) || null;
     }
     if (!this.groupFn && this.#groupFnName) {
-      this.groupFn = window[this.#groupFnName] || null;
+      this.groupFn = resolveDataSource(this.#groupFnName) || null;
     }
-    if (!this.dataFn) return;
+    // Resolution is deliberately lazy and retried on every refresh — that is what
+    // lets a late-loading service module recover, and what makes a page-scoped
+    // override take effect. What changed is the failure branch: returning
+    // silently here was the single most common failure mode in this UI, and it
+    // was invisible — a permanent skeleton with nothing in the console. It is how
+    // `window.deleteSession` went unnoticed. Now it says so, on screen.
+    if (!this.dataFn) {
+      this.showError(
+        this.#dataFnName
+          ? `No data source named "${this.#dataFnName}".`
+          : 'This view has no data-fn attribute.',
+      );
+      console.error(
+        `[data-view] unresolved data-fn "${this.#dataFnName}" — register it with ` +
+          `dataSources.registerAll({ ${this.#dataFnName}: … }) in the page's service module.`,
+      );
+      return;
+    }
 
     this.hideError();
     this.#showSkeletons();

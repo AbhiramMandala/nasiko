@@ -188,6 +188,10 @@
 
   --r-0: 0px; --r-4: 4px; --r-6: 6px; --r-8: 8px;
   --r-10: 10px; --r-12: 12px; --r-16: 16px; --r-40: 40px;
+  /* Pill/circle. Was referenced as --radius-full in three places and declared
+     nowhere, so not-defined.css's skeleton avatar computed border-radius:0 —
+     a square placeholder for a round element. */
+  --r-full: 999px;
 
   /* border_width.dart defines hairline(0.5)/thin(1)/base(2)/thick(3)/
      thicker(4) — only thin/base existed here. --bw-4 added for the first
@@ -197,9 +201,43 @@
 
   --icon-xs: 16px; --icon-s: 20px; --icon-m: 24px; --icon-l: 28px;
 
+  /* ==== DS line height / weight ====
+     Neither family existed, so every leading and weight in the component tree
+     was a literal — which is why a type-scale change could not be mechanical. */
+  --lh-none: 1;
+  --lh-tight: 1.2;
+  --lh-snug: 1.35;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.65;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* ==== DS stacking order ====
+     Stacking was eight hand-picked values from 0 to 10000 spread across five
+     files, so "does this sit above that?" could only be answered by grepping.
+     Named steps, deliberately sparse so there is room to insert between them.
+     app-toast sits above app-modal on purpose: a toast confirming an action
+     taken inside a dialog has to be readable while the dialog is still open. */
+  --z-base: 0;
+  --z-raised: 1;
+  --z-sticky: 100;
+  --z-dropdown: 200;
+  --z-overlay: 800;
+  --z-modal: 1000;
+  --z-toast: 1100;
+  --z-tooltip: 1200;
+
   /* ==== DS elevation (flat by default — borders carry depth) ==== */
   --shadow-card-hover: 0 2px 16px rgba(0, 0, 0, 0.10);
   --shadow-menu:       0 4px 16px rgba(0, 0, 0, 0.08);
+
+  /* Darkest neutral. mcp-page.css referenced --neutral-950 with an inline
+     `#0c0c0c` fallback because the ramp stopped at 900; declaring it removes the
+     last raw hex from that file's dark-mode path. */
+  --neutral-950: #0c0c0c;
 
   /* ==== Legacy aliases → DS ==== */
   --color-primary: var(--fg-brand);
@@ -257,6 +295,7 @@
   --radius-sm: var(--r-4);
   --radius-md: var(--r-8);
   --radius-lg: var(--r-12);
+  --radius-full: var(--r-full);
 
   /* Shadows — DS is flat; keep the legacy ramp shallow */
   --shadow-sm: light-dark(0 1px 2px 0 rgba(0, 0, 0, 0.04),
@@ -333,7 +372,7 @@ body {
    itself, so page components sit on the white surface directly. Desktop gets
    the floating white card in the @media block below. */
 @media (max-width: 1023.98px) {
-  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette) {
+  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(div):not(dialog) {
     background: var(--color-bg-surface);
     flex: 1;
   }
@@ -396,7 +435,7 @@ main.app-shell {
   /* Content card — the page component floats as the single white r8 card on
      the ink shell (floating chrome like toasts, dialogs, and the kb palette
      are plain divs / dedicated tags and are opted out). */
-  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(main):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette),
+  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(main):not(div):not(dialog),
   body:has(> app-header) > main {
     background: var(--color-bg-surface);
     border: none;

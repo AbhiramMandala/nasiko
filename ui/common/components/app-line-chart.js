@@ -162,7 +162,7 @@ export class AppLineChart extends HTMLElement {
     if (!svg) return;
 
     if (this.#error) {
-      svg.innerHTML = `<text x="200" y="80" text-anchor="middle" dominant-baseline="middle" fill="var(--color-error-text,currentColor)" font-size="10">${this.#esc(this.#error)}</text>`;
+      svg.innerHTML = `<text x="200" y="80" text-anchor="middle" dominant-baseline="middle" fill="var(--fg-error,currentColor)" font-size="10">${this.#esc(this.#error)}</text>`;
       return;
     }
 

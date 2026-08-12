@@ -115,6 +115,15 @@ window.fetchAgents = async (query, page, limit) => {
 
 // `/chat/sessions` is keyset-paginated: pass the `next_cursor` from the previous
 // response to get the following page. Returns {data, has_more, next_cursor}.
+// Session deletion. This existed as a server route (DELETE /chat/sessions/{id},
+// oss/server/src/chat/routes.rs:28) and as a delete button in the UI, but the
+// function connecting them was never written outside a preview fixture — so the
+// row disappeared and nothing was sent. See sessions-page.js#deleteSession.
+window.deleteSession = async (sessionId) => {
+  if (!sessionId) throw new Error('deleteSession requires a session id');
+  await apiFetch(`/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+};
+
 window.fetchSessions = async (_query, limit = 25, cursor = null) => {
   const params = new URLSearchParams({ limit });
   if (cursor) params.set('cursor', cursor);

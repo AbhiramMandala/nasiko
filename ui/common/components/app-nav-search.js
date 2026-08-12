@@ -263,6 +263,18 @@ export class AppNavSearch extends HTMLElement {
 
   #onResize = () => { if (this.#dialog?.open) this.#position(); };
 
+  /**
+   * `close()` already detaches the resize listener and clears the debounce, so
+   * the leak window is narrow — but real: this element lives inside app-header on
+   * all 37 pages, and removing it while the dialog is open (a workspace switch, a
+   * re-render of the header) left a window listener holding this component, and a
+   * pending debounce timer that would fire into detached DOM.
+   */
+  disconnectedCallback() {
+    window.removeEventListener('resize', this.#onResize);
+    clearTimeout(this.#debounceTimer);
+  }
+
   /** Anchor the panel under the topbar search field, mockup-style; fall
    *  back to the top-centered CSS position when no anchor is rendered. */
   #position() {
@@ -302,7 +314,11 @@ export class AppNavSearch extends HTMLElement {
     settle(call('fetchAgents', '', 1, 50), (r) => { this.#data.agents = rowsOf(r); });
     settle(call('fetchWorkflows', 50), (r) => { this.#data.workflows = rowsOf(r); });
     settle(call('fetchAllExecutions', 50), (r) => { this.#data.executions = rowsOf(r); });
-    settle(call('fetchSessions', '', 1, 50), (r) => { this.#data.sessions = rowsOf(r); });
+    // `/chat/sessions` is keyset-paginated, so fetchSessions is
+    // (query, limit, cursor) — NOT the (query, page, limit) triple the other
+    // sources use. Calling it positionally as (…, 1, 50) bound limit=1 and
+    // cursor=50, so this section showed at most one row against a bogus cursor.
+    settle(call('fetchSessions', '', 50), (r) => { this.#data.sessions = rowsOf(r); });
     settle(call('fetchMcpConnectors'), (r) => {
       const d = r?.data ?? r ?? {};
       this.#data.connectors = [...(d.created_by_you || []), ...(d.shared_with_you || [])];

@@ -1,4 +1,5 @@
 import { apiFetch } from '/common/services/api.js';
+import { isAbort, userMessage } from '/common/core/errors.js';
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
@@ -16,6 +17,13 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 class OrchestratorPage extends HTMLElement {
   #initialized = false;
   #sessionId = null;
+
+  /**
+   * Aborted on disconnect. Before this existed, navigating away mid-response
+   * left the A2A reader pulling frames and writing them into detached DOM for as
+   * long as the agent kept streaming.
+   */
+  #abort = new AbortController();
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -137,10 +145,15 @@ class OrchestratorPage extends HTMLElement {
           },
         };
 
+        // `timeout: 0` disables the API funnel's default 30s deadline — this is
+        // a long-lived stream, not a request/response. `signal` lets
+        // disconnectedCallback cut it off on navigation.
         const res = await apiFetch('/orchestrator/a2a', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          timeout: 0,
+          signal: this.#abort.signal,
         });
         if (!res.ok) throw new Error(await res.text());
 
@@ -151,11 +164,20 @@ class OrchestratorPage extends HTMLElement {
         // needed, unlike the agent chat page whose direct-agent path does not.
       } catch (err) {
         pendingRow.remove();
-        this.#appendMsg(messagesEl, 'assistant', `Error: ${err.message}`);
+        // A cancellation is us, not a failure: the element is being removed, so
+        // there is nobody to tell. Without this, navigating away mid-response
+        // painted "Error: The user aborted a request." into a dying page.
+        if (!isAbort(err)) {
+          this.#appendMsg(messagesEl, 'assistant', `Error: ${userMessage(err)}`);
+        }
       } finally {
         voiceInput.setLoading(false);
       }
     });
+  }
+
+  disconnectedCallback() {
+    this.#abort.abort();
   }
 
   #appendMsg(messagesEl, role, content, { usage = null, traceId = null } = {}) {
