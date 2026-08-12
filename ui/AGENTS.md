@@ -36,6 +36,49 @@ copying files — `common/` has exactly one copy in the repo.
 | `web/*.html` | One page per file, each a real URL — no client-side router |
 | `web/<pagename>.preview.js`, `web/.preview/` | Preview-only fixtures (see below) — never referenced by production pages |
 
+## Architecture
+
+`ARCHITECTURE.md` (next to this file) is the layer model and the dependency
+direction. The short version: **Application → Domain → Components → Design
+System → Platform, never upward.** A primitive that imports a domain service, or
+a shared component that reads `window.fetchAgents`, is a layering violation, not
+a shortcut.
+
+## Platform layer — use it, don't re-invent it
+
+`common/core`, `common/services` and `common/state` are the platform. These are
+now mandatory for new code:
+
+- **Extend `NasikoElement`** (`core/element.js`) for new components. It gives you
+  Lit templating (which escapes every interpolation, so no `#esc` helper), light
+  DOM + `@scope` styling via `static styleText`, and automatic teardown:
+  `this.listen()`, `this.interval()`, `this.timeout()`, `this.signal`,
+  `this.watch()`, `this.compute()`, `this.onTeardown()`. Register with
+  `defineElement('my-tag', MyClass)`.
+- **Declare dependencies, don't import them.** `static inject = { api: keys.api }`
+  resolves onto `this.api` before first render. Never
+  `import { fetchApi } from '/common/services/api.js'` in a component again —
+  that is what made component logic untestable without a whole page.
+- **Every request carries `this.signal`** and, where the deadline should be
+  disabled, `timeout: 0` (streams only). A stream without a signal is a leak: the
+  reader keeps pulling into detached DOM after the element is gone.
+- **Errors are typed.** Catch `ApiError` and switch on `err.code`; call
+  `this.report(err)` to surface it. `shouldReport()` already filters
+  cancellations and session expiry — do not toast those.
+- **List data comes from `listFetcher()`** (`services/query.js`) and always
+  returns `{ data, total }`. Register it with
+  `dataSources.registerAll({ fetchThings })` — never `window.fetchThings = …`.
+- **Cross-screen changes go through `publish()`** (`core/events.js`) using a name
+  declared in `EVENTS`, which also states the cache keys it invalidates.
+- **URL writes go through `setSearchParams()`** (`utils/url-policy.js`). Only
+  opaque values — IDs, enums, integers. Never a search term, a name, or anything
+  a human typed.
+- **In legacy (non-Lit) components**, import `escHtml`/`escAttr` from
+  `utils/escape.js`. Do not add another private `#esc`.
+
+Tests: `just test-ui` runs the platform-layer tests (`oss/ui/tests/`) with
+Node's built-in runner — no npm, no bundler.
+
 ## Component conventions
 
 - **Light DOM only** — no `attachShadow()`. Style isolation comes from CSS
