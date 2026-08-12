@@ -45,12 +45,6 @@ struct DeployRequest {
     env: std::collections::HashMap<String, String>,
     #[serde(default)]
     replicas: Option<u32>,
-    #[serde(default)]
-    writable: bool,
-    /// Container-side mount target for the writable volume (`--writable-path`).
-    /// `None` = `/workspace`. Implies `writable` when set.
-    #[serde(default)]
-    writable_path: Option<String>,
 }
 
 async fn deploy(
@@ -60,15 +54,6 @@ async fn deploy(
 ) -> impl IntoResponse {
     // Start with env from request (inline -e flags)
     let mut env = req.env;
-
-    // Used both for secret resolution below (when this name maps to an existing
-    // catalog agent) and to namespace the `--writable` memory subpath (see
-    // DeploymentSpec::owner_id) — the caller is the closest thing to an "owner"
-    // an ad-hoc, possibly-unclaimed image deploy has.
-    let owner_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
 
     // Resolve the catalog agent (if any) once — used for both secret resolution and
     // UUID-keying so this ad-hoc deploy converges with the upload/update/import paths.
@@ -90,6 +75,10 @@ async fn deploy(
 
     // Resolve vault + agent secrets (vault = base, agent = override, request = highest)
     if let Some(agent_id) = resolved_agent_id {
+        let owner_id = match claims.user_uuid() {
+            Ok(id) => id,
+            Err(e) => return e.into_response(),
+        };
         let resolved = resolve_full_env(&state, owner_id, agent_id).await;
         // resolved secrets are base; request env overrides
         for (k, v) in resolved {
@@ -135,11 +124,6 @@ async fn deploy(
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
-        // A path implies the mount — requiring both flags would make
-        // `--writable-path X` alone silently deploy without storage.
-        writable: req.writable || req.writable_path.is_some(),
-        writable_path: req.writable_path.clone(),
-        owner_id,
     };
     // Only a name that already maps to a registered catalog agent has an
     // `agents` row to scope a pull credential to (see pull_credentials'
@@ -333,10 +317,7 @@ async fn stop(
         Err(resp) => return resp,
     };
     match state.runtime.scale(&id, 0).await {
-        Ok(()) => {
-            record_lifecycle_status(&state, &name, "stopped").await;
-            StatusCode::OK.into_response()
-        }
+        Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
             tracing::error!(%e, %name, "stop: runtime error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -354,10 +335,7 @@ async fn start(
         Err(resp) => return resp,
     };
     match state.runtime.scale(&id, 1).await {
-        Ok(()) => {
-            record_lifecycle_status(&state, &name, "running").await;
-            StatusCode::OK.into_response()
-        }
+        Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
             tracing::error!(%e, %name, "start: runtime error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -393,43 +371,23 @@ async fn restart(
     // (which the sibling stop/start/scale/logs ops use) — without this, copying
     // the UUID `nasiko ps` prints into `nasiko restart <uuid>` 404'd even though
     // the identical UUID worked for `nasiko rm`.
-    #[derive(sqlx::FromRow)]
-    struct RestartAgentRow {
-        id: Uuid,
-        owner_id: Uuid,
-        image: Option<String>,
-        writable: bool,
-        writable_path: Option<String>,
-    }
-
-    let agent: Option<RestartAgentRow> = if let Ok(id) = name.parse::<Uuid>() {
-        sqlx::query_as(
-            "SELECT id, owner_id, image, writable, writable_path FROM agents WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten()
+    let agent: Option<(Uuid, Uuid, Option<String>)> = if let Ok(id) = name.parse::<Uuid>() {
+        sqlx::query_as("SELECT id, owner_id, image FROM agents WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
     } else {
-        sqlx::query_as(
-            "SELECT id, owner_id, image, writable, writable_path FROM agents WHERE name = $1",
-        )
-        .bind(&name)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten()
+        sqlx::query_as("SELECT id, owner_id, image FROM agents WHERE name = $1")
+            .bind(&name)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
     };
 
-    let Some(RestartAgentRow {
-        id: agent_id,
-        owner_id,
-        image,
-        writable,
-        writable_path,
-    }) = agent
-    else {
+    let Some((agent_id, owner_id, image)) = agent else {
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     };
 
@@ -489,11 +447,8 @@ async fn restart(
         image,
         vec![],
         env,
-        &state.config.agent_default_memory,
+        None,
         state.config.agent_max_replicas,
-        writable,
-        writable_path,
-        owner_id,
     );
     crate::agents::attach_pull_credential(
         &state.db,
@@ -549,18 +504,7 @@ async fn scale(
         Err(resp) => return resp,
     };
     match state.runtime.scale(&id, req.replicas).await {
-        Ok(()) => {
-            // Scaling to zero is what `stop` does, so it must leave the same
-            // status behind — otherwise `scale 0` parks a container that the
-            // catalog still advertises as running.
-            let status = if req.replicas == 0 {
-                "stopped"
-            } else {
-                "running"
-            };
-            record_lifecycle_status(&state, &name, status).await;
-            StatusCode::OK.into_response()
-        }
+        Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
             tracing::error!(%e, %name, "scale: runtime error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -614,65 +558,6 @@ async fn logs(
 /// filter, `deploy()`'s ad-hoc image path found the old deleted row, updated
 /// it in place instead of treating the name as unclaimed, and left the
 /// resulting running container permanently invisible to `nasiko ps`/`rm`.
-/// Persist a lifecycle status change to the catalog row and its deployment row.
-///
-/// `GET /api/agents` reports `agents.status` straight from the column
-/// (`catalog::routes`) with no runtime reconciliation, so a lifecycle op that
-/// only talks to the runtime leaves the catalog lying: stopping a container left
-/// it listed as running forever, and the UI's "Stopped" filter never matched it.
-///
-/// Awaited, not spawned like `destroy`'s deployment write: the UI refetches the
-/// agent list as soon as the request returns, and a detached write would race
-/// that refetch and hand back the pre-stop status.
-async fn record_lifecycle_status(state: &AppState, name: &str, status: &str) {
-    let Some(agent_id) = resolve_agent_id_by_name(state, name).await else {
-        return;
-    };
-    if let Err(e) = sqlx::query("UPDATE agents SET status = $2, updated_at = now() WHERE id = $1")
-        .bind(agent_id)
-        .bind(status)
-        .execute(&state.db)
-        .await
-    {
-        tracing::error!(%e, %name, %status, "failed to record agent status");
-    }
-    // `agent_deployments` is append-only history: `restart_deployment` and every
-    // update/upload path mark the current row `stopped` (by id) and INSERT a new
-    // one, so an agent owns one live row and N historical ones.
-    //
-    // That makes the two directions asymmetric, and they must not share a query:
-    //
-    // - Bringing an agent UP may only touch the newest row. An agent-wide sweep
-    //   would resurrect every historical row as `running`, which is not just a
-    //   smudged history — EE's crash guardian polls *every* row in
-    //   ('starting','running') (ee/server/src/crash_guardian.rs), so each stale
-    //   row becomes a phantom deployment it probes and can mark crashed.
-    // - Taking one DOWN sweeps the agent, matching `destroy` above. Nothing of
-    //   this agent's is running afterwards, so any row still claiming otherwise
-    //   is stale by definition and this converges it on reality — including rows
-    //   orphaned `running` by an earlier crash.
-    let sql = if status == "stopped" {
-        "UPDATE agent_deployments SET status = $2, updated_at = now()
-         WHERE agent_id = $1 AND status != $2"
-    } else {
-        "UPDATE agent_deployments SET status = $2, updated_at = now()
-         WHERE id = (
-             SELECT id FROM agent_deployments
-             WHERE agent_id = $1
-             ORDER BY created_at DESC
-             LIMIT 1
-         ) AND status != $2"
-    };
-    if let Err(e) = sqlx::query(sql)
-        .bind(agent_id)
-        .bind(status)
-        .execute(&state.db)
-        .await
-    {
-        tracing::error!(%e, %name, %status, "failed to record deployment status");
-    }
-}
-
 async fn resolve_agent_id_by_name(state: &AppState, name_or_id: &str) -> Option<Uuid> {
     if let Ok(id) = name_or_id.parse::<Uuid>() {
         return sqlx::query_scalar::<_, Uuid>(
