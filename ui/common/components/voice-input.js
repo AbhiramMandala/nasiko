@@ -18,7 +18,6 @@ import styles from './voice-input.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class VoiceInputForm extends HTMLElement {
-  #loading = false;
   constructor() {
     super();
     this.voiceRecorder = new VoiceRecorder();
@@ -89,7 +88,7 @@ export class VoiceInputForm extends HTMLElement {
             ${this.getMicIcon()}
           </button>
 
-          <button type="submit" class="submit-icon" id="submitBtn" title="Send (Enter)">
+          <button type="submit" class="submit-icon" id="submitBtn" title="Send (Ctrl+Enter)">
             ${icons.arrowUp("btn-icon", 14)}
           </button>
         </div>
@@ -116,7 +115,7 @@ export class VoiceInputForm extends HTMLElement {
     this.submitBtn.addEventListener("click", () => this.handleSubmit());
 
     this.textarea.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
         this.handleSubmit();
@@ -145,7 +144,6 @@ export class VoiceInputForm extends HTMLElement {
   }
 
   setState(state) {
-    this.#loading = state === "loading";
     this.wrapper.dataset.state = state;
     this.recordBtn.dataset.state = state;
 
@@ -201,7 +199,6 @@ export class VoiceInputForm extends HTMLElement {
   }
 
   handleSubmit() {
-    if (this.#loading) return;
     const query = this.textarea.value.trim();
     if (!query && this.attachedFiles.length === 0) return;
     const files = [...this.attachedFiles];

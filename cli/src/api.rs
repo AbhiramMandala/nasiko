@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, bail};
-use nasiko_types::{CodingAgentEventBatchRequest, CodingAgentEventBatchResponse};
 use nasiko_utils::display::opt_dash;
 use serde::{Deserialize, Serialize};
 use tabled::Tabled;
@@ -87,28 +86,17 @@ pub struct Client {
 impl Client {
     pub fn from_active_cluster() -> Result<Self> {
         let (_, entry) = config::active_cluster()?;
-        Ok(Self::from_cluster_entry(&entry))
-    }
-
-    pub(crate) fn from_cluster_entry(entry: &config::ClusterEntry) -> Self {
-        Self::from_cluster_entry_with_timeout(entry, None)
-    }
-
-    pub(crate) fn from_cluster_entry_with_timeout(
-        entry: &config::ClusterEntry,
-        timeout: Option<std::time::Duration>,
-    ) -> Self {
         let agent = Agent::new_with_config(
             ureq::config::Config::builder()
-                .timeout_global(timeout)
+                .timeout_global(None)
                 .http_status_as_error(false)
                 .build(),
         );
-        Self {
+        Ok(Self {
             agent,
             base_url: entry.url.clone(),
-            token: entry.token.clone(),
-        }
+            token: entry.token,
+        })
     }
 
     /// Build a client against an arbitrary base URL (mock server in tests),
@@ -251,22 +239,6 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
-    /// Authenticated JSON POST without terminal status output. Credential helpers
-    /// must write only the credential itself to stdout.
-    pub(crate) fn post_json_quiet<T: for<'de> Deserialize<'de>, B: Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T> {
-        let url = self.api_url(path);
-        let mut resp = self
-            .auth_post(&url)
-            .send_json(body)
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
-    }
-
     pub fn put_json<T: for<'de> Deserialize<'de>, B: Serialize>(
         &self,
         path: &str,
@@ -319,25 +291,6 @@ impl Client {
             .context("cannot reach control plane")?;
         check_status(&mut resp, &url)?;
         Ok(())
-    }
-
-    pub(crate) fn post_coding_agent_batch(
-        &self,
-        body: &CodingAgentEventBatchRequest,
-    ) -> Result<CodingAgentEventBatchResponse> {
-        let path = "/telemetry/coding-agent/events/batch";
-        let url = self.api_url(path);
-        let mut resp = self
-            .auth_post(&url)
-            .send_json(body)
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        let envelope: serde_json::Value = resp
-            .body_mut()
-            .read_json()
-            .with_context(|| format!("invalid coding-agent batch response from {url}"))?;
-        unwrap_data(envelope)
-            .with_context(|| format!("invalid coding-agent batch response from {url}"))
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {
@@ -751,7 +704,6 @@ impl RegistryClient {
 
 impl Client {
     /// Upload a zip file to `POST /api/agents/upload` and return the queued build info.
-    #[allow(clippy::too_many_arguments)]
     pub fn upload_agent(
         &self,
         zip_path: &std::path::Path,
@@ -759,8 +711,6 @@ impl Client {
         version_tag: &str,
         ports: &[u16],
         env: &std::collections::HashMap<String, String>,
-        writable: bool,
-        writable_path: Option<&str>,
     ) -> anyhow::Result<UploadQueued> {
         let file_bytes = std::fs::read(zip_path)
             .with_context(|| format!("cannot read {}", zip_path.display()))?;
@@ -795,18 +745,6 @@ impl Client {
             let env_json = serde_json::to_string(env).unwrap_or_else(|_| "{}".into());
             body.extend_from_slice(
                 format!("--{boundary}\r\nContent-Disposition: form-data; name=\"env\"\r\n\r\n{env_json}\r\n").as_bytes(),
-            );
-        }
-        // writable
-        if writable {
-            body.extend_from_slice(
-                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"writable\"\r\n\r\ntrue\r\n").as_bytes(),
-            );
-        }
-        // writable_path (implies writable server-side)
-        if let Some(path) = writable_path {
-            body.extend_from_slice(
-                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"writable_path\"\r\n\r\n{path}\r\n").as_bytes(),
             );
         }
         // file (the zip file)
@@ -955,34 +893,12 @@ impl Client {
         drop(spin);
 
         if failed {
-            if let Some(msg) = self.version_conflict_message(build_id) {
-                bail!("{msg}");
-            }
             bail!("build failed");
         }
         if !succeeded {
             bail!("build did not complete successfully");
         }
         Ok(())
-    }
-
-    /// Checks `/agents/uploads/{build_id}` for a `VERSION_CONFLICT:` error
-    /// detail and formats it into a helpful message, instead of the generic
-    /// "build failed" [`poll_build_status`] would otherwise print.
-    ///
-    /// Wire format: `VERSION_CONFLICT:<version>:<suggested>:<message>`.
-    fn version_conflict_message(&self, build_id: &str) -> Option<String> {
-        let item: serde_json::Value = self.get_json(&format!("/agents/uploads/{build_id}")).ok()?;
-        let detail = item.get("error_details")?.get(0)?.as_str()?;
-        let rest = detail.strip_prefix("VERSION_CONFLICT:")?;
-        let mut parts = rest.splitn(3, ':');
-        let _version = parts.next()?;
-        let suggested = parts.next()?;
-        let message = parts.next().unwrap_or("").trim();
-        Some(format!(
-            "Import failed: {message}.\n\nSuggested next version: {suggested}\n\n\
-             Update the version and import again."
-        ))
     }
 
     /// Upload a zip file to `POST /api/mcp/connectors/upload` and return the
@@ -1313,20 +1229,6 @@ impl Client {
             .collect())
     }
 
-    /// The exact history status of one specific version ("pushed", "active",
-    /// "archived"), or `None` if this version has never been recorded at
-    /// all. Unlike [`Client::used_versions`], this does NOT exclude
-    /// `"pushed"` rows — `push` needs to see them to reject re-pushing an
-    /// already-pushed version instead of silently repointing its registry
-    /// tag.
-    pub fn version_status(&self, agent_id: &str, version: &str) -> Result<Option<String>> {
-        Ok(self
-            .version_history(agent_id)?
-            .into_iter()
-            .find(|v| v.version == version)
-            .map(|v| v.status))
-    }
-
     /// Looks up an agent by UUID or name. `None` if it doesn't exist yet.
     pub fn get_agent(&self, id_or_name: &str) -> Result<Option<serde_json::Value>> {
         Ok(self
@@ -1343,10 +1245,6 @@ pub struct DeploySpec {
     pub ports: Vec<u16>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub env: std::collections::HashMap<String, String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub writable: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub writable_path: Option<String>,
 }
 
 #[cfg(test)]
@@ -1441,47 +1339,6 @@ mod tests {
             .create();
         let client = Client::for_test(&srv.url(), None);
         assert!(client.used_versions("a1").is_err());
-    }
-
-    // ─── version_status: sees "pushed" rows that used_versions hides ───────────
-
-    #[test]
-    fn version_status_finds_a_pushed_row() {
-        let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/a1/versions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"data": [
-                    {"version": "1.0.0", "status": "active", "is_active": true,
-                     "can_rollback": false, "created_at": "2024-01-01T00:00:00Z"},
-                    {"version": "2.0.0", "status": "pushed", "is_active": false,
-                     "can_rollback": false, "created_at": "2024-01-02T00:00:00Z"}
-                ]}"#,
-            )
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-        assert_eq!(
-            client.version_status("a1", "2.0.0").unwrap(),
-            Some("pushed".to_string())
-        );
-    }
-
-    #[test]
-    fn version_status_is_none_for_an_unrecorded_version() {
-        let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/a1/versions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"data": [
-                    {"version": "1.0.0", "status": "active", "is_active": true,
-                     "can_rollback": false, "created_at": "2024-01-01T00:00:00Z"}
-                ]}"#,
-            )
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-        assert_eq!(client.version_status("a1", "9.9.9").unwrap(), None);
     }
 
     #[test]

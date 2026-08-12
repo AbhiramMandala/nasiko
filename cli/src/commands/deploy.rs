@@ -7,9 +7,7 @@ use anyhow::{Context, Result};
 use crate::api::{Client, ContainerStatus, DeploySpec};
 use crate::oci;
 use crate::util::parse_image_name_and_tag;
-use crate::version_prompt::{
-    VersionContext, VersionFlags, resolve_deploy_version, resolve_image_deploy_version,
-};
+use crate::version_prompt::{VersionContext, VersionFlags, resolve_deploy_version};
 
 const AGENT_FILE: &str = ".nasiko/agent.json";
 
@@ -22,7 +20,23 @@ const AGENT_FILE: &str = ".nasiko/agent.json";
 ///    - Exists → update agent + restart container
 ///    - Not found → create new agent, save ID
 /// 4. Deploy/restart container
-#[allow(clippy::too_many_arguments)]
+pub fn deploy(
+    image: &str,
+    name: Option<&str>,
+    port: u16,
+    env_file: Option<&str>,
+    env_args: &[String],
+) -> Result<()> {
+    deploy_with_version_flags(
+        image,
+        name,
+        port,
+        env_file,
+        env_args,
+        VersionFlags::default(),
+    )
+}
+
 pub fn deploy_with_version_flags(
     image: &str,
     name: Option<&str>,
@@ -30,36 +44,14 @@ pub fn deploy_with_version_flags(
     env_file: Option<&str>,
     env_args: &[String],
     flags: VersionFlags,
-    writable: bool,
-    writable_path: Option<&str>,
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let env = parse_env(env_file, env_args)?;
-    // A path implies the mount (mirrors the server-side rule).
-    let writable = writable || writable_path.is_some();
 
     if Path::new(image).join("AgentCard.json").exists() {
-        deploy_from_directory(
-            image,
-            name,
-            port,
-            &env,
-            flags,
-            writable,
-            writable_path,
-            &client,
-        )
+        deploy_from_directory(image, name, port, &env, flags, &client)
     } else {
-        deploy_from_image(
-            image,
-            name,
-            port,
-            &env,
-            flags,
-            writable,
-            writable_path,
-            &client,
-        )
+        deploy_from_image(image, name, port, &env, flags, &client)
     }
 }
 
@@ -83,28 +75,6 @@ fn used_version_context<'a>(
         None => Vec::new(),
     };
     Ok((current_deployed_version, used_versions))
-}
-
-/// Whether `version` is already recorded with `status = "pushed"` for this
-/// agent — an image `nasiko push` made available in the registry but never
-/// deployed. When true, the artifact is already sitting in the registry
-/// under this exact tag, so deploy must promote it as-is instead of
-/// re-uploading: an OCI tag isn't content-addressed, so pushing again would
-/// silently repoint it if the local image has changed since the push.
-fn already_pushed(
-    client: &Client,
-    existing: Option<&(String, serde_json::Value)>,
-    version: &str,
-) -> Result<bool> {
-    let Some((id, _)) = existing else {
-        return Ok(false);
-    };
-    let status = client
-        .version_history(id)?
-        .into_iter()
-        .find(|v| v.version == version)
-        .map(|v| v.status);
-    Ok(status.as_deref() == Some("pushed"))
 }
 
 /// Finds the existing agent for a directory deploy: first checks the local
@@ -167,15 +137,12 @@ fn parse_env(env_file: Option<&str>, env_args: &[String]) -> Result<HashMap<Stri
     Ok(env)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn deploy_from_directory(
     dir: &str,
     name_override: Option<&str>,
     port: u16,
     env: &HashMap<String, String>,
     flags: VersionFlags,
-    writable: bool,
-    writable_path: Option<&str>,
     client: &Client,
 ) -> Result<()> {
     let root = Path::new(dir);
@@ -204,25 +171,18 @@ fn deploy_from_directory(
     };
     let decision = resolve_deploy_version(context, flags)?;
     let version = decision.version;
+    let image_tag = format!("{agent_name}:{version}");
+
+    // Build for linux/amd64 (the cluster's arch), not the host arch — an
+    // Apple Silicon build here would CrashLoop with "exec format error".
+    super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
+
+    // Push image to OCI
     let repo = format!("nasiko/{agent_name}");
+    println!("Pushing {image_tag} → {repo}:{version}...");
+    oci::push_image(&image_tag, &repo, &version)?;
+
     let image_ref = format!("{repo}:{version}");
-
-    if already_pushed(client, existing.as_ref(), &version)? {
-        println!(
-            "  Version {version} was already pushed — deploying the existing registry image \
-             without rebuilding."
-        );
-    } else {
-        let image_tag = format!("{agent_name}:{version}");
-
-        // Build for linux/amd64 (the cluster's arch), not the host arch — an
-        // Apple Silicon build here would CrashLoop with "exec format error".
-        super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
-
-        // Push image to OCI
-        println!("Pushing {image_tag} → {repo}:{version}...");
-        oci::push_image(&image_tag, &repo, &version)?;
-    }
 
     let agent_id = match existing {
         Some((id, current)) => {
@@ -230,7 +190,11 @@ fn deploy_from_directory(
                 .get("version")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            println!("  Updating: {current_version} → {version}");
+            if decision.overwrite {
+                println!("  Overwriting: {version} (was: {current_version})");
+            } else {
+                println!("  Updating: {current_version} → {version}");
+            }
             save_agent_id(&agent_file, &id, &agent_name)?;
 
             // Deploy the container BEFORE activating the new version in the
@@ -245,8 +209,6 @@ fn deploy_from_directory(
                 name: agent_name.clone(),
                 ports: vec![port],
                 env: env.clone(),
-                writable,
-                writable_path: writable_path.map(str::to_owned),
             };
             let status: ContainerStatus = client.post_json("/containers", &spec)?;
             println!("  {} → {}", agent_name, status.state);
@@ -257,6 +219,7 @@ fn deploy_from_directory(
                 "description": card.get("description"),
                 "skills": card.get("skills"),
                 "capabilities": card.get("capabilities"),
+                "allow_overwrite": decision.overwrite,
             });
             let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
             if let Err(e) = crate::util::sync_card_version(&card_path, &card, &version) {
@@ -297,8 +260,6 @@ fn deploy_from_directory(
         name: agent_name.clone(),
         ports: vec![port],
         env: env.clone(),
-        writable,
-        writable_path: writable_path.map(str::to_owned),
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;
     println!("  {} → {}", agent_name, status.state);
@@ -315,8 +276,6 @@ fn deploy_from_image(
     port: u16,
     env: &HashMap<String, String>,
     flags: VersionFlags,
-    writable: bool,
-    writable_path: Option<&str>,
     client: &Client,
 ) -> Result<()> {
     let (image_name, image_tag_version) = parse_image_name_and_tag(image);
@@ -334,35 +293,34 @@ fn deploy_from_image(
     });
     let (current_deployed_version, used_versions) =
         used_version_context(client, existing.as_ref())?;
-    let decision = resolve_image_deploy_version(
-        image,
-        &image_tag_version,
-        flags,
+    // Only trust the tag if the user actually wrote one (`image:tag`) — a
+    // bare `image` implicitly means Docker's "latest", not a real choice.
+    let card_version =
+        crate::util::image_has_explicit_tag(image).then_some(image_tag_version.as_str());
+    let context = VersionContext {
+        card_version,
         current_deployed_version,
-        &used_versions,
-        "deploy",
-    )?;
+        used_versions: &used_versions,
+    };
+    let decision = resolve_deploy_version(context, flags)?;
     let version = decision.version;
 
     let image_ref = format!("{repo}:{version}");
 
-    if already_pushed(client, existing.as_ref(), &version)? {
-        println!(
-            "  Version {version} was already pushed — deploying the existing registry image \
-             without re-pushing."
-        );
-    } else {
-        // Tag locally so Docker can find it by the canonical ref without a registry pull.
-        let _ = std::process::Command::new("docker")
-            .args(["tag", image, &image_ref])
-            .status();
+    // Tag locally so Docker can find it by the canonical ref without a registry pull.
+    let _ = std::process::Command::new("docker")
+        .args(["tag", image, &image_ref])
+        .status();
 
-        println!("Pushing {image} → {image_ref}...");
-        oci::push_image(image, &repo, &version)?;
-    }
+    println!("Pushing {image} → {image_ref}...");
+    oci::push_image(image, &repo, &version)?;
 
     if let Some((id, _)) = existing {
-        println!("  Updating agent: {agent_name}");
+        if decision.overwrite {
+            println!("  Overwriting agent: {agent_name} @ {version}");
+        } else {
+            println!("  Updating agent: {agent_name}");
+        }
 
         // Deploy the container BEFORE activating the new version in the
         // catalog — see the matching comment in `deploy_from_directory`.
@@ -372,8 +330,6 @@ fn deploy_from_image(
             name: agent_name.clone(),
             ports: vec![port],
             env: env.clone(),
-            writable,
-            writable_path: writable_path.map(str::to_owned),
         };
         let status: ContainerStatus = client.post_json("/containers", &spec)?;
         println!("  {} → {}", agent_name, status.state);
@@ -381,6 +337,7 @@ fn deploy_from_image(
         let update = serde_json::json!({
             "version": version,
             "image": image_ref,
+            "allow_overwrite": decision.overwrite,
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
         println!("\n✓ Deployed {agent_name}:{version}");
@@ -404,8 +361,6 @@ fn deploy_from_image(
         name: agent_name.clone(),
         ports: vec![port],
         env: env.clone(),
-        writable,
-        writable_path: writable_path.map(str::to_owned),
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;
     println!("  {} → {}", agent_name, status.state);
