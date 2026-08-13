@@ -49,12 +49,19 @@ pub async fn discover(sandbox: &dyn Sandbox) -> Option<WorkspaceInstructions> {
 
 /// Build the full system prompt by prepending workspace instructions to the base prompt.
 /// If no workspace instructions exist, returns the base prompt unchanged.
+/// Includes the instruction mode directive so the agent knows whether to auto-add.
 pub fn build_system_prompt(base_prompt: &str, workspace_instructions: Option<&WorkspaceInstructions>) -> String {
+    let mode = get_instruction_mode(workspace_instructions);
+    let mode_note = match mode {
+        InstructionMode::Auto => "",
+        InstructionMode::Manual => "\n\n(Instruction mode: manual — only use update_instructions when the user explicitly asks you to remember or record something.)",
+    };
+
     match workspace_instructions {
         Some(wi) if !wi.clean.trim().is_empty() => {
             format!(
-                "## Workspace Instructions (from {})\n\n{}\n\n---\n\n{}",
-                wi.source_file, wi.clean, base_prompt
+                "## Workspace Instructions (from {})\n\n{}{}\n\n---\n\n{}",
+                wi.source_file, wi.clean, mode_note, base_prompt
             )
         }
         _ => base_prompt.to_string(),
@@ -134,6 +141,52 @@ pub async fn update_outcome(
 
 /// Default threshold for triggering an automatic pruning pass.
 const DEFAULT_PRUNE_THRESHOLD: usize = 20;
+
+/// Controls whether the agent adds instructions automatically or only on explicit user request.
+/// Set via `<!-- @instructions auto|manual -->` in the file or `NASIKO_INSTRUCTION_MODE` env var.
+/// Defaults to `manual` (agent only adds when user explicitly asks).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstructionMode {
+    Auto,
+    Manual,
+}
+
+/// Parse the `<!-- @instructions auto|manual -->` directive.
+/// Falls back to `NASIKO_INSTRUCTION_MODE` env var, then defaults to `Manual`.
+pub fn parse_instruction_mode(raw: &str) -> InstructionMode {
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("<!-- @instructions") {
+            let value = rest.trim_end_matches("-->").trim();
+            return match value {
+                "auto" => InstructionMode::Auto,
+                _ => InstructionMode::Manual,
+            };
+        }
+    }
+    if let Ok(val) = std::env::var("NASIKO_INSTRUCTION_MODE") {
+        if val.trim() == "auto" {
+            return InstructionMode::Auto;
+        }
+    }
+    InstructionMode::Manual
+}
+
+/// Determine the instruction mode for the current workspace. If no instruction file exists,
+/// checks the env var only.
+pub fn get_instruction_mode(instructions: Option<&WorkspaceInstructions>) -> InstructionMode {
+    match instructions {
+        Some(wi) => parse_instruction_mode(&wi.raw),
+        None => {
+            if let Ok(val) = std::env::var("NASIKO_INSTRUCTION_MODE") {
+                if val.trim() == "auto" {
+                    return InstructionMode::Auto;
+                }
+            }
+            InstructionMode::Manual
+        }
+    }
+}
 
 /// Pruning mode, controlled by two sources (in priority order):
 /// 1. `<!-- @pruning auto|manual|<N> -->` directive in the instruction file
@@ -386,5 +439,30 @@ mod tests {
     fn parse_prune_mode_defaults_to_manual() {
         let raw = "- Some rule with no directive.\n";
         assert_eq!(parse_prune_mode(raw), PruneMode::Manual);
+    }
+
+    #[test]
+    fn parse_instruction_mode_auto() {
+        let raw = "<!-- @instructions auto -->\n- Rule.\n";
+        assert_eq!(parse_instruction_mode(raw), InstructionMode::Auto);
+    }
+
+    #[test]
+    fn parse_instruction_mode_manual() {
+        let raw = "<!-- @instructions manual -->\n- Rule.\n";
+        assert_eq!(parse_instruction_mode(raw), InstructionMode::Manual);
+    }
+
+    #[test]
+    fn parse_instruction_mode_defaults_to_manual() {
+        let raw = "- Rule with no directive.\n";
+        assert_eq!(parse_instruction_mode(raw), InstructionMode::Manual);
+    }
+
+    #[test]
+    fn both_directives_coexist() {
+        let raw = "<!-- @instructions auto -->\n<!-- @pruning 30 -->\n- Rule.\n";
+        assert_eq!(parse_instruction_mode(raw), InstructionMode::Auto);
+        assert_eq!(parse_prune_mode(raw), PruneMode::Threshold(30));
     }
 }
