@@ -14,35 +14,8 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.opentelemetry.io/otel/propagation"
 	// [nasiko:imports]
 )
-
-// Trace propagation reference pattern for Nasiko agents:
-//
-// The platform forwards the W3C `traceparent` header on the inbound A2A
-// request, and the a2a-go server copies the inbound HTTP headers into
-// execCtx.ServiceParams. Extract the trace context into ctx once in Execute
-// (extractTraceContext), then make every outbound HTTP call with that ctx
-// through the otelhttp-wrapped client below — the transport injects
-// `traceparent` into the outbound request automatically, so downstream
-// calls are linked to the caller's trace (and usage can be attributed).
-var httpClient = &http.Client{
-	Transport: otelhttp.NewTransport(nil, otelhttp.WithPropagators(propagation.TraceContext{})),
-}
-
-// extractTraceContext pulls the inbound W3C trace context (traceparent /
-// tracestate) out of the A2A request headers and stores it in ctx.
-func extractTraceContext(ctx context.Context, execCtx *a2asrv.ExecutorContext) context.Context {
-	headers := http.Header{}
-	for k, vals := range execCtx.ServiceParams.List() {
-		for _, v := range vals {
-			headers.Add(k, v)
-		}
-	}
-	return propagation.TraceContext{}.Extract(ctx, propagation.HeaderCarrier(headers))
-}
 
 type weatherExecutor struct{}
 
@@ -51,7 +24,6 @@ var _ a2asrv.AgentExecutor = (*weatherExecutor)(nil)
 func (*weatherExecutor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {
 		userText := extractText(execCtx.Message)
-		ctx = extractTraceContext(ctx, execCtx)
 		result, err := getWeather(ctx, userText)
 		if err != nil {
 			yield(nil, err)
@@ -77,11 +49,7 @@ func getWeather(ctx context.Context, query string) (string, error) {
 		lat, lon,
 	)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := http.Get(apiURL)
 	if err != nil {
 		return "", err
 	}
@@ -128,11 +96,7 @@ func getWeather(ctx context.Context, query string) (string, error) {
 
 func geocode(ctx context.Context, query string) (float64, float64, string, error) {
 	apiURL := fmt.Sprintf("https://geocoding-api.open-meteo.com/v1/search?name=%s&count=1&language=en&format=json", url.QueryEscape(query))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return 0, 0, "", err
-	}
-	resp, err := httpClient.Do(req)
+	resp, err := http.Get(apiURL)
 	if err != nil {
 		return 0, 0, "", err
 	}
