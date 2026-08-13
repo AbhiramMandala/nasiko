@@ -138,10 +138,10 @@ fn agent_session_query(agent_id: &str) -> String {
 
 /// Resolves the session ↔ trace correlation from an external mapping.
 ///
-/// Pre-built agents (deployed via `nasiko deploy`) don't carry the
-/// sitecustomize.py patch and never set `session.id` on their spans; the
-/// agent_proxy records the session_id ↔ trace_id pair when it forwards A2A
-/// requests. The server injects a Postgres-backed implementation.
+/// Agents that aren't OTel-instrumented (or whose instrumentation doesn't tag
+/// spans) never set `session.id`; the agent_proxy records the session_id ↔
+/// trace_id pair when it forwards A2A requests. The server injects a
+/// Postgres-backed implementation.
 #[async_trait]
 pub trait SessionIdResolver: Send + Sync {
     async fn session_for_trace(&self, trace_id: &str) -> Option<String>;
@@ -597,7 +597,9 @@ impl ObservabilityProvider for TempoLokiProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<AgentStats, ObservabilityError> {
-        let results = self.user_traces_for_agent(agent_id, start, end, 1000).await?;
+        let results = self
+            .user_traces_for_agent(agent_id, start, end, 1000)
+            .await?;
 
         let durations: Vec<u64> = results.iter().filter_map(|(_, _, d)| *d).collect();
         let (p50, p99) = latency_percentiles(durations);
@@ -623,7 +625,9 @@ impl ObservabilityProvider for TempoLokiProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<AgentFinOps, ObservabilityError> {
-        let results = self.user_traces_for_agent(agent_id, start, end, 1000).await?;
+        let results = self
+            .user_traces_for_agent(agent_id, start, end, 1000)
+            .await?;
 
         let durations: Vec<u64> = results.iter().filter_map(|(_, _, d)| *d).collect();
         let (p50, _) = latency_percentiles(durations);
@@ -649,7 +653,9 @@ impl ObservabilityProvider for TempoLokiProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<usize, ObservabilityError> {
-        let results = self.user_traces_for_agent(agent_id, start, end, 1000).await?;
+        let results = self
+            .user_traces_for_agent(agent_id, start, end, 1000)
+            .await?;
         Ok(results.len())
     }
 

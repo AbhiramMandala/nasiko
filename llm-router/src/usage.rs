@@ -8,9 +8,12 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::ir::Usage;
+use crate::routing::attribution::AttributionSource;
 
 /// One usage row to write.
 pub struct UsageRecord {
+    /// The billed identity: the chatting user (`flows.user_id`) when the call
+    /// was attributed to a flow, else the agent owner from the JWT.
     pub owner_id: String,
     pub agent_id: String,
     /// `token_usage.operation_type`, e.g. `"direct_llm"` (chat) or `"embedding"`.
@@ -19,15 +22,18 @@ pub struct UsageRecord {
     /// Bare provider-native model id (no prefix).
     pub model: String,
     pub usage: Option<Usage>,
-    pub cached_tokens: Option<i64>,
-    pub reasoning_tokens: Option<i64>,
     pub latency_ms: i64,
     pub streaming: bool,
     pub finish_reason: Option<String>,
-    /// The flow id parsed from the agent-forwarded `traceparent`, when present.
-    /// Written to `token_usage.session_id` — the same key the orchestrator uses —
-    /// so per-message usage can be aggregated across the platform and its agents.
+    /// The flow this call belongs to — named by the agent-forwarded
+    /// `traceparent`, or by the active-flow fallback for agents that don't
+    /// propagate trace context. Written to `token_usage.session_id` — the same
+    /// key the orchestrator uses — so per-message usage aggregates across the
+    /// platform and its agents.
     pub flow_id: Option<String>,
+    /// How `flow_id` was resolved; recorded in the row's metadata so
+    /// attribution quality is auditable. `None` = no flow found.
+    pub attribution_source: Option<AttributionSource>,
     /// Whether the platform's key paid for this call (vs. the owner's own secret).
     pub platform_paid: bool,
 }
@@ -57,26 +63,25 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
 
     let metadata = serde_json::json!({
         "key_source": if record.platform_paid { "platform" } else { "user_secret" },
+        "attribution": record.attribution_source.map(|s| s.as_label()),
     });
 
     sqlx::query(
         r#"INSERT INTO token_usage
                (user_id, agent_id, operation_type, provider, model,
-                 input_tokens, output_tokens, total_tokens, cached_tokens, reasoning_tokens,
-                 latency_ms, streaming, finish_reason, session_id, metadata)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"#,
+                input_tokens, output_tokens, total_tokens,
+                latency_ms, streaming, finish_reason, session_id, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
     )
     .bind(owner)
     .bind(agent)
     .bind(record.operation_type)
     .bind(&record.provider)
     .bind(&record.model)
-    .bind(saturating_i32(input.unwrap_or(0)))
-    .bind(saturating_i32(output.unwrap_or(0)))
-    .bind(saturating_i32(total.unwrap_or(0)))
-    .bind(saturating_i32(record.cached_tokens.unwrap_or(0)))
-    .bind(saturating_i32(record.reasoning_tokens.unwrap_or(0)))
-    .bind(saturating_i32(record.latency_ms))
+    .bind(input.unwrap_or(0) as i32)
+    .bind(output.unwrap_or(0) as i32)
+    .bind(total.unwrap_or(0) as i32)
+    .bind(record.latency_ms as i32)
     .bind(record.streaming)
     .bind(record.finish_reason)
     .bind(record.flow_id)
@@ -85,20 +90,4 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-fn saturating_i32(value: i64) -> i32 {
-    value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
-}
-
-#[cfg(test)]
-mod tests {
-    use super::saturating_i32;
-
-    #[test]
-    fn usage_values_saturate_without_wrapping() {
-        assert_eq!(saturating_i32(i64::MAX), i32::MAX);
-        assert_eq!(saturating_i32(i64::MIN), i32::MIN);
-        assert_eq!(saturating_i32(42), 42);
-    }
 }

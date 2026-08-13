@@ -28,26 +28,8 @@ use crate::ir::{ChatChunk, Usage};
 use crate::providers::{ProviderError, fallback};
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
-use crate::routing::{self, BoundarySignals, Mode, RouteInputs};
+use crate::routing::{self, BoundarySignals, RouteInputs};
 use crate::usage::{self, UsageRecord};
-
-#[derive(Clone)]
-pub(crate) struct RoutedRequest {
-    pub agent_id: String,
-    pub owner_id: String,
-    pub resolved: crate::resolver::ResolvedConfig,
-    pub flow_id: Option<String>,
-}
-
-pub(crate) fn authenticate_request(
-    headers: &HeaderMap,
-    cfg: &crate::config::GatewayConfig,
-) -> Result<(String, String), GatewayError> {
-    let authz = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-    verify_agent_jwt(authz, cfg)
-}
 
 /// Axum handler for the OpenAI surface (`POST /v1/chat/completions`).
 pub async fn chat_completions(
@@ -108,7 +90,8 @@ async fn chat_core(
     format: InboundFormat,
     force_stream: Option<bool>,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id) = authenticate_request(headers, &ctx.cfg)?;
+    let authz = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
+    let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id, %owner_id, ?format,
@@ -136,85 +119,33 @@ async fn chat_core(
         provider: Some(format.provider_label()),
         model: req.model.as_deref(),
     };
-    let query = routing::latest_user_query(&req.messages);
-    let routed =
-        resolve_routed_request(ctx, store, headers, agent_id, owner_id, hint, query).await?;
-    let RoutedRequest {
-        agent_id,
-        owner_id,
-        resolved,
-        flow_id,
-    } = routed;
-    tracing::info!(
-        target: "nasiko::llm_router::chat",
-        %agent_id,
-        litellm_model = %resolved.litellm_model,
-        provider = %resolved.provider,
-        fallback_models = ?resolved.fallback_models,
-        streaming = req.is_streaming(),
-        "chat_core: final model selected — dispatching to provider"
-    );
-
-    let started = Instant::now();
-    let platform_paid = resolved.platform_paid;
-
-    if req.is_streaming() {
-        let (stream, (provider, model)) =
-            fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req).await?;
-        let renderer = inbound.chat_stream_renderer();
-        return stream_chat(StreamChatArgs {
-            ctx,
-            renderer,
-            provider_stream: stream,
-            provider,
-            model,
-            agent_id,
-            owner_id,
-            started,
-            flow_id,
-            platform_paid,
-        });
-    }
-
-    // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) =
-        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req).await?;
-    let latency_ms = started.elapsed().as_millis() as i64;
-
-    usage::spawn_log(
-        ctx.db.clone(),
-        UsageRecord {
-            owner_id,
-            agent_id,
-            operation_type: "direct_llm",
-            provider,
-            model,
-            usage: resp.usage.clone(),
-            cached_tokens: None,
-            reasoning_tokens: None,
-            latency_ms,
-            streaming: false,
-            finish_reason: resp.choices.first().and_then(|c| c.finish_reason.clone()),
-            flow_id,
-            platform_paid,
-        },
-    );
-
-    Ok(Json(inbound.render_chat_response(resp)).into_response())
-}
-
-pub(crate) async fn resolve_routed_request(
-    ctx: &LlmRouterCtx,
-    store: &dyn RegistryStore,
-    headers: &HeaderMap,
-    agent_id: String,
-    owner_id: String,
-    hint: RequestHint<'_>,
-    query: Option<String>,
-) -> Result<RoutedRequest, GatewayError> {
     let mut resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
-    // Model routing: the resolver fixed provider/key/params; routing may override only model.
-    let signals = derive_boundary_signals(headers, &ctx.db).await;
+
+    let query = routing::latest_user_query(&req.messages);
+
+    // Flow attribution: which user conversation this LLM call belongs to. The
+    // agent's JWT only names the agent/owner; the caller's identity comes from
+    // the `flows` row — named precisely by the forwarded traceparent, or
+    // approximated by the agent's currently-running flow when the agent
+    // doesn't propagate trace context (see routing/attribution.rs).
+    let trace_flow = headers
+        .get(TRACEPARENT_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_flow_id);
+    let attribution = routing::attribution::resolve(
+        &ctx.db,
+        &agent_id,
+        trace_flow.clone(),
+        query.as_deref(),
+        ctx.cfg.attribution_window_secs as i64,
+    )
+    .await;
+
+    // Model routing: the resolver fixed the provider/key/params; the router may override
+    // the *model* at a conversation boundary (else it stays the resolved model). Signals
+    // come from the attributed flow's trusted state — via the traceparent path or the
+    // active-flow fallback; no flow ⇒ inert (behaviour identical to before this layer).
+    let signals = boundary_signals_for(&attribution, trace_flow.as_deref());
     let decision = routing::route_model(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
@@ -263,89 +194,127 @@ pub(crate) async fn resolve_routed_request(
         );
         resolved.fallback_models.clear();
     }
-    let flow_id = headers
-        .get(TRACEPARENT_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_flow_id);
-    Ok(RoutedRequest {
-        agent_id,
-        owner_id,
-        resolved,
-        flow_id,
-    })
-}
-
-/// Derive the model-routing [`BoundarySignals`] for this request (S5).
-///
-/// The opaque agent sets nothing: the gateway reads the `traceparent` the agent forwards,
-/// maps its trace id to a `flows` row (the conversation), and builds the signals from that
-/// trusted state. The flow lookup does double duty — it both confirms this is a genuine
-/// platform conversation (not an arbitrary trace) and reads the conversation `mode`.
-///
-/// Any of: no `traceparent`, an unparseable one, an unknown flow, or a DB error ⇒
-/// [`BoundarySignals::inert`] — the router doesn't fire and the resolved model is used.
-async fn derive_boundary_signals(headers: &HeaderMap, db: &sqlx::PgPool) -> BoundarySignals {
-    let Some(flow_id) = headers
-        .get(TRACEPARENT_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_flow_id)
-    else {
-        tracing::info!(
-            target: "nasiko::llm_router::boundary",
-            conv_id = "None",
-            "derive_boundary_signals: no/unparseable traceparent → INERT (router will not fire; resolved model used)"
-        );
-        return BoundarySignals::inert();
-    };
-    tracing::debug!(
-        target: "nasiko::llm_router::boundary",
-        %flow_id, "derive_boundary_signals: parsed flow_id from traceparent; looking up flow in DB"
+    tracing::info!(
+        target: "nasiko::llm_router::chat",
+        %agent_id,
+        litellm_model = %resolved.litellm_model,
+        provider = %resolved.provider,
+        fallback_models = ?resolved.fallback_models,
+        streaming = req.is_streaming(),
+        "chat_core: final model selected — dispatching to provider"
     );
 
-    let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-        "SELECT metadata->>'mode', metadata->>'context_id' FROM flows WHERE flow_id = $1",
-    )
-    .bind(&flow_id)
-    .fetch_optional(db)
-    .await;
-    match row {
-        Ok(Some((mode, context_id))) => {
-            let mode = mode
-                .as_deref()
-                .map(Mode::from_label)
-                .unwrap_or(Mode::FreeFlowing);
+    let started = Instant::now();
+    // The usage row's flow/session key: the attributed flow when one was
+    // found, else the raw trace id (it may not be a known flow, but grouping
+    // by it is still correct). The billed identity: the chatting user from
+    // the flow row when known (a shared agent's spend belongs to the caller),
+    // else the agent owner from the JWT.
+    let flow_id = attribution
+        .as_ref()
+        .map(|a| a.flow_id.clone())
+        .or(trace_flow);
+    let billed_user_id = attribution
+        .as_ref()
+        .and_then(|a| a.user_id.map(|u| u.to_string()))
+        .unwrap_or_else(|| owner_id.clone());
+    let attribution_source = attribution.as_ref().map(|a| a.source);
+    let platform_paid = resolved.platform_paid;
+
+    if req.is_streaming() {
+        let (stream, (provider, model)) =
+            fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req).await?;
+        let renderer = inbound.chat_stream_renderer();
+        return stream_chat(StreamChatArgs {
+            ctx,
+            renderer,
+            provider_stream: stream,
+            provider,
+            model,
+            agent_id,
+            owner_id: billed_user_id,
+            started,
+            flow_id,
+            attribution_source,
+            platform_paid,
+        });
+    }
+
+    // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
+    let (resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req).await?;
+    let latency_ms = started.elapsed().as_millis() as i64;
+
+    usage::spawn_log(
+        ctx.db.clone(),
+        UsageRecord {
+            owner_id: billed_user_id,
+            agent_id,
+            operation_type: "direct_llm",
+            provider,
+            model,
+            usage: resp.usage.clone(),
+            latency_ms,
+            streaming: false,
+            finish_reason: resp.choices.first().and_then(|c| c.finish_reason.clone()),
+            flow_id,
+            attribution_source,
+            platform_paid,
+        },
+    );
+
+    Ok(Json(inbound.render_chat_response(resp)).into_response())
+}
+
+/// Derive the model-routing [`BoundarySignals`] from the attributed flow.
+///
+/// The flow lookup already happened in [`attribution::resolve`] (traceparent
+/// path, or the active-flow fallback when the agent doesn't propagate trace
+/// context) — the signals here come from that same trusted flow state. A
+/// `trace_flow` that named no known flow falls through to the log below (a
+/// broken propagation chain), same as before the fallback existed.
+///
+/// No attributed flow ⇒ [`BoundarySignals::inert`] — the router doesn't fire
+/// and the resolved model is used (behaviour identical to before this layer).
+fn boundary_signals_for(
+    attribution: &Option<routing::attribution::FlowAttribution>,
+    trace_flow: Option<&str>,
+) -> BoundarySignals {
+    match attribution {
+        Some(a) => {
             // Key the decision cache on the conversation's stable context_id, not
-            // the flow_id (= this turn's traceparent trace id, which the CLI
-            // re-mints every turn). The proxy/orchestrator writes context_id onto
-            // the flow row; turn 1 (cold start) writes the sticky decision under
-            // it and turn 2+ hit it. Fall back to flow_id for older flow rows (or
-            // a caller) that never set context_id — behaviour identical to before.
-            let conv_id = context_id
+            // the flow_id (= this turn's trace id, which the CLI re-mints every
+            // turn). Turn 1 writes the sticky decision under it and turn 2+ hit
+            // it. Fall back to flow_id for flows that never set context_id.
+            let conv_id = a
+                .context_id
+                .clone()
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| flow_id.clone());
-            let signals = BoundarySignals::in_flow(conv_id.clone(), mode);
+                .unwrap_or_else(|| a.flow_id.clone());
+            let signals = BoundarySignals::in_flow(conv_id.clone(), a.mode);
             tracing::info!(
                 target: "nasiko::llm_router::boundary",
-                %flow_id, %conv_id, mode = ?mode, phase = ?signals.phase,
+                flow_id = %a.flow_id, %conv_id, mode = ?a.mode,
+                source = a.source.as_label(), phase = ?signals.phase,
                 is_fireable_boundary = signals.is_fireable_boundary(),
-                "derive_boundary_signals: known flow → IN-FLOW signals (router may re-select the model at this boundary)"
+                "boundary signals: known flow → IN-FLOW (router may re-select the model at this boundary)"
             );
             signals
         }
-        Ok(None) => {
-            tracing::info!(
-                target: "nasiko::llm_router::boundary",
-                flow_id_lookup = %flow_id,
-                conv_id = "None",
-                "derive_boundary_signals: forwarded trace id is not a known flow → INERT (router will not fire; check the orchestrator's `nasiko::flow` flow_id — a mismatch means the agent didn't propagate the trace)"
-            );
-            BoundarySignals::inert() // trace id isn't a known flow → don't fire
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "nasiko::llm_router::boundary",
-                error = %e, %flow_id, "derive_boundary_signals: flow lookup failed; router INERT for request"
-            );
+        None => {
+            match trace_flow {
+                Some(flow_id) => tracing::info!(
+                    target: "nasiko::llm_router::boundary",
+                    flow_id_lookup = %flow_id,
+                    conv_id = "None",
+                    "boundary signals: forwarded trace id is not a known flow → INERT (check the orchestrator's `nasiko::flow` flow_id — a mismatch means the agent didn't propagate the trace)"
+                ),
+                None => tracing::info!(
+                    target: "nasiko::llm_router::boundary",
+                    conv_id = "None",
+                    "boundary signals: no traceparent and no active flow → INERT (router will not fire; resolved model used)"
+                ),
+            }
             BoundarySignals::inert()
         }
     }
@@ -362,6 +331,7 @@ struct StreamChatArgs<'a> {
     owner_id: String,
     started: Instant,
     flow_id: Option<String>,
+    attribution_source: Option<routing::attribution::AttributionSource>,
     platform_paid: bool,
 }
 
@@ -380,6 +350,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         owner_id,
         started,
         flow_id,
+        attribution_source,
         platform_paid,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
@@ -392,6 +363,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         started,
         state: state.clone(),
         flow_id,
+        attribution_source,
         platform_paid,
     };
 
@@ -455,6 +427,7 @@ struct UsageGuard {
     started: Instant,
     state: Arc<Mutex<StreamState>>,
     flow_id: Option<String>,
+    attribution_source: Option<routing::attribution::AttributionSource>,
     platform_paid: bool,
 }
 
@@ -470,12 +443,11 @@ impl Drop for UsageGuard {
                 provider: self.provider.clone(),
                 model: self.model.clone(),
                 usage: st.usage.clone(),
-                cached_tokens: None,
-                reasoning_tokens: None,
                 latency_ms: self.started.elapsed().as_millis() as i64,
                 streaming: true,
                 finish_reason: st.finish_reason.clone(),
                 flow_id: self.flow_id.clone(),
+                attribution_source: self.attribution_source,
                 platform_paid: self.platform_paid,
             },
         );
@@ -780,13 +752,36 @@ mod tests {
         assert!(matches!(err, GatewayError::MissingAuthHeader));
     }
 
-    #[tokio::test]
-    async fn derive_signals_inert_without_traceparent() {
-        // No traceparent ⇒ inert, returned before any DB access.
-        let ctx = ctx_with("http://unused".into());
-        let signals = derive_boundary_signals(&HeaderMap::new(), &ctx.db).await;
+    #[test]
+    fn boundary_signals_inert_without_attribution() {
+        // No traceparent and no resolved flow ⇒ inert (the router never fires).
+        let signals = boundary_signals_for(&None, None);
         assert!(signals.conv_id.is_none());
         assert!(!signals.is_fireable_boundary());
+    }
+
+    #[test]
+    fn boundary_signals_inert_for_unknown_trace_flow() {
+        // A traceparent that named no known flow ⇒ inert, same as before the
+        // fallback existed (broken propagation chain must not fire the router).
+        let signals = boundary_signals_for(&None, Some("deadbeef"));
+        assert!(signals.conv_id.is_none());
+        assert!(!signals.is_fireable_boundary());
+    }
+
+    #[test]
+    fn boundary_signals_in_flow_when_attributed() {
+        let attribution = routing::attribution::FlowAttribution {
+            flow_id: "f1".into(),
+            user_id: None,
+            context_id: Some("ses_1".into()),
+            mode: routing::Mode::FreeFlowing,
+            source: routing::attribution::AttributionSource::ActiveFlow,
+        };
+        // The stable context_id keys the decision cache, not the per-turn flow id.
+        let signals = boundary_signals_for(&Some(attribution), None);
+        assert_eq!(signals.conv_id.as_deref(), Some("ses_1"));
+        assert!(signals.is_fireable_boundary());
     }
 
     #[tokio::test]

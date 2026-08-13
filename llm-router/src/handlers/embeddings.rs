@@ -64,8 +64,6 @@ async fn embeddings_core(
             provider,
             model,
             usage: resp.usage.clone(),
-            cached_tokens: None,
-            reasoning_tokens: None,
             latency_ms,
             streaming: false,
             finish_reason: None,
@@ -73,6 +71,9 @@ async fn embeddings_core(
                 .get(TRACEPARENT_HEADER)
                 .and_then(|v| v.to_str().ok())
                 .and_then(parse_flow_id),
+            // Embeddings carry no conversation context to match against — a
+            // raw trace id only; no flow attribution attempted.
+            attribution_source: None,
             platform_paid: resolved.platform_paid,
         },
     );

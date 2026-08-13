@@ -346,17 +346,16 @@ pub async fn agent_proxy(
         // below, so tap the SSE chunks on their way to the client and persist
         // the collected assistant text when the stream ends (Drop also covers
         // a client disconnect mid-stream).
-        let body = match persist_info {
-            Some(ref info) => {
-                let mut tap = SseReplyTap::new(state.db.clone(), info.session_id.clone());
-                Body::from_stream(stream.inspect(move |chunk| {
-                    if let Ok(bytes) = chunk {
-                        tap.collector.feed(bytes);
-                    }
-                }))
+        let mut tap = SseReplyTap::new(
+            state.db.clone(),
+            persist_info.as_ref().map(|i| i.session_id.clone()),
+            flow_ctx.flow_id.clone(),
+        );
+        let body = Body::from_stream(stream.inspect(move |chunk| {
+            if let Ok(bytes) = chunk {
+                tap.collector.feed(bytes);
             }
-            None => Body::from_stream(stream),
-        };
+        }));
         return builder.body(body).map_err(|e| {
             tracing::error!(error = %e, %agent_id, "agent proxy: failed to build streamed response");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -387,10 +386,34 @@ pub async fn agent_proxy(
         });
     }
 
+    // The response body is fully buffered — the flow's work is done. Without
+    // this the direct-chat path's rows stayed 'running' forever, which would
+    // poison the LLM router's active-flow attribution fallback (it only looks
+    // at running flows).
+    complete_flow(&state.db, &flow_ctx.flow_id);
+
     builder.body(Body::from(bytes)).map_err(|e| {
         tracing::error!(error = %e, %agent_id, "agent proxy: failed to build response");
         StatusCode::INTERNAL_SERVER_ERROR
     })
+}
+
+/// Mark a direct-chat flow completed (fire-and-forget). `a2a_dispatch` marks
+/// its own flows; the proxy path never did, so they accumulated as 'running'.
+fn complete_flow(db: &sqlx::PgPool, flow_id: &str) {
+    let db = db.clone();
+    let flow_id = flow_id.to_string();
+    tokio::spawn(async move {
+        let _ = sqlx::query(
+            r#"UPDATE flows SET status = 'completed',
+               duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
+               completed_at = now()
+               WHERE flow_id = $1"#,
+        )
+        .bind(&flow_id)
+        .execute(&db)
+        .await;
+    });
 }
 
 /// A2A JSON-RPC methods that carry a user message and therefore must be bound
@@ -702,15 +725,20 @@ fn message_parts_text(result: &serde_json::Value) -> Option<String> {
 /// stream completed or the client disconnected.
 struct SseReplyTap {
     db: sqlx::PgPool,
-    session_id: String,
+    /// Chat session to persist the collected reply into — absent for proxied
+    /// requests that carry no user message.
+    session_id: Option<String>,
+    /// The flow this request opened — completed when the stream ends.
+    flow_id: String,
     collector: SseReplyText,
 }
 
 impl SseReplyTap {
-    fn new(db: sqlx::PgPool, session_id: String) -> Self {
+    fn new(db: sqlx::PgPool, session_id: Option<String>, flow_id: String) -> Self {
         Self {
             db,
             session_id,
+            flow_id,
             collector: SseReplyText::default(),
         }
     }
@@ -718,25 +746,27 @@ impl SseReplyTap {
 
 impl Drop for SseReplyTap {
     fn drop(&mut self) {
-        let Some(text) = self.collector.finish() else {
-            return;
-        };
         // Drop can run during runtime shutdown, where spawn would panic.
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
         let db = self.db.clone();
-        let session_id = std::mem::take(&mut self.session_id);
+        let session_id = self.session_id.take();
+        let text = self.collector.finish();
         handle.spawn(async move {
-            let _ = sqlx::query(
-                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
-            )
-            .bind(&session_id)
-            .bind("assistant")
-            .bind(&text)
-            .execute(&db)
-            .await;
+            if let (Some(session_id), Some(text)) = (session_id, text) {
+                let _ = sqlx::query(
+                    "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+                )
+                .bind(&session_id)
+                .bind("assistant")
+                .bind(&text)
+                .execute(&db)
+                .await;
+            }
         });
+        // Stream ended (or the client disconnected): close the flow row.
+        complete_flow(&self.db, &self.flow_id);
     }
 }
 

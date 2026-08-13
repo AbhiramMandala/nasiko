@@ -196,6 +196,36 @@ Secrets are encrypted env vars injected into agent containers at runtime. There 
 
     nasiko status                   # control plane health + metrics
 
+### Observability & usage attribution
+
+The control plane injects the standard `OTEL_*` environment variables into every
+deployment (collector endpoint, `OTEL_SERVICE_NAME`, GenAI capture mode) and routes your
+agent's LLM calls through its LLM gateway (`OPENAI_BASE_URL` etc.). **What the platform
+records depends on whether your agent initializes OpenTelemetry:**
+
+| Your agent | Token usage | Distributed traces | Per-user/session attribution |
+|---|---|---|---|
+| With OTel initialized | ✅ | ✅ | ✅ precise (the forwarded `traceparent` names the flow) |
+| Without OTel | ✅ | ❌ | ✅ best-effort (the router correlates the agent's JWT to its active flow) |
+
+Usage is **never lost**: the LLM gateway meters every call and attributes it to the
+agent's currently-active conversation in Postgres, with zero code in your agent. OTel is
+the contract for the full fidelity path (traces, per-session drill-down, exact
+attribution under concurrent conversations).
+
+How to enable it, per language — all driven by the injected `OTEL_*` env vars:
+
+| Language | How |
+|---|---|
+| Python | `opentelemetry-instrument python main.py`, or initialize the SDK yourself (see `oss/agents/common/telemetry.py`) |
+| Node.js | Set `NODE_OPTIONS="--require @opentelemetry/auto-instrumentations-node/register"` in your Dockerfile, with the package in your image |
+| Java | OTel javaagent: `JAVA_TOOL_OPTIONS="-javaagent:/path/to/opentelemetry-javaagent.jar"` |
+| Go / Rust | No runtime auto-instrumentation exists — initialize the OTel SDK in code (see the Rust agents' `telemetry.rs`) |
+
+Minimum for attribution: instrument your **inbound HTTP server** (extract `traceparent`)
+and your **outbound LLM client** (inject it). Token counts themselves come from the LLM
+provider's response — no GenAI-specific instrumentors are required.
+
 ---
 
 ## Phase 5: Share (Registry)
