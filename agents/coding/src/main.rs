@@ -134,13 +134,37 @@ impl AgentExecutor for CodingAgent {
             };
 
             // Discover workspace instructions and strip prompt comments before injection.
-            let workspace_instructions = instructions::discover(sandbox.as_ref()).await;
+            let mut workspace_instructions = instructions::discover(sandbox.as_ref()).await;
+
+            let agent = CodingAgent { model, api_key, base_url, http };
+
+            // Prune stale instructions if the list has grown past threshold (one LLM call).
+            if let Some(ref wi) = workspace_instructions {
+                if instructions::needs_pruning(wi) {
+                    yield Ok(status_working(&task_id, &context_id, Some("pruning stale instructions")));
+                    let (prune_prompt, annotated) = instructions::build_prune_prompt(wi);
+                    let prune_messages = vec![
+                        serde_json::json!({"role": "system", "content": "You review instruction files for staleness. Respond with only a JSON array."}),
+                        serde_json::json!({"role": "user", "content": prune_prompt}),
+                    ];
+                    if let Ok(resp) = agent.chat(&prune_messages, &[]).await {
+                        let answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
+                        let indices = instructions::parse_prune_response(answer);
+                        if !indices.is_empty() {
+                            let _ = instructions::apply_pruning(
+                                sandbox.as_ref(), wi, &indices, &annotated,
+                            ).await;
+                            // Re-discover after pruning to get updated clean text.
+                            workspace_instructions = instructions::discover(sandbox.as_ref()).await;
+                        }
+                    }
+                }
+            }
+
             let system_prompt = instructions::build_system_prompt(
                 SYSTEM_PROMPT,
                 workspace_instructions.as_ref(),
             );
-
-            let agent = CodingAgent { model, api_key, base_url, http };
             let mut tool_defs = tools::definitions();
             tool_defs.push(tools::update_instructions_definition());
 

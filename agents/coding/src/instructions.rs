@@ -5,7 +5,7 @@
 //! content as a dynamic preamble before the hardcoded system prompt. This gives workspace
 //! owners declarative control over agent behavior without modifying the agent image.
 
-use crate::prompt_comments;
+use crate::prompt_comments::{self, AnnotatedInstruction, Outcome};
 use crate::sandbox::Sandbox;
 
 /// Well-known instruction file paths, checked in priority order.
@@ -130,6 +130,105 @@ pub async fn update_outcome(
     let rendered = prompt_comments::render(&parsed);
     sandbox.write_file(instructions_path, &rendered).await?;
     Ok(())
+}
+
+/// Threshold for triggering a pruning pass. Only instructions with prompt comments count.
+const PRUNE_THRESHOLD: usize = 10;
+
+/// Check whether the instruction list should be pruned. Returns true when the number of
+/// annotated (non-header, non-bare) instructions exceeds the threshold.
+pub fn needs_pruning(instructions: &WorkspaceInstructions) -> bool {
+    let parsed = prompt_comments::parse(&instructions.raw);
+    let annotated_count = parsed.iter().filter(|i| i.comment.is_some()).count();
+    annotated_count > PRUNE_THRESHOLD
+}
+
+/// Build the pruning prompt sent to the LLM. Lists each instruction with its rationale
+/// and asks the model to return a JSON array of indices to revoke.
+pub fn build_prune_prompt(instructions: &WorkspaceInstructions) -> (String, Vec<AnnotatedInstruction>) {
+    let parsed = prompt_comments::parse(&instructions.raw);
+    let annotated: Vec<AnnotatedInstruction> = parsed
+        .into_iter()
+        .filter(|i| i.comment.is_some() && i.comment.as_ref().unwrap().outcome != Outcome::Revoked)
+        .collect();
+
+    let mut listing = String::new();
+    for (i, inst) in annotated.iter().enumerate() {
+        let c = inst.comment.as_ref().unwrap();
+        listing.push_str(&format!(
+            "[{}] instruction: {}\n    trigger: {}\n    hypothesis: {}\n    outcome: {}\n\n",
+            i,
+            inst.text.trim(),
+            c.trigger,
+            c.hypothesis,
+            if c.outcome == Outcome::Confirmed { "confirmed" } else { "pending" },
+        ));
+    }
+
+    let prompt = format!(
+        "You are reviewing a workspace instruction file for staleness. Below are the current \
+instructions with their rationale.\n\n\
+{listing}\
+Review each instruction. An instruction should be REVOKED if:\n\
+- Its trigger is no longer relevant (the underlying issue was fixed structurally)\n\
+- Its hypothesis was wrong (it doesn't actually help)\n\
+- It conflicts with or is superseded by another instruction\n\
+- It is too vague to be actionable\n\n\
+Return ONLY a JSON array of indices to revoke, e.g. [2, 5, 7]. \
+If nothing should be revoked, return []. No explanation needed."
+    );
+
+    (prompt, annotated)
+}
+
+/// Apply pruning decisions: mark the specified instructions as revoked and rewrite the file.
+pub async fn apply_pruning(
+    sandbox: &dyn Sandbox,
+    instructions: &WorkspaceInstructions,
+    revoke_indices: &[usize],
+    annotated: &[AnnotatedInstruction],
+) -> Result<usize, String> {
+    if revoke_indices.is_empty() {
+        return Ok(0);
+    }
+
+    let texts_to_revoke: Vec<&str> = revoke_indices
+        .iter()
+        .filter_map(|&i| annotated.get(i).map(|a| a.text.as_str()))
+        .collect();
+
+    let raw = sandbox.read_file_raw(&instructions.source_file).await?;
+    let mut parsed = prompt_comments::parse(&raw);
+    let mut count = 0;
+
+    for inst in &mut parsed {
+        if let Some(ref mut comment) = inst.comment {
+            if texts_to_revoke.iter().any(|t| inst.text.contains(t)) {
+                comment.outcome = Outcome::Revoked;
+                count += 1;
+            }
+        }
+    }
+
+    let rendered = prompt_comments::render(&parsed);
+    sandbox.write_file(&instructions.source_file, &rendered).await?;
+    Ok(count)
+}
+
+/// Parse the LLM's pruning response into a list of indices.
+pub fn parse_prune_response(response: &str) -> Vec<usize> {
+    let trimmed = response.trim();
+    let json_str = if let Some(start) = trimmed.find('[') {
+        if let Some(end) = trimmed.rfind(']') {
+            &trimmed[start..=end]
+        } else {
+            return Vec::new();
+        }
+    } else {
+        return Vec::new();
+    };
+
+    serde_json::from_str::<Vec<usize>>(json_str).unwrap_or_default()
 }
 
 #[cfg(test)]
