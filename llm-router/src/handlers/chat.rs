@@ -136,7 +136,6 @@ async fn chat_core(
         &ctx.db,
         &agent_id,
         trace_flow.clone(),
-        query.as_deref(),
         ctx.cfg.attribution_window_secs as i64,
     )
     .await;
