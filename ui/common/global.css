@@ -269,7 +269,7 @@
   /* ==== Legacy aliases → DS ==== */
   --color-primary: var(--fg-brand);
   --color-primary-hover: var(--fg-brand-hover);
-  --color-primary-muted: light-dark(color-mix(in srgb, var(--color-primary) 60%, white), color-mix(in srgb, var(--color-primary) 60%, black));
+  /* --color-primary-muted removed — was unused */
   --color-primary-subtle: var(--bg-secondary-brand);
   --color-primary-ring: color-mix(in srgb, var(--color-primary) 20%, transparent);
   --color-on-primary: var(--fg-on-action);
@@ -294,10 +294,10 @@
   --color-neutral-bg: var(--bg-subtle);
   --color-neutral-border: var(--border-primary);
 
-  /* Page canvas / raised surfaces. NightOwl: flat ink shell backdrop (body
-     only — see --shell-bg) → white content card → sand wells on white.
-     --color-bg-base stays a LIGHT wash: table heads, code, hovers use it. */
-  --color-bg-base: light-dark(var(--sand-50), var(--neutral-900));
+  /* Page canvas / raised surfaces.
+     --color-bg-base is the sand wash used for table heads, code wells, hovers.
+     --color-bg-surface is the white plane cards / inputs sit on. */
+  --color-bg-base: var(--bg-group);
   --color-bg-surface: light-dark(var(--white), var(--neutral-800));
   /* Chrome sitting directly on the ink shell (rare — most chrome is the shell itself) */
   --bg-canvas-card: light-dark(var(--shell-control), var(--neutral-800));
