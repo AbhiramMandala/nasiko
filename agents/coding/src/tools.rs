@@ -370,6 +370,21 @@ pub async fn execute_update_instructions(
     }
 }
 
+/// OpenAI-style tool definition for the `prune_instructions` tool (user-triggered).
+pub fn prune_instructions_definition() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "prune_instructions",
+            "description": "Review and prune stale or unhelpful instructions from the workspace instruction file. Use this when the user asks to clean up, prune, or review their instructions. This triggers a review of all annotated instructions and revokes ones that are no longer relevant. Works regardless of the @pruning directive setting.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

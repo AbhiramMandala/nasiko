@@ -167,6 +167,7 @@ impl AgentExecutor for CodingAgent {
             );
             let mut tool_defs = tools::definitions();
             tool_defs.push(tools::update_instructions_definition());
+            tool_defs.push(tools::prune_instructions_definition());
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system_prompt}),
@@ -202,6 +203,33 @@ impl AgentExecutor for CodingAgent {
                                 args,
                                 workspace_instructions.as_ref(),
                             ).await
+                        } else if name == "prune_instructions" {
+                            // Manual prune: build prompt, call LLM, apply.
+                            match workspace_instructions.as_ref() {
+                                Some(wi) => {
+                                    let (prune_prompt, annotated) = instructions::build_prune_prompt(wi);
+                                    let prune_messages = vec![
+                                        serde_json::json!({"role": "system", "content": "You review instruction files for staleness. Respond with only a JSON array."}),
+                                        serde_json::json!({"role": "user", "content": prune_prompt}),
+                                    ];
+                                    match agent.chat(&prune_messages, &[]).await {
+                                        Ok(resp) => {
+                                            let answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
+                                            let indices = instructions::parse_prune_response(answer);
+                                            if indices.is_empty() {
+                                                "No instructions were identified as stale. All current instructions remain active.".to_string()
+                                            } else {
+                                                match instructions::apply_pruning(sandbox.as_ref(), wi, &indices, &annotated).await {
+                                                    Ok(count) => format!("Pruned {count} stale instruction(s). They are now marked as revoked and will be excluded from future sessions."),
+                                                    Err(e) => format!("Error applying pruning: {e}"),
+                                                }
+                                            }
+                                        }
+                                        Err(e) => format!("Error during pruning review: {e}"),
+                                    }
+                                }
+                                None => "No instruction file found in workspace. Nothing to prune.".to_string(),
+                            }
                         } else {
                             tools::execute(sandbox.as_ref(), name, args).await
                         };

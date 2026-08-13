@@ -132,12 +132,15 @@ pub async fn update_outcome(
     Ok(())
 }
 
-/// Default threshold for triggering a pruning pass.
-const DEFAULT_PRUNE_THRESHOLD: usize = 200;
+/// Default threshold for triggering an automatic pruning pass.
+const DEFAULT_PRUNE_THRESHOLD: usize = 20;
 
-/// Pruning mode, controlled by `<!-- @pruning auto|manual|<N> -->` directive in the
-/// instruction file. `auto` uses the default threshold, `manual` disables automatic
-/// pruning entirely, and a bare number sets a custom threshold.
+/// Pruning mode, controlled by two sources (in priority order):
+/// 1. `<!-- @pruning auto|manual|<N> -->` directive in the instruction file
+/// 2. `NASIKO_PRUNE_MODE` env var on the agent container (auto|manual|<N>)
+///
+/// `auto` uses the default threshold (20), `manual` disables automatic pruning,
+/// and a number sets a custom threshold. File directive wins over env var.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PruneMode {
     Auto,
@@ -146,26 +149,35 @@ pub enum PruneMode {
 }
 
 /// Parse the `<!-- @pruning ... -->` directive from the raw instruction file.
-/// Defaults to `Manual` if no directive is present (opt-in behavior).
+/// Falls back to `NASIKO_PRUNE_MODE` env var, then defaults to `Manual`.
 pub fn parse_prune_mode(raw: &str) -> PruneMode {
     for line in raw.lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("<!-- @pruning") {
             let value = rest.trim_end_matches("-->").trim();
-            return match value {
-                "auto" => PruneMode::Auto,
-                "manual" => PruneMode::Manual,
-                other => other
-                    .parse::<usize>()
-                    .map(PruneMode::Threshold)
-                    .unwrap_or(PruneMode::Manual),
-            };
+            return parse_mode_value(value);
         }
+    }
+    // Fall back to env var for platform-level default.
+    if let Ok(val) = std::env::var("NASIKO_PRUNE_MODE") {
+        return parse_mode_value(val.trim());
     }
     PruneMode::Manual
 }
 
-/// Check whether the instruction list should be pruned based on the user's configured mode.
+fn parse_mode_value(value: &str) -> PruneMode {
+    match value {
+        "auto" => PruneMode::Auto,
+        "manual" => PruneMode::Manual,
+        other => other
+            .parse::<usize>()
+            .map(PruneMode::Threshold)
+            .unwrap_or(PruneMode::Manual),
+    }
+}
+
+/// Check whether the instruction list should be automatically pruned based on the
+/// user's configured mode and threshold.
 pub fn needs_pruning(instructions: &WorkspaceInstructions) -> bool {
     let mode = parse_prune_mode(&instructions.raw);
     let threshold = match mode {
