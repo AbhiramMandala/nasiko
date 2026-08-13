@@ -257,8 +257,8 @@
     min-height: var(--control-h-sm);
     padding: 0 var(--s-12);
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-800), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
     font-size: 13px;
     font-weight: 500;
     text-decoration: none;
@@ -267,8 +267,8 @@
   }
   .card-chat-btn svg { flex-shrink: 0; }
   .card-chat-btn:hover {
-    background: light-dark(var(--sand-700), var(--neutral-300));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action-hover);
+    color: var(--fg-on-action);
   }
 
   /* ── Skeleton cards ──────────────────────────────────────────────────────── */

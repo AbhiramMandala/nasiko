@@ -85,8 +85,8 @@
     align-items: center;
     height: var(--control-h-lg);
     padding: 0 var(--space-lg);
-    background: light-dark(var(--sand-800), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
     border: none;
     border-radius: var(--r-8);
     font-size: var(--font-size-sm);
@@ -94,7 +94,7 @@
     cursor: pointer;
     transition: background var(--transition-fast);
 
-    &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+    &:hover { background: var(--bg-action-hover); }
     &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
     &:disabled { opacity: 0.5; cursor: not-allowed; }
   }

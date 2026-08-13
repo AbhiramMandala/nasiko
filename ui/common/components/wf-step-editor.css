@@ -19,12 +19,12 @@
     column-gap: var(--s-12);
     row-gap: var(--s-12);
     padding: var(--s-16) var(--s-20);
-    border: 1px solid light-dark(var(--sand-100), var(--neutral-800));
+    border: 1px solid var(--border-subtle);
     border-radius: var(--r-8);
     background: var(--color-bg-base);
   }
   .step-card:focus-within {
-    border-color: light-dark(var(--sand-200), var(--neutral-700));
+    border-color: var(--border-primary);
   }
 
   /* Gold ordinal chip — the step's only identity marker, and the anchor the
@@ -40,7 +40,7 @@
     /* Centres on the instruction field's first text line (10px pad + 9px). */
     margin-top: 9px;
     border-radius: var(--r-40);
-    background: light-dark(var(--yellow-200), var(--yellow-800));
+    background: var(--bg-secondary-brand-hover);
     font-size: var(--font-size-xs);
     font-weight: 500;
     line-height: 1;
@@ -90,7 +90,7 @@
     width: 1px;
     height: 14px;
     margin-left: var(--s-4);
-    background: light-dark(var(--sand-300), var(--neutral-700));
+    background: var(--bg-inset);
   }
 
   /* Instruction well — raised surface inside the sand card */
@@ -102,7 +102,7 @@
     padding: 10px var(--s-12);
     border: 1px solid transparent;
     border-radius: var(--r-6);
-    background: light-dark(var(--white), var(--neutral-800));
+    background: var(--color-bg-surface);
     resize: vertical;
     font-family: inherit;
     font-size: 13px;
@@ -138,7 +138,7 @@
     border-radius: var(--r-6);
     /* background-color only — the global select rule draws the DS chevron
        via background-image, and a `background:` shorthand would erase it. */
-    background-color: light-dark(var(--white), var(--neutral-800));
+    background-color: var(--color-bg-surface);
     font-family: inherit;
     font-size: 13px;
     color: var(--color-text-main);
@@ -155,10 +155,10 @@
     height: 20px;
     padding: 0 var(--s-8);
     border-radius: var(--r-40);
-    background: light-dark(var(--yellow-100), var(--yellow-900));
+    background: var(--bg-secondary-brand);
     font-size: var(--font-size-xs);
     line-height: 16px;
-    color: light-dark(var(--yellow-700), var(--yellow-300));
+    color: var(--fg-caution);
     white-space: nowrap;
     flex-shrink: 0;
   }
@@ -203,7 +203,7 @@
     height: 18px;
     margin-left: 30px;
     border-radius: var(--r-4);
-    background: light-dark(var(--sand-300), var(--neutral-600));
+    background: var(--bg-surface-active);
   }
 
   .steps-empty {
@@ -212,7 +212,7 @@
     align-items: center;
     gap: var(--s-8);
     padding: var(--space-xl) var(--s-20);
-    border: 1px solid light-dark(var(--sand-100), var(--neutral-800));
+    border: 1px solid var(--border-subtle);
     border-radius: var(--r-8);
     background: var(--color-bg-base);
     text-align: center;

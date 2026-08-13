@@ -451,12 +451,12 @@ chat-page:not(:defined) .chat-skel {
 }
 .pre-action--solid {
   border-color: transparent;
-  background: light-dark(var(--sand-800), var(--neutral-100));
-  color: light-dark(var(--white), var(--neutral-900));
+  background: var(--bg-action);
+  color: var(--fg-on-action);
 }
 .pre-action--secondary {
-  background: light-dark(var(--yellow-100), var(--yellow-900));
-  border-color: light-dark(var(--yellow-200), var(--yellow-800));
+  background: var(--bg-secondary-brand);
+  border-color: var(--bg-secondary-brand-hover);
 }
 
 .pre-controls {
@@ -723,8 +723,8 @@ chat-page:not(:defined) .chat-skel {
 .pre-table--sand {
   --pre-table-stroke: none;
   --pre-table-radius: var(--r-8);
-  --pre-table-head-bg: light-dark(var(--sand-100), var(--neutral-800));
-  --pre-table-rule: light-dark(var(--sand-100), var(--neutral-800));
+  --pre-table-head-bg: var(--bg-subtle);
+  --pre-table-rule: var(--bg-subtle);
 }
 .pre-table--sand .pre-table__row--head {
   border-bottom: none;

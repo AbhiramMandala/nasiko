@@ -115,7 +115,7 @@ styles.replaceSync(`@scope (app-user-menu) {
       /* Dark needs the stronger edge: the panel and the content plane are both
          --color-bg-surface there, so the default hairline leaves the flyout
          indistinguishable from the page behind it. */
-      border: 1px solid light-dark(var(--color-border), var(--neutral-700));
+      border: 1px solid var(--border-primary);
       /* r12 + the single menu shadow token, like every other floating DS
          surface; the doubled md+xl stack read as a heavier, foreign card. */
       border-radius: var(--r-12);

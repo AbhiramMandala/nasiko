@@ -39,7 +39,7 @@
     margin-bottom: var(--space-lg);
     transition: background var(--transition-fast);
 
-    &:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
+    &:hover { background: var(--bg-surface-hover); }
     &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   }
 
@@ -50,7 +50,7 @@
     width: 36px;
     height: 36px;
     border-radius: var(--r-8);
-    background: light-dark(var(--white), var(--neutral-700));
+    background: var(--bg-popover);
     color: var(--color-text-main);
     flex-shrink: 0;
   }
@@ -98,7 +98,7 @@
     border: 1px solid var(--color-border);
     border-radius: var(--r-12);
     padding: var(--space-lg);
-    background: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-page);
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
@@ -106,7 +106,7 @@
   }
 
   .method-card:hover {
-    border-color: light-dark(var(--sand-300), var(--neutral-600));
+    border-color: var(--border-emphasis);
     box-shadow: var(--shadow-md);
   }
 
@@ -145,8 +145,8 @@
     height: var(--control-h-lg);
     border: none;
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-800), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
@@ -154,7 +154,7 @@
   }
 
   .method-btn:hover:not(:disabled) {
-    background: light-dark(var(--sand-700), var(--neutral-300));
+    background: var(--bg-action-hover);
   }
 
   .method-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
@@ -162,6 +162,10 @@
   .method-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .method-card-req.connected {
+    color: var(--color-success, #22c55e);
   }
 
   /* ── Upload modal form ─────────────────────────────────────────────────── */
@@ -219,11 +223,11 @@
   }
   [data-slot="footer"] .btn-dark {
     border: none;
-    background: light-dark(var(--sand-800), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
   }
   [data-slot="footer"] .btn-dark:hover:not(:disabled) {
-    background: light-dark(var(--sand-700), var(--neutral-300));
+    background: var(--bg-action-hover);
   }
   [data-slot="footer"] .btn-dark:disabled { opacity: 0.5; cursor: not-allowed; }
   [data-slot="footer"] .btn-outline {

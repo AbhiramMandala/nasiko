@@ -124,7 +124,7 @@ login-page {
   align-items: center;
   justify-content: center;
   overflow: auto;
-  background: light-dark(var(--white), var(--neutral-900));
+  background: var(--bg-page);
 }
 
 /* ── Desktop: the floating content card ──────────────────────────────────── */

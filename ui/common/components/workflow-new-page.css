@@ -117,7 +117,7 @@
   .gen-notice {
     padding: var(--s-12) var(--s-16);
     border-radius: var(--r-8);
-    background: light-dark(var(--yellow-50), var(--neutral-800));
+    background: var(--bg-caution-subtle);
     font-size: 13px;
     line-height: 18px;
     color: var(--color-text-main);
@@ -184,7 +184,7 @@
     gap: 10px;
     min-height: 122px;
     padding: var(--s-16) var(--s-20);
-    border: 1px solid light-dark(var(--sand-100), var(--neutral-800));
+    border: 1px solid var(--border-subtle);
     border-radius: var(--r-8);
     background: var(--color-bg-base);
     animation: wfn-pulse 1.6s ease-in-out infinite;
@@ -192,9 +192,9 @@
   .drafting-bar {
     height: 10px;
     border-radius: var(--r-40);
-    background: light-dark(var(--sand-200), var(--neutral-700));
+    background: var(--bg-disabled);
   }
-  .drafting-bar.is-short { width: 120px; background: light-dark(var(--sand-300), var(--neutral-600)); }
+  .drafting-bar.is-short { width: 120px; background: var(--bg-surface-active); }
   .drafting-bar.is-mid { width: 60%; }
 
   .spin {

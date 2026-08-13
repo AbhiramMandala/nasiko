@@ -47,21 +47,21 @@ styles.replaceSync(`@scope (app-button) {
     }
 
     &.is-primary {
-      background: light-dark(var(--sand-800), var(--neutral-100));
-      color: light-dark(var(--white), var(--neutral-900));
+      background: var(--bg-action);
+      color: var(--fg-on-action);
 
       &:hover:not(:disabled) {
-        background: light-dark(var(--sand-700), var(--neutral-300));
+        background: var(--bg-action-hover);
       }
     }
 
     &.is-secondary {
-      background: light-dark(var(--yellow-100), var(--yellow-900));
-      border-color: light-dark(var(--yellow-200), var(--yellow-800));
+      background: var(--bg-secondary-brand);
+      border-color: var(--bg-secondary-brand-hover);
       color: var(--color-text-main);
 
       &:hover:not(:disabled) {
-        background: light-dark(var(--yellow-200), var(--yellow-800));
+        background: var(--bg-secondary-brand-hover);
       }
     }
 
@@ -95,11 +95,11 @@ styles.replaceSync(`@scope (app-button) {
     }
 
     &.is-dark {
-      background: light-dark(var(--sand-800), var(--neutral-100));
-      color: light-dark(var(--white), var(--neutral-900));
+      background: var(--bg-action);
+      color: var(--fg-on-action);
 
       &:hover:not(:disabled) {
-        background: light-dark(var(--sand-700), var(--neutral-300));
+        background: var(--bg-action-hover);
       }
     }
 

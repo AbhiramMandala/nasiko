@@ -84,15 +84,15 @@
       width: var(--btn-size);
       height: var(--btn-size);
       border-radius: 50%;
-      background: light-dark(var(--sand-800), var(--neutral-100));
-      color: light-dark(var(--white), var(--neutral-900));
+      background: var(--bg-action);
+      color: var(--fg-on-action);
       border: none;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
       justify-content: center;
 
-      &:hover:not(:disabled) { background: light-dark(var(--sand-700), var(--neutral-300)); }
+      &:hover:not(:disabled) { background: var(--bg-action-hover); }
       &:disabled { opacity: 0.5; cursor: not-allowed; }
     }
     .btn-icon { width: var(--icon-size); height: var(--icon-size); display: block; color: inherit; }

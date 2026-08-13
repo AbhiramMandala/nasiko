@@ -62,7 +62,7 @@ styles.replaceSync(`@scope (app-code-snippet) {
     background: transparent;
     cursor: pointer;
 
-    &:hover { background: light-dark(var(--sand-100), var(--neutral-700)); color: var(--color-text-main); }
+    &:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
     &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
     & svg { width: 14px; height: 14px; }
     &.is-copied { color: var(--color-success); }

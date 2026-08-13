@@ -256,13 +256,13 @@
   .card-action-btn:disabled { opacity: 0.6; cursor: default; }
   /* Contextual primary (Deploy) — contained dark, same as agents-page Chat */
   .card-action-btn--primary {
-    background: light-dark(var(--sand-800), var(--neutral-100));
+    background: var(--bg-action);
     border-color: transparent;
-    color: light-dark(var(--white), var(--neutral-900));
+    color: var(--fg-on-action);
   }
   .card-action-btn--primary:hover:not(:disabled) {
-    background: light-dark(var(--sand-700), var(--neutral-300));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action-hover);
+    color: var(--fg-on-action);
   }
   /* Delete — icon-only quiet-danger, pushed right of the lifecycle actions */
   /* Icon-only lifecycle buttons (Restart/Stop) — square quiet buttons; the

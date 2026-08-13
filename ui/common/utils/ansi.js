@@ -11,11 +11,11 @@
 
 const FG = {
   30: 'var(--color-text-main)',
-  31: 'light-dark(#d73a49, #ff7b72)', // red
-  32: 'light-dark(#22863a, #7ee787)', // green
+  31: 'var(--syntax-keyword)', // red
+  32: 'var(--syntax-literal)', // green
   33: 'light-dark(#b08800, #e3b341)', // yellow
-  34: 'light-dark(#005cc5, #79c0ff)', // blue
-  35: 'light-dark(#6f42c1, #d2a8ff)', // magenta
+  34: 'var(--syntax-number)', // blue
+  35: 'var(--syntax-type)', // magenta
   36: 'light-dark(#0598a8, #56d4dd)', // cyan
   37: 'var(--color-text-muted)',
 };

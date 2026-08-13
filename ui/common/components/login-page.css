@@ -65,8 +65,8 @@
   .btn-submit {
     width: 100%;
     height: var(--control-h-lg);
-    background: light-dark(var(--sand-800), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
     font-weight: 500;
     font-size: var(--font-size-sm);
     border-radius: var(--r-8);
@@ -75,7 +75,7 @@
     margin-top: var(--space-xs);
     transition: background var(--transition-fast);
   }
-  .btn-submit:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+  .btn-submit:hover { background: var(--bg-action-hover); }
   .btn-submit:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; }
   .error-msg {
@@ -109,7 +109,7 @@
     padding: 0 var(--space-md);
     border: 1px solid var(--color-border);
     border-radius: var(--r-8);
-    background: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-page);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-weight: 500;
@@ -119,7 +119,7 @@
   }
   .btn-oauth:hover {
     background: var(--bg-input);
-    border-color: light-dark(var(--sand-300), var(--neutral-600));
+    border-color: var(--border-emphasis);
   }
   .btn-oauth:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   .btn-oauth svg { width: 18px; height: 18px; flex-shrink: 0; }

@@ -282,7 +282,7 @@
     width: 40px;
     height: 40px;
     border-radius: var(--r-8);
-    background: light-dark(var(--white), var(--neutral-800));
+    background: var(--color-bg-surface);
     color: var(--color-text-muted);
     flex-shrink: 0;
   }
@@ -310,7 +310,7 @@
     min-height: var(--control-h-sm);
     padding: 0 var(--s-12);
     border-radius: var(--r-8);
-    background: light-dark(var(--yellow-100), var(--yellow-900));
+    background: var(--bg-secondary-brand);
     font-size: 13px;
     font-weight: 500;
     color: var(--color-text-main);
@@ -319,7 +319,7 @@
     transition: background var(--transition-fast);
   }
   .wf-banner:hover .wf-banner-cta {
-    background: light-dark(var(--yellow-200), var(--yellow-800));
+    background: var(--bg-secondary-brand-hover);
   }
   @media (max-width: 640px) {
     .wf-banner { flex-wrap: wrap; }

@@ -130,8 +130,8 @@
   button.md-code-copy {
     display: grid;
     place-items: center;
-    width: var(--control-h-sm);
-    height: var(--control-h-sm);
+    width: 24px;
+    height: 24px;
     border: none;
     border-radius: var(--radius-sm);
     background: transparent;
@@ -162,29 +162,29 @@
 
   /* Syntax highlighting (highlight.js) — GitHub light/dark palettes */
   :is(.hljs-comment, .hljs-quote) {
-    color: light-dark(#6a737d, #8b949e);
+    color: var(--syntax-comment);
     font-style: italic;
   }
   :is(.hljs-keyword, .hljs-selector-tag, .hljs-doctag, .hljs-template-tag) {
-    color: light-dark(#d73a49, #ff7b72);
+    color: var(--syntax-keyword);
   }
   :is(.hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string) {
-    color: light-dark(#032f62, #a5d6ff);
+    color: var(--syntax-string);
   }
   :is(.hljs-number, .hljs-literal, .hljs-attr, .hljs-selector-attr, .hljs-selector-pseudo) {
-    color: light-dark(#005cc5, #79c0ff);
+    color: var(--syntax-number);
   }
   :is(.hljs-title, .hljs-title.function_, .hljs-title.class_, .hljs-section) {
-    color: light-dark(#6f42c1, #d2a8ff);
+    color: var(--syntax-type);
   }
   :is(.hljs-built_in, .hljs-symbol, .hljs-type, .hljs-selector-class, .hljs-selector-id) {
-    color: light-dark(#e36209, #ffa657);
+    color: var(--syntax-function);
   }
   :is(.hljs-variable, .hljs-template-variable, .hljs-attribute, .hljs-name, .hljs-property) {
-    color: light-dark(#22863a, #7ee787);
+    color: var(--syntax-literal);
   }
   :is(.hljs-meta, .hljs-deletion) {
-    color: light-dark(#b31d28, #ffdcd7);
+    color: var(--syntax-deleted);
   }
   .hljs-emphasis {
     font-style: italic;

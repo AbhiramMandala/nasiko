@@ -53,8 +53,8 @@ styles.replaceSync(`@scope (agent-llm-config) {
     padding: 0 var(--s-16);
     border: none;
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-800), var(--neutral-200));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;

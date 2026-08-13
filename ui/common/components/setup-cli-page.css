@@ -16,7 +16,7 @@
     cursor: pointer;
     align-self: flex-start;
 
-    &:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
+    &:hover { background: var(--bg-surface-hover); }
     &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
     & svg { width: 16px; height: 16px; }
   }
@@ -62,7 +62,7 @@
     &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
 
     &.is-active {
-      background: light-dark(var(--white), var(--neutral-700));
+      background: var(--bg-popover);
       color: var(--color-text-main);
       box-shadow: var(--shadow-sm);
     }
@@ -75,7 +75,7 @@
     width: 20px;
     height: 20px;
     border-radius: 50%;
-    background: light-dark(var(--sand-200), var(--neutral-600));
+    background: var(--bg-surface-active);
     color: var(--color-text-main);
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
@@ -84,8 +84,8 @@
   }
 
   .step-tab.is-active .step-num {
-    background: light-dark(var(--sand-900), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
   }
 
   /* ── Step panels ─────────────────────────────────────────────────────── */

@@ -34,8 +34,8 @@
     gap: var(--space-xs);
     padding: 10px var(--space-md);
     border-radius: var(--r-8);
-    background: light-dark(var(--neutral-900), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-inverse);
+    color: var(--fg-on-action);
     font-size: var(--font-size-sm);
     font-weight: 600;
     cursor: pointer;
@@ -196,7 +196,7 @@
     &.is-ok { background: light-dark(#e5f4e8, #1d3a24); color: var(--fg-success); }
     &.is-error { background: light-dark(#fbe9e7, #3d1f1c); color: var(--fg-error); }
     &.is-building { background: var(--bg-secondary-brand); color: light-dark(#8a6410, #f0bc45); }
-    &.is-off { background: light-dark(var(--neutral-200), var(--neutral-700)); color: var(--color-text-muted); }
+    &.is-off { background: var(--bg-neutral); color: var(--color-text-muted); }
   }
 
   .empty-row td {
@@ -260,8 +260,8 @@
     font-family: var(--font-mono, monospace);
     font-size: var(--font-size-xs);
     line-height: 1.6;
-    background: light-dark(var(--neutral-900), var(--neutral-950, #0c0c0c));
-    color: light-dark(var(--neutral-100), var(--neutral-200));
+    background: var(--bg-code);
+    color: var(--fg-code);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -328,7 +328,7 @@
       position: absolute;
       inset: 0;
       border-radius: var(--r-16);
-      background: light-dark(var(--neutral-300), var(--neutral-600));
+      background: var(--bg-track);
       transition: background 0.15s ease;
       cursor: pointer;
 
@@ -573,8 +573,8 @@
     flex-shrink: 0;
     border: none;
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-800), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
     font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
@@ -582,7 +582,7 @@
     transition: background var(--transition-fast);
 
     & svg { flex-shrink: 0; }
-    &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+    &:hover { background: var(--bg-action-hover); }
   }
 
   .tk-rest, .tk-hover {
@@ -672,8 +672,8 @@
       padding: 0 var(--s-12);
       border: none;
       border-radius: var(--r-6);
-      background: light-dark(var(--sand-800), var(--neutral-100));
-      color: light-dark(var(--white), var(--neutral-900));
+      background: var(--bg-action);
+      color: var(--fg-on-action);
       font-family: inherit;
       font-size: var(--font-size-xs);
       font-weight: 500;
@@ -748,13 +748,13 @@
     &.is-active {
       color: var(--color-text-main);
       font-weight: 600;
-      border-bottom-color: light-dark(var(--neutral-900), var(--neutral-100));
+      border-bottom-color: var(--bg-inverse);
     }
   }
 
   /* Sliding indicator takes over the (neutral, not gold) active bar */
   .upload-tabs.has-tab-indicator .upload-tab.is-active { border-bottom-color: transparent; }
-  .upload-tabs .tab-indicator { background: light-dark(var(--neutral-900), var(--neutral-100)); }
+  .upload-tabs .tab-indicator { background: var(--bg-inverse); }
 
   .upload-queued {
     display: flex;

@@ -140,11 +140,11 @@ app-module-nav:not(:defined) { display: block; }
 
   .child { padding-left: 26px; }
   .child.is-active {
-    background: light-dark(var(--sand-100), var(--neutral-700));
+    background: var(--bg-surface-hover);
     color: var(--fg-primary);
     font-weight: 500;
   }
-  .child.is-active:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
+  .child.is-active:hover { background: var(--bg-surface-hover); }
 
   /* Skeleton while fetchModuleNav resolves */
   .skel-row {

@@ -107,8 +107,8 @@
     gap: var(--space-xs);
     padding: 10px var(--space-lg);
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-800), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
     font-size: var(--font-size-sm);
     font-weight: 600;
     text-decoration: none;
@@ -118,8 +118,8 @@
   }
   .acp-start-btn svg { flex-shrink: 0; }
   .acp-start-btn:hover {
-    background: light-dark(var(--sand-700), var(--neutral-300));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action-hover);
+    color: var(--fg-on-action);
   }
 
   /* -- Overview head: description + JSON toggle --------------------------- */
@@ -600,14 +600,14 @@
     padding: 0 var(--s-12);
     border: none;
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-800), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
     font-size: var(--font-size-xs);
     font-weight: 600;
     cursor: pointer;
     white-space: nowrap;
   }
-  .acp-primary-btn:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+  .acp-primary-btn:hover { background: var(--bg-action-hover); }
   .acp-primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .acp-link-btn {
     border: none;

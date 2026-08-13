@@ -97,14 +97,14 @@
   }
   /* Neutral meta pills sit on sand — lift them to white for contrast */
   .run-card-meta .badge--muted {
-    background: light-dark(var(--white), var(--neutral-800));
+    background: var(--color-bg-surface);
     color: var(--color-text-muted);
   }
 
   .run-error {
     padding: var(--s-12) var(--s-16);
     border-radius: var(--r-8);
-    background: light-dark(var(--white), var(--neutral-800));
+    background: var(--color-bg-surface);
     font-family: var(--font-display);
     font-size: var(--font-size-xs);
     line-height: 18px;
@@ -164,8 +164,8 @@
     min-height: var(--control-h-md);
     padding: 0 var(--s-16);
     border-radius: var(--r-8);
-    background: light-dark(var(--sand-800), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
     font-size: 13px;
     font-weight: 500;
     text-decoration: none;
@@ -173,15 +173,15 @@
     transition: background var(--transition-fast);
   }
   .cta-btn:hover {
-    background: light-dark(var(--sand-700), var(--neutral-300));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action-hover);
+    color: var(--fg-on-action);
   }
   .cta-btn.is-secondary {
-    background: light-dark(var(--yellow-100), var(--yellow-900));
+    background: var(--bg-secondary-brand);
     color: var(--color-text-main);
   }
   .cta-btn.is-secondary:hover {
-    background: light-dark(var(--yellow-200), var(--yellow-800));
+    background: var(--bg-secondary-brand-hover);
     color: var(--color-text-main);
   }
 

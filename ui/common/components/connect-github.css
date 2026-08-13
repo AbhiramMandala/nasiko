@@ -6,7 +6,7 @@
     padding: var(--space-2xl);
     border: 1px solid var(--color-border);
     border-radius: var(--r-12);
-    background: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-page);
     text-align: center;
   }
   .connect-icon {
@@ -41,8 +41,8 @@
     gap: var(--space-sm);
     height: var(--control-h-lg);
     padding: 0 var(--space-xl);
-    background: light-dark(var(--sand-800), var(--neutral-100));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action);
+    color: var(--fg-on-action);
     font-weight: 500;
     font-size: var(--font-size-sm);
     border-radius: var(--r-8);
@@ -52,8 +52,8 @@
     transition: background var(--transition-fast);
   }
   .connect-btn:hover {
-    background: light-dark(var(--sand-700), var(--neutral-300));
-    color: light-dark(var(--white), var(--neutral-900));
+    background: var(--bg-action-hover);
+    color: var(--fg-on-action);
   }
   .connect-btn svg { width: 18px; height: 18px; fill: currentColor; }
   .connect-scopes {
