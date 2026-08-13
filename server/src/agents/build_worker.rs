@@ -23,13 +23,16 @@ use crate::build::routes::execute_build;
 /// A job targets exactly one of an agent or an MCP connector — enforced by
 /// `chk_build_jobs_one_target` (`038_mcp_connector_uploads.sql`), so `agent_id`
 /// and `connector_id` are never both `Some`.
+///
+/// `pub` alongside [`claim_next_job`], so an integration test can assert *which*
+/// job a claim returned rather than only that one was returned.
 #[derive(Debug, sqlx::FromRow)]
-struct BuildJob {
-    id: Uuid,
-    agent_id: Option<Uuid>,
-    connector_id: Option<Uuid>,
-    payload: serde_json::Value,
-    attempt: i32,
+pub struct BuildJob {
+    pub id: Uuid,
+    pub agent_id: Option<Uuid>,
+    pub connector_id: Option<Uuid>,
+    pub payload: serde_json::Value,
+    pub attempt: i32,
 }
 
 /// Main build worker loop. Spawned once at server startup.
@@ -41,8 +44,12 @@ struct BuildJob {
 /// catch jobs left `in_progress` by a crashed replica — without this, a multi-replica
 /// cluster where no replica restarts would leave stuck jobs stranded indefinitely.
 ///
-/// After each successful claim, drains the queue immediately before sleeping
-/// to avoid a 5-second lag when multiple jobs arrive in a burst.
+/// Drains the queue immediately after each wake-up rather than sleeping between
+/// jobs, so a burst of uploads doesn't pay the 5-second poll lag per job.
+///
+/// Up to `config.build_concurrency` jobs run at once. Two jobs for the *same*
+/// agent or connector never overlap — [`claim_next_job`] skips a target that
+/// already has a build in flight.
 pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
     recover_stuck_jobs(&state.db).await;
 
@@ -51,33 +58,19 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
     let mut recovery_tick = tokio::time::interval_at(recovery_start, Duration::from_secs(10 * 60));
     recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    tracing::info!("build worker: started");
+    let concurrency = state.config.build_concurrency; // already clamped to 1..=16 by Config
+    let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+
+    tracing::info!(concurrency, "build worker: started");
     loop {
-        tokio::select! {
-            msg = notify.recv() => {
-                if msg.is_none() {
-                    // Sender was dropped — server is shutting down.
-                    tracing::info!("build worker: notification channel closed, exiting");
-                    return;
-                }
-            }
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
-            _ = recovery_tick.tick() => {
-                recover_stuck_jobs(&state.db).await;
-                // Fall through to the drain loop: recovered jobs are now pending.
-            }
-        }
-        // Drain: keep claiming jobs until the queue is empty.
-        // Claim runs in the outer task (minimal, no panic risk).
-        // Execute runs in a spawned task for panic isolation.
-        // Separating the two means we always have the job_id available in the panic arm,
-        // enabling immediate reset instead of waiting up to STUCK_JOB_MINS.
-        loop {
-            // Phase 1: claim (no panic risk — just DB reads/writes)
-            let job = match claim_next_job(&state).await {
+        // Drain: claim while there is a free slot and the queue has a claimable job.
+        // Claim runs here in the worker loop (minimal, no panic risk); execute runs
+        // in a spawned task so a panicking build can't take the worker down.
+        while tasks.len() < concurrency {
+            let job = match claim_next_job(&state.db).await {
                 Ok(Some(j)) => j,
                 Ok(None) => {
-                    tracing::debug!("build worker: queue empty");
+                    tracing::debug!("build worker: nothing claimable");
                     break;
                 }
                 Err(e) => {
@@ -106,17 +99,47 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
                 continue; // try next job
             }
 
-            // Phase 2: execute in a spawned task (panic-isolated)
             let state_clone = state.clone();
-            match tokio::task::spawn(async move { execute_claimed_job(state_clone, job).await })
-                .await
-            {
-                Ok(()) => {} // job finished (success or failure recorded in DB by execute_claimed_job)
-                Err(ref e) if e.is_panic() => {
-                    tracing::error!(job_id = %job_id, "build worker: job panicked — resetting immediately");
-                    reset_panicked_job(&state.db, job_id, old_attempt).await;
+            let db = state.db.clone();
+            tasks.spawn(async move {
+                // Nested spawn keeps the panic-isolation contract: job_id and
+                // old_attempt stay in scope here, so a panicking build resets
+                // immediately instead of waiting out STUCK_JOB_MINS. The outer
+                // task only awaits and writes to the DB — it can't itself panic.
+                match tokio::task::spawn(execute_claimed_job(state_clone, job)).await {
+                    // Job finished; success or failure already recorded in the DB
+                    // by execute_claimed_job.
+                    Ok(()) => {}
+                    Err(ref e) if e.is_panic() => {
+                        tracing::error!(job_id = %job_id, "build worker: job panicked — resetting immediately");
+                        reset_panicked_job(&db, job_id, old_attempt).await;
+                    }
+                    Err(_) => {
+                        tracing::info!(job_id = %job_id, "build worker: job cancelled (shutdown)");
+                    }
                 }
-                Err(_) => break, // task cancelled (server shutdown)
+            });
+        }
+
+        tokio::select! {
+            // A slot freed up — loop back and refill it without waiting for the poll.
+            _ = tasks.join_next(), if !tasks.is_empty() => {}
+            msg = notify.recv() => {
+                if msg.is_none() {
+                    // Sender was dropped — server is shutting down. Return without
+                    // draining: in-flight jobs stay 'in_progress' and are re-queued by
+                    // recover_stuck_jobs on the next boot, exactly as they are today
+                    // when the runtime aborts them. Awaiting them instead could block
+                    // for a full build_timeout (30 min) only to be killed at the pod's
+                    // termination grace period.
+                    tracing::info!(in_flight = tasks.len(), "build worker: notification channel closed, exiting");
+                    return;
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+            _ = recovery_tick.tick() => {
+                recover_stuck_jobs(&state.db).await;
+                // Fall through to the drain loop: recovered jobs are now pending.
             }
         }
     }
@@ -178,15 +201,42 @@ async fn recover_stuck_jobs(db: &PgPool) {
 /// Claim one pending job from the queue.
 ///
 /// Sets status to `in_progress` and increments attempt within a transaction.
-/// Returns `Ok(None)` if the queue is empty. The returned `job.attempt` is the
-/// pre-increment value; the DB now holds `attempt + 1`.
-async fn claim_next_job(state: &AppState) -> anyhow::Result<Option<BuildJob>> {
-    let mut tx = state.db.begin().await?;
+/// Returns `Ok(None)` if the queue holds nothing claimable. The returned
+/// `job.attempt` is the pre-increment value; the DB now holds `attempt + 1`.
+///
+/// `FOR UPDATE SKIP LOCKED` makes this safe for concurrent claimers, both
+/// across the worker's own in-flight slots and across server replicas.
+///
+/// `pub` (not `pub(crate)`) so the same-target clause is directly testable from
+/// an integration test — same reasoning as [`infer_build_status`]. Takes the
+/// pool rather than `AppState` because that is all it touches, which also lets
+/// a test drive it against a bare migrated database with no worker running.
+pub async fn claim_next_job(db: &PgPool) -> anyhow::Result<Option<BuildJob>> {
+    let mut tx = db.begin().await?;
 
+    // The NOT EXISTS clause serializes per target. Two builds of the same agent
+    // resolve to the same `image_tag` (`agents::build_image_tag` is
+    // name + version) and would deploy the same container_id, so running them
+    // concurrently makes the surviving image nondeterministic. The serial
+    // worker used to prevent this implicitly; with build_concurrency > 1 it has
+    // to be explicit.
+    //
+    // Skipped, not failed: the row stays 'pending' and is claimed on a later
+    // drain pass once its in-flight sibling finishes.
+    //
+    // NOT EXISTS rather than NOT IN: `=` is NULL-safe, so a job targeting an
+    // agent is never blocked by an in-flight connector job (and vice versa)
+    // without needing IS NOT NULL guards. Every row sets exactly one of the two
+    // columns — enforced by `chk_build_jobs_one_target`.
     let job = sqlx::query_as::<_, BuildJob>(
         "SELECT id, agent_id, connector_id, payload, attempt
-         FROM build_jobs
+         FROM build_jobs j
          WHERE status = 'pending'
+           AND NOT EXISTS (
+                 SELECT 1 FROM build_jobs b
+                 WHERE b.status = 'in_progress'
+                   AND (b.agent_id = j.agent_id OR b.connector_id = j.connector_id)
+               )
          ORDER BY created_at
          FOR UPDATE SKIP LOCKED
          LIMIT 1",
@@ -375,8 +425,6 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
         } => {
             let mut platform_env = state.agent_env(agent_id).await;
             platform_env.extend(env);
-            // This legacy job variant is never actually enqueued anymore
-            // (superseded by `GithubClone`), kept for in-flight compat.
             execute_clone_and_deploy(
                 state.runtime.clone(),
                 state.db.clone(),
@@ -408,13 +456,9 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             name,
             repo_full_name,
             branch,
-            image_tag: _,
+            image_tag,
             ports,
             env,
-            version_override,
-            prior_version,
-            prior_image,
-            prior_status,
         } => {
             execute_github_clone_and_deploy(
                 state.clone(),
@@ -425,12 +469,9 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 name,
                 repo_full_name,
                 branch,
+                image_tag,
                 ports,
                 env,
-                version_override,
-                prior_version,
-                prior_image,
-                prior_status,
             )
             .await;
         }

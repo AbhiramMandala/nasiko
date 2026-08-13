@@ -192,6 +192,7 @@ fn optional_fields_use_defaults_when_not_set() {
         "GIT_CLONE_ALLOWED_HOSTS",
         "REGISTRY_IMPORT_ALLOWED_HOSTS",
         "ADMIN_USERNAME",
+        "BUILD_CONCURRENCY",
     ]);
 
     let cfg = Config::from_env().expect("Config::from_env() should succeed with all defaults");
@@ -248,6 +249,9 @@ fn optional_fields_use_defaults_when_not_set() {
     assert_eq!(cfg.oci_registry_host, None);
     assert_eq!(cfg.container_hours_poll_secs, 60);
     assert_eq!(cfg.admin_username, "admin");
+    // Concurrent by default: shipping 1 here would mean every deployment keeps
+    // queuing builds serially until someone discovers the env var.
+    assert_eq!(cfg.build_concurrency, 4);
 
     // git_clone_allowed_hosts has a hardcoded default
     assert!(
@@ -344,6 +348,24 @@ fn router_shortlist_size_is_parsed_from_env() {
     assert_eq!(cfg.router_shortlist_size, 5);
 
     unsafe { std::env::remove_var("ROUTER_SHORTLIST_SIZE") };
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn build_concurrency_is_parsed_and_clamped() {
+    set_required_vars();
+
+    for (env_value, expected) in [("2", 2), ("1", 1), ("0", 1), ("1000", 16)] {
+        unsafe { std::env::set_var("BUILD_CONCURRENCY", env_value) };
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(
+            cfg.build_concurrency, expected,
+            "BUILD_CONCURRENCY={env_value} should resolve to {expected}"
+        );
+    }
+
+    unsafe { std::env::remove_var("BUILD_CONCURRENCY") };
     unset_required_vars();
 }
 
