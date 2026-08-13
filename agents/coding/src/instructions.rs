@@ -132,15 +132,50 @@ pub async fn update_outcome(
     Ok(())
 }
 
-/// Threshold for triggering a pruning pass. Only instructions with prompt comments count.
-const PRUNE_THRESHOLD: usize = 10;
+/// Default threshold for triggering a pruning pass.
+const DEFAULT_PRUNE_THRESHOLD: usize = 200;
 
-/// Check whether the instruction list should be pruned. Returns true when the number of
-/// annotated (non-header, non-bare) instructions exceeds the threshold.
+/// Pruning mode, controlled by `<!-- @pruning auto|manual|<N> -->` directive in the
+/// instruction file. `auto` uses the default threshold, `manual` disables automatic
+/// pruning entirely, and a bare number sets a custom threshold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PruneMode {
+    Auto,
+    Manual,
+    Threshold(usize),
+}
+
+/// Parse the `<!-- @pruning ... -->` directive from the raw instruction file.
+/// Defaults to `Manual` if no directive is present (opt-in behavior).
+pub fn parse_prune_mode(raw: &str) -> PruneMode {
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("<!-- @pruning") {
+            let value = rest.trim_end_matches("-->").trim();
+            return match value {
+                "auto" => PruneMode::Auto,
+                "manual" => PruneMode::Manual,
+                other => other
+                    .parse::<usize>()
+                    .map(PruneMode::Threshold)
+                    .unwrap_or(PruneMode::Manual),
+            };
+        }
+    }
+    PruneMode::Manual
+}
+
+/// Check whether the instruction list should be pruned based on the user's configured mode.
 pub fn needs_pruning(instructions: &WorkspaceInstructions) -> bool {
+    let mode = parse_prune_mode(&instructions.raw);
+    let threshold = match mode {
+        PruneMode::Manual => return false,
+        PruneMode::Auto => DEFAULT_PRUNE_THRESHOLD,
+        PruneMode::Threshold(n) => n,
+    };
     let parsed = prompt_comments::parse(&instructions.raw);
     let annotated_count = parsed.iter().filter(|i| i.comment.is_some()).count();
-    annotated_count > PRUNE_THRESHOLD
+    annotated_count > threshold
 }
 
 /// Build the pruning prompt sent to the LLM. Lists each instruction with its rationale
@@ -315,5 +350,29 @@ mod tests {
 
         let updated = sb.read_file_raw("NASIKO.md").await.unwrap();
         assert!(updated.contains("outcome: revoked"));
+    }
+
+    #[test]
+    fn parse_prune_mode_auto() {
+        let raw = "<!-- @pruning auto -->\n- Some rule.\n";
+        assert_eq!(parse_prune_mode(raw), PruneMode::Auto);
+    }
+
+    #[test]
+    fn parse_prune_mode_manual() {
+        let raw = "<!-- @pruning manual -->\n- Some rule.\n";
+        assert_eq!(parse_prune_mode(raw), PruneMode::Manual);
+    }
+
+    #[test]
+    fn parse_prune_mode_custom_threshold() {
+        let raw = "<!-- @pruning 50 -->\n- Some rule.\n";
+        assert_eq!(parse_prune_mode(raw), PruneMode::Threshold(50));
+    }
+
+    #[test]
+    fn parse_prune_mode_defaults_to_manual() {
+        let raw = "- Some rule with no directive.\n";
+        assert_eq!(parse_prune_mode(raw), PruneMode::Manual);
     }
 }
