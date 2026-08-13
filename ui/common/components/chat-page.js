@@ -7,10 +7,10 @@ import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
 import { usageChipsHtml, usageFromMessage } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
+import { registerAll } from '/common/core/data-sources.js';
 
-if (!window.transcribeAudio) {
-  window.transcribeAudio = transcribeBlob;
-}
+const transcribeAudio = transcribeBlob;
+registerAll({ transcribeAudio }, { replace: true });
 
 import styles from './chat-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';

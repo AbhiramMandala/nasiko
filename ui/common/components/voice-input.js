@@ -4,13 +4,14 @@
  * @element voice-input
  * @attr {string} placeholder - Textarea placeholder text
  * @attr {boolean} no-attachments - Hide the file attachment button
- * @attr {string} transcription-callback - Name of `window[callback](blob)` async function returning transcribed text
+ * @attr {string} transcription-callback - Name of a data-source function returning transcribed text
  * @prop {string} value - Get/set the textarea value
  * @fires voice-input-submit - User submits; `detail: { value: string, files: [] }` — bubbles
  */
 import { VoiceRecorder } from '../utils/voice-utils.js';
 import { icons } from '../utils/icons.js';
 import { showToast } from '../utils/toast.js';
+import { resolveOptional } from '../core/data-sources.js';
 import './app-stack.js';
 import './app-row.js';
 
@@ -49,8 +50,9 @@ export class VoiceInputForm extends HTMLElement {
     this.setState("idle");
 
     const callbackName = this.getAttribute("transcription-callback");
-    if (callbackName && window[callbackName]) {
-      this.voiceRecorder.setTranscriptionCallback(window[callbackName]);
+    if (callbackName) {
+      const fn = resolveOptional(callbackName);
+      if (fn) this.voiceRecorder.setTranscriptionCallback(fn);
     }
   }
 

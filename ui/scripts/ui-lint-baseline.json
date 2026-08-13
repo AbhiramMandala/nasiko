@@ -4,7 +4,7 @@
     "layer-direction": 0,
     "oss-must-not-import-ee": 0,
     "no-private-escape-helper": 0,
-    "no-window-data-function": 28,
+    "no-window-data-function": 0,
     "teardown-required": 0,
     "scope-required": 0,
     "not-defined-belongs-in-not-defined-css": 0,
