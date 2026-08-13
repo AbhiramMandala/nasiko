@@ -15,6 +15,7 @@
 //! from the user's next turn ([`classifier::signal`]) is folded back into those cells, so the
 //! router learns which tier suffices for which kind of query. See [`route_model`].
 
+pub mod attribution;
 pub mod boundary;
 pub mod cache;
 pub mod cells;
@@ -339,23 +340,6 @@ pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
         .and_then(|m| m.text())
 }
 
-/// Number of top-level user turns so far (count of `role == "user"` messages). Tool results
-/// normalize to `role == "tool"`, so this counts only genuine new prompts, not tool-loop
-/// continuations. Combined with [`latest_user_query`], this anchors a coding-agent's
-/// `conv_id` ([`crate::routing::boundary::BoundarySignals::for_coding_agent`]) to *this*
-/// prompt — stable across the tool loop it starts, but distinct from the prompt before and
-/// after it.
-pub fn user_turn_ordinal(messages: &[crate::ir::Message]) -> usize {
-    messages.iter().filter(|m| m.role == "user").count()
-}
-
-/// Whether the transcript's last turn is a tool result — a coding-agent CLI mid tool-loop,
-/// which [`crate::routing::boundary::BoundarySignals::for_coding_agent`] must keep sticky
-/// (`Phase::Continue`).
-pub fn is_tool_continuation(messages: &[crate::ir::Message]) -> bool {
-    messages.last().is_some_and(|m| m.role == "tool")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,47 +604,5 @@ mod tests {
         ];
         assert_eq!(latest_user_query(&messages).as_deref(), Some("second"));
         assert_eq!(latest_user_query(&[msg("system", "only")]), None);
-    }
-
-    #[test]
-    fn user_turn_ordinal_counts_user_messages_not_tool_results() {
-        let msg = |role: &str| Message {
-            role: role.into(),
-            content: None,
-            name: None,
-            tool_calls: None,
-            tool_call_id: None,
-            extra: Map::new(),
-        };
-        assert_eq!(user_turn_ordinal(&[msg("system"), msg("user")]), 1);
-        // A tool loop after the first prompt doesn't add to the count — it's still turn 1.
-        assert_eq!(
-            user_turn_ordinal(&[msg("user"), msg("assistant"), msg("tool")]),
-            1
-        );
-        // A second genuine prompt bumps the ordinal.
-        assert_eq!(
-            user_turn_ordinal(&[msg("user"), msg("assistant"), msg("tool"), msg("user")]),
-            2
-        );
-    }
-
-    #[test]
-    fn is_tool_continuation_detects_a_trailing_tool_result() {
-        let msg = |role: &str| Message {
-            role: role.into(),
-            content: None,
-            name: None,
-            tool_calls: None,
-            tool_call_id: None,
-            extra: Map::new(),
-        };
-        assert!(is_tool_continuation(&[
-            msg("user"),
-            msg("assistant"),
-            msg("tool")
-        ]));
-        assert!(!is_tool_continuation(&[msg("user"), msg("assistant")]));
-        assert!(!is_tool_continuation(&[]));
     }
 }

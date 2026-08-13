@@ -28,8 +28,6 @@ pub struct GatewayConfig {
     pub platform_anthropic_api_key: String,
     /// Platform-owned Gemini key, used for the `gemini` provider.
     pub platform_gemini_api_key: String,
-    /// Platform-owned OpenRouter key, used for the `openrouter` provider.
-    pub platform_openrouter_api_key: String,
 
     /// TTL (seconds) for the in-process per-agent `llm_config` cache. Default 30.
     pub llm_config_cache_ttl_secs: u64,
@@ -43,16 +41,17 @@ pub struct GatewayConfig {
     /// through to the configured model (Level 4), same as a cache miss.
     pub router_decision_ttl_secs: u64,
 
+    /// Max age of a `status='running'` flow for the active-flow attribution fallback
+    /// (an agent whose LLM call carries no `traceparent` is attributed to its running
+    /// flow within this window). Also bounds orphaned flows (a direct-chat flow whose
+    /// completion marking never ran stays 'running' but ages out of attribution).
+    /// Default 300 (5 min).
+    pub attribution_window_secs: u64,
+
     /// Provider base URLs (overridable for tests / self-hosted gateways).
     pub openai_api_base: String,
     pub anthropic_api_base: String,
     pub gemini_api_base: String,
-    pub openrouter_api_base: String,
-
-    /// Optional OpenRouter attribution headers (`HTTP-Referer` / `X-Title`) — affect
-    /// openrouter.ai app rankings only, harmless to leave empty.
-    pub openrouter_http_referer: String,
-    pub openrouter_x_title: String,
 
     /// Gateway origin (`scheme://host[:port]`) that deployed agents reach this router
     /// at, used by the deploy-time injector (Phase 2). The injector appends `/llm/v1`
@@ -72,16 +71,13 @@ impl Default for GatewayConfig {
             platform_openai_api_key: String::new(),
             platform_anthropic_api_key: String::new(),
             platform_gemini_api_key: String::new(),
-            platform_openrouter_api_key: String::new(),
             llm_config_cache_ttl_secs: 30,
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
+            attribution_window_secs: 300,
             openai_api_base: "https://api.openai.com/v1".into(),
             anthropic_api_base: "https://api.anthropic.com/v1".into(),
             gemini_api_base: "https://generativelanguage.googleapis.com/v1beta".into(),
-            openrouter_api_base: "https://openrouter.ai/api/v1".into(),
-            openrouter_http_referer: String::new(),
-            openrouter_x_title: String::new(),
             llm_gateway_base_url: String::new(),
         }
     }
@@ -112,10 +108,6 @@ impl GatewayConfig {
                 &["PLATFORM_GEMINI_API_KEY", "GEMINI_API_KEY"],
                 &d.platform_gemini_api_key,
             ),
-            platform_openrouter_api_key: env_first(
-                &["PLATFORM_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"],
-                &d.platform_openrouter_api_key,
-            ),
             llm_config_cache_ttl_secs: std::env::var("LLM_CONFIG_CACHE_TTL")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -125,12 +117,13 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.router_decision_ttl_secs),
+            attribution_window_secs: std::env::var("LLM_ATTRIBUTION_WINDOW_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.attribution_window_secs),
             openai_api_base: env_or("OPENAI_API_BASE", &d.openai_api_base),
             anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
             gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),
-            openrouter_api_base: env_or("OPENROUTER_API_BASE", &d.openrouter_api_base),
-            openrouter_http_referer: env_or("OPENROUTER_HTTP_REFERER", &d.openrouter_http_referer),
-            openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
         }
     }
@@ -142,7 +135,6 @@ impl GatewayConfig {
         match provider {
             "anthropic" => &self.platform_anthropic_api_key,
             "gemini" => &self.platform_gemini_api_key,
-            "openrouter" => &self.platform_openrouter_api_key,
             _ => &self.platform_openai_api_key,
         }
     }
