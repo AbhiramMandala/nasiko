@@ -7,6 +7,7 @@
     "check-types": "tsc -p tsconfig.json"
   },
   "devDependencies": {
-    "typescript": "^5.7.0"
-  }
+    "typescript": "~5.9.0"
+  },
+  "//": "typescript is pinned to a minor range on purpose: TS 5 and TS 7 resolve an explicit .js import differently (5 checks the .js, 7 prefers a sibling .d.ts), which changes whether the vendored Lit bundle is type-checked. Verified clean against 5.9.3."
 }

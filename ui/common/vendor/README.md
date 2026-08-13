@@ -9,7 +9,7 @@ replace them wholesale when upgrading.
 | `marked.esm.js`    | `marked`       | 15.0.12 | `https://cdn.jsdelivr.net/npm/marked@15.0.12/lib/marked.esm.js`   |
 | `dompurify.esm.js` | `dompurify`    | 3.2.6   | `https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.es.mjs` |
 | `highlight.esm.js` | `highlight.js` | 11.11.1 | `https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/es/common/+esm` (common-languages bundle) |
-| `lit-all.esm.js`   | `lit` + `@lit/context` | 3.3.3 / 1.x | Built locally — see "Rebuilding lit-all.esm.js" below |
+| `lit-all.esm.js`   | `lit` + `@lit/context` | 3.3.3 / 1.x | Built locally — see "Rebuilding lit-all.esm.js" below. **Prepend `// @ts-nocheck` after rebuilding.** |
 
 To upgrade: download the new version from the URL above (bump the version in
 the path), strip any trailing `//# sourceMappingURL=...` line (the `.map`
@@ -52,12 +52,33 @@ Verify the result has no bare imports (`grep -E "from ['\"][^./]" lit-all.esm.js
 must be empty) — a bare specifier would 404 at runtime, since there is no import
 map and no bundler.
 
+Then **prepend the `@ts-nocheck` line** (see below) and bump the table above.
+Verify the result has no bare imports (`grep -E "from ['\"][^./]" lit-all.esm.js`
+must be empty) — a bare specifier would 404 at runtime, since there is no import
+map and no bundler.
+
 Consumed by `/common/core/element.js` (the `NasikoElement` base class).
 
-`lit-all.esm.d.ts` beside it is **ours**, not part of the vendored artifact: it is
-what stops `tsc --checkJs` from type-checking 28KB of minified output, and it gives
-us Lit types with no runtime dependency. Keep it when replacing the `.js`; add to
-it when you start using another Lit export.
+### The `@ts-nocheck` line
+
+`lit-all.esm.js` starts with:
+
+```js
+// @ts-nocheck — vendored, minified third-party output. See vendor/README.md.
+```
+
+It is required, and it is easy to lose on upgrade. `just check-ui-types` runs
+`tsc --checkJs`, and TypeScript walks into any `.js` it resolves — so without this
+line the minified bundle reports ~77 errors of its own and the type-check gate
+becomes useless noise.
+
+A sibling `lit-all.esm.d.ts` was tried first and does **not** work: for an import
+with an explicit `.js` extension, TypeScript 5 resolves the `.js` and ignores the
+declaration file (TypeScript 7 prefers the declaration, which is what made this
+look like it worked). The consequence is that Lit itself is untyped for us — our
+own code still type-checks, we just get no completions from Lit. If that becomes
+annoying, the fix is to depend on `lit`'s real types as a devDependency, not to
+hand-write declarations.
 
 ---
 
