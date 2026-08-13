@@ -1,0 +1,15 @@
+{
+  "_comment": "Measured architectural debt, per rule. Every number here is something someone chose not to fix yet. Counts may go down but never up. Regenerate with `node oss/ui/scripts/ui-lint.mjs --update-baseline`.",
+  "counts": {
+    "layer-direction": 0,
+    "oss-must-not-import-ee": 0,
+    "no-private-escape-helper": 44,
+    "no-window-data-function": 28,
+    "teardown-required": 0,
+    "scope-required": 1,
+    "not-defined-belongs-in-not-defined-css": 0,
+    "no-hardcoded-color": 67,
+    "url-policy": 0,
+    "ee-element-in-shared-css": 14
+  }
+}

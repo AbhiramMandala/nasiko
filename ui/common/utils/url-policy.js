@@ -136,6 +136,7 @@ export function setSearchParams(params, { push = false, url = new URL(location.h
  */
 export function readSearchParams(names, search = location.search) {
   const sp = new URLSearchParams(search);
+  /** @type {Record<string, string>} */
   const out = {};
   for (const name of names) {
     if (checkParam(name)) continue;

@@ -80,6 +80,10 @@ export class SessionExpiredError extends ApiError {
 
 /** The request never reached the server (offline, DNS, TLS, CORS preflight). */
 export class NetworkError extends Error {
+  /**
+   * @param {string} [message]
+   * @param {{ cause?: unknown, path?: string, method?: string }} [opts]
+   */
   constructor(message, { cause, path, method } = {}) {
     super(message || 'Network request failed');
     this.name = 'NetworkError';
@@ -97,6 +101,10 @@ export class NetworkError extends Error {
 
 /** Our own deadline fired before the server answered. */
 export class TimeoutError extends Error {
+  /**
+   * @param {number} ms
+   * @param {{ path?: string, method?: string }} [opts]
+   */
   constructor(ms, { path, method } = {}) {
     super(`Request timed out after ${ms}ms`);
     this.name = 'TimeoutError';
@@ -157,6 +165,6 @@ export function userMessage(err, fallback = 'Something went wrong. Please try ag
     if (m && m.length <= 300 && !m.startsWith('{') && !m.startsWith('<')) return m;
     return fallback;
   }
-  const m = (err.message || String(err)).trim();
+  const m = ((/** @type {any} */ (err).message) || String(err)).trim();
   return m && m.length <= 300 && !m.startsWith('{') && !m.startsWith('<') ? m : fallback;
 }

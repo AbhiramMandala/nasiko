@@ -214,6 +214,7 @@ export async function apiFetch(path, opts = {}) {
   const deadline = withDeadline(callerSignal, timeout);
 
   // Cross-origin CP calls ride the CP's host-only session cookie.
+  /** @type {RequestInit} */
   const init = base ? { credentials: 'include', ...rest } : { ...rest };
   if (deadline.signal) init.signal = deadline.signal;
 

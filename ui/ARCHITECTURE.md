@@ -187,9 +187,31 @@ ee/ui/components/domains/org/   users teams departments access-control …
 - **A cross-domain notification** → add it to `EVENTS` in `core/events.js` with
   its payload shape and the cache keys it invalidates, then `publish(...)`.
 
-## Running the tests
+## Keeping the architecture true
+
+Layer rules in a markdown file rot. These make them mechanical:
 
 ```sh
-just test-ui        # platform-layer tests (Node's runner — no npm, no bundler)
-just test           # Rust unit + frontend + server integration
+just test-ui          # imports resolve, ui-lint, generated globals current, platform tests
+just check-ui-types   # tsc --checkJs over the platform layer (no build, no emit)
+just test-ui-browser  # 33 pages load clean; NasikoElement; the nav seam
+just test             # Rust unit + frontend + server integration
 ```
+
+`scripts/ui-lint.mjs` is the piece that enforces *this* document. Five rules must
+be zero — the layer direction above, the OSS/EE import boundary, teardown for
+outside listeners, `:not(:defined)` staying out of component sheets, and the URL
+policy. Five more ratchet against `ui-lint-baseline.json`, which is the measured
+debt: 44 private escape helpers, 28 `window.fetchX` assignments, 1 unscoped
+component sheet, 67 hardcoded colours, 14 EE-only element references in shared
+CSS. Those numbers may fall, never rise.
+
+The last one is worth noting: it is exactly the work in the next phase. When the
+seven EE-only page components move out of `oss/ui/common`,
+`ee-element-in-shared-css` goes to zero — so the lint measures that phase's
+progress rather than just describing it.
+
+Dev-only tooling (Playwright, TypeScript) is allowed and lives behind
+`package.json` files under `oss/ui/`. The **runtime** keeps its no-build,
+no-`node_modules` property; nothing in those directories is embedded in the
+server binary.

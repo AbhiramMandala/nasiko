@@ -84,8 +84,22 @@ now mandatory for new code:
 - **In legacy (non-Lit) components**, import `escHtml`/`escAttr` from
   `utils/escape.js`. Do not add another private `#esc`.
 
-Tests: `just test-ui` runs the platform-layer tests (`oss/ui/tests/`) with
-Node's built-in runner — no npm, no bundler.
+## What is mechanically enforced
+
+These are no longer conventions. `just test-ui` runs all of it, and CI blocks on it:
+
+| Check | Enforces |
+| :--- | :--- |
+| `scripts/check-imports.mjs` | Every relative and `/common/` specifier resolves. A stale path is a runtime 404 that kills a page's whole module graph. |
+| `scripts/ui-lint.mjs` | The architectural rules. **Must be zero:** layer direction (no upward imports), no `oss/` → `ee/` import, teardown for any outside listener/timer, no `:not(:defined)` in a component sheet, URL-param policy. **Ratcheted against a checked-in baseline:** private escape helpers (44), `window.fetchX` assignments (28), unscoped component sheets (1), hardcoded colours (67), EE-only elements in shared CSS (14). |
+| `scripts/gen-globals.mjs --check` | `types/globals.d.ts` is regenerated from `services/data-functions.js`, so the typed contract cannot drift from the implementation. |
+| `just check-ui-types` | `tsc --checkJs` over the platform layer, clean at zero. No build step, emits nothing. |
+| `just test-ui` | Platform-layer tests (Node's runner). |
+| `just test-ui-browser` | All 33 pages load with no uncaught error; `NasikoElement` end to end; the nav seam across three overlays. |
+
+**The baseline is not a budget.** Numbers in `ui-lint-baseline.json` may go down,
+never up — each one is debt someone chose not to pay yet. If a ratcheted rule
+fails, fix the finding; do not raise the baseline.
 
 ## Component conventions
 

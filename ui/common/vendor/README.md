@@ -54,6 +54,11 @@ map and no bundler.
 
 Consumed by `/common/core/element.js` (the `NasikoElement` base class).
 
+`lit-all.esm.d.ts` beside it is **ours**, not part of the vendored artifact: it is
+what stops `tsc --checkJs` from type-checking 28KB of minified output, and it gives
+us Lit types with no runtime dependency. Keep it when replacing the `.js`; add to
+it when you start using another Lit export.
+
 ---
 
 Consumed by `/common/utils/markdown.js`: `marked`, `dompurify`, `highlight.js`.

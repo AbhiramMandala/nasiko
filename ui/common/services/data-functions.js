@@ -417,25 +417,38 @@ window.saveAgentMcpToolRules = async (agentId, rules) => {
 // The list is explicit rather than derived by scanning `window`: enumerating a
 // real Window walks every global, and some of those are getters that throw or are
 // expensive to touch. An explicit list is also the thing a reviewer can check.
+/**
+ * Every data function defined above, by name.
+ *
+ * Explicit rather than derived by scanning `window`: enumerating a real Window
+ * walks every global, some of which are getters that throw. It is also the thing
+ * a reviewer can check against the assignments.
+ */
+const DATA_FUNCTION_NAMES = [
+  'authorizeMcpOauth', 'clearDefaultLlmConfig', 'connectMcpService', 'createLlmConfig',
+  'createWorkflow', 'deleteLlmConfig', 'deleteMcpConnector', 'deleteMcpCredential',
+  'deleteSession', 'deleteWorkflow', 'disconnectMcpConnection', 'fetchAgentMcpConnectorTools',
+  'fetchAgentMcpConnectors', 'fetchAgentMcpToolRules', 'fetchAgentResourceStats', 'fetchAgents',
+  'fetchAllExecutions', 'fetchBuilds', 'fetchChatSession', 'fetchContainers',
+  'fetchExecution', 'fetchFlowDetail', 'fetchFlows', 'fetchLlmConfigs',
+  'fetchLlmProviders', 'fetchMcpBuildLogs', 'fetchMcpBuildStatus', 'fetchMcpConnections',
+  'fetchMcpConnectors', 'fetchMcpCredentialStatus', 'fetchMcpMyUploads', 'fetchMcpOauthStatus',
+  'fetchMcpToolkits', 'fetchObservabilitySession', 'fetchObservabilitySessions', 'fetchObservabilityTrace',
+  'fetchResourceStats', 'fetchSecretsList', 'fetchSessions', 'fetchSettings',
+  'fetchSpanDetail', 'fetchTokenopsDashboard', 'fetchTraceDetail', 'fetchUsageByAgent',
+  'fetchUsageByModel', 'fetchUsageHistory', 'fetchUsageSummary', 'fetchUserSearch',
+  'fetchWorkflow', 'fetchWorkflowExecutions', 'fetchWorkflows', 'generateWorkflow',
+  'probeMcpConnector', 'registerMcpConnector', 'revokeMcpOauthToken', 'runWorkflow',
+  'saveAgentMcpToolRules', 'saveSettings', 'setAgentMcpConnectorAccess', 'setDefaultLlmConfig',
+  'setMcpCredential', 'updateMcpConnector', 'updateWorkflow', 'uploadMcpServerGithub',
+  'uploadMcpServerZip',
+];
+
+// Look each one up explicitly. Shorthand properties (`{ fetchAgents }`) happen to
+// work here — a bare identifier resolves through the global object — but the
+// binding is implicit, so renaming a window assignment would break registration
+// silently. `window[name]` says what is actually meant.
 registerAll(
-  {
-  authorizeMcpOauth, clearDefaultLlmConfig, connectMcpService, createLlmConfig,
-  createWorkflow, deleteLlmConfig, deleteMcpConnector, deleteMcpCredential,
-  deleteSession, deleteWorkflow, disconnectMcpConnection, fetchAgentMcpConnectorTools,
-  fetchAgentMcpConnectors, fetchAgentMcpToolRules, fetchAgentResourceStats, fetchAgents,
-  fetchAllExecutions, fetchBuilds, fetchChatSession, fetchContainers,
-  fetchExecution, fetchFlowDetail, fetchFlows, fetchLlmConfigs,
-  fetchLlmProviders, fetchMcpBuildLogs, fetchMcpBuildStatus, fetchMcpConnections,
-  fetchMcpConnectors, fetchMcpCredentialStatus, fetchMcpMyUploads, fetchMcpOauthStatus,
-  fetchMcpToolkits, fetchObservabilitySession, fetchObservabilitySessions, fetchObservabilityTrace,
-  fetchResourceStats, fetchSecretsList, fetchSessions, fetchSettings,
-  fetchSpanDetail, fetchTokenopsDashboard, fetchTraceDetail, fetchUsageByAgent,
-  fetchUsageByModel, fetchUsageHistory, fetchUsageSummary, fetchUserSearch,
-  fetchWorkflow, fetchWorkflowExecutions, fetchWorkflows, generateWorkflow,
-  probeMcpConnector, registerMcpConnector, revokeMcpOauthToken, runWorkflow,
-  saveAgentMcpToolRules, saveSettings, setAgentMcpConnectorAccess, setDefaultLlmConfig,
-  setMcpCredential, updateMcpConnector, updateWorkflow, uploadMcpServerGithub,
-  uploadMcpServerZip,
-  },
+  Object.fromEntries(DATA_FUNCTION_NAMES.map((name) => [name, window[name]])),
   { replace: true },
 );

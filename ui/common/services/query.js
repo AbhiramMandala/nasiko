@@ -82,16 +82,20 @@ export function pageToRange(page, limit) {
 export function normalizeList(body, collection) {
   if (Array.isArray(body)) return { data: body, total: body.length };
   if (!body || typeof body !== 'object') return { data: [], total: 0 };
+  // Server shapes vary by route (see the doc comment above); `any` here is the
+  // honest description of an unvalidated response body, and every read below is
+  // guarded by Array.isArray or ??.
+  const b = /** @type {any} */ (body);
   const rows =
-    (collection && Array.isArray(body[collection]) && body[collection]) ||
-    (Array.isArray(body.data) && body.data) ||
+    (collection && Array.isArray(b[collection]) && b[collection]) ||
+    (Array.isArray(b.data) && b.data) ||
     // `items` is not a shape any component reads, but a couple of routes emit
     // it; accept it here so nobody is tempted to "fix" a component instead.
-    (Array.isArray(body.items) && body.items) ||
+    (Array.isArray(b.items) && b.items) ||
     [];
   const total =
-    body.total ??
-    body.total_count ?? // API_CONVENTIONS §1 canonical name; no component read it before
+    b.total ??
+    b.total_count ?? // API_CONVENTIONS §1 canonical name; no component read it before
     rows.length;
   return { data: rows, total: Number(total) || 0 };
 }
@@ -125,6 +129,13 @@ export function normalizeList(body, collection) {
 export function listFetcher(path, options = {}) {
   const { collection, searchParam = 'q', params, mapRows, timeout } = options;
 
+  /**
+   * @param {string} [query]
+   * @param {number} [page] 1-based.
+   * @param {number} [limit]
+   * @param {{ signal?: AbortSignal }} [opts]
+   * @returns {Promise<ListResult>}
+   */
   return async function fetchList(query, page, limit, { signal } = {}) {
     const range = pageToRange(page, limit);
     const extra = typeof params === 'function' ? params() : params || {};
@@ -153,6 +164,9 @@ export function listFetcher(path, options = {}) {
 export function cursorFetcher(path, options = {}) {
   const { collection, limit: defaultLimit = 25 } = options;
 
+  /**
+   * @param {{ cursor?: string|null, limit?: number, signal?: AbortSignal }} [opts]
+   */
   return async function fetchPage({ cursor = null, limit = defaultLimit, signal } = {}) {
     const body = await fetchApi(`${path}${qs({ limit, cursor })}`, { signal });
     const { data } = normalizeList(body, collection);
@@ -172,6 +186,10 @@ export function cursorFetcher(path, options = {}) {
  * @param {string} path Base path, e.g. `/agents`.
  */
 export function detailFetcher(path) {
+  /**
+   * @param {string} id
+   * @param {{ signal?: AbortSignal, params?: Record<string, unknown> }} [opts]
+   */
   return (id, { signal, params } = {}) =>
     fetchApi(`${path}/${encodeURIComponent(id)}${qs(params || {})}`, { signal });
 }

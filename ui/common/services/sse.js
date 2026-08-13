@@ -1,3 +1,8 @@
+/**
+ * @param {string} path Relative to `/api`.
+ * @param {{ onMessage?: (data: any) => void, onError?: (e: Event) => void, onOpen?: (e: Event) => void }} [handlers]
+ * @returns {EventSource}
+ */
 export function connectSSE(path, { onMessage, onError, onOpen } = {}) {
   // Same multi-tenant seam as apiFetch (see services/api.js): base from
   // window.nasikoConfig, credentialed when cross-origin.

@@ -66,6 +66,14 @@ export class NasikoElement extends LitElement {
    */
   static needsUpgradeReservation = true;
 
+  /**
+   * Set by `defineElement()`. Used to build the `@scope (<tag>)` wrapper, so a
+   * component registered with a bare `customElements.define` fails loudly rather
+   * than shipping unscoped CSS.
+   * @type {string|null}
+   */
+  static tagName = null;
+
   /** @type {AbortController} */
   #abort = new AbortController();
   /** @type {Array<() => void>} */
@@ -87,7 +95,11 @@ export class NasikoElement extends LitElement {
    */
   createRenderRoot() {
     /** @type {any} */ (this.constructor).adoptStyles();
-    return this;
+    // Lit's own types declare this returns a ShadowRoot. Returning the element
+    // itself is how you opt out of Shadow DOM, which is the house rule here
+    // (69 of 69 components, zero attachShadow calls — see ARCHITECTURE.md for
+    // why). The cast records that the divergence is deliberate.
+    return /** @type {any} */ (this);
   }
 
   /** Adopt this class's scoped sheet onto the document, once. */
@@ -291,7 +303,7 @@ export class NasikoElement extends LitElement {
    * Bind a `resource()` to this element: loads it, re-renders on change, and
    * returns the resource so `state`/`error` can drive the template.
    * @template T
-   * @param {ReturnType<import('../state/store.js').resource>} res
+   * @param {ReturnType<typeof import('../state/store.js').resource>} res
    */
   useResource(res) {
     this.watch(() => {
