@@ -122,7 +122,7 @@ boundary and only once team count demands it. Nothing here forecloses them.
 oss/ui/
 ├── ARCHITECTURE.md          this file
 ├── AGENTS.md                the binding coding standard
-├── common/
+├── common/            (shared, syncs verbatim to the public repo)
 │   ├── core/                PLATFORM — bootstrap, container, element, errors,
 │   │                        events, data-sources, env
 │   ├── services/            PLATFORM — api, query, sse
@@ -135,7 +135,17 @@ oss/ui/
 │   └── vendor/              single-file ESM deps, incl. lit-all.esm.js
 ├── tests/                   Node-runner tests for the platform layer
 └── web/                     APPLICATION — one .html per URL
+
+ee/ui/
+├── components/              DOMAIN — enterprise page components + user-picker,
+│                            plus ee-page-layout.css (their host geometry).
+│                            Served at /components/ by the EeComponents embed.
+└── web/                     APPLICATION — the 8 enterprise pages
 ```
+
+Nothing under `ee/` may be imported from `oss/` — `ui-lint`'s
+`oss-must-not-import-ee` rule enforces it, and it understands the `/components/`
+mount, so reaching for one from a shared file fails the build.
 
 ### The edition seam
 
@@ -171,8 +181,11 @@ common/
     ├── mcp/                    mcp-page connectors
     ├── tokenops/               tokenops llm-router
     └── settings/               settings secrets setup-cli
-ee/ui/components/domains/org/   users teams departments access-control …
 ```
+
+When that lands, `ui-lint`'s `layerOf()` can classify by directory instead of the
+hand-maintained `PRIMITIVES` set it uses today — which is the point of the split:
+the layer rule stops being a list someone remembers to update.
 
 ## Adding things
 
@@ -203,13 +216,11 @@ be zero — the layer direction above, the OSS/EE import boundary, teardown for
 outside listeners, `:not(:defined)` staying out of component sheets, and the URL
 policy. Five more ratchet against `ui-lint-baseline.json`, which is the measured
 debt: 44 private escape helpers, 28 `window.fetchX` assignments, 1 unscoped
-component sheet, 67 hardcoded colours, 14 EE-only element references in shared
-CSS. Those numbers may fall, never rise.
+component sheet, and 67 hardcoded colours. Those numbers may fall, never rise.
 
-The last one is worth noting: it is exactly the work in the next phase. When the
-seven EE-only page components move out of `oss/ui/common`,
-`ee-element-in-shared-css` goes to zero — so the lint measures that phase's
-progress rather than just describing it.
+`ee-element-in-shared-css` is now **0**, down from 14 — the enterprise split
+closed it. That is the pattern worth repeating: give a phase a rule, and the lint
+measures the work instead of merely describing it.
 
 Dev-only tooling (Playwright, TypeScript) is allowed and lives behind
 `package.json` files under `oss/ui/`. The **runtime** keeps its no-build,

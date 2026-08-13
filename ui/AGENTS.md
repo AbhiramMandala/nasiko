@@ -8,7 +8,10 @@ It has two parts:
 
 - **`common/`** — the single source of shared design-system assets: web
   components, CSS, fonts, icons, and small JS utilities/services. Nothing in
-  here is specific to any one site.
+  here is specific to any one site — and nothing enterprise-only, which is
+  mechanically enforced: enterprise page components live in `ee/ui/components/`
+  (served at `/components/`), and `ui-lint` fails on an EE element name appearing
+  in a shared stylesheet or an `oss/` file importing from `ee/`.
 - **`web/`** — one website's pages (`*.html`), each importing components
   from `common/` and defining its own page-level logic/styles.
 
@@ -91,7 +94,7 @@ These are no longer conventions. `just test-ui` runs all of it, and CI blocks on
 | Check | Enforces |
 | :--- | :--- |
 | `scripts/check-imports.mjs` | Every relative and `/common/` specifier resolves. A stale path is a runtime 404 that kills a page's whole module graph. |
-| `scripts/ui-lint.mjs` | The architectural rules. **Must be zero:** layer direction (no upward imports), no `oss/` → `ee/` import, teardown for any outside listener/timer, no `:not(:defined)` in a component sheet, URL-param policy. **Ratcheted against a checked-in baseline:** private escape helpers (44), `window.fetchX` assignments (28), unscoped component sheets (1), hardcoded colours (67), EE-only elements in shared CSS (14). |
+| `scripts/ui-lint.mjs` | The architectural rules. **Must be zero:** layer direction (no upward imports), no `oss/` → `ee/` import, teardown for any outside listener/timer, no `:not(:defined)` in a component sheet, URL-param policy. **Ratcheted against a checked-in baseline:** private escape helpers (44), `window.fetchX` assignments (28), unscoped component sheets (1), hardcoded colours (67). EE-only elements in shared CSS is now 0. |
 | `scripts/gen-globals.mjs --check` | `types/globals.d.ts` is regenerated from `services/data-functions.js`, so the typed contract cannot drift from the implementation. |
 | `just check-ui-types` | `tsc --checkJs` over the platform layer, clean at zero. No build step, emits nothing. |
 | `just test-ui` | Platform-layer tests (Node's runner). |

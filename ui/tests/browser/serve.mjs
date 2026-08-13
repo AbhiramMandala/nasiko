@@ -1,7 +1,8 @@
 /**
  * Minimal static server mirroring the real serving overlay so pages resolve
  * exactly as they do from the Rust binary:
- *   EeAssets (ee/ui/web) -> OssAssets (oss/ui/web) -> CommonAssets (/common/ -> oss/ui/common)
+ *   EeAssets (ee/ui/web) -> EeComponents (/components/ -> ee/ui/components)
+ *     -> OssAssets (oss/ui/web) -> CommonAssets (/common/ -> oss/ui/common)
  */
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -10,6 +11,8 @@ import { resolve, extname, join } from 'node:path';
 const ROOT = resolve(process.argv[2] || '.');
 const DEFAULT_LAYERS = ['ee/ui/web', 'oss/ui/web'];
 const COMMON = join(ROOT, 'oss/ui/common');
+/** The EE components mount — enterprise page components and their host geometry. */
+const EE_COMPONENTS = join(ROOT, 'ee/ui/components');
 
 const MIME = {
   '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
@@ -26,6 +29,7 @@ async function resolvePath(urlPath, layers) {
   let p = decodeURIComponent(urlPath.split('?')[0]);
   if (p === '/' ) p = '/index.html';
   if (p.startsWith('/common/')) return tryFile(join(COMMON, p.slice('/common/'.length)));
+  if (p.startsWith('/components/')) return tryFile(join(EE_COMPONENTS, p.slice('/components/'.length)));
   for (const layer of layers) {
     const hit = await tryFile(join(layer, p.slice(1)));
     if (hit) return hit;

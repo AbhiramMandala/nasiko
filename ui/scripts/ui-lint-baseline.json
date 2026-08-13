@@ -10,6 +10,6 @@
     "not-defined-belongs-in-not-defined-css": 0,
     "no-hardcoded-color": 67,
     "url-policy": 0,
-    "ee-element-in-shared-css": 14
+    "ee-element-in-shared-css": 0
   }
 }

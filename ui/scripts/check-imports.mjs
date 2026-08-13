@@ -25,6 +25,8 @@ import { glob } from 'node:fs/promises';
 const uiRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(uiRoot, '../..');
 const commonRoot = resolve(uiRoot, 'common');
+/** The EE components mount (`EeComponents` in ee/server/src/main.rs). */
+const eeComponentsRoot = resolve(repoRoot, 'ee/ui/components');
 
 const SPEC_PATTERNS = [
   /(?:^|\s)(?:import|export)[^'"\n]*from\s*['"]([^'"]+)['"]/gm,
@@ -35,6 +37,7 @@ const SPEC_PATTERNS = [
 const SEARCH = [
   'oss/ui/common/**/*.js',
   'oss/ui/web/*.js',
+  'ee/ui/components/**/*.js',
   'ee/ui/web/**/*.js',
   'ee/ui/registry/**/*.js',
 ];
@@ -58,6 +61,7 @@ for (const pattern of SEARCH) {
     for (const spec of specs) {
       let target;
       if (spec.startsWith('/common/')) target = resolve(commonRoot, spec.slice('/common/'.length));
+      else if (spec.startsWith('/components/')) target = resolve(eeComponentsRoot, spec.slice('/components/'.length));
       else if (spec.startsWith('.')) target = resolve(dirname(abs), spec);
       else continue; // bare specifier, or a site-root path resolved by the server overlay
       checked++;

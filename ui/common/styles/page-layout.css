@@ -49,20 +49,13 @@ your-agents-page {
 }
 
 /* Pages whose narrow-viewport gutter is the wider --space-xl. */
-access-control-page,
 add-agent-github-page,
-departments-page,
-group-mappings-page,
 llm-router-page,
 mcp-page,
 observability-session-page,
 resources-page,
-runtime-page,
 settings-page,
-team-access-page,
-teams-page,
-tokenops-page,
-users-page {
+tokenops-page {
   display: block;
   padding: var(--space-lg) var(--space-xl);
 }
@@ -151,19 +144,12 @@ login-page {
   workflow-detail-page,
   workflow-new-page,
   workflows-page,
-  access-control-page,
   add-agent-github-page,
-  departments-page,
-  group-mappings-page,
   llm-router-page,
   mcp-page,
   observability-session-page,
   resources-page,
-  runtime-page,
-  settings-page,
-  team-access-page,
-  teams-page,
-  users-page {
+  settings-page {
     padding: var(--card-content-pad);
   }
 
@@ -179,21 +165,14 @@ login-page {
 
     Must follow the `padding` shorthand above, which would otherwise reset it.
   */
-  access-control-page,
   agents-page,
   builds-page,
-  departments-page,
   executions-page,
   flows-page,
-  group-mappings-page,
   mcp-page,
   resources-page,
-  runtime-page,
   sessions-page,
   settings-page,
-  team-access-page,
-  teams-page,
-  users-page,
   workflows-page,
   your-agents-page {
     padding-left: calc(224px + var(--s-64));

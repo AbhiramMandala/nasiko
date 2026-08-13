@@ -62,6 +62,9 @@ function layerOf(rel) {
     const name = basename(rel).replace(/\.(js|css)$/, '');
     return PRIMITIVES.has(name) ? LAYER.DESIGN_SYSTEM : LAYER.COMPONENT;
   }
+  // Enterprise page components: Domain layer. They import downward into the
+  // shared design system and platform; nothing in oss/ui may import them.
+  if (rel.startsWith('ee/ui/components/')) return LAYER.DOMAIN;
   if (rel.startsWith('ee/ui/web/services/') || rel.startsWith('oss/ui/web/')) return LAYER.APPLICATION;
   if (rel.startsWith('ee/ui/')) return LAYER.APPLICATION;
   return LAYER.COMPONENT;
@@ -70,6 +73,9 @@ function layerOf(rel) {
 /** Resolve an import specifier to a repo-relative path, or null if not local. */
 function resolveSpec(fromRel, spec) {
   if (spec.startsWith('/common/')) return 'oss/ui/common/' + spec.slice('/common/'.length);
+  // The EE components mount (`EeComponents` in ee/server/src/main.rs). Mapping it
+  // here is what lets `oss-must-not-import-ee` see an oss/ file reaching for it.
+  if (spec.startsWith('/components/')) return 'ee/ui/components/' + spec.slice('/components/'.length);
   if (spec.startsWith('.')) {
     return relative(REPO, resolve(dirname(resolve(REPO, fromRel)), spec)).replace(/\\/g, '/');
   }
@@ -264,7 +270,9 @@ const rules = [
     id: 'ee-element-in-shared-css',
     enforce: 'ratchet',
     why: 'oss/ui is synced to the public repo. An enterprise-only element name in a shared stylesheet ships ' +
-         'selectors for a page the OSS binary cannot serve, and is a layering violation the compiler cannot catch.',
+         'selectors for a page the OSS binary cannot serve, and is a layering violation the compiler cannot catch. ' +
+         'Now zero: those components live in ee/ui/components/ and their host geometry in ' +
+         'ee/ui/components/ee-page-layout.css. Keep it there.',
     check({ rel, source, isJs }) {
       if (isJs || !rel.startsWith('oss/ui/common/')) return [];
       const out = [];
@@ -295,6 +303,7 @@ const EE_ONLY_ELEMENTS = [
 const SEARCH = [
   'oss/ui/common/**/*.{js,css}',
   'oss/ui/web/*.{js,css,html}',
+  'ee/ui/components/**/*.{js,css}',
   'ee/ui/web/**/*.{js,css,html}',
 ];
 const SKIP = (p) => p.includes('/vendor/') || p.includes('/tests/') || p.includes('/node_modules/');
