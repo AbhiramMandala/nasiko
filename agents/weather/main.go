@@ -122,18 +122,35 @@ func geocode(ctx context.Context, query string) (float64, float64, string, error
 
 func cleanQuery(q string) string {
 	q = strings.TrimSpace(q)
+	lower := strings.ToLower(q)
+	// Strip trailing punctuation ("paris?" -> "paris") so it doesn't hit the geocoder.
+	q = strings.TrimRight(strings.TrimSpace(q), "?!.,")
+	// Order matters: longest/most-specific prefixes first so "what is the weather in "
+	// wins over the bare "weather in ".
 	for _, prefix := range []string{
-		"weather in ", "weather for ", "weather at ",
-		"forecast for ", "forecast in ",
-		"what's the weather in ", "what's the weather like in ",
-		"how's the weather in ", "temperature in ",
+		"what's the weather like in ", "what is the weather like in ",
+		"what's the weather in ", "what is the weather in ",
+		"what's weather in ", "what is weather in ",
+		"what's the weather like ", "what is the weather like ",
+		"what's the weather ", "what is the weather ",
+		"what's weather ", "what is weather ",
+		"what's the weather", "what is the weather",
+		"what's weather", "what is weather",
+		"how's the weather in ", "how is the weather in ",
+		"how's the weather ", "how is the weather ",
+		"tell me the weather in ", "tell me the weather ",
+		"the weather in ", "the weather ",
+		"weather in ", "weather for ", "weather at ", "weather ",
+		"forecast for ", "forecast in ", "forecast ",
+		"temperature in ", "temperature ",
+		"what is ", "what's ",
 	} {
-		if strings.HasPrefix(strings.ToLower(q), prefix) {
+		if strings.HasPrefix(lower, prefix) {
 			q = q[len(prefix):]
 			break
 		}
 	}
-	return strings.TrimSpace(q)
+	return strings.TrimSpace(strings.TrimRight(strings.TrimSpace(q), "?!.,"))
 }
 
 func weatherDescription(code int) string {
