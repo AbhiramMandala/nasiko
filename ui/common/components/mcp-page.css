@@ -149,7 +149,7 @@
 
     &.is-ok { background: var(--fg-success); }
     &.is-error { background: var(--fg-error); }
-    &.is-building { background: light-dark(#e8a817, #f0bc45); }
+    &.is-building { background: var(--fg-warning); }
     &.is-off { background: var(--color-border); }
   }
 
@@ -160,9 +160,9 @@
     padding: 2px 10px;
     border-radius: var(--r-16);
 
-    &.is-ok { background: light-dark(#e5f4e8, #1d3a24); color: var(--fg-success); }
-    &.is-error { background: light-dark(#fbe9e7, #3d1f1c); color: var(--fg-error); }
-    &.is-building { background: var(--bg-secondary-brand); color: light-dark(#8a6410, #f0bc45); }
+    &.is-ok { background: var(--bg-success); color: var(--fg-success); }
+    &.is-error { background: var(--bg-error); color: var(--fg-error); }
+    &.is-building { background: var(--bg-secondary-brand); color: var(--fg-warning); }
     &.is-off { background: var(--bg-neutral); color: var(--color-text-muted); }
   }
 

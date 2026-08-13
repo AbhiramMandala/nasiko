@@ -27,7 +27,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       border-radius: var(--r-8);
       background: var(--shell-bg);
       color: var(--shell-fg);
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+      box-shadow: var(--shell-shadow);
       overflow: hidden;
       /* Mockup: no dim, no blur — outside clicks still close via the
          (invisible) backdrop. Overrides global dialog::backdrop. */
@@ -63,7 +63,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       font-size: 11px;
       color: var(--shell-fg-muted);
       background: transparent; /* global kbd rule paints a light chip */
-      border: 1px solid rgba(255, 255, 255, 0.16);
+      border: 1px solid var(--shell-border-kbd);
       border-radius: var(--r-4);
       padding: 1px 5px;
       cursor: default;
@@ -92,7 +92,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       }
       &::-webkit-scrollbar { width: 6px; }
       &::-webkit-scrollbar-track { background: transparent; }
-      &::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 3px; }
+      &::-webkit-scrollbar-thumb { background: var(--shell-scrollbar); border-radius: 3px; }
     }
     .result {
       display: flex;
@@ -101,7 +101,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       padding: 6px var(--s-8);
       border-radius: var(--r-6);
       cursor: pointer;
-      &:hover { background: rgba(255, 255, 255, 0.06); }
+      &:hover { background: var(--shell-hover); }
       &.is-active {
         background: var(--shell-control-hover);
         & .result-icon { color: var(--shell-selected); }
@@ -130,7 +130,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       align-items: center;
       gap: var(--s-12);
       padding: var(--s-8) var(--s-12);
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      border-top: 1px solid var(--shell-border-subtle);
     }
     .footer-hint { display: flex; align-items: center; gap: var(--s-4); font-size: 11px; color: var(--shell-fg-muted); }
     .footer-key {
@@ -141,7 +141,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       font-size: 11px;
       color: var(--shell-fg-muted);
       background: transparent; /* global kbd rule paints a light chip */
-      border: 1px solid rgba(255, 255, 255, 0.16);
+      border: 1px solid var(--shell-border-kbd);
       border-radius: var(--r-4);
       padding: 0 4px;
     }

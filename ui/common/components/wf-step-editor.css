@@ -28,7 +28,7 @@
   }
 
   /* Gold ordinal chip — the step's only identity marker, and the anchor the
-     connector spine below the card lines up with (mockup: #F7E19C fill). */
+     connector spine below the card lines up with (mockup: yellow-200 fill). */
   .step-num {
     grid-column: 1;
     grid-row: 1;

@@ -122,6 +122,11 @@
   --shell-rail-width:     56px;  /* 32px buttons + gutters */
   --shell-rail-expanded:  240px;
   --shell-logo-glow:      drop-shadow(0 4px 16px rgba(247, 225, 156, 0.16));
+  --shell-shadow:         0 12px 32px color-mix(in srgb, #000000 32%, transparent);
+  --shell-border-subtle:  color-mix(in srgb, #FFFFFF 8%, transparent);
+  --shell-border-kbd:     color-mix(in srgb, #FFFFFF 16%, transparent);
+  --shell-hover:          color-mix(in srgb, #FFFFFF 6%, transparent);
+  --shell-scrollbar:      color-mix(in srgb, #FFFFFF 18%, transparent);
 
   /* ==== Control metrics (fig-tokens control-*) ==== */
   --control-h-sm: 28px;
