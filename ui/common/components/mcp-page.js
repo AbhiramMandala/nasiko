@@ -27,6 +27,7 @@ import './app-skeleton.js';
 import './app-module-nav.js';
 import './autocomplete.js';
 import { escHtml } from '/common/utils/escape.js';
+import '/common/components/app-button.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const AUTH_LABELS = {
@@ -86,8 +87,8 @@ class McpPage extends HTMLElement {
           <p class="page-sub">Connect external MCP servers and control which agents can use their tools</p>
         </div>
         <div class="head-actions">
-          <button class="btn-outline" id="upload-btn" type="button">${icons.upload('', 14)} Upload MCP server</button>
-          <button class="btn-dark" id="register-btn" type="button">${icons.plus('', 14)} Register connector</button>
+          <app-button variant="outline" id="upload-btn">${icons.upload('', 14)} Upload MCP server</app-button>
+          <app-button variant="dark" id="register-btn">${icons.plus('', 14)} Register connector</app-button>
         </div>
       </div>
 
@@ -113,7 +114,7 @@ class McpPage extends HTMLElement {
         <div class="logs-panel" id="logs-panel" hidden>
           <div class="logs-head">
             <span class="logs-title">${icons.terminal('', 14)} Build logs — <span id="logs-name"></span></span>
-            <button class="btn-ghost" id="logs-close" type="button">${icons.x('', 14)}</button>
+            <app-button variant="icon" id="logs-close">${icons.x('', 14)}</app-button>
           </div>
           <pre id="logs-pre"></pre>
         </div>
@@ -348,7 +349,7 @@ class McpPage extends HTMLElement {
         ${icons.network('', 32)}
         <h3>No connectable services yet</h3>
         <p>Register an external MCP server or upload your own to give agents new tools.</p>
-        <button class="btn-dark" id="empty-register-btn" type="button">${icons.plus('', 14)} Register connector</button>
+        <app-button variant="dark" id="empty-register-btn">${icons.plus('', 14)} Register connector</app-button>
       </div>`;
   }
 
@@ -473,8 +474,8 @@ class McpPage extends HTMLElement {
           <div class="form-error" id="connect-error" hidden></div>
         </div>
         <div data-slot="footer">
-          <button class="btn-outline" id="connect-cancel" type="button">Cancel</button>
-          <button class="btn-dark" id="connect-submit" type="button">Connect</button>
+          <app-button variant="outline" id="connect-cancel">Cancel</app-button>
+          <app-button variant="dark" id="connect-submit">Connect</app-button>
         </div>
       </app-modal>`;
   }
@@ -589,7 +590,7 @@ class McpPage extends HTMLElement {
       </div>
       <div class="cred-form">
         <input type="password" id="cred-value" placeholder="${c.auth_type === 'basic' ? 'username:password' : 'API key / token'}" />
-        <button class="btn-dark" id="cred-save" type="button">${connected ? 'Replace' : 'Save'}</button>
+        <app-button variant="dark" id="cred-save">${connected ? 'Replace' : 'Save'}</app-button>
       </div>
       <div class="form-error" id="cred-error" hidden></div>
     `;
@@ -636,7 +637,7 @@ class McpPage extends HTMLElement {
         <span class="cred-actions">
           ${status.authorized
             ? `<button class="btn-ghost danger" id="oauth-revoke" type="button">Revoke</button>`
-            : `<button class="btn-dark" id="oauth-authorize" type="button">${icons.externalLink('', 14)} Authorize</button>`}
+            : `<app-button variant="dark" id="oauth-authorize">${icons.externalLink('', 14)} Authorize</app-button>`}
         </span>
       </div>
       <div class="form-error" id="oauth-error" hidden></div>
@@ -678,7 +679,7 @@ class McpPage extends HTMLElement {
           <label>Server URL
             <div class="url-row">
               <input name="url" required type="url" placeholder="https://mcp.example.com/mcp" autocomplete="off" />
-              <button class="btn-outline" id="probe-btn" type="button">${icons.search('', 14)} Probe</button>
+              <app-button variant="outline" id="probe-btn">${icons.search('', 14)} Probe</app-button>
             </div>
           </label>
           <div class="probe-result" id="probe-result" hidden></div>
@@ -717,8 +718,8 @@ class McpPage extends HTMLElement {
           <div class="form-error" id="register-error" hidden></div>
         </form>
         <div data-slot="footer">
-          <button class="btn-outline" id="register-cancel" type="button">Cancel</button>
-          <button class="btn-dark" id="register-submit" type="button">Register</button>
+          <app-button variant="outline" id="register-cancel">Cancel</app-button>
+          <app-button variant="dark" id="register-submit">Register</app-button>
         </div>
       </app-modal>`;
   }
@@ -811,8 +812,8 @@ class McpPage extends HTMLElement {
         <div class="form-error" id="upload-error" hidden></div>
         <div class="upload-queued" id="upload-queued" hidden></div>
         <div data-slot="footer">
-          <button class="btn-outline" id="upload-cancel" type="button">Cancel</button>
-          <button class="btn-dark" id="upload-submit" type="button">Queue build</button>
+          <app-button variant="outline" id="upload-cancel">Cancel</app-button>
+          <app-button variant="dark" id="upload-submit">Queue build</app-button>
         </div>
       </app-modal>`;
   }
@@ -891,7 +892,7 @@ class McpPage extends HTMLElement {
           <td class="cell-muted">${escHtml(info.error_detail || info.status_message || '—')}</td>
           <td class="cell-url">${escHtml(u.url || '—')}</td>
           <td class="cell-actions">
-            <button class="btn-ghost act-logs" type="button" title="Build logs">${icons.terminal('', 14)}</button>
+            <app-button variant="icon" class="act-logs" title="Build logs">${icons.terminal('', 14)}</app-button>
           </td>
         </tr>`;
     }).join('');
@@ -960,7 +961,7 @@ class McpPage extends HTMLElement {
                 </label>
               </td>
               <td class="cell-actions">
-                <button class="btn-ghost act-tools" type="button">${icons.chevronDown('', 14)} Tools</button>
+                <app-button variant="ghost" class="act-tools">${icons.chevronDown('', 14)} Tools</app-button>
               </td>
             </tr>
             <tr class="tools-row" data-for="${escHtml(c.connector_id)}" hidden>
@@ -1025,7 +1026,7 @@ class McpPage extends HTMLElement {
       </div>
       <div class="tools-actions">
         <span class="tools-save-status" hidden></span>
-        <button class="btn-dark tools-save" type="button">Save rules</button>
+        <app-button variant="dark" class="tools-save">Save rules</app-button>
       </div>`;
     editor.querySelector('.tools-save').addEventListener('click', async () => {
       const rules = [...editor.querySelectorAll('.tool-stance')].map((sel) => ({

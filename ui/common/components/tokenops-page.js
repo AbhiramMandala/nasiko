@@ -12,6 +12,7 @@ import { icons } from '../utils/icons.js';
 // rendered as inert unknown elements.
 import '/common/components/app-skeleton.js';
 import { escHtml } from '/common/utils/escape.js';
+import '/common/components/app-button.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const COLUMNS = [
@@ -57,7 +58,7 @@ class TokenopsPage extends HTMLElement {
         </div>
         <div class="head-actions">
           <select id="month-select" aria-label="Period">${this.#monthOptions()}</select>
-          <button class="btn-dark" id="export-btn" type="button">Export</button>
+          <app-button variant="dark" id="export-btn">Export</app-button>
         </div>
       </div>
 

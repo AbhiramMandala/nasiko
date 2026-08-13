@@ -53,24 +53,6 @@
     &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   }
 
-  .btn-dark {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    height: var(--control-h-lg);
-    padding: 0 var(--s-16);
-    border-radius: var(--r-8);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-
-    &:hover { background: var(--bg-action-hover); }
-    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-    & svg { width: 14px; height: 14px; }
-  }
-
   /* ── KPI strip: columns divided by hairlines, top+bottom rules ────────── */
   .kpi-strip {
     display: grid;

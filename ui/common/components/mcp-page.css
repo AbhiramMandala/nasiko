@@ -28,39 +28,6 @@
     flex-shrink: 0;
   }
 
-  .btn-dark {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    padding: 10px var(--space-md);
-    border-radius: var(--r-8);
-    background: var(--bg-inverse);
-    color: var(--fg-on-action);
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    cursor: pointer;
-
-    &:hover { opacity: 0.85; }
-    & svg { width: 14px; height: 14px; }
-  }
-
-  .btn-outline {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    padding: 10px var(--space-md);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: var(--color-bg-surface);
-    color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    cursor: pointer;
-
-    &:hover { background: var(--bg-input); }
-    & svg { width: 14px; height: 14px; }
-  }
-
   .btn-ghost {
     display: inline-flex;
     align-items: center;

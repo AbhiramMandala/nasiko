@@ -10,6 +10,7 @@ import '/common/components/app-modal.js';
 import '/common/components/agent-llm-config.js';
 import '/common/components/secrets-manager.js';
 import { escHtml, escAttr } from '/common/utils/escape.js';
+import '/common/components/app-button.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 // Tabs marked `managed` render only for callers who can manage the agent
@@ -150,8 +151,8 @@ class AgentCardPage extends HTMLElement {
 
   #topbarHtml(a) {
     const actions = this.#canManage && a.status === 'running' ? `
-            <button class="acp-action-btn" data-action="restart" title="Restart agent">${icons.refresh('', 14)} Restart</button>
-            <button class="acp-action-btn" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</button>` : '';
+            <app-button variant="ghost" data-action="restart" title="Restart agent">${icons.refresh('', 14)} Restart</app-button>
+            <app-button variant="ghost" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</app-button>` : '';
     return `
         <div class="acp-topbar">
           <a class="acp-back" href="/your-agents.html" title="Back to Your Agents" aria-label="Back to Your Agents">
@@ -338,7 +339,7 @@ class AgentCardPage extends HTMLElement {
   async #runContainerAction(btn, verb, busyLabel) {
     const original = btn.innerHTML;
     btn.disabled = true;
-    btn.textContent = busyLabel;
+    btn.label = busyLabel;
     try {
       const res = await apiFetch(`/containers/${encodeURIComponent(this.#agent.name)}/${verb}`, { method: 'POST' });
       if (!res.ok) throw new Error(await res.text());
@@ -346,8 +347,8 @@ class AgentCardPage extends HTMLElement {
       location.reload();
     } catch (err) {
       showToast(`Failed to ${verb}: ${err.message}`);
-      btn.disabled = false;
       btn.innerHTML = original;
+      btn.disabled = false;
     }
   }
 
@@ -356,7 +357,7 @@ class AgentCardPage extends HTMLElement {
     if (!confirm(`Delete "${displayName}"? This removes the agent from the registry, revokes all grants, and stops its container.`)) return;
     const original = btn.innerHTML;
     btn.disabled = true;
-    btn.textContent = 'Deleting...';
+    btn.label = 'Deleting...';
     try {
       const res = await apiFetch(`/agents/${encodeURIComponent(this.#agent.id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
@@ -389,7 +390,7 @@ class AgentCardPage extends HTMLElement {
                 <p class="acp-section-sub">Every build of this agent. Re-upload to ship a new
                   version, or roll back to a previous image.</p>
               </div>
-              <button type="button" class="acp-primary-btn" data-action="reupload">${icons.upload('', 14)} Re-upload</button>
+              <app-button variant="dark" data-action="reupload">${icons.upload('', 14)} Re-upload</app-button>
             </div>
             <div id="acp-versions-body"><app-skeleton height="200px"></app-skeleton></div>
           </section>
@@ -448,8 +449,8 @@ class AgentCardPage extends HTMLElement {
               <td class="acp-td-muted">${v.created_at ? new Date(v.created_at).toLocaleString() : '—'}</td>
               <td>
                 ${v.is_active || !v.can_rollback ? '' : `
-                  <button type="button" class="acp-action-btn" data-action="rollback"
-                    data-version="${escAttr(v.version)}">Roll back</button>`}
+                  <app-button variant="ghost" data-action="rollback"
+                    data-version="${escAttr(v.version)}">Roll back</app-button>`}
               </td>
             </tr>`).join('')}
         </tbody>
@@ -682,7 +683,7 @@ class AgentCardPage extends HTMLElement {
             <h2 class="acp-section-title">Access</h2>
             <p class="acp-section-sub">Grant access to ${isEe ? 'users, teams, or departments' : 'users or agents'}. ${isEe ? 'Access is automatically inherited by members.' : ''}</p>
           </div>
-          <button type="button" class="acp-primary-btn" id="acp-grant-open">${icons.plus('', 14)} Grant access</button>
+          <app-button variant="dark" id="acp-grant-open">${icons.plus('', 14)} Grant access</app-button>
         </div>
         <div class="acp-access-search">
           ${icons.search('acp-access-search-icon', 14)}
@@ -913,8 +914,8 @@ class AgentCardPage extends HTMLElement {
           <p class="acp-form-error" id="acp-grant-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <button type="button" class="acp-action-btn" id="acp-grant-cancel">Cancel</button>
-          <button type="button" class="acp-primary-btn" id="acp-grant-submit" disabled>Grant access</button>
+          <app-button variant="ghost" id="acp-grant-cancel">Cancel</app-button>
+          <app-button variant="dark" id="acp-grant-submit" disabled>Grant access</app-button>
         </div>
       </app-modal>
       <app-modal id="acp-transfer-modal" heading="Transfer ownership">
@@ -928,8 +929,8 @@ class AgentCardPage extends HTMLElement {
           <p class="acp-form-error" id="acp-transfer-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <button type="button" class="acp-action-btn" id="acp-transfer-cancel">Cancel</button>
-          <button type="button" class="acp-primary-btn" id="acp-transfer-submit" disabled>Transfer ownership</button>
+          <app-button variant="ghost" id="acp-transfer-cancel">Cancel</app-button>
+          <app-button variant="dark" id="acp-transfer-submit" disabled>Transfer ownership</app-button>
         </div>
       </app-modal>
       <app-modal id="acp-reupload-modal" heading="Re-upload agent">
@@ -954,8 +955,8 @@ class AgentCardPage extends HTMLElement {
           <p class="acp-form-error" id="acp-reupload-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <button type="button" class="acp-action-btn" id="acp-reupload-cancel">Cancel</button>
-          <button type="button" class="acp-primary-btn" id="acp-reupload-submit">Queue build</button>
+          <app-button variant="ghost" id="acp-reupload-cancel">Cancel</app-button>
+          <app-button variant="dark" id="acp-reupload-submit">Queue build</app-button>
         </div>
       </app-modal>
       <app-modal id="acp-rollback-modal" heading="Roll back version">
@@ -969,8 +970,8 @@ class AgentCardPage extends HTMLElement {
           <p class="acp-form-error" id="acp-rollback-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <button type="button" class="acp-action-btn" id="acp-rollback-cancel">Cancel</button>
-          <button type="button" class="acp-primary-btn" id="acp-rollback-submit">Roll back</button>
+          <app-button variant="ghost" id="acp-rollback-cancel">Cancel</app-button>
+          <app-button variant="dark" id="acp-rollback-submit">Roll back</app-button>
         </div>
       </app-modal>`;
   }
@@ -1356,7 +1357,7 @@ class AgentCardPage extends HTMLElement {
                 <span class="acp-field-hint">Generated when the agent was first published.</span>
               </label>
               <div class="acp-identity-actions">
-                <button type="submit" class="acp-primary-btn">Save changes</button>
+                <app-button type="submit" variant="dark">Save changes</app-button>
               </div>
             </form>
           </section>
@@ -1378,7 +1379,7 @@ class AgentCardPage extends HTMLElement {
           <section class="acp-section acp-danger">
             <h3 class="acp-danger-title">Danger zone</h3>
             <p class="acp-section-sub">Deleting this agent removes it from the registry, revokes all grants, and stops its container.</p>
-            <button type="button" class="acp-action-btn acp-action-btn--danger" data-action="delete">${icons.trash('', 14)} Delete agent</button>
+            <app-button variant="danger" data-action="delete">${icons.trash('', 14)} Delete agent</app-button>
           </section>
         </div>`;
   }

@@ -2,6 +2,7 @@ import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import '/common/components/app-modal.js';
 import styles from './add-agent-page.css' with { type: 'css' };
+import '/common/components/app-button.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /// Mirrors the server's `validate_version_tag` (oss/server/src/build/routes.rs),
@@ -95,8 +96,8 @@ class AddAgentPage extends HTMLElement {
           <p class="form-error" id="upload-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <button type="button" class="btn-outline" id="upload-cancel">Cancel</button>
-          <button type="button" class="btn-dark" id="upload-submit">Upload and deploy</button>
+          <app-button variant="outline" id="upload-cancel">Cancel</app-button>
+          <app-button variant="dark" id="upload-submit">Upload and deploy</app-button>
         </div>
       </app-modal>
     `;
@@ -105,6 +106,7 @@ class AddAgentPage extends HTMLElement {
       window.location.href = '/add-agent-github.html';
     });
 
+    this.#checkGithubStatus();
     this.#wireUploadModal();
 
     this.querySelector('#btn-oci')?.addEventListener('click', async () => {
@@ -184,6 +186,25 @@ class AddAgentPage extends HTMLElement {
         submitEl.disabled = false;
       }
     });
+  }
+
+  async #checkGithubStatus() {
+    try {
+      const res = await apiFetch('/auth/github/token');
+      const body = await res.json();
+      if (body.status === 'connected') {
+        const btn = this.querySelector('#btn-github');
+        if (btn) {
+          btn.textContent = 'Import from GitHub';
+          btn.classList.add('connected');
+        }
+        const req = this.querySelector('.method-card .method-card-req');
+        if (req && req.closest('.method-card')?.querySelector('#btn-github')) {
+          req.textContent = `Connected as ${body.username || 'GitHub user'}`;
+          req.classList.add('connected');
+        }
+      }
+    } catch { /* leave default text */ }
   }
 
   #showUploadError(message) {
