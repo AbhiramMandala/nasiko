@@ -66,24 +66,20 @@ export function bootstrap({ overrides = [] } = {}) {
 }
 
 /**
- * Bridge to whichever toast implementation the page has.
+ * Bridge to the consolidated toast system.
  *
- * There are currently two — `utils/toast.js#showToast` (20 importers, inline
- * styles) and `components/app-toast.js` (1 importer, proper adopted sheet).
- * Consolidating them is a Design-System task; until then this indirection means
- * components call `this.report(err)` and are not coupled to which one wins.
+ * Lazy-loaded through utils/toast.js (same layer) which re-exports the rich
+ * app-toast manager. This avoids a layer-direction violation (Platform →
+ * Components) while still getting the icons + @scope rendering.
  */
 function createNotifier() {
-  const load = () => import('../utils/toast.js').then((m) => m.showToast).catch(() => null);
-  const say = async (message) => {
-    const showToast = await load();
-    if (showToast) showToast(message);
-    else console.warn('[notifier]', message);
-  };
+  const load = () => import('../utils/toast.js').then((m) => m.toast).catch(() => null);
+  let cached = null;
+  const get = async () => cached ?? (cached = await load());
   return {
-    error: (message) => say(message),
-    success: (message) => say(message),
-    info: (message) => say(message),
+    error:   async (message) => { const t = await get(); t ? t.error(message)   : console.warn('[notifier]', message); },
+    success: async (message) => { const t = await get(); t ? t.success(message) : console.warn('[notifier]', message); },
+    info:    async (message) => { const t = await get(); t ? t.info(message)    : console.warn('[notifier]', message); },
   };
 }
 
