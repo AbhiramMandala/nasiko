@@ -4,6 +4,7 @@
 
 use serde_json::{Value, json};
 
+use crate::instructions::{self, WorkspaceInstructions};
 use crate::project;
 use crate::sandbox::Sandbox;
 
@@ -308,6 +309,65 @@ fn format_exec(res: &crate::sandbox::ExecResult) -> String {
 /// Wrap a string in single quotes for safe use in `sh -c`, escaping embedded single quotes.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// OpenAI-style tool definition for the `update_instructions` tool.
+pub fn update_instructions_definition() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "update_instructions",
+            "description": "Add a new instruction to the workspace instruction file (NASIKO.md) with a structured prompt comment recording why it was added. Use this when you discover a pattern, convention, or rule that should persist across future sessions — e.g. after fixing a recurring bug, discovering a project convention, or when the user asks you to remember something. The instruction is stored with rationale metadata so it can be maintained over time.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "instruction": {
+                        "type": "string",
+                        "description": "The instruction text (what the agent should do in future sessions)"
+                    },
+                    "trigger": {
+                        "type": "string",
+                        "description": "What failure or observation led to this instruction (the 'why now')"
+                    },
+                    "hypothesis": {
+                        "type": "string",
+                        "description": "Why this instruction should help (the expected benefit)"
+                    }
+                },
+                "required": ["instruction", "trigger", "hypothesis"]
+            }
+        }
+    })
+}
+
+/// Execute the `update_instructions` tool call.
+pub async fn execute_update_instructions(
+    sandbox: &dyn Sandbox,
+    arguments: &str,
+    current_instructions: Option<&WorkspaceInstructions>,
+) -> String {
+    let args: Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(e) => return format!("Error: invalid arguments JSON: {e}"),
+    };
+
+    let instruction = match args["instruction"].as_str() {
+        Some(s) => s,
+        None => return "Error: missing 'instruction' field".into(),
+    };
+    let trigger = match args["trigger"].as_str() {
+        Some(s) => s,
+        None => return "Error: missing 'trigger' field".into(),
+    };
+    let hypothesis = match args["hypothesis"].as_str() {
+        Some(s) => s,
+        None => return "Error: missing 'hypothesis' field".into(),
+    };
+
+    match instructions::add_instruction(sandbox, current_instructions, instruction, trigger, hypothesis).await {
+        Ok(path) => format!("Instruction added to {path} with prompt comment (trigger and hypothesis recorded for future maintenance)."),
+        Err(e) => format!("Error: {e}"),
+    }
 }
 
 #[cfg(test)]

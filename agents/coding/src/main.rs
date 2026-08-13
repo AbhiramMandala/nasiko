@@ -5,7 +5,9 @@ use a2a_server::*;
 use futures::stream::BoxStream;
 use tracing_subscriber::EnvFilter;
 
+mod instructions;
 mod project;
+mod prompt_comments;
 mod sandbox;
 mod tools;
 
@@ -83,7 +85,13 @@ explained what's blocking.
 - Be economical with tool calls — don't re-read a file you already have, and don't repeat an \
 identical command.
 - When done, respond with a concise summary of what you changed and the test/verification result \
-(no tool call).";
+(no tool call).
+
+Instruction maintenance:
+- If you discover a recurring pattern, convention, or corrective rule that should persist across \
+future sessions, use update_instructions to record it with its rationale.
+- Only add instructions when there is a clear trigger (a failure you fixed, a convention you \
+discovered, or an explicit user request to remember something). Do not speculatively add instructions.";
 
 impl AgentExecutor for CodingAgent {
     fn execute(
@@ -125,11 +133,19 @@ impl AgentExecutor for CodingAgent {
                 }
             };
 
+            // Discover workspace instructions and strip prompt comments before injection.
+            let workspace_instructions = instructions::discover(sandbox.as_ref()).await;
+            let system_prompt = instructions::build_system_prompt(
+                SYSTEM_PROMPT,
+                workspace_instructions.as_ref(),
+            );
+
             let agent = CodingAgent { model, api_key, base_url, http };
-            let tool_defs = tools::definitions();
+            let mut tool_defs = tools::definitions();
+            tool_defs.push(tools::update_instructions_definition());
 
             let mut messages = vec![
-                serde_json::json!({"role": "system", "content": SYSTEM_PROMPT}),
+                serde_json::json!({"role": "system", "content": system_prompt}),
                 serde_json::json!({"role": "user", "content": user_text}),
             ];
 
@@ -156,7 +172,15 @@ impl AgentExecutor for CodingAgent {
                         let preview = extract_preview(name, args);
                         yield Ok(status_working(&task_id, &context_id, Some(&preview)));
 
-                        let result = tools::execute(sandbox.as_ref(), name, args).await;
+                        let result = if name == "update_instructions" {
+                            tools::execute_update_instructions(
+                                sandbox.as_ref(),
+                                args,
+                                workspace_instructions.as_ref(),
+                            ).await
+                        } else {
+                            tools::execute(sandbox.as_ref(), name, args).await
+                        };
 
                         messages.push(serde_json::json!({
                             "role": "tool",
