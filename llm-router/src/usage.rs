@@ -56,9 +56,20 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
         return Ok(());
     };
     let agent = Uuid::parse_str(&record.agent_id).ok();
-    let (input, output, total) = match record.usage {
-        Some(u) => (u.prompt_tokens, u.completion_tokens, u.total_tokens),
-        None => (None, None, None),
+    let (input, output, total, cache_read, cache_creation) = match record.usage {
+        Some(mut u) => {
+            // Lift OpenAI's nested prompt_tokens_details.cached_tokens into the
+            // flat cache_read field (Anthropic already sets it directly).
+            u.normalize_openai_details();
+            (
+                u.prompt_tokens,
+                u.completion_tokens,
+                u.total_tokens,
+                u.cache_read_input_tokens,
+                u.cache_creation_input_tokens,
+            )
+        }
+        None => (None, None, None, None, None),
     };
 
     let metadata = serde_json::json!({
@@ -70,8 +81,9 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
         r#"INSERT INTO token_usage
                (user_id, agent_id, operation_type, provider, model,
                 input_tokens, output_tokens, total_tokens,
+                cache_read_input_tokens, cache_creation_input_tokens, cached_tokens,
                 latency_ms, streaming, finish_reason, session_id, metadata)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"#,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)"#,
     )
     .bind(owner)
     .bind(agent)
@@ -81,6 +93,11 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
     .bind(input.unwrap_or(0) as i32)
     .bind(output.unwrap_or(0) as i32)
     .bind(total.unwrap_or(0) as i32)
+    .bind(cache_read.unwrap_or(0) as i32)
+    .bind(cache_creation.unwrap_or(0) as i32)
+    // `cached_tokens` is the OpenAI-flavoured read count; mirror cache_read into it
+    // so either column family answers "how much came from cache".
+    .bind(cache_read.unwrap_or(0) as i32)
     .bind(record.latency_ms as i32)
     .bind(record.streaming)
     .bind(record.finish_reason)
