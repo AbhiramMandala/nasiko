@@ -60,6 +60,7 @@
  */
 import { icons } from '../utils/icons.js';
 import '/common/components/app-action-menu.js';
+import { escHtml } from '/common/utils/escape.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@keyframes ac-indeterminate {
@@ -308,10 +309,6 @@ export class AppCard extends HTMLElement {
     this.style.maxWidth = this.getAttribute('max-width') || '';
   }
 
-  #esc(str = '') {
-    return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  }
-
   #tags() {
     const raw = this.getAttribute('tags');
     if (!raw) return [];
@@ -390,8 +387,8 @@ export class AppCard extends HTMLElement {
     const overflow = tags.length - tagsToShow.length;
     const tagsHtml = tags.length ? `
       <div class="ac-tags">
-        ${tagsToShow.map((t) => `<span class="ac-tag${isMuted ? ' is-muted' : ''}">${t.icon || ''}${this.#esc(t.label)}</span>`).join('')}
-        ${overflow > 0 ? `<span class="ac-tag${isMuted ? ' is-muted' : ''}" title="${this.#esc(tags.slice(maxVisible).map((t) => t.label).join(', '))}">+${overflow}</span>` : ''}
+        ${tagsToShow.map((t) => `<span class="ac-tag${isMuted ? ' is-muted' : ''}">${t.icon || ''}${escHtml(t.label)}</span>`).join('')}
+        ${overflow > 0 ? `<span class="ac-tag${isMuted ? ' is-muted' : ''}" title="${escHtml(tags.slice(maxVisible).map((t) => t.label).join(', '))}">+${overflow}</span>` : ''}
       </div>` : '';
 
     let actionsHtml = '';
@@ -410,23 +407,23 @@ export class AppCard extends HTMLElement {
     let bodyHtml = '';
     if (isError) {
       bodyHtml = `
-        ${errorTitle ? `<p class="ac-error-title">${this.#esc(errorTitle)}</p>` : ''}
-        <p class="ac-error-body">${this.#esc(errorBody)}</p>
-        ${errorDetails ? `<span class="ac-know-more" title="${this.#esc(errorDetails)}">Know more</span>` : ''}`;
+        ${errorTitle ? `<p class="ac-error-title">${escHtml(errorTitle)}</p>` : ''}
+        <p class="ac-error-body">${escHtml(errorBody)}</p>
+        ${errorDetails ? `<span class="ac-know-more" title="${escHtml(errorDetails)}">Know more</span>` : ''}`;
     } else if (hasSettingUpBody) {
       const pct = suProgressAttr != null ? Math.max(0, Math.min(100, Number(suProgressAttr))) : null;
       bodyHtml = `
-        ${suTitle ? `<p class="ac-su-title">${this.#esc(suTitle)}</p>` : ''}
-        ${suBody ? `<p class="ac-su-body">${this.#esc(suBody)}</p>` : ''}
+        ${suTitle ? `<p class="ac-su-title">${escHtml(suTitle)}</p>` : ''}
+        ${suBody ? `<p class="ac-su-body">${escHtml(suBody)}</p>` : ''}
         <div class="ac-progress${pct == null ? ' is-indeterminate' : ''}">
           <i${pct == null ? '' : ` style="width:${pct}%"`}></i>
         </div>`;
     } else {
       bodyHtml = `
-        ${subtitle ? `<p class="ac-subtitle${isMuted ? ' is-muted' : ''}">${this.#esc(subtitle)}</p>` : ''}
+        ${subtitle ? `<p class="ac-subtitle${isMuted ? ' is-muted' : ''}">${escHtml(subtitle)}</p>` : ''}
         ${tagsHtml}
-        ${description ? `<p class="ac-description${isMuted ? ' is-muted' : ''}">${this.#esc(description)}</p>` : ''}
-        ${author ? `<p class="ac-author${isMuted ? ' is-muted' : ''}">Author: <b>${this.#esc(author)}</b></p>` : ''}`;
+        ${description ? `<p class="ac-description${isMuted ? ' is-muted' : ''}">${escHtml(description)}</p>` : ''}
+        ${author ? `<p class="ac-author${isMuted ? ' is-muted' : ''}">Author: <b>${escHtml(author)}</b></p>` : ''}`;
     }
 
     this.innerHTML = `
@@ -435,9 +432,9 @@ export class AppCard extends HTMLElement {
         <div class="ac-header">
           ${leadingHtml}
           <div class="ac-title-wrap">
-            <span class="ac-title${isMuted || isError ? ' is-muted' : ''}">${this.#esc(title)}</span>
+            <span class="ac-title${isMuted || isError ? ' is-muted' : ''}">${escHtml(title)}</span>
             <span class="ac-badge-slot"></span>
-            ${version ? `<span class="ac-version${isMuted ? ' is-muted' : ''}">${this.#esc(version)}</span>` : ''}
+            ${version ? `<span class="ac-version${isMuted ? ' is-muted' : ''}">${escHtml(version)}</span>` : ''}
           </div>
           <div class="ac-actions">${actionsHtml}</div>
         </div>

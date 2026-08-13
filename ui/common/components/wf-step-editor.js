@@ -12,6 +12,7 @@
 import { icons } from '/common/utils/icons.js';
 
 import styles from './wf-step-editor.css' with { type: 'css' };
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class WfStepEditor extends HTMLElement {
@@ -92,13 +93,13 @@ class WfStepEditor extends HTMLElement {
     for (const a of this.#agents) {
       const selected = a.id === step.agentId;
       seen = seen || selected;
-      options.push(`<option value="${this.#esc(a.id)}" data-name="${this.#esc(a.name)}"
-        ${selected ? 'selected' : ''}>${this.#esc(a.name)}</option>`);
+      options.push(`<option value="${escHtml(a.id)}" data-name="${escHtml(a.name)}"
+        ${selected ? 'selected' : ''}>${escHtml(a.name)}</option>`);
     }
     // Keep a previously-assigned agent visible even if it's no longer listed.
     if (step.agentId && !seen) {
-      options.push(`<option value="${this.#esc(step.agentId)}" data-name="${this.#esc(step.agentName)}" selected>
-        ${this.#esc(step.agentName || step.agentId)}</option>`);
+      options.push(`<option value="${escHtml(step.agentId)}" data-name="${escHtml(step.agentName)}" selected>
+        ${escHtml(step.agentName || step.agentId)}</option>`);
     }
     return options.join('');
   }
@@ -118,7 +119,7 @@ class WfStepEditor extends HTMLElement {
         <div class="step-card" role="group" aria-label="Step ${n}">
           <span class="step-num" aria-hidden="true">${n}</span>
           <textarea rows="2" data-index="${i}" aria-label="Instructions for step ${n}"
-            placeholder="Tell this agent what to do">${this.#esc(step.taskDescription)}</textarea>
+            placeholder="Tell this agent what to do">${escHtml(step.taskDescription)}</textarea>
           <div class="step-tools">
             <button type="button" class="tool-btn" data-act="up" data-index="${i}"
               title="Move step up" aria-label="Move step ${n} up"
@@ -153,11 +154,6 @@ class WfStepEditor extends HTMLElement {
       <button type="button" class="add-step" data-act="add">Add step ${icons.plus('', 13)}</button>`;
   }
 
-  #esc(s) {
-    const d = document.createElement('span');
-    d.textContent = s ?? '';
-    return d.innerHTML;
-  }
 }
 
 customElements.define('wf-step-editor', WfStepEditor);

@@ -12,6 +12,7 @@
 import { icons } from '../utils/icons.js';
 import './app-code-snippet.js';
 import styles from './setup-cli-page.css' with { type: 'css' };
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const DEFAULT_STEPS = [
@@ -97,7 +98,7 @@ class SetupCliPage extends HTMLElement {
         <div class="step-panel${i === 0 ? ' is-active' : ''}" data-panel="${s.key}" role="tabpanel">
           <p class="step-intro">${s.intro}</p>
           <div class="snippet-list">
-            ${s.snippets.map((sn) => `<app-code-snippet label="${sn.label}">${this.#esc(sn.code)}</app-code-snippet>`).join('')}
+            ${s.snippets.map((sn) => `<app-code-snippet label="${sn.label}">${escHtml(sn.code)}</app-code-snippet>`).join('')}
           </div>
           <p class="step-note">${s.note}</p>
         </div>
@@ -130,11 +131,6 @@ class SetupCliPage extends HTMLElement {
     });
   }
 
-  #esc(str) {
-    return String(str).replace(/[&<>"']/g, (m) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
-    })[m]);
-  }
 }
 
 customElements.define('setup-cli-page', SetupCliPage);

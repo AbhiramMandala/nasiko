@@ -13,6 +13,7 @@ if (!window.transcribeAudio) {
 }
 
 import styles from './chat-page.css' with { type: 'css' };
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class ChatPage extends HTMLElement {
@@ -75,7 +76,7 @@ class ChatPage extends HTMLElement {
       <div class="chat-header">
         <div class="chat-header-avatar" aria-hidden="true">${initial}</div>
         <div class="chat-header-info">
-          <span class="chat-agent-name">${this.#esc(this.#agentLabel)}</span>
+          <span class="chat-agent-name">${escHtml(this.#agentLabel)}</span>
           <span class="chat-agent-status"><span class="status-dot"></span> Running</span>
         </div>
         ${agentCardUrl ? `<a class="chat-header-link" href="${agentCardUrl}" title="View agent card">${icons.externalLink('', 16)}</a>` : ''}
@@ -102,10 +103,10 @@ class ChatPage extends HTMLElement {
     return `
       <div class="welcome-state">
         <div class="welcome-avatar" aria-hidden="true">${this.#agentLabel.charAt(0).toUpperCase()}</div>
-        <h2 class="welcome-title">${this.#esc(this.#agentLabel)}</h2>
+        <h2 class="welcome-title">${escHtml(this.#agentLabel)}</h2>
         <p class="welcome-subtitle">Ask me anything</p>
         <div class="welcome-prompts">
-          ${prompts.map(p => `<button type="button" class="welcome-chip">${this.#esc(p)}</button>`).join('')}
+          ${prompts.map(p => `<button type="button" class="welcome-chip">${escHtml(p)}</button>`).join('')}
         </div>
       </div>
     `;
@@ -430,7 +431,7 @@ class ChatPage extends HTMLElement {
       },
       onError: (message) => {
         stepsEl.finish();
-        showContent(`<span style="color:var(--color-error)">${this.#esc(message)}</span>`);
+        showContent(`<span style="color:var(--color-error)">${escHtml(message)}</span>`);
       },
     });
 
@@ -440,7 +441,7 @@ class ChatPage extends HTMLElement {
     let fullText = out.text;
     if (out.failed && !fullText) {
       fullText = out.errorMessage;
-      showContent(`<span style="color:var(--color-error)">${this.#esc(fullText)}</span>`);
+      showContent(`<span style="color:var(--color-error)">${escHtml(fullText)}</span>`);
     } else if (!fullText) {
       showContent(renderMarkdown("No response"));
       fullText = "No response";
@@ -497,11 +498,6 @@ class ChatPage extends HTMLElement {
     }).catch(() => {});
   }
 
-  #esc(s) {
-    const d = document.createElement("span");
-    d.textContent = s || "";
-    return d.innerHTML;
-  }
 }
 
 customElements.define("chat-page", ChatPage);

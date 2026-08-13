@@ -4,6 +4,7 @@ import { showToast } from '../utils/toast.js';
 import { userMessage } from '../core/errors.js';
 import './app-button.js';
 import './app-module-nav.js';
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /// Rows requested per page. `/api/chat/sessions` is keyset-paginated and the
@@ -241,17 +242,17 @@ class SessionsPage extends HTMLElement {
 
     return `<tr data-href="${href}" tabindex="0">
       <td class="col-session">
-        <div class="session-agent">${this.#esc(agentName)}${msgCount}</div>
-        ${preview ? `<div class="session-preview">${this.#esc(preview.slice(0, 90))}</div>` : ''}
+        <div class="session-agent">${escHtml(agentName)}${msgCount}</div>
+        ${preview ? `<div class="session-preview">${escHtml(preview.slice(0, 90))}</div>` : ''}
       </td>
       <td class="col-num">${traces}</td>
       <td class="col-num">${tokens}</td>
       <td class="col-num">${p50}</td>
       <td class="col-date">${timeStr}</td>
       <td class="col-actions">
-        <button class="session-traces" type="button" data-session-id="${this.#esc(sessionId)}"
+        <button class="session-traces" type="button" data-session-id="${escHtml(sessionId)}"
           title="View traces" aria-label="View traces for this session"><span>Traces</span>${icons.chevronRight('', 14)}</button>
-        <button class="session-delete" data-session-id="${this.#esc(sessionId)}" title="Delete session" aria-label="Delete session">${icons.trash('', 14)}</button>
+        <button class="session-delete" data-session-id="${escHtml(sessionId)}" title="Delete session" aria-label="Delete session">${icons.trash('', 14)}</button>
       </td>
     </tr>`;
   }
@@ -304,11 +305,6 @@ class SessionsPage extends HTMLElement {
     }
   }
 
-  #esc(s) {
-    const d = document.createElement('span');
-    d.textContent = s || '';
-    return d.innerHTML;
-  }
 }
 
 customElements.define('sessions-page', SessionsPage);

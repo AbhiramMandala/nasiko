@@ -12,6 +12,7 @@ import '/common/components/app-module-nav.js';
 window.transcribeAudio = transcribeBlob;
 
 import styles from './orchestrator-page.css' with { type: 'css' };
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class OrchestratorPage extends HTMLElement {
@@ -239,10 +240,10 @@ class OrchestratorPage extends HTMLElement {
         return `
           <a class="agent-card" href="/chat.html?agent_name=${encodeURIComponent(agent.name)}&agent_id=${encodeURIComponent(agent.id)}">
             <div class="agent-card-top">
-              <span class="agent-card-name">${this.#esc(displayName)}</span>
+              <span class="agent-card-name">${escHtml(displayName)}</span>
               <span class="agent-card-go">${icons.arrowUpRight('', 14)}</span>
             </div>
-            ${agent.description ? `<div class="agent-card-desc">${this.#esc(agent.description)}</div>` : ''}
+            ${agent.description ? `<div class="agent-card-desc">${escHtml(agent.description)}</div>` : ''}
           </a>
         `;
       }).join('');
@@ -303,7 +304,7 @@ class OrchestratorPage extends HTMLElement {
       },
       onError: (message) => {
         stepsEl.finish();
-        showContent(`<span style="color:var(--color-error)">${this.#esc(message)}</span>`);
+        showContent(`<span style="color:var(--color-error)">${escHtml(message)}</span>`);
       },
     });
 
@@ -312,7 +313,7 @@ class OrchestratorPage extends HTMLElement {
     let fullText = out.text;
     if (out.failed && !fullText) {
       fullText = out.errorMessage;
-      showContent(`<span style="color:var(--color-error)">${this.#esc(fullText)}</span>`);
+      showContent(`<span style="color:var(--color-error)">${escHtml(fullText)}</span>`);
     } else if (!fullText) {
       showContent(renderMarkdown('No response'));
       fullText = 'No response';
@@ -333,11 +334,6 @@ class OrchestratorPage extends HTMLElement {
     return { text: fullText, traceId: out.traceId, usage: out.usage };
   }
 
-  #esc(s) {
-    const d = document.createElement('span');
-    d.textContent = s || '';
-    return d.innerHTML;
-  }
 }
 
 customElements.define('orchestrator-page', OrchestratorPage);

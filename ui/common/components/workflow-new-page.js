@@ -15,6 +15,7 @@ import '/common/components/app-button.js';
 import '/common/components/wf-step-editor.js';
 
 import styles from './workflow-new-page.css' with { type: 'css' };
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class WorkflowNewPage extends HTMLElement {
@@ -174,7 +175,7 @@ class WorkflowNewPage extends HTMLElement {
       return `Nasiko couldn't draft steps from that description — try rephrasing it,
         or add the steps manually below.`;
     }
-    return `Drafting failed: ${this.#esc(err.message)}`;
+    return `Drafting failed: ${escHtml(err.message)}`;
   }
 
   async #save({ run }) {
@@ -215,11 +216,6 @@ class WorkflowNewPage extends HTMLElement {
     }
   }
 
-  #esc(s) {
-    const d = document.createElement('span');
-    d.textContent = s ?? '';
-    return d.innerHTML;
-  }
 }
 
 customElements.define('workflow-new-page', WorkflowNewPage);

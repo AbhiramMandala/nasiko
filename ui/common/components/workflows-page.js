@@ -14,6 +14,7 @@ import '/common/components/app-module-nav.js';
 import '/common/components/app-action-menu.js';
 
 import styles from './workflows-page.css' with { type: 'css' };
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const MENU_ITEMS = JSON.stringify([
@@ -72,7 +73,7 @@ class WorkflowsPage extends HTMLElement {
       this.#renderGrid();
     } catch (err) {
       this.querySelector('#wf-grid').innerHTML =
-        `<p class="load-error">Failed to load workflows: ${this.#esc(err.message)}</p>`;
+        `<p class="load-error">Failed to load workflows: ${escHtml(err.message)}</p>`;
     }
   }
 
@@ -118,24 +119,24 @@ class WorkflowsPage extends HTMLElement {
     const status = this.#statusLine(wf);
     const runs = wf.execution_count === 1 ? '1 run' : `${wf.execution_count} runs`;
     return `
-      <div class="wf-card" data-id="${this.#esc(wf.id)}" role="link" tabindex="0"
-        aria-label="Open ${this.#esc(wf.name)}">
+      <div class="wf-card" data-id="${escHtml(wf.id)}" role="link" tabindex="0"
+        aria-label="Open ${escHtml(wf.name)}">
         <div class="wf-card-top">
-          <span class="wf-name">${this.#esc(wf.name)}</span>
+          <span class="wf-name">${escHtml(wf.name)}</span>
           <app-action-menu trigger-title="Workflow actions" items='${MENU_ITEMS}'>
             ${icons.moreVertical('', 16)}
           </app-action-menu>
         </div>
         <div class="wf-badges">
           <span class="badge badge--muted">${steps.length === 1 ? '1 step' : `${steps.length} steps`}</span>
-          <span class="badge badge--muted">${this.#esc(runs)}</span>
-          ${wf.created_at ? `<span class="badge badge--muted">Created ${this.#esc(formatDisplay(new Date(wf.created_at)))}</span>` : ''}
+          <span class="badge badge--muted">${escHtml(runs)}</span>
+          ${wf.created_at ? `<span class="badge badge--muted">Created ${escHtml(formatDisplay(new Date(wf.created_at)))}</span>` : ''}
         </div>
-        ${description ? `<p class="wf-desc">${this.#esc(description)}</p>` : ''}
-        ${agents.length ? `<p class="wf-agents">${this.#esc(agents.join(' · '))}</p>` : ''}
+        ${description ? `<p class="wf-desc">${escHtml(description)}</p>` : ''}
+        ${agents.length ? `<p class="wf-agents">${escHtml(agents.join(' · '))}</p>` : ''}
         <div class="wf-status ${status.cls}">
           <span class="wf-dot"></span>
-          <span class="wf-status-text">${this.#esc(status.text)}</span>
+          <span class="wf-status-text">${escHtml(status.text)}</span>
         </div>
       </div>`;
   }
@@ -175,11 +176,6 @@ class WorkflowsPage extends HTMLElement {
       </div>`).join('');
   }
 
-  #esc(s) {
-    const d = document.createElement('span');
-    d.textContent = s ?? '';
-    return d.innerHTML;
-  }
 }
 
 customElements.define('workflows-page', WorkflowsPage);

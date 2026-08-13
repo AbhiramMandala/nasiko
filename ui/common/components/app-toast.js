@@ -8,6 +8,7 @@
  * @note Not a custom element. Import this file to mount the toast container and expose `window.toast`.
  */
 import { icons } from '../utils/icons.js';
+import { escHtml } from '/common/utils/escape.js';
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (.app-toast-container) {
   :scope {
@@ -54,7 +55,7 @@ class ToastManager {
     toast.className = `app-toast is-${type}`;
     toast.innerHTML = `
       ${this.getIcon(type)}
-      <span class="message">${this.escapeHtml(message)}</span>
+      <span class="message">${escHtml(message)}</span>
     `;
     this.container.appendChild(toast);
     setTimeout(() => toast.remove(), duration);
@@ -68,12 +69,6 @@ class ToastManager {
     }
   }
 
-  escapeHtml(str) {
-    return str
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
 }
 
 let manager = null;

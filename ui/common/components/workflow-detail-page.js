@@ -22,6 +22,7 @@ import '/common/components/wf-step-editor.js';
 import '/common/components/wf-run-steps.js';
 
 import styles from './workflow-detail-page.css' with { type: 'css' };
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const POLL_MS = 1500;
@@ -118,16 +119,16 @@ class WorkflowDetailPage extends HTMLElement {
       <div class="col">
         <header class="page-head">
           <a class="back-btn" href="/workflows.html" aria-label="Back to workflows">${icons.chevronLeft('', 16)}</a>
-          <input class="name-input" id="wf-name" value="${this.#esc(wf.name)}" aria-label="Workflow name" />
+          <input class="name-input" id="wf-name" value="${escHtml(wf.name)}" aria-label="Workflow name" />
           <app-button variant="primary" size="sm" id="run-btn">${icons.play('', 12)} Run</app-button>
         </header>
 
         <textarea class="desc-input" id="wf-desc" rows="2"
-          placeholder="Describe what this workflow is for">${this.#esc(wf.description || wf.maf_json?.description || '')}</textarea>
+          placeholder="Describe what this workflow is for">${escHtml(wf.description || wf.maf_json?.description || '')}</textarea>
 
         <div class="badges">
           <span class="badge badge--muted">${steps.length === 1 ? '1 step' : `${steps.length} steps`}</span>
-          <span class="badge badge--muted">${this.#esc(runs)}</span>
+          <span class="badge badge--muted">${escHtml(runs)}</span>
         </div>
 
         <section class="sec">
@@ -138,7 +139,7 @@ class WorkflowDetailPage extends HTMLElement {
         ${wf.maf_json?.output_generation ? `
           <section class="sec">
             <h2 class="sec-title">Output guidelines</h2>
-            <p class="output-gen">${this.#esc(wf.maf_json.output_generation)}</p>
+            <p class="output-gen">${escHtml(wf.maf_json.output_generation)}</p>
           </section>` : ''}
 
         <div class="save-bar" id="save-bar" hidden>
@@ -198,10 +199,10 @@ class WorkflowDetailPage extends HTMLElement {
       return;
     }
     list.innerHTML = this.#executions.map((e) => `
-      <button type="button" class="exec-row" data-exec="${this.#esc(e.id)}">
+      <button type="button" class="exec-row" data-exec="${escHtml(e.id)}">
         <span class="exec-num">#${e.execution_number}</span>
-        <span class="badge ${EXEC_BADGES[e.status] || 'badge--neutral'}"><span class="badge__dot"></span>${this.#esc(e.status)}</span>
-        <span class="exec-meta">${this.#esc(timeAgo(e.created_at))}</span>
+        <span class="badge ${EXEC_BADGES[e.status] || 'badge--neutral'}"><span class="badge__dot"></span>${escHtml(e.status)}</span>
+        <span class="exec-meta">${escHtml(timeAgo(e.created_at))}</span>
         <span class="exec-meta">${e.duration_ms != null ? fmtDuration(e.duration_ms) : ''}</span>
         <span class="exec-meta">${fmtTokens(e.tokens_used)}</span>
         <span class="exec-open">${icons.chevronRight('', 14)}</span>
@@ -269,7 +270,7 @@ class WorkflowDetailPage extends HTMLElement {
       this.#execution = await window.fetchExecution(execId);
     } catch (err) {
       this.querySelector('#run-body').innerHTML =
-        `<p class="exec-empty">Failed to load execution: ${this.#esc(err.message)}</p>`;
+        `<p class="exec-empty">Failed to load execution: ${escHtml(err.message)}</p>`;
       return;
     }
     this.#updateRunView();
@@ -281,7 +282,7 @@ class WorkflowDetailPage extends HTMLElement {
       <div class="col">
         <header class="page-head">
           <button type="button" class="back-btn" id="run-back" aria-label="Back to workflow">${icons.chevronLeft('', 16)}</button>
-          <h1 class="title-page run-title" id="run-title">${this.#esc(this.#workflow?.name || 'Execution')}</h1>
+          <h1 class="title-page run-title" id="run-title">${escHtml(this.#workflow?.name || 'Execution')}</h1>
         </header>
         <div id="run-body">
           <div class="run-head-row">
@@ -310,7 +311,7 @@ class WorkflowDetailPage extends HTMLElement {
     const statusCls = EXEC_BADGES[exec.status] || 'badge--neutral';
     this.querySelector('#run-num').textContent = `Execution #${exec.execution_number}`;
     this.querySelector('#run-status').innerHTML =
-      `<span class="badge ${statusCls}"><span class="badge__dot"></span>${this.#esc(exec.status)}</span>`;
+      `<span class="badge ${statusCls}"><span class="badge__dot"></span>${escHtml(exec.status)}</span>`;
 
     const stepCount = exec.step_results?.length || 0;
     const attempts = exec.attempt_count > 1 ? `attempt ${exec.attempt_count}/${exec.max_attempts}` : '';
@@ -320,7 +321,7 @@ class WorkflowDetailPage extends HTMLElement {
       exec.duration_ms != null ? fmtDuration(exec.duration_ms) : '',
       fmtTokens(exec.tokens_used),
       attempts,
-    ].filter(Boolean).map((label) => `<span class="badge badge--muted">${this.#esc(label)}</span>`).join('');
+    ].filter(Boolean).map((label) => `<span class="badge badge--muted">${escHtml(label)}</span>`).join('');
 
     const stepsEl = this.querySelector('#run-steps');
     stepsEl.labels = this.#stepLabels();
@@ -360,11 +361,6 @@ class WorkflowDetailPage extends HTMLElement {
     this.#pollTimer = null;
   }
 
-  #esc(s) {
-    const d = document.createElement('span');
-    d.textContent = s ?? '';
-    return d.innerHTML;
-  }
 }
 
 customElements.define('workflow-detail-page', WorkflowDetailPage);

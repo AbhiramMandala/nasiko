@@ -26,6 +26,7 @@ import './app-modal.js';
 import './app-skeleton.js';
 import './app-module-nav.js';
 import './autocomplete.js';
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const AUTH_LABELS = {
@@ -340,7 +341,7 @@ class McpPage extends HTMLElement {
 
   #catalogEmptyHtml() {
     if (this.#catalogScope !== 'all') {
-      return `<div class="tk-msg">${this.#esc(CATALOG_SCOPES[this.#catalogScope].empty)}</div>`;
+      return `<div class="tk-msg">${escHtml(CATALOG_SCOPES[this.#catalogScope].empty)}</div>`;
     }
     return `
       <div class="empty-state">
@@ -354,22 +355,22 @@ class McpPage extends HTMLElement {
   #serviceCardHtml(s) {
     const name = s.display_name || s.name;
     const chips = [`<span class="tk-chip">${s.tool_count ?? 0} tools</span>`];
-    if (s.version) chips.push(`<span class="tk-chip">${this.#esc(s.version)}</span>`);
+    if (s.version) chips.push(`<span class="tk-chip">${escHtml(s.version)}</span>`);
     if (s.__shared) {
-      chips.push(`<span class="tk-by">shared by ${this.#esc(s.owner_username || 'someone')}</span>`);
+      chips.push(`<span class="tk-by">shared by ${escHtml(s.owner_username || 'someone')}</span>`);
     }
     return `
-      <div class="tk-card${s.kind === 'server' ? ' is-clickable' : ''}" data-id="${this.#esc(s.connector_id)}">
+      <div class="tk-card${s.kind === 'server' ? ' is-clickable' : ''}" data-id="${escHtml(s.connector_id)}">
         <div class="tk-top">
-          <span class="tk-logo" aria-hidden="true">${this.#esc(name.charAt(0))}${s.logo_url
-            ? `<img src="${this.#esc(s.logo_url)}" alt="" loading="lazy" />` : ''}</span>
+          <span class="tk-logo" aria-hidden="true">${escHtml(name.charAt(0))}${s.logo_url
+            ? `<img src="${escHtml(s.logo_url)}" alt="" loading="lazy" />` : ''}</span>
           <div class="tk-id">
-            <span class="tk-name" title="${this.#esc(name)}">${this.#esc(name)}</span>
+            <span class="tk-name" title="${escHtml(name)}">${escHtml(name)}</span>
             <span class="tk-chips">${chips.join('')}</span>
           </div>
           ${this.#serviceActionHtml(s, name)}
         </div>
-        <p class="tk-desc">${this.#esc(s.description || 'No description provided.')}</p>
+        <p class="tk-desc">${escHtml(s.description || 'No description provided.')}</p>
       </div>`;
   }
 
@@ -383,7 +384,7 @@ class McpPage extends HTMLElement {
     }
     if (s.is_connected) {
       return `<button class="tk-action is-connected act-disconnect" type="button"
-                title="Disconnect ${this.#esc(name)}" aria-label="Disconnect ${this.#esc(name)}">
+                title="Disconnect ${escHtml(name)}" aria-label="Disconnect ${escHtml(name)}">
           <span class="tk-rest">${icons.check('', 14)} Connected</span>
           <span class="tk-hover">${icons.x('', 14)} Disconnect</span>
         </button>`;
@@ -570,7 +571,7 @@ class McpPage extends HTMLElement {
   }
 
   #metaRow(label, value) {
-    return `<div class="meta-row"><span class="meta-label">${this.#esc(label)}</span><span class="meta-value">${this.#esc(value)}</span></div>`;
+    return `<div class="meta-row"><span class="meta-label">${escHtml(label)}</span><span class="meta-value">${escHtml(value)}</span></div>`;
   }
 
   async #renderCredentialSection(c) {
@@ -631,7 +632,7 @@ class McpPage extends HTMLElement {
     section.innerHTML = `
       <h4 class="detail-subtitle">${icons.shield('', 14)} OAuth 2.1</h4>
       <div class="cred-status">
-        <span class="status"><span class="status-dot ${status.authorized ? 'is-ok' : 'is-off'}"></span>${status.authorized ? `Authorized${this.#esc(expiry)}` : 'Not authorized'}</span>
+        <span class="status"><span class="status-dot ${status.authorized ? 'is-ok' : 'is-off'}"></span>${status.authorized ? `Authorized${escHtml(expiry)}` : 'Not authorized'}</span>
         <span class="cred-actions">
           ${status.authorized
             ? `<button class="btn-ghost danger" id="oauth-revoke" type="button">Revoke</button>`
@@ -748,10 +749,10 @@ class McpPage extends HTMLElement {
           syncAuthFields();
         }
         result.className = 'probe-result is-ok';
-        result.innerHTML = `${icons.checkCircle('', 14)} Detected auth: <strong>${this.#esc(AUTH_LABELS[d.auth_type] || d.auth_type)}</strong>${d.hint ? ` — ${this.#esc(d.hint)}` : ''}`;
+        result.innerHTML = `${icons.checkCircle('', 14)} Detected auth: <strong>${escHtml(AUTH_LABELS[d.auth_type] || d.auth_type)}</strong>${d.hint ? ` — ${escHtml(d.hint)}` : ''}`;
       } catch (e) {
         result.className = 'probe-result is-error';
-        result.innerHTML = `${icons.xCircle('', 14)} Probe failed: ${this.#esc(e.message)}`;
+        result.innerHTML = `${icons.xCircle('', 14)} Probe failed: ${escHtml(e.message)}`;
       }
     });
 
@@ -855,7 +856,7 @@ class McpPage extends HTMLElement {
             github_url: form.elements.github_url.value.trim(),
           });
         }
-        queued.innerHTML = `${icons.checkCircle('', 14)} Build queued — connector <code>${this.#esc(resp?.data?.connector_id || '')}</code>. Track progress under “My uploads”.`;
+        queued.innerHTML = `${icons.checkCircle('', 14)} Build queued — connector <code>${escHtml(resp?.data?.connector_id || '')}</code>. Track progress under “My uploads”.`;
         queued.hidden = false;
         this.#load();
       } catch (e) {
@@ -884,11 +885,11 @@ class McpPage extends HTMLElement {
       const info = u.upload_info || {};
       const cls = chipClass[info.upload_status] || 'is-off';
       return `
-        <tr data-id="${this.#esc(u.connector_id)}" data-name="${this.#esc(u.connector_name)}">
-          <td class="cell-name"><span class="name-main">${this.#esc(u.connector_name)}</span></td>
-          <td><span class="chip ${cls}">${this.#esc(info.upload_status || 'Unknown')}</span></td>
-          <td class="cell-muted">${this.#esc(info.error_detail || info.status_message || '—')}</td>
-          <td class="cell-url">${this.#esc(u.url || '—')}</td>
+        <tr data-id="${escHtml(u.connector_id)}" data-name="${escHtml(u.connector_name)}">
+          <td class="cell-name"><span class="name-main">${escHtml(u.connector_name)}</span></td>
+          <td><span class="chip ${cls}">${escHtml(info.upload_status || 'Unknown')}</span></td>
+          <td class="cell-muted">${escHtml(info.error_detail || info.status_message || '—')}</td>
+          <td class="cell-url">${escHtml(u.url || '—')}</td>
           <td class="cell-actions">
             <button class="btn-ghost act-logs" type="button" title="Build logs">${icons.terminal('', 14)}</button>
           </td>
@@ -931,7 +932,7 @@ class McpPage extends HTMLElement {
       const resp = await window.fetchAgentMcpConnectors(this.#selectedAgentId);
       this.#agentConnectors = resp?.data?.connectors || [];
     } catch (e) {
-      body.innerHTML = `<div class="agent-access-empty"><p>Failed to load connector access: ${this.#esc(e.message)}</p></div>`;
+      body.innerHTML = `<div class="agent-access-empty"><p>Failed to load connector access: ${escHtml(e.message)}</p></div>`;
       return;
     }
     this.#agentTools = new Map();
@@ -949,9 +950,9 @@ class McpPage extends HTMLElement {
         <thead><tr><th>Connector</th><th>Description</th><th>Enabled</th><th class="th-actions"></th></tr></thead>
         <tbody>
           ${this.#agentConnectors.map((c) => `
-            <tr data-id="${this.#esc(c.connector_id)}">
-              <td class="cell-name"><span class="name-main">${this.#esc(c.display_name || c.name)}</span></td>
-              <td class="cell-muted">${this.#esc(c.description || '—')}</td>
+            <tr data-id="${escHtml(c.connector_id)}">
+              <td class="cell-name"><span class="name-main">${escHtml(c.display_name || c.name)}</span></td>
+              <td class="cell-muted">${escHtml(c.description || '—')}</td>
               <td>
                 <label class="switch">
                   <input type="checkbox" class="access-toggle" ${c.enabled ? 'checked' : ''} />
@@ -962,8 +963,8 @@ class McpPage extends HTMLElement {
                 <button class="btn-ghost act-tools" type="button">${icons.chevronDown('', 14)} Tools</button>
               </td>
             </tr>
-            <tr class="tools-row" data-for="${this.#esc(c.connector_id)}" hidden>
-              <td colspan="4"><div class="tools-editor" data-id="${this.#esc(c.connector_id)}"></div></td>
+            <tr class="tools-row" data-for="${escHtml(c.connector_id)}" hidden>
+              <td colspan="4"><div class="tools-editor" data-id="${escHtml(c.connector_id)}"></div></td>
             </tr>
           `).join('')}
         </tbody>
@@ -999,7 +1000,7 @@ class McpPage extends HTMLElement {
         const resp = await window.fetchAgentMcpConnectorTools(this.#selectedAgentId, connectorId);
         this.#agentTools.set(connectorId, resp?.data?.tools || []);
       } catch (e) {
-        editor.innerHTML = `<div class="form-error">Failed to load tools: ${this.#esc(e.message)}</div>`;
+        editor.innerHTML = `<div class="form-error">Failed to load tools: ${escHtml(e.message)}</div>`;
         return;
       }
     }
@@ -1013,8 +1014,8 @@ class McpPage extends HTMLElement {
         ${tools.map((t, i) => `
           <div class="tool-line">
             <div class="tool-info">
-              <span class="tool-name">${this.#esc(t.name)}</span>
-              ${t.description ? `<span class="tool-desc">${this.#esc(t.description)}</span>` : ''}
+              <span class="tool-name">${escHtml(t.name)}</span>
+              ${t.description ? `<span class="tool-desc">${escHtml(t.description)}</span>` : ''}
             </div>
             <select class="tool-stance" data-index="${i}">
               <option value="allow" ${t.stance !== 'deny' ? 'selected' : ''}>Allow</option>
@@ -1045,12 +1046,6 @@ class McpPage extends HTMLElement {
     });
   }
 
-  #esc(str) {
-    if (!str) return '';
-    return String(str).replace(/[&<>"']/g, (m) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
-    })[m]);
-  }
 }
 
 customElements.define('mcp-page', McpPage);

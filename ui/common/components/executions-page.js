@@ -16,6 +16,7 @@ import '/common/components/app-module-nav.js';
 import '/common/components/wf-run-steps.js';
 
 import styles from './executions-page.css' with { type: 'css' };
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const POLL_MS = 1500;
@@ -90,7 +91,7 @@ class ExecutionsPage extends HTMLElement {
       this.#pollIfActive();
     } catch (err) {
       this.querySelector('#list-area').innerHTML =
-        `<p class="load-error">Failed to load executions: ${this.#esc(err.message)}</p>`;
+        `<p class="load-error">Failed to load executions: ${escHtml(err.message)}</p>`;
     }
   }
 
@@ -207,28 +208,28 @@ class ExecutionsPage extends HTMLElement {
       fmtTokens(exec.tokens_used),
     ].filter(Boolean);
     const statusCls = STATUS_BADGES[exec.status] || 'badge--neutral';
-    return meta.map((m) => `<span class="badge badge--muted">${this.#esc(m)}</span>`).join('') +
-      `<span class="badge ${statusCls}"><span class="badge__dot"></span>${this.#esc(exec.status)}</span>`;
+    return meta.map((m) => `<span class="badge badge--muted">${escHtml(m)}</span>`).join('') +
+      `<span class="badge ${statusCls}"><span class="badge__dot"></span>${escHtml(exec.status)}</span>`;
   }
 
   #runCard(exec, { open }) {
     const orphaned = !exec.workflow_name || exec.workflow_status === 'deleted';
     const title = `${exec.workflow_name || 'Deleted workflow'} #${exec.execution_number}`;
     return `
-      <div class="run-card" data-card="${this.#esc(exec.id)}">
+      <div class="run-card" data-card="${escHtml(exec.id)}">
         <div class="run-card-head">
-          <span class="run-title">${this.#esc(title)}</span>
+          <span class="run-title">${escHtml(title)}</span>
           ${orphaned ? `<span class="badge badge--error">${icons.info('', 12)} Workflow not found</span>` : ''}
           <span class="head-spacer"></span>
           ${!orphaned && exec.maf_id ? `<a class="open-wf" href="/workflow.html?id=${encodeURIComponent(exec.maf_id)}&exec=${encodeURIComponent(exec.id)}">Open workflow</a>` : ''}
-          <button type="button" class="toggle-btn" data-toggle="${this.#esc(exec.id)}"
+          <button type="button" class="toggle-btn" data-toggle="${escHtml(exec.id)}"
             aria-expanded="${open}" aria-label="${open ? 'Collapse' : 'Expand'} run">
             ${open ? icons.chevronUp('', 16) : icons.chevronDown('', 16)}
           </button>
         </div>
         <div class="run-card-meta">${this.#metaHtml(exec)}</div>
-        ${open ? `<wf-run-steps surface="sand" data-exec="${this.#esc(exec.id)}"></wf-run-steps>` : ''}
-        ${open && exec.error ? `<div class="run-error">${this.#esc(exec.error)}</div>` : ''}
+        ${open ? `<wf-run-steps surface="sand" data-exec="${escHtml(exec.id)}"></wf-run-steps>` : ''}
+        ${open && exec.error ? `<div class="run-error">${escHtml(exec.error)}</div>` : ''}
       </div>`;
   }
 
@@ -251,11 +252,6 @@ class ExecutionsPage extends HTMLElement {
       </div>`).join('')}</div>`;
   }
 
-  #esc(s) {
-    const d = document.createElement('span');
-    d.textContent = s ?? '';
-    return d.innerHTML;
-  }
 }
 
 customElements.define('executions-page', ExecutionsPage);

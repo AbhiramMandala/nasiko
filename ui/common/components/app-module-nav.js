@@ -20,6 +20,7 @@
  * @fires module-nav-select - `{ detail: { section } }` on section item click.
  */
 import { icons } from "../utils/icons.js";
+import { escHtml } from '/common/utils/escape.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav is
@@ -302,13 +303,6 @@ export class AppModuleNav extends HTMLElement {
     }
   };
 
-  #esc(str) {
-    if (str == null) return "";
-    return String(str).replace(/[&<>"']/g, (m) => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;",
-    })[m]);
-  }
-
   #normalizePath(p) {
     return p
       .replace(/\/index\.html$/, "/")
@@ -337,12 +331,12 @@ export class AppModuleNav extends HTMLElement {
     if (item.section != null) {
       const active = this.getAttribute("active-section") === item.section;
       return `<button type="button" class="row child${active ? " is-active" : ""}"
-        data-section="${this.#esc(item.section)}" ${active ? 'aria-current="true"' : ""}>
-        <span class="row-label">${this.#esc(item.label)}</span></button>`;
+        data-section="${escHtml(item.section)}" ${active ? 'aria-current="true"' : ""}>
+        <span class="row-label">${escHtml(item.label)}</span></button>`;
     }
     const active = this.#isActive(item.url);
-    return `<a class="row child${active ? " is-active" : ""}" href="${this.#esc(item.url)}"
-      ${active ? 'aria-current="page"' : ""}><span class="row-label">${this.#esc(item.label)}</span></a>`;
+    return `<a class="row child${active ? " is-active" : ""}" href="${escHtml(item.url)}"
+      ${active ? 'aria-current="page"' : ""}><span class="row-label">${escHtml(item.label)}</span></a>`;
   }
 
   #render() {
@@ -365,20 +359,20 @@ export class AppModuleNav extends HTMLElement {
       <button class="mobile-toggle" data-mobile-toggle type="button"
         aria-expanded="${this.#mobileOpen}">
         ${iconHtml}
-        <span class="mod-title">${this.#esc(nav.title)}</span>
+        <span class="mod-title">${escHtml(nav.title)}</span>
         <span class="chev">${icons.chevronDown("", 14)}</span>
       </button>
       <div class="mod-head">
         ${iconHtml}
-        <span class="mod-title">${this.#esc(nav.title)}</span>
+        <span class="mod-title">${escHtml(nav.title)}</span>
       </div>
-      <nav class="mod-groups" aria-label="${this.#esc(nav.title)} navigation">
+      <nav class="mod-groups" aria-label="${escHtml(nav.title)} navigation">
         ${nav.groups.map((g) => `
           <div class="group${this.#collapsed.has(g.label) ? " is-collapsed" : ""}">
-            <button type="button" class="row group-head" data-group="${this.#esc(g.label)}"
+            <button type="button" class="row group-head" data-group="${escHtml(g.label)}"
               aria-expanded="${!this.#collapsed.has(g.label)}">
               <span class="chev">${icons.chevronDown("", 12)}</span>
-              <span class="row-label">${this.#esc(g.label)}</span>
+              <span class="row-label">${escHtml(g.label)}</span>
             </button>
             <div class="group-items">
               <div class="items-clip">

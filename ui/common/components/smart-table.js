@@ -21,6 +21,7 @@ import '/common/components/app-modal.js';
 import { createEventTracker, debounce } from '../utils/data-component-utils.js';
 import { resolveOptional as resolveDataSource } from '../core/data-sources.js';
 import styles from './smart-table.css' with { type: 'css' };
+import { escHtml, escAttr } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 // Icon references — sourced from the shared icons library
@@ -105,8 +106,8 @@ export class SmartTable extends HTMLElement {
             <input
               type="search"
               class="search"
-              placeholder="${this.#escapeAttr(this.searchPlaceholder)}"
-              value="${this.#escapeAttr(this.#searchQuery)}"
+              placeholder="${escAttr(this.searchPlaceholder)}"
+              value="${escAttr(this.#searchQuery)}"
               aria-label="Search table data"
             >
           </div>
@@ -298,7 +299,7 @@ export class SmartTable extends HTMLElement {
         const raw = row[col.key];
         const cell = col.render
           ? col.render(raw, row)
-          : `<span title="${this.#escapeAttr(raw)}">${this.#escapeHtml(raw)}</span>`;
+          : `<span title="${escAttr(raw)}">${escHtml(raw)}</span>`;
         return `<td class="td${col.wrap ? ' is-wrap' : ''}">${cell}</td>`;
       }).join('')}</tr>
     `).join('');
@@ -339,13 +340,13 @@ export class SmartTable extends HTMLElement {
       }
       return `
         <th class="th"
-            data-field="${this.#escapeAttr(field)}"
+            data-field="${escAttr(field)}"
             tabindex="0"
             role="columnheader"
             aria-sort="${ariaSort}"
-            aria-label="Sort by ${this.#escapeHtml(label)}">
+            aria-label="Sort by ${escHtml(label)}">
           <div class="th-content">
-            <span>${this.#escapeHtml(label)}</span>
+            <span>${escHtml(label)}</span>
             ${icon}
           </div>
         </th>`;
@@ -418,24 +419,6 @@ export class SmartTable extends HTMLElement {
     this.#sortedData = [];
   }
 
-  #escapeHtml(value) {
-    if (value == null) return '';
-    return String(value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
-
-  #escapeAttr(value) {
-    if (value == null) return '';
-    return String(value)
-      .replace(/&/g, '&amp;')
-      .replace(/"/g, '&quot;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-  }
-
   #openDetail(row) {
     const modal = this.querySelector('.detail-modal');
     if (!modal) return;
@@ -449,8 +432,8 @@ export class SmartTable extends HTMLElement {
       const val = raw == null ? '' : String(raw);
       return `
         <div class="detail-item">
-          <dt class="detail-key">${this.#escapeHtml(col.label ?? col.key)}</dt>
-          <dd class="detail-val">${this.#escapeHtml(val)}</dd>
+          <dt class="detail-key">${escHtml(col.label ?? col.key)}</dt>
+          <dd class="detail-val">${escHtml(val)}</dd>
         </div>`;
     }).join('');
     modal.open();

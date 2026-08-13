@@ -16,6 +16,7 @@ import styles from './llm-router-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import { showToast } from '../utils/toast.js';
 import '/common/components/app-button.js';
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const TIERS = [
@@ -120,7 +121,7 @@ class LlmRouterPage extends HTMLElement {
         </div>
         <div class="kpi">
           <div class="kpi-label">Default config</div>
-          <div class="kpi-value is-mono">${defaultCfg ? this.#esc(defaultCfg.name) : '—'}</div>
+          <div class="kpi-value is-mono">${defaultCfg ? escHtml(defaultCfg.name) : '—'}</div>
         </div>
       </div>
     `;
@@ -143,7 +144,7 @@ class LlmRouterPage extends HTMLElement {
         ${this.#configs.map((c) => `
           <div class="config-card">
             <div class="config-head">
-              <div class="config-name">${this.#esc(c.name)}</div>
+              <div class="config-name">${escHtml(c.name)}</div>
               <div class="config-tools">
                 <button class="icon-btn star-btn ${c.is_default ? 'is-default' : ''}"
                   data-action="${c.is_default ? 'clear-default' : 'set-default'}" data-id="${c.id}"
@@ -157,19 +158,19 @@ class LlmRouterPage extends HTMLElement {
               ${c.is_default
                 ? '<span class="badge badge--brand"><span class="badge__dot"></span>Default</span>'
                 : '<span class="badge badge--success"><span class="badge__dot"></span>Active</span>'}
-              <span class="badge badge--muted">${this.#esc(this.#cap(c.provider))}</span>
+              <span class="badge badge--muted">${escHtml(this.#cap(c.provider))}</span>
             </div>
             <div class="tier-rows">
               ${TIERS.map((t) => `
                 <div class="tier-row">
                   <span class="tier-label">${t.label}</span>
-                  <span class="tier-model">${this.#esc(c[t.key] || c.model || '—')}</span>
+                  <span class="tier-model">${escHtml(c[t.key] || c.model || '—')}</span>
                 </div>`).join('')}
             </div>
             ${c.api_key_secret_name ? `
               <div class="secret-row">
                 <span class="tier-label">Secret</span>
-                <span class="secret-name">${this.#esc(c.api_key_secret_name)}</span>
+                <span class="secret-name">${escHtml(c.api_key_secret_name)}</span>
               </div>` : ''}
           </div>`).join('')}
       </div>
@@ -179,11 +180,11 @@ class LlmRouterPage extends HTMLElement {
   #providerCardHtml(p) {
     const count = p.models?.length ?? 0;
     return `
-      <div class="provider-card" data-action="new-config" data-provider="${this.#esc(p.provider)}"
+      <div class="provider-card" data-action="new-config" data-provider="${escHtml(p.provider)}"
         role="button" tabindex="0">
         <div class="provider-head">
-          <span class="provider-glyph">${this.#esc((p.provider || '?')[0])}</span>
-          <span class="provider-name">${this.#esc(p.provider)}</span>
+          <span class="provider-glyph">${escHtml((p.provider || '?')[0])}</span>
+          <span class="provider-name">${escHtml(p.provider)}</span>
           <span class="provider-add">${icons.plus('', 15)}</span>
         </div>
         <div class="provider-chips">
@@ -212,8 +213,8 @@ class LlmRouterPage extends HTMLElement {
           <select id="cfg-provider" name="provider" required>
             <option value="" disabled ${provider ? '' : 'selected'}>Choose Provider</option>
             ${this.#providers.map((p) => `
-              <option value="${this.#esc(p.provider)}" ${p.provider === provider ? 'selected' : ''}>
-                ${this.#esc(this.#cap(p.provider))}
+              <option value="${escHtml(p.provider)}" ${p.provider === provider ? 'selected' : ''}>
+                ${escHtml(this.#cap(p.provider))}
               </option>`).join('')}
           </select>
         </div>
@@ -232,7 +233,7 @@ class LlmRouterPage extends HTMLElement {
             <label for="cfg-secret">Use saved secret</label>
             <select id="cfg-secret" name="api_key_secret_name">
               <option value="" disabled selected>Find secrets</option>
-              ${this.#secrets.map((s) => `<option value="${this.#esc(s.name)}">${this.#esc(s.name)}</option>`).join('')}
+              ${this.#secrets.map((s) => `<option value="${escHtml(s.name)}">${escHtml(s.name)}</option>`).join('')}
             </select>
             <div class="hint">Select a secret already stored in your workspace.</div>
           </div>
@@ -273,7 +274,7 @@ class LlmRouterPage extends HTMLElement {
   #modelOptions(provider) {
     const entry = this.#providers.find((p) => p.provider === provider);
     return (entry?.models ?? [])
-      .map((m) => `<option value="${this.#esc(m.model)}">${this.#esc(m.model)}</option>`)
+      .map((m) => `<option value="${escHtml(m.model)}">${escHtml(m.model)}</option>`)
       .join('');
   }
 
@@ -385,12 +386,6 @@ class LlmRouterPage extends HTMLElement {
     return s ? s[0].toUpperCase() + s.slice(1) : s;
   }
 
-  #esc(str) {
-    if (str == null) return '';
-    return String(str).replace(/[&<>"']/g, (m) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
-    })[m]);
-  }
 }
 
 customElements.define('llm-router-page', LlmRouterPage);

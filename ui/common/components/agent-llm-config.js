@@ -2,6 +2,7 @@ import { fetchApi } from '/common/services/api.js';
 import '/common/components/app-skeleton.js';
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
+import { escHtml } from '/common/utils/escape.js';
 
 // Self-service LLM routing config for an agent (Phase 2, P2.7). Reads/writes
 // GET|PATCH /api/agents/{id}/llm-config and lists the owner's secrets for the key picker.
@@ -131,7 +132,7 @@ class AgentLlmConfig extends HTMLElement {
       `<option value="">— Platform default key —</option>`,
       ...secrets.map((s) => {
         const name = s.name ?? s.key ?? '';
-        const safe = this.#esc(name);
+        const safe = escHtml(name);
         return `<option value="${safe}"${name === secretName ? ' selected' : ''}>${safe}</option>`;
       }),
     ].join('');
@@ -140,8 +141,8 @@ class AgentLlmConfig extends HTMLElement {
     // values come from a config shared with every other unattached agent, and
     // saving will fork a dedicated one rather than edit that.
     const sourceNote = {
-      attached: `Editing <code>${this.#esc(llm.name || 'this agent’s config')}</code>, attached to this agent.`,
-      'owner-default': `Showing your default config <code>${this.#esc(llm.name || '')}</code>. Saving creates a dedicated config for this agent and leaves the default alone.`,
+      attached: `Editing <code>${escHtml(llm.name || 'this agent’s config')}</code>, attached to this agent.`,
+      'owner-default': `Showing your default config <code>${escHtml(llm.name || '')}</code>. Saving creates a dedicated config for this agent and leaves the default alone.`,
       none: 'No config yet — saving creates one dedicated to this agent.',
     }[this.#configSource] || '';
 
@@ -155,7 +156,7 @@ class AgentLlmConfig extends HTMLElement {
         </div>
         <div class="row">
           <label>Model</label>
-          <input id="model" type="text" value="${this.#esc(model)}" placeholder="e.g. gpt-4o-mini" />
+          <input id="model" type="text" value="${escHtml(model)}" placeholder="e.g. gpt-4o-mini" />
           <div class="hint">Provider-native model id. The request's model is ignored.</div>
         </div>
       </div>
@@ -179,7 +180,7 @@ class AgentLlmConfig extends HTMLElement {
 
       <div class="row">
         <label>Fallback models</label>
-        <input id="fallback_models" type="text" value="${this.#esc(fallbacks)}" placeholder="provider/model, provider/model" />
+        <input id="fallback_models" type="text" value="${escHtml(fallbacks)}" placeholder="provider/model, provider/model" />
         <div class="hint">Comma-separated, tried in order on failure (e.g. <code>openai/gpt-4o-mini</code>).</div>
       </div>
 
@@ -250,13 +251,6 @@ class AgentLlmConfig extends HTMLElement {
     } catch (e) {
       showToast(`Failed: ${e.message}`);
     }
-  }
-
-  #esc(str) {
-    if (str == null) return '';
-    return String(str).replace(/[&<>"']/g, (m) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
-    })[m]);
   }
 
   #patchConfig(id, body) {

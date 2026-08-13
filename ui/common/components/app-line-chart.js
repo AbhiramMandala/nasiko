@@ -8,6 +8,7 @@
  * @attr {string} period - Active period label shown in the header
  * @prop {Array} data - Set chart data: array of `{ label, value }` objects (JS setter)
  */
+import { escHtml } from '/common/utils/escape.js';
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (app-line-chart) {
   :scope { display: block; }
@@ -131,7 +132,7 @@ export class AppLineChart extends HTMLElement {
     this.innerHTML = `
       <div class="chart-wrap">
         <div class="chart-hdr">
-          <span class="chart-title">${this.#esc(this.getAttribute('title') ?? '')}</span>
+          <span class="chart-title">${escHtml(this.getAttribute('title') ?? '')}</span>
           <span class="chart-meta"></span>
         </div>
         <svg class="chart-svg" viewBox="0 0 400 160" preserveAspectRatio="none" aria-hidden="true"></svg>
@@ -162,13 +163,13 @@ export class AppLineChart extends HTMLElement {
     if (!svg) return;
 
     if (this.#error) {
-      svg.innerHTML = `<text x="200" y="80" text-anchor="middle" dominant-baseline="middle" fill="var(--fg-error,currentColor)" font-size="10">${this.#esc(this.#error)}</text>`;
+      svg.innerHTML = `<text x="200" y="80" text-anchor="middle" dominant-baseline="middle" fill="var(--fg-error,currentColor)" font-size="10">${escHtml(this.#error)}</text>`;
       return;
     }
 
     const pts = this.#points;
     if (!pts.length) {
-      svg.innerHTML = `<text x="200" y="80" text-anchor="middle" dominant-baseline="middle" fill="var(--color-text-muted)" font-size="10">${this.#esc(this.getAttribute('empty-text') || 'No data')}</text>`;
+      svg.innerHTML = `<text x="200" y="80" text-anchor="middle" dominant-baseline="middle" fill="var(--color-text-muted)" font-size="10">${escHtml(this.getAttribute('empty-text') || 'No data')}</text>`;
       return;
     }
 
@@ -235,9 +236,6 @@ export class AppLineChart extends HTMLElement {
     return d.toISOString().slice(11, 16);
   }
 
-  #esc(v) {
-    return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
 }
 
 customElements.define('app-line-chart', AppLineChart);

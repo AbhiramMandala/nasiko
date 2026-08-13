@@ -15,6 +15,7 @@ import { renderMarkdown } from '/common/utils/markdown.js';
 import { fmtDuration, fmtTokens } from '/common/utils/units.js';
 
 import styles from './wf-run-steps.css' with { type: 'css' };
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const STATUS_META = {
@@ -82,9 +83,9 @@ class WfRunSteps extends HTMLElement {
 
     let pane = '';
     if (error) {
-      pane = `<div class="pane pane--error">${this.#esc(error)}</div>`;
+      pane = `<div class="pane pane--error">${escHtml(error)}</div>`;
     } else if (tab === 'prompt' && prompt) {
-      pane = `<div class="pane pane--mono">${this.#esc(prompt)}</div>`;
+      pane = `<div class="pane pane--mono">${escHtml(prompt)}</div>`;
     } else if (output) {
       pane = `<div class="pane md-body">${renderMarkdown(output)}</div>`;
     }
@@ -100,10 +101,10 @@ class WfRunSteps extends HTMLElement {
       const meta = STATUS_META[step.status] || STATUS_META.pending;
       const label = this.#labels[step.step_id] || '';
       const title = label
-        ? `Step ${i + 1} — ${this.#esc(label)}`
-        : `Step ${i + 1} — ${this.#esc(step.agent_name || 'Unassigned')}`;
+        ? `Step ${i + 1} — ${escHtml(label)}`
+        : `Step ${i + 1} — ${escHtml(step.agent_name || 'Unassigned')}`;
       const chips = [
-        label ? `<span class="meta">${this.#esc(step.agent_name || '')}</span>` : '',
+        label ? `<span class="meta">${escHtml(step.agent_name || '')}</span>` : '',
         `<span class="meta status ${meta.cls}">${meta.label}</span>`,
         step.latency_ms ? `<span class="meta">${fmtDuration(step.latency_ms)}</span>` : '',
         step.tokens_used ? `<span class="meta">${fmtTokens(step.tokens_used)}</span>` : '',
@@ -125,11 +126,6 @@ class WfRunSteps extends HTMLElement {
     }).join('');
   }
 
-  #esc(s) {
-    const d = document.createElement('span');
-    d.textContent = s ?? '';
-    return d.innerHTML;
-  }
 }
 
 customElements.define('wf-run-steps', WfRunSteps);

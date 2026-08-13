@@ -8,6 +8,7 @@ import "/common/components/app-module-nav.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
 import "/common/components/app-card.js";
+import { escHtml, escAttr } from '/common/utils/escape.js';
 
 // your-agents-page.css is <link>ed by the host page, not imported here: a sheet
 // pulled in by this module only exists once the module does, which is too late
@@ -254,23 +255,23 @@ class YourAgentsPage extends HTMLElement {
 
         const footerButtonsHtml = isRunning
           ? `
-            <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${this.#escAttr(a.name)}" aria-label="Restart ${this.#escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
-            <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${this.#escAttr(a.name)}" aria-label="Stop ${this.#escAttr(name)}" title="Stop">${icons.square("", 12)}</button>`
-          : `<button type="button" slot="footer" class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" data-image="${this.#escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>`;
+            <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
+            <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square("", 12)}</button>`
+          : `<button type="button" slot="footer" class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>`;
 
         return `
         <app-card
-          card-title="${this.#escAttr(name)}"
-          ${version ? `version="v${this.#escAttr(String(version).replace(/^v/, ""))}"` : ""}
+          card-title="${escAttr(name)}"
+          ${version ? `version="v${escAttr(String(version).replace(/^v/, ""))}"` : ""}
           variant="${variant}"
-          href="/agent-card.html?id=${this.#escAttr(a.id)}"
+          href="/agent-card.html?id=${escAttr(a.id)}"
           ${isError ? `error-title="Agent failed" error-body="Container exited with an error."` : ""}
-          ${!isError && a.description ? `description="${this.#escAttr(a.description)}"` : ""}
-          ${tags.length ? `tags="${this.#escAttr(JSON.stringify(tags))}"` : ""}
+          ${!isError && a.description ? `description="${escAttr(a.description)}"` : ""}
+          ${tags.length ? `tags="${escAttr(JSON.stringify(tags))}"` : ""}
         >
           ${isError ? `<a slot="footer" data-action="view-logs" href="/flows.html?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
           ${footerButtonsHtml}
-          <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" aria-label="Delete ${this.#escAttr(name)}" title="Delete ${this.#escAttr(name)}">
+          <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">
             ${icons.trash("", 14)}
           </button>
         </app-card>
@@ -315,7 +316,7 @@ class YourAgentsPage extends HTMLElement {
     const addEnvRow = (key = "", value = "") => {
       const row = document.createElement("div");
       row.className = "env-row";
-      row.innerHTML = `<input type="text" placeholder="KEY" value="${this.#escAttr(key)}" /><input type="text" placeholder="value" value="${this.#escAttr(value)}" /><button class="env-remove" aria-label="Remove variable">${icons.xCircle("", 16)}</button>`;
+      row.innerHTML = `<input type="text" placeholder="KEY" value="${escAttr(key)}" /><input type="text" placeholder="value" value="${escAttr(value)}" /><button class="env-remove" aria-label="Remove variable">${icons.xCircle("", 16)}</button>`;
       row.querySelector(".env-remove").addEventListener("click", () => row.remove());
       envRows.appendChild(row);
     };
@@ -347,7 +348,7 @@ class YourAgentsPage extends HTMLElement {
         secretChips.innerHTML = userSecrets
           .map(
             (s) =>
-              `<span class="secret-chip" data-name="${this.#escAttr(s.name)}">${this.#esc(s.name)}</span>`,
+              `<span class="secret-chip" data-name="${escAttr(s.name)}">${escHtml(s.name)}</span>`,
           )
           .join("");
         secretsSection.style.display = "";
@@ -488,19 +489,6 @@ class YourAgentsPage extends HTMLElement {
     });
   }
 
-  #esc(s) {
-    const d = document.createElement("span");
-    d.textContent = s || "";
-    return d.innerHTML;
-  }
-
-  #escAttr(s) {
-    return (s || "")
-      .replace(/&/g, "&amp;")
-      .replace(/"/g, "&quot;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-  }
 }
 
 customElements.define("your-agents-page", YourAgentsPage);

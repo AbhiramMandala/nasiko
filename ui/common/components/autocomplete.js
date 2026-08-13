@@ -10,6 +10,7 @@
 import { icons } from '../utils/icons.js';
 import styles from './autocomplete.css' with { type: 'css' };
 import { DropdownController } from './dropdown-controller.js';
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export default class AutoComplete extends HTMLElement {
@@ -151,8 +152,8 @@ export default class AutoComplete extends HTMLElement {
           return `
             <li class="ac-option" data-index="${index}" role="option" aria-selected="false">
               <div class="ac-option-body">
-                <div class="ac-option-text">${this.#escapeHtml(label)}</div>
-                ${subtitle ? `<div class="ac-option-subtitle">${this.#escapeHtml(subtitle)}</div>` : ''}
+                <div class="ac-option-text">${escHtml(label)}</div>
+                ${subtitle ? `<div class="ac-option-subtitle">${escHtml(subtitle)}</div>` : ''}
               </div>
             </li>
           `;
@@ -195,11 +196,6 @@ export default class AutoComplete extends HTMLElement {
   set value(v) { this.#inputEl.value = v; }
   get value()  { return this.#inputEl.value; }
 
-  #escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-  }
 }
 
 customElements.define('auto-complete', AutoComplete);

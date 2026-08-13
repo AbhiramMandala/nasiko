@@ -12,6 +12,7 @@
  * @fires navigate - Item selected; `detail: { url, newTab }` — bubbles
  */
 import { icons } from "../utils/icons.js";
+import { escHtml } from '/common/utils/escape.js';
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (app-nav-search) {
     /* Ink panel per the NightOwl mockup: shell background, radius 8, deep
@@ -471,8 +472,8 @@ export class AppNavSearch extends HTMLElement {
             data-idx="${i}" role="option" aria-selected="${i === this.#selectedIndex}">
             ${iconHtml}
             <div class="result-body">
-              <div class="result-label">${this.#esc(item.label)}</div>
-              ${item.subtitle ? `<div class="result-subtitle">${this.#esc(item.subtitle)}</div>` : ''}
+              <div class="result-label">${escHtml(item.label)}</div>
+              ${item.subtitle ? `<div class="result-subtitle">${escHtml(item.subtitle)}</div>` : ''}
             </div>
             ${indicator}
           </li>`;
@@ -480,7 +481,7 @@ export class AppNavSearch extends HTMLElement {
       const more = sec.extra > 0
         ? `<li class="group-more" role="presentation">+${sec.extra} more — keep typing to narrow</li>`
         : '';
-      return `<li class="group-head" role="presentation">${this.#esc(sec.group)}</li>${rows}${more}`;
+      return `<li class="group-head" role="presentation">${escHtml(sec.group)}</li>${rows}${more}`;
     }).join('');
 
     this.#resultsList.querySelectorAll('[data-idx]').forEach(el => {
@@ -521,11 +522,6 @@ export class AppNavSearch extends HTMLElement {
     this.dispatchEvent(new CustomEvent('navigate', { bubbles: true, detail: { url: item.value, newTab } }));
   }
 
-  #esc(text) {
-    const d = document.createElement('div');
-    d.textContent = text;
-    return d.innerHTML;
-  }
 }
 
 customElements.define('app-nav-search', AppNavSearch);

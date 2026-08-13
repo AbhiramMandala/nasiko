@@ -11,6 +11,7 @@ import { icons } from '../utils/icons.js';
 // Was "imported" from inside the docblock above, i.e. never — the loading rows
 // rendered as inert unknown elements.
 import '/common/components/app-skeleton.js';
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const COLUMNS = [
@@ -203,7 +204,7 @@ class TokenopsPage extends HTMLElement {
     }
     tbody.innerHTML = rows.map((a) => `
       <tr>
-        <td class="agent-name">${this.#esc(a.agent_name || a.agent_id)}</td>
+        <td class="agent-name">${escHtml(a.agent_name || a.agent_id)}</td>
         <td class="is-num">${this.#fmtTokens(a.total_tokens)}</td>
         <td class="is-num">${this.#fmtTokens(a.prompt_tokens)}</td>
         <td class="is-num">${this.#fmtTokens(a.completion_tokens)}</td>
@@ -213,7 +214,7 @@ class TokenopsPage extends HTMLElement {
         <td class="is-num">${this.#fmtCost(a.avg_cost_per_operation)}</td>
         <td class="is-num">${this.#fmtNum(a.container_hours)} hrs</td>
         <td class="is-num">${this.#fmtLatency(a.avg_latency_ms)}</td>
-        <td>${this.#esc(a.version || '—')}</td>
+        <td>${escHtml(a.version || '—')}</td>
       </tr>
     `).join('');
   }
@@ -262,12 +263,6 @@ class TokenopsPage extends HTMLElement {
     return ms == null ? '—' : `${(ms / 1000).toFixed(1)}s`;
   }
 
-  #esc(str) {
-    if (!str) return '';
-    return String(str).replace(/[&<>"']/g, (m) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
-    })[m]);
-  }
 }
 
 customElements.define('tokenops-page', TokenopsPage);

@@ -17,6 +17,7 @@ import { authService } from "../services/auth-service.js";
 import { icons } from "../utils/icons.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
+import { escHtml } from '/common/utils/escape.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@keyframes ah-skel-pulse {
@@ -320,13 +321,6 @@ export class AppHeader extends HTMLElement {
   #expanded = localStorage.getItem("app-rail-expanded") === "true";
   #mobileOpen = false;
 
-  #esc(str) {
-    if (!str) return "";
-    return str.replace(/[&<>"']/g, m => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
-    })[m]);
-  }
-
   #handleKeyDown = (e) => {
     const isShortcut =
       ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "f")) || e.key === "\\";
@@ -474,12 +468,12 @@ export class AppHeader extends HTMLElement {
   #railItem(link) {
     const href = link.url;
     const active = this.#isActive(href);
-    const titleEsc = this.#esc(link.title);
+    const titleEsc = escHtml(link.title);
     // Chrome icons (rail + topbar) render at 1px stroke per the NightOwl weight rule.
     // Rail glyphs: 1.25 stroke — the mockup's 1px chrome weight reads wispy at
     // 18px on the ink rail; topbar utility icons stay at 1.
     const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('', 18, 1.75) : icons.cube('', 18, 1.75);
-    return `<a href="${this.#esc(href)}" class="rail-item${active ? " is-active" : ""}"
+    return `<a href="${escHtml(href)}" class="rail-item${active ? " is-active" : ""}"
       title="${titleEsc}" ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
   }
 
@@ -516,7 +510,7 @@ export class AppHeader extends HTMLElement {
       <header class="topbar" role="banner">
         ${window.nasikoChrome?.workspaceSwitcher
           ? `<workspace-switcher></workspace-switcher>`
-          : `<span class="identity-chip" title="${this.#esc(currentUser || "Nasiko")}">${this.#esc(this.#initials())}</span>`}
+          : `<span class="identity-chip" title="${escHtml(currentUser || "Nasiko")}">${escHtml(this.#initials())}</span>`}
         <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button">
           ${icons.panelLeft("", 16, 1)}
         </button>
@@ -532,7 +526,7 @@ export class AppHeader extends HTMLElement {
         </button>` : ""}
         <span class="topbar-spacer"></span>
         <div class="topbar-right">
-          ${addAgent ? `<a href="${this.#esc(addAgent.url)}" class="chrome-btn is-labeled">${icons.plus("", 16, 1)} Add agent</a>` : ""}
+          ${addAgent ? `<a href="${escHtml(addAgent.url)}" class="chrome-btn is-labeled">${icons.plus("", 16, 1)} Add agent</a>` : ""}
           <button class="chrome-btn mobile-menu-btn" data-mobile-menu aria-label="Menu" type="button">${icons.menu("", 16, 1)}</button>
         </div>
       </header>
@@ -542,8 +536,8 @@ export class AppHeader extends HTMLElement {
           ${settingsLinks.map(l => this.#railItem(l)).join("")}
           ${isAuthenticated ? `
           <div class="rail-identity">
-            <app-user-menu current-user="${this.#esc(currentUser)}"></app-user-menu>
-            <span class="identity-name">${this.#esc(currentUser)}</span>
+            <app-user-menu current-user="${escHtml(currentUser)}"></app-user-menu>
+            <span class="identity-name">${escHtml(currentUser)}</span>
           </div>` : ""}
         </div>
       </nav>

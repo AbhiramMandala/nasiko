@@ -14,6 +14,7 @@ import styles from './resources-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import '/common/components/app-skeleton.js';
 import '/common/components/app-empty-state.js';
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Refresh cadence. The endpoint caches for 5s server-side, so polling faster
@@ -108,7 +109,7 @@ class ResourcesPage extends HTMLElement {
         <section class="pane">
           <app-empty-state
             title="Resource stats unavailable"
-            description="${this.#esc(this.#error)}"
+            description="${escHtml(this.#error)}"
           ></app-empty-state>
         </section>`;
       return;
@@ -127,7 +128,7 @@ class ResourcesPage extends HTMLElement {
     const t = new Date(at);
     const label = Number.isNaN(t.getTime()) ? '' : t.toLocaleTimeString();
     this.querySelector('#head-meta').innerHTML = label
-      ? `<span class="chip">${icons.clock('', 12)} Updated ${this.#esc(label)}</span>`
+      ? `<span class="chip">${icons.clock('', 12)} Updated ${escHtml(label)}</span>`
       : '';
   }
 
@@ -202,9 +203,9 @@ class ResourcesPage extends HTMLElement {
       .map(
         (k) => `
         <div class="kpi">
-          <span class="kpi-label">${this.#esc(k.label)}</span>
-          <span class="kpi-value">${this.#esc(k.value)}</span>
-          ${k.sub ? `<span class="kpi-sub">${this.#esc(k.sub)}</span>` : ''}
+          <span class="kpi-label">${escHtml(k.label)}</span>
+          <span class="kpi-value">${escHtml(k.value)}</span>
+          ${k.sub ? `<span class="kpi-sub">${escHtml(k.sub)}</span>` : ''}
           ${k.pct === null ? '' : this.#meterHtml(k.pct)}
         </div>`,
       )
@@ -217,8 +218,8 @@ class ResourcesPage extends HTMLElement {
       const list = groups[g.key] || [];
       const icon = icons[g.icon] ? icons[g.icon]('', 14) : '';
       return `
-        <section class="pane" aria-label="${this.#esc(g.label)}">
-          <h2 class="pane-title">${icon} ${this.#esc(g.label)}
+        <section class="pane" aria-label="${escHtml(g.label)}">
+          <h2 class="pane-title">${icon} ${escHtml(g.label)}
             <span class="pane-count">${list.length} container${list.length === 1 ? '' : 's'}</span>
           </h2>
           ${list.length === 0 ? '<div class="pane-empty">Nothing running in this group.</div>' : this.#rowsHtml(list)}
@@ -252,8 +253,8 @@ class ResourcesPage extends HTMLElement {
     return `
       <div class="row">
         <div class="cell-name">
-          <span class="name-text" title="${this.#esc(c.name)}">${this.#esc(c.display_name || c.name)}</span>
-          <span class="chip ${running ? 'is-running' : 'is-stopped'}">${this.#esc(c.state || 'unknown')}</span>
+          <span class="name-text" title="${escHtml(c.name)}">${escHtml(c.display_name || c.name)}</span>
+          <span class="chip ${running ? 'is-running' : 'is-stopped'}">${escHtml(c.state || 'unknown')}</span>
         </div>
         <div class="metric">
           <span class="metric-value">${known ? this.#fmtCpu(cpuPct) : 'not reporting'}</span>
@@ -316,12 +317,6 @@ class ResourcesPage extends HTMLElement {
     return `${v >= 10 || i === 0 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
   }
 
-  #esc(s) {
-    return String(s ?? '').replace(
-      /[&<>"']/g,
-      (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m],
-    );
-  }
 }
 
 customElements.define('resources-page', ResourcesPage);

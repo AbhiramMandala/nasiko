@@ -1,6 +1,7 @@
 import { icons } from '/common/utils/icons.js';
 
 import styles from './session-trace-page.css' with { type: 'css' };
+import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /**
@@ -48,7 +49,7 @@ class SessionTracePage extends HTMLElement {
     this.innerHTML = `
       <div class="trace-header">
         <a class="back-link" href="javascript:history.back()">${icons.chevronLeft('', 16)} Back</a>
-        <h1>${this.#esc(traceId)}</h1>
+        <h1>${escHtml(traceId)}</h1>
       </div>
       <div class="empty-state">
         <p>This trace isn't linked to a session yet.</p>
@@ -60,11 +61,6 @@ class SessionTracePage extends HTMLElement {
     `;
   }
 
-  #esc(s) {
-    const d = document.createElement('span');
-    d.textContent = s || '';
-    return d.innerHTML;
-  }
 }
 
 customElements.define('session-trace-page', SessionTracePage);
