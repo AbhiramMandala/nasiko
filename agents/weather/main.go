@@ -17,14 +17,20 @@ import (
 	// [nasiko:imports]
 )
 
-type weatherExecutor struct{}
+type weatherExecutor struct {
+	llm *llmClient
+}
 
 var _ a2asrv.AgentExecutor = (*weatherExecutor)(nil)
 
-func (*weatherExecutor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+func (w *weatherExecutor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	// The inbound W3C trace context, forwarded on the LLM call for attribution.
+	traceparent := firstParam(execCtx, "traceparent")
 	return func(yield func(a2a.Event, error) bool) {
 		userText := extractText(execCtx.Message)
-		result, err := getWeather(ctx, userText)
+		// Run the LLM tool-calling loop: the model extracts the location and picks
+		// tools, we execute them, then the model synthesizes the answer.
+		result, err := w.llm.runAgentLoop(ctx, userText, traceparent)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -33,23 +39,30 @@ func (*weatherExecutor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCon
 	}
 }
 
+// firstParam reads a single-valued service param (the a2a-go handler copies the
+// inbound HTTP headers into ExecutorContext.ServiceParams, lowercased).
+func firstParam(execCtx *a2asrv.ExecutorContext, name string) string {
+	if execCtx == nil || execCtx.ServiceParams == nil {
+		return ""
+	}
+	vals, ok := execCtx.ServiceParams.Get(name)
+	if !ok || len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
+}
+
 func (*weatherExecutor) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {}
 }
 
-func getWeather(ctx context.Context, query string) (string, error) {
-	query = cleanQuery(query)
-	lat, lon, city, err := geocode(ctx, query)
-	if err != nil {
-		return "", fmt.Errorf("could not find location %q: %w", query, err)
-	}
-
+func getWeather(ctx context.Context, lat, lon float64, city string) (string, error) {
 	apiURL := fmt.Sprintf(
 		"https://api.open-meteo.com/v1/forecast?latitude=%f&longitude=%f&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=3",
 		lat, lon,
 	)
 
-	resp, err := http.Get(apiURL)
+	resp, err := httpGet(ctx, apiURL)
 	if err != nil {
 		return "", err
 	}
@@ -63,10 +76,10 @@ func getWeather(ctx context.Context, query string) (string, error) {
 			WeatherCode int     `json:"weather_code"`
 		} `json:"current"`
 		Daily struct {
-			Time       []string  `json:"time"`
-			TempMax    []float64 `json:"temperature_2m_max"`
-			TempMin    []float64 `json:"temperature_2m_min"`
-			WeatherCode []int    `json:"weather_code"`
+			Time        []string  `json:"time"`
+			TempMax     []float64 `json:"temperature_2m_max"`
+			TempMin     []float64 `json:"temperature_2m_min"`
+			WeatherCode []int     `json:"weather_code"`
 		} `json:"daily"`
 	}
 
@@ -96,7 +109,7 @@ func getWeather(ctx context.Context, query string) (string, error) {
 
 func geocode(ctx context.Context, query string) (float64, float64, string, error) {
 	apiURL := fmt.Sprintf("https://geocoding-api.open-meteo.com/v1/search?name=%s&count=1&language=en&format=json", url.QueryEscape(query))
-	resp, err := http.Get(apiURL)
+	resp, err := httpGet(ctx, apiURL)
 	if err != nil {
 		return 0, 0, "", err
 	}
@@ -120,37 +133,15 @@ func geocode(ctx context.Context, query string) (float64, float64, string, error
 	return r.Latitude, r.Longitude, fmt.Sprintf("%s, %s", r.Name, r.Country), nil
 }
 
-func cleanQuery(q string) string {
-	q = strings.TrimSpace(q)
-	lower := strings.ToLower(q)
-	// Strip trailing punctuation ("paris?" -> "paris") so it doesn't hit the geocoder.
-	q = strings.TrimRight(strings.TrimSpace(q), "?!.,")
-	// Order matters: longest/most-specific prefixes first so "what is the weather in "
-	// wins over the bare "weather in ".
-	for _, prefix := range []string{
-		"what's the weather like in ", "what is the weather like in ",
-		"what's the weather in ", "what is the weather in ",
-		"what's weather in ", "what is weather in ",
-		"what's the weather like ", "what is the weather like ",
-		"what's the weather ", "what is the weather ",
-		"what's weather ", "what is weather ",
-		"what's the weather", "what is the weather",
-		"what's weather", "what is weather",
-		"how's the weather in ", "how is the weather in ",
-		"how's the weather ", "how is the weather ",
-		"tell me the weather in ", "tell me the weather ",
-		"the weather in ", "the weather ",
-		"weather in ", "weather for ", "weather at ", "weather ",
-		"forecast for ", "forecast in ", "forecast ",
-		"temperature in ", "temperature ",
-		"what is ", "what's ",
-	} {
-		if strings.HasPrefix(lower, prefix) {
-			q = q[len(prefix):]
-			break
-		}
+// httpGet issues a GET with the request context attached, so the
+// loongsuite-instrumented transport (see Dockerfile) propagates the trace and
+// the call shows up as a span.
+func httpGet(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
 	}
-	return strings.TrimSpace(strings.TrimRight(strings.TrimSpace(q), "?!.,"))
+	return http.DefaultClient.Do(req)
 }
 
 func weatherDescription(code int) string {
@@ -224,7 +215,7 @@ func main() {
 		},
 	}
 
-	handler := a2asrv.NewHandler(&weatherExecutor{})
+	handler := a2asrv.NewHandler(&weatherExecutor{llm: newLLMClient()})
 
 	mux := http.NewServeMux()
 	mux.Handle("/a2a", a2asrv.NewJSONRPCHandler(handler))
