@@ -87,11 +87,6 @@ smart-table:not(:defined) {
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
 
-data-view:not(:defined) {
-  display: block;
-  min-height: 200px;
-}
-
 /*
   app-module-nav upgrade contract. Below 1024px the nav is a disclosure bar in
   normal flow above the page content (desktop pins it into the content card's

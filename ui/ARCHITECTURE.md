@@ -187,6 +187,27 @@ When that lands, `ui-lint`'s `layerOf()` can classify by directory instead of th
 hand-maintained `PRIMITIVES` set it uses today — which is the point of the split:
 the layer rule stops being a list someone remembers to update.
 
+## Unused on purpose, and unverified
+
+Three elements have zero consumers and have therefore never rendered in a browser.
+They are kept rather than deleted because each is either trivial or a plausible
+near-term need — but nothing has exercised them, so treat them as drafts:
+
+| Element | LOC | Why it is still here |
+| :--- | ---: | :--- |
+| `app-line-chart` | 243 | No page draws a chart today, and none hand-rolls one either — so there is no adoption to do, but FinOps/TokenOps is the obvious future caller. Never rendered; it referenced an undeclared `--color-error-text` until Phase 2, which is evidence of exactly that. |
+| `app-grid` | 38 | Completes the `app-stack` / `app-row` / `app-grid` layout trio (the other two are used). Too small to be worth the asymmetry of deleting. |
+| `app-toolbar` | 49 | Same reasoning. |
+
+Two were deleted instead, because neither was a draft of something wanted:
+`data-view` (517 LOC — a full duplicate of `smart-table`, same contract, different
+renderer) and `agent-detail-page` (494 LOC — a page component with no page, and no
+nav entry or route that could reach it).
+
+If you adopt one of the three above, render it and add it to a browser test in the
+same commit. Unused code that has never executed is not a component; it is a
+proposal.
+
 ## Adding things
 
 - **A primitive** → `AGENTS.md` § "New primitive". Extend `NasikoElement`, inline
