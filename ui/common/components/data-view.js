@@ -192,15 +192,14 @@ export class DataView extends HTMLElement {
     // was invisible — a permanent skeleton with nothing in the console. It is how
     // `window.deleteSession` went unnoticed. Now it says so, on screen.
     if (!this.dataFn) {
-      this.showError(
-        this.#dataFnName
-          ? `No data source named "${this.#dataFnName}".`
-          : 'This view has no data-fn attribute.',
-      );
-      console.error(
-        `[data-view] unresolved data-fn "${this.#dataFnName}" — register it with ` +
-          `dataSources.registerAll({ ${this.#dataFnName}: … }) in the page's service module.`,
-      );
+      // See smart-table: loud only when a name was declared and cannot resolve.
+      if (this.#dataFnName) {
+        this.showError(`No data source named "${this.#dataFnName}".`);
+        console.error(
+          `[data-view] unresolved data-fn "${this.#dataFnName}" — register it with ` +
+            `dataSources.registerAll({ ${this.#dataFnName}: … }) in the page's service module.`,
+        );
+      }
       return;
     }
 

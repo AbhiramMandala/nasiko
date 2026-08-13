@@ -55,6 +55,12 @@ now mandatory for new code:
   `this.listen()`, `this.interval()`, `this.timeout()`, `this.signal`,
   `this.watch()`, `this.compute()`, `this.onTeardown()`. Register with
   `defineElement('my-tag', MyClass)`.
+- **Two lifecycle hooks, and the difference matters.** `firstConnected()` runs
+  once for the element's life — attribute reads, initial DOM, a one-time load.
+  `connected()` runs on **every** connect, and every subscription belongs there,
+  because teardown runs on every *dis*connect. Subscribe in `firstConnected()` and
+  the first time the element is re-parented it loses its listeners, timers and
+  reactive bindings permanently. Dev builds warn if you get this wrong.
 - **Declare dependencies, don't import them.** `static inject = { api: keys.api }`
   resolves onto `this.api` before first render. Never
   `import { fetchApi } from '/common/services/api.js'` in a component again —

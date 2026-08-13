@@ -59,7 +59,7 @@ OSS binary.
 | `ApiError` + `err.code` | `throw new Error(await res.text())` | The server's machine-readable `code` was read in **zero** places; JSON bodies reached users as literal JSON in toasts. |
 | `listFetcher('/agents')` | hand-built query string + offset math | The same four lines were retyped nine times for the query string alone, across ~50 functions in one file. |
 | `dataSources.register('fetchAgents', fn)` | `window.fetchAgents = fn` | Missing names threw instead of rendering an empty view forever; duplicate names are an error instead of last-script-wins. |
-| `this.listen()` / `this.interval()` / `this.signal` | manual `addEventListener` / `setInterval` / no AbortController | Three confirmed listener leaks and an uncancellable stream existed. Now torn down automatically. |
+| `this.listen()` / `this.interval()` / `this.signal` | manual `addEventListener` / `setInterval` / no AbortController | Three confirmed listener leaks and an uncancellable stream existed. Now torn down automatically — register them in `connected()`, not `firstConnected()`, so they are re-established after a move. |
 | Lit `html` templates | `innerHTML` + a private `#esc()` | 38 escape helpers in 4 incompatible families, two used in attribute position where they don't escape quotes. Lit escapes by construction. |
 | `publish('agent:created', …)` | each screen re-polling the server | Screens had no way to hear about each other's changes; `EVENTS` also declares which caches to invalidate, so the two can't drift. |
 | `resource(key, loader)` | hand-rolled `sessionStorage` caches | Three components each rolled their own read/write/sweep. One implementation: single-flight, stale-while-revalidate, cross-tab invalidation. |

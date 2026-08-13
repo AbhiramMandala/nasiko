@@ -30,6 +30,7 @@
 
 import { LitElement, html, nothing } from '../vendor/lit-all.esm.js';
 import { injectOptional, keys, resolveAll } from './container.js';
+import { isDev } from './env.js';
 import { shouldReport, userMessage, isAbort } from './errors.js';
 import { computed as makeComputed, effect as runEffect } from '../state/signal.js';
 
@@ -70,6 +71,7 @@ export class NasikoElement extends LitElement {
   /** @type {Array<() => void>} */
   #teardown = [];
   #firstConnected = false;
+  #inFirstConnected = false;
 
   constructor() {
     super();
@@ -114,10 +116,18 @@ export class NasikoElement extends LitElement {
     if (!this.#firstConnected) {
       this.#firstConnected = true;
       try {
+        this.#inFirstConnected = true;
         this.firstConnected();
       } catch (err) {
         this.report(err);
+      } finally {
+        this.#inFirstConnected = false;
       }
+    }
+    try {
+      this.connected();
+    } catch (err) {
+      this.report(err);
     }
   }
 
@@ -136,17 +146,50 @@ export class NasikoElement extends LitElement {
   }
 
   /**
-   * One-time setup, after the element is in the document. Prefer this to
-   * `connectedCallback` — it runs exactly once even if the element is moved,
-   * which is what the hand-written `#initialized` guard was doing in 37
-   * components (and forgetting in 24 others).
+   * One-time setup, run once for the element's whole life even if it is moved in
+   * the DOM. This is the equivalent of the hand-written `#initialized` guard that
+   * 37 components used (and 24 forgot): it is for work that must not be repeated
+   * — reading attributes, building initial DOM, kicking off a one-time load.
+   *
+   * DO NOT subscribe to anything here. `listen()`, `interval()`, `timeout()` and
+   * `watch()` are all torn down on *every* disconnect, so anything registered
+   * here is gone for good the first time the element is re-parented and will
+   * never come back. Put subscriptions in `connected()`, which is called on every
+   * connect and therefore pairs with that teardown. In development, registering a
+   * subscription here logs a warning naming this trap.
    */
   firstConnected() {}
+
+  /**
+   * Setup that pairs with teardown — called on **every** connect, including after
+   * a move. This is where `listen()`, `interval()`, `watch()` and `useResource()`
+   * belong.
+   *
+   * The asymmetry this resolves is a real bug the browser tests surfaced: with
+   * only a once-only hook, re-parenting an element ran the full teardown and then
+   * re-established nothing, leaving a live element with no listeners, no timers
+   * and no reactive bindings — silently, and permanently.
+   */
+  connected() {}
 
   /** Register arbitrary cleanup to run on disconnect. */
   onTeardown(fn) {
     if (typeof fn === 'function') this.#teardown.push(fn);
     return fn;
+  }
+
+  /**
+   * Dev-time guard for the one asymmetry in this class: subscriptions registered
+   * in `firstConnected` are torn down on the next disconnect and never restored.
+   */
+  #warnIfFirstConnected(what) {
+    if (this.#inFirstConnected && isDev()) {
+      console.warn(
+        `[${this.localName}] ${what}() was called in firstConnected(), which runs once — ` +
+          `but teardown runs on every disconnect, so this subscription is lost permanently ` +
+          `the first time the element is moved. Move it to connected().`,
+      );
+    }
   }
 
   /**
@@ -159,6 +202,7 @@ export class NasikoElement extends LitElement {
    * @param {AddEventListenerOptions} [options]
    */
   listen(target, type, handler, options) {
+    this.#warnIfFirstConnected('listen');
     target.addEventListener(type, handler, options);
     this.onTeardown(() => target.removeEventListener(type, handler, options));
     return handler;
@@ -177,6 +221,7 @@ export class NasikoElement extends LitElement {
    * @param {{ pauseWhenHidden?: boolean, runImmediately?: boolean }} [opts]
    */
   interval(fn, ms, { pauseWhenHidden = true, runImmediately = false } = {}) {
+    this.#warnIfFirstConnected('interval');
     let id = null;
     const start = () => {
       if (id === null) id = setInterval(fn, ms);
@@ -215,6 +260,7 @@ export class NasikoElement extends LitElement {
    * ```
    */
   watch(fn) {
+    this.#warnIfFirstConnected('watch');
     const dispose = runEffect(() => {
       fn();
       this.requestUpdate();

@@ -180,16 +180,18 @@ export class SmartTable extends HTMLElement {
     // was invisible — a permanent skeleton with nothing in the console. It is how
     // `window.deleteSession` went unnoticed. Now it says so, on screen.
     if (!this.dataFn) {
-      this.#showError(
-        this.#dataFnName
-          ? `No data source named "${this.#dataFnName}".`
-          : 'This table has no data-fn attribute.',
-      );
-      console.error(
-        `[smart-table] unresolved data-fn "${this.#dataFnName}" — register it with ` +
-          `dataSources.registerAll({ ${this.#dataFnName}: … }) in the page's service module. ` +
-          `Check the <script> order too: data functions must be defined before the page component.`,
-      );
+      // A declared data-fn that will not resolve is a real bug — say so on
+      // screen. No declared name means the owner sets `.dataFn` directly and
+      // calls refresh() itself (see runtime-page), so an early refresh here is
+      // expected and must stay silent.
+      if (this.#dataFnName) {
+        this.#showError(`No data source named "${this.#dataFnName}".`);
+        console.error(
+          `[smart-table] unresolved data-fn "${this.#dataFnName}" — register it with ` +
+            `dataSources.registerAll({ ${this.#dataFnName}: … }) in the page's service module. ` +
+            `Check the <script> order too: data functions must be defined before the page component.`,
+        );
+      }
       return;
     }
 
