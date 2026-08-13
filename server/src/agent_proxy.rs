@@ -150,6 +150,19 @@ pub async fn agent_proxy(
             format!("http://{}:{}", stored.host, stored.port)
         }
     };
+    // The forwarded path. A bare `/` (the chat call) must land on the agent's
+    // actual A2A mount, which the card advertises as `transport_path` — `/a2a`
+    // for the a2a-go agents, root for the a2a-server-lf ones. POSTing to `/`
+    // unconditionally 404s every agent mounted elsewhere. Sub-paths (e.g.
+    // `/.well-known/agent-card.json`) are forwarded verbatim.
+    let forwarded_path = if forwarded_path == "/" {
+        match agent.transport_path.as_deref() {
+            None | Some("") | Some("/") => "/".to_string(),
+            Some(p) => p.to_string(),
+        }
+    } else {
+        forwarded_path
+    };
     let target_url = format!("{agent_base}{forwarded_path}");
 
     // Forward the request
