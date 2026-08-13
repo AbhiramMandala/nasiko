@@ -11,10 +11,12 @@ Two suites:
 | --- | --- |
 | `pages.test.mjs` | Every page in `oss/ui/web` and `ee/ui/web` loads with **no uncaught exception, no 404'd module, and every custom element upgraded**. All `/api/**` calls are stubbed — the target is JS runtime failures, not data. |
 | `element.test.mjs` | `NasikoElement` end to end: DI resolution, light DOM (no shadow root), `@scope`-wrapped adopted styles, Lit's escaping, the `firstConnected` / `connected` split, re-subscription after a move, and full teardown. |
+| `nav.test.mjs` | The `/nav-ext.js` extension seam, under three overlays — OSS-only, EE-as-admin, EE-as-member. Asserts nav *content*, not just that pages load: no EE items leak into OSS, every EE org item and role gate survives, and `fetchTraceDetail` returns the trace object in both editions. This is the test that makes removing the `navigation.js` fork safe to review. |
 
 `serve.mjs` is a ~60-line static server that mirrors the real overlay resolution
 (`ee/ui/web` → `oss/ui/web` → `/common/` → `oss/ui/common`), so a page resolves
-exactly as it does from the Rust binary. It is also usable on its own as a
+exactly as it does from the Rust binary. The layer list is a parameter, which is
+how `nav.test.mjs` can test an OSS-only console and an EE console in one run. It is also usable on its own as a
 zero-backend dev server:
 
 ```sh

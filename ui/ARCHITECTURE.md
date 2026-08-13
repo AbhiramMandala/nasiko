@@ -137,9 +137,28 @@ oss/ui/
 └── web/                     APPLICATION — one .html per URL
 ```
 
-`components/` is currently flat: 69 elements, 63% of the code being page
-components, with seven EE-only pages mixed in. Splitting it by domain — and
-moving the EE-only pages to `ee/ui/` — is the next structural step. The target:
+### The edition seam
+
+There is exactly one `navigation.js`, shared by both editions, and one
+`/nav-ext.js` extension point resolved through the asset overlay —
+`oss/ui/web/nav-ext.js` is a documented no-op, `ee/ui/web/nav-ext.js` supplies the
+enterprise tree. `navigation.js` performs that dynamic import itself (it is the
+first module every page loads), and a hook that throws falls back to the base nav
+rather than blanking the shell.
+
+This replaced a 662-line EE copy of `navigation.js` of which 450 lines were an
+exact duplicate. The duplication was not the real cost: the copy drifted, and
+`fetchTraceDetail` ended up spreading the response envelope instead of the trace,
+so every `/session-trace.html?trace_id=…` link dead-ended on EE. When you need
+edition-specific behaviour, add a hook — never a second copy of a file.
+
+The 65 shared data functions now live once in
+`common/services/data-functions.js`, assigned to `window` for the existing
+`data-fn=` attributes and registered with `core/data-sources.js` for new code.
+
+`components/` is still flat: 69 elements, 63% of the code being page components,
+with seven EE-only pages mixed in. Splitting it by domain — and moving the EE-only
+pages to `ee/ui/` — is the next structural step. The target:
 
 ```
 common/

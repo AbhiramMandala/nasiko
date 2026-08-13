@@ -29,6 +29,8 @@ copying files — `common/` has exactly one copy in the repo.
 | `common/styles/*.css` | Utility layers: buttons, badges, layout primitives, prose/markdown, segmented controls, surfaces, text, the page host geometry (`page-layout.css`), and the `:not(:defined)` upgrade-contract rules |
 | `common/components/*.js` (+ sibling `.css`) | Web components: reusable primitives (`app-button`, `app-modal`, `app-badge`, layout elements, …) and page-level components |
 | `common/services/api.js` | Single funnel for `/api/*` calls (`apiFetch`/`fetchApi`) — handles session-expired redirects in one place |
+| `common/services/data-functions.js` | The 65 shared data functions, one copy for both editions. Edition-specific navigation goes in `/nav-ext.js`, never a second copy of `navigation.js` |
+| `common/services/query.js` | `listFetcher`/`detailFetcher` — build every list data function with these |
 | `common/services/sse.js` | `connectSSE()` helper wrapping `EventSource` |
 | `common/utils/*.js` | `toast.js` (ephemeral feedback), `theme.js` (light/dark/system, persisted), `icons.js` (central SVG icon library), plus markdown, date, keyboard-shortcut, and async-button helpers |
 | `common/vendor/*.esm.js` | Vendored single-file ESM builds of third-party libraries (see `common/vendor/README.md`) — committed directly since there's no package manager at runtime; never hand-edit, replace wholesale on upgrade |

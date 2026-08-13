@@ -8,7 +8,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { resolve, extname, join } from 'node:path';
 
 const ROOT = resolve(process.argv[2] || '.');
-const LAYERS = [join(ROOT, 'ee/ui/web'), join(ROOT, 'oss/ui/web')];
+const DEFAULT_LAYERS = ['ee/ui/web', 'oss/ui/web'];
 const COMMON = join(ROOT, 'oss/ui/common');
 
 const MIME = {
@@ -22,20 +22,21 @@ async function tryFile(p) {
   return null;
 }
 
-async function resolvePath(urlPath) {
+async function resolvePath(urlPath, layers) {
   let p = decodeURIComponent(urlPath.split('?')[0]);
   if (p === '/' ) p = '/index.html';
   if (p.startsWith('/common/')) return tryFile(join(COMMON, p.slice('/common/'.length)));
-  for (const layer of LAYERS) {
+  for (const layer of layers) {
     const hit = await tryFile(join(layer, p.slice(1)));
     if (hit) return hit;
   }
   return null;
 }
 
-export function startServer(root, port = 0) {
+export function startServer(root, port = 0, layerDirs = DEFAULT_LAYERS) {
+  const layers = layerDirs.map((d) => join(ROOT, d));
   const server = createServer(async (req, res) => {
-    const file = await resolvePath(req.url);
+    const file = await resolvePath(req.url, layers);
     if (!file) { res.writeHead(404, {'content-type':'text/plain'}); res.end('not found: ' + req.url); return; }
     const body = await readFile(file);
     res.writeHead(200, { 'content-type': MIME[extname(file)] || 'application/octet-stream' });
