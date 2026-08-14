@@ -23,6 +23,8 @@ import '/common/components/wf-run-steps.js';
 
 import styles from './workflow-detail-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const POLL_MS = 1500;
@@ -77,8 +79,8 @@ class WorkflowDetailPage extends HTMLElement {
   async #load(execId) {
     try {
       const [workflow, executions] = await Promise.all([
-        window.fetchWorkflow(this.#workflowId),
-        window.fetchWorkflowExecutions(this.#workflowId).catch(() => []),
+        call('fetchWorkflow', this.#workflowId),
+        call('fetchWorkflowExecutions', this.#workflowId).catch(() => []),
       ]);
       this.#workflow = workflow;
       this.#executions = executions;
@@ -228,7 +230,7 @@ class WorkflowDetailPage extends HTMLElement {
     }
     btn.setAttribute('loading', '');
     try {
-      this.#workflow = await window.updateWorkflow(this.#workflowId, {
+      this.#workflow = await call('updateWorkflow', this.#workflowId, {
         name: this.querySelector('#wf-name').value.trim() || undefined,
         description: this.querySelector('#wf-desc').value.trim() || undefined,
         steps,
@@ -249,7 +251,7 @@ class WorkflowDetailPage extends HTMLElement {
     const btn = this.querySelector('#run-btn');
     btn?.setAttribute('loading', '');
     try {
-      const started = await window.runWorkflow(this.#workflowId);
+      const started = await call('runWorkflow', this.#workflowId);
       this.#openRun(started.execution_id, { push: true });
     } catch (err) {
       btn?.removeAttribute('loading');
@@ -267,7 +269,7 @@ class WorkflowDetailPage extends HTMLElement {
     }
     this.#renderRunShell();
     try {
-      this.#execution = await window.fetchExecution(execId);
+      this.#execution = await call('fetchExecution', execId);
     } catch (err) {
       this.querySelector('#run-body').innerHTML =
         `<p class="exec-empty">Failed to load execution: ${escHtml(err.message)}</p>`;
@@ -301,7 +303,7 @@ class WorkflowDetailPage extends HTMLElement {
     this.querySelector('#run-back').addEventListener('click', async () => {
       history.pushState({}, '', `/workflow.html?id=${encodeURIComponent(this.#workflowId)}`);
       // A run just happened — refresh the history list before showing it.
-      this.#executions = await window.fetchWorkflowExecutions(this.#workflowId).catch(() => this.#executions);
+      this.#executions = await call('fetchWorkflowExecutions', this.#workflowId).catch(() => this.#executions);
       this.#showReview();
     });
   }
@@ -349,7 +351,7 @@ class WorkflowDetailPage extends HTMLElement {
     if (status !== 'pending' && status !== 'running') return;
     this.#pollTimer = setTimeout(async () => {
       try {
-        this.#execution = await window.fetchExecution(this.#execution.id);
+        this.#execution = await call('fetchExecution', this.#execution.id);
         if (this.querySelector('#run-body')) this.#updateRunView();
       } catch { /* transient poll failure — keep trying */ }
       this.#pollIfActive();

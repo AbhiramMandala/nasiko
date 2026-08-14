@@ -5,18 +5,20 @@ import '/common/components/app-skeleton.js';
  *
  * @element llm-router-page
  * @note Data sources (see /api/docs):
- *       `window.fetchLlmConfigs()`      → GET  /api/llm-configs
- *       `window.createLlmConfig(body)`  → POST /api/llm-configs
- *       `window.deleteLlmConfig(id)`    → DELETE /api/llm-configs/{id}
+ *       `call('fetchLlmConfigs')`      → GET  /api/llm-configs
+ *       `call('createLlmConfig', body)`  → POST /api/llm-configs
+ *       `call('deleteLlmConfig', id)`    → DELETE /api/llm-configs/{id}
  *       `window.setDefaultLlmConfig(id)`→ POST /api/llm-configs/{id}/default
- *       `window.fetchLlmProviders()`    → GET  /api/llm-router/providers
- *       `window.fetchSecretsList()`         → GET  /api/secrets
+ *       `call('fetchLlmProviders')`    → GET  /api/llm-router/providers
+ *       `call('fetchSecretsList')`         → GET  /api/secrets
  */
 import styles from './llm-router-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import { showToast } from '../utils/toast.js';
 import '/common/components/app-button.js';
 import { escHtml } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const TIERS = [
@@ -52,9 +54,9 @@ class LlmRouterPage extends HTMLElement {
       </div>`;
     try {
       const [configs, providers, secrets] = await Promise.all([
-        window.fetchLlmConfigs(),
-        window.fetchLlmProviders(),
-        window.fetchSecretsList(),
+        call('fetchLlmConfigs'),
+        call('fetchLlmProviders'),
+        call('fetchSecretsList'),
       ]);
       this.#configs = configs?.data ?? [];
       this.#providers = providers?.data ?? [];
@@ -337,7 +339,7 @@ class LlmRouterPage extends HTMLElement {
       return;
     }
     try {
-      await window.createLlmConfig(body);
+      await call('createLlmConfig', body);
     } catch (err) {
       errEl.textContent = err?.message || 'Failed to save config';
       errEl.hidden = false;
@@ -350,7 +352,7 @@ class LlmRouterPage extends HTMLElement {
   async #deleteConfig(id) {
     if (!confirm('Delete this routing config?')) return;
     try {
-      await window.deleteLlmConfig(id);
+      await call('deleteLlmConfig', id);
     } catch (err) {
       showToast(err?.message || 'Failed to delete config');
       return;

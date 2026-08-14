@@ -15,6 +15,8 @@ import '/common/components/app-action-menu.js';
 
 import styles from './workflows-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const MENU_ITEMS = JSON.stringify([
@@ -61,8 +63,8 @@ class WorkflowsPage extends HTMLElement {
   async #load() {
     try {
       const [workflows, executions] = await Promise.all([
-        window.fetchWorkflows(),
-        window.fetchAllExecutions().catch(() => []),
+        call('fetchWorkflows'),
+        call('fetchAllExecutions').catch(() => []),
       ]);
       this.#workflows = workflows;
       // Executions come newest-first; keep the first row seen per workflow.
@@ -82,7 +84,7 @@ class WorkflowsPage extends HTMLElement {
       window.location.href = `/workflow.html?id=${encodeURIComponent(id)}`;
     } else if (action === 'run') {
       try {
-        const run = await window.runWorkflow(id);
+        const run = await call('runWorkflow', id);
         window.location.href = `/workflow.html?id=${encodeURIComponent(id)}&exec=${encodeURIComponent(run.execution_id)}`;
       } catch (err) {
         showToast(`Run failed: ${err.message}`);
@@ -91,7 +93,7 @@ class WorkflowsPage extends HTMLElement {
       const wf = this.#workflows.find((w) => w.id === id);
       if (!confirm(`Delete workflow "${wf?.name || id}"? Its execution history goes with it.`)) return;
       try {
-        await window.deleteWorkflow(id);
+        await call('deleteWorkflow', id);
         this.#workflows = this.#workflows.filter((w) => w.id !== id);
         this.#renderGrid();
         showToast('Workflow deleted');

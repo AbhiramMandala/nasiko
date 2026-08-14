@@ -17,6 +17,8 @@ import '/common/components/wf-run-steps.js';
 
 import styles from './executions-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const POLL_MS = 1500;
@@ -85,7 +87,7 @@ class ExecutionsPage extends HTMLElement {
 
   async #load() {
     try {
-      this.#executions = await window.fetchAllExecutions();
+      this.#executions = await call('fetchAllExecutions');
       this.#loaded = true;
       this.#renderList();
       this.#pollIfActive();
@@ -99,7 +101,7 @@ class ExecutionsPage extends HTMLElement {
     if (!this.#executions.some((e) => ACTIVE.has(e.status))) return;
     this.#pollTimer = setTimeout(async () => {
       try {
-        this.#executions = await window.fetchAllExecutions();
+        this.#executions = await call('fetchAllExecutions');
         if (this.#tab === 'active') this.#refreshActive();
       } catch { /* transient poll failure — keep trying */ }
       this.#pollIfActive();

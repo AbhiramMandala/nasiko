@@ -8,13 +8,15 @@
  *
  * @element resources-page
  * @note Data source (see /api/docs):
- *       `window.fetchResourceStats()` → GET /api/observability/resources
+ *       `call('fetchResourceStats')` → GET /api/observability/resources
  */
 import styles from './resources-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import '/common/components/app-skeleton.js';
 import '/common/components/app-empty-state.js';
 import { escHtml } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Refresh cadence. The endpoint caches for 5s server-side, so polling faster
@@ -79,7 +81,7 @@ class ResourcesPage extends HTMLElement {
   async #load() {
     let resp;
     try {
-      resp = await window.fetchResourceStats();
+      resp = await call('fetchResourceStats');
     } catch (e) {
       // A 503 here is the normal answer on a Kubernetes or simulated runtime,
       // where usage cannot be read — say so rather than showing zeros.

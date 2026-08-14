@@ -16,6 +16,8 @@ import '/common/components/wf-step-editor.js';
 
 import styles from './workflow-new-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class WorkflowNewPage extends HTMLElement {
@@ -144,7 +146,7 @@ class WorkflowNewPage extends HTMLElement {
     this.querySelector('#drafted-note').hidden = true;
     this.#setDrafting(true);
     try {
-      const plan = await window.generateWorkflow(desc);
+      const plan = await call('generateWorkflow', desc);
       const nameInput = this.querySelector('#wf-name');
       if (!nameInput.value.trim() && plan.name) nameInput.value = plan.name;
       this.querySelector('#editor').steps = (plan.steps || []).map((s) => ({
@@ -192,7 +194,7 @@ class WorkflowNewPage extends HTMLElement {
     try {
       const name = this.querySelector('#wf-name').value.trim();
       const description = this.querySelector('#wf-desc').value.trim();
-      const workflow = await window.createWorkflow({
+      const workflow = await call('createWorkflow', {
         name: name || undefined,
         description: description || undefined,
         steps,
@@ -200,7 +202,7 @@ class WorkflowNewPage extends HTMLElement {
       let target = `/workflow.html?id=${encodeURIComponent(workflow.id)}`;
       if (run) {
         try {
-          const started = await window.runWorkflow(workflow.id);
+          const started = await call('runWorkflow', workflow.id);
           target += `&exec=${encodeURIComponent(started.execution_id)}`;
         } catch (runErr) {
           // The workflow IS saved, so still land on the review screen — but say

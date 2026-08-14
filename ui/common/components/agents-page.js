@@ -4,6 +4,8 @@ import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
 import "/common/components/app-module-nav.js";
 import { escHtml } from '/common/utils/escape.js';
+import { call, callOptional } from '../core/data-sources.js';
+
 
 // agents-page.css is <link>ed by the host page, not imported here: a sheet
 // pulled in by this module only exists once the module does, which is too late
@@ -73,7 +75,7 @@ class AgentsPage extends HTMLElement {
   }
 
   async #loadAgents() {
-    const result = await window.fetchAgents("", 1, 100);
+    const result = await call('fetchAgents', "", 1, 100);
     this.#agents = result.data || [];
     await this.#loadPinnedTabs();
     this.#renderFilter();
@@ -83,7 +85,7 @@ class AgentsPage extends HTMLElement {
   /** Admin-pinned tab list (Settings → `catalog_tabs`, comma-separated tags). */
   async #loadPinnedTabs() {
     try {
-      const settings = await window.fetchSettings?.();
+      const settings = await callOptional('fetchSettings');
       this.#pinnedTabs = (settings?.catalog_tabs || "")
         .split(",")
         .map((t) => t.trim().toLowerCase())

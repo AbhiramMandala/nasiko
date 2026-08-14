@@ -13,6 +13,8 @@
  */
 import { icons } from "../utils/icons.js";
 import { escHtml } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (app-nav-search) {
     /* Ink panel per the NightOwl mockup: shell background, radius 8, deep
@@ -335,7 +337,7 @@ export class AppNavSearch extends HTMLElement {
     if (this.#usersUnavailable || typeof window.fetchUserSearch !== 'function') return;
     const token = this.#loadToken;
     try {
-      const r = await window.fetchUserSearch(query);
+      const r = await call('fetchUserSearch', query);
       if (token !== this.#loadToken || !this.#dialog?.open) return;
       this.#data.users = Array.isArray(r) ? r : r?.data?.users || r?.data || [];
       this.#refresh();

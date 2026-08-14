@@ -3,6 +3,8 @@ import { withLoading } from '/common/utils/async-button.js';
 import '/common/components/app-module-nav.js';
 
 import styles from './settings-page.css' with { type: 'css' };
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 // Every field below must exist in the server's `SettingsUpdate`
@@ -220,7 +222,7 @@ class SettingsPage extends HTMLElement {
   }
 
   async #load() {
-    const s = await window.fetchSettings();
+    const s = await call('fetchSettings');
     if (!s) return;
     this.#settings = s;
     this.querySelectorAll('[data-field]').forEach(el => {
@@ -250,7 +252,7 @@ class SettingsPage extends HTMLElement {
           updated[el.dataset.field] = el.type === 'number' ? Number(v) : v;
         }
       });
-      await window.saveSettings(updated);
+      await call('saveSettings', updated);
       showToast('Settings saved');
     })();
   }

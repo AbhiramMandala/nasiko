@@ -4,10 +4,10 @@
  *
  * @element observability-session-page
  * @note Data sources (see /api/docs):
- *       `window.fetchObservabilitySession(sessionId)` → GET /api/observability/session/{id}
- *       `window.fetchObservabilityTrace(traceId)`     → GET /api/observability/trace/{id}
- *       `window.fetchSpanDetail(traceId, spanId)`     → GET /api/observability/span/{trace_id}/{span_id}
- *       `window.fetchChatSession(sessionId)`          → GET /api/chat/sessions/{id} (chat transcript)
+ *       `call('fetchObservabilitySession', sessionId)` → GET /api/observability/session/{id}
+ *       `call('fetchObservabilityTrace', traceId)`     → GET /api/observability/trace/{id}
+ *       `call('fetchSpanDetail', traceId, spanId)`     → GET /api/observability/span/{trace_id}/{span_id}
+ *       `call('fetchChatSession', sessionId)`          → GET /api/chat/sessions/{id} (chat transcript)
  */
 import styles from './observability-session-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
@@ -17,6 +17,8 @@ import { renderMarkdown } from '/common/utils/markdown.js';
 import '/common/components/app-skeleton.js';
 import '/common/components/app-empty-state.js';
 import { escHtml } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class ObservabilitySessionPage extends HTMLElement {
@@ -134,7 +136,7 @@ class ObservabilitySessionPage extends HTMLElement {
   async #loadSession() {
     let resp;
     try {
-      resp = await window.fetchObservabilitySession(this.#sessionId);
+      resp = await call('fetchObservabilitySession', this.#sessionId);
     } catch (e) {
       console.error('Session fetch failed:', e);
       this.#tracesState = 'error';
@@ -189,7 +191,7 @@ class ObservabilitySessionPage extends HTMLElement {
       const traceId = entry.trace_id;
       let detail;
       try {
-        detail = await window.fetchObservabilityTrace(traceId);
+        detail = await call('fetchObservabilityTrace', traceId);
       } catch (e) {
         console.warn(`Trace ${traceId} fetch failed:`, e);
         continue;
@@ -283,7 +285,7 @@ class ObservabilitySessionPage extends HTMLElement {
     pane.innerHTML = '<div class="pane-empty" aria-busy="true"><app-skeleton lines="4"></app-skeleton></div>';
     let resp;
     try {
-      resp = await window.fetchSpanDetail(traceId, spanId);
+      resp = await call('fetchSpanDetail', traceId, spanId);
     } catch (e) {
       console.error('Span fetch failed:', e);
       pane.innerHTML = '<div class="pane-empty">Failed to load span details</div>';
@@ -434,7 +436,7 @@ class ObservabilitySessionPage extends HTMLElement {
     const pane = this.querySelector('#chat-pane');
     let messages = [];
     try {
-      const resp = await window.fetchChatSession(this.#sessionId);
+      const resp = await call('fetchChatSession', this.#sessionId);
       messages = resp?.data ?? [];
     } catch {
       // Observability sessions don't always map to a chat session.

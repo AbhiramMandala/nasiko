@@ -2,7 +2,7 @@
  * TokenOps dashboard — token-first cost/usage analytics per agent.
  *
  * @element tokenops-page
- * @note Data source: `window.fetchTokenopsDashboard(startTime?, endTime?)` →
+ * @note Data source: `call('fetchTokenopsDashboard', startTime?, endTime?)` →
  *       GET /api/observability/finops/dashboard (see /api/docs), which returns
  *       `{ data: { summary, agents, token_usage }, status_code, message }`.
  */
@@ -13,6 +13,8 @@ import { icons } from '../utils/icons.js';
 import '/common/components/app-skeleton.js';
 import { escHtml } from '/common/utils/escape.js';
 import '/common/components/app-button.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const COLUMNS = [
@@ -135,7 +137,7 @@ class TokenopsPage extends HTMLElement {
     const endTime = select.selectedOptions[0]?.dataset.end;
     let resp;
     try {
-      resp = await window.fetchTokenopsDashboard(startTime, endTime);
+      resp = await call('fetchTokenopsDashboard', startTime, endTime);
     } catch (e) {
       console.error('TokenOps dashboard fetch failed:', e);
       this.querySelector('#cost-tbody').innerHTML =

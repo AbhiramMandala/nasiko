@@ -5,6 +5,8 @@ import { userMessage } from '../core/errors.js';
 import './app-button.js';
 import './app-module-nav.js';
 import { escHtml } from '/common/utils/escape.js';
+import { call, callOptional } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /// Rows requested per page. `/api/chat/sessions` is keyset-paginated and the
@@ -96,8 +98,8 @@ class SessionsPage extends HTMLElement {
       // request only does work for rows that are about to be shown.
       const offset = more ? this.#sessions.length : 0;
       const [chatRes, obsRes] = await Promise.allSettled([
-        window.fetchSessions('', PAGE_SIZE, more ? this.#nextCursor : null),
-        window.fetchObservabilitySessions?.(PAGE_SIZE, offset) ?? Promise.reject(),
+        call('fetchSessions', '', PAGE_SIZE, more ? this.#nextCursor : null),
+        callOptional('fetchObservabilitySessions',PAGE_SIZE, offset) ?? Promise.reject(),
       ]);
       if (chatRes.status === 'rejected') throw chatRes.reason;
 
@@ -294,7 +296,7 @@ class SessionsPage extends HTMLElement {
       // browser the branch was skipped, the row was removed locally, nothing was
       // sent, and the session came back on reload. If the data function is
       // missing we now fail — and the user sees why.
-      await window.deleteSession(sessionId);
+      await call('deleteSession', sessionId);
       this.#sessions = this.#sessions.filter(s => s.session_id !== sessionId);
       this.#obsStats.delete(sessionId);
       this.#applyFilter();

@@ -11,6 +11,8 @@ import '/common/components/agent-llm-config.js';
 import '/common/components/secrets-manager.js';
 import { escHtml, escAttr } from '/common/utils/escape.js';
 import '/common/components/app-button.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 // Tabs marked `managed` render only for callers who can manage the agent
@@ -1192,7 +1194,7 @@ class AgentCardPage extends HTMLElement {
     const list = this.querySelector('#acp-mcp-list');
     if (!list) return;
     try {
-      const resp = await window.fetchAgentMcpConnectors(this.#agent.id);
+      const resp = await call('fetchAgentMcpConnectors', this.#agent.id);
       this.#connectors = resp?.data?.connectors || [];
     } catch (e) {
       list.innerHTML = `<p class="acp-section-sub">Failed to load MCP connectors: ${escHtml(e.message)}</p>`;
@@ -1202,7 +1204,7 @@ class AgentCardPage extends HTMLElement {
     // "{n} of {m} tools allowed" summary without waiting for an expand.
     await Promise.all(this.#connectors.map(async (c) => {
       try {
-        const resp = await window.fetchAgentMcpConnectorTools(this.#agent.id, c.connector_id);
+        const resp = await call('fetchAgentMcpConnectorTools', this.#agent.id, c.connector_id);
         this.#connectorTools.set(c.connector_id, resp?.data?.tools || []);
       } catch {
         this.#connectorTools.set(c.connector_id, []);
@@ -1325,7 +1327,7 @@ class AgentCardPage extends HTMLElement {
         tool_pattern: t.name,
         stance: t.stance === 'deny' ? 'deny' : 'allow',
       }));
-      await window.saveAgentMcpToolRules(this.#agent.id, rules);
+      await call('saveAgentMcpToolRules', this.#agent.id, rules);
     } catch (e) {
       tool.stance = previous;
       this.#renderConnectors();
@@ -1494,7 +1496,7 @@ class AgentCardPage extends HTMLElement {
     let usage;
     let state = '';
     try {
-      const resp = await window.fetchAgentResourceStats(this.#agentId);
+      const resp = await call('fetchAgentResourceStats', this.#agentId);
       usage = resp?.data?.usage ?? null;
       state = resp?.data?.usage?.state ?? '';
     } catch {

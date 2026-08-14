@@ -5,15 +5,15 @@
  *
  * @element mcp-page
  * @note Data sources (all under /api/mcp, envelope {data, status_code, message}):
- *       `window.fetchMcpConnectors()` → GET /api/mcp/connectors
+ *       `call('fetchMcpConnectors')` → GET /api/mcp/connectors
  *         → data = {created_by_you: [dto], shared_with_you: [dto], total}
- *       `window.fetchMcpToolkits()` → GET /api/mcp/composio/toolkits
+ *       `call('fetchMcpToolkits')` → GET /api/mcp/composio/toolkits
  *         → data = {toolkits: [{connector_id, name, display_name, description,
  *           logo_url, auth_flow, tool_count, is_connected}], total}
  *       The catalog grid merges those two client-side rather than using
  *       GET /api/mcp/catalog: the catalog view has no is_connected, ownership,
  *       version, or owner_username, all of which the cards and tabs need.
- *       `window.fetchMcpMyUploads()` → GET /api/mcp/connectors/my-uploads
+ *       `call('fetchMcpMyUploads')` → GET /api/mcp/connectors/my-uploads
  *       plus register/probe/update/delete, credential + OAuth management,
  *       connect/disconnect (`/mcp/connect`, `/mcp/connections`),
  *       upload (zip/GitHub) + build status/logs, and the per-agent
@@ -28,6 +28,8 @@ import './app-module-nav.js';
 import './autocomplete.js';
 import { escHtml } from '/common/utils/escape.js';
 import '/common/components/app-button.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const AUTH_LABELS = {
@@ -215,9 +217,9 @@ class McpPage extends HTMLElement {
     let toolkitsResp;
     try {
       [connResp, uploadsResp, toolkitsResp] = await Promise.all([
-        window.fetchMcpConnectors(),
-        window.fetchMcpMyUploads().catch(() => ({ data: [] })),
-        window.fetchMcpToolkits().catch(() => ({ data: { toolkits: [] } })),
+        call('fetchMcpConnectors'),
+        call('fetchMcpMyUploads').catch(() => ({ data: [] })),
+        call('fetchMcpToolkits').catch(() => ({ data: { toolkits: [] } })),
       ]);
     } catch (e) {
       console.error('MCP catalog fetch failed:', e);
@@ -242,7 +244,7 @@ class McpPage extends HTMLElement {
 
   async #loadAgents() {
     try {
-      const resp = await window.fetchAgents('', 1, 100);
+      const resp = await call('fetchAgents', '', 1, 100);
       this.#agents = resp?.data || [];
     } catch {
       this.#agents = [];
@@ -516,7 +518,7 @@ class McpPage extends HTMLElement {
     const c = this.#connectors.find((x) => x.connector_id === id);
     if (!confirm(`Delete connector "${c?.display_name || c?.name || id}"? Agents will lose access to its tools.`)) return false;
     try {
-      await window.deleteMcpConnector(id);
+      await call('deleteMcpConnector', id);
       this.#load();
       return true;
     } catch (e) {
@@ -579,7 +581,7 @@ class McpPage extends HTMLElement {
     const section = this.querySelector('#detail-auth-section');
     let connected = false;
     try {
-      const resp = await window.fetchMcpCredentialStatus(c.connector_id);
+      const resp = await call('fetchMcpCredentialStatus', c.connector_id);
       connected = !!resp?.data?.connected;
     } catch { /* leave disconnected */ }
     section.innerHTML = `
@@ -613,7 +615,7 @@ class McpPage extends HTMLElement {
     });
     section.querySelector('#cred-remove')?.addEventListener('click', async () => {
       try {
-        await window.deleteMcpCredential(c.connector_id);
+        await call('deleteMcpCredential', c.connector_id);
         this.#renderCredentialSection(c);
       } catch (e) {
         alert(`Remove failed: ${e.message}`);
@@ -625,7 +627,7 @@ class McpPage extends HTMLElement {
     const section = this.querySelector('#detail-auth-section');
     let status = { authorized: false, expires_at: null };
     try {
-      const resp = await window.fetchMcpOauthStatus(c.connector_id);
+      const resp = await call('fetchMcpOauthStatus', c.connector_id);
       status = resp?.data ?? status;
     } catch { /* leave unauthorized */ }
     const expiry = status.expires_at
@@ -912,7 +914,7 @@ class McpPage extends HTMLElement {
     const pre = this.querySelector('#logs-pre');
     pre.textContent = 'Loading logs…';
     try {
-      const resp = await window.fetchMcpBuildLogs(connectorId, 200);
+      const resp = await call('fetchMcpBuildLogs', connectorId, 200);
       const logs = typeof resp?.data === 'string' ? resp.data : (resp?.data ?? '');
       pre.textContent = logs || '(no logs)';
     } catch (e) {
@@ -930,7 +932,7 @@ class McpPage extends HTMLElement {
     }
     body.innerHTML = `<div class="detail-loading" aria-busy="true"><app-skeleton lines="3"></app-skeleton></div>`;
     try {
-      const resp = await window.fetchAgentMcpConnectors(this.#selectedAgentId);
+      const resp = await call('fetchAgentMcpConnectors', this.#selectedAgentId);
       this.#agentConnectors = resp?.data?.connectors || [];
     } catch (e) {
       body.innerHTML = `<div class="agent-access-empty"><p>Failed to load connector access: ${escHtml(e.message)}</p></div>`;
@@ -998,7 +1000,7 @@ class McpPage extends HTMLElement {
     if (!this.#agentTools.has(connectorId)) {
       editor.innerHTML = `<div class="detail-loading" aria-busy="true"><app-skeleton lines="3"></app-skeleton></div>`;
       try {
-        const resp = await window.fetchAgentMcpConnectorTools(this.#selectedAgentId, connectorId);
+        const resp = await call('fetchAgentMcpConnectorTools', this.#selectedAgentId, connectorId);
         this.#agentTools.set(connectorId, resp?.data?.tools || []);
       } catch (e) {
         editor.innerHTML = `<div class="form-error">Failed to load tools: ${escHtml(e.message)}</div>`;
@@ -1036,7 +1038,7 @@ class McpPage extends HTMLElement {
       }));
       const statusEl = editor.querySelector('.tools-save-status');
       try {
-        await window.saveAgentMcpToolRules(this.#selectedAgentId, rules);
+        await call('saveAgentMcpToolRules', this.#selectedAgentId, rules);
         statusEl.textContent = 'Saved';
         statusEl.className = 'tools-save-status is-ok';
       } catch (e) {

@@ -2,6 +2,8 @@ import { icons } from '/common/utils/icons.js';
 
 import styles from './session-trace-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /**
@@ -32,7 +34,7 @@ class SessionTracePage extends HTMLElement {
     let sessionId = new URLSearchParams(location.search).get('session_id') || '';
     if (!sessionId) {
       try {
-        const trace = await window.fetchTraceDetail(traceId);
+        const trace = await call('fetchTraceDetail', traceId);
         sessionId = trace?.project_session_id || '';
       } catch {
         // Fall through to the manual escape hatch below.

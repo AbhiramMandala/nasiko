@@ -9,6 +9,8 @@ import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
 import "/common/components/app-card.js";
 import { escHtml, escAttr } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 
 // your-agents-page.css is <link>ed by the host page, not imported here: a sheet
 // pulled in by this module only exists once the module does, which is too late
@@ -70,7 +72,7 @@ class YourAgentsPage extends HTMLElement {
   }
 
   async #load() {
-    const result = await window.fetchContainers("", 1, 100);
+    const result = await call('fetchContainers', "", 1, 100);
     this.#agents = result.data || [];
     this.#renderTabs();
     this.#renderGrid();

@@ -2,6 +2,8 @@ import { icons } from '/common/utils/icons.js';
 
 import styles from './flow-detail-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
+import { call } from '../core/data-sources.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const STATUS_VARIANTS = { completed: 'success', running: 'info', failed: 'error', timeout: 'warning' };
@@ -37,7 +39,7 @@ class FlowDetailPage extends HTMLElement {
   }
 
   async #load(flowId) {
-    const data = await window.fetchFlowDetail(flowId);
+    const data = await call('fetchFlowDetail', flowId);
     if (!data) {
       this.innerHTML = `${this.#toolbar()}
         <div class="empty-state">
