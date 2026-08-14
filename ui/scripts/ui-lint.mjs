@@ -162,7 +162,6 @@ const rules = [
          'used to render an empty view forever. Register with core/data-sources.js instead.',
     check({ rel, source, isJs }) {
       if (!isJs) return [];
-      if (rel === 'oss/ui/common/services/data-functions.js') return []; // the one sanctioned home
       if (rel.endsWith('.preview.js') || rel.includes('/.preview/')) return [];
       const out = [];
       // The shell contract, not a data source: <app-header> and <app-module-nav>

@@ -18,17 +18,16 @@
  * linked to a session yet" instead of redirecting. A single shared copy plus a
  * narrow extension seam (`/nav-ext.js`) removes the whole failure mode.
  *
- * These are assigned to `window` because that is still how `data-fn=` resolves
- * during the migration; they are also registered with `core/data-sources.js`, so
- * new code can resolve them properly and a missing name fails loudly. Phase 3B
- * splits this file by domain — it is deliberately a verbatim move for now, so the
- * diff that eliminates the fork is mechanical and reviewable.
+ * All functions are registered with `core/data-sources.js` via `registerAll` at
+ * the end of this file. Components resolve them through `call()` / `resolve()`.
+ * Phase 3B splits this file by domain — it is deliberately a verbatim move for
+ * now, so the diff that eliminates the fork is mechanical and reviewable.
  */
 
 import { apiFetch, fetchApi } from '/common/services/api.js';
 import { registerAll } from '/common/core/data-sources.js';
 
-window.fetchAgents = async (query, page, limit) => {
+const fetchAgents = async (query, page, limit) => {
   const params = new URLSearchParams({ q: query || '', page, limit });
   const agents = await fetchApi(`/agents?${params}`);
   return { data: Array.isArray(agents) ? agents : agents.data || [], total: agents.total || agents.length };
@@ -40,18 +39,18 @@ window.fetchAgents = async (query, page, limit) => {
 // oss/server/src/chat/routes.rs:28) and as a delete button in the UI, but the
 // function connecting them was never written outside a preview fixture — so the
 // row disappeared and nothing was sent. See sessions-page.js#deleteSession.
-window.deleteSession = async (sessionId) => {
+const deleteSession = async (sessionId) => {
   if (!sessionId) throw new Error('deleteSession requires a session id');
   await apiFetch(`/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
 };
 
-window.fetchSessions = async (_query, limit = 25, cursor = null) => {
+const fetchSessions = async (_query, limit = 25, cursor = null) => {
   const params = new URLSearchParams({ limit });
   if (cursor) params.set('cursor', cursor);
   return fetchApi(`/chat/sessions?${params}`);
 };
 
-window.fetchContainers = async (query, page, limit) => {
+const fetchContainers = async (query, page, limit) => {
   const params = new URLSearchParams({ limit, offset: ((page || 1) - 1) * limit });
   if (query) params.set('q', query);
   const body = await fetchApi(`/agents?${params}`);
@@ -59,12 +58,12 @@ window.fetchContainers = async (query, page, limit) => {
   return { data, total: body.total || data.length };
 };
 
-window.fetchFlows = async (query, page, limit) => {
+const fetchFlows = async (query, page, limit) => {
   const params = new URLSearchParams({ q: query || '', page, limit });
   return fetchApi(`/flows?${params}`);
 };
 
-window.fetchFlowDetail = async (flowId) => {
+const fetchFlowDetail = async (flowId) => {
   return fetchApi(`/flows/${flowId}`);
 };
 
@@ -75,15 +74,15 @@ window.fetchFlowDetail = async (flowId) => {
 const mafRows = (body) =>
   (Array.isArray(body?.data) ? body.data : body?.data?.data) || [];
 
-window.fetchWorkflows = async (limit = 100, offset = 0) => {
+const fetchWorkflows = async (limit = 100, offset = 0) => {
   return mafRows(await fetchApi(`/maf/workflows?limit=${limit}&offset=${offset}`));
 };
 
-window.fetchWorkflow = async (id) => {
+const fetchWorkflow = async (id) => {
   return (await fetchApi(`/maf/workflow/${encodeURIComponent(id)}`)).data;
 };
 
-window.createWorkflow = async (body) => {
+const createWorkflow = async (body) => {
   return (await fetchApi('/maf/workflows', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -91,7 +90,7 @@ window.createWorkflow = async (body) => {
   })).data;
 };
 
-window.updateWorkflow = async (id, body) => {
+const updateWorkflow = async (id, body) => {
   return (await fetchApi(`/maf/workflow/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -99,32 +98,32 @@ window.updateWorkflow = async (id, body) => {
   })).data;
 };
 
-window.deleteWorkflow = async (id) => {
+const deleteWorkflow = async (id) => {
   return fetchApi(`/maf/workflow/${encodeURIComponent(id)}`, { method: 'DELETE' });
 };
 
-window.runWorkflow = async (id) => {
+const runWorkflow = async (id) => {
   // 202 Accepted → data: {execution_id, execution_number, execution_count}
   return (await fetchApi(`/maf/workflow/${encodeURIComponent(id)}/run`, { method: 'POST' })).data;
 };
 
-window.fetchExecution = async (id) => {
+const fetchExecution = async (id) => {
   return (await fetchApi(`/maf/execution/${encodeURIComponent(id)}`)).data;
 };
 
-window.fetchWorkflowExecutions = async (id, limit = 50, offset = 0) => {
+const fetchWorkflowExecutions = async (id, limit = 50, offset = 0) => {
   return mafRows(await fetchApi(
     `/maf/workflow/${encodeURIComponent(id)}/executions?limit=${limit}&offset=${offset}`,
   ));
 };
 
-window.fetchAllExecutions = async (limit = 100, offset = 0) => {
+const fetchAllExecutions = async (limit = 100, offset = 0) => {
   return mafRows(await fetchApi(`/maf/executions?limit=${limit}&offset=${offset}`));
 };
 
 // The create page branches on the failure mode (503 = no LLM key configured,
 // 400 = user has no agents, 422 = planner failure), so surface the status.
-window.generateWorkflow = async (description) => {
+const generateWorkflow = async (description) => {
   const res = await apiFetch('/maf/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -139,7 +138,7 @@ window.generateWorkflow = async (description) => {
   return body?.data;
 };
 
-window.fetchTraceDetail = async (traceId) => {
+const fetchTraceDetail = async (traceId) => {
   // Server route: GET /api/observability/trace/{id} (same as `nasiko observe trace`).
   // Envelope {data:{trace}}; trace.spans is a nested tree (children embedded).
   const resp = await fetchApi(`/observability/trace/${traceId}`);
@@ -149,44 +148,44 @@ window.fetchTraceDetail = async (traceId) => {
 // Observability — execution history + per-session traces (see /api/docs)
 // Paged: every row costs the server one trace-store lookup, so asking for the
 // whole history is what made Execution history slow to appear.
-window.fetchObservabilitySessions = async (limit = 25, offset = 0) => {
+const fetchObservabilitySessions = async (limit = 25, offset = 0) => {
   const params = new URLSearchParams({ limit, offset });
   return fetchApi(`/observability/session/list?${params}`);
 };
 
-window.fetchObservabilitySession = async (sessionId) => {
+const fetchObservabilitySession = async (sessionId) => {
   return fetchApi(`/observability/session/${encodeURIComponent(sessionId)}`);
 };
 
 // Resource usage — host + per-container CPU/memory/IO (admin-only endpoint).
-window.fetchResourceStats = async () => {
+const fetchResourceStats = async () => {
   return fetchApi('/observability/resources');
 };
 
 // Owner-scoped: usage for a single agent. Accepts a UUID or an agent name.
-window.fetchAgentResourceStats = async (agentRef) => {
+const fetchAgentResourceStats = async (agentRef) => {
   return fetchApi(`/observability/agent/${encodeURIComponent(agentRef)}/resources`);
 };
 
-window.fetchObservabilityTrace = async (traceId) => {
+const fetchObservabilityTrace = async (traceId) => {
   const resp = await fetchApi(`/observability/trace/${encodeURIComponent(traceId)}`);
   return resp.data?.trace ?? resp.trace ?? resp;
 };
 
-window.fetchSpanDetail = async (traceId, spanId) => {
+const fetchSpanDetail = async (traceId, spanId) => {
   return fetchApi(`/observability/span/${encodeURIComponent(traceId)}/${encodeURIComponent(spanId)}`);
 };
 
-window.fetchChatSession = async (sessionId) => {
+const fetchChatSession = async (sessionId) => {
   return fetchApi(`/chat/sessions/${encodeURIComponent(sessionId)}`);
 };
 
 // LLM router — routing configs + provider/model catalog (see /api/docs)
-window.fetchLlmConfigs = async () => {
+const fetchLlmConfigs = async () => {
   return fetchApi('/llm-configs');
 };
 
-window.createLlmConfig = async (body) => {
+const createLlmConfig = async (body) => {
   return fetchApi('/llm-configs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -194,30 +193,30 @@ window.createLlmConfig = async (body) => {
   });
 };
 
-window.deleteLlmConfig = async (id) => {
+const deleteLlmConfig = async (id) => {
   return fetchApi(`/llm-configs/${encodeURIComponent(id)}`, { method: 'DELETE' });
 };
 
-window.setDefaultLlmConfig = async (id) => {
+const setDefaultLlmConfig = async (id) => {
   return fetchApi(`/llm-configs/${encodeURIComponent(id)}/default`, { method: 'POST' });
 };
 
-window.clearDefaultLlmConfig = async (id) => {
+const clearDefaultLlmConfig = async (id) => {
   return fetchApi(`/llm-configs/${encodeURIComponent(id)}/default`, { method: 'DELETE' });
 };
 
-window.fetchLlmProviders = async () => {
+const fetchLlmProviders = async () => {
   return fetchApi('/llm-router/providers');
 };
 
-window.fetchSecretsList = async () => fetchApi('/secrets');
+const fetchSecretsList = async () => fetchApi('/secrets');
 
-window.fetchUsageSummary = async () => {
+const fetchUsageSummary = async () => {
   return fetchApi('/usage/summary');
 };
 
 // TokenOps dashboard — GET /api/observability/finops/dashboard
-window.fetchTokenopsDashboard = async (startTime, endTime) => {
+const fetchTokenopsDashboard = async (startTime, endTime) => {
   const q = new URLSearchParams();
   if (startTime) q.set('start_time', startTime);
   if (endTime) q.set('end_time', endTime);
@@ -225,21 +224,21 @@ window.fetchTokenopsDashboard = async (startTime, endTime) => {
   return fetchApi(`/observability/finops/dashboard${params}`);
 };
 
-window.fetchUsageHistory = async (days = 7) => {
+const fetchUsageHistory = async (days = 7) => {
   return fetchApi(`/usage/history?days=${days}`);
 };
 
-window.fetchUsageByAgent = async (query, page, limit) => {
+const fetchUsageByAgent = async (query, page, limit) => {
   const params = new URLSearchParams({ q: query || '', limit, offset: ((page || 1) - 1) * limit });
   return fetchApi(`/usage/by-agent?${params}`);
 };
 
-window.fetchUsageByModel = async (query, page, limit) => {
+const fetchUsageByModel = async (query, page, limit) => {
   const params = new URLSearchParams({ q: query || '', limit, offset: ((page || 1) - 1) * limit });
   return fetchApi(`/usage/by-model?${params}`);
 };
 
-window.fetchBuilds = async (query, page, limit) => {
+const fetchBuilds = async (query, page, limit) => {
   const params = new URLSearchParams({ limit, offset: ((page || 1) - 1) * limit });
   if (query) params.set('q', query);
   return fetchApi(`/builds?${params}`);
@@ -247,16 +246,16 @@ window.fetchBuilds = async (query, page, limit) => {
 
 // User directory search for the ⌘F palette (GET /api/search/users, an OSS
 // route — org-scoped on EE). A 404 hides the palette's Users section.
-window.fetchUserSearch = async (query) => {
+const fetchUserSearch = async (query) => {
   const params = new URLSearchParams({ q: query || '' });
   return fetchApi(`/search/users?${params}`);
 };
 
-window.fetchSettings = async () => {
+const fetchSettings = async () => {
   return fetchApi('/settings');
 };
 
-window.saveSettings = async (settings) => {
+const saveSettings = async (settings) => {
   return fetchApi('/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -266,11 +265,11 @@ window.saveSettings = async (settings) => {
 
 // ── MCP gateway — connectors, uploads, credentials, per-agent access ─────────
 // Envelope {data, status_code, message}; see /api/docs (tag "mcp").
-window.fetchMcpConnectors = async () => {
+const fetchMcpConnectors = async () => {
   return fetchApi('/mcp/connectors');
 };
 
-window.registerMcpConnector = async (body) => {
+const registerMcpConnector = async (body) => {
   return fetchApi('/mcp/connectors', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -278,7 +277,7 @@ window.registerMcpConnector = async (body) => {
   });
 };
 
-window.probeMcpConnector = async (url) => {
+const probeMcpConnector = async (url) => {
   return fetchApi('/mcp/connectors/probe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -286,7 +285,7 @@ window.probeMcpConnector = async (url) => {
   });
 };
 
-window.updateMcpConnector = async (connectorId, body) => {
+const updateMcpConnector = async (connectorId, body) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -294,16 +293,16 @@ window.updateMcpConnector = async (connectorId, body) => {
   });
 };
 
-window.deleteMcpConnector = async (connectorId) => {
+const deleteMcpConnector = async (connectorId) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}`, { method: 'DELETE' });
 };
 
-window.uploadMcpServerZip = async (formData) => {
+const uploadMcpServerZip = async (formData) => {
   // Multipart fields: name, version_tag, env (JSON string), file.
   return fetchApi('/mcp/connectors/upload', { method: 'POST', body: formData });
 };
 
-window.uploadMcpServerGithub = async (body) => {
+const uploadMcpServerGithub = async (body) => {
   return fetchApi('/mcp/connectors/upload-github', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -311,23 +310,23 @@ window.uploadMcpServerGithub = async (body) => {
   });
 };
 
-window.fetchMcpMyUploads = async () => {
+const fetchMcpMyUploads = async () => {
   return fetchApi('/mcp/connectors/my-uploads');
 };
 
-window.fetchMcpBuildStatus = async (connectorId) => {
+const fetchMcpBuildStatus = async (connectorId) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/build-status`);
 };
 
-window.fetchMcpBuildLogs = async (connectorId, tail = 200) => {
+const fetchMcpBuildLogs = async (connectorId, tail = 200) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/build-logs?tail=${tail}`);
 };
 
-window.fetchMcpCredentialStatus = async (connectorId) => {
+const fetchMcpCredentialStatus = async (connectorId) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/credential/status`);
 };
 
-window.setMcpCredential = async (connectorId, value) => {
+const setMcpCredential = async (connectorId, value) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/credential`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -335,30 +334,30 @@ window.setMcpCredential = async (connectorId, value) => {
   });
 };
 
-window.deleteMcpCredential = async (connectorId) => {
+const deleteMcpCredential = async (connectorId) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/credential`, { method: 'DELETE' });
 };
 
-window.authorizeMcpOauth = async (connectorId) => {
+const authorizeMcpOauth = async (connectorId) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/oauth/authorize`, { method: 'POST' });
 };
 
-window.fetchMcpOauthStatus = async (connectorId) => {
+const fetchMcpOauthStatus = async (connectorId) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/oauth/status`);
 };
 
-window.revokeMcpOauthToken = async (connectorId) => {
+const revokeMcpOauthToken = async (connectorId) => {
   return fetchApi(`/mcp/connectors/${encodeURIComponent(connectorId)}/oauth/token`, { method: 'DELETE' });
 };
 
 // Toolkits — platform Composio connectables the caller can connect to.
-window.fetchMcpToolkits = async () => {
+const fetchMcpToolkits = async () => {
   return fetchApi('/mcp/composio/toolkits');
 };
 
 // body: {connector_id} (+ optional credentials: {value} for api_key flows).
 // data.status: connected | initiated (oauth_url) | oauth_required (authorization_url).
-window.connectMcpService = async (body) => {
+const connectMcpService = async (body) => {
   return fetchApi('/mcp/connect', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -366,19 +365,19 @@ window.connectMcpService = async (body) => {
   });
 };
 
-window.fetchMcpConnections = async () => {
+const fetchMcpConnections = async () => {
   return fetchApi('/mcp/connections');
 };
 
-window.disconnectMcpConnection = async (connectorId) => {
+const disconnectMcpConnection = async (connectorId) => {
   return fetchApi(`/mcp/connections/${encodeURIComponent(connectorId)}`, { method: 'DELETE' });
 };
 
-window.fetchAgentMcpConnectors = async (agentId) => {
+const fetchAgentMcpConnectors = async (agentId) => {
   return fetchApi(`/mcp/agents/${encodeURIComponent(agentId)}/connectors`);
 };
 
-window.setAgentMcpConnectorAccess = async (agentId, connectorId, enabled) => {
+const setAgentMcpConnectorAccess = async (agentId, connectorId, enabled) => {
   return fetchApi(
     `/mcp/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}`,
     {
@@ -389,17 +388,17 @@ window.setAgentMcpConnectorAccess = async (agentId, connectorId, enabled) => {
   );
 };
 
-window.fetchAgentMcpConnectorTools = async (agentId, connectorId) => {
+const fetchAgentMcpConnectorTools = async (agentId, connectorId) => {
   return fetchApi(
     `/mcp/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/tools`,
   );
 };
 
-window.fetchAgentMcpToolRules = async (agentId) => {
+const fetchAgentMcpToolRules = async (agentId) => {
   return fetchApi(`/mcp/agents/${encodeURIComponent(agentId)}/tools`);
 };
 
-window.saveAgentMcpToolRules = async (agentId, rules) => {
+const saveAgentMcpToolRules = async (agentId, rules) => {
   return fetchApi(`/mcp/agents/${encodeURIComponent(agentId)}/tools`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -424,31 +423,71 @@ window.saveAgentMcpToolRules = async (agentId, rules) => {
  * walks every global, some of which are getters that throw. It is also the thing
  * a reviewer can check against the assignments.
  */
-const DATA_FUNCTION_NAMES = [
-  'authorizeMcpOauth', 'clearDefaultLlmConfig', 'connectMcpService', 'createLlmConfig',
-  'createWorkflow', 'deleteLlmConfig', 'deleteMcpConnector', 'deleteMcpCredential',
-  'deleteSession', 'deleteWorkflow', 'disconnectMcpConnection', 'fetchAgentMcpConnectorTools',
-  'fetchAgentMcpConnectors', 'fetchAgentMcpToolRules', 'fetchAgentResourceStats', 'fetchAgents',
-  'fetchAllExecutions', 'fetchBuilds', 'fetchChatSession', 'fetchContainers',
-  'fetchExecution', 'fetchFlowDetail', 'fetchFlows', 'fetchLlmConfigs',
-  'fetchLlmProviders', 'fetchMcpBuildLogs', 'fetchMcpBuildStatus', 'fetchMcpConnections',
-  'fetchMcpConnectors', 'fetchMcpCredentialStatus', 'fetchMcpMyUploads', 'fetchMcpOauthStatus',
-  'fetchMcpToolkits', 'fetchObservabilitySession', 'fetchObservabilitySessions', 'fetchObservabilityTrace',
-  'fetchResourceStats', 'fetchSecretsList', 'fetchSessions', 'fetchSettings',
-  'fetchSpanDetail', 'fetchTokenopsDashboard', 'fetchTraceDetail', 'fetchUsageByAgent',
-  'fetchUsageByModel', 'fetchUsageHistory', 'fetchUsageSummary', 'fetchUserSearch',
-  'fetchWorkflow', 'fetchWorkflowExecutions', 'fetchWorkflows', 'generateWorkflow',
-  'probeMcpConnector', 'registerMcpConnector', 'revokeMcpOauthToken', 'runWorkflow',
-  'saveAgentMcpToolRules', 'saveSettings', 'setAgentMcpConnectorAccess', 'setDefaultLlmConfig',
-  'setMcpCredential', 'updateMcpConnector', 'updateWorkflow', 'uploadMcpServerGithub',
-  'uploadMcpServerZip',
-];
+registerAll({
+  fetchAgents,
+  deleteSession,
+  fetchSessions,
+  fetchContainers,
+  fetchFlows,
+  fetchFlowDetail,
+  fetchWorkflows,
+  fetchWorkflow,
+  createWorkflow,
+  updateWorkflow,
+  deleteWorkflow,
+  runWorkflow,
+  fetchExecution,
+  fetchWorkflowExecutions,
+  fetchAllExecutions,
+  generateWorkflow,
+  fetchTraceDetail,
+  fetchObservabilitySessions,
+  fetchObservabilitySession,
+  fetchResourceStats,
+  fetchAgentResourceStats,
+  fetchObservabilityTrace,
+  fetchSpanDetail,
+  fetchChatSession,
+  fetchLlmConfigs,
+  createLlmConfig,
+  deleteLlmConfig,
+  setDefaultLlmConfig,
+  clearDefaultLlmConfig,
+  fetchLlmProviders,
+  fetchSecretsList,
+  fetchUsageSummary,
+  fetchTokenopsDashboard,
+  fetchUsageHistory,
+  fetchUsageByAgent,
+  fetchUsageByModel,
+  fetchBuilds,
+  fetchUserSearch,
+  fetchSettings,
+  saveSettings,
+  fetchMcpConnectors,
+  registerMcpConnector,
+  probeMcpConnector,
+  updateMcpConnector,
+  deleteMcpConnector,
+  uploadMcpServerZip,
+  uploadMcpServerGithub,
+  fetchMcpMyUploads,
+  fetchMcpBuildStatus,
+  fetchMcpBuildLogs,
+  fetchMcpCredentialStatus,
+  setMcpCredential,
+  deleteMcpCredential,
+  authorizeMcpOauth,
+  fetchMcpOauthStatus,
+  revokeMcpOauthToken,
+  fetchMcpToolkits,
+  connectMcpService,
+  fetchMcpConnections,
+  disconnectMcpConnection,
+  fetchAgentMcpConnectors,
+  setAgentMcpConnectorAccess,
+  fetchAgentMcpConnectorTools,
+  fetchAgentMcpToolRules,
+  saveAgentMcpToolRules,
+}, { replace: true });
 
-// Look each one up explicitly. Shorthand properties (`{ fetchAgents }`) happen to
-// work here — a bare identifier resolves through the global object — but the
-// binding is implicit, so renaming a window assignment would break registration
-// silently. `window[name]` says what is actually meant.
-registerAll(
-  Object.fromEntries(DATA_FUNCTION_NAMES.map((name) => [name, window[name]])),
-  { replace: true },
-);
