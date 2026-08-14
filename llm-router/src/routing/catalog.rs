@@ -29,23 +29,23 @@ use crate::config::GatewayConfig;
 /// Upper bound on a `/models` fetch so a slow provider can't stall the sync loop.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The providers we know how to list models for: `(provider label, list URL, key)`
+/// The providers we know how to list models for: `(provider label, API base URL, key)`
 /// resolved from the gateway config. Providers without a platform key are skipped —
 /// no key means the router can't call that provider anyway.
-fn listable_providers(cfg: &GatewayConfig) -> Vec<(String, String, String)> {
+pub(crate) fn listable_providers(cfg: &GatewayConfig) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     if !cfg.platform_openai_api_key.is_empty() {
         // Any OpenAI-compatible endpoint (OpenAI, DeepSeek, vLLM, …) shares this shape.
         out.push((
             "openai".to_string(),
-            format!("{}/models", cfg.openai_api_base),
+            cfg.openai_api_base.clone(),
             cfg.platform_openai_api_key.clone(),
         ));
     }
     if !cfg.platform_anthropic_api_key.is_empty() {
         out.push((
             "anthropic".to_string(),
-            format!("{}/models", cfg.anthropic_api_base),
+            cfg.anthropic_api_base.clone(),
             cfg.platform_anthropic_api_key.clone(),
         ));
     }
@@ -140,7 +140,8 @@ async fn sync_provider(
 /// successfully synced.
 pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig) -> usize {
     let mut synced = 0;
-    for (provider, url, key) in listable_providers(cfg) {
+    for (provider, base, key) in listable_providers(cfg) {
+        let url = format!("{base}/models");
         let Some(models) = fetch_models(http, &provider, &url, &key).await else {
             continue;
         };
@@ -222,6 +223,6 @@ mod tests {
         let providers = listable_providers(&cfg);
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].0, "openai");
-        assert_eq!(providers[0].1, "https://api.deepseek.com/v1/models");
+        assert_eq!(providers[0].1, "https://api.deepseek.com/v1");
     }
 }

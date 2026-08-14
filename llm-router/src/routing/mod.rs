@@ -22,6 +22,7 @@ pub mod catalog;
 pub mod cells;
 pub mod classifier;
 mod patterns;
+pub mod pricing_sync;
 pub mod registry;
 
 pub use boundary::{BoundarySignals, Mode, Phase};

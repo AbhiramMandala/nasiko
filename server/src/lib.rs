@@ -336,6 +336,12 @@ where
     // Keep the provider model catalog (tier-routing candidates) fresh from each
     // provider's GET /models. Runs immediately, then every 10 min; fail-open.
     nasiko_llm_router::routing::catalog::spawn_sync(state.db.clone(), state.http_client.clone());
+    // Keep model_pricing fresh from the Portkey price book (free, no-auth, MIT);
+    // curated seed rows remain the offline baseline. Daily; fail-open.
+    nasiko_llm_router::routing::pricing_sync::spawn_sync(
+        state.db.clone(),
+        state.http_client.clone(),
+    );
 
     // UI pages: the static fallback is gated server-side — unauthenticated
     // page navigations get a redirect to /login.html instead of the document
