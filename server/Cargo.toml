@@ -2,9 +2,6 @@
 name = "nasiko-server"
 edition.workspace = true
 version.workspace = true
-# `src/bin/bench_seed.rs` is auto-discovered as a second binary, so
-# `cargo run -p nasiko-server` is ambiguous without naming the default.
-default-run = "nasiko-server"
 
 [lib]
 path = "src/lib.rs"
@@ -41,7 +38,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 redis = { workspace = true }
-rustls = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
@@ -66,7 +62,6 @@ mime_guess = { workspace = true }
 hex = { workspace = true }
 dashmap = { workspace = true }
 async-trait = { workspace = true }
-clap = { workspace = true }
 rand = { workspace = true }
 
 # OpenTelemetry

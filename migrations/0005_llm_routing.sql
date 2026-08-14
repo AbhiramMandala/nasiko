@@ -83,10 +83,15 @@ ALTER TABLE agents ADD COLUMN pinned_model TEXT;
 -- fixes the *provider*/key) — the registry only decides *which model* of that
 -- provider a classified request uses.
 --
--- The router (PgTierRegistry) reads this table and falls back to compiled-in
--- static seeds on a missing row or a DB error, so an absent/unreachable
--- registry never breaks routing. These seed rows MUST mirror
--- StaticTierRegistry::seed in oss/llm-router.
+-- This table carries OPERATOR INTENT ONLY (written via
+-- PUT /api/model-registry) and starts EMPTY. The router (PgTierRegistry)
+-- checks it first, then derives tiers from the live provider_models catalog
+-- (0006_provider_models.sql); a read failure degrades to no mapping, so an
+-- absent/unreachable registry never breaks routing. Do NOT seed built-in
+-- provider models here: they are actively wrong for deployments whose
+-- provider endpoint is a custom OpenAI-compatible host (e.g.
+-- OPENAI_API_BASE=https://api.deepseek.com/v1) — the router would override
+-- the request's model with names the upstream rejects.
 CREATE TABLE model_registry (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     provider TEXT NOT NULL,
@@ -98,16 +103,6 @@ CREATE TABLE model_registry (
 );
 CREATE TRIGGER trg_model_registry_updated_at BEFORE UPDATE ON model_registry
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
--- Seeds mirror the static table. ON CONFLICT keeps re-application idempotent.
-INSERT INTO model_registry (provider, tier, model) VALUES
-    ('anthropic', 1, 'claude-opus-4-8'),
-    ('anthropic', 2, 'claude-sonnet-4-6'),
-    ('anthropic', 3, 'claude-haiku-4-5'),
-    ('openai', 1, 'gpt-5.5'),
-    ('openai', 2, 'gpt-5.4'),
-    ('openai', 3, 'gpt-4o-mini')
-ON CONFLICT (provider, tier) DO NOTHING;
 
 -- =============================================================================
 -- router_quality_cells — Thompson-sampling tier selection memory (S5)

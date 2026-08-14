@@ -76,12 +76,15 @@ impl AppState {
     }
 
     pub async fn run_migrations(db: &PgPool) {
-        ensure_pg_extensions(db).await;
         sqlx::migrate!("../migrations")
             .set_ignore_missing(true)
             .run(db)
             .await
             .expect("database migration failed");
+        // Offline pricing baseline: gap-filling upsert, so operator-set prices
+        // and pricing-sync history always win. Code (not a migration) so price
+        // updates ship with the binary.
+        nasiko_observability::pricing::seed_model_pricing(db).await;
     }
 
     pub async fn from_config_with_db(
@@ -448,49 +451,5 @@ impl AppState {
         }
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
         env
-    }
-}
-
-/// Postgres extensions the migrations require (`0001_schema.sql` runs
-/// `CREATE EXTENSION IF NOT EXISTS` for each). Invisible on the in-cluster
-/// `pgvector/pgvector` image, which ships all three preinstalled.
-const REQUIRED_PG_EXTENSIONS: [&str; 3] = ["pgcrypto", "pg_trgm", "vector"];
-
-/// Creates the required extensions before the migration runner touches them,
-/// so a managed Postgres that hasn't installed or allowlisted one (Azure
-/// Flexible Server, RDS, Cloud SQL all gate `CREATE EXTENSION`) fails fast
-/// with an actionable message instead of a raw mid-migration SQL error.
-async fn ensure_pg_extensions(db: &PgPool) {
-    for ext in REQUIRED_PG_EXTENSIONS {
-        if let Err(err) = sqlx::query(&format!("CREATE EXTENSION IF NOT EXISTS \"{ext}\""))
-            .execute(db)
-            .await
-        {
-            panic!("{}", pg_extension_error_message(ext, &err.to_string()));
-        }
-    }
-}
-
-fn pg_extension_error_message(ext: &str, err: &str) -> String {
-    format!(
-        "required Postgres extension \"{ext}\" is unavailable: {err}\n\
-         The migrations need pgcrypto, pg_trgm, and vector. On a managed \
-         Postgres, install/allowlist them on the server first — e.g. Azure \
-         Flexible Server: `az postgres flexible-server parameter set \
-         --name azure.extensions --value VECTOR,PG_TRGM,PGCRYPTO` — then \
-         restart the control plane."
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extension_error_names_the_extension_and_the_remedy() {
-        let msg = pg_extension_error_message("vector", "permission denied");
-        assert!(msg.contains("\"vector\""));
-        assert!(msg.contains("permission denied"));
-        assert!(msg.contains("azure.extensions"));
     }
 }

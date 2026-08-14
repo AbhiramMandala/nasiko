@@ -1,18 +1,21 @@
 -- =============================================================================
--- Baseline schema: users, agents, builds/deployments, chat, artifacts,
+-- Baseline schema: users, agents, builds/deployments, chat,
 -- observability, flows, settings, metering.
 --
 -- Domain-specific schemas live in their own files:
---   0002_oci.sql          OCI registry storage (manifests, tags, blobs, ...)
---   0003_mcp.sql          MCP gateway (connectors, grants, connections, ...)
---   0004_maf.sql          Multi-agent flow definitions and executions
---   0005_llm_routing.sql  LLM configs, model registry, router learning cells
---   0006_seed_model_pricing.sql  Pricing seed data
+--   0002_oci.sql              OCI registry storage (manifests, tags, blobs, ...)
+--   0003_mcp.sql              MCP gateway (connectors, grants, connections, ...)
+--   0004_maf.sql              Multi-agent flow definitions and executions
+--   0005_llm_routing.sql      LLM configs, model registry, router learning cells
+--   0006_provider_models.sql  Live per-provider model catalog (router-synced)
+--
+-- Model pricing rows are NOT seeded by migrations — they are upserted at server
+-- boot from nasiko_observability::pricing (see AppState::run_migrations) and kept
+-- fresh by the LLM router's pricing-sync loop.
 -- =============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
-CREATE EXTENSION IF NOT EXISTS "vector";
 
 -- Helper: immutable wrapper for GENERATED columns
 CREATE OR REPLACE FUNCTION text_array_to_string(arr TEXT[], sep TEXT)
@@ -31,7 +34,6 @@ BEGIN NEW.updated_at = NOW(); RETURN NEW; END; $$;
 -- ENUMs
 CREATE TYPE user_role AS ENUM ('admin', 'member');
 CREATE TYPE grant_type AS ENUM ('user', 'public');
-CREATE TYPE artifact_status AS ENUM ('preview', 'active', 'yanked');
 CREATE TYPE build_status AS ENUM ('queued', 'building', 'success', 'failed');
 CREATE TYPE deployment_status AS ENUM ('starting', 'running', 'stopped', 'failed', 'crashed');
 CREATE TYPE upload_pipeline_status AS ENUM ('initiated', 'processing', 'capabilities_generated', 'orchestration_triggered', 'orchestration_processing', 'completed', 'failed');
@@ -122,7 +124,7 @@ CREATE TABLE agents (
     transport_path TEXT,
     icon_url TEXT,
     version TEXT NOT NULL DEFAULT '1.0.0',
-    protocol_version TEXT NOT NULL DEFAULT '0.2.9',
+    protocol_version TEXT NOT NULL DEFAULT '0.3.0',
     preferred_transport TEXT NOT NULL DEFAULT 'JSONRPC',
     documentation_url TEXT,
     capabilities JSONB NOT NULL DEFAULT '{"streaming": false, "pushNotifications": false, "stateTransitionHistory": false, "chat_agent": false}',
@@ -134,7 +136,11 @@ CREATE TABLE agents (
     tags TEXT[] NOT NULL DEFAULT '{}',
     metadata JSONB NOT NULL DEFAULT '{}',
     secrets_env JSONB NOT NULL DEFAULT '{}',
-    status TEXT NOT NULL DEFAULT 'registered',
+    -- Lifecycle state written by the deploy/update/lifecycle paths. TEXT +
+    -- CHECK (the 0003 philosophy) so a new state is a CHECK change, not an
+    -- ALTER TYPE.
+    status TEXT NOT NULL DEFAULT 'registered'
+        CHECK (status IN ('registered', 'deploying', 'running', 'stopped', 'failed')),
     image TEXT,
     is_public BOOLEAN NOT NULL DEFAULT false,
     supports_authenticated_extended_card BOOLEAN NOT NULL DEFAULT false,
@@ -316,13 +322,14 @@ CREATE TABLE agent_deployments (
     crashed_at TIMESTAMPTZ,
     last_logs TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_agent_deployments_agent ON agent_deployments(agent_id);
 CREATE INDEX idx_agent_deployments_build ON agent_deployments(build_id);
 CREATE INDEX idx_agent_deployments_running ON agent_deployments(status) WHERE status = 'running';
 CREATE INDEX idx_agent_deployments_owner ON agent_deployments(owner_id, created_at DESC);
 CREATE INDEX idx_agent_deployments_ns ON agent_deployments(namespace);
+CREATE TRIGGER trg_agent_deployments_updated_at BEFORE UPDATE ON agent_deployments FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- Durable build queue (workers claim with SKIP LOCKED).
 -- agent_id is nullable because 0003_mcp.sql adds connector_id as an
@@ -331,6 +338,8 @@ CREATE INDEX idx_agent_deployments_ns ON agent_deployments(namespace);
 CREATE TABLE build_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     agent_id UUID REFERENCES agents(id) ON DELETE CASCADE,
+    -- Deliberately no FK to users: a queued/claimed job must survive its
+    -- owner's deletion (the build is already paid for in side effects).
     owner_id UUID NOT NULL,
     payload JSONB NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','done','failed')),
@@ -450,43 +459,6 @@ CREATE TABLE session_traces (
 CREATE INDEX idx_session_traces_trace ON session_traces(trace_id);
 
 -- =============================================================================
--- Artifacts (OCI catalog with vector search)
--- =============================================================================
-
-CREATE TABLE artifacts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner VARCHAR(255) NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    version VARCHAR(50) NOT NULL,
-    artifact_type VARCHAR(50) NOT NULL,
-    status artifact_status NOT NULL DEFAULT 'preview',
-    description TEXT,
-    metadata JSONB NOT NULL DEFAULT '{}',
-    oci_digest VARCHAR(71),
-    size_bytes BIGINT,
-    tags TEXT[] NOT NULL DEFAULT '{}',
-    framework VARCHAR(50),
-    license VARCHAR(50),
-    embedding vector(1536),
-    search_vector tsvector GENERATED ALWAYS AS (
-        to_tsvector('english'::regconfig,
-            coalesce(name, '') || ' ' || coalesce(description, '') || ' ' || text_array_to_string(tags, ' ')
-        )
-    ) STORED,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (owner, name, version)
-);
-CREATE INDEX idx_artifacts_type_status ON artifacts(artifact_type, status);
-CREATE INDEX idx_artifacts_framework ON artifacts(artifact_type, framework, status, created_at DESC) WHERE status != 'yanked';
-CREATE INDEX idx_artifacts_framework_created ON artifacts(framework, created_at DESC) WHERE status != 'yanked';
-CREATE INDEX idx_artifacts_owner_name ON artifacts(owner, name);
-CREATE INDEX idx_artifacts_tags ON artifacts USING gin(tags);
-CREATE INDEX idx_artifacts_fts ON artifacts USING gin(search_vector);
-CREATE INDEX idx_artifacts_embedding ON artifacts USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
-CREATE TRIGGER trg_artifacts_updated_at BEFORE UPDATE ON artifacts FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-
--- =============================================================================
 -- Observability & Audit
 -- =============================================================================
 
@@ -543,9 +515,10 @@ CREATE INDEX idx_token_usage_model ON token_usage(model, created_at DESC);
 CREATE INDEX idx_token_usage_session ON token_usage(session_id) WHERE session_id IS NOT NULL;
 CREATE INDEX idx_token_usage_request ON token_usage(request_id) WHERE request_id IS NOT NULL;
 CREATE INDEX idx_token_usage_cost ON token_usage(created_at DESC, cost_usd) WHERE cost_usd IS NOT NULL;
-CREATE INDEX idx_token_usage_metadata ON token_usage USING gin(metadata);
 
--- Model pricing (for cost calculation). Seeded by 0006_seed_model_pricing.sql.
+-- Model pricing (for cost calculation). Rows are upserted at server boot from
+-- nasiko_observability::pricing::seed_model_pricing and kept fresh by the LLM
+-- router's pricing-sync loop — no migration seeds this table.
 CREATE TABLE model_pricing (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     provider TEXT NOT NULL,
@@ -565,7 +538,12 @@ CREATE TABLE model_pricing (
 CREATE INDEX idx_model_pricing_lookup ON model_pricing(provider, model, effective_from DESC);
 CREATE TRIGGER trg_model_pricing_updated_at BEFORE UPDATE ON model_pricing FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- Auto-calculate cost on insert
+-- Auto-calculate cost on insert. Falls back to a model-only pricing match when
+-- the exact (provider, model) pair has no row: the router labels every
+-- OpenAI-compatible upstream 'openai' regardless of who actually serves the
+-- model (e.g. DeepSeek behind OPENAI_API_BASE), while pricing may be seeded
+-- under the upstream's own provider name — without the fallback,
+-- gateway-metered usage on such deployments never gets a cost.
 CREATE OR REPLACE FUNCTION calculate_token_cost(
     p_provider TEXT, p_model TEXT,
     p_input_tokens INTEGER, p_output_tokens INTEGER,
@@ -579,6 +557,15 @@ BEGIN
       AND effective_from <= p_timestamp
       AND (effective_until IS NULL OR effective_until > p_timestamp)
     ORDER BY effective_from DESC LIMIT 1;
+    IF NOT FOUND THEN
+        -- Model-only fallback: provider labels are routing-surface labels, not
+        -- upstream identities; model names are near-unique across providers.
+        SELECT * INTO v_pricing FROM model_pricing
+        WHERE model = p_model
+          AND effective_from <= p_timestamp
+          AND (effective_until IS NULL OR effective_until > p_timestamp)
+        ORDER BY effective_from DESC LIMIT 1;
+    END IF;
     IF NOT FOUND THEN RETURN NULL; END IF;
     v_cost := (p_input_tokens::DECIMAL / 1000000.0) * v_pricing.input_price_per_1m
             + (p_output_tokens::DECIMAL / 1000000.0) * v_pricing.output_price_per_1m;
@@ -757,7 +744,8 @@ CREATE TABLE settings (
     oidc_redirect_uri TEXT,
     oidc_scopes      TEXT,
     oidc_provider_label TEXT,
-    catalog_tabs     TEXT
+    catalog_tabs     TEXT,
+    CONSTRAINT settings_singleton CHECK (id = 1)
 );
 
 -- =============================================================================

@@ -32,7 +32,7 @@ pub struct RouteResult {
     pub fallback_used: bool,
 }
 
-/// Mirrors `router_request_log` columns (003 + 011 migration).
+/// Mirrors `router_request_log` columns (`oss/migrations/0001_schema.sql`).
 /// Written fire-and-forget after every successful route().
 #[derive(Debug, Clone)]
 pub struct RouterLogEntry {
