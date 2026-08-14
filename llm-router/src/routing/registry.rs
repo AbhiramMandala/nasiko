@@ -5,17 +5,24 @@
 //!
 //! Two impls behind the [`TierRegistry`] seam:
 //! - [`StaticTierRegistry`] — the hardcoded seed table (also the fallback layer).
-//! - [`PgTierRegistry`] — reads the `model_registry` DB table (migration 018), falling
-//!   back to the static seeds on a missing row **or** a DB error. Correctness never
-//!   depends on the table being present/reachable — an unseeded/unavailable registry
-//!   degrades to the seeds, and an unknown provider degrades to `None` (which makes the
-//!   router fall through to the configured/default model).
+//! - [`PgTierRegistry`] — reads the `model_registry` DB table, falling back to the
+//!   static seeds on a missing row **or** a DB error. Correctness never depends on the
+//!   table being present/reachable — an unseeded/unavailable registry degrades to the
+//!   seeds, and an unknown provider degrades to `None` (which makes the router fall
+//!   through to the configured/default model).
 //!
-//! The DB seed rows (018) MUST stay in sync with [`StaticTierRegistry::seed`] — the static
-//! table is the source of truth the migration mirrors.
+//! The static seeds name **first-party** models (gpt-*, claude-*), so [`PgTierRegistry`]
+//! applies them only when the provider's configured base URL is the canonical
+//! first-party endpoint. An overridden base URL (e.g. `OPENAI_API_BASE` pointing at
+//! DeepSeek, vLLM, or Ollama) means the upstream's model names are unknowable — the
+//! seeds would be actively wrong — so the registry returns `None` and the router passes
+//! the request's own model through. DB rows are always honored regardless: they are
+//! explicit operator config (`PUT /api/model-registry`).
 
 use async_trait::async_trait;
 use sqlx::PgPool;
+
+use crate::config::GatewayConfig;
 
 use super::classifier::Tier;
 
@@ -92,19 +99,69 @@ impl TierRegistry for StaticTierRegistry {
     }
 }
 
+/// Whether the built-in static tier seeds apply to each known provider. The seeds name
+/// first-party models, so they only apply while the provider's base URL is the canonical
+/// first-party endpoint; an overridden base URL means an OpenAI-compatible third party
+/// whose model names we cannot know.
+#[derive(Debug, Clone, Copy)]
+struct CanonicalSeeds {
+    openai: bool,
+    anthropic: bool,
+    gemini: bool,
+}
+
+impl CanonicalSeeds {
+    fn from_config(cfg: &GatewayConfig) -> Self {
+        let canonical = GatewayConfig::default();
+        Self {
+            openai: cfg.openai_api_base == canonical.openai_api_base,
+            anthropic: cfg.anthropic_api_base == canonical.anthropic_api_base,
+            gemini: cfg.gemini_api_base == canonical.gemini_api_base,
+        }
+    }
+
+    /// Whether static seeds may be served for `provider` (already lowercased).
+    /// Unknown providers have no static seeds, so the answer is irrelevant — `true`
+    /// keeps the fallback path simple.
+    fn applies_to(&self, provider: &str) -> bool {
+        match provider {
+            "openai" => self.openai,
+            "anthropic" => self.anthropic,
+            "gemini" => self.gemini,
+            _ => true,
+        }
+    }
+}
+
 /// Postgres-backed registry reading the `model_registry` table, with the static seeds as a
 /// fallback for missing rows and DB errors.
 pub struct PgTierRegistry {
     db: PgPool,
     fallback: StaticTierRegistry,
+    seeds: CanonicalSeeds,
 }
 
 impl PgTierRegistry {
-    pub fn new(db: PgPool) -> Self {
+    pub fn new(db: PgPool, cfg: &GatewayConfig) -> Self {
         Self {
             db,
             fallback: StaticTierRegistry,
+            seeds: CanonicalSeeds::from_config(cfg),
         }
+    }
+
+    /// Static-seed fallback, gated on the provider still pointing at its canonical
+    /// first-party endpoint.
+    async fn static_fallback(&self, provider: &str, tier: Tier) -> Option<String> {
+        if !self.seeds.applies_to(provider) {
+            tracing::info!(
+                target: "nasiko::llm_router::registry",
+                provider = %provider, tier = ?tier,
+                "tier registry: custom base URL for provider — built-in tier seeds skipped (first-party model names would be wrong); passing through the requested model"
+            );
+            return None;
+        }
+        self.fallback.model_for(provider, tier).await
     }
 }
 
@@ -136,7 +193,7 @@ impl TierRegistry for PgTierRegistry {
                     provider = %key, tier = ?tier,
                     "tier registry lookup — no DB row for (provider, tier); falling back to static seed table"
                 );
-                self.fallback.model_for(provider, tier).await
+                self.static_fallback(&key, tier).await
             }
             Err(e) => {
                 tracing::warn!(
@@ -144,7 +201,7 @@ impl TierRegistry for PgTierRegistry {
                     error = %e, provider = %key, tier = ?tier,
                     "model_registry read failed; using static seed fallback"
                 );
-                self.fallback.model_for(provider, tier).await
+                self.static_fallback(&key, tier).await
             }
         }
     }
@@ -203,5 +260,63 @@ mod tests {
             Some("claude-opus-4-8")
         );
         assert_eq!(r.model_for("gemini", Tier::Tier1).await, None);
+    }
+
+    /// A registry whose DB always errors (lazy pool to a dead port), so `model_for`
+    /// exercises the static-fallback path the canonical gate protects.
+    fn unreachable_registry(cfg: &GatewayConfig) -> PgTierRegistry {
+        let opts = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(200));
+        let pool = opts
+            .connect_lazy("postgres://localhost:1/unreachable")
+            .unwrap();
+        PgTierRegistry::new(pool, cfg)
+    }
+
+    #[tokio::test]
+    async fn static_fallback_served_for_canonical_endpoints() {
+        let r = unreachable_registry(&GatewayConfig::default());
+        assert_eq!(
+            r.model_for("openai", Tier::Tier2).await.as_deref(),
+            Some("gpt-5.4")
+        );
+        assert_eq!(
+            r.model_for("anthropic", Tier::Tier3).await.as_deref(),
+            Some("claude-haiku-4-5")
+        );
+        assert_eq!(r.model_for("gemini", Tier::Tier1).await, None);
+    }
+
+    #[tokio::test]
+    async fn static_fallback_skipped_for_custom_openai_endpoint() {
+        // e.g. OPENAI_API_BASE=https://api.deepseek.com/v1 — the gpt-* seed names are
+        // wrong for that upstream, so the registry must defer to the requested model.
+        let cfg = GatewayConfig {
+            openai_api_base: "https://api.deepseek.com/v1".into(),
+            ..GatewayConfig::default()
+        };
+        let r = unreachable_registry(&cfg);
+        assert_eq!(r.model_for("openai", Tier::Tier1).await, None);
+        assert_eq!(r.model_for("openai", Tier::Tier2).await, None);
+        assert_eq!(r.model_for("openai", Tier::Tier3).await, None);
+        // Other providers are unaffected.
+        assert_eq!(
+            r.model_for("anthropic", Tier::Tier2).await.as_deref(),
+            Some("claude-sonnet-4-6")
+        );
+    }
+
+    #[tokio::test]
+    async fn static_fallback_skipped_for_custom_anthropic_endpoint() {
+        let cfg = GatewayConfig {
+            anthropic_api_base: "http://localhost:11434/v1".into(),
+            ..GatewayConfig::default()
+        };
+        let r = unreachable_registry(&cfg);
+        assert_eq!(r.model_for("anthropic", Tier::Tier1).await, None);
+        assert_eq!(
+            r.model_for("openai", Tier::Tier2).await.as_deref(),
+            Some("gpt-5.4")
+        );
     }
 }

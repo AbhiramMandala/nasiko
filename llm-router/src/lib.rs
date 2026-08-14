@@ -23,7 +23,6 @@ use axum::{
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use tower_http::decompression::RequestDecompressionLayer;
 
 pub mod auth;
 pub mod config;
@@ -97,14 +96,14 @@ impl LlmRouterCtx {
             llm_gateway_base_url = %cfg.llm_gateway_base_url,
             "llm-router: initializing with effective GatewayConfig"
         );
-        log_seed_registry();
+        log_seed_registry(&cfg);
         let cache = Arc::new(ConfigCache::new(Duration::from_secs(
             cfg.llm_config_cache_ttl_secs,
         )));
-        let tier_registry = Arc::new(PgTierRegistry::new(db.clone()));
+        let tier_registry = Arc::new(PgTierRegistry::new(db.clone(), &cfg));
         tracing::info!(
             target: "nasiko::llm_router::startup",
-            "llm-router: tier registry = PgTierRegistry (DB model_registry table, static seeds as fallback)"
+            "llm-router: tier registry = PgTierRegistry (DB model_registry table, static seeds as fallback for canonical provider endpoints only)"
         );
         let cell_store = Arc::new(PgCellStore::new(db.clone()));
         tracing::info!(
@@ -156,17 +155,34 @@ fn build_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
 
 /// Log the built-in static tier→model seed table at startup, so the effective
 /// `(provider, tier)` → model mapping is visible without a DB round-trip. The DB
-/// `model_registry` table (migration 018) can override any of these per row.
-fn log_seed_registry() {
+/// `model_registry` table can override any of these per row. Seeds are logged as
+/// skipped for providers whose base URL is overridden (custom OpenAI-compatible
+/// endpoint) — [`PgTierRegistry`] will not serve them there.
+fn log_seed_registry(cfg: &GatewayConfig) {
     use routing::Tier;
-    for provider in ["anthropic", "openai"] {
+    let canonical = GatewayConfig::default();
+    for (provider, is_canonical) in [
+        (
+            "anthropic",
+            cfg.anthropic_api_base == canonical.anthropic_api_base,
+        ),
+        ("openai", cfg.openai_api_base == canonical.openai_api_base),
+    ] {
         for tier in [Tier::Tier1, Tier::Tier2, Tier::Tier3] {
             if let Some(model) = StaticTierRegistry::seed(provider, tier) {
-                tracing::info!(
-                    target: "nasiko::llm_router::startup",
-                    %provider, tier = ?tier, tier_level = tier.as_level(), %model,
-                    "llm-router: static tier seed (DB model_registry may override)"
-                );
+                if is_canonical {
+                    tracing::info!(
+                        target: "nasiko::llm_router::startup",
+                        %provider, tier = ?tier, tier_level = tier.as_level(), %model,
+                        "llm-router: static tier seed (DB model_registry may override)"
+                    );
+                } else {
+                    tracing::info!(
+                        target: "nasiko::llm_router::startup",
+                        %provider, tier = ?tier, tier_level = tier.as_level(), %model,
+                        "llm-router: static tier seed INERT — custom base URL for provider; seed will not be served"
+                    );
+                }
             }
         }
     }
@@ -187,7 +203,6 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
             "/v1/chat/completions",
             post(handlers::chat::chat_completions),
         )
-        .route("/v1/responses", post(handlers::responses::responses))
         // Anthropic Messages surface — an Anthropic-SDK agent (`ANTHROPIC_BASE_URL`)
         // POSTs here; the inbound parser normalizes to the same IR (P2.3).
         .route("/v1/messages", post(handlers::chat::messages))
@@ -201,48 +216,9 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
         .route("/v1/embeddings", post(handlers::embeddings::embeddings))
         .route("/v1/models", get(handlers::models::models))
         .with_state(ctx)
-        .layer(RequestDecompressionLayer::new())
 }
 
 /// `GET /v1/health` → `{"status":"ok"}`.
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
-}
-
-#[cfg(test)]
-mod transport_tests {
-    use axum::body::{Body, to_bytes};
-    use axum::http::{Request, StatusCode};
-    use axum::routing::post;
-    use axum::{Json, Router};
-    use serde_json::{Value, json};
-    use std::future::poll_fn;
-    use tower::Service;
-    use tower_http::decompression::RequestDecompressionLayer;
-
-    #[tokio::test]
-    async fn request_decompression_accepts_codex_zstd_json() {
-        async fn echo(Json(value): Json<Value>) -> Json<Value> {
-            Json(value)
-        }
-
-        let mut app = Router::new()
-            .route("/responses", post(echo))
-            .layer(RequestDecompressionLayer::new());
-        let expected =
-            json!({"model":"gpt-5.4","stream":true,"input":[{"role":"user","content":"hello"}]});
-        let compressed = zstd::stream::encode_all(expected.to_string().as_bytes(), 1).unwrap();
-        let request = Request::post("/responses")
-            .header("content-type", "application/json")
-            .header("content-encoding", "zstd")
-            .body(Body::from(compressed))
-            .unwrap();
-        poll_fn(|context| <Router as Service<Request<Body>>>::poll_ready(&mut app, context))
-            .await
-            .unwrap();
-        let response = app.call(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
-    }
 }
