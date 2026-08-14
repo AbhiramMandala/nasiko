@@ -18,7 +18,9 @@ pub enum FeatureState {
 }
 
 /// Check whether the prompt-comments feature is enabled.
-/// Probes the instruction file first, then env var, defaults to Disabled.
+/// Resolution order: file directive (wins) > env var > default (Disabled).
+/// A file-level `<!-- @prompt-comments disabled -->` overrides an env-level `enabled`,
+/// letting individual workspaces opt out even when the platform default is on.
 pub fn feature_state(instructions: Option<&WorkspaceInstructions>) -> FeatureState {
     if let Some(wi) = instructions {
         for line in wi.raw.lines() {
@@ -27,15 +29,19 @@ pub fn feature_state(instructions: Option<&WorkspaceInstructions>) -> FeatureSta
                 let value = rest.trim_end_matches("-->").trim();
                 return match value {
                     "enabled" => FeatureState::Enabled,
+                    "disabled" => FeatureState::Disabled,
                     _ => FeatureState::Disabled,
                 };
             }
         }
     }
+    // No file directive found — fall back to env var.
     if let Ok(val) = std::env::var("NASIKO_PROMPT_COMMENTS") {
-        if val.trim() == "enabled" {
-            return FeatureState::Enabled;
-        }
+        return match val.trim() {
+            "enabled" => FeatureState::Enabled,
+            "disabled" => FeatureState::Disabled,
+            _ => FeatureState::Disabled,
+        };
     }
     FeatureState::Disabled
 }
