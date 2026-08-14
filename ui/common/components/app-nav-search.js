@@ -13,7 +13,7 @@
  */
 import { icons } from "../utils/icons.js";
 import { escHtml } from '/common/utils/escape.js';
-import { call } from '../core/data-sources.js';
+import { call, has } from '../core/data-sources.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (app-nav-search) {
@@ -334,7 +334,7 @@ export class AppNavSearch extends HTMLElement {
   /** EE-only user directory search; the query runs server-side, so refetch
    *  per (debounced) keystroke. First failure hides the section for this open. */
   async #searchUsers(query) {
-    if (this.#usersUnavailable || typeof window.fetchUserSearch !== 'function') return;
+    if (this.#usersUnavailable || !has('fetchUserSearch')) return;
     const token = this.#loadToken;
     try {
       const r = await call('fetchUserSearch', query);
