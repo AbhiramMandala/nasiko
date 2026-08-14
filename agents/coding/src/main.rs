@@ -133,29 +133,32 @@ impl AgentExecutor for CodingAgent {
                 }
             };
 
-            // Discover workspace instructions and strip prompt comments before injection.
+            // Discover workspace instructions and check if prompt-comments feature is opted in.
             let mut workspace_instructions = instructions::discover(sandbox.as_ref()).await;
+            let feature_enabled = instructions::feature_state(workspace_instructions.as_ref())
+                == instructions::FeatureState::Enabled;
 
             let agent = CodingAgent { model, api_key, base_url, http };
 
-            // Prune stale instructions if the list has grown past threshold (one LLM call).
-            if let Some(ref wi) = workspace_instructions {
-                if instructions::needs_pruning(wi) {
-                    yield Ok(status_working(&task_id, &context_id, Some("pruning stale instructions")));
-                    let (prune_prompt, annotated) = instructions::build_prune_prompt(wi);
-                    let prune_messages = vec![
-                        serde_json::json!({"role": "system", "content": "You review instruction files for staleness. Respond with only a JSON array."}),
-                        serde_json::json!({"role": "user", "content": prune_prompt}),
-                    ];
-                    if let Ok(resp) = agent.chat(&prune_messages, &[]).await {
-                        let answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
-                        let indices = instructions::parse_prune_response(answer);
-                        if !indices.is_empty() {
-                            let _ = instructions::apply_pruning(
-                                sandbox.as_ref(), wi, &indices, &annotated,
-                            ).await;
-                            // Re-discover after pruning to get updated clean text.
-                            workspace_instructions = instructions::discover(sandbox.as_ref()).await;
+            // Prune stale instructions if opted in and the list has grown past threshold.
+            if feature_enabled {
+                if let Some(ref wi) = workspace_instructions {
+                    if instructions::needs_pruning(wi) {
+                        yield Ok(status_working(&task_id, &context_id, Some("pruning stale instructions")));
+                        let (prune_prompt, annotated) = instructions::build_prune_prompt(wi);
+                        let prune_messages = vec![
+                            serde_json::json!({"role": "system", "content": "You review instruction files for staleness. Respond with only a JSON array."}),
+                            serde_json::json!({"role": "user", "content": prune_prompt}),
+                        ];
+                        if let Ok(resp) = agent.chat(&prune_messages, &[]).await {
+                            let answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
+                            let indices = instructions::parse_prune_response(answer);
+                            if !indices.is_empty() {
+                                let _ = instructions::apply_pruning(
+                                    sandbox.as_ref(), wi, &indices, &annotated,
+                                ).await;
+                                workspace_instructions = instructions::discover(sandbox.as_ref()).await;
+                            }
                         }
                     }
                 }
@@ -166,8 +169,11 @@ impl AgentExecutor for CodingAgent {
                 workspace_instructions.as_ref(),
             );
             let mut tool_defs = tools::definitions();
-            tool_defs.push(tools::update_instructions_definition());
-            tool_defs.push(tools::prune_instructions_definition());
+            // Only expose instruction management tools when the feature is opted in.
+            if feature_enabled {
+                tool_defs.push(tools::update_instructions_definition());
+                tool_defs.push(tools::prune_instructions_definition());
+            }
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system_prompt}),

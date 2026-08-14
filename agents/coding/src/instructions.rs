@@ -8,6 +8,38 @@
 use crate::prompt_comments::{self, AnnotatedInstruction, Outcome};
 use crate::sandbox::Sandbox;
 
+/// Whether the prompt-comments feature is enabled for this workspace.
+/// Off by default. User opts in via `<!-- @prompt-comments enabled -->` in the instruction
+/// file or `NASIKO_PROMPT_COMMENTS=enabled` env var.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeatureState {
+    Enabled,
+    Disabled,
+}
+
+/// Check whether the prompt-comments feature is enabled.
+/// Probes the instruction file first, then env var, defaults to Disabled.
+pub fn feature_state(instructions: Option<&WorkspaceInstructions>) -> FeatureState {
+    if let Some(wi) = instructions {
+        for line in wi.raw.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("<!-- @prompt-comments") {
+                let value = rest.trim_end_matches("-->").trim();
+                return match value {
+                    "enabled" => FeatureState::Enabled,
+                    _ => FeatureState::Disabled,
+                };
+            }
+        }
+    }
+    if let Ok(val) = std::env::var("NASIKO_PROMPT_COMMENTS") {
+        if val.trim() == "enabled" {
+            return FeatureState::Enabled;
+        }
+    }
+    FeatureState::Disabled
+}
+
 /// Well-known instruction file paths, checked in priority order.
 /// The first one found wins (avoids conflicting instructions from multiple files).
 const INSTRUCTION_FILES: &[&str] = &[
@@ -464,5 +496,40 @@ mod tests {
         let raw = "<!-- @instructions auto -->\n<!-- @pruning 30 -->\n- Rule.\n";
         assert_eq!(parse_instruction_mode(raw), InstructionMode::Auto);
         assert_eq!(parse_prune_mode(raw), PruneMode::Threshold(30));
+    }
+
+    #[test]
+    fn feature_state_disabled_by_default() {
+        let wi = WorkspaceInstructions {
+            source_file: "NASIKO.md".into(),
+            raw: "- Some rule.\n".into(),
+            clean: "- Some rule.\n".into(),
+        };
+        assert_eq!(feature_state(Some(&wi)), FeatureState::Disabled);
+    }
+
+    #[test]
+    fn feature_state_enabled_by_directive() {
+        let wi = WorkspaceInstructions {
+            source_file: "NASIKO.md".into(),
+            raw: "<!-- @prompt-comments enabled -->\n- Rule.\n".into(),
+            clean: "- Rule.\n".into(),
+        };
+        assert_eq!(feature_state(Some(&wi)), FeatureState::Enabled);
+    }
+
+    #[test]
+    fn feature_state_disabled_explicitly() {
+        let wi = WorkspaceInstructions {
+            source_file: "NASIKO.md".into(),
+            raw: "<!-- @prompt-comments disabled -->\n- Rule.\n".into(),
+            clean: "- Rule.\n".into(),
+        };
+        assert_eq!(feature_state(Some(&wi)), FeatureState::Disabled);
+    }
+
+    #[test]
+    fn feature_state_none_instructions() {
+        assert_eq!(feature_state(None), FeatureState::Disabled);
     }
 }

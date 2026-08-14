@@ -4,6 +4,33 @@ Based on "Why Does CLAUDE.md Keep Growing? Catastrophic Remembering in Agentic C
 (Chakrabarti, 2025). Implemented in the Nasiko coding agent as a system-level feature that
 prevents unbounded growth of workspace instruction files.
 
+## Opt-in / Opt-out
+
+This feature is **disabled by default**. The coding agent behaves exactly as before unless
+the user explicitly opts in. To enable:
+
+**In the instruction file** (recommended):
+```markdown
+<!-- @prompt-comments enabled -->
+```
+
+**Or via environment variable** (platform-level default for all workspaces):
+```
+NASIKO_PROMPT_COMMENTS=enabled
+```
+
+When disabled (the default):
+- Workspace instruction files are still discovered and injected into the prompt (that
+  behavior is independent)
+- But the `update_instructions` and `prune_instructions` tools are NOT exposed to the agent
+- No automatic pruning occurs
+- The agent cannot add or modify instructions on its own
+
+When enabled:
+- The agent gains `update_instructions` and `prune_instructions` tools
+- Auto-pruning can be configured (still off by default within the feature)
+- Instruction addition mode can be configured (manual by default)
+
 ## Problem
 
 Instruction files (NASIKO.md, CLAUDE.md) grow unbounded. Adding rules is cheap, but deletion
@@ -24,6 +51,7 @@ in their workspace root. The file contains instructions for the coding agent, op
 annotated with prompt comments:
 
 ```markdown
+<!-- @prompt-comments enabled -->
 <!-- @instructions auto -->
 <!-- @pruning auto -->
 
@@ -86,8 +114,20 @@ The agent receives only:
 
 ## User Configuration
 
-Two directives control behavior. Both can be set in the instruction file (highest priority)
+Three directives control behavior. All can be set in the instruction file (highest priority)
 or via environment variables on the agent container (platform-level default).
+
+### Feature gate (required)
+
+The entire feature must be opted into before anything else applies.
+
+| Setting | Behavior |
+|---------|----------|
+| `<!-- @prompt-comments enabled -->` | Feature is active: tools exposed, pruning available |
+| `<!-- @prompt-comments disabled -->` | Feature is off (same as omitting the directive) |
+| No directive | **Disabled by default** |
+
+Environment variable fallback: `NASIKO_PROMPT_COMMENTS=enabled|disabled`
 
 ### Instruction addition mode
 
@@ -177,17 +217,18 @@ agent level. Works with any OpenAI-compatible LLM backend.
 
 | Var | Default | Purpose |
 |-----|---------|---------|
+| `NASIKO_PROMPT_COMMENTS` | `disabled` | Master switch: `enabled` activates the feature |
 | `NASIKO_INSTRUCTION_MODE` | `manual` | Whether agent auto-adds instructions (`auto` or `manual`) |
 | `NASIKO_PRUNE_MODE` | `manual` | Whether auto-pruning is enabled (`auto`, `manual`, or a threshold number) |
 
-File-level directives (`<!-- @instructions ... -->`, `<!-- @pruning ... -->`) take
-priority over environment variables.
+File-level directives take priority over environment variables.
 
 ## Example Instruction File
 
-A complete example showing both directives and multiple instructions at various lifecycle stages:
+A complete example showing all directives and multiple instructions at various lifecycle stages:
 
 ```markdown
+<!-- @prompt-comments enabled -->
 <!-- @instructions auto -->
 <!-- @pruning 15 -->
 
@@ -219,8 +260,13 @@ A complete example showing both directives and multiple instructions at various 
 ```
 
 In this example:
+- The feature is explicitly enabled (`@prompt-comments enabled`)
 - The agent will proactively add new instructions (auto mode)
 - Auto-pruning triggers at 15 annotated instructions
 - The first instruction is confirmed and stays in the prompt
 - The second is pending (not yet validated)
 - The third is revoked and excluded from the prompt entirely
+
+Without `<!-- @prompt-comments enabled -->`, none of the instruction management
+behavior activates. The file is still read and injected into the prompt (that is basic
+agent behavior), but the agent cannot add, modify, or prune instructions on its own.
