@@ -80,7 +80,7 @@ export class SmartTable extends HTMLElement {
 
     if (fnName) {
       this.#dataFnName = fnName;
-      this.dataFn = window[fnName] || null;
+      this.dataFn = resolveOptional(fnName) || null;
     }
 
     this.#render();
@@ -463,7 +463,7 @@ export class SmartTable extends HTMLElement {
         break;
       case 'data-fn':
         this.#dataFnName = newValue;
-        this.dataFn = window[newValue] || null;
+        this.dataFn = resolveOptional(newValue) || null;
         this.#currentPage = 1;
         this.refresh();
         break;
