@@ -2,8 +2,9 @@
  * Navigation for the OSS control plane, plus the seam every edition extends.
  *
  * Loaded first on every page (see the module-order note in any page's <head>):
- * it publishes `window.fetchNavigation` / `window.fetchModuleNav` for
- * `<app-header>` and `<app-module-nav>`, and pulls in the shared data functions.
+ * it registers `fetchNavigation` / `fetchModuleNav` with the data-sources
+ * registry for `<app-header>` and `<app-module-nav>`, and pulls in the shared
+ * data functions.
  *
  * ─── Why the extension seam exists ─────────────────────────────────────────
  * EE used to override this entire file. `EeAssets` resolves before `OssAssets`
@@ -19,6 +20,7 @@
  */
 
 import '/common/services/data-functions.js';
+import { registerAll } from '/common/core/data-sources.js';
 
 // rail: true → shown as a rail module icon; everything else is reachable
 // through the module tree navs and the ⌘F nav search.
@@ -154,7 +156,7 @@ const extensionContext = async () => {
   return contextPromise;
 };
 
-window.fetchNavigation = async () => {
+const fetchNavigation = async () => {
   const base = BASE_ITEMS();
   const ext = await extension();
   if (!ext.items) return base;
@@ -166,7 +168,7 @@ window.fetchNavigation = async () => {
   }
 };
 
-window.fetchModuleNav = async (module) => {
+const fetchModuleNav = async (module) => {
   const nav = MODULE_NAVS[module];
   // Observability used to append a dynamic "Recent activity" group listing the
   // five newest sessions. Dropped: on sessions.html — the only page it appeared
@@ -183,5 +185,7 @@ window.fetchModuleNav = async (module) => {
     return base;
   }
 };
+
+registerAll({ fetchNavigation, fetchModuleNav }, { replace: true });
 
 export { BASE_ITEMS, MODULE_NAVS };

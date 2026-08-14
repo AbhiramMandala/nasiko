@@ -6,13 +6,14 @@
  * @note Static content, no API calls. Commands mirror `nasiko --help`
  *       (oss/cli/src/main.rs) and the OSS README quick start.
  * @note Deployments may replace the guide wholesale by defining
- *       `window.setupCliSteps` (same shape as STEPS) in navigation.js —
+ *       `setupCliSteps` via data-sources (same shape as STEPS) in nav-ext.js —
  *       e.g. to install a prebuilt binary instead of building from source.
  */
 import { icons } from '../utils/icons.js';
 import './app-code-snippet.js';
 import styles from './setup-cli-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
+import { resolveOptional } from '../core/data-sources.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const DEFAULT_STEPS = [
@@ -71,8 +72,9 @@ class SetupCliPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
 
-    const STEPS = Array.isArray(window.setupCliSteps) && window.setupCliSteps.length
-      ? window.setupCliSteps
+    const extSteps = resolveOptional('setupCliSteps');
+    const STEPS = Array.isArray(extSteps) && extSteps.length
+      ? extSteps
       : DEFAULT_STEPS;
 
     this.innerHTML = `

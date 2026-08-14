@@ -2,7 +2,7 @@
  * In-card module tree navigation (NightOwl): module icon + title header,
  * collapsible groups, and 28px rows with a sand-100 active state.
  *
- * Data comes from `window.fetchModuleNav(module)` (navigation.js), which
+ * Data comes from `fetchModuleNav` via data-sources (navigation.js), which
  * resolves to `{ title, icon, groups: [{ label, items }] }` where an item is
  * either `{ label, url }` (link, active by path match) or
  * `{ label, section }` (in-page section — clicking dispatches a bubbling
@@ -14,13 +14,14 @@
  * flow above the page content.
  *
  * @element app-module-nav
- * @attr {string} module - Key passed to `window.fetchModuleNav`.
+ * @attr {string} module - Key passed to `fetchModuleNav` via data-sources.
  * @attr {string} active-section - Section key rendered as active (for pages
  *                                 whose sections are tabs, e.g. Settings).
  * @fires module-nav-select - `{ detail: { section } }` on section item click.
  */
 import { icons } from "../utils/icons.js";
 import { escHtml } from '/common/utils/escape.js';
+import { callOptional } from '../core/data-sources.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav is
@@ -235,7 +236,7 @@ export class AppModuleNav extends HTMLElement {
 
   async #load() {
     const module = this.getAttribute("module");
-    if (!module || typeof window.fetchModuleNav !== "function") {
+    if (!module) {
       this.#nav = null;
       this.#render();
       return;
@@ -260,7 +261,7 @@ export class AppModuleNav extends HTMLElement {
     }
 
     try {
-      this.#nav = await window.fetchModuleNav(module);
+      this.#nav = await callOptional('fetchModuleNav', module);
       try {
         sessionStorage.setItem(cacheKey, JSON.stringify(this.#nav));
       } catch { /* quota exceeded */ }

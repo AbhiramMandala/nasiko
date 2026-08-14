@@ -3,7 +3,7 @@
  *
  * Renders both chrome bars from one element so existing pages keep their
  * single `<app-header>` tag. The rail lists the pages from
- * `window.fetchNavigation()` (or the `nav-links` attribute); Settings and the
+ * `fetchNavigation` via data-sources (or the `nav-links` attribute); Settings and the
  * identity menu pin to the rail's bottom cluster.
  *
  * @element app-header
@@ -18,6 +18,7 @@ import { icons } from "../utils/icons.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
 import { escHtml } from '/common/utils/escape.js';
+import { callOptional } from '../core/data-sources.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@keyframes ah-skel-pulse {
@@ -417,15 +418,16 @@ export class AppHeader extends HTMLElement {
 
   async loadNavigation() {
     if (this.getAttribute("nav-links")) return;
-    if (typeof window.fetchNavigation === "function") {
-      try {
-        this.navItems = await window.fetchNavigation();
+    try {
+      const nav = await callOptional('fetchNavigation');
+      if (nav) {
+        this.navItems = nav;
         try { sessionStorage.setItem("app-header-nav", JSON.stringify(this.navItems)); } catch { /* quota exceeded */ }
-      } catch (e) {
-        console.warn("fetchNavigation failed:", e);
+      } else {
         if (!this.navItems) this.navItems = [];
       }
-    } else {
+    } catch (e) {
+      console.warn("fetchNavigation failed:", e);
       if (!this.navItems) this.navItems = [];
     }
   }
