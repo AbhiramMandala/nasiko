@@ -7,21 +7,59 @@ prevents unbounded growth of workspace instruction files.
 ## Opt-in / Opt-out
 
 This feature is **disabled by default**. The coding agent behaves exactly as before unless
-the user explicitly opts in. To enable:
+the user explicitly opts in.
 
-**In the instruction file** (recommended):
+### How to enable
+
+**Option A: In the instruction file** (per-workspace, recommended):
+
+Add this line to your `NASIKO.md` (or `CLAUDE.md`, `.nasiko/instructions.md`):
 ```markdown
 <!-- @prompt-comments enabled -->
 ```
 
-**Or via environment variable** (platform-level default for all workspaces):
+**Option B: Via environment variable** (platform-level, all workspaces):
+
+Set on the coding agent container at deploy time:
 ```
 NASIKO_PROMPT_COMMENTS=enabled
 ```
 
+### How to disable
+
+**If enabled at the platform level and you want a specific workspace to opt out:**
+
+Add this to the workspace's instruction file:
+```markdown
+<!-- @prompt-comments disabled -->
+```
+The file directive always wins over the env var.
+
+**If enabled at the file level:** Change `enabled` to `disabled`, or remove the line entirely.
+
+**If enabled at the env var level:** Unset `NASIKO_PROMPT_COMMENTS` or set it to `disabled`.
+
+### Resolution order
+
+| Platform env var | File directive | Result |
+|---|---|---|
+| not set | not set | **Disabled** (default) |
+| `enabled` | not set | Enabled |
+| `enabled` | `disabled` | **Disabled** (file wins) |
+| not set | `enabled` | Enabled |
+| `disabled` | `enabled` | **Enabled** (file wins) |
+
+### When the flag takes effect
+
+The feature state is read **once at session start**. If the user changes the directive
+mid-session (by editing the file directly), the change takes effect on the next session.
+There is no runtime toggle within an active session.
+
+### What changes when enabled vs disabled
+
 When disabled (the default):
 - Workspace instruction files are still discovered and injected into the prompt (that
-  behavior is independent)
+  behavior is independent of this feature)
 - But the `update_instructions` and `prune_instructions` tools are NOT exposed to the agent
 - No automatic pruning occurs
 - The agent cannot add or modify instructions on its own
