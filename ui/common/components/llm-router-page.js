@@ -8,7 +8,7 @@ import '/common/components/app-skeleton.js';
  *       `call('fetchLlmConfigs')`      → GET  /api/llm-configs
  *       `call('createLlmConfig', body)`  → POST /api/llm-configs
  *       `call('deleteLlmConfig', id)`    → DELETE /api/llm-configs/{id}
- *       `window.setDefaultLlmConfig(id)`→ POST /api/llm-configs/{id}/default
+ *       `call('setDefaultLlmConfig', id)`→ POST /api/llm-configs/{id}/default
  *       `call('fetchLlmProviders')`    → GET  /api/llm-router/providers
  *       `call('fetchSecretsList')`         → GET  /api/secrets
  */
@@ -362,7 +362,7 @@ class LlmRouterPage extends HTMLElement {
 
   async #setDefault(id) {
     try {
-      await window.setDefaultLlmConfig(id);
+      await call('setDefaultLlmConfig', id);
     } catch (err) {
       showToast(err?.message || 'Failed to set default');
       return;
@@ -375,7 +375,7 @@ class LlmRouterPage extends HTMLElement {
   /// another config — with one config there was no way to unset it at all.
   async #clearDefault(id) {
     try {
-      await window.clearDefaultLlmConfig(id);
+      await call('clearDefaultLlmConfig', id);
     } catch (err) {
       showToast(err?.message || 'Failed to remove default');
       return;

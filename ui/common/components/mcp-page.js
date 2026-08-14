@@ -405,7 +405,7 @@ class McpPage extends HTMLElement {
       return;
     }
     try {
-      const resp = await window.connectMcpService({ connector_id: id });
+      const resp = await call('connectMcpService', { connector_id: id });
       this.#applyConnectOutcome(resp?.data);
     } catch (e) {
       alert(`Connect failed: ${e.message}`);
@@ -459,7 +459,7 @@ class McpPage extends HTMLElement {
     const name = s?.display_name || s?.name || id;
     if (!confirm(`Disconnect "${name}"? Agents lose access to its tools until you reconnect.`)) return;
     try {
-      await window.disconnectMcpConnection(id);
+      await call('disconnectMcpConnection', id);
       this.#load();
     } catch (e) {
       alert(`Disconnect failed: ${e.message}`);
@@ -491,7 +491,7 @@ class McpPage extends HTMLElement {
       const err = this.querySelector('#connect-error');
       err.hidden = true;
       try {
-        const resp = await window.connectMcpService({
+        const resp = await call('connectMcpService', {
           connector_id: this.#connectTargetId,
           credentials: { value },
         });
@@ -602,7 +602,7 @@ class McpPage extends HTMLElement {
       const err = section.querySelector('#cred-error');
       err.hidden = true;
       try {
-        const resp = await window.setMcpCredential(c.connector_id, value);
+        const resp = await call('setMcpCredential', c.connector_id, value);
         if (resp?.data?.connected === false) {
           err.textContent = `Stored, but verification failed: ${resp.data.error || 'unknown error'}`;
           err.hidden = false;
@@ -648,7 +648,7 @@ class McpPage extends HTMLElement {
       const err = section.querySelector('#oauth-error');
       err.hidden = true;
       try {
-        const resp = await window.authorizeMcpOauth(c.connector_id);
+        const resp = await call('authorizeMcpOauth', c.connector_id);
         const url = resp?.data?.authorization_url;
         if (url) window.open(url, 'mcp-oauth', 'width=600,height=720');
       } catch (e) {
@@ -658,7 +658,7 @@ class McpPage extends HTMLElement {
     });
     section.querySelector('#oauth-revoke')?.addEventListener('click', async () => {
       try {
-        await window.revokeMcpOauthToken(c.connector_id);
+        await call('revokeMcpOauthToken', c.connector_id);
         this.#renderOauthSection(c);
       } catch (e) {
         alert(`Revoke failed: ${e.message}`);
@@ -745,7 +745,7 @@ class McpPage extends HTMLElement {
       result.className = 'probe-result';
       result.innerHTML = 'Probing…';
       try {
-        const resp = await window.probeMcpConnector(url);
+        const resp = await call('probeMcpConnector', url);
         const d = resp?.data ?? {};
         if (d.auth_type) {
           authSelect.value = d.auth_type;
@@ -772,7 +772,7 @@ class McpPage extends HTMLElement {
         if (v) body[key] = v;
       }
       try {
-        await window.registerMcpConnector(body);
+        await call('registerMcpConnector', body);
         modal.close();
         form.reset();
         this.querySelector('#probe-result').hidden = true;
@@ -849,11 +849,11 @@ class McpPage extends HTMLElement {
           fd.append('name', form.elements.name.value.trim());
           fd.append('version_tag', form.elements.version_tag.value.trim() || 'v1');
           fd.append('file', form.elements.file.files[0]);
-          resp = await window.uploadMcpServerZip(fd);
+          resp = await call('uploadMcpServerZip', fd);
         } else {
           const form = this.querySelector('#upload-github-form');
           if (!form.reportValidity()) return;
-          resp = await window.uploadMcpServerGithub({
+          resp = await call('uploadMcpServerGithub', {
             name: form.elements.name.value.trim(),
             version_tag: form.elements.version_tag.value.trim() || 'v1',
             github_url: form.elements.github_url.value.trim(),
@@ -977,7 +977,7 @@ class McpPage extends HTMLElement {
       toggle.addEventListener('change', async () => {
         const id = toggle.closest('tr').dataset.id;
         try {
-          await window.setAgentMcpConnectorAccess(this.#selectedAgentId, id, toggle.checked);
+          await call('setAgentMcpConnectorAccess', this.#selectedAgentId, id, toggle.checked);
         } catch (e) {
           toggle.checked = !toggle.checked;
           alert(`Failed to update access: ${e.message}`);

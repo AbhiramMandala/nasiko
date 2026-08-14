@@ -1303,7 +1303,7 @@ class AgentCardPage extends HTMLElement {
   async #setConnectorEnabled(connectorId, enabled) {
     const connector = this.#connectors.find((c) => c.connector_id === connectorId);
     try {
-      await window.setAgentMcpConnectorAccess(this.#agent.id, connectorId, enabled);
+      await call('setAgentMcpConnectorAccess', this.#agent.id, connectorId, enabled);
       if (connector) connector.enabled = enabled;
     } catch (e) {
       showToast(`Failed to update access: ${e.message}`);
