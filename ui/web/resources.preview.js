@@ -70,9 +70,9 @@ export default {
     // for the next tick is what actually exercises the failure path.
     unavailable: async (page) => {
       await page.evaluate(() => {
-        window.fetchResourceStats = async () => {
+        __dataSources.registerAll({ fetchResourceStats: async () => {
           throw new Error("resource stats are not available for the 'kubernetes' runtime");
-        };
+        } }, { replace: true });
       });
       await page.waitForSelector('app-empty-state', { timeout: 15000 });
     },

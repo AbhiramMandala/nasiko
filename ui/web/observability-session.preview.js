@@ -202,9 +202,9 @@ export default {
     "no-traces": async (page) => {
       await withSession(page);
       await page.evaluate(() => {
-        window.fetchObservabilitySession = async () => ({
+        __dataSources.registerAll({ fetchObservabilitySession: async () => ({
           data: { session: { session_id: "ses_empty", num_traces: 0, token_usage: { total: 0 }, cost_summary: { total: { cost: 0 } }, latency_p50: 0, latency_p99: 0, traces: [] } },
-        });
+        }) }, { replace: true });
         document.querySelector("observability-session-page").remove();
         document.body.appendChild(document.createElement("observability-session-page"));
       });
@@ -215,10 +215,10 @@ export default {
     "no-data": async (page) => {
       await withSession(page);
       await page.evaluate(() => {
-        window.fetchObservabilitySession = async () => ({
+        __dataSources.registerAll({ fetchObservabilitySession: async () => ({
           data: { session: { session_id: "ses_empty", num_traces: 0, token_usage: { total: 0 }, cost_summary: { total: { cost: 0 } }, latency_p50: 0, latency_p99: 0, traces: [] } },
-        });
-        window.fetchChatSession = async () => ({ data: [] });
+        }) }, { replace: true });
+        __dataSources.registerAll({ fetchChatSession: async () => ({ data: [] }) }, { replace: true });
         document.querySelector("observability-session-page").remove();
         document.body.appendChild(document.createElement("observability-session-page"));
       });
@@ -229,12 +229,12 @@ export default {
     "long-chat": async (page) => {
       await withSession(page);
       await page.evaluate(() => {
-        window.fetchChatSession = async () => ({
+        __dataSources.registerAll({ fetchChatSession: async () => ({
           data: [
             { id: "m1", role: "user", content: "Walk me through the deploy rollback procedure." },
             { id: "m2", role: "assistant", content: "## Rollback procedure\n\nRolling back is a **three step** operation:\n\n1. Freeze the build queue\n2. Re-point the service to the previous image\n3. Verify health, then unfreeze\n\n### Commands\n\n```bash\nnasiko ps --agent devops-agent\nnasiko deploy devops-agent --image devops-agent:0.3.0\nnasiko logs devops-agent --follow\n```\n\n### Verification checklist\n\n| Check | Expected |\n| --- | --- |\n| `/health` | `ok` |\n| Replicas | matches previous |\n| Error rate | back to baseline |\n\nIf the health check does not settle within five minutes, escalate to the on-call\nplatform engineer and leave the build queue frozen. Do *not* retry the rollback\nautomatically — a second image flip while the first is still converging will make\nthe deployment history ambiguous and complicate the incident review.\n\n> Note: rollbacks do not revert database migrations. Any migration applied by the\n> bad release must be reverted separately.\n" },
           ],
-        });
+        }) }, { replace: true });
         document.querySelector("observability-session-page").remove();
         document.body.appendChild(document.createElement("observability-session-page"));
       });

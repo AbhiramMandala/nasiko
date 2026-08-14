@@ -500,10 +500,10 @@ export default {
     },
     'catalog-empty': async (page) => {
       await page.evaluate(() => {
-        window.fetchMcpConnectors = async () => (
-          { data: { created_by_you: [], shared_with_you: [], total: 0 }, status_code: 200 });
-        window.fetchMcpToolkits = async () => ({ data: { toolkits: [], total: 0 }, status_code: 200 });
-        window.fetchMcpMyUploads = async () => ({ data: [], status_code: 200 });
+        __dataSources.registerAll({ fetchMcpConnectors: async () => (
+          { data: { created_by_you: [], shared_with_you: [], total: 0 }, status_code: 200 }) }, { replace: true });
+        __dataSources.registerAll({ fetchMcpToolkits: async () => ({ data: { toolkits: [], total: 0 }, status_code: 200 }) }, { replace: true });
+        __dataSources.registerAll({ fetchMcpMyUploads: async () => ({ data: [], status_code: 200 }) }, { replace: true });
         document.querySelector('mcp-page').remove();
         document.body.appendChild(document.createElement('mcp-page'));
       });

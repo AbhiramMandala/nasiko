@@ -94,7 +94,7 @@ export default {
     },
     empty: async (page) => {
       await page.evaluate(() => {
-        window.fetchAgents = async () => ({ data: [], total: 0 });
+        __dataSources.registerAll({ fetchAgents: async () => ({ data: [], total: 0 }) }, { replace: true });
       });
       await page.evaluate(() => {
         document.querySelector("agents-page").remove();
@@ -116,7 +116,7 @@ export default {
     },
     "pinned-tabs": async (page) => {
       await page.evaluate(() => {
-        window.fetchSettings = async () => ({ catalog_tabs: "finance, devops" });
+        __dataSources.registerAll({ fetchSettings: async () => ({ catalog_tabs: "finance, devops" }) }, { replace: true });
         document.querySelector("agents-page").remove();
         document.body.appendChild(document.createElement("agents-page"));
       });

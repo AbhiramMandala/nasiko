@@ -218,3 +218,20 @@ export const dataSources = Object.freeze({
   unresolved,
   reset,
 });
+
+// ── Test bridge ─────────────────────────────────────────────────────────────
+// Preview fixtures run inside `page.evaluate()`, which executes in the
+// browser's global scope — not as an ES module. They need to override
+// registered data sources to inject mock data, but `registerAll` is a module
+// export and invisible from `page.evaluate`. This bridge exposes the registry
+// API on `window.__dataSources` so fixture code can write:
+//
+//   await page.evaluate(() => {
+//     __dataSources.registerAll({ fetchAgents: async () => ({ data: [], total: 0 }) }, { replace: true });
+//   });
+//
+// The bridge is always present (it costs nothing) and serves the same role as
+// the `window.__STORE_DEV__` pattern used by state management libraries.
+if (typeof globalThis !== 'undefined') {
+  globalThis.__dataSources = dataSources;
+}

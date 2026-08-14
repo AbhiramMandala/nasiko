@@ -36,7 +36,7 @@ export default {
   scenarios: {
     empty: async (page) => {
       await page.evaluate(() => {
-        window.fetchSessions = async () => ({ data: [], total: 0 });
+        __dataSources.registerAll({ fetchSessions: async () => ({ data: [], total: 0 }) }, { replace: true });
       });
       await page.evaluate(() => {
         document.querySelector("sessions-page").remove();

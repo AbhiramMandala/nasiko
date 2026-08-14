@@ -29,8 +29,8 @@ export default {
   scenarios: {
     drafting: async (page) => {
       await page.evaluate(() => {
-        window.generateWorkflow = () => new Promise(() => {}); // never settles
-      });
+        __dataSources.registerAll({ generateWorkflow: () => new Promise(() => {}); // never settles
+      }) }, { replace: true });
       await page.fill("#wf-desc", "Draft three caption variations each weekday, review the tone, then queue the approved ones for publishing.");
       await page.click("#draft-btn");
       await page.waitForSelector(".drafting:not([hidden])");
@@ -44,11 +44,11 @@ export default {
     },
     "no-agents": async (page) => {
       await page.evaluate(() => {
-        window.generateWorkflow = async () => {
+        __dataSources.registerAll({ generateWorkflow: async () => {
           const err = new Error("no agents registered — register at least one agent before generating a MAF");
           err.status = 400;
           throw err;
-        };
+        } }, { replace: true });
       });
       await page.fill("#wf-desc", "Enrich incoming leads with company data.");
       await page.click("#draft-btn");

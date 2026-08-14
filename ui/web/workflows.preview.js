@@ -91,8 +91,8 @@ export default {
   scenarios: {
     empty: async (page) => {
       await page.evaluate(() => {
-        window.fetchWorkflows = async () => [];
-        window.fetchAllExecutions = async () => [];
+        __dataSources.registerAll({ fetchWorkflows: async () => [] }, { replace: true });
+        __dataSources.registerAll({ fetchAllExecutions: async () => [] }, { replace: true });
         document.querySelector("workflows-page").remove();
         document.body.appendChild(document.createElement("workflows-page"));
       });

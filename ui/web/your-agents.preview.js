@@ -20,7 +20,7 @@ export default {
   scenarios: {
     empty: async (page) => {
       await page.evaluate(() => {
-        window.fetchContainers = async () => ({ data: [], total: 0 });
+        __dataSources.registerAll({ fetchContainers: async () => ({ data: [], total: 0 }) }, { replace: true });
       });
       await page.evaluate(() => {
         document.querySelector("your-agents-page").remove();

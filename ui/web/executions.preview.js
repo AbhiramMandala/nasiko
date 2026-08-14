@@ -77,7 +77,7 @@ export default {
     },
     empty: async (page) => {
       await page.evaluate(() => {
-        window.fetchAllExecutions = async () => [];
+        __dataSources.registerAll({ fetchAllExecutions: async () => [] }, { replace: true });
         document.querySelector("executions-page").remove();
         document.body.appendChild(document.createElement("executions-page"));
       });
@@ -96,7 +96,7 @@ export default {
           workflow_name: "Social media content pipeline", workflow_status: "active",
           step_results: [],
         };
-        window.fetchAllExecutions = async () => [finished];
+        __dataSources.registerAll({ fetchAllExecutions: async () => [finished] }, { replace: true });
         document.querySelector("executions-page").remove();
         document.body.appendChild(document.createElement("executions-page"));
       });
