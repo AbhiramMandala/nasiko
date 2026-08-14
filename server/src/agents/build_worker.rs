@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sqlx::PgPool;
@@ -51,15 +52,21 @@ pub struct BuildJob {
 /// agent or connector never overlap — [`claim_next_job`] skips a target that
 /// already has a build in flight.
 pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
-    recover_stuck_jobs(&state.db).await;
+    recover_stuck_jobs(&state.db, &[]).await;
 
     // First tick fires after the interval, not immediately — startup already ran recovery.
     let recovery_start = tokio::time::Instant::now() + Duration::from_secs(10 * 60);
     let mut recovery_tick = tokio::time::interval_at(recovery_start, Duration::from_secs(10 * 60));
     recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    let concurrency = state.config.build_concurrency; // already clamped to 1..=16 by Config
+    // Config clamps this to 1..=16, but the field is a plain `usize` that test
+    // and bench harnesses set by struct literal — a 0 would make the drain loop
+    // body unreachable and silently park the worker forever.
+    let concurrency = state.config.build_concurrency.max(1);
     let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+    // Jobs executing right now, so the recovery sweep doesn't reset one of them
+    // out from under us. Shared with each spawned task, which clears its own id.
+    let in_flight: Arc<Mutex<HashSet<Uuid>>> = Arc::new(Mutex::new(HashSet::new()));
 
     tracing::info!(concurrency, "build worker: started");
     loop {
@@ -101,6 +108,11 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
 
             let state_clone = state.clone();
             let db = state.db.clone();
+            let in_flight_task = in_flight.clone();
+            in_flight
+                .lock()
+                .expect("in-flight set poisoned")
+                .insert(job_id);
             tasks.spawn(async move {
                 // Nested spawn keeps the panic-isolation contract: job_id and
                 // old_attempt stay in scope here, so a panicking build resets
@@ -114,10 +126,14 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
                         tracing::error!(job_id = %job_id, "build worker: job panicked — resetting immediately");
                         reset_panicked_job(&db, job_id, old_attempt).await;
                     }
-                    Err(_) => {
-                        tracing::info!(job_id = %job_id, "build worker: job cancelled (shutdown)");
-                    }
+                    // Only reachable if the inner task is aborted, which nothing
+                    // does — dropping its handle detaches rather than cancels.
+                    Err(_) => {}
                 }
+                in_flight_task
+                    .lock()
+                    .expect("in-flight set poisoned")
+                    .remove(&job_id);
             });
         }
 
@@ -138,7 +154,9 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
             }
             _ = tokio::time::sleep(Duration::from_secs(5)) => {}
             _ = recovery_tick.tick() => {
-                recover_stuck_jobs(&state.db).await;
+                let running: Vec<Uuid> =
+                    in_flight.lock().expect("in-flight set poisoned").iter().copied().collect();
+                recover_stuck_jobs(&state.db, &running).await;
                 // Fall through to the drain loop: recovered jobs are now pending.
             }
         }
@@ -151,7 +169,16 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
 /// replica are recovered without requiring a server restart.
 /// The `make_interval` form keeps the threshold in one place rather than
 /// embedding it as a string literal in two separate SQL statements.
-async fn recover_stuck_jobs(db: &PgPool) {
+///
+/// `in_flight` holds the jobs this worker is currently executing, and they are
+/// excluded from both statements. While the worker was serial the sweep could
+/// never observe its own running job — the loop was blocked awaiting it — but a
+/// concurrent worker returns to `select!` immediately, so a legitimately slow
+/// build (execute + deploy can outlast `STUCK_JOB_MINS`) would otherwise be
+/// reset to `pending`, re-claimed, and run a second time against the same image
+/// tag: exactly what `claim_next_job`'s same-target clause exists to prevent.
+/// Jobs from *other* replicas can't be vouched for this way and are still swept.
+async fn recover_stuck_jobs(db: &PgPool, in_flight: &[Uuid]) {
     // Permanently fail exhausted jobs (>= MAX_ATTEMPTS attempts already made).
     // RETURNING agent_id, connector_id so we can also drive the target to a
     // terminal state (RUN-4, extended to MCP connectors) — otherwise its
@@ -159,10 +186,12 @@ async fn recover_stuck_jobs(db: &PgPool) {
     match sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>)>(
         "UPDATE build_jobs SET status = 'failed', error_msg = 'max attempts exceeded', completed_at = now()
          WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2::int) AND attempt >= $1
+           AND id <> ALL($3)
          RETURNING agent_id, connector_id",
     )
     .bind(MAX_ATTEMPTS)
     .bind(STUCK_JOB_MINS)
+    .bind(in_flight)
     .fetch_all(db)
     .await
     {
@@ -181,10 +210,12 @@ async fn recover_stuck_jobs(db: &PgPool) {
     // Reset remaining stuck jobs so they get another try.
     match sqlx::query(
         "UPDATE build_jobs SET status = 'pending', picked_at = NULL
-         WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2::int) AND attempt < $1",
+         WHERE status = 'in_progress' AND picked_at < now() - make_interval(mins => $2::int) AND attempt < $1
+           AND id <> ALL($3)",
     )
     .bind(MAX_ATTEMPTS)
     .bind(STUCK_JOB_MINS)
+    .bind(in_flight)
     .execute(db)
     .await
     {
@@ -204,8 +235,15 @@ async fn recover_stuck_jobs(db: &PgPool) {
 /// Returns `Ok(None)` if the queue holds nothing claimable. The returned
 /// `job.attempt` is the pre-increment value; the DB now holds `attempt + 1`.
 ///
-/// `FOR UPDATE SKIP LOCKED` makes this safe for concurrent claimers, both
-/// across the worker's own in-flight slots and across server replicas.
+/// `FOR UPDATE SKIP LOCKED` stops two claimers taking the *same* row, across
+/// this worker's slots and across replicas.
+///
+/// The same-target clause below is a different guarantee, and a weaker one: it
+/// reads committed state, so it fully serializes per target within one worker
+/// (claims here are sequential) but leaves a millisecond window across replicas,
+/// where a claim transaction that has not yet committed is invisible to another
+/// replica's subquery. Closing that needs `pg_advisory_xact_lock` on the target
+/// id or a partial unique index; single-replica deployments are unaffected.
 ///
 /// `pub` (not `pub(crate)`) so the same-target clause is directly testable from
 /// an integration test — same reasoning as [`infer_build_status`]. Takes the
@@ -224,6 +262,12 @@ pub async fn claim_next_job(db: &PgPool) -> anyhow::Result<Option<BuildJob>> {
     // Skipped, not failed: the row stays 'pending' and is claimed on a later
     // drain pass once its in-flight sibling finishes.
     //
+    // Bounded by STUCK_JOB_MINS so an orphan can't block a target forever: a
+    // replica SIGKILLed mid-build leaves an 'in_progress' row nobody will ever
+    // complete, and without this bound every later build of that agent would
+    // wait for the recovery sweep to clear it. Past the threshold the row is
+    // about to be swept anyway, so it stops counting as a live sibling.
+    //
     // NOT EXISTS rather than NOT IN: `=` is NULL-safe, so a job targeting an
     // agent is never blocked by an in-flight connector job (and vice versa)
     // without needing IS NOT NULL guards. Every row sets exactly one of the two
@@ -235,12 +279,14 @@ pub async fn claim_next_job(db: &PgPool) -> anyhow::Result<Option<BuildJob>> {
            AND NOT EXISTS (
                  SELECT 1 FROM build_jobs b
                  WHERE b.status = 'in_progress'
+                   AND b.picked_at > now() - make_interval(mins => $1::int)
                    AND (b.agent_id = j.agent_id OR b.connector_id = j.connector_id)
                )
          ORDER BY created_at
          FOR UPDATE SKIP LOCKED
          LIMIT 1",
     )
+    .bind(STUCK_JOB_MINS)
     .fetch_optional(&mut *tx)
     .await?;
 
