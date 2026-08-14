@@ -48,6 +48,10 @@ pub struct GatewayConfig {
     /// Default 300 (5 min).
     pub attribution_window_secs: u64,
 
+    /// Interval between provider model-catalog syncs (`GET /models` →
+    /// `provider_models`). Default 600 (10 min).
+    pub model_catalog_sync_interval_secs: u64,
+
     /// Provider base URLs (overridable for tests / self-hosted gateways).
     pub openai_api_base: String,
     pub anthropic_api_base: String,
@@ -75,6 +79,7 @@ impl Default for GatewayConfig {
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
             attribution_window_secs: 300,
+            model_catalog_sync_interval_secs: 600,
             openai_api_base: "https://api.openai.com/v1".into(),
             anthropic_api_base: "https://api.anthropic.com/v1".into(),
             gemini_api_base: "https://generativelanguage.googleapis.com/v1beta".into(),
@@ -121,6 +126,10 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.attribution_window_secs),
+            model_catalog_sync_interval_secs: std::env::var("MODEL_CATALOG_SYNC_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.model_catalog_sync_interval_secs),
             openai_api_base: env_or("OPENAI_API_BASE", &d.openai_api_base),
             anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
             gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),

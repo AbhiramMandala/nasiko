@@ -43,7 +43,7 @@ pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
     CellStore, DecisionCache, InMemoryCellStore, NoopCache, PgCellStore, PgTierRegistry,
-    RedisCache, StaticTierRegistry, TierRegistry,
+    RedisCache, TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -64,8 +64,9 @@ pub struct LlmRouterCtx {
     /// Model-routing decision cache, keyed on `(conv_id, agent_id)`. [`NoopCache`] by
     /// default (every read misses); S3 swaps in a Redis-backed impl when configured.
     pub router_cache: Arc<dyn DecisionCache>,
-    /// Tier→model registry for classified routing. [`PgTierRegistry`] (DB-backed, static
-    /// seed fallback) in production; tests use [`StaticTierRegistry`].
+    /// Tier→model registry for classified routing. [`PgTierRegistry`] in production:
+    /// operator `model_registry` overrides first, then a mapping derived from the
+    /// live provider model catalog (synced from `GET /models`, price-ranked).
     pub tier_registry: Arc<dyn TierRegistry>,
     /// Learned per-provider quality cells behind Thompson-sampling tier selection.
     /// [`PgCellStore`] (durable, cross-instance) in production; tests use
@@ -96,14 +97,13 @@ impl LlmRouterCtx {
             llm_gateway_base_url = %cfg.llm_gateway_base_url,
             "llm-router: initializing with effective GatewayConfig"
         );
-        log_seed_registry(&cfg);
         let cache = Arc::new(ConfigCache::new(Duration::from_secs(
             cfg.llm_config_cache_ttl_secs,
         )));
-        let tier_registry = Arc::new(PgTierRegistry::new(db.clone(), &cfg));
+        let tier_registry = Arc::new(PgTierRegistry::new(db.clone()));
         tracing::info!(
             target: "nasiko::llm_router::startup",
-            "llm-router: tier registry = PgTierRegistry (DB model_registry table, static seeds as fallback for canonical provider endpoints only)"
+            "llm-router: tier registry = PgTierRegistry (operator model_registry overrides, then live provider catalog ranked by price)"
         );
         let cell_store = Arc::new(PgCellStore::new(db.clone()));
         tracing::info!(
@@ -149,41 +149,6 @@ fn build_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
                 error = %e, "invalid REDIS_URL; router decision cache disabled (NoopCache)"
             );
             Arc::new(NoopCache)
-        }
-    }
-}
-
-/// Log the built-in static tier→model seed table at startup, so the effective
-/// `(provider, tier)` → model mapping is visible without a DB round-trip. The DB
-/// `model_registry` table can override any of these per row. Seeds are logged as
-/// skipped for providers whose base URL is overridden (custom OpenAI-compatible
-/// endpoint) — [`PgTierRegistry`] will not serve them there.
-fn log_seed_registry(cfg: &GatewayConfig) {
-    use routing::Tier;
-    let canonical = GatewayConfig::default();
-    for (provider, is_canonical) in [
-        (
-            "anthropic",
-            cfg.anthropic_api_base == canonical.anthropic_api_base,
-        ),
-        ("openai", cfg.openai_api_base == canonical.openai_api_base),
-    ] {
-        for tier in [Tier::Tier1, Tier::Tier2, Tier::Tier3] {
-            if let Some(model) = StaticTierRegistry::seed(provider, tier) {
-                if is_canonical {
-                    tracing::info!(
-                        target: "nasiko::llm_router::startup",
-                        %provider, tier = ?tier, tier_level = tier.as_level(), %model,
-                        "llm-router: static tier seed (DB model_registry may override)"
-                    );
-                } else {
-                    tracing::info!(
-                        target: "nasiko::llm_router::startup",
-                        %provider, tier = ?tier, tier_level = tier.as_level(), %model,
-                        "llm-router: static tier seed INERT — custom base URL for provider; seed will not be served"
-                    );
-                }
-            }
         }
     }
 }

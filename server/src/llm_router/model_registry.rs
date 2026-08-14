@@ -1,12 +1,11 @@
 //! Admin API for the tier→model registry (`model_registry` table).
 //!
-//! The smart router's `PgTierRegistry` reads this table first and falls back to
-//! compiled-in static seeds (first-party model names) on a missing row — and then only
-//! while the provider's base URL is the canonical first-party endpoint. These routes
-//! let an operator set the mapping explicitly: point a `(provider, tier)` pair at
-//! whatever concrete model they want. This is how custom-endpoint deployments (e.g.
-//! `OPENAI_API_BASE=https://api.deepseek.com/v1`) opt back into tier routing with
-//! model names their upstream actually accepts.
+//! The smart router's `PgTierRegistry` resolves `(provider, tier)` → model in two
+//! steps: rows in this table first (explicit operator overrides, always honored), then
+//! a mapping derived from the provider's live model catalog (`provider_models`, synced
+//! from the provider's `GET /models`) ranked by price. There is no hardcoded model
+//! list — with neither an override nor a catalog, the router passes the request's own
+//! model through rather than guess names the upstream might not serve.
 //!
 //! - `GET  /api/model-registry` — list all configured mappings (any authenticated user).
 //! - `PUT  /api/model-registry` — upsert one `(provider, tier)` → model mapping (superuser).

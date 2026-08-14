@@ -333,6 +333,9 @@ where
         state.db.clone(),
         state.http_client.clone(),
     ));
+    // Keep the provider model catalog (tier-routing candidates) fresh from each
+    // provider's GET /models. Runs immediately, then every 10 min; fail-open.
+    nasiko_llm_router::routing::catalog::spawn_sync(state.db.clone(), state.http_client.clone());
 
     // UI pages: the static fallback is gated server-side — unauthenticated
     // page navigations get a redirect to /login.html instead of the document

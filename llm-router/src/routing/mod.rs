@@ -18,6 +18,7 @@
 pub mod attribution;
 pub mod boundary;
 pub mod cache;
+pub mod catalog;
 pub mod cells;
 pub mod classifier;
 mod patterns;
@@ -27,7 +28,7 @@ pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{RequestType, Tier, classify, signal};
-pub use registry::{PgTierRegistry, StaticTierRegistry, TierRegistry};
+pub use registry::{PgTierRegistry, TierRegistry};
 
 /// Which precedence level produced a routing decision — emitted as a structured tag so we
 /// can see, per request, how the model was chosen.
@@ -344,6 +345,7 @@ pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::ir::Message;
+    use crate::routing::registry::test_support;
     use async_trait::async_trait;
     use serde_json::{Map, Value};
     use std::sync::Mutex;
@@ -420,7 +422,7 @@ mod tests {
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
         let d = route_model(
             &cache,
-            &StaticTierRegistry,
+            &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &inputs("anthropic", &s, Some("pinned-model")),
         )
@@ -436,7 +438,7 @@ mod tests {
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
         let d = route_model(
             &cache,
-            &StaticTierRegistry,
+            &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &inputs("anthropic", &s, None),
         )
@@ -454,7 +456,7 @@ mod tests {
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
         let d = route_model(
             &cache,
-            &StaticTierRegistry,
+            &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &inputs("anthropic", &s, None),
         )
@@ -484,7 +486,7 @@ mod tests {
         let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
         let mut i = inputs("anthropic", &s, None);
         i.query = Some("perfect, that worked. thanks!");
-        let d = route_model(&cache, &StaticTierRegistry, &cells, &i).await;
+        let d = route_model(&cache, &test_support::StubRegistry, &cells, &i).await;
         assert_eq!(d.source, RouteSource::CacheHit);
         assert_eq!(d.model, "claude-opus-4-8");
         let learned = cells.load("anthropic").await;
@@ -504,7 +506,7 @@ mod tests {
         let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
         let mut i = inputs("anthropic", &s, None);
         i.query = Some("now also handle the empty-input case");
-        let d = route_model(&cache, &StaticTierRegistry, &cells, &i).await;
+        let d = route_model(&cache, &test_support::StubRegistry, &cells, &i).await;
         assert_eq!(d.source, RouteSource::CacheHit);
         assert!(cells.load("anthropic").await.is_empty());
     }
@@ -516,7 +518,7 @@ mod tests {
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
         let d = route_model(
             &cache,
-            &StaticTierRegistry,
+            &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &inputs("gemini", &s, None),
         )
@@ -533,7 +535,7 @@ mod tests {
         let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
         let d = route_model(
             &cache,
-            &StaticTierRegistry,
+            &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &inputs("anthropic", &s, None),
         )
@@ -548,7 +550,7 @@ mod tests {
         let s = signals(Some("c1"), Phase::Switch, Mode::PinnedFlow);
         let d = route_model(
             &cache,
-            &StaticTierRegistry,
+            &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &inputs("anthropic", &s, None),
         )
@@ -565,7 +567,7 @@ mod tests {
         let s = signals(None, Phase::Switch, Mode::FreeFlowing);
         let d = route_model(
             &cache,
-            &StaticTierRegistry,
+            &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &inputs("anthropic", &s, None),
         )
@@ -581,7 +583,13 @@ mod tests {
         let s = signals(None, Phase::Continue, Mode::FreeFlowing);
         let mut i = inputs("anthropic", &s, None);
         i.has_llm_config = false;
-        let d = route_model(&cache, &StaticTierRegistry, &InMemoryCellStore::new(), &i).await;
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &i,
+        )
+        .await;
         assert_eq!(d.source, RouteSource::Default);
         assert_eq!(d.model, "cfg-model");
     }
