@@ -17,7 +17,7 @@
  *       plus register/probe/update/delete, credential + OAuth management,
  *       connect/disconnect (`/mcp/connect`, `/mcp/connections`),
  *       upload (zip/GitHub) + build status/logs, and the per-agent
- *       connector/tool-rule endpoints — see oss/ui/web/navigation.js.
+ *       connector/tool-rule endpoints — see ui/oss/navigation.js.
  */
 import styles from './mcp-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';

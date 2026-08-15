@@ -1,5 +1,5 @@
 /**
- * Platform-layer tests. Run with: `node --test oss/ui/tests/` (or `just test-ui`).
+ * Platform-layer tests. Run with: `node --test ui/tests/` (or `just test-ui`).
  *
  * These are the first automated tests in a frontend of ~48k LOC that previously
  * had none — no unit tests, no lint, no type checking, with the entire QA story

@@ -2,7 +2,7 @@
   "name": "nasiko-ui-typecheck",
   "private": true,
   "type": "module",
-  "description": "Type-checking tooling for oss/ui. Dev-only: the UI has no build step, emits nothing, and ships no node_modules. See oss/ui/AGENTS.md.",
+  "description": "Type-checking tooling for ui/. Dev-only: the UI has no build step, emits nothing, and ships no node_modules. See ui/AGENTS.md.",
   "scripts": {
     "check-types": "tsc -p tsconfig.json"
   },

@@ -1,5 +1,5 @@
 {
-  "_comment": "Measured architectural debt, per rule. Every number here is something someone chose not to fix yet. Counts may go down but never up. Regenerate with `node oss/ui/scripts/ui-lint.mjs --update-baseline`.",
+  "_comment": "Measured architectural debt, per rule. Every number here is something someone chose not to fix yet. Counts may go down but never up. Regenerate with `node ui/scripts/ui-lint.mjs --update-baseline`.",
   "counts": {
     "layer-direction": 0,
     "oss-must-not-import-ee": 0,

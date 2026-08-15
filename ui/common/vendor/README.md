@@ -47,7 +47,7 @@ npx esbuild entry.js --bundle --format=esm --minify --legal-comments=none \
   --target=es2022 --outfile=lit-all.esm.js
 ```
 
-Then copy over `oss/ui/common/vendor/lit-all.esm.js` and bump the table above.
+Then copy over `ui/common/vendor/lit-all.esm.js` and bump the table above.
 Verify the result has no bare imports (`grep -E "from ['\"][^./]" lit-all.esm.js`
 must be empty) — a bare specifier would 404 at runtime, since there is no import
 map and no bundler.

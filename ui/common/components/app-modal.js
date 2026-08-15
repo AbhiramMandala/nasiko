@@ -38,8 +38,8 @@ styles.replaceSync(`@scope (app-modal) {
     header > button {
       border: 1px solid var(--color-border);
       border-radius: var(--radius-md);
-      width: var(--control-h-sm);
-      height: var(--control-h-sm);
+      width: 28px;
+      height: 28px;
       flex-shrink: 0;
       &:hover { border-color: var(--color-primary); background: var(--color-bg-base); }
     }

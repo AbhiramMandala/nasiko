@@ -14,13 +14,13 @@
  * that wasn't had silently drifted into a user-visible bug.
  *
  * Now both editions share this file, and edition-specific navigation lives in
- * `/nav-ext.js`, resolved through the same overlay: `oss/ui/web/nav-ext.js` is a
+ * `/nav-ext.js`, resolved through the same overlay: `ui/oss/nav-ext.js` is a
  * documented no-op, `ee/ui/web/nav-ext.js` supplies the EE tree. Nothing 404s,
  * and there is exactly one copy of every data function.
  */
 
 import '/common/services/data-functions.js';
-import { registerAll } from '/common/core/data-sources.js';
+import { registerAll, resolveOptional } from '/common/core/data-sources.js';
 
 // rail: true → shown as a rail module icon; everything else is reachable
 // through the module tree navs and the ⌘F nav search.
@@ -123,16 +123,18 @@ const MODULE_NAVS = {
 /**
  * The edition extension, loaded once.
  *
- * Resolved through the asset overlay, so this import always succeeds: OSS serves
- * a no-op and EE serves its own. Failure is still tolerated — a nav extension
- * that throws should degrade to the base nav, not blank the shell.
+ * The extension is delivered through the asset overlay (ui/oss/nav-ext.js
+ * is a no-op, ee/ui/web/nav-ext.js supplies the EE hooks) and resolved
+ * through the data-sources registry. The dynamic import triggers the extension
+ * module's side-effect registration; the actual contract is DI-based so the
+ * seam is testable and consistent with the rest of the architecture.
  *
  * @type {Promise<{ context?: () => Promise<any>, items?: Function, moduleNav?: Function }>}
  */
 let extensionPromise;
 const extension = () => {
   extensionPromise ??= import('/nav-ext.js')
-    .then((m) => m.navExtension || {})
+    .then(() => resolveOptional('navExtension') || {})
     .catch((err) => {
       console.warn('[navigation] /nav-ext.js failed to load — using base navigation', err);
       return {};

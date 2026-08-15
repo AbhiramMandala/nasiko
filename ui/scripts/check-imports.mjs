@@ -13,7 +13,7 @@
  * or non-`/common/` absolute paths (those are resolved per-binary by the
  * rust-embed overlay chain, not on disk).
  *
- * Usage: node oss/ui/scripts/check-imports.mjs [--quiet]
+ * Usage: node ui/scripts/check-imports.mjs [--quiet]
  */
 
 import { readFileSync } from 'node:fs';
@@ -23,10 +23,10 @@ import { fileURLToPath } from 'node:url';
 import { glob } from 'node:fs/promises';
 
 const uiRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = resolve(uiRoot, '../..');
+const repoRoot = resolve(uiRoot, '..');
 const commonRoot = resolve(uiRoot, 'common');
 /** The EE components mount (`EeComponents` in ee/server/src/main.rs). */
-const eeComponentsRoot = resolve(repoRoot, 'ee/ui/components');
+const eeComponentsRoot = resolve(repoRoot, 'ui/ee/components');
 
 const SPEC_PATTERNS = [
   /(?:^|\s)(?:import|export)[^'"\n]*from\s*['"]([^'"]+)['"]/gm,
@@ -35,11 +35,11 @@ const SPEC_PATTERNS = [
 ];
 
 const SEARCH = [
-  'oss/ui/common/**/*.js',
-  'oss/ui/web/*.js',
-  'ee/ui/components/**/*.js',
-  'ee/ui/web/**/*.js',
-  'ee/ui/registry/**/*.js',
+  'ui/common/**/*.js',
+  'ui/oss/*.js',
+  'ui/ee/components/**/*.js',
+  'ui/ee/web/**/*.js',
+  'ui/ee/registry/**/*.js',
 ];
 
 const SKIP = (p) => p.includes('/vendor/') || p.includes('/.preview/') || p.endsWith('.preview.js');

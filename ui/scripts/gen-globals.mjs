@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Regenerate the data-function declarations in `oss/ui/types/globals.d.ts` from
+ * Regenerate the data-function declarations in `ui/types/globals.d.ts` from
  * `common/services/data-functions.js`.
  *
  * The point is that the typed contract cannot drift from the implementation: the
@@ -8,7 +8,7 @@
  * a data function without regenerating is caught by `just check-ui-types`
  * (the call site won't type-check), and a stale declaration cannot survive.
  *
- * Usage: node oss/ui/scripts/gen-globals.mjs [--check]
+ * Usage: node ui/scripts/gen-globals.mjs [--check]
  *   --check  exit 1 if the file is out of date, without writing (for CI)
  */
 
@@ -42,7 +42,7 @@ if (process.argv.includes('--check')) {
   if (next !== current) {
     console.error(
       `globals.d.ts is out of date (${decls.length} data functions in data-functions.js).\n` +
-        'Run: node oss/ui/scripts/gen-globals.mjs',
+        'Run: node ui/scripts/gen-globals.mjs',
     );
     process.exit(1);
   }

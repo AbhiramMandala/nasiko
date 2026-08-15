@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Architectural lint for `oss/ui` + `ee/ui`.
+ * Architectural lint for the UI layer (`ui/`).
  *
  * There is no bundler, no type checker and no ESLint here, so every rule in
  * AGENTS.md and ARCHITECTURE.md is currently a convention that a person has to
@@ -20,9 +20,9 @@
  * `--update-baseline`.
  *
  * Usage:
- *   node oss/ui/scripts/ui-lint.mjs
- *   node oss/ui/scripts/ui-lint.mjs --update-baseline
- *   node oss/ui/scripts/ui-lint.mjs --rule=layer-direction   # one rule, verbose
+ *   node ui/scripts/ui-lint.mjs
+ *   node ui/scripts/ui-lint.mjs --update-baseline
+ *   node ui/scripts/ui-lint.mjs --rule=layer-direction   # one rule, verbose
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -32,7 +32,7 @@ import { glob } from 'node:fs/promises';
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 const UI = resolve(SCRIPTS, '..');
-const REPO = resolve(UI, '../..');
+const REPO = resolve(UI, '..');
 const BASELINE_PATH = resolve(SCRIPTS, 'ui-lint-baseline.json');
 
 // ── Layer model (ARCHITECTURE.md). Lower number = lower layer. ───────────────
@@ -51,31 +51,31 @@ function layerOf(rel) {
   // layer of ours. Without this, utils/markdown.js importing marked, and
   // core/element.js importing Lit, both read as upward imports.
   if (rel.includes('/vendor/')) return -1;
-  if (rel.startsWith('oss/ui/common/core/') || rel.startsWith('oss/ui/common/services/') ||
-      rel.startsWith('oss/ui/common/state/') || rel.startsWith('oss/ui/common/utils/')) {
+  if (rel.startsWith('ui/common/core/') || rel.startsWith('ui/common/services/') ||
+      rel.startsWith('ui/common/state/') || rel.startsWith('ui/common/utils/')) {
     return LAYER.PLATFORM;
   }
-  if (rel.startsWith('oss/ui/common/styles/') || rel === 'oss/ui/common/global.css') {
+  if (rel.startsWith('ui/common/styles/') || rel === 'ui/common/global.css') {
     return LAYER.DESIGN_SYSTEM;
   }
-  if (rel.startsWith('oss/ui/common/components/')) {
+  if (rel.startsWith('ui/common/components/')) {
     const name = basename(rel).replace(/\.(js|css)$/, '');
     return PRIMITIVES.has(name) ? LAYER.DESIGN_SYSTEM : LAYER.COMPONENT;
   }
   // Enterprise page components: Domain layer. They import downward into the
-  // shared design system and platform; nothing in oss/ui may import them.
-  if (rel.startsWith('ee/ui/components/')) return LAYER.DOMAIN;
-  if (rel.startsWith('ee/ui/web/services/') || rel.startsWith('oss/ui/web/')) return LAYER.APPLICATION;
-  if (rel.startsWith('ee/ui/')) return LAYER.APPLICATION;
+  // shared design system and platform; nothing in ui/oss/ or ui/common/ may import them.
+  if (rel.startsWith('ui/ee/components/')) return LAYER.DOMAIN;
+  if (rel.startsWith('ui/ee/web/services/') || rel.startsWith('ui/oss/')) return LAYER.APPLICATION;
+  if (rel.startsWith('ui/ee/')) return LAYER.APPLICATION;
   return LAYER.COMPONENT;
 }
 
 /** Resolve an import specifier to a repo-relative path, or null if not local. */
 function resolveSpec(fromRel, spec) {
-  if (spec.startsWith('/common/')) return 'oss/ui/common/' + spec.slice('/common/'.length);
+  if (spec.startsWith('/common/')) return 'ui/common/' + spec.slice('/common/'.length);
   // The EE components mount (`EeComponents` in ee/server/src/main.rs). Mapping it
   // here is what lets `oss-must-not-import-ee` see an oss/ file reaching for it.
-  if (spec.startsWith('/components/')) return 'ee/ui/components/' + spec.slice('/components/'.length);
+  if (spec.startsWith('/components/')) return 'ui/ee/components/' + spec.slice('/components/'.length);
   if (spec.startsWith('.')) {
     return relative(REPO, resolve(dirname(resolve(REPO, fromRel)), spec)).replace(/\\/g, '/');
   }
@@ -209,7 +209,7 @@ const rules = [
     why: 'Every component sheet must wrap its rules in @scope (element-name) so specificity stays local ' +
          'without !important. An unscoped component sheet leaks document-wide.',
     check({ rel, source, isJs }) {
-      if (isJs || !rel.startsWith('oss/ui/common/components/')) return [];
+      if (isJs || !rel.startsWith('ui/common/components/')) return [];
       if (!source.trim()) return [];
       if (/@scope\s*\(/.test(source)) return [];
       return [{ file: rel, line: 1, message: 'component stylesheet has no @scope wrapper' }];
@@ -223,7 +223,7 @@ const rules = [
          'module), so it cannot reserve geometry — and if it contradicts the linked rule it causes the exact ' +
          'layout shift the contract prevents. voice-input cost ~82px of CLS this way.',
     check({ rel, source, isJs }) {
-      if (isJs || !rel.startsWith('oss/ui/common/components/')) return [];
+      if (isJs || !rel.startsWith('ui/common/components/')) return [];
       const out = [];
       for (const m of source.matchAll(/:not\(:defined\)/g)) {
         out.push({ file: rel, line: lineOf(source, m.index), message: 'declares :not(:defined) — move it to styles/not-defined.css' });
@@ -238,8 +238,8 @@ const rules = [
     why: 'Colours must come from design tokens or a re-skin cannot be mechanical. Syntax highlighting and brand ' +
          'marks are the legitimate exceptions and are in the baseline.',
     check({ rel, source, isJs }) {
-      if (!rel.startsWith('oss/ui/') && !rel.startsWith('ee/ui/')) return [];
-      if (rel.includes('/vendor/') || rel === 'oss/ui/common/global.css') return [];
+      if (!rel.startsWith('ui/oss/') && !rel.startsWith('ui/ee/')) return [];
+      if (rel.includes('/vendor/') || rel === 'ui/common/global.css') return [];
       const out = [];
       for (const m of source.matchAll(/#[0-9a-fA-F]{6}\b|rgba?\(\s*\d+\s*,/g)) {
         out.push({ file: rel, line: lineOf(source, m.index), message: `hardcoded colour ${m[0]}` });
@@ -268,12 +268,12 @@ const rules = [
   {
     id: 'ee-element-in-shared-css',
     enforce: 'ratchet',
-    why: 'oss/ui is synced to the public repo. An enterprise-only element name in a shared stylesheet ships ' +
+    why: 'ui/oss/ and ui/common/ are synced to the public repo. An enterprise-only element name in a shared stylesheet ships ' +
          'selectors for a page the OSS binary cannot serve, and is a layering violation the compiler cannot catch. ' +
-         'Now zero: those components live in ee/ui/components/ and their host geometry in ' +
-         'ee/ui/components/ee-page-layout.css. Keep it there.',
+         'Now zero: those components live in ui/ee/components/ and their host geometry in ' +
+         'ui/ee/components/ee-page-layout.css. Keep it there.',
     check({ rel, source, isJs }) {
-      if (isJs || !rel.startsWith('oss/ui/common/')) return [];
+      if (isJs || !rel.startsWith('ui/common/')) return [];
       const out = [];
       for (const el of EE_ONLY_ELEMENTS) {
         const i = source.indexOf(el);
@@ -300,10 +300,10 @@ const EE_ONLY_ELEMENTS = [
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SEARCH = [
-  'oss/ui/common/**/*.{js,css}',
-  'oss/ui/web/*.{js,css,html}',
-  'ee/ui/components/**/*.{js,css}',
-  'ee/ui/web/**/*.{js,css,html}',
+  'ui/common/**/*.{js,css}',
+  'ui/oss/*.{js,css,html}',
+  'ui/ee/components/**/*.{js,css}',
+  'ui/ee/web/**/*.{js,css,html}',
 ];
 const SKIP = (p) => p.includes('/vendor/') || p.includes('/tests/') || p.includes('/node_modules/');
 
@@ -336,7 +336,7 @@ if (updating) {
       {
         _comment:
           'Measured architectural debt, per rule. Every number here is something someone chose not to fix yet. ' +
-          "Counts may go down but never up. Regenerate with `node oss/ui/scripts/ui-lint.mjs --update-baseline`.",
+          "Counts may go down but never up. Regenerate with `node ui/scripts/ui-lint.mjs --update-baseline`.",
         counts,
       },
       null,
