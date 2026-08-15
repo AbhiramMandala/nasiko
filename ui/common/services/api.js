@@ -147,7 +147,7 @@ function beginSessionRecovery() {
   navigatingAway = true;
 
   const base = apiBase();
-  let restart = '/login.html';
+  let restart = '/login';
 
   if (base) {
     // A 401 from the workspace control plane means its session cookie is

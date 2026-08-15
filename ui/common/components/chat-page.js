@@ -70,7 +70,7 @@ class ChatPage extends HTMLElement {
 
   #render() {
     const initial = this.#agentLabel.charAt(0).toUpperCase();
-    const agentCardUrl = this.#agentId ? `/agent-card.html?id=${encodeURIComponent(this.#agentId)}` : null;
+    const agentCardUrl = this.#agentId ? `/agent-card?id=${encodeURIComponent(this.#agentId)}` : null;
 
     this.innerHTML = `
       <div class="chat-header">
@@ -213,7 +213,7 @@ class ChatPage extends HTMLElement {
         history.replaceState(
           null,
           "",
-          `/chat.html?agent_id=${this.#agentId}&session_id=${this.#sessionId}${nameParam}`,
+          `/chat?agent_id=${this.#agentId}&session_id=${this.#sessionId}${nameParam}`,
         );
       }
 
@@ -472,7 +472,7 @@ class ChatPage extends HTMLElement {
     if (!traceId) return '';
     const q = new URLSearchParams({ trace_id: traceId });
     if (this.#sessionId) q.set('session_id', this.#sessionId);
-    return `<a class="msg-action-trace" href="/observability-session.html?${q}"
+    return `<a class="msg-action-trace" href="/observability-session?${q}"
       aria-label="View trace" title="View trace">${icons.trace('', 14)}<span>Detailed trace</span></a>`;
   }
 

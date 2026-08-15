@@ -77,7 +77,7 @@ class SettingsPage extends HTMLElement {
               <label>Provider API keys</label>
               <div class="hint">Keys aren't stored here — each routing config references one of your
                 encrypted secrets. Manage them on the
-                <a href="/llm-router.html">LLM router</a> and <a href="/secrets.html">Secrets</a> pages.</div>
+                <a href="/llm-router">LLM router</a> and <a href="/secrets">Secrets</a> pages.</div>
             </div>
             <div class="setting-control"></div>
           </div>

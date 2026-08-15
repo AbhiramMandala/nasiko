@@ -19,6 +19,7 @@
  *                                 whose sections are tabs, e.g. Settings).
  * @fires module-nav-select - `{ detail: { section } }` on section item click.
  */
+import { navigate as routerNavigate } from '../core/router.js';
 import { icons } from "../utils/icons.js";
 import { escHtml } from '/common/utils/escape.js';
 import { callOptional } from '../core/data-sources.js';
@@ -221,6 +222,9 @@ export class AppModuleNav extends HTMLElement {
 
   connectedCallback() {
     this.addEventListener("click", this.#handleClick);
+    // SPA: update active state when the router changes page
+    document.removeEventListener("route-change", this.#onRouteChange);
+    document.addEventListener("route-change", this.#onRouteChange);
     this.#load();
   }
 
@@ -276,6 +280,15 @@ export class AppModuleNav extends HTMLElement {
     this.#render();
   }
 
+  #onRouteChange = () => {
+    // Re-evaluate which link is active after SPA navigation
+    this.querySelectorAll("a.row[href]").forEach((a) => {
+      const active = this.#isActive(a.getAttribute("href"));
+      a.classList.toggle("is-active", active);
+      a.setAttribute("aria-current", active ? "page" : "false");
+    });
+  };
+
   #handleClick = (e) => {
     if (e.target.closest("[data-mobile-toggle]")) {
       this.#mobileOpen = !this.#mobileOpen;
@@ -299,8 +312,10 @@ export class AppModuleNav extends HTMLElement {
       }));
       return;
     }
-    if (e.target.closest("a.row[href]")) {
-      document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
+    const link = e.target.closest("a.row[href]");
+    if (link && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0)) {
+      e.preventDefault();
+      routerNavigate(link.href);
     }
   };
 

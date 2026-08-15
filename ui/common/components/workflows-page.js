@@ -16,6 +16,8 @@ import '/common/components/app-action-menu.js';
 import styles from './workflows-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
+import { navigate as routerNavigate } from '../core/router.js';
+
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -41,7 +43,7 @@ class WorkflowsPage extends HTMLElement {
           <h1 class="title-page">Workflows</h1>
           <p class="page-sub">Reusable multi-agent sequences you can run on demand.</p>
         </div>
-        <a class="new-wf-btn" href="/workflow-new.html">Create workflow ${icons.plus('', 13)}</a>
+        <a class="new-wf-btn" href="/workflow-new">Create workflow ${icons.plus('', 13)}</a>
       </header>
       <div class="grid" id="wf-grid">${this.#skeletonCards()}</div>
     `;
@@ -50,7 +52,7 @@ class WorkflowsPage extends HTMLElement {
     grid.addEventListener('click', (e) => {
       if (e.target.closest('app-action-menu') || e.target.closest('a')) return;
       const card = e.target.closest('.wf-card[data-id]');
-      if (card) window.location.href = `/workflow.html?id=${encodeURIComponent(card.dataset.id)}`;
+      if (card) routerNavigate(`/workflow?id=${encodeURIComponent(card.dataset.id)}`);
     });
     grid.addEventListener('action-select', (e) => {
       const card = e.target.closest('.wf-card[data-id]');
@@ -81,11 +83,11 @@ class WorkflowsPage extends HTMLElement {
 
   async #onAction(action, id) {
     if (action === 'open') {
-      window.location.href = `/workflow.html?id=${encodeURIComponent(id)}`;
+      routerNavigate(`/workflow?id=${encodeURIComponent(id)}`);
     } else if (action === 'run') {
       try {
         const run = await call('runWorkflow', id);
-        window.location.href = `/workflow.html?id=${encodeURIComponent(id)}&exec=${encodeURIComponent(run.execution_id)}`;
+        routerNavigate(`/workflow?id=${encodeURIComponent(id)}&exec=${encodeURIComponent(run.execution_id)}`);
       } catch (err) {
         showToast(`Run failed: ${err.message}`);
       }
@@ -160,7 +162,7 @@ class WorkflowsPage extends HTMLElement {
             ${icons.chevronRight('empty-arrow', 12)}
             <span class="process-pill">${icons.play('', 12)} Run</span>
           </div>
-          <a class="new-wf-btn is-lg" href="/workflow-new.html">Create workflow ${icons.plus('', 13)}</a>
+          <a class="new-wf-btn is-lg" href="/workflow-new">Create workflow ${icons.plus('', 13)}</a>
         </div>`;
       return;
     }

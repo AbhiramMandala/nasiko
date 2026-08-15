@@ -61,6 +61,7 @@
 import { icons } from '../utils/icons.js';
 import '/common/components/app-action-menu.js';
 import { escHtml } from '/common/utils/escape.js';
+import { navigate as routerNavigate } from '../core/router.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@keyframes ac-indeterminate {
@@ -460,7 +461,7 @@ export class AppCard extends HTMLElement {
     if (canInteract) {
       card.addEventListener('click', (e) => {
         if (e.target.closest('[data-action], app-action-menu')) return;
-        if (href) { window.location.href = href; return; }
+        if (href) { routerNavigate(href); return; }
         this.dispatchEvent(new CustomEvent('card-click', { bubbles: true }));
       });
     }

@@ -7,9 +7,15 @@ import { escHtml } from '/common/utils/escape.js';
 import { call, callOptional } from '../core/data-sources.js';
 
 
-// agents-page.css is <link>ed by the host page, not imported here: a sheet
-// pulled in by this module only exists once the module does, which is too late
-// to style the static shell the page paints before then (see web/agents.html).
+// In MPA mode, agents-page.css was <link>ed in the HTML for instant pre-upgrade
+// styling. In SPA mode, the router lazy-loads this module, so we adopt the sheet
+// here too. The CSS import assertion returns the same CSSStyleSheet instance on
+// repeat calls (module caching), so double-adoption is harmless.
+import agentsStyles from './agents-page.css' with { type: 'css' };
+import { navigate as routerNavigate } from '../core/router.js';
+if (!document.adoptedStyleSheets.includes(agentsStyles)) {
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, agentsStyles];
+}
 
 function statusClass(status) {
   if (status === "running") return "is-running";
@@ -58,7 +64,7 @@ class AgentsPage extends HTMLElement {
 
     // Whole card opens details; explicit links (Details/Chat) keep their own hrefs.
     const openCard = (card) => {
-      window.location.href = `/agent-card.html?id=${card.dataset.agentId}`;
+      routerNavigate(`/agent-card?id=${card.dataset.agentId}`);
     };
     this.querySelector("#agents-grid").addEventListener("click", (e) => {
       if (e.target.closest("a")) return;
@@ -230,8 +236,8 @@ class AgentsPage extends HTMLElement {
           <div class="card-tags">${tags}</div>
           <div class="card-desc">${escHtml(a.description || "")}</div>
           <div class="card-foot">
-            <a class="card-link" href="/agent-card.html?id=${encodeURIComponent(a.id)}">Details</a>
-            <a class="card-chat-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(name)}">Chat ${icons.arrowUpRight("", 13)}</a>
+            <a class="card-link" href="/agent-card?id=${encodeURIComponent(a.id)}">Details</a>
+            <a class="card-chat-btn" href="/chat?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(name)}">Chat ${icons.arrowUpRight("", 13)}</a>
           </div>
         </div>
       `;

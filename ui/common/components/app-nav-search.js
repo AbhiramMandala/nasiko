@@ -377,28 +377,28 @@ export class AppNavSearch extends HTMLElement {
         (a) => hit(a.display_name, a.name, a.description),
         (a) => ({
           label: a.display_name || a.name,
-          value: `${pfx}/agent-card.html?id=${encodeURIComponent(a.id)}`,
+          value: `${pfx}/agent-card?id=${encodeURIComponent(a.id)}`,
           subtitle: (a.description || a.name || '').slice(0, 90),
         })),
       section('Workflows', 'workflow', d.workflows,
         (w) => hit(w.name, w.description),
         (w) => ({
           label: w.name,
-          value: `${pfx}/workflow.html?id=${encodeURIComponent(w.id)}`,
+          value: `${pfx}/workflow?id=${encodeURIComponent(w.id)}`,
           subtitle: (w.description || '').slice(0, 90) || w.status,
         })),
       section('Executions', 'play', d.executions.filter((e) => e.maf_id),
         (e) => hit(e.workflow_name, e.status, e.id),
         (e) => ({
           label: `${e.workflow_name || 'Deleted workflow'} · ${e.status}`,
-          value: `${pfx}/workflow.html?id=${encodeURIComponent(e.maf_id)}&exec=${encodeURIComponent(e.id)}`,
+          value: `${pfx}/workflow?id=${encodeURIComponent(e.maf_id)}&exec=${encodeURIComponent(e.id)}`,
           subtitle: e.execution_number != null ? `Run #${e.execution_number}` : e.id,
         })),
       section('Chats', 'history', d.sessions,
         (s) => hit(s.title, s.last_message, s.agent_name),
         (s) => ({
           label: (s.title || s.last_message || '').slice(0, 70) || s.session_id,
-          value: `${pfx}/chat.html?session_id=${encodeURIComponent(s.session_id)}`
+          value: `${pfx}/chat?session_id=${encodeURIComponent(s.session_id)}`
             + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
             + `&agent_name=${encodeURIComponent(s.agent_name || 'Orchestrator')}`,
           subtitle: s.agent_name || 'Orchestrator',
@@ -407,14 +407,14 @@ export class AppNavSearch extends HTMLElement {
         (c) => hit(c.display_name, c.name, c.url),
         (c) => ({
           label: c.display_name || c.name,
-          value: `${pfx}/mcp.html`,
+          value: `${pfx}/mcp`,
           subtitle: c.url || c.name,
         })),
       section('Toolkits', 'layers', d.toolkits,
         (t) => hit(t.display_name, t.name, t.description),
         (t) => ({
           label: t.display_name || t.name,
-          value: `${pfx}/mcp.html`,
+          value: `${pfx}/mcp`,
           subtitle: (t.description || '').slice(0, 90)
             || (t.tool_count ? `${t.tool_count} tools` : ''),
         })),
@@ -422,14 +422,14 @@ export class AppNavSearch extends HTMLElement {
         (b) => hit(b.image_reference, b.version_tag, b.status, b.id),
         (b) => ({
           label: b.image_reference || `Build ${(b.id || '').slice(0, 8)}`,
-          value: `${pfx}/build.html?id=${encodeURIComponent(b.id)}`,
+          value: `${pfx}/build?id=${encodeURIComponent(b.id)}`,
           subtitle: [b.status, b.version_tag].filter(Boolean).join(' · '),
         })),
       section('Users', 'users', d.users,
         (u) => hit(u.display_name, u.username, u.email),
         (u) => ({
           label: u.display_name || u.username || u.email,
-          value: `${pfx}/users.html`,
+          value: `${pfx}/users`,
           subtitle: u.email || u.role || '',
         })),
       section('Pages', 'document', this.#navLinks,

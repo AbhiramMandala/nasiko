@@ -5,36 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
-    <!-- Inline and synchronous on purpose: both theme.js and app-header.js are deferred ES modules, so they apply the stored theme / rail width only after first paint —
-         the skeleton would flash the OS theme, and an expanded rail would collapse and re-expand on every MPA navigation. Must stay inline and non-module. -->
+    <!-- Inline and synchronous on purpose: restore theme + rail width before
+         first paint so the skeleton doesn't flash the OS theme. Only runs once
+         per session (SPA), not per navigation (MPA). -->
     <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
+    <!-- Module execution order is guaranteed by document order:
+         1. navigation.js — registers data functions + fetchNavigation/fetchModuleNav
+         2. app-header.js — renders the persistent shell (imports bootstrap.js)
+         3. app.js        — defines routes + starts the router -->
     <script type="module" src="/navigation.js"></script>
     <script type="module" src="/common/components/app-header.js"></script>
-    <script type="module" src="/common/components/orchestrator-page.js"></script>
+    <script type="module" src="/app.js"></script>
   </head>
   <body>
     <app-header></app-header>
-    <orchestrator-page>
-      <!-- Mirrors the loaded route screen: 72px hero icon, title + subtitle,
-           recent-agents grid (96px cards), 88px composer, workflow banner —
-           all in the page's centered --orch-column-w column. -->
-      <!-- Below 1024px the module nav is a disclosure bar above the content;
-           reserve it so the hero doesn't jump when the real nav arrives. -->
-      <div class="pre-modnav" style="align-self:stretch;"></div>
-      <div style="display:flex;flex-direction:column;align-items:center;gap:0;width:min(100%,var(--orch-column-w));">
-        <div class="skel-block" style="width:72px;height:72px;border-radius:var(--r-12);margin-bottom:var(--space-lg);"></div>
-        <div class="skel-block" style="height:2rem;width:240px;margin-bottom:var(--space-xs);"></div>
-        <div class="skel-block" style="height:1rem;width:420px;max-width:90%;margin-bottom:var(--space-xl);"></div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:var(--space-sm);width:100%;margin-bottom:var(--space-md);">
-          <div class="skel-block" style="height:96px;border-radius:var(--r-8);"></div>
-          <div class="skel-block" style="height:96px;border-radius:var(--r-8);"></div>
-          <div class="skel-block" style="height:96px;border-radius:var(--r-8);"></div>
-        </div>
-        <div class="skel-block" style="height:88px;width:100%;border-radius:var(--radius-lg);"></div>
-        <div class="skel-block" style="height:80px;width:100%;border-radius:var(--r-8);margin-top:var(--space-xl);"></div>
-      </div>
-    </orchestrator-page>
+    <main id="outlet">
+      <!-- The router mounts page components here. On initial load the outlet
+           is empty — the page component's own connectedCallback renders its
+           loading state (or the pre-upgrade skeleton CSS fills in). Subsequent
+           client-side navigations swap the page element with a view transition. -->
+    </main>
   </body>
 </html>

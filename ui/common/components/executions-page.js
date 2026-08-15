@@ -137,7 +137,7 @@ class ExecutionsPage extends HTMLElement {
           icon: icons.workflow('', 32),
           title: 'No workflow runs yet',
           sub: 'Create your first workflow by chaining agents together.',
-          action: `<a class="cta-btn" href="/workflow-new.html">Create workflow ${icons.plus('', 13)}</a>`,
+          action: `<a class="cta-btn" href="/workflow-new">Create workflow ${icons.plus('', 13)}</a>`,
         });
         return;
       }
@@ -146,7 +146,7 @@ class ExecutionsPage extends HTMLElement {
           icon: icons.play('', 32),
           title: 'Your active runs will appear here',
           sub: 'Monitor live workflow executions, track progress across each step, and inspect outputs as they are generated.',
-          action: `<a class="cta-btn is-secondary" href="/workflows.html">Browse workflows</a>`,
+          action: `<a class="cta-btn is-secondary" href="/workflows">Browse workflows</a>`,
         });
         return;
       }
@@ -162,7 +162,7 @@ class ExecutionsPage extends HTMLElement {
         icon: icons.workflow('', 32),
         title: 'No finished runs yet',
         sub: 'Completed and failed workflow runs land here with their full step timelines.',
-        action: `<a class="cta-btn is-secondary" href="/workflows.html">Browse workflows</a>`,
+        action: `<a class="cta-btn is-secondary" href="/workflows">Browse workflows</a>`,
       });
       return;
     }
@@ -223,7 +223,7 @@ class ExecutionsPage extends HTMLElement {
           <span class="run-title">${escHtml(title)}</span>
           ${orphaned ? `<span class="badge badge--error">${icons.info('', 12)} Workflow not found</span>` : ''}
           <span class="head-spacer"></span>
-          ${!orphaned && exec.maf_id ? `<a class="open-wf" href="/workflow.html?id=${encodeURIComponent(exec.maf_id)}&exec=${encodeURIComponent(exec.id)}">Open workflow</a>` : ''}
+          ${!orphaned && exec.maf_id ? `<a class="open-wf" href="/workflow?id=${encodeURIComponent(exec.maf_id)}&exec=${encodeURIComponent(exec.id)}">Open workflow</a>` : ''}
           <button type="button" class="toggle-btn" data-toggle="${escHtml(exec.id)}"
             aria-expanded="${open}" aria-label="${open ? 'Collapse' : 'Expand'} run">
             ${open ? icons.chevronUp('', 16) : icons.chevronDown('', 16)}

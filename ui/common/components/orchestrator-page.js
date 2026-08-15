@@ -52,7 +52,7 @@ class OrchestratorPage extends HTMLElement {
           transcription-callback="transcribeAudio"
         ></voice-input>
       </div>
-      <a class="wf-banner" href="/workflow-new.html">
+      <a class="wf-banner" href="/workflow-new">
         <span class="wf-banner-icon" aria-hidden="true">${icons.workflow('', 20)}</span>
         <span class="wf-banner-text">
           <span class="wf-banner-title">Need multiple coordinated steps or agents?</span>
@@ -220,7 +220,7 @@ class OrchestratorPage extends HTMLElement {
     if (!traceId) return '';
     const q = new URLSearchParams({ trace_id: traceId });
     if (this.#sessionId) q.set('session_id', this.#sessionId);
-    return `<a class="msg-action-trace" href="/observability-session.html?${q}"
+    return `<a class="msg-action-trace" href="/observability-session?${q}"
       aria-label="View trace" title="View trace">${icons.trace('', 14)}<span>Detailed trace</span></a>`;
   }
 
@@ -240,7 +240,7 @@ class OrchestratorPage extends HTMLElement {
       grid.innerHTML = agents.map(agent => {
         const displayName = agent.display_name || agent.name || agent.id;
         return `
-          <a class="agent-card" href="/chat.html?agent_name=${encodeURIComponent(agent.name)}&agent_id=${encodeURIComponent(agent.id)}">
+          <a class="agent-card" href="/chat?agent_name=${encodeURIComponent(agent.name)}&agent_id=${encodeURIComponent(agent.id)}">
             <div class="agent-card-top">
               <span class="agent-card-name">${escHtml(displayName)}</span>
               <span class="agent-card-go">${icons.arrowUpRight('', 14)}</span>

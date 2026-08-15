@@ -18,6 +18,8 @@ import '/common/components/app-skeleton.js';
 import '/common/components/app-empty-state.js';
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
+import { navigate as routerNavigate } from '../core/router.js';
+
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -64,7 +66,7 @@ class ObservabilitySessionPage extends HTMLElement {
     `;
 
     this.querySelector('#back-btn').addEventListener('click', () => {
-      window.location.href = '/sessions.html';
+      routerNavigate('/sessions');
     });
     this.querySelector('#chat-pane').addEventListener('click', (e) => {
       if (e.target.closest('.pane-collapse')) {

@@ -9,10 +9,10 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 /**
  * Redirect stub for the retired trace-scoped view.
  *
- * `/session-trace.html?trace_id=…` used to render its own flat span list.
+ * `/session-trace?trace_id=…` used to render its own flat span list.
  * That showed strictly less than the Observability session view for the same
  * data (no span detail, no attributes, no chat transcript), so the two pages
- * are consolidated onto `/observability-session.html`. This keeps old links
+ * are consolidated onto `/observability-session`. This keeps old links
  * and bookmarks working: resolve the trace to its session via the trace
  * payload's `project_session_id`, then hand off with the trace preselected.
  *
@@ -43,7 +43,7 @@ class SessionTracePage extends HTMLElement {
     if (sessionId) {
       const q = new URLSearchParams({ session_id: sessionId, trace_id: traceId });
       // replace() so Back returns to the chat, not to this interstitial.
-      location.replace(`/observability-session.html?${q}`);
+      location.replace(`/observability-session?${q}`);
       return;
     }
     // A trace with no session mapping can't open the session view. Say so

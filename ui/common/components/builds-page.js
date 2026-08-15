@@ -34,13 +34,13 @@ class BuildsPage extends HTMLElement {
 
     const table = this.querySelector('#builds-table');
     table.columns = [
-      { key: 'id', label: 'Build', width: '12%', render: (v) => v ? `<a class="cell-id" href="/build.html?id=${v}">#${v.slice(0, 8)}</a>` : '' },
+      { key: 'id', label: 'Build', width: '12%', render: (v) => v ? `<a class="cell-id" href="/build?id=${v}">#${v.slice(0, 8)}</a>` : '' },
       { key: 'version_tag', label: 'Version', width: '12%', render: (v) => v ? `<span class="cell-num">${v}</span>` : '—' },
       { key: 'image_reference', label: 'Image', width: '26%', render: (v) => v ? `<span class="cell-image">${v}</span>` : '—' },
       { key: 'status', label: 'Status', width: '13%', render: statusPill },
       { key: 'github_url', label: 'Source', width: '13%', render: (v) => v ? `<a class="cell-action" href="${v}" target="_blank" rel="noopener">repo ↗</a>` : '—' },
       { key: 'created_at', label: 'Started', width: '16%', render: (v) => v ? `<span class="cell-num">${new Date(v).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>` : '—' },
-      { key: 'id', label: '', width: '8%', render: (v) => v ? `<a class="cell-action" href="/build.html?id=${v}">Logs →</a>` : '' },
+      { key: 'id', label: '', width: '8%', render: (v) => v ? `<a class="cell-action" href="/build?id=${v}">Logs →</a>` : '' },
     ];
   }
 }

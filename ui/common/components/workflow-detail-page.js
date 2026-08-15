@@ -7,7 +7,7 @@
  * - run: live per-step timeline for one execution — polls
  *   GET /api/maf/execution/{id} every 1.5s while pending/running (no SSE).
  *
- * Deep link: /workflow.html?id=<workflow>&exec=<execution>.
+ * Deep link: /workflow?id=<workflow>&exec=<execution>.
  *
  * @element workflow-detail-page
  */
@@ -52,7 +52,7 @@ class WorkflowDetailPage extends HTMLElement {
           <div class="not-found">
             <span class="empty-tile">${icons.workflow('', 24)}</span>
             <p class="not-found-title">No workflow selected</p>
-            <p class="not-found-sub">Open a workflow from the <a href="/workflows.html">library</a>.</p>
+            <p class="not-found-sub">Open a workflow from the <a href="/workflows">library</a>.</p>
           </div>
         </div>`;
       return;
@@ -92,7 +92,7 @@ class WorkflowDetailPage extends HTMLElement {
             <span class="empty-tile">${icons.faceFrown('', 24)}</span>
             <p class="not-found-title">Workflow not found</p>
             <p class="not-found-sub">It may have been deleted. Back to the
-              <a href="/workflows.html">library</a>.</p>
+              <a href="/workflows">library</a>.</p>
           </div>
         </div>`;
       return;
@@ -120,7 +120,7 @@ class WorkflowDetailPage extends HTMLElement {
     this.innerHTML = `
       <div class="col">
         <header class="page-head">
-          <a class="back-btn" href="/workflows.html" aria-label="Back to workflows">${icons.chevronLeft('', 16)}</a>
+          <a class="back-btn" href="/workflows" aria-label="Back to workflows">${icons.chevronLeft('', 16)}</a>
           <input class="name-input" id="wf-name" value="${escHtml(wf.name)}" aria-label="Workflow name" />
           <app-button variant="primary" size="sm" id="run-btn">${icons.play('', 12)} Run</app-button>
         </header>
@@ -264,7 +264,7 @@ class WorkflowDetailPage extends HTMLElement {
   async #openRun(execId, { push }) {
     this.#stopPolling();
     if (push) {
-      const url = `/workflow.html?id=${encodeURIComponent(this.#workflowId)}&exec=${encodeURIComponent(execId)}`;
+      const url = `/workflow?id=${encodeURIComponent(this.#workflowId)}&exec=${encodeURIComponent(execId)}`;
       history.pushState({}, '', url);
     }
     this.#renderRunShell();
@@ -301,7 +301,7 @@ class WorkflowDetailPage extends HTMLElement {
         </div>
       </div>`;
     this.querySelector('#run-back').addEventListener('click', async () => {
-      history.pushState({}, '', `/workflow.html?id=${encodeURIComponent(this.#workflowId)}`);
+      history.pushState({}, '', `/workflow?id=${encodeURIComponent(this.#workflowId)}`);
       // A run just happened — refresh the history list before showing it.
       this.#executions = await call('fetchWorkflowExecutions', this.#workflowId).catch(() => this.#executions);
       this.#showReview();

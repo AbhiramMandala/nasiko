@@ -27,23 +27,23 @@ import { registerAll, resolveOptional } from '/common/core/data-sources.js';
 const BASE_ITEMS = () => [
   // rail: true → shown as a rail module icon; everything else is reachable
   // through the module tree navs and the ⌘F nav search.
-  { title: "Orchestrator", url: "/index.html", icon: "brain", rail: true },
+  { title: "Orchestrator", url: "/", icon: "brain", rail: true },
   // On the rail: without it the only route to the workflow list was to open
   // "Create workflow" and back out of it.
-  { title: "Workflows", url: "/workflows.html", icon: "workflow", rail: true },
-  { title: "Executions", url: "/executions.html", icon: "play" },
-  { title: "Agents", url: "/agents.html", icon: "bot", rail: true },
-  { title: "Sessions", url: "/sessions.html", icon: "activity", rail: true },
-  { title: "MCP gateway", url: "/mcp.html", icon: "server", rail: true },
-  { title: "LLM router", url: "/llm-router.html", icon: "route", rail: true },
-  { title: "TokenOps", url: "/tokenops.html", icon: "banknote", rail: true },
-  { title: "Your Agents", url: "/your-agents.html", icon: "user" },
-  { title: "Add Agent", url: "/add-agent.html", icon: "plus" },
-  { title: "Set up CLI", url: "/setup-cli.html", icon: "terminal" },
-  { title: "Flows", url: "/flows.html", icon: "cornerUpRight" },
-  { title: "Builds", url: "/builds.html", icon: "cube" },
-  { title: "Secrets", url: "/secrets.html", icon: "lock" },
-  { title: "Settings", url: "/settings.html", icon: "settings", rail: true },
+  { title: "Workflows", url: "/workflows", icon: "workflow", rail: true },
+  { title: "Executions", url: "/executions", icon: "play" },
+  { title: "Agents", url: "/agents", icon: "bot", rail: true },
+  { title: "Sessions", url: "/sessions", icon: "activity", rail: true },
+  { title: "MCP gateway", url: "/mcp", icon: "server", rail: true },
+  { title: "LLM router", url: "/llm-router", icon: "route", rail: true },
+  { title: "TokenOps", url: "/tokenops", icon: "banknote", rail: true },
+  { title: "Your Agents", url: "/your-agents", icon: "user" },
+  { title: "Add Agent", url: "/add-agent", icon: "plus" },
+  { title: "Set up CLI", url: "/setup-cli", icon: "terminal" },
+  { title: "Flows", url: "/flows", icon: "cornerUpRight" },
+  { title: "Builds", url: "/builds", icon: "cube" },
+  { title: "Secrets", url: "/secrets", icon: "lock" },
+  { title: "Settings", url: "/settings", icon: "settings", rail: true },
 ];
 
 // In-card module tree navs (app-module-nav). Items are either page links
@@ -54,11 +54,11 @@ const MODULE_NAVS = {
     title: 'Orchestrator', icon: 'brain',
     groups: [
       { label: 'Session', items: [
-        { label: 'Orchestrate a task', url: '/index.html' },
+        { label: 'Orchestrate a task', url: '/' },
       ]},
       { label: 'Workflows', items: [
-        { label: 'All workflows', url: '/workflows.html' },
-        { label: 'Executions', url: '/executions.html' },
+        { label: 'All workflows', url: '/workflows' },
+        { label: 'Executions', url: '/executions' },
       ]},
     ],
   },
@@ -85,12 +85,12 @@ const MODULE_NAVS = {
     title: 'Agent registry', icon: 'bot',
     groups: [
       { label: 'Agent sources', items: [
-        { label: 'Agent hub', url: '/agents.html' },
-        { label: 'Your agents', url: '/your-agents.html' },
-        { label: 'Import agent', url: '/add-agent.html' },
+        { label: 'Agent hub', url: '/agents' },
+        { label: 'Your agents', url: '/your-agents' },
+        { label: 'Import agent', url: '/add-agent' },
       ]},
       { label: 'Builds', items: [
-        { label: 'All builds', url: '/builds.html' },
+        { label: 'All builds', url: '/builds' },
       ]},
     ],
   },
@@ -98,9 +98,9 @@ const MODULE_NAVS = {
     title: 'Observability', icon: 'activity',
     groups: [
       { label: 'Home', items: [
-        { label: 'Execution history', url: '/sessions.html' },
-        { label: 'Live flows', url: '/flows.html' },
-        { label: 'Resources', url: '/resources.html' },
+        { label: 'Execution history', url: '/sessions' },
+        { label: 'Live flows', url: '/flows' },
+        { label: 'Resources', url: '/resources' },
       ]},
     ],
   },
@@ -114,7 +114,7 @@ const MODULE_NAVS = {
       ]},
       { label: 'Security', items: [
         { label: 'Single sign-on', section: 'sso' },
-        { label: 'Secrets', url: '/secrets.html' },
+        { label: 'Secrets', url: '/secrets' },
       ]},
     ],
   },

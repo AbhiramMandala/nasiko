@@ -19,6 +19,7 @@ import "./app-user-menu.js";
 import "./app-nav-search.js";
 import { escHtml } from '/common/utils/escape.js';
 import { callOptional } from '../core/data-sources.js';
+import { navigate as routerNavigate } from '../core/router.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@keyframes ah-skel-pulse {
@@ -333,6 +334,18 @@ export class AppHeader extends HTMLElement {
     }
   };
 
+  #onRouteChange = () => {
+    // Update rail active indicators and mobile nav highlights
+    this.querySelectorAll(".rail-item").forEach((a) => {
+      a.classList.toggle("is-active", this.#isActive(a.getAttribute("href")));
+    });
+    // Close mobile nav on navigation
+    if (this.#mobileOpen) {
+      this.#mobileOpen = false;
+      this.classList.remove("mobile-open");
+    }
+  };
+
   #handleClick = (e) => {
     if (e.target.closest("[data-rail-toggle]")) {
       this.#expanded = !this.#expanded;
@@ -353,7 +366,8 @@ export class AppHeader extends HTMLElement {
     if (e.target.closest("[data-nav-fwd]")) { window.history.forward(); return; }
     const link = e.target.closest(".rail-item[href]");
     if (link && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0)) {
-      document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
+      e.preventDefault();
+      routerNavigate(link.href);
     }
   };
 
@@ -378,6 +392,9 @@ export class AppHeader extends HTMLElement {
     document.removeEventListener("keydown", this.#handleKeyDown);
     this.removeEventListener("click", this.#handleClick);
     this.addEventListener("click", this.#handleClick);
+    // SPA: re-render active states when the router changes the page
+    document.removeEventListener("route-change", this.#onRouteChange);
+    document.addEventListener("route-change", this.#onRouteChange);
     if (this.getAttribute("nav-links")) {
       this.render();
       document.addEventListener("keydown", this.#handleKeyDown);
@@ -568,7 +585,7 @@ export class AppHeader extends HTMLElement {
       navSearch.addEventListener("navigate", (e) => {
         e.detail.newTab
           ? window.open(e.detail.url, "_blank")
-          : (window.location.href = e.detail.url);
+          : routerNavigate(e.detail.url);
       });
     }
   }

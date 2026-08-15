@@ -12,9 +12,12 @@ import { escHtml, escAttr } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 
 
-// your-agents-page.css is <link>ed by the host page, not imported here: a sheet
-// pulled in by this module only exists once the module does, which is too late
-// to style the static shell the page paints before then (see web/your-agents.html).
+// In MPA mode, your-agents-page.css was <link>ed in the HTML. In SPA mode the
+// router lazy-loads this module, so we adopt the sheet here too.
+import yourAgentsStyles from './your-agents-page.css' with { type: 'css' };
+if (!document.adoptedStyleSheets.includes(yourAgentsStyles)) {
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, yourAgentsStyles];
+}
 
 function parseImageTag(image) {
   if (!image) return { name: "", version: "" };
@@ -220,8 +223,8 @@ class YourAgentsPage extends HTMLElement {
             title="No agents deployed"
             description="Deploy your first agent from the catalog or add a new one."
             icon='${icons.layers("", 40)}'>
-            <a href="/agents.html" class="empty-action-link">Browse catalog</a>
-            <a href="/add-agent.html" class="empty-action-link empty-action-link--secondary">Add agent</a>
+            <a href="/agents" class="empty-action-link">Browse catalog</a>
+            <a href="/add-agent" class="empty-action-link empty-action-link--secondary">Add agent</a>
           </app-empty-state>
         </div>`;
       return;
@@ -266,12 +269,12 @@ class YourAgentsPage extends HTMLElement {
           card-title="${escAttr(name)}"
           ${version ? `version="v${escAttr(String(version).replace(/^v/, ""))}"` : ""}
           variant="${variant}"
-          href="/agent-card.html?id=${escAttr(a.id)}"
+          href="/agent-card?id=${escAttr(a.id)}"
           ${isError ? `error-title="Agent failed" error-body="Container exited with an error."` : ""}
           ${!isError && a.description ? `description="${escAttr(a.description)}"` : ""}
           ${tags.length ? `tags="${escAttr(JSON.stringify(tags))}"` : ""}
         >
-          ${isError ? `<a slot="footer" data-action="view-logs" href="/flows.html?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
+          ${isError ? `<a slot="footer" data-action="view-logs" href="/flows?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
           ${footerButtonsHtml}
           <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">
             ${icons.trash("", 14)}

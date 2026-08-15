@@ -6,6 +6,8 @@ import './app-button.js';
 import './app-module-nav.js';
 import { escHtml } from '/common/utils/escape.js';
 import { call, callOptional } from '../core/data-sources.js';
+import { navigate as routerNavigate } from '../core/router.js';
+
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -58,7 +60,7 @@ class SessionsPage extends HTMLElement {
     this.querySelector('#btn-new')?.addEventListener('click', () => {
       // No agent preselected: the orchestrator routes each message, so name it
       // honestly instead of showing the placeholder agent header.
-      window.location.href = '/chat.html?agent_name=Orchestrator';
+      routerNavigate('/chat?agent_name=Orchestrator');
     });
 
     this.querySelector('.sessions-search')?.addEventListener('input', (e) => {
@@ -184,7 +186,7 @@ class SessionsPage extends HTMLElement {
           title="No sessions yet"
           description="Start a conversation from the orchestrator or an agent page."
           icon='${icons.send()}'>
-          <app-button variant="dark" size="sm" onclick="window.location.href='/index.html'">Start a Chat</app-button>
+          <a href="/" style="text-decoration:none"><app-button variant="dark" size="sm">Start a Chat</app-button></a>
         </app-empty-state>`;
       }
       return;
@@ -220,12 +222,12 @@ class SessionsPage extends HTMLElement {
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        window.location.href = `/observability-session.html?session_id=${encodeURIComponent(btn.dataset.sessionId)}`;
+        routerNavigate(`/observability-session?session_id=${encodeURIComponent(btn.dataset.sessionId)}`);
       });
     });
 
     list.querySelectorAll('tr[data-href]').forEach(row => {
-      row.addEventListener('click', () => { window.location.href = row.dataset.href; });
+      row.addEventListener('click', () => { routerNavigate(row.dataset.href); });
     });
   }
 
@@ -235,7 +237,7 @@ class SessionsPage extends HTMLElement {
     const time = s.updated_at || s.created_at;
     const timeStr = time ? this.#formatDate(new Date(time)) : '—';
     const sessionId = s.session_id;
-    const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
+    const href = `/chat?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
     const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
     const o = this.#obsStats.get(sessionId);
     const traces = o?.num_traces ?? '—';

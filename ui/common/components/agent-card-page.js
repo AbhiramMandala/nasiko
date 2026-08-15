@@ -12,6 +12,8 @@ import '/common/components/secrets-manager.js';
 import { escHtml, escAttr } from '/common/utils/escape.js';
 import '/common/components/app-button.js';
 import { call } from '../core/data-sources.js';
+import { navigate as routerNavigate } from '../core/router.js';
+
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -71,7 +73,7 @@ class AgentCardPage extends HTMLElement {
             title="No agent selected"
             description="Open an agent from the hub to see its card, settings, and logs.">
           </app-empty-state>
-          <a href="/agents.html" style="color:var(--fg-brand);font-size:var(--font-size-sm);font-weight:600;">Browse the agent hub</a>
+          <a href="/agents" style="color:var(--fg-brand);font-size:var(--font-size-sm);font-weight:600;">Browse the agent hub</a>
         </div>`;
       return;
     }
@@ -157,7 +159,7 @@ class AgentCardPage extends HTMLElement {
             <app-button variant="ghost" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</app-button>` : '';
     return `
         <div class="acp-topbar">
-          <a class="acp-back" href="/your-agents.html" title="Back to Your Agents" aria-label="Back to Your Agents">
+          <a class="acp-back" href="/your-agents" title="Back to Your Agents" aria-label="Back to Your Agents">
             ${icons.x('', 16)}
           </a>
           <div class="acp-topbar-actions">${actions}</div>
@@ -177,7 +179,7 @@ class AgentCardPage extends HTMLElement {
           <h1 class="acp-name">${escHtml(displayName)}</h1>
           <span class="acp-version">v${escHtml(a.version || '?')}</span>
           <span class="acp-verified" title="Registered agent">${icons.checkCircle('', 16)}</span>
-          <a class="acp-start-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
+          <a class="acp-start-btn" href="/chat?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
             Start session ${icons.send('', 15)}
           </a>
         </div>
@@ -195,7 +197,7 @@ class AgentCardPage extends HTMLElement {
     const skills = a.skills || [];
     const skillsHtml = skills.map(s => {
       const href = s.sample_query
-        ? `/chat.html?agent_id=${encodeURIComponent(a.id)}&query=${encodeURIComponent(s.sample_query)}`
+        ? `/chat?agent_id=${encodeURIComponent(a.id)}&query=${encodeURIComponent(s.sample_query)}`
         : null;
       const wrapper = href ? 'a' : 'div';
       const hrefAttr = href ? ` href="${escAttr(href)}"` : '';
@@ -363,7 +365,7 @@ class AgentCardPage extends HTMLElement {
     try {
       const res = await apiFetch(`/agents/${encodeURIComponent(this.#agent.id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
-      location.href = '/your-agents.html';
+      routerNavigate('/your-agents');
     } catch (err) {
       showToast(`Failed to delete: ${err.message}`);
       btn.disabled = false;
