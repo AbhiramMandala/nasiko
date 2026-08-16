@@ -32,10 +32,12 @@ styles.replaceSync(`/* Host-page layout contract: the page component that contai
    sheet only arrives with this module. What is left here is how the nav fills
    that gutter, which is inert until the nav upgrades anyway. */
 @media (min-width: 1024px) {
-  body:has(> app-header) > :not(app-header):has(> app-module-nav) {
+  body:has(> app-header) > :not(app-header):has(> app-module-nav),
+  body:has(> app-header) > #outlet > :has(> app-module-nav) {
     position: relative;
   }
-  body:has(> app-header) > :not(app-header) > app-module-nav {
+  body:has(> app-header) > :not(app-header) > app-module-nav,
+  body:has(> app-header) > #outlet > * > app-module-nav {
     position: absolute;
     top: var(--s-24);
     left: var(--s-24);

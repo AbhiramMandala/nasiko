@@ -498,6 +498,27 @@ main.app-shell {
     margin-inline: auto;
   }
 
+  /*
+    SPA: the router mounts pages into <main id="outlet">, so the page is a
+    grandchild of body, not a child. The rule above centres a <main>'s children
+    in a --page-max-width column — correct for an MPA content page, wrong for a
+    router-mounted one: it shrinks the whole page to a narrow centred strip
+    inside the card and leaves the module-nav gutter empty beside it.
+
+    The outlet is a passthrough. The card geometry above still applies to it,
+    but the page inside owns its own padding (styles/page-layout.css) and fills
+    the card edge to edge.
+  */
+  body:has(> app-header) > main#outlet {
+    padding: 0;
+  }
+
+  body:has(> app-header) > main#outlet > * {
+    max-width: none;
+    margin-inline: 0;
+    min-height: 100%;
+  }
+
   body:has(> app-header) > main.app-shell {
     height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     padding: 0;

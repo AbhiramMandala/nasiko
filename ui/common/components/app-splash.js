@@ -105,22 +105,27 @@ _sheet.replaceSync(`
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--shell-bg, #242628);
+    /* Follow the active theme. --shell-bg is the ink rail colour and is dark in
+       both themes, so using it here put a dark full-screen panel in front of a
+       light app. The page surface token is the one that actually flips. */
+    background: var(--color-bg-base);
     /* Ensure it sits above everything during load */
   }
 
   app-splash .splash-logo {
-    width: 128px;
-    height: 128px;
-    filter: var(--shell-logo-glow, drop-shadow(0 4px 16px rgba(247, 225, 156, 0.16)));
+    /* 128px read as oversized against the shell it hands off to — the mark is
+       a brand beat, not the subject of the screen. */
+    width: 72px;
+    height: 72px;
+    filter: var(--splash-logo-glow, drop-shadow(0 2px 10px rgba(234, 179, 8, 0.14)));
     animation: splash-breathe 2s ease-in-out infinite;
   }
 
   /* Smaller logo on very small viewports */
   @media (max-width: 480px) {
     app-splash .splash-logo {
-      width: 112px;
-      height: 112px;
+      width: 56px;
+      height: 56px;
     }
   }
 
@@ -149,8 +154,8 @@ class AppSplash extends HTMLElement {
       <img class="splash-logo"
            src="/common/mark-nasiko.svg"
            alt="Nasiko"
-           width="128"
-           height="128" />
+           width="72"
+           height="72" />
     `;
 
     // Preload fonts (overlap with splash hold time)
