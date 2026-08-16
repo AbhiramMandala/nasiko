@@ -1,7 +1,8 @@
 import { icons } from '../utils/icons.js';
+import { escHtml } from '../utils/escape.js';
 import { fetchApi } from '../services/api.js';
 import { showToast } from '../utils/toast.js';
-import { confirmDialog } from '../utils/confirm-dialog.js';
+import { confirmDialog } from './confirm-dialog.js';
 import { attachSlidingIndicator } from '../utils/tab-indicator.js';
 import { navigate } from '../core/router.js';
 import styles from './mcp-detail-page.css' with { type: 'css' };
@@ -115,10 +116,10 @@ class McpDetailPage extends HTMLElement {
 
         <div class="mdp-header">
           <div class="mdp-title-row">
-            <h1 class="mdp-name">${this.#esc(name)}</h1>
-            <span class="mdp-badge ${st.cls}"><span class="mdp-badge-dot"></span>${this.#esc(st.label)}</span>
+            <h1 class="mdp-name">${escHtml(name)}</h1>
+            <span class="mdp-badge ${st.cls}"><span class="mdp-badge-dot"></span>${escHtml(st.label)}</span>
           </div>
-          ${c.description ? '<p class="mdp-description">' + this.#esc(c.description) + '</p>' : ''}
+          ${c.description ? '<p class="mdp-description">' + escHtml(c.description) + '</p>' : ''}
         </div>
 
         <nav class="mdp-tabs">
@@ -184,7 +185,7 @@ class McpDetailPage extends HTMLElement {
     return `
       <div class="mdp-panel is-active" data-panel="overview">
         <div class="mdp-meta-grid">
-          ${items.map(([label, value]) => '<div class="mdp-meta-item"><span class="mdp-meta-label">' + this.#esc(label) + '</span><span class="mdp-meta-value">' + this.#esc(value) + '</span></div>').join('')}
+          ${items.map(([label, value]) => '<div class="mdp-meta-item"><span class="mdp-meta-label">' + escHtml(label) + '</span><span class="mdp-meta-value">' + escHtml(value) + '</span></div>').join('')}
         </div>
 
         ${this.#toolsSectionHtml()}
@@ -201,7 +202,7 @@ class McpDetailPage extends HTMLElement {
       <div class="mdp-section">
         <h2 class="mdp-section-title">Tools (${this.#tools.length})</h2>
         <div class="mdp-tools-grid">
-          ${this.#tools.map((t) => '<div class="mdp-tool-card"><span class="mdp-tool-name">' + this.#esc(t.name) + '</span>' + (t.description ? '<span class="mdp-tool-desc">' + this.#esc(t.description) + '</span>' : '') + '</div>').join('')}
+          ${this.#tools.map((t) => '<div class="mdp-tool-card"><span class="mdp-tool-name">' + escHtml(t.name) + '</span>' + (t.description ? '<span class="mdp-tool-desc">' + escHtml(t.description) + '</span>' : '') + '</div>').join('')}
         </div>
       </div>`;
   }
@@ -278,7 +279,7 @@ class McpDetailPage extends HTMLElement {
         <h2 class="mdp-section-title">${icons.shield('', 16)} OAuth 2.1</h2>
         <div class="mdp-cred-row">
           <span class="mdp-status-dot ${status.authorized ? 'is-ok' : 'is-off'}"></span>
-          <span>${status.authorized ? 'Authorized' + this.#esc(expiry) : 'Not authorized'}</span>
+          <span>${status.authorized ? 'Authorized' + escHtml(expiry) : 'Not authorized'}</span>
           ${status.authorized
             ? '<button class="mdp-btn-ghost danger" id="mdp-oauth-revoke">Revoke</button>'
             : '<button class="mdp-btn-dark" id="mdp-oauth-authorize">' + icons.externalLink('', 14) + ' Authorize</button>'}
@@ -357,7 +358,7 @@ class McpDetailPage extends HTMLElement {
       const resp = await window.fetchAgentMcpConnectors(this.#selectedAgentId);
       this.#agentConnectors = resp?.data?.connectors || [];
     } catch (e) {
-      body.innerHTML = '<div class="mdp-empty"><p>Failed to load: ' + this.#esc(e.message) + '</p></div>';
+      body.innerHTML = '<div class="mdp-empty"><p>Failed to load: ' + escHtml(e.message) + '</p></div>';
       return;
     }
     this.#agentTools = new Map();
@@ -406,7 +407,7 @@ class McpDetailPage extends HTMLElement {
         const resp = await window.fetchAgentMcpConnectorTools(this.#selectedAgentId, this.#connectorId);
         this.#agentTools.set(this.#connectorId, resp?.data?.tools || []);
       } catch (e) {
-        editor.innerHTML = '<p class="mdp-form-error">Failed to load tools: ' + this.#esc(e.message) + '</p>';
+        editor.innerHTML = '<p class="mdp-form-error">Failed to load tools: ' + escHtml(e.message) + '</p>';
         return;
       }
     }
@@ -417,7 +418,7 @@ class McpDetailPage extends HTMLElement {
     }
     editor.innerHTML = `
       <div class="mdp-tools-list">
-        ${tools.map((t, i) => '<div class="mdp-tool-line"><div class="mdp-tool-info"><span class="mdp-tool-info-name">' + this.#esc(t.name) + '</span>' + (t.description ? '<span class="mdp-tool-info-desc">' + this.#esc(t.description) + '</span>' : '') + '</div><select class="mdp-tool-stance" data-index="' + i + '"><option value="allow"' + (t.stance !== 'block' ? ' selected' : '') + '>Allow</option><option value="block"' + (t.stance === 'block' ? ' selected' : '') + '>Block</option></select></div>').join('')}
+        ${tools.map((t, i) => '<div class="mdp-tool-line"><div class="mdp-tool-info"><span class="mdp-tool-info-name">' + escHtml(t.name) + '</span>' + (t.description ? '<span class="mdp-tool-info-desc">' + escHtml(t.description) + '</span>' : '') + '</div><select class="mdp-tool-stance" data-index="' + i + '"><option value="allow"' + (t.stance !== 'block' ? ' selected' : '') + '>Allow</option><option value="block"' + (t.stance === 'block' ? ' selected' : '') + '>Block</option></select></div>').join('')}
       </div>
       <div class="mdp-tools-actions">
         <span class="mdp-save-status" id="mdp-save-status" hidden></span>
@@ -474,13 +475,6 @@ class McpDetailPage extends HTMLElement {
     });
   }
 
-  // ── Utilities ─────────────────────────────────────────────────────────────
-
-  #esc(s) {
-    const d = document.createElement('span');
-    d.textContent = s || '';
-    return d.innerHTML;
-  }
 }
 
 customElements.define('mcp-detail-page', McpDetailPage);

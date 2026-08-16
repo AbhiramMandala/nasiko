@@ -9,7 +9,7 @@
  */
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
-import { confirmDialog } from '/common/utils/confirm-dialog.js';
+import { confirmDialog } from '/common/components/confirm-dialog.js';
 import { timeAgo, formatDisplay } from '/common/utils/date-utils.js';
 import '/common/components/app-action-menu.js';
 

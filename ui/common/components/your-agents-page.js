@@ -3,7 +3,7 @@ import { icons } from "/common/utils/icons.js";
 import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
-import { confirmDialog } from "/common/utils/confirm-dialog.js";
+import { confirmDialog } from "/common/components/confirm-dialog.js";
 import "/common/components/app-modal.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
