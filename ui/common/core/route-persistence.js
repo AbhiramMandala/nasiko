@@ -172,7 +172,8 @@ export function initRouteIntegration(opts = {}) {
   const container = opts.scrollContainer;
 
   // Save scroll position before navigating away
-  window.addEventListener('route-change', (e) => {
+  window.addEventListener('route-change', (evt) => {
+    const e = /** @type {CustomEvent} */ (evt);
     const prev = e.detail?.previousPath;
     if (prev) saveScrollPosition(prev, container);
   });
@@ -184,7 +185,8 @@ export function initRouteIntegration(opts = {}) {
   });
 
   // Persist current route context on route-change
-  window.addEventListener('route-change', (e) => {
+  window.addEventListener('route-change', (evt) => {
+    const e = /** @type {CustomEvent} */ (evt);
     const path = location.pathname;
     const title = document.title || '';
     persistRoute({

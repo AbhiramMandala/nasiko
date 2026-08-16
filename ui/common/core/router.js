@@ -53,7 +53,7 @@ function matchRoute(pattern, path) {
 // ── Router singleton ────────────────────────────────────────────────────
 
 class Router {
-  /** @type {Array<{pattern: string, tag: string, module: string, title?: string}>} */
+  /** @type {Array<{pattern: string, tag: string, module: string, title?: string, noShell?: boolean}>} */
   #routes = [];
   /** @type {HTMLElement|null} */
   #outlet = null;
@@ -82,7 +82,7 @@ class Router {
 
   /**
    * Register multiple routes at once.
-   * @param {Array<{path: string, tag: string, module: string, title?: string}>} routes
+   * @param {Array<{path: string, tag: string, module: string, title?: string, noShell?: boolean}>} routes
    */
   addAll(routes) {
     for (const r of routes) this.add(r.path, r);
@@ -280,7 +280,7 @@ class Router {
       this.#currentPattern = route.pattern;
 
       // Hide/show shell for shell-less pages (login)
-      const header = document.querySelector('app-header');
+      const header = /** @type {HTMLElement|null} */ (document.querySelector('app-header'));
       if (header) {
         header.style.display = route.noShell ? 'none' : '';
       }

@@ -120,12 +120,12 @@ export function isWide()    { return mql('xl').matches; }
  * @template T
  * @param {T} base                    Default / mobile-first value
  * @param {object} [overrides]
- * @param {T} [overrides.xs]          ≥ 480px
- * @param {T} [overrides.sm]          ≥ 768px
- * @param {T} [overrides.md]          ≥ 1024px
- * @param {T} [overrides.lg]          ≥ 1280px
- * @param {T} [overrides.xl]          ≥ 1536px
- * @param {T} [overrides.xxl]         ≥ 1920px
+ * @param {T} [overrides.xs]          >= 480px
+ * @param {T} [overrides.sm]          >= 768px
+ * @param {T} [overrides.md]          >= 1024px
+ * @param {T} [overrides.lg]          >= 1280px
+ * @param {T} [overrides.xl]          >= 1536px
+ * @param {T} [overrides.xxl]         >= 1920px
  * @returns {T}
  */
 export function responsive(base, overrides = {}) {
