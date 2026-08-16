@@ -11,17 +11,15 @@ import { navigate as routerNavigate } from '../core/router.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-/// Rows requested per page. `/api/chat/sessions` is keyset-paginated and the
-/// observability list charges one trace-store lookup per row, so paging is what
-/// keeps this page fast — it previously asked for 50 sessions in one shot and
-/// had no way to reach the 51st.
+/// Rows requested per page. `/api/chat/sessions` is keyset-paginated — it
+/// previously asked for 50 sessions in one shot and had no way to reach the
+/// 51st.
 const PAGE_SIZE = 25;
 
 class SessionsPage extends HTMLElement {
   #initialized = false;
   /// Every session loaded so far, across pages.
   #sessions = [];
-  #obsStats = new Map();
   /// Opaque keyset cursor for the next page; null once the list is exhausted.
   #nextCursor = null;
   #loadingMore = false;
@@ -36,7 +34,6 @@ class SessionsPage extends HTMLElement {
 
   #render() {
     this.innerHTML = `
-      <app-module-nav module="observability"></app-module-nav>
       <div class="sessions-header">
         <div class="sessions-header-info">
           <h1 class="title-page">Execution history</h1>
@@ -105,16 +102,8 @@ class SessionsPage extends HTMLElement {
       ]);
       if (chatRes.status === 'rejected') throw chatRes.reason;
 
-      const page = chatRes.value?.data || [];
-      this.#nextCursor = chatRes.value?.next_cursor || null;
-
-      if (obsRes.status === 'fulfilled') {
-        const obsSessions = obsRes.value?.data?.sessions || obsRes.value?.sessions || [];
-        for (const o of obsSessions) {
-          const id = o.session_id || o.id;
-          if (id) this.#obsStats.set(id, o);
-        }
-      }
+      const page = res?.data || [];
+      this.#nextCursor = res?.next_cursor || null;
 
       this.#sessions = more ? [...this.#sessions, ...page] : page;
       this.#applyFilter();
@@ -199,7 +188,7 @@ class SessionsPage extends HTMLElement {
           <tr>
             <th>Sessions</th>
             <th>Traces count</th>
-            <th>Tokens</th>
+            <th title="Platform-paid tokens. “—” means no usage was recorded for this session — an agent using its own API key, or messages from before usage tracking. Open the session's traces for the full picture.">Tokens (billed)</th>
             <th>Latency P50</th>
             <th>Date</th>
             <th class="col-actions">Actions</th>
@@ -239,10 +228,13 @@ class SessionsPage extends HTMLElement {
     const sessionId = s.session_id;
     const href = `/chat?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
     const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
-    const o = this.#obsStats.get(sessionId);
-    const traces = o?.num_traces ?? '—';
-    const tokens = o?.token_usage?.total ? this.#fmtCount(o.token_usage.total) : '—';
-    const p50 = o?.trace_latency_ms_p50 ? this.#fmtMs(o.trace_latency_ms_p50) : '—';
+    // `total_tokens` is null when no usage was recorded at all (a BYO-key agent,
+    // or messages predating usage tracking) and reads as "—"; a recorded 0 is a
+    // real value and must render as "0", hence the null check rather than a
+    // truthiness test. Same for p50 — a sub-millisecond turn is not "no data".
+    const traces = s.trace_count ?? '—';
+    const tokens = s.total_tokens != null ? this.#fmtCount(s.total_tokens) : '—';
+    const p50 = s.latency_p50_ms != null ? this.#fmtMs(s.latency_p50_ms) : '—';
 
     return `<tr data-href="${href}" tabindex="0">
       <td class="col-session">
@@ -300,7 +292,6 @@ class SessionsPage extends HTMLElement {
       // missing we now fail — and the user sees why.
       await call('deleteSession', sessionId);
       this.#sessions = this.#sessions.filter(s => s.session_id !== sessionId);
-      this.#obsStats.delete(sessionId);
       this.#applyFilter();
     } catch (err) {
       if (card) card.style.opacity = '1';

@@ -23,6 +23,7 @@ import { navigate as routerNavigate } from '../core/router.js';
 import { icons } from "../utils/icons.js";
 import { escHtml } from '/common/utils/escape.js';
 import { callOptional } from '../core/data-sources.js';
+import { initialView, syncView } from '../utils/module-view.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav is
@@ -207,10 +208,26 @@ app-module-nav:not(:defined) { display: block; }
 }`);
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
+/* Collapsed groups outlive the element. 20 page components render
+   `<app-module-nav>` inside their own innerHTML, so every data refresh
+   destroys this element and builds a new one — per-instance state meant a
+   group the user had closed sprang back open each time, which reads as the
+   sidebar resetting itself.
+   ponytail: keyed by module in memory, which is all an MPA page lifetime
+   needs. The structural fix is to stop page components owning this markup —
+   see the note on #load(). */
+const COLLAPSED = new Map();
+
 export class AppModuleNav extends HTMLElement {
   #nav = null;
-  #collapsed = new Set();
   #mobileOpen = false;
+
+  get #collapsed() {
+    const module = this.getAttribute("module") || "";
+    let set = COLLAPSED.get(module);
+    if (!set) COLLAPSED.set(module, (set = new Set()));
+    return set;
+  }
 
   static get observedAttributes() {
     return ["module", "active-section"];
@@ -219,7 +236,19 @@ export class AppModuleNav extends HTMLElement {
   attributeChangedCallback(name) {
     if (!this.isConnected) return;
     if (name === "module") this.#load();
-    else this.#render();
+    else this.#applyActiveSection();
+  }
+
+  /** The active section is only ever a class on one row, so move the class
+   *  instead of rebuilding the whole tree on every section click. */
+  #applyActiveSection() {
+    const active = this.getAttribute("active-section");
+    for (const row of this.querySelectorAll("[data-section]")) {
+      const on = row.dataset.section === active;
+      row.classList.toggle("is-active", on);
+      if (on) row.setAttribute("aria-current", "true");
+      else row.removeAttribute("aria-current");
+    }
   }
 
   connectedCallback() {
@@ -250,8 +279,11 @@ export class AppModuleNav extends HTMLElement {
 
     // Per-tab cache, same reasoning as app-header's: this is an MPA, so
     // without it every navigation shows a skeleton and then swaps in an
-    // identical tree. Role-gated trees are dropped on logout by
-    // `clearShellCache`.
+    // identical tree. It is also what makes a content refresh invisible —
+    // 20 page components render this element inside their own innerHTML, so
+    // an API-driven re-render destroys and recreates it, and the cache lets
+    // the replacement paint the same tree synchronously instead of flashing a
+    // skeleton. Role-gated trees are dropped on logout by `clearShellCache`.
     const cacheKey = `app-module-nav:${module}`;
     let cached = null;
     try {
@@ -259,13 +291,17 @@ export class AppModuleNav extends HTMLElement {
       if (raw) cached = JSON.parse(raw);
     } catch { /* ignore bad cache */ }
 
-    if (cached) {
+    // `.groups?.length` rather than a plain truthiness check: a previous run
+    // could have written a degraded (or literal `null`) tree here.
+    if (cached?.groups?.length) {
       this.#nav = cached;
       this.#render();
     } else {
+      cached = null;
       this.#renderSkeleton();
     }
 
+    let fresh = null;
     try {
       this.#nav = await callOptional('fetchModuleNav', module);
       try {
@@ -273,12 +309,30 @@ export class AppModuleNav extends HTMLElement {
       } catch { /* quota exceeded */ }
     } catch (e) {
       console.warn("fetchModuleNav failed:", e);
-      this.#nav = cached ?? null;
-      if (cached) return; // already on screen, and it's still our best answer
     }
 
+    // An empty answer is transient far more often than it is real. EE's
+    // fetchModuleNav awaits `/org/context` over the network and degrades to a
+    // thinner tree (or nothing) whenever that request wobbles, and #render()
+    // deletes this element when handed nothing — which is why the nested
+    // sidebar sometimes vanished mid-session on an API call. One flaky request
+    // is not a reason to delete a sidebar: keep what is on screen, don't cache
+    // the degraded answer over the good one, and let the next load correct it.
+    if (!fresh?.groups?.length) {
+      if (!cached) {
+        this.#nav = fresh;
+        this.#render();
+      }
+      return;
+    }
+
+    try {
+      sessionStorage.setItem(cacheKey, JSON.stringify(fresh));
+    } catch { /* quota exceeded */ }
+
     // Skip the repaint when the freshly fetched tree matches what's rendered.
-    if (cached && JSON.stringify(cached) === JSON.stringify(this.#nav)) return;
+    if (cached && JSON.stringify(cached) === JSON.stringify(fresh)) return;
+    this.#nav = fresh;
     this.#render();
   }
 
@@ -307,7 +361,23 @@ export class AppModuleNav extends HTMLElement {
     }
     const section = e.target.closest("[data-section]");
     if (section) {
+      // A section row may carry a `url` (its sections live on another page of
+      // the module). From that other page there is nothing here to switch, so
+      // follow the link and let the owning page pick the section out of the URL
+      // — swallowing the click was what used to pin the content to one panel.
+      // Every module now keeps its sections in one document (module-shell), so
+      // no nav entry takes this branch today; it is the seam that keeps a
+      // multi-document module working if one is added back.
+      const href = section.getAttribute("href");
+      if (href && !this.#isActive(href.split("#")[0])) {
+        document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
+        return;
+      }
       this.setAttribute("active-section", section.dataset.section);
+      // Name the view in the URL so the row the user is looking at is what a
+      // copied link opens. replaceState, not pushState: a section is a view of
+      // this page, not a place in history.
+      syncView(section.dataset.section);
       this.dispatchEvent(new CustomEvent("module-nav-select", {
         bubbles: true,
         detail: { section: section.dataset.section },
@@ -348,9 +418,15 @@ export class AppModuleNav extends HTMLElement {
   #itemHtml(item) {
     if (item.section != null) {
       const active = this.getAttribute("active-section") === item.section;
-      return `<button type="button" class="row child${active ? " is-active" : ""}"
+      // `url` names the page that owns the sections: a link so the row works
+      // from anywhere in the module, and on the owning page it only moves the
+      // hash (no reload) while the click handler switches the panel.
+      const tag = item.url
+        ? `a href="${escHtml(item.url)}#${escHtml(item.section)}"`
+        : `button type="button"`;
+      return `<${tag} class="row child${active ? " is-active" : ""}"
         data-section="${escHtml(item.section)}" ${active ? 'aria-current="true"' : ""}>
-        <span class="row-label">${escHtml(item.label)}</span></button>`;
+        <span class="row-label">${escHtml(item.label)}</span></${item.url ? "a" : "button"}>`;
     }
     const active = this.#isActive(item.url);
     return `<a class="row child${active ? " is-active" : ""}" href="${escHtml(item.url)}"
@@ -366,10 +442,19 @@ export class AppModuleNav extends HTMLElement {
       return;
     }
 
-    // Default active section: the attribute, else the first section item.
+    // Active section, in precedence order: whatever the host already set (a
+    // module-shell resolves this before the nav loads, and it owns the answer),
+    // then `?view=` so a shared link highlights the row it opened, then the
+    // first section item. Sections owned by another page are skipped — one
+    // would otherwise light up next to that page's own active row.
     if (!this.getAttribute("active-section")) {
-      const first = nav.groups.flatMap((g) => g.items).find((i) => i.section != null);
-      if (first) this.setAttribute("active-section", first.section);
+      const sections = nav.groups
+        .flatMap((g) => g.items)
+        .filter((i) => i.section != null && (!i.url || this.#isActive(i.url)))
+        .map((i) => i.section);
+      if (sections.length) {
+        this.setAttribute("active-section", initialView(sections));
+      }
     }
 
     const iconHtml = nav.icon && icons[nav.icon] ? icons[nav.icon]("", 14) : "";
