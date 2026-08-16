@@ -13,6 +13,9 @@
 
 import { router } from '/common/core/router.js';
 import { resolveOptional } from '/common/core/data-sources.js';
+import { dismissSplash } from '/common/components/app-splash.js';
+import { initErrorBoundary } from '/common/core/error-boundary.js';
+import { initRouteIntegration } from '/common/core/route-persistence.js';
 
 // ── Base route table ────────────────────────────────────────────────────
 // Each route maps a clean URL to a lazy-loaded page component.
@@ -66,6 +69,9 @@ async function loadExtensionRoutes() {
 // ── Boot ────────────────────────────────────────────────────────────────
 
 async function boot() {
+  // Wire up global error handling first — catches everything from here on
+  initErrorBoundary();
+
   // Register base routes
   router.addAll(BASE_ROUTES);
 
@@ -86,6 +92,12 @@ async function boot() {
     return;
   }
   router.start(outlet);
+
+  // Persist route state (scroll positions, deep-link context) across reloads
+  initRouteIntegration();
+
+  // Everything is wired — drop the splash screen and reveal the app
+  dismissSplash();
 }
 
 boot();

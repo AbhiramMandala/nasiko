@@ -3,6 +3,7 @@ import { fetchApi } from '../services/api.js';
 import { showToast } from '../utils/toast.js';
 import { confirmDialog } from '../utils/confirm-dialog.js';
 import { attachSlidingIndicator } from '../utils/tab-indicator.js';
+import { navigate } from '../core/router.js';
 import styles from './mcp-detail-page.css' with { type: 'css' };
 import './app-skeleton.js';
 import './autocomplete.js';
@@ -109,7 +110,7 @@ class McpDetailPage extends HTMLElement {
     this.innerHTML = `
       <div class="mdp-page">
         <div class="mdp-topbar">
-          <a class="mdp-back" href="/mcp.html">${icons.x('', 16)}</a>
+          <a class="mdp-back" href="/mcp">${icons.x('', 16)}</a>
         </div>
 
         <div class="mdp-header">
@@ -466,7 +467,7 @@ class McpDetailPage extends HTMLElement {
       if (!confirmed) return;
       try {
         await window.deleteMcpConnector(this.#connectorId);
-        location.href = '/mcp.html';
+        navigate('/mcp');
       } catch (e) {
         showToast('Failed to delete: ' + e.message);
       }

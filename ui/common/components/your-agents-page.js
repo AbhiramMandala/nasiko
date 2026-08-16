@@ -3,12 +3,12 @@ import { icons } from "/common/utils/icons.js";
 import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
+import { confirmDialog } from "/common/utils/confirm-dialog.js";
 import "/common/components/app-modal.js";
-import "/common/components/app-module-nav.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
 import "/common/components/app-card.js";
-import { escHtml, escAttr } from '/common/utils/escape.js';
+import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 
 
@@ -30,12 +30,13 @@ class YourAgentsPage extends HTMLElement {
   #agents = [];
   #statusFilter = "all";
   #sortBy = "name";
+  #pollTimer = null;
 
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
 
-    // The host page owns the shell (web/your-agents.html) so it paints styled
+    // The host page owns the shell (web/agents.html) so it paints styled
     // before this module arrives; here we only bind to it and fill the API-fed
     // regions. Fallback for hosts that don't supply it (element created in JS).
     if (!this.querySelector("#agents-grid")) this.insertAdjacentHTML("afterbegin", this.#shell());
@@ -77,16 +78,122 @@ class YourAgentsPage extends HTMLElement {
   async #load() {
     const result = await call('fetchContainers', "", 1, 100);
     this.#agents = result.data || [];
+
+    // Fetch upload info so we can show upload source (GitHub/Upload) on all
+    // agent cards and granular progress for agents still deploying.
+    try {
+      const res = await apiFetch("/agents/my-uploads");
+      if (res.ok) {
+        const body = await res.json();
+        const uploads = body.data || [];
+        const uploadMap = new Map();
+        for (const u of uploads) uploadMap.set(u.agent_name, u.upload_info);
+        for (const a of this.#agents) {
+          a._uploadInfo = uploadMap.get(a.name) || null;
+        }
+      }
+    } catch { /* best-effort */ }
+
     this.#renderTabs();
     this.#renderGrid();
+    this.#schedulePoll();
+  }
+
+  #schedulePoll() {
+    clearTimeout(this.#pollTimer);
+    const hasSettingUp = this.#agents.some(
+      (a) => a.status === "deploying" || a.status === "starting",
+    );
+    if (hasSettingUp) {
+      this.#pollTimer = setTimeout(() => this.#pollSettingUp(), 5000);
+    }
+  }
+
+  async #pollSettingUp() {
+    const result = await window.fetchContainers("", 1, 100);
+    const freshAgents = result.data || [];
+    const freshMap = new Map();
+    for (const a of freshAgents) freshMap.set(a.id, a);
+
+    let tabsChanged = false;
+    for (const a of this.#agents) {
+      if (a.status !== "deploying" && a.status !== "starting") continue;
+      const fresh = freshMap.get(a.id);
+      if (!fresh || fresh.status === a.status) continue;
+      // Status changed — update in place, preserve upload info
+      const uploadInfo = a._uploadInfo;
+      Object.assign(a, fresh);
+      a._uploadInfo = uploadInfo;
+      tabsChanged = true;
+      // Re-render only this card
+      const card = this.querySelector(`[data-agent-id="${a.id}"]`);
+      if (card) {
+        const tmp = document.createElement("div");
+        tmp.innerHTML = this.#renderCard(a);
+        card.replaceWith(tmp.firstElementChild);
+      }
+    }
+
+    if (tabsChanged) this.#renderTabs();
+    this.#schedulePoll();
+  }
+
+  #renderCard(a) {
+    const name = a.display_name || a.name;
+    const isRunning = a.status === "running";
+    const isError = a.status === "error" || a.status === "failed";
+    const isPending = a.status === "deploying" || a.status === "starting";
+    // Maps to <app-card variant>: running -> the green "active" accent,
+    // error/failed -> the red "error" body, deploying/starting -> the
+    // brand "setting-up" accent (genuinely mid-provisioning), everything
+    // else (stopped) -> "normal" — same as nasiko_ui's NasikoCard default.
+    const variant = isError ? "error" : isRunning ? "active" : isPending ? "setting-up" : "normal";
+    const { version: imgVersion } = parseImageTag(a.image);
+    const version = a.version || imgVersion;
+    const tags = (a.tags || []).map((t) => ({ label: t }));
+
+    const footerButtonsHtml = isRunning
+      ? `
+        <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
+        <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square("", 12)}</button>`
+      : `<button type="button" slot="footer" class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>`;
+
+    // data-agent-id is the hook the status poller keys on to swap a single
+    // card in place; without it the poller can't find the node and the whole
+    // grid re-renders, losing scroll position.
+    return `
+    <app-card
+      data-agent-id="${escAttr(a.id)}"
+      card-title="${escAttr(name)}"
+      ${version ? `version="v${escAttr(String(version).replace(/^v/, ""))}"` : ""}
+      variant="${variant}"
+      href="/agent-card?id=${escAttr(a.id)}"
+      ${isError ? `error-title="Agent failed" error-body="Container exited with an error."` : ""}
+      ${!isError && a.description ? `description="${escAttr(a.description)}"` : ""}
+      ${tags.length ? `tags="${escAttr(JSON.stringify(tags))}"` : ""}
+    >
+      ${isError ? `<a slot="footer" data-action="view-logs" href="/flows?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
+      ${footerButtonsHtml}
+      <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">
+        ${icons.trash("", 14)}
+      </button>
+    </app-card>
+  `;
+  }
+
+  disconnectedCallback() {
+    clearTimeout(this.#pollTimer);
   }
 
   #renderTabs() {
     const running = this.#agents.filter((a) => a.status === "running").length;
+    const settingUp = this.#agents.filter(
+      (a) => a.status === "deploying" || a.status === "starting",
+    ).length;
     const failed = this.#agents.filter(
       (a) => a.status === "error" || a.status === "failed",
     ).length;
-    const stopped = this.#agents.length - running - failed;
+    const stopped = this.#agents.length - running - settingUp - failed;
 
     const tab = (key, label, n) =>
       `<button class="type-tab ${this.#statusFilter === key ? "active" : ""}" role="tab"
@@ -96,6 +203,7 @@ class YourAgentsPage extends HTMLElement {
     this.querySelector("#status-tabs").innerHTML =
       tab("all", "All", this.#agents.length) +
       tab("running", "Running", running) +
+      tab("setting-up", "Setting up", settingUp) +
       tab("stopped", "Stopped", stopped) +
       tab("failed", "Failed", failed);
   }
@@ -106,10 +214,10 @@ class YourAgentsPage extends HTMLElement {
     btn.style.display = input.value ? "" : "none";
   }
 
-  /** Fallback shell — mirrors the static markup in web/your-agents.html. */
+  /** Fallback shell — mirrors the static markup in web/agents.html's
+   *  your-agents view. */
   #shell() {
     return `
-      <app-module-nav module="agents"></app-module-nav>
       <div class="page-header">
         <div class="page-header-top">
           <div>
@@ -125,6 +233,7 @@ class YourAgentsPage extends HTMLElement {
           <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
         </div>
         <div class="sort-wrap">
+          <span class="sort-icon">${icons.sortBoth("", 16)}</span>
           <select id="sort-select" class="sort-select" aria-label="Sort agents">
             <option value="name">Sort: Name</option>
             <option value="status">Sort: Status</option>
@@ -193,12 +302,17 @@ class YourAgentsPage extends HTMLElement {
         );
       } else if (this.#statusFilter === "running") {
         filtered = filtered.filter((a) => a.status === "running");
+      } else if (this.#statusFilter === "setting-up") {
+        filtered = filtered.filter(
+          (a) => a.status === "deploying" || a.status === "starting",
+        );
       } else {
-        // "stopped" covers everything that isn't running or failed
-        // (stopped, deploying, starting, unknown).
+        // "stopped" covers everything that isn't running, setting up, or failed.
         filtered = filtered.filter(
           (a) =>
             a.status !== "running" &&
+            a.status !== "deploying" &&
+            a.status !== "starting" &&
             a.status !== "error" &&
             a.status !== "failed",
         );
@@ -242,47 +356,7 @@ class YourAgentsPage extends HTMLElement {
       return;
     }
 
-    grid.innerHTML = filtered
-      .map((a) => {
-        const name = a.display_name || a.name;
-        const isRunning = a.status === "running";
-        const isError = a.status === "error" || a.status === "failed";
-        const isPending = a.status === "deploying" || a.status === "starting";
-        // Maps to <app-card variant>: running -> the green "active" accent,
-        // error/failed -> the red "error" body, deploying/starting -> the
-        // brand "setting-up" accent (genuinely mid-provisioning), everything
-        // else (stopped) -> "normal" — no accent bar, same as nasiko_ui's
-        // NasikoCard default.
-        const variant = isError ? "error" : isRunning ? "active" : isPending ? "setting-up" : "normal";
-        const { version: imgVersion } = parseImageTag(a.image);
-        const version = a.version || imgVersion;
-        const tags = (a.tags || []).map((t) => ({ label: t }));
-
-        const footerButtonsHtml = isRunning
-          ? `
-            <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
-            <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square("", 12)}</button>`
-          : `<button type="button" slot="footer" class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>`;
-
-        return `
-        <app-card
-          card-title="${escAttr(name)}"
-          ${version ? `version="v${escAttr(String(version).replace(/^v/, ""))}"` : ""}
-          variant="${variant}"
-          href="/agent-card?id=${escAttr(a.id)}"
-          ${isError ? `error-title="Agent failed" error-body="Container exited with an error."` : ""}
-          ${!isError && a.description ? `description="${escAttr(a.description)}"` : ""}
-          ${tags.length ? `tags="${escAttr(JSON.stringify(tags))}"` : ""}
-        >
-          ${isError ? `<a slot="footer" data-action="view-logs" href="/flows?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
-          ${footerButtonsHtml}
-          <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">
-            ${icons.trash("", 14)}
-          </button>
-        </app-card>
-      `;
-      })
-      .join("");
+    grid.innerHTML = filtered.map((a) => this.#renderCard(a)).join("");
   }
 
   #sortAgents(agents) {
@@ -473,12 +547,13 @@ class YourAgentsPage extends HTMLElement {
       } else if (action === "delete") {
         const name = btn.dataset.name;
         const id = btn.dataset.id;
-        if (
-          !confirm(
-            `Delete agent "${name}"? This will stop the container and remove it from the registry.`,
-          )
-        )
-          return;
+        const confirmed = await confirmDialog({
+          title: `Delete ${name}`,
+          message: `This will stop the container and remove it from the registry. This action cannot be undone.`,
+          confirmLabel: 'Delete',
+          danger: true,
+        });
+        if (!confirmed) return;
         try {
           const res = await apiFetch(
             `/agents/${encodeURIComponent(id)}`,

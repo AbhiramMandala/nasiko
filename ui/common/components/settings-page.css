@@ -88,7 +88,7 @@
     background: var(--bg-action);
     color: var(--fg-on-action);
     border: none;
-    border-radius: var(--r-8);
+    border-radius: var(--r-10);
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
@@ -97,5 +97,6 @@
     &:hover { background: var(--bg-action-hover); }
     &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
     &:disabled { opacity: 0.5; cursor: not-allowed; }
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
 }

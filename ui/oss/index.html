@@ -15,13 +15,18 @@
          1. navigation.js — registers data functions + fetchNavigation/fetchModuleNav
          2. app-header.js — renders the persistent shell (imports bootstrap.js)
          3. app.js        — defines routes + starts the router -->
+    <!-- Core systems — auto-inject CSS tokens + utilities on import -->
+    <script type="module" src="/common/core/motion.js"></script>
+    <script type="module" src="/common/core/responsive.js"></script>
+    <script type="module" src="/common/components/app-tooltip.js"></script>
     <script type="module" src="/navigation.js"></script>
     <script type="module" src="/common/components/app-header.js"></script>
     <script type="module" src="/app.js"></script>
   </head>
   <body>
-    <app-header></app-header>
-    <main id="outlet">
+    <app-splash></app-splash>
+    <app-header hidden></app-header>
+    <main id="outlet" hidden>
       <!-- The router mounts page components here. On initial load the outlet
            is empty — the page component's own connectedCallback renders its
            loading state (or the pre-upgrade skeleton CSS fills in). Subsequent

@@ -5,6 +5,12 @@
   /* Host box (display + padding): common/styles/page-layout.css — linked, so
      it is in effect at first paint. */
 
+  /* Mobile: the module nav is a full-width disclosure bar in normal flow, and
+     this host is a centered flex column — without this it shrinks to its own
+     content width. Desktop pins it out of flow, so this is inert there. */
+  app-module-nav,
+  .pre-modnav { align-self: stretch; }
+
   .page-icon {
     display: inline-flex;
     align-items: center;
@@ -94,20 +100,12 @@
     .method-grid { grid-template-columns: 1fr; width: min(100%, 520px); }
   }
 
+  /* Surface + hover lift: common/styles/surface.css */
   .method-card {
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-12);
     padding: var(--space-lg);
-    background: var(--bg-page);
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    transition: box-shadow var(--transition-fast), border-color var(--transition-fast);
-  }
-
-  .method-card:hover {
-    border-color: var(--border-emphasis);
-    box-shadow: var(--shadow-md);
   }
 
   .method-card-header {
@@ -128,6 +126,9 @@
     font-weight: 500;
     color: var(--color-text-muted);
   }
+  .method-card-req.connected {
+    color: var(--color-success, #22c55e);
+  }
 
   .method-card-desc {
     font-size: var(--font-size-sm);
@@ -144,13 +145,14 @@
     justify-content: center;
     height: var(--control-h-lg);
     border: none;
-    border-radius: var(--r-8);
+    border-radius: var(--r-10);
     background: var(--bg-action);
     color: var(--fg-on-action);
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
     transition: background var(--transition-fast);
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
 
   .method-btn:hover:not(:disabled) {

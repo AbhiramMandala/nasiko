@@ -1,4 +1,3 @@
-import { apiFetch } from '/common/services/api.js';
 import styles from './connect-github.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -6,6 +5,9 @@ const GITHUB_ICON = `<svg viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c
 
 class ConnectGithub extends HTMLElement {
   connectedCallback() {
+    const redirectPath = this.getAttribute('redirect') || window.location.pathname + window.location.search;
+    const scope = this.getAttribute('scope') || 'repo,read:user';
+
     this.innerHTML = `
       <div class="connect-card">
         <div class="connect-icon">${GITHUB_ICON}</div>
@@ -13,10 +15,10 @@ class ConnectGithub extends HTMLElement {
         <p class="connect-desc">
           Connect your GitHub account to browse repositories, deploy agents directly from source, and enable automated builds.
         </p>
-        <button class="connect-btn" type="button">
+        <a href="/api/github/login?scope=${encodeURIComponent(scope)}&redirect=${encodeURIComponent(redirectPath)}" class="connect-btn">
           ${GITHUB_ICON}
           Connect GitHub Account
-        </button>
+        </a>
         <p class="connect-scopes">Permissions requested: repository access, user profile</p>
       </div>
     `;

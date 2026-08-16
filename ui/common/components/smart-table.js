@@ -21,7 +21,7 @@ import '/common/components/app-modal.js';
 import { createEventTracker, debounce } from '../utils/data-component-utils.js';
 import { resolveOptional as resolveDataSource } from '../core/data-sources.js';
 import styles from './smart-table.css' with { type: 'css' };
-import { escHtml, escAttr } from '/common/utils/escape.js';
+import { escAttr, escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 // Icon references — sourced from the shared icons library
@@ -68,7 +68,7 @@ export class SmartTable extends HTMLElement {
   }
 
   static get observedAttributes() {
-    return ['limit', 'data-fn', 'search-placeholder', 'search', 'detail'];
+    return ['limit', 'data-fn', 'search-placeholder', 'search', 'detail', 'empty-message'];
   }
 
   connectedCallback() {
@@ -264,8 +264,17 @@ export class SmartTable extends HTMLElement {
     if (!thead || !tbody) return;
 
     if (!this.#data || this.#data.length === 0) {
-      thead.innerHTML = '';
-      tbody.innerHTML = `<tr><td class="empty" colspan="100%">No results found</td></tr>`;
+      // Keep the header row. Blanking it left a <colgroup> sizing columns that
+      // had no headers above them, so an empty table read as a broken one.
+      this.#renderColgroup(this.columns);
+      this.#renderHead(this.columns);
+      // "No results found" is only true when something was actually searched
+      // for — on a table with no active query it told the user their own filter
+      // came up empty on a filter they never set.
+      const message = this.#searchQuery
+        ? `No results for “${escHtml(this.#searchQuery)}”`
+        : (this.getAttribute('empty-message') || 'Nothing here yet');
+      tbody.innerHTML = `<tr><td class="empty" colspan="100%">${message}</td></tr>`;
       return;
     }
 
@@ -300,7 +309,10 @@ export class SmartTable extends HTMLElement {
         const cell = col.render
           ? col.render(raw, row)
           : `<span title="${escAttr(raw)}">${escHtml(raw)}</span>`;
-        return `<td class="td${col.wrap ? ' is-wrap' : ''}">${cell}</td>`;
+        // `is-plain` mirrors the header marker for label-less (row-action)
+        // columns, so CSS can pin the action cell and its header together.
+        const plain = !String(col.label ?? col.key).trim() ? ' is-plain' : '';
+        return `<td class="td${col.wrap ? ' is-wrap' : ''}${plain}">${cell}</td>`;
       }).join('')}</tr>
     `).join('');
   }

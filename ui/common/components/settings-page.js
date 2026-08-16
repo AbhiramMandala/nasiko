@@ -1,6 +1,6 @@
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
-import '/common/components/app-module-nav.js';
+import { initialView, syncView } from '/common/utils/module-view.js';
 
 import styles from './settings-page.css' with { type: 'css' };
 import { call } from '../core/data-sources.js';
@@ -21,26 +21,42 @@ const TABS = [
   { key: 'sso', label: 'Single sign-on', sub: 'OIDC provider used for "Continue with Microsoft".' },
 ];
 
+// The key web/settings.html gives this element as a `data-view` of the Settings
+// module-shell. The shell selects between *views* (this page and Secrets); the
+// four sections above are a finer level inside this one view, which is why they
+// are not view keys and why this element is the shell's `default-view` — a
+// `?view=limits` link means "Settings, Flow limits section", and only the
+// fallback-to-default keeps the shell showing this page for it.
+const VIEW = 'settings';
+
 class SettingsPage extends HTMLElement {
   #initialized = false;
   #settings = {};
+  /** The section on screen — one of TABS' keys. */
+  #section = TABS[0].key;
+  /** Where the nav's bubbling events are listened for (see connectedCallback). */
+  #navRoot = null;
 
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
 
-    this.innerHTML = `
-      <app-module-nav module="settings"></app-module-nav>
+    // Deep links name a section, not a view: `?view=limits` opens this page on
+    // Flow limits. Same param and same validator as the shell's, so the two
+    // levels cannot disagree about how a view is spelled — an unknown value
+    // falls back to General rather than rendering four hidden panels.
+    this.#section = initialView(TABS.map(t => t.key), TABS[0].key);
 
+    this.innerHTML = `
       <div class="content">
         ${TABS.map(t => `
-          <div class="panel-head${t.key === 'general' ? ' is-active' : ''}" data-panel-head="${t.key}">
+          <div class="panel-head${t.key === this.#section ? ' is-active' : ''}" data-panel-head="${t.key}">
             <h1 class="title-page">${t.label}</h1>
             <p class="page-sub">${t.sub}</p>
           </div>
         `).join('')}
 
-        <div class="panel is-active" data-panel="general">
+        <div class="panel${this.#section === 'general' ? ' is-active' : ''}" data-panel="general">
           <div class="setting-row">
             <div class="setting-info">
               <label for="s-router-model">Router model</label>
@@ -83,7 +99,7 @@ class SettingsPage extends HTMLElement {
           </div>
         </div>
 
-        <div class="panel" data-panel="limits">
+        <div class="panel${this.#section === 'limits' ? ' is-active' : ''}" data-panel="limits">
           <div class="setting-row">
             <div class="setting-info">
               <label for="s-flow-depth">Max call depth</label>
@@ -122,7 +138,7 @@ class SettingsPage extends HTMLElement {
           </div>
         </div>
 
-        <div class="panel" data-panel="registry">
+        <div class="panel${this.#section === 'registry' ? ' is-active' : ''}" data-panel="registry">
           <div class="setting-row">
             <div class="setting-info">
               <label for="s-registry-url">OCI registry URL</label>
@@ -143,7 +159,7 @@ class SettingsPage extends HTMLElement {
           </div>
         </div>
 
-        <div class="panel" data-panel="sso">
+        <div class="panel${this.#section === 'sso' ? ' is-active' : ''}" data-panel="sso">
           <div class="setting-row">
             <div class="setting-info">
               <label for="s-oidc-issuer">Issuer URL</label>
@@ -208,18 +224,65 @@ class SettingsPage extends HTMLElement {
       </div>
     `;
 
-    this.addEventListener('module-nav-select', (e) => {
-      const key = e.detail.section;
-      if (!TABS.some(t => t.key === key)) return;
-      this.querySelectorAll('.panel').forEach(p =>
-        p.classList.toggle('is-active', p.dataset.panel === key));
-      this.querySelectorAll('.panel-head').forEach(h =>
-        h.classList.toggle('is-active', h.dataset.panelHead === key));
-    });
+    // The nav is the shell's child, not this element's (see web/settings.html),
+    // so its bubbling `module-nav-select` goes past this element rather than
+    // through it — listen on the shell. Standalone hosts (an element created in
+    // JS, or a page that still renders its own nav inside) keep the old target.
+    this.#navRoot = this.closest('module-shell') ?? this;
+    this.#navRoot.addEventListener('module-nav-select', this.#onNavSelect);
+
+    // Only meaningful for the shell's own view keys, and the shell resolves
+    // those itself; here it is the section level that has to reach the nav.
+    if (this.#isActiveView()) this.#highlightNav(this.#section);
 
     this.querySelector('#btn-save').addEventListener('click', () => this.#save());
     this.#load();
   }
+
+  disconnectedCallback() {
+    this.#navRoot?.removeEventListener('module-nav-select', this.#onNavSelect);
+  }
+
+  /** True when the shell is showing this view (or there is no shell). */
+  #isActiveView() {
+    const shell = this.closest('module-shell');
+    return !shell || shell.activeView === VIEW;
+  }
+
+  /** The nav lives beside this element now, and only this element knows which
+   *  section is up, so the highlight at that granularity is ours to set. */
+  #highlightNav(key) {
+    (this.closest('module-shell') ?? this)
+      .querySelector('app-module-nav')
+      ?.setAttribute('active-section', key);
+  }
+
+  /**
+   * One event, two granularities. The shell answers it for its view keys and
+   * ignores everything else, and these four section keys are exactly that
+   * "everything else" — so a workspace row never moves the shell, and this
+   * element owns the switch.
+   */
+  #onNavSelect = (e) => {
+    const key = e.detail?.section;
+    if (!TABS.some(t => t.key === key)) return;
+    this.#section = key;
+    this.querySelectorAll('.panel').forEach(p =>
+      p.classList.toggle('is-active', p.dataset.panel === key));
+    this.querySelectorAll('.panel-head').forEach(h =>
+      h.classList.toggle('is-active', h.dataset.panelHead === key));
+
+    // Arriving from a sibling view (Secrets): the shell is still showing that
+    // one, since the key it just saw is not one of its own, so ask it for this
+    // view. `show()` then names *its* coarser key in the URL and on the nav, so
+    // put the section the user actually clicked back into both.
+    const shell = this.closest('module-shell');
+    if (shell && shell.activeView !== VIEW) {
+      shell.show(VIEW);
+      syncView(key);
+      this.#highlightNav(key);
+    }
+  };
 
   async #load() {
     const s = await call('fetchSettings');

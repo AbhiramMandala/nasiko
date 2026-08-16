@@ -2,13 +2,12 @@ import { apiFetch } from '/common/services/api.js';
 import { isAbort, userMessage } from '/common/core/errors.js';
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
-import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
+import { readA2aStream, frameRenderer, nearBottom, scrollerFor, stickToBottom } from '/common/utils/a2a-stream.js';
 import { usageChipsHtml } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
 import { registerAll } from '/common/core/data-sources.js';
 import '/common/components/voice-input.js';
 import '/common/components/agent-steps.js';
-import '/common/components/app-module-nav.js';
 
 const transcribeAudio = transcribeBlob;
 registerAll({ transcribeAudio }, { replace: true });
@@ -33,10 +32,9 @@ class OrchestratorPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
-      <app-module-nav module="orchestrator"></app-module-nav>
       <div class="hero-icon" aria-hidden="true">${icons.route('', 24)}</div>
       <h1 class="title">Orchestrate a task</h1>
-      <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it.</p>
+      <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it</p>
       <div class="recent-agents" id="recent-agents">
         <div class="recent-agents-grid" id="recent-agents-grid">
           <div class="agent-card-skel"></div>
@@ -108,7 +106,7 @@ class OrchestratorPage extends HTMLElement {
       pendingRow.className = 'msg-row is-assistant';
       pendingRow.innerHTML = `<div class="typing-indicator" aria-label="Agent is responding"><span></span><span></span><span></span></div>`;
       messagesEl.appendChild(pendingRow);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      stickToBottom(messagesEl);
 
       try {
         // Create session on first message, reuse for subsequent ones
@@ -213,7 +211,7 @@ class OrchestratorPage extends HTMLElement {
     }
 
     messagesEl.appendChild(row);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    stickToBottom(messagesEl);
   }
 
   #traceLinkHtml(traceId) {
@@ -233,7 +231,26 @@ class OrchestratorPage extends HTMLElement {
       const agents = Array.isArray(body) ? body : (body.data || []);
 
       if (!agents.length) {
-        grid.innerHTML = `<span style="font-size:var(--font-size-sm);color:var(--color-text-muted)">No agents running</span>`;
+        // ponytail: nothing to route to, so the composer is dead UI — swap the
+        // whole page for the deploy CTA instead of a prompt box that can only fail.
+        // Same shape as the workflows empty state (tile → title → sub → pills → CTA),
+        // reusing this page's own hero/title/subtitle rules for the top three.
+        this.classList.add('is-empty');
+        this.innerHTML = `
+          <app-module-nav module="orchestrator"></app-module-nav>
+          <div class="empty-wrap">
+            <div class="hero-icon" aria-hidden="true">${icons.layers('', 24)}</div>
+            <h2 class="empty-title">No agents available</h2>
+            <p class="empty-sub">Your orchestrator is ready, but there aren't any agents to run yet. Create a new agent or deploy one from the Artifact Registry to start building workflows.</p>
+             <div class="empty-pills">
+              <span class="process-pill">${icons.layers('', 12)} Pick an agent</span>
+              ${icons.chevronRight('empty-arrow', 12)}
+              <span class="process-pill">${icons.upload('', 12)} Deploy</span>
+              ${icons.chevronRight('empty-arrow', 12)}
+              <span class="process-pill">${icons.route('', 12)} Orchestrate</span>
+            </div>
+            <a class="empty-cta" href="/add-agent">Import agent ${icons.plus('', 13)}</a>
+          </div>`;
         return;
       }
 
@@ -276,10 +293,10 @@ class OrchestratorPage extends HTMLElement {
     streamArea.appendChild(contentEl);
     streamRow.appendChild(streamArea);
     messagesEl.appendChild(streamRow);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    stickToBottom(messagesEl);
 
     const follow = () => {
-      if (nearBottom(messagesEl)) messagesEl.scrollTop = messagesEl.scrollHeight;
+      if (nearBottom(scrollerFor(messagesEl))) stickToBottom(messagesEl);
     };
 
     const showContent = (html, { progress = false } = {}) => {

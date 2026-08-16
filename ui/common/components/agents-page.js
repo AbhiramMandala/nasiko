@@ -142,7 +142,6 @@ class AgentsPage extends HTMLElement {
   /** Fallback shell — mirrors the static markup in web/agents.html. */
   #shell() {
     return `
-      <app-module-nav module="agents"></app-module-nav>
       <div class="page-top">
         <h1 class="title-page">Agent hub</h1>
         <!-- Deliberately count-free: the fleet size lands in the "All N" tab.

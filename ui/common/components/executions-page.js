@@ -12,7 +12,6 @@ import { icons } from '/common/utils/icons.js';
 import { timeAgo, formatDisplay } from '/common/utils/date-utils.js';
 import { fmtDuration, fmtTokens } from '/common/utils/units.js';
 import { attachSlidingIndicator } from '/common/utils/tab-indicator.js';
-import '/common/components/app-module-nav.js';
 import '/common/components/wf-run-steps.js';
 
 import styles from './executions-page.css' with { type: 'css' };
@@ -39,7 +38,6 @@ class ExecutionsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
-      <app-module-nav module="orchestrator"></app-module-nav>
       <h1 class="title-page page-title">All executions</h1>
       <div class="tabs" role="tablist">
         <button type="button" class="tab is-active" role="tab" data-tab="active" aria-selected="true">Active</button>

@@ -7,6 +7,9 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 // Workspace-level secrets. All CRUD lives in <secrets-manager scope="user">
 // (GET|POST /api/secrets, DELETE /api/secrets/{name}); this page only supplies
 // the page chrome around it.
+//
+// A view of the Settings module page (web/settings.html, `?view=secrets`), so it
+// renders no module nav of its own — the shell owns one nav for every view.
 class SecretsPage extends HTMLElement {
   #initialized = false;
 
