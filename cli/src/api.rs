@@ -704,6 +704,7 @@ impl RegistryClient {
 
 impl Client {
     /// Upload a zip file to `POST /api/agents/upload` and return the queued build info.
+    #[allow(clippy::too_many_arguments)]
     pub fn upload_agent(
         &self,
         zip_path: &std::path::Path,
@@ -711,6 +712,8 @@ impl Client {
         version_tag: &str,
         ports: &[u16],
         env: &std::collections::HashMap<String, String>,
+        writable: bool,
+        writable_path: Option<&str>,
     ) -> anyhow::Result<UploadQueued> {
         let file_bytes = std::fs::read(zip_path)
             .with_context(|| format!("cannot read {}", zip_path.display()))?;
@@ -745,6 +748,18 @@ impl Client {
             let env_json = serde_json::to_string(env).unwrap_or_else(|_| "{}".into());
             body.extend_from_slice(
                 format!("--{boundary}\r\nContent-Disposition: form-data; name=\"env\"\r\n\r\n{env_json}\r\n").as_bytes(),
+            );
+        }
+        // writable
+        if writable {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"writable\"\r\n\r\ntrue\r\n").as_bytes(),
+            );
+        }
+        // writable_path (implies writable server-side)
+        if let Some(path) = writable_path {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"writable_path\"\r\n\r\n{path}\r\n").as_bytes(),
             );
         }
         // file (the zip file)
@@ -1245,6 +1260,10 @@ pub struct DeploySpec {
     pub ports: Vec<u16>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub env: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub writable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writable_path: Option<String>,
 }
 
 #[cfg(test)]

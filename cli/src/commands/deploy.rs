@@ -20,23 +20,7 @@ const AGENT_FILE: &str = ".nasiko/agent.json";
 ///    - Exists → update agent + restart container
 ///    - Not found → create new agent, save ID
 /// 4. Deploy/restart container
-pub fn deploy(
-    image: &str,
-    name: Option<&str>,
-    port: u16,
-    env_file: Option<&str>,
-    env_args: &[String],
-) -> Result<()> {
-    deploy_with_version_flags(
-        image,
-        name,
-        port,
-        env_file,
-        env_args,
-        VersionFlags::default(),
-    )
-}
-
+#[allow(clippy::too_many_arguments)]
 pub fn deploy_with_version_flags(
     image: &str,
     name: Option<&str>,
@@ -44,14 +28,18 @@ pub fn deploy_with_version_flags(
     env_file: Option<&str>,
     env_args: &[String],
     flags: VersionFlags,
+    writable: bool,
+    writable_path: Option<&str>,
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let env = parse_env(env_file, env_args)?;
+    // A path implies the mount (mirrors the server-side rule).
+    let writable = writable || writable_path.is_some();
 
     if Path::new(image).join("AgentCard.json").exists() {
-        deploy_from_directory(image, name, port, &env, flags, &client)
+        deploy_from_directory(image, name, port, &env, flags, writable, writable_path, &client)
     } else {
-        deploy_from_image(image, name, port, &env, flags, &client)
+        deploy_from_image(image, name, port, &env, flags, writable, writable_path, &client)
     }
 }
 
@@ -137,12 +125,15 @@ fn parse_env(env_file: Option<&str>, env_args: &[String]) -> Result<HashMap<Stri
     Ok(env)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn deploy_from_directory(
     dir: &str,
     name_override: Option<&str>,
     port: u16,
     env: &HashMap<String, String>,
     flags: VersionFlags,
+    writable: bool,
+    writable_path: Option<&str>,
     client: &Client,
 ) -> Result<()> {
     let root = Path::new(dir);
@@ -209,6 +200,8 @@ fn deploy_from_directory(
                 name: agent_name.clone(),
                 ports: vec![port],
                 env: env.clone(),
+                writable,
+                writable_path: writable_path.map(str::to_owned),
             };
             let status: ContainerStatus = client.post_json("/containers", &spec)?;
             println!("  {} → {}", agent_name, status.state);
@@ -260,6 +253,8 @@ fn deploy_from_directory(
         name: agent_name.clone(),
         ports: vec![port],
         env: env.clone(),
+        writable,
+        writable_path: writable_path.map(str::to_owned),
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;
     println!("  {} → {}", agent_name, status.state);
@@ -276,6 +271,8 @@ fn deploy_from_image(
     port: u16,
     env: &HashMap<String, String>,
     flags: VersionFlags,
+    writable: bool,
+    writable_path: Option<&str>,
     client: &Client,
 ) -> Result<()> {
     let (image_name, image_tag_version) = parse_image_name_and_tag(image);
@@ -330,6 +327,8 @@ fn deploy_from_image(
             name: agent_name.clone(),
             ports: vec![port],
             env: env.clone(),
+            writable,
+            writable_path: writable_path.map(str::to_owned),
         };
         let status: ContainerStatus = client.post_json("/containers", &spec)?;
         println!("  {} → {}", agent_name, status.state);
@@ -361,6 +360,8 @@ fn deploy_from_image(
         name: agent_name.clone(),
         ports: vec![port],
         env: env.clone(),
+        writable,
+        writable_path: writable_path.map(str::to_owned),
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;
     println!("  {} → {}", agent_name, status.state);

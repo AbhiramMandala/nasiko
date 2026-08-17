@@ -2,9 +2,6 @@ import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import '/common/components/app-modal.js';
 import styles from './add-agent-page.css' with { type: 'css' };
-import '/common/components/app-button.js';
-import { navigate as routerNavigate } from '../core/router.js';
-
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /// Mirrors the server's `validate_version_tag` (oss/server/src/build/routes.rs),
@@ -42,7 +39,7 @@ class AddAgentPage extends HTMLElement {
       <h1 class="title-page">Import new agent</h1>
       <p class="page-subtitle">Choose how you would like to register your agent.</p>
 
-      <a class="cli-banner" href="/setup-cli">
+      <a class="cli-banner" href="/setup-cli.html">
         <span class="cli-banner-icon">${icons.terminal('', 18)}</span>
         <span class="cli-banner-text">
           <span class="cli-banner-title">Set up CLI</span>
@@ -98,14 +95,14 @@ class AddAgentPage extends HTMLElement {
           <p class="form-error" id="upload-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="outline" id="upload-cancel">Cancel</app-button>
-          <app-button variant="dark" id="upload-submit">Upload and deploy</app-button>
+          <button type="button" class="btn-outline" id="upload-cancel">Cancel</button>
+          <button type="button" class="btn-dark" id="upload-submit">Upload and deploy</button>
         </div>
       </app-modal>
     `;
 
     this.querySelector('#btn-github')?.addEventListener('click', () => {
-      routerNavigate('/add-agent-github');
+      window.location.href = '/add-agent-github.html';
     });
 
     this.#checkGithubStatus();
@@ -121,7 +118,7 @@ class AddAgentPage extends HTMLElement {
           body: JSON.stringify({ reference }),
         });
         if (!res.ok) throw new Error(await res.text());
-        routerNavigate('/your-agents');
+        window.location.href = '/agents.html?view=your-agents';
       } catch (err) {
         const { showToast } = await import('/common/utils/toast.js');
         showToast(`Import failed: ${err.message}`);
@@ -196,7 +193,7 @@ class AddAgentPage extends HTMLElement {
       try {
         const res = await apiFetch('/agents/upload', { method: 'POST', body: formData });
         if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
-        routerNavigate('/your-agents');
+        window.location.href = '/agents.html?view=your-agents';
       } catch (err) {
         this.#showUploadError(`Upload failed: ${err.message}`);
       } finally {

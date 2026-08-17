@@ -25,7 +25,7 @@
     width: 1px;
     min-height: 20px;
     margin-top: var(--s-4);
-    background: var(--bg-disabled);
+    background: light-dark(var(--sand-200), var(--neutral-700));
   }
 
   .spin {
@@ -102,7 +102,7 @@
   }
   /* On a sand card (surface="sand") the wells flip to white for contrast */
   :scope[surface='sand'] .pane-tab.is-active {
-    background: var(--color-bg-surface);
+    background: light-dark(var(--white), var(--neutral-800));
   }
 
   .pane {
@@ -118,7 +118,7 @@
     overflow-wrap: anywhere;
   }
   :scope[surface='sand'] .pane {
-    background: var(--color-bg-surface);
+    background: light-dark(var(--white), var(--neutral-800));
   }
   .pane.md-body { font-size: var(--font-size-xs); }
   .pane--mono {

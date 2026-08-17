@@ -3,20 +3,20 @@ import { icons } from "/common/utils/icons.js";
 import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
-import { confirmDialog } from "/common/components/confirm-dialog.js";
+import { confirmDialog } from "/common/utils/confirm-dialog.js";
 import "/common/components/app-modal.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
-import "/common/components/app-card.js";
-import { escAttr, escHtml } from '/common/utils/escape.js';
-import { call } from '../core/data-sources.js';
 
+// your-agents-page.css is <link>ed by the host page, not imported here: a sheet
+// pulled in by this module only exists once the module does, which is too late
+// to style the static shell the page paints before then (see web/agents.html).
 
-// In MPA mode, your-agents-page.css was <link>ed in the HTML. In SPA mode the
-// router lazy-loads this module, so we adopt the sheet here too.
-import yourAgentsStyles from './your-agents-page.css' with { type: 'css' };
-if (!document.adoptedStyleSheets.includes(yourAgentsStyles)) {
-  document.adoptedStyleSheets = [...document.adoptedStyleSheets, yourAgentsStyles];
+function statusClass(status) {
+  if (status === "running") return "is-running";
+  if (status === "error" || status === "failed") return "is-error";
+  if (status === "deploying" || status === "starting") return "is-pending";
+  return "is-stopped";
 }
 
 function parseImageTag(image) {
@@ -76,7 +76,7 @@ class YourAgentsPage extends HTMLElement {
   }
 
   async #load() {
-    const result = await call('fetchContainers', "", 1, 100);
+    const result = await window.fetchContainers("", 1, 100);
     this.#agents = result.data || [];
 
     // Fetch upload info so we can show upload source (GitHub/Upload) on all
@@ -142,43 +142,65 @@ class YourAgentsPage extends HTMLElement {
     const name = a.display_name || a.name;
     const isRunning = a.status === "running";
     const isError = a.status === "error" || a.status === "failed";
-    const isPending = a.status === "deploying" || a.status === "starting";
-    // Maps to <app-card variant>: running -> the green "active" accent,
-    // error/failed -> the red "error" body, deploying/starting -> the
-    // brand "setting-up" accent (genuinely mid-provisioning), everything
-    // else (stopped) -> "normal" — same as nasiko_ui's NasikoCard default.
-    const variant = isError ? "error" : isRunning ? "active" : isPending ? "setting-up" : "normal";
+    const isSettingUp = a.status === "deploying" || a.status === "starting";
     const { version: imgVersion } = parseImageTag(a.image);
     const version = a.version || imgVersion;
-    const tags = (a.tags || []).map((t) => ({ label: t }));
+    const allTags = a.tags || [];
+    const shownTags = allTags.slice(0, 2);
+    const extraTags = allTags.length - shownTags.length;
+    const tagsHtml =
+      shownTags.map((t) => `<span class="tag">${this.#esc(t)}</span>`).join("") +
+      (extraTags > 0 ? `<span class="tag tag--more">+${extraTags}</span>` : "");
 
-    const footerButtonsHtml = isRunning
-      ? `
-        <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
-        <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square("", 12)}</button>`
-      : `<button type="button" slot="footer" class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>`;
+    const cardClass = isError ? " agent-card--error" : isSettingUp ? " agent-card--setting-up" : "";
+    const sourceType = a._uploadInfo?.upload_type;
+    const sourceLabel = sourceType === "github" ? "GitHub" : sourceType === "zip" ? "Zip" : null;
 
-    // data-agent-id is the hook the status poller keys on to swap a single
-    // card in place; without it the poller can't find the node and the whole
-    // grid re-renders, losing scroll position.
+    let bodyHtml = "";
+    if (isError) {
+      bodyHtml = `<div class="agent-card-error"><span class="agent-card-error-title">Agent failed</span>Container exited with an error. <a href="/sessions.html?view=flows&agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a></div>`;
+    } else if (isSettingUp) {
+      const info = a._uploadInfo;
+      const statusMsg = info?.status_message || (a.status === "starting" ? "Starting container..." : "Building and deploying...");
+      bodyHtml = `
+        <div class="agent-card-setup">
+          <div class="setup-progress">
+            <span class="setup-spinner"></span>
+            <span class="setup-label">${this.#esc(statusMsg)}</span>
+          </div>
+          <p class="setup-hint">This may take a few minutes. Status updates automatically.</p>
+        </div>`;
+    } else if (a.description) {
+      bodyHtml = `<div class="agent-card-desc">${this.#esc(a.description)}</div>`;
+    }
+
+    let actionsHtml = "";
+    if (isRunning) {
+      actionsHtml = `
+        <button class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${this.#escAttr(a.name)}" aria-label="Restart ${this.#escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
+        <button class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${this.#escAttr(a.name)}" aria-label="Stop ${this.#escAttr(name)}" title="Stop">${icons.square("", 12)}</button>`;
+    } else if (!isSettingUp) {
+      actionsHtml = `
+        <button class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" data-image="${this.#escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>`;
+    }
+
     return `
-    <app-card
-      data-agent-id="${escAttr(a.id)}"
-      card-title="${escAttr(name)}"
-      ${version ? `version="v${escAttr(String(version).replace(/^v/, ""))}"` : ""}
-      variant="${variant}"
-      href="/agent-card?id=${escAttr(a.id)}"
-      ${isError ? `error-title="Agent failed" error-body="Container exited with an error."` : ""}
-      ${!isError && a.description ? `description="${escAttr(a.description)}"` : ""}
-      ${tags.length ? `tags="${escAttr(JSON.stringify(tags))}"` : ""}
-    >
-      ${isError ? `<a slot="footer" data-action="view-logs" href="/flows?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
-      ${footerButtonsHtml}
-      <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">
-        ${icons.trash("", 14)}
-      </button>
-    </app-card>
-  `;
+    <div class="agent-card${cardClass}" data-agent-id="${this.#escAttr(a.id)}">
+      ${sourceLabel ? `<span class="agent-card-source">${sourceLabel}</span>` : ""}
+      <div class="agent-card-top">
+        <span class="status-dot ${statusClass(a.status)}" title="${this.#esc(a.status)}"></span>
+        <a class="agent-card-name" href="/agent-card.html?id=${this.#escAttr(a.id)}">${this.#esc(name)}</a>
+        ${version ? `<span class="agent-card-version">v${this.#esc(String(version).replace(/^v/, ""))}</span>` : ""}
+      </div>
+      ${tagsHtml ? `<div class="agent-card-tags">${tagsHtml}</div>` : ""}
+      ${bodyHtml}
+      <div class="agent-card-actions">
+        ${actionsHtml}
+        ${!isSettingUp ? `<button class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${this.#escAttr(a.id)}" data-name="${this.#escAttr(a.name)}" aria-label="Delete ${this.#escAttr(name)}" title="Delete ${this.#escAttr(name)}">
+          ${icons.trash("", 14)}
+        </button>` : ""}
+      </div>
+    </div>`;
   }
 
   disconnectedCallback() {
@@ -337,8 +359,8 @@ class YourAgentsPage extends HTMLElement {
             title="No agents deployed"
             description="Deploy your first agent from the catalog or add a new one."
             icon='${icons.layers("", 40)}'>
-            <a href="/agents" class="empty-action-link">Browse catalog</a>
-            <a href="/add-agent" class="empty-action-link empty-action-link--secondary">Add agent</a>
+            <a href="/agents.html" class="empty-action-link">Browse catalog</a>
+            <a href="/agents.html?view=import" class="empty-action-link empty-action-link--secondary">Import agent</a>
           </app-empty-state>
         </div>`;
       return;
@@ -395,7 +417,7 @@ class YourAgentsPage extends HTMLElement {
     const addEnvRow = (key = "", value = "") => {
       const row = document.createElement("div");
       row.className = "env-row";
-      row.innerHTML = `<input type="text" placeholder="KEY" value="${escAttr(key)}" /><input type="text" placeholder="value" value="${escAttr(value)}" /><button class="env-remove" aria-label="Remove variable">${icons.xCircle("", 16)}</button>`;
+      row.innerHTML = `<input type="text" placeholder="KEY" value="${this.#escAttr(key)}" /><input type="text" placeholder="value" value="${this.#escAttr(value)}" /><button class="env-remove" aria-label="Remove variable">${icons.xCircle("", 16)}</button>`;
       row.querySelector(".env-remove").addEventListener("click", () => row.remove());
       envRows.appendChild(row);
     };
@@ -427,7 +449,7 @@ class YourAgentsPage extends HTMLElement {
         secretChips.innerHTML = userSecrets
           .map(
             (s) =>
-              `<span class="secret-chip" data-name="${escAttr(s.name)}">${escHtml(s.name)}</span>`,
+              `<span class="secret-chip" data-name="${this.#escAttr(s.name)}">${this.#esc(s.name)}</span>`,
           )
           .join("");
         secretsSection.style.display = "";
@@ -569,6 +591,19 @@ class YourAgentsPage extends HTMLElement {
     });
   }
 
+  #esc(s) {
+    const d = document.createElement("span");
+    d.textContent = s || "";
+    return d.innerHTML;
+  }
+
+  #escAttr(s) {
+    return (s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
 }
 
 customElements.define("your-agents-page", YourAgentsPage);

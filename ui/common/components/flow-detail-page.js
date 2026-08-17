@@ -1,9 +1,6 @@
 import { icons } from '/common/utils/icons.js';
 
 import styles from './flow-detail-page.css' with { type: 'css' };
-import { escHtml } from '/common/utils/escape.js';
-import { call } from '../core/data-sources.js';
-
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const STATUS_VARIANTS = { completed: 'success', running: 'info', failed: 'error', timeout: 'warning' };
@@ -17,7 +14,7 @@ class FlowDetailPage extends HTMLElement {
         <h1 class="title-page">Flow detail</h1>
         ${sub ? `<p class="page-sub">${sub}</p>` : ''}
       </div>
-      <a class="back-link" href="/flows">${icons.chevronLeft('', 16)}Back to flows</a>
+      <a class="back-link" href="/sessions.html?view=flows">${icons.chevronLeft('', 16)}Back to flows</a>
     </header>`;
   }
 
@@ -39,7 +36,7 @@ class FlowDetailPage extends HTMLElement {
   }
 
   async #load(flowId) {
-    const data = await call('fetchFlowDetail', flowId);
+    const data = await window.fetchFlowDetail(flowId);
     if (!data) {
       this.innerHTML = `${this.#toolbar()}
         <div class="empty-state">
@@ -62,7 +59,7 @@ class FlowDetailPage extends HTMLElement {
       ? new Date(flow.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
       : '—';
 
-    this.innerHTML = `${this.#toolbar(escHtml(flow.title || ''))}
+    this.innerHTML = `${this.#toolbar(this.#esc(flow.title || ''))}
       <div class="kpi-strip">
         <div class="kpi">
           <div class="kpi-label">Status</div>
@@ -70,7 +67,7 @@ class FlowDetailPage extends HTMLElement {
         </div>
         <div class="kpi">
           <div class="kpi-label">Root agent</div>
-          <div class="kpi-value is-mono">${escHtml(flow.root_agent_name || 'orchestrator')}</div>
+          <div class="kpi-value is-mono">${this.#esc(flow.root_agent_name || 'orchestrator')}</div>
         </div>
         <div class="kpi">
           <div class="kpi-label">Duration</div>
@@ -124,8 +121,8 @@ class FlowDetailPage extends HTMLElement {
         <details class="step">
           <summary class="step-row">
             <span class="step-num ${numClass}">${i + 1}</span>
-            <span class="step-agent">${escHtml(step.agent_name)}</span>
-            ${step.input_summary ? `<span class="step-snippet">${escHtml(step.input_summary.slice(0, 60))}${step.input_summary.length > 60 ? '…' : ''}</span>` : '<span class="step-snippet"></span>'}
+            <span class="step-agent">${this.#esc(step.agent_name)}</span>
+            ${step.input_summary ? `<span class="step-snippet">${this.#esc(step.input_summary.slice(0, 60))}${step.input_summary.length > 60 ? '…' : ''}</span>` : '<span class="step-snippet"></span>'}
             <span class="badge badge--${STATUS_VARIANTS[status] || 'neutral'}"><span class="badge__dot"></span>${status}</span>
             <span class="step-latency">${latency}</span>
             <span class="step-caret">${icons.chevronDown('', 14)}</span>
@@ -134,7 +131,7 @@ class FlowDetailPage extends HTMLElement {
             ${step.input_summary ? `
               <div class="step-well">
                 <div class="well-label">Input</div>
-                <div class="well-text">${escHtml(step.input_summary)}</div>
+                <div class="well-text">${this.#esc(step.input_summary)}</div>
               </div>` : ''}
             <div class="step-meta">
               <span class="meta-item">Started <span class="is-mono">${startedAt}</span></span>
@@ -149,6 +146,11 @@ class FlowDetailPage extends HTMLElement {
     }).join('');
   }
 
+  #esc(s) {
+    const d = document.createElement('span');
+    d.textContent = s || '';
+    return d.innerHTML;
+  }
 }
 
 customElements.define('flow-detail-page', FlowDetailPage);

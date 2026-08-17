@@ -1,5 +1,4 @@
 import { apiFetch } from '/common/services/api.js';
-import { isAbort, userMessage } from '/common/core/errors.js';
 import "./voice-input.js";
 import "./agent-steps.js";
 import { icons } from '/common/utils/icons.js';
@@ -7,13 +6,12 @@ import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
 import { usageChipsHtml, usageFromMessage } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
-import { registerAll } from '/common/core/data-sources.js';
 
-const transcribeAudio = transcribeBlob;
-registerAll({ transcribeAudio }, { replace: true });
+if (!window.transcribeAudio) {
+  window.transcribeAudio = transcribeBlob;
+}
 
 import styles from './chat-page.css' with { type: 'css' };
-import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class ChatPage extends HTMLElement {
@@ -25,12 +23,6 @@ class ChatPage extends HTMLElement {
   #lastUserContent = null;
   #sampleQueries = [];
   #sending = false;
-
-  /**
-   * Aborted on disconnect — see orchestrator-page for the same reasoning: an
-   * in-flight A2A stream used to outlive the element that started it.
-   */
-  #abort = new AbortController();
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -68,19 +60,15 @@ class ChatPage extends HTMLElement {
     }
   }
 
-  disconnectedCallback() {
-    this.#abort.abort();
-  }
-
   #render() {
     const initial = this.#agentLabel.charAt(0).toUpperCase();
-    const agentCardUrl = this.#agentId ? `/agent-card?id=${encodeURIComponent(this.#agentId)}` : null;
+    const agentCardUrl = this.#agentId ? `/agent-card.html?id=${encodeURIComponent(this.#agentId)}` : null;
 
     this.innerHTML = `
       <div class="chat-header">
         <div class="chat-header-avatar" aria-hidden="true">${initial}</div>
         <div class="chat-header-info">
-          <span class="chat-agent-name">${escHtml(this.#agentLabel)}</span>
+          <span class="chat-agent-name">${this.#esc(this.#agentLabel)}</span>
           <span class="chat-agent-status"><span class="status-dot"></span> Running</span>
         </div>
         ${agentCardUrl ? `<a class="chat-header-link" href="${agentCardUrl}" title="View agent card">${icons.externalLink('', 16)}</a>` : ''}
@@ -105,10 +93,10 @@ class ChatPage extends HTMLElement {
     return `
       <div class="welcome-state">
         <div class="welcome-avatar" aria-hidden="true">${this.#agentLabel.charAt(0).toUpperCase()}</div>
-        <h2 class="welcome-title">${escHtml(this.#agentLabel)}</h2>
+        <h2 class="welcome-title">${this.#esc(this.#agentLabel)}</h2>
         <p class="welcome-subtitle">Ask me anything</p>
         <div class="welcome-prompts">
-          ${chips.map(p => `<button type="button" class="welcome-chip">${escHtml(p)}</button>`).join('')}
+          ${chips.map(p => `<button type="button" class="welcome-chip">${this.#esc(p)}</button>`).join('')}
         </div>
       </div>
     `;
@@ -244,7 +232,7 @@ class ChatPage extends HTMLElement {
         history.replaceState(
           null,
           "",
-          `/chat?agent_id=${this.#agentId}&session_id=${this.#sessionId}${nameParam}`,
+          `/chat.html?agent_id=${this.#agentId}&session_id=${this.#sessionId}${nameParam}`,
         );
       }
 
@@ -283,15 +271,10 @@ class ChatPage extends HTMLElement {
         },
       };
 
-      // `timeout: 0` disables the API funnel's default 30s deadline — this is a
-      // long-lived stream, not a request/response. `signal` lets
-      // disconnectedCallback cut it off on navigation.
       const res = await apiFetch("/orchestrator/a2a", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        timeout: 0,
-        signal: this.#abort.signal,
       });
       if (!res.ok) {
         const errBody = await res.text();
@@ -305,20 +288,12 @@ class ChatPage extends HTMLElement {
       }
 
       pendingRow.remove();
-      const { text: reply, traceId, usage, aborted } = await this.#readA2aStream(res, messagesEl);
-      // An aborted stream returns normally (it is a cancellation, not a
-      // failure), so this guard is what stops a half-received reply from being
-      // written to the server as if the agent had finished saying it.
-      if (aborted) return;
+      const { text: reply, traceId, usage } = await this.#readA2aStream(res, messagesEl);
       this.#persistMessage(this.#sessionId, "assistant", reply, { traceId, usage });
       this.#updateRetryButtons(messagesEl);
     } catch (err) {
       pendingRow.remove();
-      // A cancellation is us, not a failure — see orchestrator-page. Also don't
-      // persist a partial reply: the stream was cut, not completed.
-      if (!isAbort(err)) {
-        this.#appendMsg(messagesEl, "assistant", `Error: ${userMessage(err)}`);
-      }
+      this.#appendMsg(messagesEl, "assistant", `Error: ${err.message}`);
       this.#updateRetryButtons(messagesEl);
     } finally {
       this.#sending = false;
@@ -446,7 +421,6 @@ class ChatPage extends HTMLElement {
       showContent(renderMarkdown(text));
     });
     const out = await readA2aStream(res, {
-      signal: this.#abort.signal,
       onReply: renderReply,
       // Working prose goes to the activity timeline, not into the message
       // body: it is the agent's tool activity, and rendering it there as a
@@ -463,7 +437,7 @@ class ChatPage extends HTMLElement {
       },
       onError: (message) => {
         stepsEl.finish();
-        showContent(`<span style="color:var(--color-error)">${escHtml(message)}</span>`);
+        showContent(`<span style="color:var(--color-error)">${this.#esc(message)}</span>`);
       },
     });
 
@@ -473,7 +447,7 @@ class ChatPage extends HTMLElement {
     let fullText = out.text;
     if (out.failed && !fullText) {
       fullText = out.errorMessage;
-      showContent(`<span style="color:var(--color-error)">${escHtml(fullText)}</span>`);
+      showContent(`<span style="color:var(--color-error)">${this.#esc(fullText)}</span>`);
     } else if (!fullText) {
       showContent(renderMarkdown("No response"));
       fullText = "No response";
@@ -493,7 +467,7 @@ class ChatPage extends HTMLElement {
     `;
     streamArea.appendChild(actions);
 
-    return { text: fullText, traceId: out.traceId, usage: out.usage, aborted: out.aborted };
+    return { text: fullText, traceId: out.traceId, usage: out.usage };
   }
 
   // Opens the full Observability session view with this turn's trace
@@ -504,7 +478,7 @@ class ChatPage extends HTMLElement {
     if (!traceId) return '';
     const q = new URLSearchParams({ trace_id: traceId });
     if (this.#sessionId) q.set('session_id', this.#sessionId);
-    return `<a class="msg-action-trace" href="/observability-session?${q}"
+    return `<a class="msg-action-trace" href="/observability-session.html?${q}"
       aria-label="View trace" title="View trace">${icons.trace('', 14)}<span>Detailed trace</span></a>`;
   }
 
@@ -530,6 +504,11 @@ class ChatPage extends HTMLElement {
     }).catch(() => {});
   }
 
+  #esc(s) {
+    const d = document.createElement("span");
+    d.textContent = s || "";
+    return d.innerHTML;
+  }
 }
 
 customElements.define("chat-page", ChatPage);

@@ -39,8 +39,8 @@
     gap: var(--space-sm);
     height: var(--control-h-lg);
     padding: 0 var(--space-xl);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
     font-weight: 500;
     font-size: var(--font-size-sm);
     border-radius: var(--r-10);
@@ -51,8 +51,8 @@
     & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .connect-btn:hover {
-    background: var(--bg-action-hover);
-    color: var(--fg-on-action);
+    background: light-dark(var(--sand-700), var(--neutral-300));
+    color: light-dark(var(--white), var(--neutral-900));
   }
   .connect-btn svg { width: 20px; height: 20px; fill: currentColor; }
   .connect-scopes {

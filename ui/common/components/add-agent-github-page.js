@@ -4,8 +4,6 @@ import '/common/components/app-button.js';
 import '/common/components/app-badge.js';
 import '/common/components/app-skeleton.js';
 import styles from './add-agent-github-page.css' with { type: 'css' };
-import { navigate as routerNavigate } from '../core/router.js';
-
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const GITHUB_ICON = `<svg class="gh-icon" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>`;
@@ -16,12 +14,10 @@ class AddAgentGithubPage extends HTMLElement {
   #branch = '';
   #agentName = '';
   #githubUsername = null;
-  /** @type {number|null} */
-  #pollTimer = null;
 
   connectedCallback() {
     this.innerHTML = `
-      <a class="back-link" href="/add-agent">${icons.chevronLeft('', 14)} Back</a>
+      <a class="back-link" href="/agents.html?view=import">${icons.chevronLeft('', 14)} Back</a>
       <div class="page-head">
         <div>
           <h1 class="title-page">Import from GitHub</h1>
@@ -179,23 +175,11 @@ class AddAgentGithubPage extends HTMLElement {
     }
   }
 
-  /**
-   * The GitHub OAuth poll is bounded (90 attempts) and self-clearing, so it
-   * terminates on its own — but until it does, an element removed mid-poll keeps
-   * firing an authenticated request every 2s and writing the result into detached
-   * DOM. Tracked and cleared, same as mcp-page's popup poll.
-   */
-  disconnectedCallback() {
-    clearInterval(this.#pollTimer);
-    this.#pollTimer = null;
-  }
-
   #pollForToken(popup) {
     let attempts = 0;
     const maxAttempts = 90;
 
-    clearInterval(this.#pollTimer);
-    const timer = (this.#pollTimer = setInterval(async () => {
+    const timer = setInterval(async () => {
       attempts++;
       if (attempts > maxAttempts) { clearInterval(timer); return; }
       if (popup && popup.closed) {
@@ -216,7 +200,7 @@ class AddAgentGithubPage extends HTMLElement {
           this.#loadRepos();
         }
       } catch { /* keep polling */ }
-    }, 2000));
+    }, 2000);
   }
 
   async #logout() {
@@ -256,7 +240,7 @@ class AddAgentGithubPage extends HTMLElement {
   }
 
   #showConnectGithub() {
-    this.innerHTML = '<connect-github redirect="/add-agent-github"></connect-github>';
+    this.innerHTML = '<connect-github redirect="/add-agent-github.html"></connect-github>';
     import('/common/components/connect-github.js');
   }
 
@@ -300,7 +284,7 @@ class AddAgentGithubPage extends HTMLElement {
         body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(await res.text());
-      routerNavigate('/your-agents');
+      window.location.href = '/agents.html?view=your-agents';
     } catch (err) {
       btn.removeAttribute('loading');
       btn.textContent = 'Clone and upload';

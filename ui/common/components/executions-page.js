@@ -15,9 +15,6 @@ import { attachSlidingIndicator } from '/common/utils/tab-indicator.js';
 import '/common/components/wf-run-steps.js';
 
 import styles from './executions-page.css' with { type: 'css' };
-import { escHtml } from '/common/utils/escape.js';
-import { call } from '../core/data-sources.js';
-
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const POLL_MS = 1500;
@@ -85,13 +82,13 @@ class ExecutionsPage extends HTMLElement {
 
   async #load() {
     try {
-      this.#executions = await call('fetchAllExecutions');
+      this.#executions = await window.fetchAllExecutions();
       this.#loaded = true;
       this.#renderList();
       this.#pollIfActive();
     } catch (err) {
       this.querySelector('#list-area').innerHTML =
-        `<p class="load-error">Failed to load executions: ${escHtml(err.message)}</p>`;
+        `<p class="load-error">Failed to load executions: ${this.#esc(err.message)}</p>`;
     }
   }
 
@@ -99,7 +96,7 @@ class ExecutionsPage extends HTMLElement {
     if (!this.#executions.some((e) => ACTIVE.has(e.status))) return;
     this.#pollTimer = setTimeout(async () => {
       try {
-        this.#executions = await call('fetchAllExecutions');
+        this.#executions = await window.fetchAllExecutions();
         if (this.#tab === 'active') this.#refreshActive();
       } catch { /* transient poll failure — keep trying */ }
       this.#pollIfActive();
@@ -135,7 +132,7 @@ class ExecutionsPage extends HTMLElement {
           icon: icons.workflow('', 32),
           title: 'No workflow runs yet',
           sub: 'Create your first workflow by chaining agents together.',
-          action: `<a class="cta-btn" href="/workflow-new">Create workflow ${icons.plus('', 13)}</a>`,
+          action: `<a class="cta-btn" href="/workflow-new.html">Create workflow ${icons.plus('', 13)}</a>`,
         });
         return;
       }
@@ -144,7 +141,7 @@ class ExecutionsPage extends HTMLElement {
           icon: icons.play('', 32),
           title: 'Your active runs will appear here',
           sub: 'Monitor live workflow executions, track progress across each step, and inspect outputs as they are generated.',
-          action: `<a class="cta-btn is-secondary" href="/workflows">Browse workflows</a>`,
+          action: `<a class="cta-btn" href="/index.html?view=workflows">Browse workflows</a>`,
         });
         return;
       }
@@ -160,7 +157,7 @@ class ExecutionsPage extends HTMLElement {
         icon: icons.workflow('', 32),
         title: 'No finished runs yet',
         sub: 'Completed and failed workflow runs land here with their full step timelines.',
-        action: `<a class="cta-btn is-secondary" href="/workflows">Browse workflows</a>`,
+        action: `<a class="cta-btn" href="/index.html?view=workflows">Browse workflows</a>`,
       });
       return;
     }
@@ -208,28 +205,28 @@ class ExecutionsPage extends HTMLElement {
       fmtTokens(exec.tokens_used),
     ].filter(Boolean);
     const statusCls = STATUS_BADGES[exec.status] || 'badge--neutral';
-    return meta.map((m) => `<span class="badge badge--muted">${escHtml(m)}</span>`).join('') +
-      `<span class="badge ${statusCls}"><span class="badge__dot"></span>${escHtml(exec.status)}</span>`;
+    return meta.map((m) => `<span class="badge badge--muted">${this.#esc(m)}</span>`).join('') +
+      `<span class="badge ${statusCls}"><span class="badge__dot"></span>${this.#esc(exec.status)}</span>`;
   }
 
   #runCard(exec, { open }) {
     const orphaned = !exec.workflow_name || exec.workflow_status === 'deleted';
     const title = `${exec.workflow_name || 'Deleted workflow'} #${exec.execution_number}`;
     return `
-      <div class="run-card" data-card="${escHtml(exec.id)}">
+      <div class="run-card" data-card="${this.#esc(exec.id)}">
         <div class="run-card-head">
-          <span class="run-title">${escHtml(title)}</span>
+          <span class="run-title">${this.#esc(title)}</span>
           ${orphaned ? `<span class="badge badge--error">${icons.info('', 12)} Workflow not found</span>` : ''}
           <span class="head-spacer"></span>
-          ${!orphaned && exec.maf_id ? `<a class="open-wf" href="/workflow?id=${encodeURIComponent(exec.maf_id)}&exec=${encodeURIComponent(exec.id)}">Open workflow</a>` : ''}
-          <button type="button" class="toggle-btn" data-toggle="${escHtml(exec.id)}"
+          ${!orphaned && exec.maf_id ? `<a class="open-wf" href="/workflow.html?id=${encodeURIComponent(exec.maf_id)}&exec=${encodeURIComponent(exec.id)}">Open workflow</a>` : ''}
+          <button type="button" class="toggle-btn" data-toggle="${this.#esc(exec.id)}"
             aria-expanded="${open}" aria-label="${open ? 'Collapse' : 'Expand'} run">
             ${open ? icons.chevronUp('', 16) : icons.chevronDown('', 16)}
           </button>
         </div>
         <div class="run-card-meta">${this.#metaHtml(exec)}</div>
-        ${open ? `<wf-run-steps surface="sand" data-exec="${escHtml(exec.id)}"></wf-run-steps>` : ''}
-        ${open && exec.error ? `<div class="run-error">${escHtml(exec.error)}</div>` : ''}
+        ${open ? `<wf-run-steps surface="sand" data-exec="${this.#esc(exec.id)}"></wf-run-steps>` : ''}
+        ${open && exec.error ? `<div class="run-error">${this.#esc(exec.error)}</div>` : ''}
       </div>`;
   }
 
@@ -252,6 +249,11 @@ class ExecutionsPage extends HTMLElement {
       </div>`).join('')}</div>`;
   }
 
+  #esc(s) {
+    const d = document.createElement('span');
+    d.textContent = s ?? '';
+    return d.innerHTML;
+  }
 }
 
 customElements.define('executions-page', ExecutionsPage);

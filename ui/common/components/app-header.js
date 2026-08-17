@@ -3,7 +3,7 @@
  *
  * Renders both chrome bars from one element so existing pages keep their
  * single `<app-header>` tag. The rail lists the pages from
- * `fetchNavigation` via data-sources (or the `nav-links` attribute); Settings and the
+ * `window.fetchNavigation()` (or the `nav-links` attribute); Settings and the
  * identity menu pin to the rail's bottom cluster.
  *
  * @element app-header
@@ -18,9 +18,6 @@ import { icons } from "../utils/icons.js";
 import { confirmDialog } from "../utils/confirm-dialog.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
-import { escHtml } from '/common/utils/escape.js';
-import { callOptional } from '../core/data-sources.js';
-import { navigate as routerNavigate } from '../core/router.js';
 
 /* Collapsed is the default rail state. The key is versioned so the change reaches
    users who already toggled the old rail open — a stored `true` under the previous
@@ -382,6 +379,13 @@ export class AppHeader extends HTMLElement {
   #mobileOpen = false;
   #toggleTimer = 0;
 
+  #esc(str) {
+    if (!str) return "";
+    return str.replace(/[&<>"']/g, m => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+    })[m]);
+  }
+
   #handleKeyDown = (e) => {
     const isShortcut =
       ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "f")) || e.key === "\\";
@@ -390,18 +394,6 @@ export class AppHeader extends HTMLElement {
       if (!navSearch) return;
       e.preventDefault();
       if (!navSearch.querySelector("[data-nav-dialog]")?.open) navSearch.open();
-    }
-  };
-
-  #onRouteChange = () => {
-    // Update rail active indicators and mobile nav highlights
-    this.querySelectorAll(".rail-item").forEach((a) => {
-      a.classList.toggle("is-active", this.#isActive(a.getAttribute("href")));
-    });
-    // Close mobile nav on navigation
-    if (this.#mobileOpen) {
-      this.#mobileOpen = false;
-      this.classList.remove("mobile-open");
     }
   };
 
@@ -425,8 +417,7 @@ export class AppHeader extends HTMLElement {
     if (e.target.closest("[data-nav-fwd]")) { window.history.forward(); return; }
     const link = e.target.closest(".rail-item[href]");
     if (link && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0)) {
-      e.preventDefault();
-      routerNavigate(link.href);
+      document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
     }
   };
 
@@ -460,9 +451,6 @@ export class AppHeader extends HTMLElement {
     document.removeEventListener("keydown", this.#handleKeyDown);
     this.removeEventListener("click", this.#handleClick);
     this.addEventListener("click", this.#handleClick);
-    // SPA: re-render active states when the router changes the page
-    document.removeEventListener("route-change", this.#onRouteChange);
-    document.addEventListener("route-change", this.#onRouteChange);
     if (this.getAttribute("nav-links")) {
       this.render();
       document.addEventListener("keydown", this.#handleKeyDown);
@@ -503,16 +491,15 @@ export class AppHeader extends HTMLElement {
 
   async loadNavigation() {
     if (this.getAttribute("nav-links")) return;
-    try {
-      const nav = await callOptional('fetchNavigation');
-      if (nav) {
-        this.navItems = nav;
+    if (typeof window.fetchNavigation === "function") {
+      try {
+        this.navItems = await window.fetchNavigation();
         try { sessionStorage.setItem("app-header-nav", JSON.stringify(this.navItems)); } catch { /* quota exceeded */ }
-      } else {
+      } catch (e) {
+        console.warn("fetchNavigation failed:", e);
         if (!this.navItems) this.navItems = [];
       }
-    } catch (e) {
-      console.warn("fetchNavigation failed:", e);
+    } else {
       if (!this.navItems) this.navItems = [];
     }
   }
@@ -563,13 +550,13 @@ export class AppHeader extends HTMLElement {
     // has no rail item of its own; the rail item for its module carries the
     // selection instead, so the rail is never left with nothing highlighted.
     const active = this.#isActive(href) || (!!link.module && link.module === activeModule);
-    const titleEsc = escHtml(link.title);
+    const titleEsc = this.#esc(link.title);
     // Chrome icons (rail + topbar) render at 1px stroke per the NightOwl weight rule.
     // Rail glyphs: 1.25 stroke — the mockup's 1px chrome weight reads wispy at
     // 18px on the ink rail; topbar utility icons stay at 1.
     const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('', 18, 1.75) : icons.cube('', 18, 1.75);
-    return `<a href="${escHtml(href)}" class="rail-item${active ? " is-active" : ""}"
-      aria-label="${titleEsc}" data-tooltip="${titleEsc}" ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
+    return `<a href="${this.#esc(href)}" class="rail-item${active ? " is-active" : ""}"
+      aria-label="${titleEsc}" data-tip="${titleEsc}" ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
   }
 
   #renderSkeleton() {
@@ -608,7 +595,7 @@ export class AppHeader extends HTMLElement {
       <header class="topbar" role="banner">
         ${window.nasikoChrome?.workspaceSwitcher
           ? `<workspace-switcher></workspace-switcher>`
-          : `<span class="identity-chip" title="${escHtml(currentUser || "Nasiko")}">${escHtml(this.#initials())}</span>`}
+          : `<span class="identity-chip" title="${this.#esc(currentUser || "Nasiko")}">${this.#esc(this.#initials())}</span>`}
         <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button">
           ${icons.panelLeft("", 16, 1)}
         </button>
@@ -624,7 +611,7 @@ export class AppHeader extends HTMLElement {
         </button>` : ""}
         <span class="topbar-spacer"></span>
         <div class="topbar-right">
-          ${addAgent ? `<a href="${escHtml(addAgent.url)}" class="chrome-btn is-labeled">${icons.plus("", 16, 1)} Import agent</a>` : ""}
+          ${addAgent ? `<a href="${this.#esc(addAgent.url)}" class="chrome-btn is-labeled">${icons.plus("", 16, 1)} Import agent</a>` : ""}
           <button class="chrome-btn mobile-menu-btn" data-mobile-menu aria-label="Menu" type="button">${icons.menu("", 16, 1)}</button>
         </div>
       </header>
@@ -634,8 +621,7 @@ export class AppHeader extends HTMLElement {
           ${settingsLinks.map(l => this.#railItem(l, activeModule)).join("")}
           ${isAuthenticated ? `
           <div class="rail-identity">
-            <app-user-menu current-user="${escHtml(currentUser)}"></app-user-menu>
-            <span class="identity-name">${escHtml(currentUser)}</span>
+            <app-user-menu current-user="${this.#esc(currentUser)}"></app-user-menu>
           </div>` : ""}
         </div>
       </nav>
@@ -673,7 +659,7 @@ export class AppHeader extends HTMLElement {
       navSearch.addEventListener("navigate", (e) => {
         e.detail.newTab
           ? window.open(e.detail.url, "_blank")
-          : routerNavigate(e.detail.url);
+          : (window.location.href = e.detail.url);
       });
     }
   }

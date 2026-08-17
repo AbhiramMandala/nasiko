@@ -107,23 +107,44 @@ pub(crate) async fn update_agent(
     };
 
     // Fetch agent — verify it exists and capture state we need for the update.
-    // Include `image` so we can roll it back if the build fails.
-    let agent: Option<(String, String, Option<String>, Uuid)> =
-        match sqlx::query_as("SELECT name, version, image, owner_id FROM agents WHERE id = $1")
-            .bind(agent_id)
-            .fetch_optional(&state.db)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(%e, %agent_id, "update_agent: db error fetching agent");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        };
+    // Include `image` so we can roll it back if the build fails. Include `writable`
+    // so an in-place code update doesn't silently drop the agent's persistent
+    // storage mount — there is no `--writable` flag on this endpoint; it only ever
+    // carries forward whatever the agent's most recent upload/deploy set.
+    #[derive(sqlx::FromRow)]
+    struct UpdateAgentRow {
+        name: String,
+        version: String,
+        image: Option<String>,
+        owner_id: Uuid,
+        writable: bool,
+        writable_path: Option<String>,
+    }
 
-    let (agent_name, current_version, prev_image, agent_owner_id) = match agent {
-        Some(r) => r,
-        None => return StatusCode::NOT_FOUND.into_response(),
+    let agent: Option<UpdateAgentRow> = match sqlx::query_as(
+        "SELECT name, version, image, owner_id, writable, writable_path FROM agents WHERE id = $1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "update_agent: db error fetching agent");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let Some(UpdateAgentRow {
+        name: agent_name,
+        version: current_version,
+        image: prev_image,
+        owner_id: agent_owner_id,
+        writable,
+        writable_path,
+    }) = agent
+    else {
+        return StatusCode::NOT_FOUND.into_response();
     };
 
     // Superusers bypass ACL; everyone else needs owner or explicit ACL grant.
@@ -314,6 +335,8 @@ pub(crate) async fn update_agent(
         prev_version: current_version.clone(),
         prev_image,
         changelog,
+        writable,
+        writable_path,
     };
     if let Err(e) =
         sqlx::query("INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)")
@@ -423,6 +446,8 @@ pub async fn execute_agent_update(
     prev_version: String,
     prev_image: Option<String>,
     changelog: Option<String>,
+    writable: bool,
+    writable_path: Option<String>,
 ) {
     let db = &state.db;
     let upload_id = build_id.to_string();
@@ -518,8 +543,11 @@ pub async fn execute_agent_update(
             image_tag.clone(),
             vec![],
             env,
-            None,
+            &state.config.agent_default_memory,
             state.config.agent_max_replicas,
+            writable,
+            writable_path.clone(),
+            agent_owner_id,
         );
         crate::agents::attach_pull_credential(
             &state.db,
@@ -707,21 +735,23 @@ pub(crate) async fn rollback_agent(
         }
     };
 
-    // Fetch agent — verify exists.
-    let agent: Option<(String, String, Uuid)> =
-        match sqlx::query_as("SELECT name, version, owner_id FROM agents WHERE id = $1")
-            .bind(agent_id)
-            .fetch_optional(&state.db)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!(%e, %agent_id, "rollback_agent: db error");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        };
+    // Fetch agent — verify exists. Include `writable` so a rollback carries forward
+    // the agent's persistent-storage mount (same reasoning as update_agent above).
+    let agent: Option<(String, String, Uuid, bool, Option<String>)> = match sqlx::query_as(
+        "SELECT name, version, owner_id, writable, writable_path FROM agents WHERE id = $1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "rollback_agent: db error");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
-    let (agent_name, current_version, agent_owner_id) = match agent {
+    let (agent_name, current_version, agent_owner_id, writable, writable_path) = match agent {
         Some(r) => r,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -826,6 +856,8 @@ pub(crate) async fn rollback_agent(
         target_version: target.version,
         target_image_tag: target.image_tag,
         reason,
+        writable,
+        writable_path,
     };
     if let Err(e) =
         sqlx::query("INSERT INTO build_jobs (agent_id, owner_id, payload) VALUES ($1, $2, $3)")
@@ -863,6 +895,8 @@ pub async fn execute_agent_rollback(
     agent_name: String,
     target: AgentVersionRow,
     reason: Option<String>,
+    writable: bool,
+    writable_path: Option<String>,
 ) {
     let db = &state.db;
 
@@ -908,8 +942,11 @@ pub async fn execute_agent_rollback(
         image.clone(),
         vec![],
         env,
-        None,
+        &state.config.agent_default_memory,
         state.config.agent_max_replicas,
+        writable,
+        writable_path.clone(),
+        agent_owner_id,
     );
     crate::agents::attach_pull_credential(
         &state.db,

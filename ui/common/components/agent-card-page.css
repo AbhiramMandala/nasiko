@@ -79,6 +79,28 @@
   .acp-tag--more {
     color: var(--color-text-muted);
   }
+  .acp-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-8);
+    border: none;
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .acp-action-btn:hover { background: var(--bg-surface-hover); }
+  .acp-action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .acp-action-btn--danger { color: var(--color-error); }
+  .acp-action-btn--danger:hover { border-color: var(--color-error); }
   .acp-start-btn {
     display: inline-flex;
     align-items: center;
@@ -86,8 +108,8 @@
     min-height: var(--control-h-lg);
     padding: 0 var(--space-lg);
     border-radius: var(--r-10);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
     font-weight: 600;
     text-decoration: none;
@@ -98,8 +120,8 @@
   }
   .acp-start-btn svg { flex-shrink: 0; }
   .acp-start-btn:hover {
-    background: var(--bg-action-hover);
-    color: var(--fg-on-action);
+    background: light-dark(var(--sand-700), var(--neutral-300));
+    color: light-dark(var(--white), var(--neutral-900));
   }
 
   /* -- Overview head: description + JSON toggle --------------------------- */
@@ -573,6 +595,23 @@
   }
 
   /* -- Shared controls (management tabs) ---------------------------------- */
+  .acp-primary-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .acp-primary-btn:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+  .acp-primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .acp-link-btn {
     border: none;
     background: none;

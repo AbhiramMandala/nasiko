@@ -92,6 +92,16 @@ pub enum AgentOpsCommands {
         /// Environment variable override (can be repeated: -e KEY=VALUE)
         #[arg(short = 'e', long = "env")]
         env: Vec<String>,
+        /// Mount a persistent, private-per-agent directory at /workspace —
+        /// survives restarts, redeploys, and code updates (see
+        /// docs/WRITABLE_STORAGE_FLAG.md)
+        #[arg(long)]
+        writable: bool,
+        /// Mount the persistent directory at this absolute path instead of
+        /// /workspace (implies --writable). Pick a dedicated state directory —
+        /// the mount hides whatever the image ships at that path
+        #[arg(long, value_name = "PATH")]
+        writable_path: Option<String>,
         /// Explicit version, skipping AgentCard.json and any version prompt
         #[arg(long, short = 'v')]
         version: Option<String>,
@@ -144,6 +154,16 @@ pub enum AgentOpsCommands {
         /// Environment variable override (can be repeated: -e KEY=VALUE)
         #[arg(short = 'e', long = "env")]
         env: Vec<String>,
+        /// Mount a persistent, private-per-agent directory at /workspace —
+        /// survives restarts, redeploys, and code updates (see
+        /// docs/WRITABLE_STORAGE_FLAG.md)
+        #[arg(long)]
+        writable: bool,
+        /// Mount the persistent directory at this absolute path instead of
+        /// /workspace (implies --writable). Pick a dedicated state directory —
+        /// the mount hides whatever the image ships at that path
+        #[arg(long, value_name = "PATH")]
+        writable_path: Option<String>,
     },
     /// List running agents
     Ps {
@@ -914,6 +934,8 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             port,
             env_file,
             env,
+            writable,
+            writable_path,
             version,
             yes,
             overwrite,
@@ -928,6 +950,8 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 overwrite,
                 yes,
             },
+            writable,
+            writable_path.as_deref(),
         ),
         AgentOpsCommands::Push {
             image,
@@ -951,6 +975,8 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             port,
             env_file,
             env,
+            writable,
+            writable_path,
         } => commands::upload::upload(
             &source,
             name.as_deref(),
@@ -958,6 +984,8 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             port,
             env_file.as_deref(),
             &env,
+            writable,
+            writable_path.as_deref(),
         ),
         AgentOpsCommands::Ps { json } => commands::agents::ps(json),
         AgentOpsCommands::Logs {

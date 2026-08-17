@@ -107,7 +107,7 @@
     gap: var(--s-12);
     padding: var(--s-12) var(--s-16);
     border-radius: var(--r-8);
-    background: var(--bg-caution-subtle);
+    background: light-dark(var(--yellow-50), var(--neutral-800));
   }
   .save-note {
     flex: 1;

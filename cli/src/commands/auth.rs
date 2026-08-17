@@ -49,7 +49,6 @@ pub fn login() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("no token in login response"))?;
 
     config::save_login(&username, token)?;
-    crate::commands::integration::auto_install_if_authenticated();
     println!("Logged in to {} as {}", name, username);
     Ok(())
 }

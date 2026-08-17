@@ -10,7 +10,6 @@ import { connectSSE } from '/common/services/sse.js';
 import { icons } from '/common/utils/icons.js';
 
 import styles from './build-detail-page.css' with { type: 'css' };
-import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const STATUS_VARIANTS = { success: 'success', building: 'info', failed: 'error', queued: 'neutral', cancelled: 'warning', pending: 'neutral' };
@@ -26,7 +25,7 @@ class BuildDetailPage extends HTMLElement {
         <h1 class="title-page">Build detail</h1>
         ${sub ? `<p class="page-sub">${sub}</p>` : ''}
       </div>
-      <a class="back-link" href="/builds">${icons.chevronLeft('', 16)}Back to builds</a>
+      <a class="back-link" href="/agents.html?view=builds">${icons.chevronLeft('', 16)}Back to builds</a>
     </header>`;
   }
 
@@ -73,15 +72,15 @@ class BuildDetailPage extends HTMLElement {
     const variant = STATUS_VARIANTS[build.status] || 'neutral';
     const fmtTs = (v) => v ? new Date(v).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 
-    this.innerHTML = `${this.#toolbar(`<span class="is-mono">#${escHtml(shortId)}</span> · ${escHtml(build.image_reference || '')}`)}
+    this.innerHTML = `${this.#toolbar(`<span class="is-mono">#${this.#esc(shortId)}</span> · ${this.#esc(build.image_reference || '')}`)}
       <div class="kpi-strip">
         <div class="kpi">
           <div class="kpi-label">Status</div>
-          <div class="kpi-value"><span class="badge badge--${variant}"><span class="badge__dot"></span>${escHtml(build.status)}</span></div>
+          <div class="kpi-value"><span class="badge badge--${variant}"><span class="badge__dot"></span>${this.#esc(build.status)}</span></div>
         </div>
         <div class="kpi">
           <div class="kpi-label">Version</div>
-          <div class="kpi-value is-mono">${escHtml(build.version_tag || '—')}</div>
+          <div class="kpi-value is-mono">${this.#esc(build.version_tag || '—')}</div>
         </div>
         <div class="kpi">
           <div class="kpi-label">Started</div>
@@ -95,15 +94,15 @@ class BuildDetailPage extends HTMLElement {
 
       <h2 class="section-title">Details</h2>
       <div class="detail-rows">
-        <div class="detail-row"><span class="detail-key">Image</span><span class="detail-val">${escHtml(build.image_reference || '—')}</span></div>
-        <div class="detail-row"><span class="detail-key">Agent</span><span class="detail-val">${escHtml(build.agent_id || '—')}</span></div>
-        <div class="detail-row"><span class="detail-key">Commit</span><span class="detail-val">${escHtml(build.commit_hash ? build.commit_hash.slice(0, 12) : '—')}</span></div>
-        <div class="detail-row"><span class="detail-key">Source</span><span class="detail-val">${build.github_url ? `<a class="detail-link" href="${escHtml(build.github_url)}" target="_blank" rel="noopener">${escHtml(build.github_url)} ↗</a>` : '—'}</span></div>
+        <div class="detail-row"><span class="detail-key">Image</span><span class="detail-val">${this.#esc(build.image_reference || '—')}</span></div>
+        <div class="detail-row"><span class="detail-key">Agent</span><span class="detail-val">${this.#esc(build.agent_id || '—')}</span></div>
+        <div class="detail-row"><span class="detail-key">Commit</span><span class="detail-val">${this.#esc(build.commit_hash ? build.commit_hash.slice(0, 12) : '—')}</span></div>
+        <div class="detail-row"><span class="detail-key">Source</span><span class="detail-val">${build.github_url ? `<a class="detail-link" href="${this.#esc(build.github_url)}" target="_blank" rel="noopener">${this.#esc(build.github_url)} ↗</a>` : '—'}</span></div>
       </div>
 
       <div class="section-head">
         <h2 class="section-title">Build log</h2>
-        ${build.logs_url ? `<a class="detail-link" href="${escHtml(build.logs_url)}" target="_blank" rel="noopener">Raw logs ↗</a>` : ''}
+        ${build.logs_url ? `<a class="detail-link" href="${this.#esc(build.logs_url)}" target="_blank" rel="noopener">Raw logs ↗</a>` : ''}
       </div>
       <div class="log-viewer" id="log-viewer">${this.#initialLogLines(build)}</div>
     `;
@@ -115,8 +114,8 @@ class BuildDetailPage extends HTMLElement {
 
   #initialLogLines(build) {
     const lines = [
-      `<span class="log-line"><span class="ts">${escHtml(this.#logTs(build.created_at))}</span>build ${escHtml(String(build.id))} created</span>`,
-      `<span class="log-line"><span class="ts">${escHtml(this.#logTs(build.updated_at))}</span>status: ${escHtml(build.status)}</span>`,
+      `<span class="log-line"><span class="ts">${this.#esc(this.#logTs(build.created_at))}</span>build ${this.#esc(String(build.id))} created</span>`,
+      `<span class="log-line"><span class="ts">${this.#esc(this.#logTs(build.updated_at))}</span>status: ${this.#esc(build.status)}</span>`,
     ];
     if (!build.logs_url && (build.status === 'building' || build.status === 'queued' || build.status === 'pending')) {
       lines.push('<span class="log-line is-muted">waiting for status updates…</span>');
@@ -137,7 +136,7 @@ class BuildDetailPage extends HTMLElement {
         const status = update && update.status;
         if (!status) return;
         const cls = status === 'failed' ? ' is-error' : '';
-        viewer.innerHTML += `\n<span class="log-line${cls}"><span class="ts">${escHtml(new Date().toLocaleTimeString(undefined, { hour12: false }))}</span>status: ${escHtml(status)}</span>`;
+        viewer.innerHTML += `\n<span class="log-line${cls}"><span class="ts">${this.#esc(new Date().toLocaleTimeString(undefined, { hour12: false }))}</span>status: ${this.#esc(status)}</span>`;
         viewer.scrollTop = viewer.scrollHeight;
         if (status === 'success' || status === 'failed' || status === 'not_found') {
           this.#evtSource?.close();
@@ -149,6 +148,11 @@ class BuildDetailPage extends HTMLElement {
     });
   }
 
+  #esc(s) {
+    const d = document.createElement('span');
+    d.textContent = s ?? '';
+    return d.innerHTML;
+  }
 }
 
 customElements.define('build-detail-page', BuildDetailPage);

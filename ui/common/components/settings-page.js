@@ -3,8 +3,6 @@ import { withLoading } from '/common/utils/async-button.js';
 import { initialView, syncView } from '/common/utils/module-view.js';
 
 import styles from './settings-page.css' with { type: 'css' };
-import { call } from '../core/data-sources.js';
-
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 // Every field below must exist in the server's `SettingsUpdate`
@@ -93,7 +91,8 @@ class SettingsPage extends HTMLElement {
               <label>Provider API keys</label>
               <div class="hint">Keys aren't stored here — each routing config references one of your
                 encrypted secrets. Manage them on the
-                <a href="/llm-router">LLM router</a> and <a href="/secrets">Secrets</a> pages.</div>
+                <a href="/llm-router.html">LLM router</a> and
+                <a href="/settings.html?view=secrets">Secrets</a> pages.</div>
             </div>
             <div class="setting-control"></div>
           </div>
@@ -285,7 +284,7 @@ class SettingsPage extends HTMLElement {
   };
 
   async #load() {
-    const s = await call('fetchSettings');
+    const s = await window.fetchSettings();
     if (!s) return;
     this.#settings = s;
     this.querySelectorAll('[data-field]').forEach(el => {
@@ -315,7 +314,7 @@ class SettingsPage extends HTMLElement {
           updated[el.dataset.field] = el.type === 'number' ? Number(v) : v;
         }
       });
-      await call('saveSettings', updated);
+      await window.saveSettings(updated);
       showToast('Settings saved');
     })();
   }

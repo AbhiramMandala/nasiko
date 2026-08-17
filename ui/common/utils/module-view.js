@@ -12,12 +12,6 @@
  * is read once when the page loads and rewritten with `replaceState` on each
  * switch — the same contract `app-tabs` uses for its `query-param`, kept here
  * so the nav, the shell, and every linking page agree on one spelling.
- *
- * SPA note: `replaceState` is used deliberately rather than the router's
- * `navigate()`. A view switch is an in-place swap, not a route change — it
- * must not push a history entry, must not re-run the router, and must not
- * tear down and rebuild the page component. `replaceState` updates the URL
- * without emitting `popstate`, so the router stays out of it entirely.
  */
 export const VIEW_PARAM = "view";
 

@@ -37,24 +37,11 @@ class LoginPage extends HTMLElement {
   async connectedCallback() {
     const brandTitle = this.getAttribute('brand-title') || 'Nasiko';
     const subtitle = this.getAttribute('subtitle') || 'Sign in to your workspace';
-    // Social sign-in is auto-detected per deployment — each provider's
-    // backend route is probed; missing routes (404) mean the provider isn't
-    // configured, just like the Microsoft/OIDC probe below.
-    // The `no-github` attribute is still respected as an explicit opt-out.
-
-    // GitHub: the login-user route returns {auth_url} when configured,
-    // 404 when the route isn't registered (OSS or unconfigured EE).
-    const githubConfigured = async () => {
-      if (this.hasAttribute('no-github')) return false;
-      try {
-        const res = await fetch('/api/auth/github/login-user', { credentials: 'same-origin' });
-        if (!res.ok) return false;
-        const data = await res.json();
-        return Boolean(data?.auth_url);
-      } catch {
-        return false;
-      }
-    };
+    // Social sign-in is opt-in per deployment — a bare <login-page> renders
+    // no button whose backend route may not exist. GitHub SSO (`github`
+    // attribute) exists on EE control planes; Google only where the host
+    // page supplies its route via google-href (e.g. the tenant portal BFF).
+    const showGithub = this.hasAttribute('github') && !this.hasAttribute('no-github');
     let showGoogle = this.hasAttribute('google-href') && !this.hasAttribute('no-google');
     const showCredentials = !this.hasAttribute('no-credentials');
 
@@ -77,7 +64,7 @@ class LoginPage extends HTMLElement {
 
     // Both probes in flight together — the session check costs no extra wall
     // clock on top of the OIDC one we already wait for.
-    const [sessionActive, showMicrosoft, showGithub] = await Promise.all([hasSession(), oidcConfigured(), githubConfigured()]);
+    const [sessionActive, showMicrosoft] = await Promise.all([hasSession(), oidcConfigured()]);
     if (sessionActive) {
       window.location.replace('/');
       return;
@@ -97,7 +84,6 @@ class LoginPage extends HTMLElement {
       }
     }
 
-    document.title = `${brandTitle} — Sign In`;
     let oauthSection = '';
     if (showGithub || showGoogle || showMicrosoft) {
       let buttons = '';

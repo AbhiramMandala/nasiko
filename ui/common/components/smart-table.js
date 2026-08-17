@@ -3,10 +3,7 @@
  *
  * @element smart-table
  * @attr {number} limit - Rows per page (default: 10)
- * @attr {string} data-fn - Name of a registered data source (see core/data-sources.js),
- *   called as `(query, page, limit, { signal })` and returning `{ data, total }` — or a bare
- *   array. NOTE: `{ items, total }` is NOT read and never was, despite this line saying so
- *   until now; the code has always read `response.data`. `page` is 1-based.
+ * @attr {string} data-fn - Name of `window[data-fn](query, page, limit)` async function returning `{ items, total }`
  * @attr {string} search-placeholder - Placeholder text for the search input
  * @attr {boolean} search - Show the search input
  * @attr {string} detail - CSS selector or element name to render a detail panel on row click
@@ -19,9 +16,7 @@ import '/common/components/app-modal.js';
 
 
 import { createEventTracker, debounce } from '../utils/data-component-utils.js';
-import { resolveOptional as resolveDataSource } from '../core/data-sources.js';
 import styles from './smart-table.css' with { type: 'css' };
-import { escAttr, escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 // Icon references — sourced from the shared icons library
@@ -80,7 +75,7 @@ export class SmartTable extends HTMLElement {
 
     if (fnName) {
       this.#dataFnName = fnName;
-      this.dataFn = resolveOptional(fnName) || null;
+      this.dataFn = window[fnName] || null;
     }
 
     this.#render();
@@ -106,8 +101,8 @@ export class SmartTable extends HTMLElement {
             <input
               type="search"
               class="search"
-              placeholder="${escAttr(this.searchPlaceholder)}"
-              value="${escAttr(this.#searchQuery)}"
+              placeholder="${this.#escapeAttr(this.searchPlaceholder)}"
+              value="${this.#escapeAttr(this.#searchQuery)}"
               aria-label="Search table data"
             >
           </div>
@@ -172,29 +167,9 @@ export class SmartTable extends HTMLElement {
 
   async refresh() {
     if (!this.dataFn && this.#dataFnName) {
-      this.dataFn = resolveDataSource(this.#dataFnName) || null;
+      this.dataFn = window[this.#dataFnName] || null;
     }
-    // Resolution is deliberately lazy and retried on every refresh — that is what
-    // lets a late-loading service module recover, and what makes a page-scoped
-    // override take effect. What changed is the failure branch: returning
-    // silently here was the single most common failure mode in this UI, and it
-    // was invisible — a permanent skeleton with nothing in the console. It is how
-    // `window.deleteSession` went unnoticed. Now it says so, on screen.
-    if (!this.dataFn) {
-      // A declared data-fn that will not resolve is a real bug — say so on
-      // screen. No declared name means the owner sets `.dataFn` directly and
-      // calls refresh() itself (see runtime-page), so an early refresh here is
-      // expected and must stay silent.
-      if (this.#dataFnName) {
-        this.#showError(`No data source named "${this.#dataFnName}".`);
-        console.error(
-          `[smart-table] unresolved data-fn "${this.#dataFnName}" — register it with ` +
-            `dataSources.registerAll({ ${this.#dataFnName}: … }) in the page's service module. ` +
-            `Check the <script> order too: data functions must be defined before the page component.`,
-        );
-      }
-      return;
-    }
+    if (!this.dataFn) return;
 
     this.#hideError();
     this.#showSkeletons();
@@ -272,7 +247,7 @@ export class SmartTable extends HTMLElement {
       // for — on a table with no active query it told the user their own filter
       // came up empty on a filter they never set.
       const message = this.#searchQuery
-        ? `No results for “${escHtml(this.#searchQuery)}”`
+        ? `No results for “${this.#escapeHtml(this.#searchQuery)}”`
         : (this.getAttribute('empty-message') || 'Nothing here yet');
       tbody.innerHTML = `<tr><td class="empty" colspan="100%">${message}</td></tr>`;
       return;
@@ -308,7 +283,7 @@ export class SmartTable extends HTMLElement {
         const raw = row[col.key];
         const cell = col.render
           ? col.render(raw, row)
-          : `<span title="${escAttr(raw)}">${escHtml(raw)}</span>`;
+          : `<span title="${this.#escapeAttr(raw)}">${this.#escapeHtml(raw)}</span>`;
         // `is-plain` mirrors the header marker for label-less (row-action)
         // columns, so CSS can pin the action cell and its header together.
         const plain = !String(col.label ?? col.key).trim() ? ' is-plain' : '';
@@ -352,13 +327,13 @@ export class SmartTable extends HTMLElement {
       }
       return `
         <th class="th"
-            data-field="${escAttr(field)}"
+            data-field="${this.#escapeAttr(field)}"
             tabindex="0"
             role="columnheader"
             aria-sort="${ariaSort}"
-            aria-label="Sort by ${escHtml(label)}">
+            aria-label="Sort by ${this.#escapeHtml(label)}">
           <div class="th-content">
-            <span>${escHtml(label)}</span>
+            <span>${this.#escapeHtml(label)}</span>
             ${icon}
           </div>
         </th>`;
@@ -431,6 +406,24 @@ export class SmartTable extends HTMLElement {
     this.#sortedData = [];
   }
 
+  #escapeHtml(value) {
+    if (value == null) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  #escapeAttr(value) {
+    if (value == null) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
   #openDetail(row) {
     const modal = this.querySelector('.detail-modal');
     if (!modal) return;
@@ -444,8 +437,8 @@ export class SmartTable extends HTMLElement {
       const val = raw == null ? '' : String(raw);
       return `
         <div class="detail-item">
-          <dt class="detail-key">${escHtml(col.label ?? col.key)}</dt>
-          <dd class="detail-val">${escHtml(val)}</dd>
+          <dt class="detail-key">${this.#escapeHtml(col.label ?? col.key)}</dt>
+          <dd class="detail-val">${this.#escapeHtml(val)}</dd>
         </div>`;
     }).join('');
     modal.open();
@@ -475,7 +468,7 @@ export class SmartTable extends HTMLElement {
         break;
       case 'data-fn':
         this.#dataFnName = newValue;
-        this.dataFn = resolveOptional(newValue) || null;
+        this.dataFn = window[newValue] || null;
         this.#currentPage = 1;
         this.refresh();
         break;

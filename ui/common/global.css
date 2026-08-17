@@ -127,11 +127,6 @@
   --shell-rail-width:     32px;
   --shell-rail-expanded:  200px;
   --shell-logo-glow:      drop-shadow(0 4px 16px rgba(247, 225, 156, 0.16));
-  --shell-shadow:         0 12px 32px color-mix(in srgb, #000000 32%, transparent);
-  --shell-border-subtle:  color-mix(in srgb, #FFFFFF 8%, transparent);
-  --shell-border-kbd:     color-mix(in srgb, #FFFFFF 16%, transparent);
-  --shell-hover:          color-mix(in srgb, #FFFFFF 6%, transparent);
-  --shell-scrollbar:      color-mix(in srgb, #FFFFFF 18%, transparent);
 
   /* ==== Control metrics (fig-tokens control-*) ==== */
   --control-h-sm: 28px;
@@ -141,22 +136,11 @@
   /* ==== DS semantic tokens (theme-aware) ==== */
   --bg-base:            light-dark(var(--white), var(--black));
   --bg-group:           light-dark(var(--sand-50), var(--neutral-900));
-  --bg-page:            light-dark(var(--white), var(--neutral-900));
   --bg-surface:         light-dark(var(--sand-50), var(--neutral-800));
   --bg-surface-hover:   light-dark(var(--sand-100), var(--neutral-700));
   --bg-surface-active:  light-dark(var(--sand-200), var(--neutral-600));
-  --bg-subtle:          light-dark(var(--sand-100), var(--neutral-800));
-  --bg-inset:           light-dark(var(--sand-300), var(--neutral-700));
   --bg-overlay:         light-dark(rgba(100, 116, 139, 0.5), rgba(15, 23, 42, 0.6));
-  --bg-popover:         light-dark(var(--white), var(--neutral-700));
   --bg-disabled:        light-dark(var(--sand-200), var(--neutral-700));
-  --bg-neutral:         light-dark(var(--neutral-200), var(--neutral-700));
-
-  --bg-action:          light-dark(var(--sand-800), var(--neutral-100));
-  --bg-action-hover:    light-dark(var(--sand-700), var(--neutral-300));
-  --bg-inverse:         light-dark(var(--neutral-900), var(--neutral-100));
-  --bg-code:            light-dark(var(--neutral-900), var(--neutral-950, #0c0c0c));
-  --bg-track:           light-dark(var(--neutral-300), var(--neutral-600));
 
   --bg-brand:           var(--yellow-600);
   --bg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-400));
@@ -166,7 +150,6 @@
   --bg-secondary-brand:        light-dark(var(--yellow-100), var(--yellow-900));
   --bg-secondary-brand-hover:  light-dark(var(--yellow-200), var(--yellow-800));
   --bg-secondary-brand-active: light-dark(var(--yellow-100), var(--yellow-900));
-  --bg-caution-subtle:         light-dark(var(--yellow-50), var(--neutral-800));
 
   --bg-success:         light-dark(var(--green-100), var(--green-900));
   --bg-warning:         light-dark(var(--orange-100), var(--orange-900));
@@ -177,14 +160,11 @@
   --fg-secondary:       light-dark(var(--sand-700), var(--neutral-400));
   --fg-disabled:        light-dark(var(--sand-500), var(--neutral-600));
   --fg-on-action:       light-dark(var(--white), var(--neutral-900));
-  --fg-code:            light-dark(var(--neutral-100), var(--neutral-200));
 
   --fg-brand:           light-dark(var(--yellow-600), var(--yellow-400));
   --fg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-300));
   --fg-brand-link:      var(--fg-brand);
   --fg-brand-highlight: light-dark(var(--yellow-500), var(--yellow-400));
-  --fg-caution:         light-dark(var(--yellow-700), var(--yellow-300));
-  --fg-caution-emphasis: light-dark(var(--yellow-800), var(--yellow-200));
 
   --fg-success:         light-dark(var(--green-600), var(--green-400));
   --fg-warning:         light-dark(var(--orange-600), var(--orange-400));
@@ -194,92 +174,35 @@
   --border-primary:     light-dark(var(--sand-200), var(--neutral-700));
   --border-secondary:   var(--fg-brand);
   --border-hover:       var(--fg-brand);
-  --border-subtle:      light-dark(var(--sand-100), var(--neutral-800));
-  --border-emphasis:    light-dark(var(--sand-300), var(--neutral-600));
   --border-success:     light-dark(var(--green-300), var(--green-600));
   --border-error:       light-dark(var(--red-300), var(--red-600));
   --border-warning:     light-dark(var(--orange-300), var(--orange-600));
   --border-information: light-dark(var(--blue-300), var(--blue-600));
   --border-disabled:    light-dark(var(--sand-200), var(--neutral-700));
 
-  /* ==== Syntax highlighting (GitHub-style) ==== */
-  --syntax-comment:     light-dark(#6a737d, #8b949e);
-  --syntax-keyword:     light-dark(#d73a49, #ff7b72);
-  --syntax-string:      light-dark(#032f62, #a5d6ff);
-  --syntax-number:      light-dark(#005cc5, #79c0ff);
-  --syntax-type:        light-dark(#6f42c1, #d2a8ff);
-  --syntax-function:    light-dark(#e36209, #ffa657);
-  --syntax-literal:     light-dark(#22863a, #7ee787);
-  --syntax-deleted:     light-dark(#b31d28, #ffdcd7);
-
   /* ==== DS spacing / radius / border widths / icon sizes ==== */
-  /* --s-32 filled in to match nasiko_ui's spacing.dart scale (0,2,4,8,12,16,
-     20,24,28,32,36,48,64,80) exactly — it was missing here even though the
-     Flutter side has always had it (e.g. NasikoCard's header row height). */
   --s-0: 0px; --s-2: 2px; --s-4: 4px; --s-8: 8px;
   --s-12: 12px; --s-16: 16px; --s-20: 20px; --s-24: 24px;
-  --s-28: 28px; --s-32: 32px; --s-36: 36px; --s-48: 48px; --s-52: 52px; --s-64: 64px; --s-80: 80px;
+  --s-28: 28px; --s-36: 36px; --s-48: 48px; --s-52: 52px; --s-64: 64px; --s-80: 80px;
 
   /* Standard content padding inside the white card (52 top, 64 sides/bottom) */
   --card-content-pad: var(--s-52) var(--s-64) var(--s-64);
 
   --r-0: 0px; --r-4: 4px; --r-6: 6px; --r-8: 8px;
   --r-10: 10px; --r-12: 12px; --r-16: 16px; --r-40: 40px;
-  /* Pill/circle. Was referenced as --radius-full in three places and declared
-     nowhere, so not-defined.css's skeleton avatar computed border-radius:0 —
-     a square placeholder for a round element. */
-  --r-full: 999px;
 
-  /* border_width.dart defines hairline(0.5)/thin(1)/base(2)/thick(3)/
-     thicker(4) — only thin/base existed here. --bw-4 added for the first
-     consumer that needs it (app-card's left accent bar); hairline/thick
-     are still gaps if a future component needs them. */
-  --bw-1: 1px; --bw-2: 2px; --bw-4: 4px;
+  --bw-1: 1px; --bw-2: 2px;
 
   --icon-xs: 16px; --icon-s: 20px; --icon-m: 24px; --icon-l: 28px;
-
-  /* ==== DS line height / weight ====
-     Neither family existed, so every leading and weight in the component tree
-     was a literal — which is why a type-scale change could not be mechanical. */
-  --lh-none: 1;
-  --lh-tight: 1.2;
-  --lh-snug: 1.35;
-  --lh-normal: 1.5;
-  --lh-relaxed: 1.65;
-
-  --fw-regular: 400;
-  --fw-medium: 500;
-  --fw-semibold: 600;
-  --fw-bold: 700;
-
-  /* ==== DS stacking order ====
-     Stacking was eight hand-picked values from 0 to 10000 spread across five
-     files, so "does this sit above that?" could only be answered by grepping.
-     Named steps, deliberately sparse so there is room to insert between them.
-     app-toast sits above app-modal on purpose: a toast confirming an action
-     taken inside a dialog has to be readable while the dialog is still open. */
-  --z-base: 0;
-  --z-raised: 1;
-  --z-sticky: 100;
-  --z-dropdown: 200;
-  --z-overlay: 800;
-  --z-modal: 1000;
-  --z-toast: 1100;
-  --z-tooltip: 1200;
 
   /* ==== DS elevation (flat by default — borders carry depth) ==== */
   --shadow-card-hover: 0 2px 16px rgba(0, 0, 0, 0.10);
   --shadow-menu:       0 4px 16px rgba(0, 0, 0, 0.08);
 
-  /* Darkest neutral. mcp-page.css referenced --neutral-950 with an inline
-     `#0c0c0c` fallback because the ramp stopped at 900; declaring it removes the
-     last raw hex from that file's dark-mode path. */
-  --neutral-950: #0c0c0c;
-
   /* ==== Legacy aliases → DS ==== */
   --color-primary: var(--fg-brand);
   --color-primary-hover: var(--fg-brand-hover);
-  /* --color-primary-muted removed — was unused */
+  --color-primary-muted: light-dark(color-mix(in srgb, var(--color-primary) 60%, white), color-mix(in srgb, var(--color-primary) 60%, black));
   --color-primary-subtle: var(--bg-secondary-brand);
   --color-primary-ring: color-mix(in srgb, var(--color-primary) 20%, transparent);
   --color-on-primary: var(--fg-on-action);
@@ -301,13 +224,13 @@
   --color-info-border: var(--border-information);
 
   --color-neutral: var(--fg-secondary);
-  --color-neutral-bg: var(--bg-subtle);
+  --color-neutral-bg: light-dark(var(--sand-100), var(--neutral-800));
   --color-neutral-border: var(--border-primary);
 
-  /* Page canvas / raised surfaces.
-     --color-bg-base is the sand wash used for table heads, code wells, hovers.
-     --color-bg-surface is the white plane cards / inputs sit on. */
-  --color-bg-base: var(--bg-group);
+  /* Page canvas / raised surfaces. NightOwl: flat ink shell backdrop (body
+     only — see --shell-bg) → white content card → sand wells on white.
+     --color-bg-base stays a LIGHT wash: table heads, code, hovers use it. */
+  --color-bg-base: light-dark(var(--sand-50), var(--neutral-900));
   --color-bg-surface: light-dark(var(--white), var(--neutral-800));
   /* Chrome sitting directly on the ink shell (rare — most chrome is the shell itself) */
   --bg-canvas-card: light-dark(var(--shell-control), var(--neutral-800));
@@ -332,7 +255,6 @@
   --radius-sm: var(--r-4);
   --radius-md: var(--r-8);
   --radius-lg: var(--r-12);
-  --radius-full: var(--r-full);
 
   /* Shadows — DS is flat; keep the legacy ramp shallow.
      light-dark() is a *color* function, so it wraps only the color — wrapping a
@@ -408,7 +330,7 @@ body {
    itself, so page components sit on the white surface directly. Desktop gets
    the floating white card in the @media block below. */
 @media (max-width: 1023.98px) {
-  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(div):not(dialog) {
+  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette) {
     background: var(--color-bg-surface);
     flex: 1;
   }
@@ -473,7 +395,7 @@ main.app-shell {
   /* Content card — the page component floats as the single white r8 card on
      the ink shell (floating chrome like toasts, dialogs, and the kb palette
      are plain divs / dedicated tags and are opted out). */
-  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(main):not(div):not(dialog),
+  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(main):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette),
   body:has(> app-header) > main {
     background: var(--color-bg-surface);
     border: none;
@@ -496,27 +418,6 @@ main.app-shell {
   body:has(> app-header) > main > * {
     max-width: var(--page-max-width);
     margin-inline: auto;
-  }
-
-  /*
-    SPA: the router mounts pages into <main id="outlet">, so the page is a
-    grandchild of body, not a child. The rule above centres a <main>'s children
-    in a --page-max-width column — correct for an MPA content page, wrong for a
-    router-mounted one: it shrinks the whole page to a narrow centred strip
-    inside the card and leaves the module-nav gutter empty beside it.
-
-    The outlet is a passthrough. The card geometry above still applies to it,
-    but the page inside owns its own padding (styles/page-layout.css) and fills
-    the card edge to edge.
-  */
-  body:has(> app-header) > main#outlet {
-    padding: 0;
-  }
-
-  body:has(> app-header) > main#outlet > * {
-    max-width: none;
-    margin-inline: 0;
-    min-height: 100%;
   }
 
   body:has(> app-header) > main.app-shell {

@@ -2,7 +2,7 @@
  * In-card module tree navigation (NightOwl): module icon + title header,
  * collapsible groups, and 28px rows with a sand-100 active state.
  *
- * Data comes from `fetchModuleNav` via data-sources (navigation.js), which
+ * Data comes from `window.fetchModuleNav(module)` (navigation.js), which
  * resolves to `{ title, icon, groups: [{ label, items }] }` where an item is
  * either `{ label, url }` (link, active by path match) or
  * `{ label, section }` (in-page section — clicking dispatches a bubbling
@@ -14,16 +14,13 @@
  * flow above the page content.
  *
  * @element app-module-nav
- * @attr {string} module - Key passed to `fetchModuleNav` via data-sources.
+ * @attr {string} module - Key passed to `window.fetchModuleNav`.
  * @attr {string} active-section - Section key rendered as active (for pages
  *                                 whose sections are tabs, e.g. Settings).
  * @fires module-nav-select - `{ detail: { section } }` on section item click.
  */
-import { navigate as routerNavigate } from '../core/router.js';
 import { icons } from "../utils/icons.js";
-import { escHtml } from '/common/utils/escape.js';
-import { callOptional } from '../core/data-sources.js';
-import { initialView, syncView } from '../utils/module-view.js';
+import { initialView, syncView } from "../utils/module-view.js";
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav is
@@ -33,12 +30,10 @@ styles.replaceSync(`/* Host-page layout contract: the page component that contai
    sheet only arrives with this module. What is left here is how the nav fills
    that gutter, which is inert until the nav upgrades anyway. */
 @media (min-width: 1024px) {
-  body:has(> app-header) > :not(app-header):has(> app-module-nav),
-  body:has(> app-header) > #outlet > :has(> app-module-nav) {
+  body:has(> app-header) > :not(app-header):has(> app-module-nav) {
     position: relative;
   }
-  body:has(> app-header) > :not(app-header) > app-module-nav,
-  body:has(> app-header) > #outlet > * > app-module-nav {
+  body:has(> app-header) > :not(app-header) > app-module-nav {
     position: absolute;
     top: var(--s-24);
     left: var(--s-24);
@@ -146,11 +141,11 @@ app-module-nav:not(:defined) { display: block; }
 
   .child { padding-left: 26px; }
   .child.is-active {
-    background: var(--bg-surface-hover);
+    background: light-dark(var(--sand-100), var(--neutral-700));
     color: var(--fg-primary);
     font-weight: 500;
   }
-  .child.is-active:hover { background: var(--bg-surface-hover); }
+  .child.is-active:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
 
   /* Skeleton while fetchModuleNav resolves */
   .skel-row {
@@ -253,9 +248,6 @@ export class AppModuleNav extends HTMLElement {
 
   connectedCallback() {
     this.addEventListener("click", this.#handleClick);
-    // SPA: update active state when the router changes page
-    document.removeEventListener("route-change", this.#onRouteChange);
-    document.addEventListener("route-change", this.#onRouteChange);
     this.#load();
   }
 
@@ -271,7 +263,7 @@ export class AppModuleNav extends HTMLElement {
 
   async #load() {
     const module = this.getAttribute("module");
-    if (!module) {
+    if (!module || typeof window.fetchModuleNav !== "function") {
       this.#nav = null;
       this.#render();
       return;
@@ -303,10 +295,7 @@ export class AppModuleNav extends HTMLElement {
 
     let fresh = null;
     try {
-      this.#nav = await callOptional('fetchModuleNav', module);
-      try {
-        sessionStorage.setItem(cacheKey, JSON.stringify(this.#nav));
-      } catch { /* quota exceeded */ }
+      fresh = await window.fetchModuleNav(module);
     } catch (e) {
       console.warn("fetchModuleNav failed:", e);
     }
@@ -335,15 +324,6 @@ export class AppModuleNav extends HTMLElement {
     this.#nav = fresh;
     this.#render();
   }
-
-  #onRouteChange = () => {
-    // Re-evaluate which link is active after SPA navigation
-    this.querySelectorAll("a.row[href]").forEach((a) => {
-      const active = this.#isActive(a.getAttribute("href"));
-      a.classList.toggle("is-active", active);
-      a.setAttribute("aria-current", active ? "page" : "false");
-    });
-  };
 
   #handleClick = (e) => {
     if (e.target.closest("[data-mobile-toggle]")) {
@@ -384,12 +364,17 @@ export class AppModuleNav extends HTMLElement {
       }));
       return;
     }
-    const link = e.target.closest("a.row[href]");
-    if (link && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0)) {
-      e.preventDefault();
-      routerNavigate(link.href);
+    if (e.target.closest("a.row[href]")) {
+      document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
     }
   };
+
+  #esc(str) {
+    if (str == null) return "";
+    return String(str).replace(/[&<>"']/g, (m) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;",
+    })[m]);
+  }
 
   #normalizePath(p) {
     return p
@@ -422,15 +407,15 @@ export class AppModuleNav extends HTMLElement {
       // from anywhere in the module, and on the owning page it only moves the
       // hash (no reload) while the click handler switches the panel.
       const tag = item.url
-        ? `a href="${escHtml(item.url)}#${escHtml(item.section)}"`
+        ? `a href="${this.#esc(item.url)}#${this.#esc(item.section)}"`
         : `button type="button"`;
       return `<${tag} class="row child${active ? " is-active" : ""}"
-        data-section="${escHtml(item.section)}" ${active ? 'aria-current="true"' : ""}>
-        <span class="row-label">${escHtml(item.label)}</span></${item.url ? "a" : "button"}>`;
+        data-section="${this.#esc(item.section)}" ${active ? 'aria-current="true"' : ""}>
+        <span class="row-label">${this.#esc(item.label)}</span></${item.url ? "a" : "button"}>`;
     }
     const active = this.#isActive(item.url);
-    return `<a class="row child${active ? " is-active" : ""}" href="${escHtml(item.url)}"
-      ${active ? 'aria-current="page"' : ""}><span class="row-label">${escHtml(item.label)}</span></a>`;
+    return `<a class="row child${active ? " is-active" : ""}" href="${this.#esc(item.url)}"
+      ${active ? 'aria-current="page"' : ""}><span class="row-label">${this.#esc(item.label)}</span></a>`;
   }
 
   #render() {
@@ -462,20 +447,20 @@ export class AppModuleNav extends HTMLElement {
       <button class="mobile-toggle" data-mobile-toggle type="button"
         aria-expanded="${this.#mobileOpen}">
         ${iconHtml}
-        <span class="mod-title">${escHtml(nav.title)}</span>
+        <span class="mod-title">${this.#esc(nav.title)}</span>
         <span class="chev">${icons.chevronDown("", 14)}</span>
       </button>
       <div class="mod-head">
         ${iconHtml}
-        <span class="mod-title">${escHtml(nav.title)}</span>
+        <span class="mod-title">${this.#esc(nav.title)}</span>
       </div>
-      <nav class="mod-groups" aria-label="${escHtml(nav.title)} navigation">
+      <nav class="mod-groups" aria-label="${this.#esc(nav.title)} navigation">
         ${nav.groups.map((g) => `
           <div class="group${this.#collapsed.has(g.label) ? " is-collapsed" : ""}">
-            <button type="button" class="row group-head" data-group="${escHtml(g.label)}"
+            <button type="button" class="row group-head" data-group="${this.#esc(g.label)}"
               aria-expanded="${!this.#collapsed.has(g.label)}">
               <span class="chev">${icons.chevronDown("", 12)}</span>
-              <span class="row-label">${escHtml(g.label)}</span>
+              <span class="row-label">${this.#esc(g.label)}</span>
             </button>
             <div class="group-items">
               <div class="items-clip">

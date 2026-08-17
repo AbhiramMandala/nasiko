@@ -202,13 +202,7 @@
     background: var(--color-bg-surface);
   }
 
-  /* ── Card ────────────────────────────────────────────────────────────────
-     The real, data-loaded card is now <app-card> (common/components/app-card.js
-     — the nasiko_ui NasikoCard counterpart); it carries its own box, accent
-     bar, title/tags/description and error body, styled from global.css DS
-     tokens. `.agent-card` survives here ONLY as the box for the JS-rendered
-     loading skeleton below (#skeletonCards()) — its layout must keep tracking
-     <app-card>'s if that ever changes size. */
+  /* ── Card — surface + hover lift: common/styles/surface.css ─────────────── */
   .agent-card {
     /* Anchors `.agent-card-source`. Without it that badge resolved against
        whichever ancestor happened to be positioned, so every card's badge
@@ -218,6 +212,86 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
+  }
+  .agent-card--error:hover {
+    border-color: var(--color-error-border);
+  }
+  .agent-card-top {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-width: 0;
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-neutral);
+    flex-shrink: 0;
+  }
+  .status-dot.is-running { background: var(--color-success); }
+  .status-dot.is-error { background: var(--color-error); }
+  .status-dot.is-pending { background: var(--color-info, #3b82f6); animation: pulse-dot 1.5s ease-in-out infinite; }
+  @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .agent-card-name {
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    color: var(--color-text-main);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .agent-card-name:hover { text-decoration: underline; }
+  .agent-card-version {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+  .agent-card-source {
+    position: absolute;
+    top: var(--space-sm);
+    right: var(--space-sm);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--color-text-muted);
+    background: transparent;
+    padding: 0;
+    line-height: 1;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  .agent-card:hover .agent-card-source,
+  .agent-card:focus-within .agent-card-source {
+    opacity: 1;
+  }
+  .agent-card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    overflow: hidden;
+    max-height: 1.9em;
+  }
+  /* .tag / .tag--more: common/styles/badge.css */
+  .agent-card-desc {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .agent-card-error {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    line-height: 1.5;
+  }
+  .agent-card-error-title {
+    display: block;
+    color: var(--color-error);
+    font-weight: 600;
   }
   .error-logs-link {
     color: var(--color-text-main);
@@ -311,13 +385,13 @@
   .card-action-btn:disabled { opacity: 0.6; cursor: default; }
   /* Contextual primary (Deploy) — contained dark, same as agents-page Chat */
   .card-action-btn--primary {
-    background: var(--bg-action);
+    background: light-dark(var(--sand-800), var(--neutral-100));
     border-color: transparent;
-    color: var(--fg-on-action);
+    color: light-dark(var(--white), var(--neutral-900));
   }
   .card-action-btn--primary:hover:not(:disabled) {
-    background: var(--bg-action-hover);
-    color: var(--fg-on-action);
+    background: light-dark(var(--sand-700), var(--neutral-300));
+    color: light-dark(var(--white), var(--neutral-900));
   }
   /* Delete — icon-only quiet-danger, pushed right of the lifecycle actions */
   /* Icon-only lifecycle buttons (Restart/Stop) — square quiet buttons; the

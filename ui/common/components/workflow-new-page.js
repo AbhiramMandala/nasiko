@@ -15,10 +15,6 @@ import '/common/components/app-button.js';
 import '/common/components/wf-step-editor.js';
 
 import styles from './workflow-new-page.css' with { type: 'css' };
-import { escHtml } from '/common/utils/escape.js';
-import { call } from '../core/data-sources.js';
-import { navigate as routerNavigate } from '../core/router.js';
-
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class WorkflowNewPage extends HTMLElement {
@@ -32,7 +28,7 @@ class WorkflowNewPage extends HTMLElement {
     this.innerHTML = `
       <div class="col">
         <header class="page-head">
-          <a class="back-btn" href="/workflows" aria-label="Back to workflows">${icons.chevronLeft('', 16)}</a>
+          <a class="back-btn" href="/index.html?view=workflows" aria-label="Back to workflows">${icons.chevronLeft('', 16)}</a>
           <input class="name-input" id="wf-name" placeholder="Name this workflow" aria-label="Workflow name" />
           <span class="draft-pill">Draft</span>
         </header>
@@ -76,7 +72,7 @@ class WorkflowNewPage extends HTMLElement {
         <footer class="foot">
           <span class="footnote" id="footnote"></span>
           <div class="foot-actions">
-            <a class="cancel-link" href="/workflows">Cancel</a>
+            <a class="cancel-link" href="/index.html?view=workflows">Cancel</a>
             <app-button variant="secondary" size="sm" id="save-btn">Save workflow</app-button>
             <app-button variant="primary" size="sm" id="save-run-btn">${icons.play('', 12)} Save and run</app-button>
           </div>
@@ -147,7 +143,7 @@ class WorkflowNewPage extends HTMLElement {
     this.querySelector('#drafted-note').hidden = true;
     this.#setDrafting(true);
     try {
-      const plan = await call('generateWorkflow', desc);
+      const plan = await window.generateWorkflow(desc);
       const nameInput = this.querySelector('#wf-name');
       if (!nameInput.value.trim() && plan.name) nameInput.value = plan.name;
       this.querySelector('#editor').steps = (plan.steps || []).map((s) => ({
@@ -172,13 +168,13 @@ class WorkflowNewPage extends HTMLElement {
     }
     if (err.status === 400) {
       return `You don't have any agents yet, so there's nothing to plan with.
-        <a href="/agents">Deploy an agent</a> first, then draft steps.`;
+        <a href="/agents.html">Deploy an agent</a> first, then draft steps.`;
     }
     if (err.status === 422) {
       return `Nasiko couldn't draft steps from that description — try rephrasing it,
         or add the steps manually below.`;
     }
-    return `Drafting failed: ${escHtml(err.message)}`;
+    return `Drafting failed: ${this.#esc(err.message)}`;
   }
 
   async #save({ run }) {
@@ -195,15 +191,15 @@ class WorkflowNewPage extends HTMLElement {
     try {
       const name = this.querySelector('#wf-name').value.trim();
       const description = this.querySelector('#wf-desc').value.trim();
-      const workflow = await call('createWorkflow', {
+      const workflow = await window.createWorkflow({
         name: name || undefined,
         description: description || undefined,
         steps,
       });
-      let target = `/workflow?id=${encodeURIComponent(workflow.id)}`;
+      let target = `/workflow.html?id=${encodeURIComponent(workflow.id)}`;
       if (run) {
         try {
-          const started = await call('runWorkflow', workflow.id);
+          const started = await window.runWorkflow(workflow.id);
           target += `&exec=${encodeURIComponent(started.execution_id)}`;
         } catch (runErr) {
           // The workflow IS saved, so still land on the review screen — but say
@@ -212,13 +208,18 @@ class WorkflowNewPage extends HTMLElement {
           target += `&run_error=${encodeURIComponent(runErr.message || 'unknown error')}`;
         }
       }
-      routerNavigate(target);
+      window.location.href = target;
     } catch (err) {
       btn.removeAttribute('loading');
       showToast(`Save failed: ${err.message}`);
     }
   }
 
+  #esc(s) {
+    const d = document.createElement('span');
+    d.textContent = s ?? '';
+    return d.innerHTML;
+  }
 }
 
 customElements.define('workflow-new-page', WorkflowNewPage);

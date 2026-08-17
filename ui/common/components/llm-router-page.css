@@ -155,7 +155,7 @@
 
   /* Gold "Default" pill — brand tint on the shared .badge base */
   .badge--brand {
-    color: var(--fg-caution-emphasis);
+    color: light-dark(var(--yellow-800), var(--yellow-200));
     background: var(--bg-secondary-brand);
   }
 

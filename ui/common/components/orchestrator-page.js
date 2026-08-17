@@ -1,31 +1,20 @@
 import { apiFetch } from '/common/services/api.js';
-import { isAbort, userMessage } from '/common/core/errors.js';
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom, scrollerFor, stickToBottom } from '/common/utils/a2a-stream.js';
 import { usageChipsHtml } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
-import { registerAll } from '/common/core/data-sources.js';
 import '/common/components/voice-input.js';
 import '/common/components/agent-steps.js';
 
-const transcribeAudio = transcribeBlob;
-registerAll({ transcribeAudio }, { replace: true });
+window.transcribeAudio = transcribeBlob;
 
 import styles from './orchestrator-page.css' with { type: 'css' };
-import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class OrchestratorPage extends HTMLElement {
   #initialized = false;
   #sessionId = null;
-
-  /**
-   * Aborted on disconnect. Before this existed, navigating away mid-response
-   * left the A2A reader pulling frames and writing them into detached DOM for as
-   * long as the agent kept streaming.
-   */
-  #abort = new AbortController();
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -50,7 +39,7 @@ class OrchestratorPage extends HTMLElement {
           transcription-callback="transcribeAudio"
         ></voice-input>
       </div>
-      <a class="wf-banner" href="/workflow-new">
+      <a class="wf-banner" href="/workflow-new.html">
         <span class="wf-banner-icon" aria-hidden="true">${icons.workflow('', 20)}</span>
         <span class="wf-banner-text">
           <span class="wf-banner-title">Need multiple coordinated steps or agents?</span>
@@ -146,15 +135,10 @@ class OrchestratorPage extends HTMLElement {
           },
         };
 
-        // `timeout: 0` disables the API funnel's default 30s deadline — this is
-        // a long-lived stream, not a request/response. `signal` lets
-        // disconnectedCallback cut it off on navigation.
         const res = await apiFetch('/orchestrator/a2a', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
-          timeout: 0,
-          signal: this.#abort.signal,
         });
         if (!res.ok) throw new Error(await res.text());
 
@@ -165,20 +149,11 @@ class OrchestratorPage extends HTMLElement {
         // needed, unlike the agent chat page whose direct-agent path does not.
       } catch (err) {
         pendingRow.remove();
-        // A cancellation is us, not a failure: the element is being removed, so
-        // there is nobody to tell. Without this, navigating away mid-response
-        // painted "Error: The user aborted a request." into a dying page.
-        if (!isAbort(err)) {
-          this.#appendMsg(messagesEl, 'assistant', `Error: ${userMessage(err)}`);
-        }
+        this.#appendMsg(messagesEl, 'assistant', `Error: ${err.message}`);
       } finally {
         voiceInput.setLoading(false);
       }
     });
-  }
-
-  disconnectedCallback() {
-    this.#abort.abort();
   }
 
   #appendMsg(messagesEl, role, content, { usage = null, traceId = null } = {}) {
@@ -218,7 +193,7 @@ class OrchestratorPage extends HTMLElement {
     if (!traceId) return '';
     const q = new URLSearchParams({ trace_id: traceId });
     if (this.#sessionId) q.set('session_id', this.#sessionId);
-    return `<a class="msg-action-trace" href="/observability-session?${q}"
+    return `<a class="msg-action-trace" href="/observability-session.html?${q}"
       aria-label="View trace" title="View trace">${icons.trace('', 14)}<span>Detailed trace</span></a>`;
   }
 
@@ -249,7 +224,7 @@ class OrchestratorPage extends HTMLElement {
               ${icons.chevronRight('empty-arrow', 12)}
               <span class="process-pill">${icons.route('', 12)} Orchestrate</span>
             </div>
-            <a class="empty-cta" href="/add-agent">Import agent ${icons.plus('', 13)}</a>
+            <a class="empty-cta" href="/agents.html?view=import">Import agent ${icons.plus('', 13)}</a>
           </div>`;
         return;
       }
@@ -257,12 +232,12 @@ class OrchestratorPage extends HTMLElement {
       grid.innerHTML = agents.map(agent => {
         const displayName = agent.display_name || agent.name || agent.id;
         return `
-          <a class="agent-card" href="/chat?agent_name=${encodeURIComponent(agent.name)}&agent_id=${encodeURIComponent(agent.id)}">
+          <a class="agent-card" href="/chat.html?agent_name=${encodeURIComponent(agent.name)}&agent_id=${encodeURIComponent(agent.id)}">
             <div class="agent-card-top">
-              <span class="agent-card-name">${escHtml(displayName)}</span>
+              <span class="agent-card-name">${this.#esc(displayName)}</span>
               <span class="agent-card-go">${icons.arrowUpRight('', 14)}</span>
             </div>
-            ${agent.description ? `<div class="agent-card-desc">${escHtml(agent.description)}</div>` : ''}
+            ${agent.description ? `<div class="agent-card-desc">${this.#esc(agent.description)}</div>` : ''}
           </a>
         `;
       }).join('');
@@ -323,7 +298,7 @@ class OrchestratorPage extends HTMLElement {
       },
       onError: (message) => {
         stepsEl.finish();
-        showContent(`<span style="color:var(--color-error)">${escHtml(message)}</span>`);
+        showContent(`<span style="color:var(--color-error)">${this.#esc(message)}</span>`);
       },
     });
 
@@ -332,7 +307,7 @@ class OrchestratorPage extends HTMLElement {
     let fullText = out.text;
     if (out.failed && !fullText) {
       fullText = out.errorMessage;
-      showContent(`<span style="color:var(--color-error)">${escHtml(fullText)}</span>`);
+      showContent(`<span style="color:var(--color-error)">${this.#esc(fullText)}</span>`);
     } else if (!fullText) {
       showContent(renderMarkdown('No response'));
       fullText = 'No response';
@@ -353,6 +328,11 @@ class OrchestratorPage extends HTMLElement {
     return { text: fullText, traceId: out.traceId, usage: out.usage };
   }
 
+  #esc(s) {
+    const d = document.createElement('span');
+    d.textContent = s || '';
+    return d.innerHTML;
+  }
 }
 
 customElements.define('orchestrator-page', OrchestratorPage);

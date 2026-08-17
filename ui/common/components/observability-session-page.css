@@ -361,7 +361,7 @@
     font-size: var(--font-size-xs);
     padding: 3px 10px;
     border-radius: var(--r-6);
-    background: var(--bg-neutral);
+    background: light-dark(var(--neutral-200), var(--neutral-700));
     color: var(--color-text-muted);
   }
 

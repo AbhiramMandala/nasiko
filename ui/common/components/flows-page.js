@@ -33,14 +33,14 @@ class FlowsPage extends HTMLElement {
 
     const table = this.querySelector('smart-table');
     table.columns = [
-      { key: 'flow_id', label: 'Flow ID', width: '12%', render: (v) => v ? `<a class="cell-id" href="/flow?id=${v}">${v.slice(0, 12)}</a>` : '' },
+      { key: 'flow_id', label: 'Flow ID', width: '12%', render: (v) => v ? `<a class="cell-id" href="/flow.html?id=${v}">${v.slice(0, 12)}</a>` : '' },
       { key: 'title', label: 'Query', width: '30%', wrap: true, render: (v) => v ? (v.length > 80 ? v.slice(0, 80) + '...' : v) : '' },
       { key: 'root_agent_name', label: 'Agent', width: '13%', render: (v) => v ? `<span class="cell-agent">${v}</span>` : '' },
       { key: 'status', label: 'Status', width: '11%', render: statusPill },
       { key: 'total_invocations', label: 'Calls', width: '7%', render: (v) => `<span class="cell-num">${v ?? ''}</span>` },
       { key: 'duration_ms', label: 'Duration', width: '9%', render: (v) => `<span class="cell-num">${fmtDuration(v)}</span>` },
       { key: 'created_at', label: 'Started', width: '12%', render: (v) => v ? `<span class="cell-num">${new Date(v).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>` : '' },
-      { key: 'flow_id', label: '', width: '6%', render: (v) => v ? `<a class="cell-action" href="/flow?id=${v}">Trace →</a>` : '' },
+      { key: 'flow_id', label: '', width: '6%', render: (v) => v ? `<a class="cell-action" href="/flow.html?id=${v}">Trace →</a>` : '' },
     ];
   }
 }

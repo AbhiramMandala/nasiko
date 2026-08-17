@@ -1,14 +1,6 @@
 import styles from './sessions-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
-import { showToast } from '../utils/toast.js';
-import { userMessage } from '../core/errors.js';
 import './app-button.js';
-import './app-module-nav.js';
-import { escHtml } from '/common/utils/escape.js';
-import { call, callOptional } from '../core/data-sources.js';
-import { navigate as routerNavigate } from '../core/router.js';
-
-
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /// Rows requested per page. `/api/chat/sessions` is keyset-paginated — it
@@ -57,7 +49,7 @@ class SessionsPage extends HTMLElement {
     this.querySelector('#btn-new')?.addEventListener('click', () => {
       // No agent preselected: the orchestrator routes each message, so name it
       // honestly instead of showing the placeholder agent header.
-      routerNavigate('/chat?agent_name=Orchestrator');
+      window.location.href = '/chat.html?agent_name=Orchestrator';
     });
 
     this.querySelector('.sessions-search')?.addEventListener('input', (e) => {
@@ -91,16 +83,11 @@ class SessionsPage extends HTMLElement {
     if (more) moreBtn?.setAttribute('loading', '');
 
     try {
-      // Chat sessions are the primary source; observability stats (traces,
-      // tokens, latency) are joined in by session id — best-effort, the page
-      // works without them. Both are asked for the same window so the stats
-      // request only does work for rows that are about to be shown.
-      const offset = more ? this.#sessions.length : 0;
-      const [chatRes, obsRes] = await Promise.allSettled([
-        call('fetchSessions', '', PAGE_SIZE, more ? this.#nextCursor : null),
-        callOptional('fetchObservabilitySessions',PAGE_SIZE, offset) ?? Promise.reject(),
-      ]);
-      if (chatRes.status === 'rejected') throw chatRes.reason;
+      // One request for the whole page. The stats columns used to come from
+      // `/api/observability/session/list`, which costs a trace-store lookup per
+      // row and gated the render on the slowest one; they now ride along on the
+      // session rows themselves, aggregated in the same SQL query.
+      const res = await window.fetchSessions('', PAGE_SIZE, more ? this.#nextCursor : null);
 
       const page = res?.data || [];
       this.#nextCursor = res?.next_cursor || null;
@@ -110,6 +97,7 @@ class SessionsPage extends HTMLElement {
     } catch {
       // A failed "load more" must not discard the pages already on screen.
       if (more) {
+        const { showToast } = await import('/common/utils/toast.js');
         showToast('Could not load more sessions.');
         return;
       }
@@ -175,7 +163,7 @@ class SessionsPage extends HTMLElement {
           title="No sessions yet"
           description="Start a conversation from the orchestrator or an agent page."
           icon='${icons.send()}'>
-          <a href="/" style="text-decoration:none"><app-button variant="dark" size="sm">Start a Chat</app-button></a>
+          <app-button variant="dark" size="sm" onclick="window.location.href='/index.html'">Start a Chat</app-button>
         </app-empty-state>`;
       }
       return;
@@ -211,12 +199,12 @@ class SessionsPage extends HTMLElement {
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        routerNavigate(`/observability-session?session_id=${encodeURIComponent(btn.dataset.sessionId)}`);
+        window.location.href = `/observability-session.html?session_id=${encodeURIComponent(btn.dataset.sessionId)}`;
       });
     });
 
     list.querySelectorAll('tr[data-href]').forEach(row => {
-      row.addEventListener('click', () => { routerNavigate(row.dataset.href); });
+      row.addEventListener('click', () => { window.location.href = row.dataset.href; });
     });
   }
 
@@ -226,7 +214,7 @@ class SessionsPage extends HTMLElement {
     const time = s.updated_at || s.created_at;
     const timeStr = time ? this.#formatDate(new Date(time)) : '—';
     const sessionId = s.session_id;
-    const href = `/chat?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
+    const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
     const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
     // `total_tokens` is null when no usage was recorded at all (a BYO-key agent,
     // or messages predating usage tracking) and reads as "—"; a recorded 0 is a
@@ -238,17 +226,17 @@ class SessionsPage extends HTMLElement {
 
     return `<tr data-href="${href}" tabindex="0">
       <td class="col-session">
-        <div class="session-agent">${escHtml(agentName)}${msgCount}</div>
-        ${preview ? `<div class="session-preview">${escHtml(preview.slice(0, 90))}</div>` : ''}
+        <div class="session-agent">${this.#esc(agentName)}${msgCount}</div>
+        ${preview ? `<div class="session-preview">${this.#esc(preview.slice(0, 90))}</div>` : ''}
       </td>
       <td class="col-num">${traces}</td>
       <td class="col-num">${tokens}</td>
       <td class="col-num">${p50}</td>
       <td class="col-date">${timeStr}</td>
       <td class="col-actions">
-        <button class="session-traces" type="button" data-session-id="${escHtml(sessionId)}"
+        <button class="session-traces" type="button" data-session-id="${this.#esc(sessionId)}"
           title="View traces" aria-label="View traces for this session"><span>Traces</span>${icons.chevronRight('', 14)}</button>
-        <button class="session-delete" data-session-id="${escHtml(sessionId)}" title="Delete session" aria-label="Delete session">${icons.trash('', 14)}</button>
+        <button class="session-delete" data-session-id="${this.#esc(sessionId)}" title="Delete session" aria-label="Delete session">${icons.trash('', 14)}</button>
       </td>
     </tr>`;
   }
@@ -285,21 +273,21 @@ class SessionsPage extends HTMLElement {
     }
     if (card) card.style.opacity = '0.4';
     try {
-      // No `if (window.deleteSession)` guard. That guard is why this button used
-      // to lie: the function was defined only in sessions.preview.js, so in the
-      // browser the branch was skipped, the row was removed locally, nothing was
-      // sent, and the session came back on reload. If the data function is
-      // missing we now fail — and the user sees why.
-      await call('deleteSession', sessionId);
+      if (window.deleteSession) {
+        await window.deleteSession(sessionId);
+      }
       this.#sessions = this.#sessions.filter(s => s.session_id !== sessionId);
       this.#applyFilter();
-    } catch (err) {
+    } catch {
       if (card) card.style.opacity = '1';
-      console.error('[sessions-page] delete failed', err);
-      showToast(userMessage(err, 'Could not delete that session.'));
     }
   }
 
+  #esc(s) {
+    const d = document.createElement('span');
+    d.textContent = s || '';
+    return d.innerHTML;
+  }
 }
 
 customElements.define('sessions-page', SessionsPage);

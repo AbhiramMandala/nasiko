@@ -4,10 +4,10 @@
  *
  * @element observability-session-page
  * @note Data sources (see /api/docs):
- *       `call('fetchObservabilitySession', sessionId)` → GET /api/observability/session/{id}
- *       `call('fetchObservabilityTrace', traceId)`     → GET /api/observability/trace/{id}
- *       `call('fetchSpanDetail', traceId, spanId)`     → GET /api/observability/span/{trace_id}/{span_id}
- *       `call('fetchChatSession', sessionId)`          → GET /api/chat/sessions/{id} (chat transcript)
+ *       `window.fetchObservabilitySession(sessionId)` → GET /api/observability/session/{id}
+ *       `window.fetchObservabilityTrace(traceId)`     → GET /api/observability/trace/{id}
+ *       `window.fetchSpanDetail(traceId, spanId)`     → GET /api/observability/span/{trace_id}/{span_id}
+ *       `window.fetchChatSession(sessionId)`          → GET /api/chat/sessions/{id} (chat transcript)
  */
 import styles from './observability-session-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
@@ -16,11 +16,6 @@ import { renderMarkdown } from '/common/utils/markdown.js';
 // <app-skeleton> and <app-empty-state> rendered as inert unknown elements.
 import '/common/components/app-skeleton.js';
 import '/common/components/app-empty-state.js';
-import { escHtml } from '/common/utils/escape.js';
-import { call } from '../core/data-sources.js';
-import { navigate as routerNavigate } from '../core/router.js';
-
-
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class ObservabilitySessionPage extends HTMLElement {
@@ -47,7 +42,7 @@ class ObservabilitySessionPage extends HTMLElement {
     this.innerHTML = `
       <div class="page-head">
         <button class="back-btn" id="back-btn" type="button" aria-label="Back">${icons.arrowLeft('', 16)}</button>
-        <h1 class="page-title">${escHtml(this.#sessionId)}</h1>
+        <h1 class="page-title">${this.#esc(this.#sessionId)}</h1>
       </div>
       <div class="kpi-strip" id="kpi-strip"></div>
       <div class="panes">
@@ -66,7 +61,7 @@ class ObservabilitySessionPage extends HTMLElement {
     `;
 
     this.querySelector('#back-btn').addEventListener('click', () => {
-      routerNavigate('/sessions');
+      window.location.href = '/sessions.html';
     });
     this.querySelector('#chat-pane').addEventListener('click', (e) => {
       if (e.target.closest('.pane-collapse')) {
@@ -138,7 +133,7 @@ class ObservabilitySessionPage extends HTMLElement {
   async #loadSession() {
     let resp;
     try {
-      resp = await call('fetchObservabilitySession', this.#sessionId);
+      resp = await window.fetchObservabilitySession(this.#sessionId);
     } catch (e) {
       console.error('Session fetch failed:', e);
       this.#tracesState = 'error';
@@ -198,7 +193,7 @@ class ObservabilitySessionPage extends HTMLElement {
       const traceId = entry.trace_id;
       let detail;
       try {
-        detail = await call('fetchObservabilityTrace', traceId);
+        detail = await window.fetchObservabilityTrace(traceId);
       } catch (e) {
         console.warn(`Trace ${traceId} fetch failed:`, e);
         continue;
@@ -234,7 +229,7 @@ class ObservabilitySessionPage extends HTMLElement {
   #renderTracesPlaceholder(title, description, icon) {
     this.querySelector('#traces-pane').innerHTML = `
       <h2 class="pane-title">Traces</h2>
-      <app-empty-state title="${escHtml(title)}" description="${escHtml(description)}"
+      <app-empty-state title="${this.#esc(title)}" description="${this.#esc(description)}"
         icon='${icon}'></app-empty-state>
     `;
     this.#syncPanes();
@@ -265,11 +260,11 @@ class ObservabilitySessionPage extends HTMLElement {
       <h2 class="pane-title">Traces</h2>
       ${this.#spans.map(({ node, depth, traceId }) => `
         <button class="span-row" type="button"
-          data-trace-id="${escHtml(traceId)}" data-span-id="${escHtml(node.span_id)}"
+          data-trace-id="${this.#esc(traceId)}" data-span-id="${this.#esc(node.span_id)}"
           style="margin-left:${depth * 16}px; width:calc(100% - ${depth * 16}px)">
           ${depth > 0 ? '<span class="span-tree" aria-hidden="true">└</span>' : ''}
           <span class="span-icon">${this.#spanIcon(node)}</span>
-          <span class="span-name">${escHtml(node.name)}</span>
+          <span class="span-name">${this.#esc(node.name)}</span>
           <span class="status-dot${this.#isError(node.status_code) ? ' is-error' : ''}"></span>
           <span class="chip">${icons.clock('', 12)} ${this.#fmtLatency(node.latency_ms)}</span>
         </button>
@@ -292,7 +287,7 @@ class ObservabilitySessionPage extends HTMLElement {
     pane.innerHTML = '<div class="pane-empty" aria-busy="true"><app-skeleton lines="4"></app-skeleton></div>';
     let resp;
     try {
-      resp = await call('fetchSpanDetail', traceId, spanId);
+      resp = await window.fetchSpanDetail(traceId, spanId);
     } catch (e) {
       console.error('Span fetch failed:', e);
       pane.innerHTML = '<div class="pane-empty">Failed to load span details</div>';
@@ -314,8 +309,8 @@ class ObservabilitySessionPage extends HTMLElement {
     const cost = s.cost_summary?.total?.cost ?? 0;
     pane.innerHTML = `
       <div class="detail-head">
-        <h3>${escHtml(s.name)}</h3>
-        <span class="badge-kind">${escHtml(s.span_kind || 'internal')}</span>
+        <h3>${this.#esc(s.name)}</h3>
+        <span class="badge-kind">${this.#esc(s.span_kind || 'internal')}</span>
       </div>
       <div class="detail-chips">
         <span class="chip">${icons.clock('', 12)} ${s.latency_ms != null ? `${Math.round(s.latency_ms)}ms` : '—'}</span>
@@ -374,10 +369,10 @@ class ObservabilitySessionPage extends HTMLElement {
       ${msgs.length
         ? msgs.map((m) => `
             <div class="msg-block">
-              <div class="msg-role">${escHtml(m.role || '')}</div>
+              <div class="msg-role">${this.#esc(m.role || '')}</div>
               <!-- Escaped, not markdown: span payloads are often raw JSON or
                    tool output, which a markdown pass would mangle. -->
-              <div class="msg-content msg-clamp">${escHtml(m.content || '')}</div>
+              <div class="msg-content msg-clamp">${this.#esc(m.content || '')}</div>
             </div>`).join('')
         : `<div class="pane-empty">${emptyText}</div>`}
     `;
@@ -389,7 +384,7 @@ class ObservabilitySessionPage extends HTMLElement {
 
   #attributesTabHtml() {
     const attrs = this.#span?.attributes ?? {};
-    return `<pre class="raw-json">${escHtml(JSON.stringify(attrs, null, 2))}</pre>`;
+    return `<pre class="raw-json">${this.#esc(JSON.stringify(attrs, null, 2))}</pre>`;
   }
 
   /** Messages may live in OTel genai attributes or in the raw input/output value. */
@@ -443,7 +438,7 @@ class ObservabilitySessionPage extends HTMLElement {
     const pane = this.querySelector('#chat-pane');
     let messages = [];
     try {
-      const resp = await call('fetchChatSession', this.#sessionId);
+      const resp = await window.fetchChatSession(this.#sessionId);
       messages = resp?.data ?? [];
     } catch {
       // Observability sessions don't always map to a chat session.
@@ -463,7 +458,7 @@ class ObservabilitySessionPage extends HTMLElement {
       <div class="chat-card">
         ${messages.map((m) => m.role === 'user'
           // User turns are literal input — escaped, never parsed as markdown.
-          ? `<div class="msg-user"><div class="msg-clamp">${escHtml(m.content)}</div></div>`
+          ? `<div class="msg-user"><div class="msg-clamp">${this.#esc(m.content)}</div></div>`
           : `<div class="msg-assistant"><div class="msg-clamp md-body">${renderMarkdown(m.content ?? '')}</div></div>`).join('')}
         <div class="chat-meta"></div>
       </div>
@@ -515,6 +510,12 @@ class ObservabilitySessionPage extends HTMLElement {
     return `${d.toLocaleDateString('en-US')}, ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`;
   }
 
+  #esc(str) {
+    if (str == null) return '';
+    return String(str).replace(/[&<>"']/g, (m) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
+    })[m]);
+  }
 }
 
 customElements.define('observability-session-page', ObservabilitySessionPage);

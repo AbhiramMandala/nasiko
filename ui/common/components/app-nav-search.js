@@ -12,9 +12,6 @@
  * @fires navigate - Item selected; `detail: { url, newTab }` — bubbles
  */
 import { icons } from "../utils/icons.js";
-import { escHtml } from '/common/utils/escape.js';
-import { call, has } from '../core/data-sources.js';
-
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (app-nav-search) {
     /* Ink panel per the NightOwl mockup: shell background, radius 8, deep
@@ -29,7 +26,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       border-radius: var(--r-8);
       background: var(--shell-bg);
       color: var(--shell-fg);
-      box-shadow: var(--shell-shadow);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
       overflow: hidden;
       /* Mockup: no dim, no blur — outside clicks still close via the
          (invisible) backdrop. Overrides global dialog::backdrop. */
@@ -65,7 +62,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       font-size: 11px;
       color: var(--shell-fg-muted);
       background: transparent; /* global kbd rule paints a light chip */
-      border: 1px solid var(--shell-border-kbd);
+      border: 1px solid rgba(255, 255, 255, 0.16);
       border-radius: var(--r-4);
       padding: 1px 5px;
       cursor: default;
@@ -94,7 +91,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       }
       &::-webkit-scrollbar { width: 6px; }
       &::-webkit-scrollbar-track { background: transparent; }
-      &::-webkit-scrollbar-thumb { background: var(--shell-scrollbar); border-radius: 3px; }
+      &::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 3px; }
     }
     .result {
       display: flex;
@@ -103,7 +100,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       padding: 6px var(--s-8);
       border-radius: var(--r-6);
       cursor: pointer;
-      &:hover { background: var(--shell-hover); }
+      &:hover { background: rgba(255, 255, 255, 0.06); }
       &.is-active {
         background: var(--shell-control-hover);
         & .result-icon { color: var(--shell-selected); }
@@ -132,7 +129,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       align-items: center;
       gap: var(--s-12);
       padding: var(--s-8) var(--s-12);
-      border-top: 1px solid var(--shell-border-subtle);
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
     }
     .footer-hint { display: flex; align-items: center; gap: var(--s-4); font-size: 11px; color: var(--shell-fg-muted); }
     .footer-key {
@@ -143,7 +140,7 @@ styles.replaceSync(`@scope (app-nav-search) {
       font-size: 11px;
       color: var(--shell-fg-muted);
       background: transparent; /* global kbd rule paints a light chip */
-      border: 1px solid var(--shell-border-kbd);
+      border: 1px solid rgba(255, 255, 255, 0.16);
       border-radius: var(--r-4);
       padding: 0 4px;
     }
@@ -266,18 +263,6 @@ export class AppNavSearch extends HTMLElement {
 
   #onResize = () => { if (this.#dialog?.open) this.#position(); };
 
-  /**
-   * `close()` already detaches the resize listener and clears the debounce, so
-   * the leak window is narrow — but real: this element lives inside app-header on
-   * all 37 pages, and removing it while the dialog is open (a workspace switch, a
-   * re-render of the header) left a window listener holding this component, and a
-   * pending debounce timer that would fire into detached DOM.
-   */
-  disconnectedCallback() {
-    window.removeEventListener('resize', this.#onResize);
-    clearTimeout(this.#debounceTimer);
-  }
-
   /** Anchor the panel under the topbar search field, mockup-style; fall
    *  back to the top-centered CSS position when no anchor is rendered. */
   #position() {
@@ -317,11 +302,7 @@ export class AppNavSearch extends HTMLElement {
     settle(call('fetchAgents', '', 1, 50), (r) => { this.#data.agents = rowsOf(r); });
     settle(call('fetchWorkflows', 50), (r) => { this.#data.workflows = rowsOf(r); });
     settle(call('fetchAllExecutions', 50), (r) => { this.#data.executions = rowsOf(r); });
-    // `/chat/sessions` is keyset-paginated, so fetchSessions is
-    // (query, limit, cursor) — NOT the (query, page, limit) triple the other
-    // sources use. Calling it positionally as (…, 1, 50) bound limit=1 and
-    // cursor=50, so this section showed at most one row against a bogus cursor.
-    settle(call('fetchSessions', '', 50), (r) => { this.#data.sessions = rowsOf(r); });
+    settle(call('fetchSessions', '', 1, 50), (r) => { this.#data.sessions = rowsOf(r); });
     settle(call('fetchMcpConnectors'), (r) => {
       const d = r?.data ?? r ?? {};
       this.#data.connectors = [...(d.created_by_you || []), ...(d.shared_with_you || [])];
@@ -334,10 +315,10 @@ export class AppNavSearch extends HTMLElement {
   /** EE-only user directory search; the query runs server-side, so refetch
    *  per (debounced) keystroke. First failure hides the section for this open. */
   async #searchUsers(query) {
-    if (this.#usersUnavailable || !has('fetchUserSearch')) return;
+    if (this.#usersUnavailable || typeof window.fetchUserSearch !== 'function') return;
     const token = this.#loadToken;
     try {
-      const r = await call('fetchUserSearch', query);
+      const r = await window.fetchUserSearch(query);
       if (token !== this.#loadToken || !this.#dialog?.open) return;
       this.#data.users = Array.isArray(r) ? r : r?.data?.users || r?.data || [];
       this.#refresh();
@@ -377,28 +358,28 @@ export class AppNavSearch extends HTMLElement {
         (a) => hit(a.display_name, a.name, a.description),
         (a) => ({
           label: a.display_name || a.name,
-          value: `${pfx}/agent-card?id=${encodeURIComponent(a.id)}`,
+          value: `${pfx}/agent-card.html?id=${encodeURIComponent(a.id)}`,
           subtitle: (a.description || a.name || '').slice(0, 90),
         })),
       section('Workflows', 'workflow', d.workflows,
         (w) => hit(w.name, w.description),
         (w) => ({
           label: w.name,
-          value: `${pfx}/workflow?id=${encodeURIComponent(w.id)}`,
+          value: `${pfx}/workflow.html?id=${encodeURIComponent(w.id)}`,
           subtitle: (w.description || '').slice(0, 90) || w.status,
         })),
       section('Executions', 'play', d.executions.filter((e) => e.maf_id),
         (e) => hit(e.workflow_name, e.status, e.id),
         (e) => ({
           label: `${e.workflow_name || 'Deleted workflow'} · ${e.status}`,
-          value: `${pfx}/workflow?id=${encodeURIComponent(e.maf_id)}&exec=${encodeURIComponent(e.id)}`,
+          value: `${pfx}/workflow.html?id=${encodeURIComponent(e.maf_id)}&exec=${encodeURIComponent(e.id)}`,
           subtitle: e.execution_number != null ? `Run #${e.execution_number}` : e.id,
         })),
       section('Chats', 'history', d.sessions,
         (s) => hit(s.title, s.last_message, s.agent_name),
         (s) => ({
           label: (s.title || s.last_message || '').slice(0, 70) || s.session_id,
-          value: `${pfx}/chat?session_id=${encodeURIComponent(s.session_id)}`
+          value: `${pfx}/chat.html?session_id=${encodeURIComponent(s.session_id)}`
             + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
             + `&agent_name=${encodeURIComponent(s.agent_name || 'Orchestrator')}`,
           subtitle: s.agent_name || 'Orchestrator',
@@ -407,14 +388,14 @@ export class AppNavSearch extends HTMLElement {
         (c) => hit(c.display_name, c.name, c.url),
         (c) => ({
           label: c.display_name || c.name,
-          value: `${pfx}/mcp`,
+          value: `${pfx}/mcp.html`,
           subtitle: c.url || c.name,
         })),
       section('Toolkits', 'layers', d.toolkits,
         (t) => hit(t.display_name, t.name, t.description),
         (t) => ({
           label: t.display_name || t.name,
-          value: `${pfx}/mcp`,
+          value: `${pfx}/mcp.html`,
           subtitle: (t.description || '').slice(0, 90)
             || (t.tool_count ? `${t.tool_count} tools` : ''),
         })),
@@ -422,14 +403,14 @@ export class AppNavSearch extends HTMLElement {
         (b) => hit(b.image_reference, b.version_tag, b.status, b.id),
         (b) => ({
           label: b.image_reference || `Build ${(b.id || '').slice(0, 8)}`,
-          value: `${pfx}/build?id=${encodeURIComponent(b.id)}`,
+          value: `${pfx}/build.html?id=${encodeURIComponent(b.id)}`,
           subtitle: [b.status, b.version_tag].filter(Boolean).join(' · '),
         })),
       section('Users', 'users', d.users,
         (u) => hit(u.display_name, u.username, u.email),
         (u) => ({
           label: u.display_name || u.username || u.email,
-          value: `${pfx}/users`,
+          value: `${pfx}/organization.html?view=users`,
           subtitle: u.email || u.role || '',
         })),
       section('Pages', 'document', this.#navLinks,
@@ -474,8 +455,8 @@ export class AppNavSearch extends HTMLElement {
             data-idx="${i}" role="option" aria-selected="${i === this.#selectedIndex}">
             ${iconHtml}
             <div class="result-body">
-              <div class="result-label">${escHtml(item.label)}</div>
-              ${item.subtitle ? `<div class="result-subtitle">${escHtml(item.subtitle)}</div>` : ''}
+              <div class="result-label">${this.#esc(item.label)}</div>
+              ${item.subtitle ? `<div class="result-subtitle">${this.#esc(item.subtitle)}</div>` : ''}
             </div>
             ${indicator}
           </li>`;
@@ -483,7 +464,7 @@ export class AppNavSearch extends HTMLElement {
       const more = sec.extra > 0
         ? `<li class="group-more" role="presentation">+${sec.extra} more — keep typing to narrow</li>`
         : '';
-      return `<li class="group-head" role="presentation">${escHtml(sec.group)}</li>${rows}${more}`;
+      return `<li class="group-head" role="presentation">${this.#esc(sec.group)}</li>${rows}${more}`;
     }).join('');
 
     this.#resultsList.querySelectorAll('[data-idx]').forEach(el => {
@@ -524,6 +505,11 @@ export class AppNavSearch extends HTMLElement {
     this.dispatchEvent(new CustomEvent('navigate', { bubbles: true, detail: { url: item.value, newTab } }));
   }
 
+  #esc(text) {
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+  }
 }
 
 customElements.define('app-nav-search', AppNavSearch);

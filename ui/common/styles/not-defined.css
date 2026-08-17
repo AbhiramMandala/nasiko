@@ -47,19 +47,6 @@ app-grid:not(:defined) {
 }
 
 /* Content placeholders */
-/* app-card — the unified entity-card primitive (mirrors nasiko_ui's
-   NasikoCard). Reserves the sand-well plane + hairline border so pages that
-   render it directly (no page-level .pre-card skeleton) don't shift on
-   upgrade. */
-app-card:not(:defined) {
-  display: block;
-  min-height: 140px;
-  background: var(--bg-group);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--r-8);
-  animation: skel-pulse 1.5s ease-in-out infinite;
-}
-
 app-stat-card:not(:defined) {
   display: block;
   flex: 1;
@@ -92,6 +79,11 @@ smart-table:not(:defined) {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   animation: skel-pulse 1.5s ease-in-out infinite;
+}
+
+data-view:not(:defined) {
+  display: block;
+  min-height: 200px;
 }
 
 /*
@@ -143,17 +135,6 @@ voice-input:not(:defined) {
 }
 
 /*
-  The orchestrator's composer is shorter than the standalone 170px reservation
-  above. This override belongs HERE, not in orchestrator-page.css: a component
-  sheet is adopted by its module and therefore does not exist at first paint, so
-  declaring it there painted 170px and then collapsed to 88px on upgrade — ~82px
-  of layout shift on the page, caused by the very rule meant to prevent it.
-*/
-orchestrator-page .input-wrap voice-input:not(:defined) {
-  min-height: 88px;
-}
-
-/*
   Page host geometry is NOT in this file — it lives in page-layout.css, keyed
   on the page element with no `:not(:defined)` filter, so a single copy serves
   both the pre-upgrade paint and the loaded page. Mirroring it here (against a
@@ -164,7 +145,6 @@ orchestrator-page .input-wrap voice-input:not(:defined) {
 */
 
 @media (prefers-reduced-motion: reduce) {
-  app-card:not(:defined),
   app-stat-card:not(:defined),
   app-skeleton:not(:defined),
   smart-table:not(:defined) {
@@ -458,12 +438,12 @@ chat-page:not(:defined) .chat-skel {
 }
 .pre-action--solid {
   border-color: transparent;
-  background: var(--bg-action);
-  color: var(--fg-on-action);
+  background: light-dark(var(--sand-800), var(--neutral-100));
+  color: light-dark(var(--white), var(--neutral-900));
 }
 .pre-action--secondary {
-  background: var(--bg-secondary-brand);
-  border-color: var(--bg-secondary-brand-hover);
+  background: light-dark(var(--yellow-100), var(--yellow-900));
+  border-color: light-dark(var(--yellow-200), var(--yellow-800));
 }
 
 .pre-controls {
@@ -730,8 +710,8 @@ chat-page:not(:defined) .chat-skel {
 .pre-table--sand {
   --pre-table-stroke: none;
   --pre-table-radius: var(--r-8);
-  --pre-table-head-bg: var(--bg-subtle);
-  --pre-table-rule: var(--bg-subtle);
+  --pre-table-head-bg: light-dark(var(--sand-100), var(--neutral-800));
+  --pre-table-rule: light-dark(var(--sand-100), var(--neutral-800));
 }
 .pre-table--sand .pre-table__row--head {
   border-bottom: none;

@@ -1070,16 +1070,8 @@ pub async fn execute_upload_and_deploy(
         // left untouched.
         patch_otel_into_dockerfile(&tmp_dir, &dockerfile_path);
 
-        // Build Docker image. tar_directory walks the whole source tree and
-        // builds the archive in memory — synchronous CPU + IO, so it goes on the
-        // blocking pool. With build_concurrency > 1 running it inline would block
-        // one runtime thread per in-flight build, on the same runtime serving the
-        // HTTP API.
-        let src = tmp_dir.clone();
-        let tar_bytes = tokio::task::spawn_blocking(move || build::tar_directory(&src))
-            .await
-            .map_err(|e| format!("spawn_blocking tar: {e}"))?
-            .map_err(|e| format!("tar source: {e}"))?;
+        // Build Docker image.
+        let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
         runtime
             .build(&tar_bytes, &image_tag)
             .await
@@ -1313,16 +1305,8 @@ pub async fn execute_clone_and_deploy(
         // OTel patch (same as upload path — see doc on `patch_otel_into_dockerfile`).
         patch_otel_into_dockerfile(&tmp_dir, &dockerfile_path);
 
-        // Build Docker image. tar_directory walks the whole source tree and
-        // builds the archive in memory — synchronous CPU + IO, so it goes on the
-        // blocking pool. With build_concurrency > 1 running it inline would block
-        // one runtime thread per in-flight build, on the same runtime serving the
-        // HTTP API.
-        let src = tmp_dir.clone();
-        let tar_bytes = tokio::task::spawn_blocking(move || build::tar_directory(&src))
-            .await
-            .map_err(|e| format!("spawn_blocking tar: {e}"))?
-            .map_err(|e| format!("tar source: {e}"))?;
+        // Build Docker image.
+        let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
         runtime
             .build(&tar_bytes, &image_tag)
             .await
@@ -2075,9 +2059,7 @@ pub(crate) async fn list_upload_agents(
                         agent_name: r.agent_name,
                         icon_url: r.icon_url,
                         upload_info: UploadInfoResponse {
-                            upload_type: r
-                                .metadata
-                                .get("upload_type")
+                            upload_type: r.metadata.get("upload_type")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("zip")
                                 .to_string(),
@@ -2129,8 +2111,7 @@ mod otel_patch_tests {
         // `node:20-slim` matches neither "python" nor a Python toolchain, but it
         // does contain "slim" — the old check patched it and the injected `pip`
         // layer failed the build outright.
-        let original =
-            "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
+        let original = "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
 
         assert_eq!(
             patch(original, "node-slim"),

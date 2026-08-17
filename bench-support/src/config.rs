@@ -81,9 +81,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         mcp_servers_network: "nasiko-mcp-servers-net".into(),
         mcp_upload_max_replicas: 1,
         agent_max_replicas: 1,
-        // The bench never builds images; keep the worker serial so it can't
-        // compete with the benchmarked request path for runtime threads.
-        build_concurrency: 1,
         agent_default_memory: "512Mi".into(),
         agent_memory_volume: "nasiko-agent-memory".into(),
         agent_memory_init_image: "alpine:3.21".into(),

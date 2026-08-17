@@ -2,20 +2,10 @@ import { icons } from "/common/utils/icons.js";
 import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
-import "/common/components/app-module-nav.js";
-import { escHtml } from '/common/utils/escape.js';
-import { call, callOptional } from '../core/data-sources.js';
 
-
-// In MPA mode, agents-page.css was <link>ed in the HTML for instant pre-upgrade
-// styling. In SPA mode, the router lazy-loads this module, so we adopt the sheet
-// here too. The CSS import assertion returns the same CSSStyleSheet instance on
-// repeat calls (module caching), so double-adoption is harmless.
-import agentsStyles from './agents-page.css' with { type: 'css' };
-import { navigate as routerNavigate } from '../core/router.js';
-if (!document.adoptedStyleSheets.includes(agentsStyles)) {
-  document.adoptedStyleSheets = [...document.adoptedStyleSheets, agentsStyles];
-}
+// agents-page.css is <link>ed by the host page, not imported here: a sheet
+// pulled in by this module only exists once the module does, which is too late
+// to style the static shell the page paints before then (see web/agents.html).
 
 function statusClass(status) {
   if (status === "running") return "is-running";
@@ -64,7 +54,7 @@ class AgentsPage extends HTMLElement {
 
     // Whole card opens details; explicit links (Details/Chat) keep their own hrefs.
     const openCard = (card) => {
-      routerNavigate(`/agent-card?id=${card.dataset.agentId}`);
+      window.location.href = `/agent-card.html?id=${card.dataset.agentId}`;
     };
     this.querySelector("#agents-grid").addEventListener("click", (e) => {
       if (e.target.closest("a")) return;
@@ -81,7 +71,7 @@ class AgentsPage extends HTMLElement {
   }
 
   async #loadAgents() {
-    const result = await call('fetchAgents', "", 1, 100);
+    const result = await window.fetchAgents("", 1, 100);
     this.#agents = result.data || [];
     await this.#loadPinnedTabs();
     this.#renderFilter();
@@ -91,7 +81,7 @@ class AgentsPage extends HTMLElement {
   /** Admin-pinned tab list (Settings → `catalog_tabs`, comma-separated tags). */
   async #loadPinnedTabs() {
     try {
-      const settings = await callOptional('fetchSettings');
+      const settings = await window.fetchSettings?.();
       this.#pinnedTabs = (settings?.catalog_tabs || "")
         .split(",")
         .map((t) => t.trim().toLowerCase())
@@ -126,8 +116,8 @@ class AgentsPage extends HTMLElement {
     }
     const tab = (key, label, n) =>
       `<button class="type-tab ${this.#activeCategory === key ? "active" : ""}" role="tab"
-        aria-selected="${this.#activeCategory === key}" data-category="${escHtml(key)}">
-        ${escHtml(label)}<span class="n">${n}</span></button>`;
+        aria-selected="${this.#activeCategory === key}" data-category="${this.#esc(key)}">
+        ${this.#esc(label)}<span class="n">${n}</span></button>`;
     this.querySelector("#category-tabs").innerHTML =
       tab("all", "All", this.#agents.length) +
       cats.map(([c, n]) => tab(c, c.charAt(0).toUpperCase() + c.slice(1), n)).join("");
@@ -220,23 +210,23 @@ class AgentsPage extends HTMLElement {
         const shown = allTags.slice(0, 2);
         const extra = allTags.length - shown.length;
         const tags =
-          shown.map((t) => `<span class="tag">${escHtml(t)}</span>`).join("") +
+          shown.map((t) => `<span class="tag">${this.#esc(t)}</span>`).join("") +
           (extra > 0 ? `<span class="tag tag--more">+${extra}</span>` : "");
         const version = a.version ? `v${String(a.version).replace(/^v/, "")}` : "";
 
         return `
         <div class="card" data-agent-id="${encodeURIComponent(a.id)}" role="link" tabindex="0"
-          aria-label="Open ${escHtml(name)} details">
+          aria-label="Open ${this.#esc(name)} details">
           <div class="card-top">
-            ${a.status ? `<span class="status-dot ${statusClass(a.status)}" title="${escHtml(a.status)}"></span>` : ""}
-            <span class="card-name">${escHtml(name)}</span>
-            ${version ? `<span class="card-version">${escHtml(version)}</span>` : ""}
+            ${a.status ? `<span class="status-dot ${statusClass(a.status)}" title="${this.#esc(a.status)}"></span>` : ""}
+            <span class="card-name">${this.#esc(name)}</span>
+            ${version ? `<span class="card-version">${this.#esc(version)}</span>` : ""}
           </div>
           <div class="card-tags">${tags}</div>
-          <div class="card-desc">${escHtml(a.description || "")}</div>
+          <div class="card-desc">${this.#esc(a.description || "")}</div>
           <div class="card-foot">
-            <a class="card-link" href="/agent-card?id=${encodeURIComponent(a.id)}">Details</a>
-            <a class="card-chat-btn" href="/chat?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(name)}">Chat ${icons.arrowUpRight("", 13)}</a>
+            <a class="card-link" href="/agent-card.html?id=${encodeURIComponent(a.id)}">Details</a>
+            <a class="card-chat-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(name)}">Chat ${icons.arrowUpRight("", 13)}</a>
           </div>
         </div>
       `;
@@ -244,6 +234,11 @@ class AgentsPage extends HTMLElement {
       .join("");
   }
 
+  #esc(s) {
+    const d = document.createElement("span");
+    d.textContent = s || "";
+    return d.innerHTML;
+  }
 }
 
 customElements.define("agents-page", AgentsPage);

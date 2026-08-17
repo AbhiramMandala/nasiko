@@ -65,8 +65,8 @@
   .btn-submit {
     width: 100%;
     height: var(--control-h-lg);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
     font-weight: 500;
     font-size: var(--font-size-sm);
     border-radius: var(--r-10);
@@ -76,7 +76,7 @@
     transition: background var(--transition-fast);
     & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
-  .btn-submit:hover { background: var(--bg-action-hover); }
+  .btn-submit:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
   .btn-submit:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; }
   .error-msg {
@@ -108,9 +108,9 @@
     width: 100%;
     height: var(--control-h-lg);
     padding: 0 var(--space-md);
-    border: 1px solid transparent;
+    border: 1px solid var(--color-border);
     border-radius: var(--r-10);
-    background: var(--color-bg-surface);
+    background: light-dark(var(--white), var(--neutral-900));
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     font-weight: 500;
@@ -120,8 +120,8 @@
     & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .btn-oauth:hover {
-    background: var(--bg-surface-hover);
-    border-color: transparent;
+    background: var(--bg-input);
+    border-color: light-dark(var(--sand-300), var(--neutral-600));
   }
   .btn-oauth:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   .btn-oauth svg { width: 20px; height: 20px; flex-shrink: 0; }

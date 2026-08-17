@@ -118,7 +118,7 @@
   .gen-notice {
     padding: var(--s-12) var(--s-16);
     border-radius: var(--r-8);
-    background: var(--bg-caution-subtle);
+    background: light-dark(var(--yellow-50), var(--neutral-800));
     font-size: 13px;
     line-height: 18px;
     color: var(--color-text-main);
@@ -191,9 +191,9 @@
   .drafting-bar {
     height: 10px;
     border-radius: var(--r-40);
-    background: var(--bg-disabled);
+    background: light-dark(var(--sand-200), var(--neutral-700));
   }
-  .drafting-bar.is-short { width: 120px; background: var(--bg-surface-active); }
+  .drafting-bar.is-short { width: 120px; background: light-dark(var(--sand-300), var(--neutral-600)); }
   .drafting-bar.is-mid { width: 60%; }
 
   .spin {

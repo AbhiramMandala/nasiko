@@ -2,6 +2,7 @@ import { icons } from '/common/utils/icons.js';
 import { fetchApi, apiFetch } from '/common/services/api.js';
 import { authService } from '/common/services/auth-service.js';
 import { showToast } from '/common/utils/toast.js';
+import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import { ansiToHtml } from '/common/utils/ansi.js';
 import { attachSlidingIndicator } from '/common/utils/tab-indicator.js';
 import styles from './agent-card-page.css' with { type: 'css' };
@@ -9,12 +10,6 @@ import '/common/components/app-empty-state.js';
 import '/common/components/app-modal.js';
 import '/common/components/agent-llm-config.js';
 import '/common/components/secrets-manager.js';
-import { escHtml, escAttr } from '/common/utils/escape.js';
-import '/common/components/app-button.js';
-import { call } from '../core/data-sources.js';
-import { navigate as routerNavigate } from '../core/router.js';
-
-
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 // Tabs marked `managed` render only for callers who can manage the agent
@@ -73,7 +68,7 @@ class AgentCardPage extends HTMLElement {
             title="No agent selected"
             description="Open an agent from the hub to see its card, settings, and logs.">
           </app-empty-state>
-          <a href="/agents" style="color:var(--fg-brand);font-size:var(--font-size-sm);font-weight:600;">Browse the agent hub</a>
+          <a href="/agents.html" style="color:var(--fg-brand);font-size:var(--font-size-sm);font-weight:600;">Browse the agent hub</a>
         </div>`;
       return;
     }
@@ -155,20 +150,31 @@ class AgentCardPage extends HTMLElement {
 
   #topbarHtml(a) {
     const actions = this.#canManage && a.status === 'running' ? `
-            <app-button variant="ghost" data-action="restart" title="Restart agent">${icons.refresh('', 14)} Restart</app-button>
-            <app-button variant="ghost" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</app-button>` : '';
+            <button class="acp-action-btn" data-action="restart" title="Restart agent">${icons.refresh('', 14)} Restart</button>
+            <button class="acp-action-btn" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</button>` : '';
     return `
         <div class="acp-topbar">
-          <a class="acp-back" href="/your-agents" title="Back to Your Agents" aria-label="Back to Your Agents">
+          <a class="acp-back" href="${this.#backUrl()}" title="Back" aria-label="Back">
             ${icons.x('', 16)}
           </a>
           <div class="acp-topbar-actions">${actions}</div>
         </div>`;
   }
 
+  #backUrl() {
+    const ref = document.referrer;
+    try {
+      const url = ref ? new URL(ref) : null;
+      if (url && url.origin === location.origin && url.pathname !== location.pathname) {
+        return url.pathname + url.search;
+      }
+    } catch { /* invalid referrer */ }
+    return '/agents.html?view=your-agents';
+  }
+
   #heroHtml(a, displayName) {
     const tagsHtml = (a.tags || []).slice(0, 3).map(t =>
-      `<span class="acp-tag">${escHtml(t)}</span>`
+      `<span class="acp-tag">${this.#esc(t)}</span>`
     ).join('');
     const extraTagCount = (a.tags || []).length - 3;
     const moreTag = extraTagCount > 0 ? `<span class="acp-tag acp-tag--more">+${extraTagCount}</span>` : '';
@@ -176,17 +182,17 @@ class AgentCardPage extends HTMLElement {
     const statusLabel = a.status === 'running' ? 'Active' : (a.status || 'Unknown').replace(/^./, c => c.toUpperCase());
     return `
         <div class="acp-title-row">
-          <h1 class="acp-name">${escHtml(displayName)}</h1>
-          <span class="acp-version">v${escHtml(a.version || '?')}</span>
+          <h1 class="acp-name">${this.#esc(displayName)}</h1>
+          <span class="acp-version">v${this.#esc(a.version || '?')}</span>
           <span class="acp-verified" title="Registered agent">${icons.checkCircle('', 16)}</span>
-          <a class="acp-start-btn" href="/chat?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
+          <a class="acp-start-btn" href="/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
             Start session ${icons.send('', 15)}
           </a>
         </div>
 
         <div class="acp-badge-row">
-          <span class="badge badge--${statusVariant}">${escHtml(statusLabel)}</span>
-          ${a.provider ? `<span class="acp-tag">Author: ${escHtml(a.provider)}</span>` : ''}
+          <span class="badge badge--${statusVariant}">${this.#esc(statusLabel)}</span>
+          ${a.provider ? `<span class="acp-tag">Author: ${this.#esc(a.provider)}</span>` : ''}
           ${tagsHtml}${moreTag}
         </div>`;
   }
@@ -195,30 +201,18 @@ class AgentCardPage extends HTMLElement {
 
   #overviewPanelHtml(a) {
     const skills = a.skills || [];
-    const skillsHtml = skills.map(s => {
-      const href = s.sample_query
-        ? `/chat?agent_id=${encodeURIComponent(a.id)}&query=${encodeURIComponent(s.sample_query)}`
-        : null;
-      const wrapper = href ? 'a' : 'div';
-      const hrefAttr = href ? ` href="${escAttr(href)}"` : '';
-      return `
-      <${wrapper} class="acp-skill-card"${hrefAttr}>
-        <div class="acp-skill-name">${escHtml(s.name)}</div>
-        <div class="acp-skill-desc">${escHtml(s.description || '')}</div>
-        ${s.sample_query ? `
-        <div class="acp-skill-sample">
-          <span class="acp-skill-sample-icon">${icons.send('', 14)}</span>
-          <span class="acp-skill-sample-text">${escHtml(s.sample_query)}</span>
-        </div>` : ''}
-      </${wrapper}>`;
-    }).join('');
+    const skillsHtml = skills.map(s => `
+      <div class="acp-skill-card">
+        <div class="acp-skill-name">${this.#esc(s.name)}</div>
+        <div class="acp-skill-desc">${this.#esc(s.description || '')}</div>
+      </div>`).join('');
 
     const caps = a.capabilities || {};
 
     return `
         <div class="acp-panel is-active" data-panel="overview">
           <div class="acp-overview-head">
-            <p class="acp-description">${escHtml(a.description || '')}</p>
+            <p class="acp-description">${this.#esc(a.description || '')}</p>
             <label class="acp-json-toggle">
               <input type="checkbox" id="acp-json-switch" />
               <span class="acp-json-track" aria-hidden="true"></span>
@@ -230,7 +224,7 @@ class AgentCardPage extends HTMLElement {
           <div id="acp-json-view" hidden>
             <div class="acp-json-block">
               <button type="button" class="acp-json-copy" title="Copy JSON" aria-label="Copy JSON">${icons.copy('', 15)}</button>
-              <pre><code>${escHtml(JSON.stringify(a, null, 2))}</code></pre>
+              <pre><code>${this.#esc(JSON.stringify(a, null, 2))}</code></pre>
             </div>
           </div>
 
@@ -238,7 +232,7 @@ class AgentCardPage extends HTMLElement {
           ${skills.length ? `
           <section class="acp-section">
             <h2 class="acp-section-title">Skills</h2>
-            <p class="acp-section-sub">What this agent can do. Click a skill to start a session with a sample query.</p>
+            <p class="acp-section-sub">What this agent can do.</p>
             <div class="acp-skills-grid">${skillsHtml}</div>
           </section>` : ''}
 
@@ -267,14 +261,14 @@ class AgentCardPage extends HTMLElement {
             <section class="acp-section acp-details-card">
               <h2 class="acp-section-title">Agent details</h2>
               <dl class="acp-dl">
-                <div><dt>Provider</dt><dd>${escHtml(a.provider || '—')}</dd></div>
-                <div><dt>Project URL</dt><dd>${a.project_url ? `<a href="${escAttr(a.project_url)}" target="_blank">${escHtml(a.project_url)}</a>` : '—'}</dd></div>
-                <div><dt>Docs</dt><dd>${a.docs_url ? `<a href="${escAttr(a.docs_url)}" target="_blank">${escHtml(a.docs_url)}</a>` : '—'}</dd></div>
-                <div><dt>ID</dt><dd><code>${escHtml(a.id)}</code></dd></div>
-                <div><dt>Version</dt><dd>${escHtml(a.version || '—')}</dd></div>
-                <div><dt>Protocol</dt><dd>${escHtml(a.protocol_version || '—')}</dd></div>
-                <div><dt>Transport</dt><dd>${escHtml(a.transport || 'JSONRPC')}</dd></div>
-                <div><dt>Default I/O</dt><dd>${escHtml(a.default_io || 'application/json, text/plain')}</dd></div>
+                <div><dt>Provider</dt><dd>${this.#esc(a.provider || '—')}</dd></div>
+                <div><dt>Project URL</dt><dd>${a.project_url ? `<a href="${this.#escAttr(a.project_url)}" target="_blank">${this.#esc(a.project_url)}</a>` : '—'}</dd></div>
+                <div><dt>Docs</dt><dd>${a.docs_url ? `<a href="${this.#escAttr(a.docs_url)}" target="_blank">${this.#esc(a.docs_url)}</a>` : '—'}</dd></div>
+                <div><dt>ID</dt><dd><code>${this.#esc(a.id)}</code></dd></div>
+                <div><dt>Version</dt><dd>${this.#esc(a.version || '—')}</dd></div>
+                <div><dt>Protocol</dt><dd>${this.#esc(a.protocol_version || '—')}</dd></div>
+                <div><dt>Transport</dt><dd>${this.#esc(a.transport || 'JSONRPC')}</dd></div>
+                <div><dt>Default I/O</dt><dd>${this.#esc(a.default_io || 'application/json, text/plain')}</dd></div>
               </dl>
             </section>
 
@@ -343,7 +337,7 @@ class AgentCardPage extends HTMLElement {
   async #runContainerAction(btn, verb, busyLabel) {
     const original = btn.innerHTML;
     btn.disabled = true;
-    btn.label = busyLabel;
+    btn.textContent = busyLabel;
     try {
       const res = await apiFetch(`/containers/${encodeURIComponent(this.#agent.name)}/${verb}`, { method: 'POST' });
       if (!res.ok) throw new Error(await res.text());
@@ -351,21 +345,27 @@ class AgentCardPage extends HTMLElement {
       location.reload();
     } catch (err) {
       showToast(`Failed to ${verb}: ${err.message}`);
-      btn.innerHTML = original;
       btn.disabled = false;
+      btn.innerHTML = original;
     }
   }
 
   async #deleteAgent(btn) {
     const displayName = this.#agent.display_name || this.#agent.name;
-    if (!confirm(`Delete "${displayName}"? This removes the agent from the registry, revokes all grants, and stops its container.`)) return;
+    const confirmed = await confirmDialog({
+      title: `Delete ${displayName}`,
+      message: 'This removes the agent from the registry, revokes all grants, and stops its container. This action cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
     const original = btn.innerHTML;
     btn.disabled = true;
-    btn.label = 'Deleting...';
+    btn.textContent = 'Deleting...';
     try {
       const res = await apiFetch(`/agents/${encodeURIComponent(this.#agent.id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
-      routerNavigate('/your-agents');
+      location.href = '/agents.html?view=your-agents';
     } catch (err) {
       showToast(`Failed to delete: ${err.message}`);
       btn.disabled = false;
@@ -394,7 +394,7 @@ class AgentCardPage extends HTMLElement {
                 <p class="acp-section-sub">Every build of this agent. Re-upload to ship a new
                   version, or roll back to a previous image.</p>
               </div>
-              <app-button variant="dark" data-action="reupload">${icons.upload('', 14)} Re-upload</app-button>
+              <button type="button" class="acp-primary-btn" data-action="reupload">${icons.upload('', 14)} Re-upload</button>
             </div>
             <div id="acp-versions-body"><app-skeleton height="200px"></app-skeleton></div>
           </section>
@@ -411,8 +411,8 @@ class AgentCardPage extends HTMLElement {
     } catch (e) {
       el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
         title="Version history unavailable"
-        description="${escAttr(e.message)}"
-        icon="${escAttr(icons.layers('', 32))}"></app-empty-state></div>`;
+        description="${this.#escAttr(e.message)}"
+        icon="${this.#escAttr(icons.layers('', 32))}"></app-empty-state></div>`;
       return;
     }
     this.#renderVersions();
@@ -426,14 +426,14 @@ class AgentCardPage extends HTMLElement {
       el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
         title="No versions recorded"
         description="Versions appear here once this agent has been built through upload, push or re-upload."
-        icon="${escAttr(icons.layers('', 32))}"></app-empty-state></div>`;
+        icon="${this.#escAttr(icons.layers('', 32))}"></app-empty-state></div>`;
       return;
     }
 
     const statusBadge = (v) => {
       if (v.is_active) return '<span class="badge badge--brand"><span class="badge__dot"></span>Active</span>';
       if (v.status === 'archived') return '<span class="badge badge--muted">Archived</span>';
-      return `<span class="badge badge--muted">${escHtml(v.status || '—')}</span>`;
+      return `<span class="badge badge--muted">${this.#esc(v.status || '—')}</span>`;
     };
 
     el.innerHTML = `
@@ -446,15 +446,15 @@ class AgentCardPage extends HTMLElement {
         <tbody>
           ${this.#versions.map((v) => `
             <tr>
-              <td><code>${escHtml(v.version)}</code></td>
+              <td><code>${this.#esc(v.version)}</code></td>
               <td>${statusBadge(v)}</td>
-              <td class="acp-td-muted"><code>${escHtml(v.image_tag || '—')}</code></td>
-              <td class="acp-td-muted">${escHtml(v.changelog || '—')}</td>
+              <td class="acp-td-muted"><code>${this.#esc(v.image_tag || '—')}</code></td>
+              <td class="acp-td-muted">${this.#esc(v.changelog || '—')}</td>
               <td class="acp-td-muted">${v.created_at ? new Date(v.created_at).toLocaleString() : '—'}</td>
               <td>
                 ${v.is_active || !v.can_rollback ? '' : `
-                  <app-button variant="ghost" data-action="rollback"
-                    data-version="${escAttr(v.version)}">Roll back</app-button>`}
+                  <button type="button" class="acp-action-btn" data-action="rollback"
+                    data-version="${this.#escAttr(v.version)}">Roll back</button>`}
               </td>
             </tr>`).join('')}
         </tbody>
@@ -687,12 +687,12 @@ class AgentCardPage extends HTMLElement {
             <h2 class="acp-section-title">Access</h2>
             <p class="acp-section-sub">Grant access to ${isEe ? 'users, teams, or departments' : 'users or agents'}. ${isEe ? 'Access is automatically inherited by members.' : ''}</p>
           </div>
-          <app-button variant="dark" id="acp-grant-open">${icons.plus('', 14)} Grant access</app-button>
+          <button type="button" class="acp-primary-btn" id="acp-grant-open">${icons.plus('', 14)} Grant access</button>
         </div>
         <div class="acp-access-search">
           ${icons.search('acp-access-search-icon', 14)}
           <input type="text" id="acp-access-filter" placeholder="Search ${this.#granteeTabDefs().map(d => d.label.toLowerCase()).join(', ')}"
-            value="${escAttr(this.#accessFilter)}" autocomplete="off" />
+            value="${this.#escAttr(this.#accessFilter)}" autocomplete="off" />
         </div>
         <div class="acp-subtabs" id="acp-grantee-tabs">
           ${this.#granteeTabDefs().map(d => `<button type="button" class="acp-subtab${d.key === this.#granteeTab ? ' is-active' : ''}" data-grantee-tab="${d.key}">${d.label}</button>`).join('')}
@@ -807,9 +807,9 @@ class AgentCardPage extends HTMLElement {
                 : '';
             return `
             <tr>
-              <td class="acp-td-name">${escHtml(u.name)}</td>
-              <td class="acp-td-muted">${escHtml(u.email || '—')}</td>
-              <td class="acp-td-muted">${escHtml(u.role || '—')}</td>
+              <td class="acp-td-name">${this.#esc(u.name)}</td>
+              <td class="acp-td-muted">${this.#esc(u.email || '—')}</td>
+              <td class="acp-td-muted">${this.#esc(u.role || '—')}</td>
               <td>${grant}</td>
               <td class="acp-td-actions">${action}</td>
             </tr>`;
@@ -827,7 +827,7 @@ class AgentCardPage extends HTMLElement {
         <tbody>
           ${rows.map((t) => `
             <tr>
-              <td class="acp-td-name">${escHtml(t.name)}</td>
+              <td class="acp-td-name">${this.#esc(t.name)}</td>
               <td class="acp-td-muted">${t.members_count ?? '—'}</td>
               <td><span class="acp-grant-badge is-direct">Direct</span></td>
               <td class="acp-td-actions">${this.#revokeBtnHtml('team', t.id, t.name)}</td>
@@ -845,7 +845,7 @@ class AgentCardPage extends HTMLElement {
         <tbody>
           ${rows.map((d) => `
             <tr>
-              <td class="acp-td-name">${escHtml(d.name)}</td>
+              <td class="acp-td-name">${this.#esc(d.name)}</td>
               <td class="acp-td-muted">${d.members_count ?? '—'}</td>
               <td class="acp-td-muted">${d.teams_count ?? '—'}</td>
               <td class="acp-td-actions">${this.#revokeBtnHtml('department', d.id, d.name)}</td>
@@ -863,7 +863,7 @@ class AgentCardPage extends HTMLElement {
         <tbody>
           ${rows.map((g) => `
             <tr>
-              <td class="acp-td-name">${escHtml(g.name || this.#shortId(g.id))}</td>
+              <td class="acp-td-name">${this.#esc(g.name || this.#shortId(g.id))}</td>
               <td><span class="acp-grant-badge is-direct">Direct</span></td>
               <td class="acp-td-actions">${this.#revokeBtnHtml('agent', g.id, g.name || g.id)}</td>
             </tr>`).join('')}
@@ -873,8 +873,8 @@ class AgentCardPage extends HTMLElement {
 
   #revokeBtnHtml(kind, id, name) {
     return `<button type="button" class="acp-icon-btn acp-icon-btn--danger" data-revoke-kind="${kind}"
-      data-revoke-id="${escAttr(id)}" title="Revoke access for ${escAttr(name)}"
-      aria-label="Revoke access for ${escAttr(name)}">${icons.trash('', 14)}</button>`;
+      data-revoke-id="${this.#escAttr(id)}" title="Revoke access for ${this.#escAttr(name)}"
+      aria-label="Revoke access for ${this.#escAttr(name)}">${icons.trash('', 14)}</button>`;
   }
 
   #wireAccessTable() {
@@ -887,7 +887,13 @@ class AgentCardPage extends HTMLElement {
   }
 
   async #revokeGrant(kind, granteeId) {
-    if (!confirm('Revoke this access grant?')) return;
+    const confirmed = await confirmDialog({
+      title: 'Revoke access',
+      message: 'Revoke this access grant? The user or team will lose access to this agent.',
+      confirmLabel: 'Revoke',
+      danger: true,
+    });
+    if (!confirmed) return;
     const paths = { user: 'users', team: 'teams', department: 'departments', agent: 'agents' };
     try {
       const res = await apiFetch(
@@ -918,8 +924,8 @@ class AgentCardPage extends HTMLElement {
           <p class="acp-form-error" id="acp-grant-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="ghost" id="acp-grant-cancel">Cancel</app-button>
-          <app-button variant="dark" id="acp-grant-submit" disabled>Grant access</app-button>
+          <button type="button" class="acp-action-btn" id="acp-grant-cancel">Cancel</button>
+          <button type="button" class="acp-primary-btn" id="acp-grant-submit" disabled>Grant access</button>
         </div>
       </app-modal>
       <app-modal id="acp-transfer-modal" heading="Transfer ownership">
@@ -933,8 +939,8 @@ class AgentCardPage extends HTMLElement {
           <p class="acp-form-error" id="acp-transfer-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="ghost" id="acp-transfer-cancel">Cancel</app-button>
-          <app-button variant="dark" id="acp-transfer-submit" disabled>Transfer ownership</app-button>
+          <button type="button" class="acp-action-btn" id="acp-transfer-cancel">Cancel</button>
+          <button type="button" class="acp-primary-btn" id="acp-transfer-submit" disabled>Transfer ownership</button>
         </div>
       </app-modal>
       <app-modal id="acp-reupload-modal" heading="Re-upload agent">
@@ -959,8 +965,8 @@ class AgentCardPage extends HTMLElement {
           <p class="acp-form-error" id="acp-reupload-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="ghost" id="acp-reupload-cancel">Cancel</app-button>
-          <app-button variant="dark" id="acp-reupload-submit">Queue build</app-button>
+          <button type="button" class="acp-action-btn" id="acp-reupload-cancel">Cancel</button>
+          <button type="button" class="acp-primary-btn" id="acp-reupload-submit">Queue build</button>
         </div>
       </app-modal>
       <app-modal id="acp-rollback-modal" heading="Roll back version">
@@ -974,8 +980,8 @@ class AgentCardPage extends HTMLElement {
           <p class="acp-form-error" id="acp-rollback-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="ghost" id="acp-rollback-cancel">Cancel</app-button>
-          <app-button variant="dark" id="acp-rollback-submit">Roll back</app-button>
+          <button type="button" class="acp-action-btn" id="acp-rollback-cancel">Cancel</button>
+          <button type="button" class="acp-primary-btn" id="acp-rollback-submit">Roll back</button>
         </div>
       </app-modal>`;
   }
@@ -1057,7 +1063,7 @@ class AgentCardPage extends HTMLElement {
     const submit = this.querySelector(`#acp-${which}-submit`);
     if (!chip || !submit) return;
     if (picked) {
-      chip.innerHTML = `<span class="acp-chip">${escHtml(picked.label)}<button type="button" class="acp-chip-x" aria-label="Clear selection">${icons.x('', 12)}</button></span>`;
+      chip.innerHTML = `<span class="acp-chip">${this.#esc(picked.label)}<button type="button" class="acp-chip-x" aria-label="Clear selection">${icons.x('', 12)}</button></span>`;
       chip.hidden = false;
       chip.querySelector('.acp-chip-x').addEventListener('click', () => this.#setPicked(which, null));
     } else {
@@ -1083,8 +1089,8 @@ class AgentCardPage extends HTMLElement {
     }
     results.innerHTML = options.length
       ? options.map((o, i) => `<button type="button" class="acp-picker-option" data-i="${i}">
-          <span class="acp-picker-option-label">${escHtml(o.label)}</span>
-          ${o.sub ? `<span class="acp-picker-option-sub">${escHtml(o.sub)}</span>` : ''}
+          <span class="acp-picker-option-label">${this.#esc(o.label)}</span>
+          ${o.sub ? `<span class="acp-picker-option-sub">${this.#esc(o.sub)}</span>` : ''}
         </button>`).join('')
       : '<div class="acp-picker-none">No matches</div>';
     results.hidden = false;
@@ -1152,7 +1158,13 @@ class AgentCardPage extends HTMLElement {
 
   async #submitTransfer() {
     if (!this.#transferPicked) return;
-    if (!confirm(`Transfer ownership to ${this.#transferPicked.label}? This cannot be undone from here.`)) return;
+    const transferConfirmed = await confirmDialog({
+      title: 'Transfer ownership',
+      message: `Transfer ownership to <strong>${this.#transferPicked.label}</strong>? This cannot be undone.`,
+      confirmLabel: 'Transfer',
+      danger: true,
+    });
+    if (!transferConfirmed) return;
     const err = this.querySelector('#acp-transfer-error');
     err.hidden = true;
     try {
@@ -1186,7 +1198,7 @@ class AgentCardPage extends HTMLElement {
           <section class="acp-section">
             <h2 class="acp-section-title">LLM Router</h2>
             <p class="acp-section-sub">Which models this agent runs on. Overrides here apply to this agent only.</p>
-            <agent-llm-config agent-id="${escAttr(a.id)}"></agent-llm-config>
+            <agent-llm-config agent-id="${this.#escAttr(a.id)}"></agent-llm-config>
           </section>
         </div>`;
   }
@@ -1196,17 +1208,17 @@ class AgentCardPage extends HTMLElement {
     const list = this.querySelector('#acp-mcp-list');
     if (!list) return;
     try {
-      const resp = await call('fetchAgentMcpConnectors', this.#agent.id);
+      const resp = await window.fetchAgentMcpConnectors(this.#agent.id);
       this.#connectors = resp?.data?.connectors || [];
     } catch (e) {
-      list.innerHTML = `<p class="acp-section-sub">Failed to load MCP connectors: ${escHtml(e.message)}</p>`;
+      list.innerHTML = `<p class="acp-section-sub">Failed to load MCP connectors: ${this.#esc(e.message)}</p>`;
       return;
     }
     // Fetch every connector's tools up front so each card can show its
     // "{n} of {m} tools allowed" summary without waiting for an expand.
     await Promise.all(this.#connectors.map(async (c) => {
       try {
-        const resp = await call('fetchAgentMcpConnectorTools', this.#agent.id, c.connector_id);
+        const resp = await window.fetchAgentMcpConnectorTools(this.#agent.id, c.connector_id);
         this.#connectorTools.set(c.connector_id, resp?.data?.tools || []);
       } catch {
         this.#connectorTools.set(c.connector_id, []);
@@ -1233,25 +1245,25 @@ class AgentCardPage extends HTMLElement {
   #connectorCardHtml(c) {
     const name = c.display_name || c.name || 'Connector';
     const tools = this.#connectorTools.get(c.connector_id) || [];
-    const allowed = tools.filter((t) => t.stance !== 'deny').length;
+    const allowed = tools.filter((t) => t.stance !== 'block').length;
     const summary = c.enabled === false
       ? 'Disabled'
       : tools.length ? `${allowed} of ${tools.length} tools allowed` : 'No tools synced yet';
     const open = this.#openConnectors.has(c.connector_id);
     const logo = c.logo_url
-      ? `<img class="acp-mcp-logo" src="${escAttr(c.logo_url)}" alt="" />`
-      : `<span class="acp-mcp-initial">${escHtml(name.charAt(0).toUpperCase())}</span>`;
+      ? `<img class="acp-mcp-logo" src="${this.#escAttr(c.logo_url)}" alt="" />`
+      : `<span class="acp-mcp-initial">${this.#esc(name.charAt(0).toUpperCase())}</span>`;
     return `
-      <div class="acp-mcp-card${c.enabled === false ? ' is-disabled' : ''}" data-connector="${escAttr(c.connector_id)}">
+      <div class="acp-mcp-card${c.enabled === false ? ' is-disabled' : ''}" data-connector="${this.#escAttr(c.connector_id)}">
         <div class="acp-mcp-head">
           <button type="button" class="acp-icon-btn acp-mcp-toggle-open" aria-expanded="${open}"
-            aria-label="${open ? 'Collapse' : 'Expand'} ${escAttr(name)}">
+            aria-label="${open ? 'Collapse' : 'Expand'} ${this.#escAttr(name)}">
             ${open ? icons.chevronUp('', 16) : icons.chevronDown('', 16)}
           </button>
           ${logo}
-          <span class="acp-mcp-name">${escHtml(name)}</span>
-          <span class="acp-mcp-summary">${escHtml(summary)}</span>
-          <label class="acp-json-toggle acp-mcp-enable" title="${c.enabled === false ? 'Enable' : 'Disable'} ${escAttr(name)}">
+          <span class="acp-mcp-name">${this.#esc(name)}</span>
+          <span class="acp-mcp-summary">${this.#esc(summary)}</span>
+          <label class="acp-json-toggle acp-mcp-enable" title="${c.enabled === false ? 'Enable' : 'Disable'} ${this.#escAttr(name)}">
             <input type="checkbox" class="acp-mcp-enable-input" ${c.enabled === false ? '' : 'checked'} />
             <span class="acp-json-track" aria-hidden="true"></span>
           </label>
@@ -1273,13 +1285,13 @@ class AgentCardPage extends HTMLElement {
         ${note}
         ${tools.map((t, i) => `
           <div class="acp-mcp-tool${disabled ? ' is-dim' : ''}">
-            <span class="acp-mcp-tool-name">${escHtml(t.name)}</span>
-            <span class="acp-mcp-tool-desc">${escHtml(t.description || '')}</span>
+            <span class="acp-mcp-tool-name">${this.#esc(t.name)}</span>
+            <span class="acp-mcp-tool-desc">${this.#esc(t.description || '')}</span>
             <div class="acp-stance">
               <button type="button" class="acp-stance-btn is-allow" data-tool-index="${i}" data-stance="allow"
-                aria-pressed="${t.stance !== 'deny'}" ${disabled ? 'disabled' : ''}>Allow</button>
-              <button type="button" class="acp-stance-btn is-block" data-tool-index="${i}" data-stance="deny"
-                aria-pressed="${t.stance === 'deny'}" ${disabled ? 'disabled' : ''}>Block</button>
+                aria-pressed="${t.stance !== 'block'}" ${disabled ? 'disabled' : ''}>Allow</button>
+              <button type="button" class="acp-stance-btn is-block" data-tool-index="${i}" data-stance="block"
+                aria-pressed="${t.stance === 'block'}" ${disabled ? 'disabled' : ''}>Block</button>
             </div>
           </div>`).join('')}
       </div>`;
@@ -1305,7 +1317,7 @@ class AgentCardPage extends HTMLElement {
   async #setConnectorEnabled(connectorId, enabled) {
     const connector = this.#connectors.find((c) => c.connector_id === connectorId);
     try {
-      await call('setAgentMcpConnectorAccess', this.#agent.id, connectorId, enabled);
+      await window.setAgentMcpConnectorAccess(this.#agent.id, connectorId, enabled);
       if (connector) connector.enabled = enabled;
     } catch (e) {
       showToast(`Failed to update access: ${e.message}`);
@@ -1327,9 +1339,9 @@ class AgentCardPage extends HTMLElement {
       const rules = tools.map((t) => ({
         connector_id: connectorId,
         tool_pattern: t.name,
-        stance: t.stance === 'deny' ? 'deny' : 'allow',
+        stance: t.stance === 'block' ? 'block' : 'allow',
       }));
-      await call('saveAgentMcpToolRules', this.#agent.id, rules);
+      await window.saveAgentMcpToolRules(this.#agent.id, rules);
     } catch (e) {
       tool.stance = previous;
       this.#renderConnectors();
@@ -1347,43 +1359,43 @@ class AgentCardPage extends HTMLElement {
             <form class="acp-identity" id="acp-identity-form">
               <label class="acp-field">
                 <span class="acp-field-label">Display name</span>
-                <input type="text" id="acp-display-name" value="${escAttr(a.display_name || a.name)}" maxlength="120" />
+                <input type="text" id="acp-display-name" value="${this.#escAttr(a.display_name || a.name)}" maxlength="120" />
                 <span class="acp-field-hint">Shown wherever this agent appears in Nasiko.</span>
               </label>
               <label class="acp-field">
                 <span class="acp-field-label">Description</span>
-                <textarea id="acp-description" rows="3">${escHtml(a.description || '')}</textarea>
+                <textarea id="acp-description" rows="3">${this.#esc(a.description || '')}</textarea>
                 <span class="acp-field-hint">Explain what this agent does for the people you share it with.</span>
               </label>
               <label class="acp-field">
                 <span class="acp-field-label">Agent ID</span>
-                <input type="text" value="${escAttr(a.id)}" disabled />
+                <input type="text" value="${this.#escAttr(a.id)}" disabled />
                 <span class="acp-field-hint">Generated when the agent was first published.</span>
               </label>
               <div class="acp-identity-actions">
-                <app-button type="submit" variant="dark">Save changes</app-button>
+                <button type="submit" class="acp-primary-btn">Save changes</button>
               </div>
             </form>
           </section>
           <section class="acp-section">
             <h2 class="acp-section-title">Agent Configuration</h2>
             <dl class="acp-dl">
-              <div><dt>Image</dt><dd><code>${escHtml(a.image || '—')}</code></dd></div>
-              <div><dt>Port</dt><dd>${escHtml(String(a.port || '—'))}</dd></div>
+              <div><dt>Image</dt><dd><code>${this.#esc(a.image || '—')}</code></dd></div>
+              <div><dt>Port</dt><dd>${this.#esc(String(a.port || '—'))}</dd></div>
               <div><dt>Status</dt><dd><app-badge variant="${a.status === 'running' ? 'success' : a.status === 'error' ? 'error' : 'warning'}">${a.status || 'unknown'}</app-badge></dd></div>
               <div><dt>Replicas</dt><dd>${a.replicas ?? '—'}</dd></div>
             </dl>
           </section>
           <section class="acp-section">
             <secrets-manager id="acp-secrets" scope="agent" defer
-              agent-id="${escAttr(a.id)}"
+              agent-id="${this.#escAttr(a.id)}"
               heading="Secrets"
               description="Environment secrets injected into this agent's container at deploy time. Values are write-only."></secrets-manager>
           </section>
           <section class="acp-section acp-danger">
             <h3 class="acp-danger-title">Danger zone</h3>
             <p class="acp-section-sub">Deleting this agent removes it from the registry, revokes all grants, and stops its container.</p>
-            <app-button variant="danger" data-action="delete">${icons.trash('', 14)} Delete agent</app-button>
+            <button type="button" class="acp-action-btn acp-action-btn--danger" data-action="delete">${icons.trash('', 14)} Delete agent</button>
           </section>
         </div>`;
   }
@@ -1431,8 +1443,8 @@ class AgentCardPage extends HTMLElement {
     const unavailable = (description) => {
       el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
         title="Metrics unavailable"
-        description="${escAttr(description)}"
-        icon="${escAttr(icons.trace('', 32))}"></app-empty-state></div>`;
+        description="${this.#escAttr(description)}"
+        icon="${this.#escAttr(icons.trace('', 32))}"></app-empty-state></div>`;
     };
 
     let stats;
@@ -1460,7 +1472,7 @@ class AgentCardPage extends HTMLElement {
           <app-empty-state
             title="No usage data yet"
             description="Stats will appear after the first request to this agent."
-            icon="${escAttr(icons.trace('', 32))}">
+            icon="${this.#escAttr(icons.trace('', 32))}">
           </app-empty-state>
         </div>`;
       return;
@@ -1498,7 +1510,7 @@ class AgentCardPage extends HTMLElement {
     let usage;
     let state = '';
     try {
-      const resp = await call('fetchAgentResourceStats', this.#agentId);
+      const resp = await window.fetchAgentResourceStats(this.#agentId);
       usage = resp?.data?.usage ?? null;
       state = resp?.data?.usage?.state ?? '';
     } catch {
@@ -1508,7 +1520,7 @@ class AgentCardPage extends HTMLElement {
       el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
         title="Usage unavailable"
         description="Container resource usage could not be read for this agent."
-        icon="${escAttr(icons.cube('', 32))}"></app-empty-state></div>`;
+        icon="${this.#escAttr(icons.cube('', 32))}"></app-empty-state></div>`;
       return;
     }
 
@@ -1518,7 +1530,7 @@ class AgentCardPage extends HTMLElement {
       el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
         title="Not running"
         description="This agent has no running container, so there is nothing to measure."
-        icon="${escAttr(icons.cube('', 32))}"></app-empty-state></div>`;
+        icon="${this.#escAttr(icons.cube('', 32))}"></app-empty-state></div>`;
       return;
     }
 
@@ -1562,7 +1574,7 @@ class AgentCardPage extends HTMLElement {
       <div class="acp-stat">
         <div class="acp-stat-label">Network</div>
         <div class="acp-stat-value">${fmtBytes(usage.net_rx_bytes)}</div>
-        <div class="acp-stat-sub">in · ${fmtBytes(usage.net_tx_bytes)} out${state ? ` · ${escHtml(state)}` : ''}</div>
+        <div class="acp-stat-sub">in · ${fmtBytes(usage.net_tx_bytes)} out${state ? ` · ${this.#esc(state)}` : ''}</div>
       </div>
     `;
   }
@@ -1640,8 +1652,8 @@ class AgentCardPage extends HTMLElement {
         const ts = this.#formatLogTimestamp(line.timestamp);
         return `<div class="acp-log-line">` +
           `<span class="acp-log-num">${i + 1}</span>` +
-          `<span class="acp-log-ts">${escHtml(ts)}</span>` +
-          `<app-badge class="acp-log-badge" variant="${this.#levelVariant(line.level)}">${escHtml(line.level || 'info')}</app-badge>` +
+          `<span class="acp-log-ts">${this.#esc(ts)}</span>` +
+          `<app-badge class="acp-log-badge" variant="${this.#levelVariant(line.level)}">${this.#esc(line.level || 'info')}</app-badge>` +
           `<span class="acp-log-msg">${ansiToHtml(line.message)}</span>` +
           `</div>`;
       }).join('');
@@ -1701,6 +1713,15 @@ class AgentCardPage extends HTMLElement {
     return s.length > 12 ? `${s.slice(0, 8)}…` : s;
   }
 
+  #esc(s) {
+    const d = document.createElement('span');
+    d.textContent = s || '';
+    return d.innerHTML;
+  }
+
+  #escAttr(s) {
+    return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
 }
 
 customElements.define('agent-card-page', AgentCardPage);

@@ -91,7 +91,7 @@
     border: 1px solid var(--color-border);
     border-radius: var(--r-8);
     padding: var(--space-md);
-    background: var(--bg-page);
+    background: light-dark(var(--white), var(--neutral-900));
   }
   .connect-status-header {
     display: flex;
@@ -170,7 +170,7 @@
     gap: var(--space-sm);
     padding: var(--space-sm) var(--space-md);
     border-bottom: 1px solid var(--color-border);
-    background: var(--bg-page);
+    background: light-dark(var(--white), var(--neutral-900));
     transition: background var(--transition-fast);
   }
   .repo-item:last-child { border-bottom: none; }

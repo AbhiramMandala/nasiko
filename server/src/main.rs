@@ -7,11 +7,11 @@ use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
 use rust_embed::Embed;
 
 #[derive(Embed)]
-#[folder = "../../ui/oss/"]
+#[folder = "../ui/web/"]
 struct OssAssets;
 
 #[derive(Embed)]
-#[folder = "../../ui/common/"]
+#[folder = "../ui/common/"]
 #[prefix = "common/"]
 struct CommonAssets;
 
@@ -70,10 +70,14 @@ async fn main() {
 /// instead of relying on users to hard-refresh (assets aren't content-hashed,
 /// so a stale cached JS/CSS file would silently run against a new backend).
 /// 5 min is safe at a once-a-day deploy cadence; revisit if deploys get more frequent.
-// Debug builds serve from disk (rust-embed), so always revalidate there —
-// otherwise local UI edits appear stale for up to 5 minutes.
+// Debug builds serve from disk (rust-embed), so nothing is cached there at all:
+// `just run` is for editing the frontend, and a UI change must show up on the
+// next reload with no hard-refresh and no stale module. `no-store` rather than
+// `no-cache` because the latter still stores and revalidates, which leaves room
+// for a stale ES module to be reused. Use `just run-prod` to exercise the
+// release headers below.
 const STATIC_CACHE_CONTROL: &str = if cfg!(debug_assertions) {
-    "no-cache"
+    "no-store"
 } else {
     "max-age=300, must-revalidate"
 };
@@ -112,37 +116,13 @@ async fn static_handler(req: Request<Body>) -> Response {
             .into_response();
     }
 
-    // SPA fallback: serve index.html for any path that isn't a real static
-    // file. The client-side router resolves the URL to the correct page
-    // component. Paths with file extensions (CSS, JS, images, fonts) are
-    // genuine 404s — they were requested as assets and should not get HTML.
-    if !path.contains('.') {
-        if let Some(file) = OssAssets::get("index.html") {
-            let etag = format!("\"{}\""  , hex::encode(file.metadata.sha256_hash()));
-            return (
-                [
-                    (header::CONTENT_TYPE, "text/html".to_string()),
-                    // SPA shell must revalidate on every navigation so deploys
-                    // take effect within one page load.
-                    (header::CACHE_CONTROL, "no-cache".to_string()),
-                    (header::ETAG, etag),
-                ],
-                file.data,
-            )
-                .into_response();
-        }
-    }
-
     if let Some(file) = OssAssets::get("404.html") {
         return (
             StatusCode::NOT_FOUND,
-            [
-                (header::CONTENT_TYPE, "text/html".to_owned()),
-                (header::CACHE_CONTROL, "no-store".to_owned()),
-            ],
+            [(header::CONTENT_TYPE, "text/html")],
             file.data,
         )
             .into_response();
     }
-    (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-store")]).into_response()
+    StatusCode::NOT_FOUND.into_response()
 }

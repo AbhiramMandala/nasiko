@@ -37,7 +37,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-md);
-    width: min(100%, 780px);
+    width: 100%;
     padding: var(--space-md) var(--space-lg);
     border-radius: var(--r-8);
     background: var(--bg-input);
@@ -45,7 +45,7 @@
     margin-bottom: var(--space-lg);
     transition: background var(--transition-fast);
 
-    &:hover { background: var(--bg-surface-hover); }
+    &:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
     &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   }
 
@@ -56,7 +56,7 @@
     width: 36px;
     height: 36px;
     border-radius: var(--r-8);
-    background: var(--bg-popover);
+    background: light-dark(var(--white), var(--neutral-700));
     color: var(--color-text-main);
     flex-shrink: 0;
   }
@@ -93,11 +93,14 @@
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: var(--space-md);
-    width: min(100%, 1020px);
+    /* No max-width cap: the 1020px column left the three cards cramped, wrapping
+       every title onto two lines while the card had width to spare. The host's
+       padding (page-layout.css) is what bounds this now. */
+    width: 100%;
   }
 
   @media (max-width: 900px) {
-    .method-grid { grid-template-columns: 1fr; width: min(100%, 520px); }
+    .method-grid { grid-template-columns: 1fr; }
   }
 
   /* Surface + hover lift: common/styles/surface.css */
@@ -146,8 +149,8 @@
     height: var(--control-h-lg);
     border: none;
     border-radius: var(--r-10);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
@@ -156,7 +159,7 @@
   }
 
   .method-btn:hover:not(:disabled) {
-    background: var(--bg-action-hover);
+    background: light-dark(var(--sand-700), var(--neutral-300));
   }
 
   .method-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
@@ -164,10 +167,6 @@
   .method-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
-  }
-
-  .method-card-req.connected {
-    color: var(--color-success);
   }
 
   /* ── Upload modal form ─────────────────────────────────────────────────── */
@@ -210,4 +209,32 @@
     font-size: var(--font-size-xs);
   }
   /* Footer actions: reuse the card button shape, sized to content. */
+  [data-slot="footer"] .btn-dark,
+  [data-slot="footer"] .btn-outline {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--control-h-md);
+    padding: 0 var(--s-16);
+    border-radius: var(--r-8);
+    font-family: inherit;
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+  }
+  [data-slot="footer"] .btn-dark {
+    border: none;
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+  }
+  [data-slot="footer"] .btn-dark:hover:not(:disabled) {
+    background: light-dark(var(--sand-700), var(--neutral-300));
+  }
+  [data-slot="footer"] .btn-dark:disabled { opacity: 0.5; cursor: not-allowed; }
+  [data-slot="footer"] .btn-outline {
+    border: 1px solid var(--color-border);
+    background: transparent;
+    color: var(--color-text-main);
+  }
+  [data-slot="footer"] .btn-outline:hover { background: var(--bg-surface-hover); }
 }

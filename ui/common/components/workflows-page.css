@@ -32,8 +32,8 @@
     min-height: var(--control-h-sm);
     padding: 0 var(--s-12);
     border-radius: var(--r-8);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
     font-size: 13px;
     font-weight: 500;
     text-decoration: none;
@@ -42,8 +42,8 @@
     transition: background var(--transition-fast);
   }
   .new-wf-btn:hover {
-    background: var(--bg-action-hover);
-    color: var(--fg-on-action);
+    background: light-dark(var(--sand-700), var(--neutral-300));
+    color: light-dark(var(--white), var(--neutral-900));
   }
   .new-wf-btn.is-lg {
     min-height: var(--control-h-md);
@@ -91,7 +91,7 @@
   }
   /* Neutral meta pills sit on sand — lift them to white for contrast */
   .wf-badges .badge--muted {
-    background: var(--color-bg-surface);
+    background: light-dark(var(--white), var(--neutral-800));
     color: var(--color-text-muted);
   }
 
