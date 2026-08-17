@@ -65,27 +65,6 @@ pub struct Config {
     pub flow_timeout_secs: i32,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
-    /// OIDC issuer authority, e.g. `https://login.microsoftonline.com/<tenant-id>/v2.0`
-    /// for Microsoft Entra ID — or any other OIDC-compliant provider. `None`
-    /// disables OIDC login entirely (see the enterprise OIDC SSO guide).
-    pub oidc_issuer_url: Option<String>,
-    pub oidc_client_id: Option<String>,
-    pub oidc_client_secret: Option<String>,
-    /// Must exactly match the redirect URI registered with the IdP, e.g.
-    /// `https://<host>/api/auth/oidc/callback`.
-    pub oidc_redirect_uri: Option<String>,
-    /// Full origins (`scheme://host[:port]`) a post-login OIDC `redirect`
-    /// target is allowed to point at, in addition to a same-origin relative
-    /// path — needed when the frontend is a separate deployment on its own
-    /// domain rather than this binary's embedded UI (comma-separated, e.g.
-    /// `"https://app.example.com,http://localhost:5173"`). Empty (the
-    /// default) means only same-origin relative paths are accepted; see
-    /// `ee/server/src/auth.rs::is_safe_redirect_target`.
-    pub oidc_allowed_redirect_origins: Vec<String>,
-    pub oidc_scopes: String,
-    /// Stored as `user_identities.provider` for OIDC-authenticated users.
-    /// Override if fronting a non-Entra OIDC provider.
-    pub oidc_provider_label: String,
     /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
     /// multi-tenant BFF — it serves no UI (root 302s to the BFF) and enforces
     /// the corporate-only admission gate below. Default off = ordinary
@@ -117,13 +96,6 @@ pub struct Config {
     /// cluster's tenant-id path suffix. Unset (the default, and always for
     /// standalone deployments) means GitHub calls this cluster back directly.
     pub github_central_callback_url: Option<String>,
-    /// The OIDC analogue of [`Self::github_central_callback_url`]: the fleet
-    /// relay callback used as the OIDC `redirect_uri` for both authorize and
-    /// token exchange (multi-tenant workspace CPs), so many clusters share one
-    /// Google/OIDC app whose single registered callback points at the relay.
-    /// Includes this cluster's tenant-id path suffix. Unset (default, and always
-    /// standalone) means the IdP calls this cluster back directly.
-    pub oidc_central_callback_url: Option<String>,
     /// Base URL to redirect to after a successful OAuth login. In production
     /// this is the same origin as the server. Override via `APP_BASE_URL` in
     /// dev when the server and app run on different ports.
@@ -298,26 +270,6 @@ impl Config {
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
-            oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_client_id: std::env::var("OIDC_CLIENT_ID")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_client_secret: std::env::var("OIDC_CLIENT_SECRET")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_allowed_redirect_origins: std::env::var("OIDC_ALLOWED_REDIRECT_ORIGINS")
-                .unwrap_or_default()
-                .split(',')
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
-            oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
             multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")
                 .map(|v| v == "true")
                 .unwrap_or(false),
@@ -334,9 +286,6 @@ impl Config {
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_central_callback_url: std::env::var("OIDC_CENTRAL_CALLBACK_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
             app_base_url: env_or("APP_BASE_URL", ""),
