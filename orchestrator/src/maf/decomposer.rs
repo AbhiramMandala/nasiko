@@ -30,6 +30,8 @@ impl DecomposerClient {
     /// instruction unchanged as a single-element vec if the service reports
     /// nothing to split (empty `sub_queries`).
     pub async fn decompose(&self, query: &str) -> Result<Vec<String>, String> {
+        tracing::info!(query, "decomposer_client: decompose() start");
+        let start = std::time::Instant::now();
         let mut req = self.http.post(&self.url);
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
@@ -52,6 +54,12 @@ impl DecomposerClient {
             .json()
             .await
             .map_err(|e| format!("decomposer response parse error: {e}"))?;
+
+        tracing::info!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            sub_query_count = parsed.sub_queries.len(),
+            "decomposer_client: decompose() done"
+        );
 
         if parsed.sub_queries.is_empty() {
             return Ok(vec![query.to_string()]);

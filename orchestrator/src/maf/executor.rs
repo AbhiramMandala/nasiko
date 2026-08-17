@@ -7,6 +7,29 @@ use uuid::Uuid;
 use super::llm::{ChatMessage, LlmClient};
 use super::types::{ExecutionResult, MafDefinition, MafStep, StepResult};
 
+/// Times an awaited step and emits it as an `info` event — visible under the
+/// default `RUST_LOG=info` with no special filter — giving a per-call timing
+/// breakdown of a MAF run (planning, per-step LLM calls, the agent HTTP round
+/// trip, and the token-wait poll) without touching the Tempo/observability path.
+async fn timed<T>(
+    label: &str,
+    execution_id: Uuid,
+    step_index: Option<i32>,
+    fut: impl std::future::Future<Output = T>,
+) -> T {
+    let start = Instant::now();
+    let result = fut.await;
+    tracing::info!(
+        target: "nasiko_orchestrator::maf",
+        execution_id = %execution_id,
+        step_index = step_index,
+        label,
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        "maf step timing"
+    );
+    result
+}
+
 // 8 params is one over clippy's default threshold; grouping them into a context
 // struct isn't worth it for this one call site (worker.rs).
 #[allow(clippy::too_many_arguments)]
@@ -50,7 +73,13 @@ pub async fn run_maf(
     // Generates prompt templates (with <placeholders>), to_extract goals, and
     // the output_generation guideline from the task descriptions.
     // Planning happens on every execution (Python MAF parity).
-    let (step_plans, output_generation, plan_tokens) = plan_execution(&planning_steps, llm).await?;
+    let (step_plans, output_generation, plan_tokens) = timed(
+        "plan_execution",
+        execution_id,
+        None,
+        plan_execution(&planning_steps, llm),
+    )
+    .await?;
     let mut total_tokens = plan_tokens;
 
     // Fill in the prompt template / extraction goal now that planning is
@@ -68,18 +97,23 @@ pub async fn run_maf(
         persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
 
         // ── LLM call 2: fill <placeholders> with context from previous steps ─
-        let (actual_prompt, prompt_tokens) =
-            match generate_step_prompt(&plan.prompt, &step.task_description, &context, llm).await {
-                Ok(v) => v,
-                Err(e) => {
-                    let err = format!("step {}: prompt generation failed: {e}", step.step_index);
-                    step_results[i].status = "failed".to_string();
-                    step_results[i].error = Some(err.clone());
-                    persist_progress(db, execution_id, &step_results, total_tokens, total_cost)
-                        .await;
-                    return Err(err);
-                }
-            };
+        let (actual_prompt, prompt_tokens) = match timed(
+            "generate_step_prompt",
+            execution_id,
+            Some(step.step_index),
+            generate_step_prompt(&plan.prompt, &step.task_description, &context, llm),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let err = format!("step {}: prompt generation failed: {e}", step.step_index);
+                step_results[i].status = "failed".to_string();
+                step_results[i].error = Some(err.clone());
+                persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
+                return Err(err);
+            }
+        };
 
         // ── Agent call ────────────────────────────────────────────────────────
         let start = Instant::now();
@@ -128,13 +162,18 @@ pub async fn run_maf(
             );
         }
 
-        let raw_response = match call_agent(
-            client,
-            &step.agent_endpoint,
-            &execution_id.to_string(),
-            &user_id.to_string(),
-            &actual_prompt,
-            &traceparent,
+        let raw_response = match timed(
+            "call_agent",
+            execution_id,
+            Some(step.step_index),
+            call_agent(
+                client,
+                &step.agent_endpoint,
+                &execution_id.to_string(),
+                &user_id.to_string(),
+                &actual_prompt,
+                &traceparent,
+            ),
         )
         .await
         {
@@ -152,15 +191,27 @@ pub async fn run_maf(
             }
         };
         let latency_ms = start.elapsed().as_millis() as i64;
+        tracing::info!(
+            step = step.step_index,
+            agent_name = %step.agent_name,
+            raw_response_len = raw_response.len(),
+            raw_response_preview = %raw_response.chars().take(300).collect::<String>(),
+            "maf run: raw agent response"
+        );
 
         // ── LLM call 3: extract relevant info from agent response ─────────────
-        let (extracted, extract_tokens) = match extract_info(
-            &plan.prompt,
-            &actual_prompt,
-            &raw_response,
-            &plan.to_extract,
-            &context,
-            llm,
+        let (extracted, extract_tokens) = match timed(
+            "extract_info",
+            execution_id,
+            Some(step.step_index),
+            extract_info(
+                &plan.prompt,
+                &actual_prompt,
+                &raw_response,
+                &plan.to_extract,
+                &context,
+                llm,
+            ),
         )
         .await
         {
@@ -182,9 +233,26 @@ pub async fn run_maf(
         // span export, so it's usually not there the instant the call
         // returns) so the persisted step total already reflects LLM + agent
         // cost together, not just MAF's own reasoning cost.
-        let agent_usage = wait_for_agent_usage(observability, &trace_id).await;
-        let step_tokens = llm_tokens + agent_usage.input as i64 + agent_usage.output as i64;
+        let agent_usage = timed(
+            "wait_for_agent_usage",
+            execution_id,
+            Some(step.step_index),
+            wait_for_agent_usage(observability, &trace_id),
+        )
+        .await;
+        let agent_tokens = agent_usage.input as i64 + agent_usage.output as i64;
+        let step_tokens = llm_tokens + agent_tokens;
         total_tokens += step_tokens;
+        tracing::info!(
+            execution_id = %execution_id,
+            step_index = step.step_index,
+            agent_name = %step.agent_name,
+            llm_tokens,
+            agent_tokens,
+            step_tokens,
+            running_total_tokens = total_tokens,
+            "maf run: token usage"
+        );
 
         // Cost is agent-call spend only (not MAF's own planning/reasoning LLM
         // calls) — keeps Agent-view and Workflow-view FinOps rows apples-to-
@@ -230,9 +298,14 @@ pub async fn run_maf(
     // Use the guidelines generated by the planner at runtime.
     let guidelines = &output_generation;
 
-    let (output, output_tokens) = generate_final_output(&step_results, guidelines, llm)
-        .await
-        .map_err(|e| format!("final output generation failed: {e}"))?;
+    let (output, output_tokens) = timed(
+        "generate_final_output",
+        execution_id,
+        None,
+        generate_final_output(&step_results, guidelines, llm),
+    )
+    .await
+    .map_err(|e| format!("final output generation failed: {e}"))?;
     total_tokens += output_tokens;
 
     Ok(ExecutionResult {
@@ -860,6 +933,11 @@ async fn call_agent(
         return Err(format!("A2A error: {err}"));
     }
 
+    tracing::info!(
+        raw_json_preview = %json.to_string().chars().take(500).collect::<String>(),
+        "maf run: raw A2A response body"
+    );
+
     Ok(extract_text(&json))
 }
 
@@ -869,21 +947,26 @@ fn extract_text(json: &serde_json::Value) -> String {
     // `result` itself AS the task object — `result.artifacts`, no `task`
     // wrapper. Try both nestings for each shape so either SDK version works.
     for root in [&json["result"]["task"], &json["result"]] {
-        if let Some(text) = root["artifacts"]
-            .as_array()
-            .and_then(|a| a.first())
-            .and_then(|a| a["parts"].as_array())
-            .and_then(|p| p.first())
-            .and_then(|p| p["text"].as_str())
-        {
-            return text.to_string();
+        // Some agents (e.g. web-search-agent) stream their answer as many
+        // artifacts, one word/token each ({"parts":[{"text":"The"}]},
+        // {"parts":[{"text":" Eiffel"}]}, ...) rather than one artifact
+        // holding the full text — concatenate every part across every
+        // artifact, in order, or only the first token survives.
+        if let Some(artifacts) = root["artifacts"].as_array() {
+            let combined: String = artifacts
+                .iter()
+                .flat_map(|a| a["parts"].as_array().into_iter().flatten())
+                .filter_map(|p| p["text"].as_str())
+                .collect();
+            if !combined.is_empty() {
+                return combined;
+            }
         }
-        if let Some(text) = root["status"]["message"]["parts"]
-            .as_array()
-            .and_then(|p| p.first())
-            .and_then(|p| p["text"].as_str())
-        {
-            return text.to_string();
+        if let Some(parts) = root["status"]["message"]["parts"].as_array() {
+            let combined: String = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+            if !combined.is_empty() {
+                return combined;
+            }
         }
     }
     if let Some(text) = json["result"]["parts"]

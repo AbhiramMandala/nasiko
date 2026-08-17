@@ -419,6 +419,13 @@ async fn create_maf_from_steps(
         if step.task_description.trim().is_empty() {
             return bad_request(&format!("step {idx}: task_description is required"));
         }
+        tracing::info!(
+            step = idx,
+            task_description = %step.task_description,
+            has_explicit_agent = step.agent_id.is_some(),
+            "maf create: resolving step"
+        );
+        let step_start = std::time::Instant::now();
 
         let (agent_id, agent_name, agent_endpoint) = if let Some(aid) = step.agent_id {
             // Caller provided an agent — must be reachable by this caller (owner ∪
@@ -496,6 +503,13 @@ async fn create_maf_from_steps(
             }
         };
 
+        tracing::info!(
+            step = idx,
+            agent_name = %agent_name,
+            elapsed_ms = step_start.elapsed().as_millis() as u64,
+            "maf create: step resolved"
+        );
+
         resolved_steps.push(MafStep {
             step_id: Uuid::new_v4(),
             step_index: idx as i32,
@@ -546,11 +560,14 @@ async fn create_maf_from_steps(
     .await;
 
     match row {
-        Ok(r) => ok_json(
-            StatusCode::CREATED,
-            maf_row_to_response(r),
-            "Workflow created successfully",
-        ),
+        Ok(r) => {
+            tracing::info!(maf_id = %r.id, name = %r.name, "maf create: workflow persisted");
+            ok_json(
+                StatusCode::CREATED,
+                maf_row_to_response(r),
+                "Workflow created successfully",
+            )
+        }
         Err(e) => internal_err(e),
     }
 }
@@ -598,12 +615,24 @@ async fn create_maf_from_instruction(
         state.config.decomposer_api_key.clone(),
     );
 
+    tracing::info!(instruction = %req.instruction, "maf create: decomposing instruction");
+    let decompose_start = std::time::Instant::now();
     let sub_queries = match decomposer.decompose(&req.instruction).await {
         Ok(qs) => qs,
         Err(e) => {
+            tracing::info!(
+                elapsed_ms = decompose_start.elapsed().as_millis() as u64,
+                error = %e,
+                "maf create: decomposer failed"
+            );
             return err_json(StatusCode::SERVICE_UNAVAILABLE, &format!("decomposer: {e}"));
         }
     };
+    tracing::info!(
+        elapsed_ms = decompose_start.elapsed().as_millis() as u64,
+        sub_queries = ?sub_queries,
+        "maf create: decomposer returned sub-queries"
+    );
 
     let steps = sub_queries
         .into_iter()
