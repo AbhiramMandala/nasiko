@@ -200,31 +200,54 @@ Secrets are encrypted env vars injected into agent containers at runtime. There 
 
 The control plane injects the standard `OTEL_*` environment variables into every
 deployment (collector endpoint, `OTEL_SERVICE_NAME`, GenAI capture mode) and routes your
-agent's LLM calls through its LLM gateway (`OPENAI_BASE_URL` etc.). **What the platform
-records depends on whether your agent initializes OpenTelemetry:**
+agent's LLM calls through its LLM gateway (`OPENAI_BASE_URL` etc.).
 
-| Your agent | Token usage | Distributed traces | Per-user/session attribution |
+**Forwarding `traceparent` is mandatory, not best-effort.** Every LLM call (and every
+MCP `tools/call`) must carry the W3C `traceparent` your agent received on its inbound
+A2A request — the platform resolves the calling user and the flow's budgets from it,
+and **rejects unattributable calls with `403`** rather than serving them with degraded
+billing. There is no fallback attribution.
+
+| Your agent | LLM / MCP calls served | Distributed traces | Per-user/session attribution |
 |---|---|---|---|
-| With OTel initialized | ✅ | ✅ | ✅ precise (the forwarded `traceparent` names the flow) |
-| Without OTel | ✅ | ❌ | ✅ best-effort (the router correlates the agent's JWT to its active flow) |
+| Forwards `traceparent` | ✅ | ✅ | ✅ precise (the trace id names the flow) |
+| Drops `traceparent` | ❌ `403` on every call | ❌ | — |
 
-Usage is **never lost**: the LLM gateway meters every call and attributes it to the
-agent's currently-active conversation in Postgres, with zero code in your agent. OTel is
-the contract for the full fidelity path (traces, per-session drill-down, exact
-attribution under concurrent conversations).
-
-How to enable it, per language — all driven by the injected `OTEL_*` env vars:
+How to forward it, per language — all driven by the injected `OTEL_*` env vars:
 
 | Language | How |
 |---|---|
 | Python | `opentelemetry-instrument python main.py`, or initialize the SDK yourself (see `oss/agents/common/telemetry.py`) |
 | Node.js | Set `NODE_OPTIONS="--require @opentelemetry/auto-instrumentations-node/register"` in your Dockerfile, with the package in your image |
 | Java | OTel javaagent: `JAVA_TOOL_OPTIONS="-javaagent:/path/to/opentelemetry-javaagent.jar"` |
-| Go / Rust | No runtime auto-instrumentation exists — initialize the OTel SDK in code (see the Rust agents' `telemetry.rs`) |
+| Go | loongsuite `otel go build` in the Dockerfile (compile-time `net/http` instrumentation), or copy the manual-forwarding fallback in `oss/agents/weather` |
+| Rust | No auto-instrumentation exists — initialize the OTel SDK in code and inject the header explicitly (see the Rust agents' `telemetry.rs`) |
 
-Minimum for attribution: instrument your **inbound HTTP server** (extract `traceparent`)
-and your **outbound LLM client** (inject it). Token counts themselves come from the LLM
-provider's response — no GenAI-specific instrumentors are required.
+Minimum: extract `traceparent` from your **inbound HTTP server** and inject it on your
+**outbound LLM/MCP clients**. Token counts themselves come from the LLM provider's
+response — no GenAI-specific instrumentors are required.
+
+### Tools via the MCP gateway
+
+Every deployment also receives the platform's tool layer, configured entirely by env:
+
+- `MCP_GATEWAY_URL` — the gateway's single JSON-RPC endpoint (when the platform has one configured)
+- `MCP_GATEWAY_TOKEN` — your agent's own credential, minted fresh on every deploy
+
+Configure your MCP client **once at startup** — there is no per-request credential:
+
+```python
+mcp = McpClient(
+    url=os.environ["MCP_GATEWAY_URL"],
+    headers={"Authorization": f"Bearer {os.environ['MCP_GATEWAY_TOKEN']}"},
+)
+```
+
+`tools/list` works immediately (agent-only identity — use it for startup discovery).
+`tools/call` is authorized per flow: the gateway resolves the calling user from your
+forwarded `traceparent` and requires that the flow was actually dispatched to your
+agent, so the same OTel propagation above is all you need. The Go reference
+implementation is `oss/agents/weather` (`mcp.go`).
 
 ---
 

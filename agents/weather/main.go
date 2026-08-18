@@ -19,18 +19,36 @@ import (
 
 type weatherExecutor struct {
 	llm *llmClient
+	// MCP gateway client — nil when the platform didn't inject
+	// MCP_GATEWAY_URL/MCP_GATEWAY_TOKEN. Configured ONCE at startup; the
+	// per-user binding rides the forwarded traceparent, so request handling
+	// needs no credential plumbing at all (this is the reference pattern —
+	// see mcp.go).
+	mcp *mcpClient
 }
 
 var _ a2asrv.AgentExecutor = (*weatherExecutor)(nil)
 
 func (w *weatherExecutor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
-	// The inbound W3C trace context, forwarded on the LLM call for attribution.
+	// The inbound W3C trace context, forwarded on the LLM and MCP calls for
+	// attribution/authorization.
 	traceparent := firstParam(execCtx, "traceparent")
 	return func(yield func(a2a.Event, error) bool) {
 		userText := extractText(execCtx.Message)
+		// Built-in tools plus whatever the MCP gateway granted this agent.
+		tools := weatherTools
+		if w.mcp != nil {
+			tools = append(append([]toolDef{}, weatherTools...), w.mcp.tools...)
+		}
+		dispatch := func(ctx context.Context, name, argsJSON string) string {
+			if w.mcp != nil && w.mcp.names[name] {
+				return w.mcp.callTool(ctx, traceparent, name, argsJSON)
+			}
+			return dispatchTool(ctx, name, argsJSON)
+		}
 		// Run the LLM tool-calling loop: the model extracts the location and picks
 		// tools, we execute them, then the model synthesizes the answer.
-		result, err := w.llm.runAgentLoop(ctx, userText, traceparent)
+		result, err := w.llm.runAgentLoop(ctx, userText, traceparent, tools, dispatch)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -215,7 +233,14 @@ func main() {
 		},
 	}
 
-	handler := a2asrv.NewHandler(&weatherExecutor{llm: newLLMClient()})
+	// MCP gateway: configured once from the deploy-injected env; tool
+	// discovery runs at startup with agent-only identity (no flow needed).
+	mcp := newMCPClient()
+	if mcp != nil {
+		mcp.discoverTools(context.Background())
+	}
+
+	handler := a2asrv.NewHandler(&weatherExecutor{llm: newLLMClient(), mcp: mcp})
 
 	mux := http.NewServeMux()
 	mux.Handle("/a2a", a2asrv.NewJSONRPCHandler(handler))

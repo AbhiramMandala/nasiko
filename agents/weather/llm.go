@@ -137,16 +137,22 @@ func (c *llmClient) chat(ctx context.Context, messages []chatMessage, tools []to
 }
 
 // runAgentLoop is the ReAct loop: the model decides which tool to call, we
-// execute it, feed the result back, and repeat until the model answers with
-// content instead of a tool call.
-func (c *llmClient) runAgentLoop(ctx context.Context, query, traceparent string) (string, error) {
+// execute it via `dispatch`, feed the result back, and repeat until the model
+// answers with content instead of a tool call. `tools` is the full schema
+// advertised to the model (built-ins plus any MCP gateway tools).
+func (c *llmClient) runAgentLoop(
+	ctx context.Context,
+	query, traceparent string,
+	tools []toolDef,
+	dispatch func(ctx context.Context, name, argsJSON string) string,
+) (string, error) {
 	messages := []chatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: query},
 	}
 
 	for range maxToolRounds {
-		msg, err := c.chat(ctx, messages, weatherTools, traceparent)
+		msg, err := c.chat(ctx, messages, tools, traceparent)
 		if err != nil {
 			return "", err
 		}
@@ -162,7 +168,7 @@ func (c *llmClient) runAgentLoop(ctx context.Context, query, traceparent string)
 		// Record the assistant turn (with its tool calls), then run each tool.
 		messages = append(messages, *msg)
 		for _, tc := range msg.ToolCalls {
-			result := dispatchTool(ctx, tc.Function.Name, tc.Function.Arguments)
+			result := dispatch(ctx, tc.Function.Name, tc.Function.Arguments)
 			messages = append(messages, chatMessage{
 				Role:       "tool",
 				ToolCallID: tc.ID,
