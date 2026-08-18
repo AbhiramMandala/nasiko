@@ -125,26 +125,32 @@ async fn chat_core(
 
     // Flow attribution: which user conversation this LLM call belongs to. The
     // agent's JWT only names the agent/owner; the caller's identity comes from
-    // the `flows` row — named precisely by the forwarded traceparent, or
-    // approximated by the agent's currently-running flow when the agent
-    // doesn't propagate trace context (see routing/attribution.rs).
-    let trace_flow = headers
+    // the `flows` row named by the forwarded traceparent, gated on the agent
+    // being a recorded flow participant. STRICT: an unattributable call is
+    // rejected with 403 before any tokens are spent — no fallback, no guessing
+    // (see routing/attribution.rs and oss/docs/TOKEN_ATTRIBUTION.md).
+    let raw_traceparent = headers
         .get(TRACEPARENT_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_flow_id);
+        .and_then(|v| v.to_str().ok());
+    let trace_flow = raw_traceparent.and_then(parse_flow_id);
     let attribution = routing::attribution::resolve(
-        &ctx.db,
+        store,
         &agent_id,
-        trace_flow.clone(),
+        trace_flow,
         ctx.cfg.attribution_window_secs as i64,
     )
-    .await;
+    .await
+    .map_err(|denied| {
+        GatewayError::Forbidden(format!(
+            "{denied} (received traceparent: {})",
+            raw_traceparent.unwrap_or("<none>")
+        ))
+    })?;
 
     // Model routing: the resolver fixed the provider/key/params; the router may override
     // the *model* at a conversation boundary (else it stays the resolved model). Signals
-    // come from the attributed flow's trusted state — via the traceparent path or the
-    // active-flow fallback; no flow ⇒ inert (behaviour identical to before this layer).
-    let signals = boundary_signals_for(&attribution, trace_flow.as_deref());
+    // come from the attributed flow's trusted state.
+    let signals = boundary_signals_for(&attribution);
     let decision = routing::route_model(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
@@ -204,20 +210,16 @@ async fn chat_core(
     );
 
     let started = Instant::now();
-    // The usage row's flow/session key: the attributed flow when one was
-    // found, else the raw trace id (it may not be a known flow, but grouping
-    // by it is still correct). The billed identity: the chatting user from
-    // the flow row when known (a shared agent's spend belongs to the caller),
-    // else the agent owner from the JWT.
-    let flow_id = attribution
-        .as_ref()
-        .map(|a| a.flow_id.clone())
-        .or(trace_flow);
+    // The usage row's flow/session key is the attributed flow (attribution is
+    // strict, so it always exists here). The billed identity: the chatting
+    // user from the flow row (a shared agent's spend belongs to the caller),
+    // with the JWT's owner as the safety net for flows without a user.
+    let flow_id = Some(attribution.flow_id.clone());
     let billed_user_id = attribution
-        .as_ref()
-        .and_then(|a| a.user_id.map(|u| u.to_string()))
+        .user_id
+        .map(|u| u.to_string())
         .unwrap_or_else(|| owner_id.clone());
-    let attribution_source = attribution.as_ref().map(|a| a.source);
+    let attribution_source = Some(attribution.source);
     let platform_paid = resolved.platform_paid;
 
     if req.is_streaming() {
@@ -267,56 +269,29 @@ async fn chat_core(
 
 /// Derive the model-routing [`BoundarySignals`] from the attributed flow.
 ///
-/// The flow lookup already happened in [`attribution::resolve`] (traceparent
-/// path, or the active-flow fallback when the agent doesn't propagate trace
-/// context) — the signals here come from that same trusted flow state. A
-/// `trace_flow` that named no known flow falls through to the log below (a
-/// broken propagation chain), same as before the fallback existed.
-///
-/// No attributed flow ⇒ [`BoundarySignals::inert`] — the router doesn't fire
-/// and the resolved model is used (behaviour identical to before this layer).
-fn boundary_signals_for(
-    attribution: &Option<routing::attribution::FlowAttribution>,
-    trace_flow: Option<&str>,
-) -> BoundarySignals {
-    match attribution {
-        Some(a) => {
-            // Key the decision cache on the conversation's stable context_id, not
-            // the flow_id (= this turn's trace id, which the CLI re-mints every
-            // turn). Turn 1 writes the sticky decision under it and turn 2+ hit
-            // it. Fall back to flow_id for flows that never set context_id.
-            let conv_id = a
-                .context_id
-                .clone()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| a.flow_id.clone());
-            let signals = BoundarySignals::in_flow(conv_id.clone(), a.mode);
-            tracing::info!(
-                target: "nasiko::llm_router::boundary",
-                flow_id = %a.flow_id, %conv_id, mode = ?a.mode,
-                source = a.source.as_label(), phase = ?signals.phase,
-                is_fireable_boundary = signals.is_fireable_boundary(),
-                "boundary signals: known flow → IN-FLOW (router may re-select the model at this boundary)"
-            );
-            signals
-        }
-        None => {
-            match trace_flow {
-                Some(flow_id) => tracing::info!(
-                    target: "nasiko::llm_router::boundary",
-                    flow_id_lookup = %flow_id,
-                    conv_id = "None",
-                    "boundary signals: forwarded trace id is not a known flow → INERT (check the orchestrator's `nasiko::flow` flow_id — a mismatch means the agent didn't propagate the trace)"
-                ),
-                None => tracing::info!(
-                    target: "nasiko::llm_router::boundary",
-                    conv_id = "None",
-                    "boundary signals: no traceparent and no active flow → INERT (router will not fire; resolved model used)"
-                ),
-            }
-            BoundarySignals::inert()
-        }
-    }
+/// The flow lookup already happened in [`attribution::resolve`] — the signals
+/// here come from that same trusted flow state. Attribution is strict, so an
+/// unattributable call was rejected before this point; every served call is
+/// in-flow.
+fn boundary_signals_for(a: &routing::attribution::FlowAttribution) -> BoundarySignals {
+    // Key the decision cache on the conversation's stable context_id, not
+    // the flow_id (= this turn's trace id, which the CLI re-mints every
+    // turn). Turn 1 writes the sticky decision under it and turn 2+ hit
+    // it. Fall back to flow_id for flows that never set context_id.
+    let conv_id = a
+        .context_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| a.flow_id.clone());
+    let signals = BoundarySignals::in_flow(conv_id.clone(), a.mode);
+    tracing::info!(
+        target: "nasiko::llm_router::boundary",
+        flow_id = %a.flow_id, %conv_id, mode = ?a.mode,
+        source = a.source.as_label(), phase = ?signals.phase,
+        is_fireable_boundary = signals.is_fireable_boundary(),
+        "boundary signals: known flow → IN-FLOW (router may re-select the model at this boundary)"
+    );
+    signals
 }
 
 /// Everything [`stream_chat`] needs; bundled so the argument list stays readable.
@@ -486,6 +461,35 @@ mod tests {
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(None)
         }
+        async fn fetch_live_flow(
+            &self,
+            _: &str,
+            _: Uuid,
+            _: i64,
+        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
+            // Every strict-attribution branch is unit-tested in
+            // routing/attribution.rs; here the flow always resolves so the
+            // format-translation paths under test are reachable.
+            Ok(Some(routing::attribution::LiveFlow {
+                user_id: None,
+                context_id: Some("ses_test".into()),
+                mode: None,
+                agent_is_participant: true,
+            }))
+        }
+    }
+
+    /// No-op tier registry: attribution now always resolves in these tests
+    /// (strict enforcement), which makes every call a fireable boundary — a
+    /// registry with tier mappings would then override the request model and
+    /// break the passthrough behaviour under test. No mapping ⇒ the resolved
+    /// model always passes through.
+    struct NoTiers;
+    #[async_trait]
+    impl routing::registry::TierRegistry for NoTiers {
+        async fn model_for(&self, _: &str, _: routing::classifier::Tier) -> Option<String> {
+            None
+        }
     }
 
     /// ctx whose DB never connects — fire-and-forget usage writes fail silently,
@@ -505,14 +509,18 @@ mod tests {
             cfg: Arc::new(cfg),
             cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
             router_cache: Arc::new(crate::routing::NoopCache),
-            tier_registry: Arc::new(crate::routing::registry::test_support::StubRegistry),
+            tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
         }
     }
 
+    const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
     fn auth_headers(token: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
+        // Strict attribution: every served call must carry trace context.
+        h.insert(TRACEPARENT_HEADER, TRACEPARENT.parse().unwrap());
         h
     }
 
@@ -752,35 +760,41 @@ mod tests {
     }
 
     #[test]
-    fn boundary_signals_inert_without_attribution() {
-        // No traceparent and no resolved flow ⇒ inert (the router never fires).
-        let signals = boundary_signals_for(&None, None);
-        assert!(signals.conv_id.is_none());
-        assert!(!signals.is_fireable_boundary());
-    }
-
-    #[test]
-    fn boundary_signals_inert_for_unknown_trace_flow() {
-        // A traceparent that named no known flow ⇒ inert, same as before the
-        // fallback existed (broken propagation chain must not fire the router).
-        let signals = boundary_signals_for(&None, Some("deadbeef"));
-        assert!(signals.conv_id.is_none());
-        assert!(!signals.is_fireable_boundary());
-    }
-
-    #[test]
     fn boundary_signals_in_flow_when_attributed() {
         let attribution = routing::attribution::FlowAttribution {
             flow_id: "f1".into(),
             user_id: None,
             context_id: Some("ses_1".into()),
             mode: routing::Mode::FreeFlowing,
-            source: routing::attribution::AttributionSource::ActiveFlow,
+            source: routing::attribution::AttributionSource::Traceparent,
         };
         // The stable context_id keys the decision cache, not the per-turn flow id.
-        let signals = boundary_signals_for(&Some(attribution), None);
+        let signals = boundary_signals_for(&attribution);
         assert_eq!(signals.conv_id.as_deref(), Some("ses_1"));
         assert!(signals.is_fireable_boundary());
+    }
+
+    #[tokio::test]
+    async fn missing_traceparent_is_403_before_any_provider_call() {
+        // Strict enforcement: a valid agent JWT with no trace context is
+        // refused with 403 (not 401 — the credential itself is fine).
+        let ctx = ctx_with("http://unused".into());
+        let store = Store { config: None };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            format!("Bearer {}", token()).parse().unwrap(),
+        );
+        let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
+        let err = chat_core(&ctx, &store, &headers, body, InboundFormat::OpenAi, None)
+            .await
+            .unwrap_err();
+        match err {
+            GatewayError::Forbidden(msg) => {
+                assert!(msg.contains("traceparent"), "descriptive body: {msg}")
+            }
+            other => panic!("expected Forbidden, got {other:?}"),
+        }
     }
 
     #[tokio::test]

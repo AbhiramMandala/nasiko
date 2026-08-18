@@ -26,13 +26,13 @@ pub struct UsageRecord {
     pub streaming: bool,
     pub finish_reason: Option<String>,
     /// The flow this call belongs to — named by the agent-forwarded
-    /// `traceparent`, or by the active-flow fallback for agents that don't
-    /// propagate trace context. Written to `token_usage.session_id` — the same
+    /// `traceparent` (strict attribution rejects calls without one, so served
+    /// calls always carry it). Written to `token_usage.session_id` — the same
     /// key the orchestrator uses — so per-message usage aggregates across the
     /// platform and its agents.
     pub flow_id: Option<String>,
     /// How `flow_id` was resolved; recorded in the row's metadata so
-    /// attribution quality is auditable. `None` = no flow found.
+    /// attribution quality is auditable.
     pub attribution_source: Option<AttributionSource>,
     /// Whether the platform's key paid for this call (vs. the owner's own secret).
     pub platform_paid: bool,

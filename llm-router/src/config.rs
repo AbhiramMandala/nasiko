@@ -41,11 +41,10 @@ pub struct GatewayConfig {
     /// through to the configured model (Level 4), same as a cache miss.
     pub router_decision_ttl_secs: u64,
 
-    /// Max age of a `status='running'` flow for the active-flow attribution fallback
-    /// (an agent whose LLM call carries no `traceparent` is attributed to its running
-    /// flow within this window). Also bounds orphaned flows (a direct-chat flow whose
-    /// completion marking never ran stays 'running' but ages out of attribution).
-    /// Default 300 (5 min).
+    /// Max age of a `status='running'` flow for traceparent attribution — bounds
+    /// orphaned flows (a direct-chat flow whose completion marking never ran stays
+    /// 'running' but ages out of attribution, so its trace id stops authorizing
+    /// LLM calls). Default 300 (5 min).
     pub attribution_window_secs: u64,
 
     /// Interval between provider model-catalog syncs (`GET /models` →

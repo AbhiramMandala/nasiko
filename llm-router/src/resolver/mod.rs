@@ -136,6 +136,18 @@ pub trait RegistryStore: Send + Sync {
         owner_id: Uuid,
         name: &str,
     ) -> Result<Option<String>, sqlx::Error>;
+
+    /// The live flow named by a forwarded traceparent's trace id, together
+    /// with whether `agent_id` is a recorded `flow_participants` member of it.
+    /// "Live" = `status = 'running'` and younger than `window_secs` (a row
+    /// whose completion marking never ran ages out of attribution).
+    /// `Ok(None)` = no live flow ⇒ the caller must deny attribution.
+    async fn fetch_live_flow(
+        &self,
+        flow_id: &str,
+        agent_id: Uuid,
+        window_secs: i64,
+    ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error>;
 }
 
 /// Postgres-backed [`RegistryStore`].
@@ -253,6 +265,38 @@ impl RegistryStore for PgRegistry {
         .fetch_optional(&self.db)
         .await?;
         Ok(row.map(|(v,)| v))
+    }
+
+    async fn fetch_live_flow(
+        &self,
+        flow_id: &str,
+        agent_id: Uuid,
+        window_secs: i64,
+    ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
+        let row: Option<(Option<Uuid>, Option<String>, Option<String>, bool)> = sqlx::query_as(
+            "SELECT f.user_id, f.metadata->>'context_id', f.metadata->>'mode', \
+                    EXISTS(SELECT 1 FROM flow_participants fp \
+                           WHERE fp.flow_id = f.flow_id AND fp.agent_id = $2) \
+             FROM flows f \
+             WHERE f.flow_id = $1 \
+               AND f.status = 'running' \
+               AND f.created_at > now() - make_interval(secs => $3)",
+        )
+        .bind(flow_id)
+        .bind(agent_id)
+        .bind(window_secs as f64)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(
+            row.map(|(user_id, context_id, mode, agent_is_participant)| {
+                crate::routing::attribution::LiveFlow {
+                    user_id,
+                    context_id,
+                    mode,
+                    agent_is_participant,
+                }
+            }),
+        )
     }
 }
 
@@ -545,6 +589,14 @@ mod tests {
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(self.secret.clone())
+        }
+        async fn fetch_live_flow(
+            &self,
+            _: &str,
+            _: Uuid,
+            _: i64,
+        ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
+            unreachable!("resolver tests never attribute flows")
         }
     }
 
