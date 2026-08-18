@@ -1,0 +1,39 @@
+/*
+ * The tooltip is a single <div class="app-tooltip"> appended to <body>, not an
+ * instance of a custom element — so the scope root is the class, not a tag.
+ *
+ * Geometry stays in px: 12/16 type and a 280px cap are deliberate values with
+ * no step on the type or spacing scale. Colour is token-only.
+ */
+@scope (.app-tooltip) {
+  :scope {
+    position: fixed;
+    z-index: var(--z-tooltip);
+    pointer-events: none;
+    opacity: 0;
+
+    max-width: 280px;
+    padding: var(--s-4) var(--s-8);
+
+    background: var(--sand-900);
+    color: var(--sand-100);
+    font-family: var(--font-body);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: var(--fw-medium);
+    border-radius: var(--r-4);
+    box-shadow: var(--shadow-tooltip);
+    white-space: nowrap;
+
+    transition: opacity var(--tooltip-fade, var(--transition-fast));
+    will-change: opacity, transform;
+  }
+
+  /* On a pinned light theme the tooltip inverts against the sand content
+     plane, so it sits one ramp step lighter with a softer shadow. */
+  :root[data-theme="light"] :scope {
+    background: var(--sand-800);
+    color: var(--sand-50);
+    box-shadow: var(--shadow-tooltip-light);
+  }
+}

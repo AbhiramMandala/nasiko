@@ -13,7 +13,7 @@
 
 import { router } from '/common/core/router.js';
 import { resolveOptional } from '/common/core/data-sources.js';
-import { dismissSplash } from '/common/components/app-splash.js';
+import { dismissSplash } from '/common/features/app-splash.js';
 import { initErrorBoundary } from '/common/core/error-boundary.js';
 import { initRouteIntegration } from '/common/core/route-persistence.js';
 
@@ -23,31 +23,31 @@ import { initRouteIntegration } from '/common/core/route-persistence.js';
 // `tag` is the custom element tag name created in the outlet.
 
 const BASE_ROUTES = [
-  { path: '/',                tag: 'orchestrator-page',        module: '/common/components/orchestrator-page.js',        title: 'Nasiko' },
-  { path: '/agents',          tag: 'agents-page',              module: '/common/components/agents-page.js',              title: 'Nasiko — Agents' },
-  { path: '/your-agents',     tag: 'your-agents-page',         module: '/common/components/your-agents-page.js',         title: 'Nasiko — Your Agents' },
-  { path: '/add-agent',       tag: 'add-agent-page',           module: '/common/components/add-agent-page.js',           title: 'Nasiko — Add Agent' },
-  { path: '/add-agent-github',tag: 'add-agent-github-page',    module: '/common/components/add-agent-github-page.js',    title: 'Nasiko — Import from GitHub' },
-  { path: '/agent-card',      tag: 'agent-card-page',          module: '/common/components/agent-card-page.js',          title: 'Nasiko — Agent' },
-  { path: '/chat',            tag: 'chat-page',                module: '/common/components/chat-page.js',                title: 'Nasiko — Chat' },
-  { path: '/workflows',       tag: 'workflow-list-page',       module: '/common/components/workflow-list-page.js',       title: 'Nasiko — Workflows' },
-  { path: '/workflow-new',    tag: 'workflow-new-page',         module: '/common/components/workflow-new-page.js',        title: 'Nasiko — New Workflow' },
-  { path: '/workflow',        tag: 'workflow-detail-page',      module: '/common/components/workflow-detail-page.js',     title: 'Nasiko — Workflow' },
-  { path: '/executions',      tag: 'executions-page',          module: '/common/components/executions-page.js',          title: 'Nasiko — Executions' },
-  { path: '/sessions',        tag: 'sessions-page',            module: '/common/components/sessions-page.js',            title: 'Nasiko — Sessions' },
-  { path: '/session-trace',   tag: 'session-trace-page',       module: '/common/components/session-trace-page.js',       title: 'Nasiko — Session Trace' },
-  { path: '/observability-session', tag: 'observability-session-page', module: '/common/components/observability-session-page.js', title: 'Nasiko — Session' },
-  { path: '/mcp',             tag: 'mcp-page',                 module: '/common/components/mcp-page.js',                 title: 'Nasiko — MCP Gateway' },
-  { path: '/llm-router',      tag: 'llm-router-page',          module: '/common/components/llm-router-page.js',          title: 'Nasiko — LLM Router' },
-  { path: '/tokenops',        tag: 'tokenops-page',            module: '/common/components/tokenops-page.js',            title: 'Nasiko — TokenOps' },
-  { path: '/flows',           tag: 'flows-page',               module: '/common/components/flows-page.js',               title: 'Nasiko — Flows' },
-  { path: '/flow',            tag: 'flow-detail-page',         module: '/common/components/flow-detail-page.js',         title: 'Nasiko — Flow' },
-  { path: '/builds',          tag: 'builds-page',              module: '/common/components/builds-page.js',              title: 'Nasiko — Builds' },
-  { path: '/build',           tag: 'build-detail-page',        module: '/common/components/build-detail-page.js',        title: 'Nasiko — Build' },
-  { path: '/secrets',         tag: 'secrets-page',             module: '/common/components/secrets-page.js',             title: 'Nasiko — Secrets' },
-  { path: '/settings',        tag: 'settings-page',            module: '/common/components/settings-page.js',            title: 'Nasiko — Settings' },
-  { path: '/setup-cli',       tag: 'setup-cli-page',           module: '/common/components/setup-cli-page.js',           title: 'Nasiko — Set up CLI' },
-  { path: '/resources',       tag: 'resources-page',           module: '/common/components/resources-page.js',           title: 'Nasiko — Resources' },
+  { path: '/',                tag: 'orchestrator-page',        module: '/common/pages/orchestrator-page.js',        title: 'Nasiko' },
+  { path: '/agents',          tag: 'agents-page',              module: '/common/pages/agents-page.js',              title: 'Nasiko — Agents' },
+  { path: '/your-agents',     tag: 'your-agents-page',         module: '/common/pages/your-agents-page.js',         title: 'Nasiko — Your Agents' },
+  { path: '/add-agent',       tag: 'add-agent-page',           module: '/common/pages/add-agent-page.js',           title: 'Nasiko — Add Agent' },
+  { path: '/add-agent-github',tag: 'add-agent-github-page',    module: '/common/pages/add-agent-github-page.js',    title: 'Nasiko — Import from GitHub' },
+  { path: '/agent-card',      tag: 'agent-card-page',          module: '/common/pages/agent-card-page.js',          title: 'Nasiko — Agent' },
+  { path: '/chat',            tag: 'chat-page',                module: '/common/pages/chat-page.js',                title: 'Nasiko — Chat' },
+  { path: '/workflows',       tag: 'workflows-page',           module: '/common/pages/workflows-page.js',            title: 'Nasiko — Workflows' },
+  { path: '/workflow-new',    tag: 'workflow-new-page',         module: '/common/pages/workflow-new-page.js',        title: 'Nasiko — New Workflow' },
+  { path: '/workflow',        tag: 'workflow-detail-page',      module: '/common/pages/workflow-detail-page.js',     title: 'Nasiko — Workflow' },
+  { path: '/executions',      tag: 'executions-page',          module: '/common/pages/executions-page.js',          title: 'Nasiko — Executions' },
+  { path: '/sessions',        tag: 'sessions-page',            module: '/common/pages/sessions-page.js',            title: 'Nasiko — Sessions' },
+  { path: '/session-trace',   tag: 'session-trace-page',       module: '/common/pages/session-trace-page.js',       title: 'Nasiko — Session Trace' },
+  { path: '/observability-session', tag: 'observability-session-page', module: '/common/pages/observability-session-page.js', title: 'Nasiko — Session' },
+  { path: '/mcp',             tag: 'mcp-page',                 module: '/common/pages/mcp-page.js',                 title: 'Nasiko — MCP Gateway' },
+  { path: '/llm-router',      tag: 'llm-router-page',          module: '/common/pages/llm-router-page.js',          title: 'Nasiko — LLM Router' },
+  { path: '/tokenops',        tag: 'tokenops-page',            module: '/common/pages/tokenops-page.js',            title: 'Nasiko — TokenOps' },
+  { path: '/flows',           tag: 'flows-page',               module: '/common/pages/flows-page.js',               title: 'Nasiko — Flows' },
+  { path: '/flow',            tag: 'flow-detail-page',         module: '/common/pages/flow-detail-page.js',         title: 'Nasiko — Flow' },
+  { path: '/builds',          tag: 'builds-page',              module: '/common/pages/builds-page.js',              title: 'Nasiko — Builds' },
+  { path: '/build',           tag: 'build-detail-page',        module: '/common/pages/build-detail-page.js',        title: 'Nasiko — Build' },
+  { path: '/secrets',         tag: 'secrets-page',             module: '/common/pages/secrets-page.js',             title: 'Nasiko — Secrets' },
+  { path: '/settings',        tag: 'settings-page',            module: '/common/pages/settings-page.js',            title: 'Nasiko — Settings' },
+  { path: '/setup-cli',       tag: 'setup-cli-page',           module: '/common/pages/setup-cli-page.js',           title: 'Nasiko — Set up CLI' },
+  { path: '/resources',       tag: 'resources-page',           module: '/common/pages/resources-page.js',           title: 'Nasiko — Resources' },
 ];
 
 // ── Route extension seam (same pattern as nav-ext.js) ───────────────────

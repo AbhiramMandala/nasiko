@@ -36,15 +36,28 @@ const REPO = resolve(UI, '..');
 const BASELINE_PATH = resolve(SCRIPTS, 'ui-lint-baseline.json');
 
 // ── Layer model (ARCHITECTURE.md). Lower number = lower layer. ───────────────
-const LAYER = { PLATFORM: 0, DESIGN_SYSTEM: 1, COMPONENT: 2, DOMAIN: 3, APPLICATION: 4 };
+const LAYER = { PLATFORM: 0, DESIGN_SYSTEM: 1, COMPONENT: 2, PAGE: 3, DOMAIN: 4, APPLICATION: 5 };
 
-/** Design-system primitives: reusable, no domain knowledge. */
-const PRIMITIVES = new Set([
-  'app-button', 'app-badge', 'app-skeleton', 'app-empty-state', 'app-stat-card',
-  'app-modal', 'app-tabs', 'app-loading-bar', 'app-action-menu', 'app-code-snippet',
-  'app-line-chart', 'app-card', 'app-stack', 'app-row', 'app-grid', 'app-toolbar',
-  'app-toast', 'autocomplete', 'base-layout', 'dropdown-controller',
-]);
+/*
+ * Layers are read from the DIRECTORY, never from a list of filenames.
+ *
+ * This used to be a hand-written `PRIMITIVES` Set: `ui/common/components/` held
+ * primitives, product components and whole pages in one flat folder of 101
+ * files, and whether a file counted as design-system depended on someone
+ * remembering to add its name to that Set. It had already drifted — nine
+ * `app-*` files were absent from it, so they silently linted as COMPONENT.
+ *
+ * Now the path carries the meaning and drift is not expressible:
+ *
+ *   tokens/         DESIGN_SYSTEM  values only, no selectors that aren't :root
+ *   design-system/  DESIGN_SYSTEM  reusable primitives, zero domain knowledge
+ *   features/       COMPONENT      product components; may know about our domain
+ *   pages/          PAGE           route targets. Nothing may import one.
+ *
+ * PAGE exists so that "a page is not a reusable component" is a machine check
+ * rather than a convention. If a page turns out to be reusable, extract the
+ * reusable part down into features/ and leave the page a thin wrapper.
+ */
 
 function layerOf(rel) {
   // Vendored third-party ESM sits below everything: it is a dependency, not a
@@ -55,19 +68,52 @@ function layerOf(rel) {
       rel.startsWith('ui/common/state/') || rel.startsWith('ui/common/utils/')) {
     return LAYER.PLATFORM;
   }
-  if (rel.startsWith('ui/common/styles/') || rel === 'ui/common/global.css') {
+  if (rel.startsWith('ui/common/tokens/') || rel.startsWith('ui/common/design-system/') ||
+      rel.startsWith('ui/common/styles/') || rel === 'ui/common/global.css') {
     return LAYER.DESIGN_SYSTEM;
   }
-  if (rel.startsWith('ui/common/components/')) {
-    const name = basename(rel).replace(/\.(js|css)$/, '');
-    return PRIMITIVES.has(name) ? LAYER.DESIGN_SYSTEM : LAYER.COMPONENT;
-  }
+  if (rel.startsWith('ui/common/features/')) return LAYER.COMPONENT;
+  if (rel.startsWith('ui/common/pages/')) return LAYER.PAGE;
   // Enterprise page components: Domain layer. They import downward into the
   // shared design system and platform; nothing in ui/oss/ or ui/common/ may import them.
   if (rel.startsWith('ui/ee/components/')) return LAYER.DOMAIN;
   if (rel.startsWith('ui/ee/web/services/') || rel.startsWith('ui/oss/')) return LAYER.APPLICATION;
   if (rel.startsWith('ui/ee/')) return LAYER.APPLICATION;
   return LAYER.COMPONENT;
+}
+
+/**
+ * A component stylesheet: one that a JS module adopts, as opposed to the shared
+ * sheets in styles/ or the token files. These are the sheets that must be
+ * @scope-wrapped, because adopting puts them on the document.
+ *
+ * Deliberately excludes ui/ee/components/ — ee-page-layout.css lives there but is
+ * <link>ed, not adopted, so a page element's box exists at first paint. It is a
+ * peer of styles/page-layout.css, which this rule has always skipped.
+ * @param {string} rel
+ */
+function isComponentCss(rel) {
+  return rel.startsWith('ui/common/design-system/') ||
+         rel.startsWith('ui/common/features/') ||
+         rel.startsWith('ui/common/pages/');
+}
+
+
+/**
+ * Raw colour literals in a source file, ignoring comments. A hex quoted in a
+ * comment to explain a token ("sand-500, not white@62%") is documentation, not
+ * a hardcoded colour, and flagging it teaches people to delete the comment.
+ * @param {string} rel
+ * @param {string} source
+ */
+function findRawColours(rel, source) {
+  // Blank out comments in place so byte offsets — and therefore line numbers — hold.
+  const bare = source.replace(/\/\*[\s\S]*?\*\/|(^|[^:])\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, ' '));
+  const out = [];
+  for (const m of bare.matchAll(/#[0-9a-fA-F]{6}\b|rgba?\(\s*\d+\s*,/g)) {
+    out.push({ file: rel, line: lineOf(source, m.index), message: `hardcoded colour ${m[0].trim()}` });
+  }
+  return out;
 }
 
 /** Resolve an import specifier to a repo-relative path, or null if not local. */
@@ -209,7 +255,7 @@ const rules = [
     why: 'Every component sheet must wrap its rules in @scope (element-name) so specificity stays local ' +
          'without !important. An unscoped component sheet leaks document-wide.',
     check({ rel, source, isJs }) {
-      if (isJs || !rel.startsWith('ui/common/components/')) return [];
+      if (isJs || !isComponentCss(rel)) return [];
       if (!source.trim()) return [];
       if (/@scope\s*\(/.test(source)) return [];
       return [{ file: rel, line: 1, message: 'component stylesheet has no @scope wrapper' }];
@@ -223,7 +269,7 @@ const rules = [
          'module), so it cannot reserve geometry — and if it contradicts the linked rule it causes the exact ' +
          'layout shift the contract prevents. voice-input cost ~82px of CLS this way.',
     check({ rel, source, isJs }) {
-      if (isJs || !rel.startsWith('ui/common/components/')) return [];
+      if (isJs || !isComponentCss(rel)) return [];
       const out = [];
       for (const m of source.matchAll(/:not\(:defined\)/g)) {
         out.push({ file: rel, line: lineOf(source, m.index), message: 'declares :not(:defined) — move it to styles/not-defined.css' });
@@ -240,11 +286,22 @@ const rules = [
     check({ rel, source, isJs }) {
       if (!rel.startsWith('ui/oss/') && !rel.startsWith('ui/ee/')) return [];
       if (rel.includes('/vendor/') || rel === 'ui/common/global.css') return [];
-      const out = [];
-      for (const m of source.matchAll(/#[0-9a-fA-F]{6}\b|rgba?\(\s*\d+\s*,/g)) {
-        out.push({ file: rel, line: lineOf(source, m.index), message: `hardcoded colour ${m[0]}` });
-      }
-      return out;
+      return findRawColours(rel, source);
+    },
+  },
+
+  {
+    id: 'design-system-colors-are-tokens',
+    enforce: 'zero',
+    why: 'The design system is the layer a re-skin has to be able to ignore. A raw colour in design-system/ or ' +
+         'tokens/ means one surface will not follow a palette change, and the failure is invisible until ' +
+         'someone re-skins. Raw values belong in exactly two files: tokens/palette.css (the ramps) and ' +
+         'tokens/elevation.css (shadow tints, which are alpha on black rather than palette colours). ' +
+         'Everything else here must resolve through var().',
+    check({ rel, source }) {
+      if (!rel.startsWith('ui/common/design-system/') && !rel.startsWith('ui/common/tokens/')) return [];
+      if (rel === 'ui/common/tokens/palette.css' || rel === 'ui/common/tokens/elevation.css') return [];
+      return findRawColours(rel, source);
     },
   },
 

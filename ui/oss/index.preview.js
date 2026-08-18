@@ -59,7 +59,7 @@ export default {
         const host = document.createElement("div");
         host.style.cssText = "max-width:860px;margin:0 auto";
         page_.appendChild(host);
-        await import("/common/components/agent-steps.js");
+        await import("/common/features/agent-steps.js");
         const steps = document.createElement("agent-steps");
         host.appendChild(steps);
 

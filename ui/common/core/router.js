@@ -8,9 +8,9 @@
  * Usage:
  *   import { router } from '/common/core/router.js';
  *
- *   router.add('/',          { tag: 'orchestrator-page', module: '/common/components/orchestrator-page.js' });
- *   router.add('/agents',    { tag: 'agents-page',       module: '/common/components/agents-page.js' });
- *   router.add('/chat',      { tag: 'chat-page',         module: '/common/components/chat-page.js', title: 'Chat' });
+ *   router.add('/',          { tag: 'orchestrator-page', module: '/common/pages/orchestrator-page.js' });
+ *   router.add('/agents',    { tag: 'agents-page',       module: '/common/pages/agents-page.js' });
+ *   router.add('/chat',      { tag: 'chat-page',         module: '/common/pages/chat-page.js', title: 'Chat' });
  *
  *   router.start(document.getElementById('outlet'));
  *

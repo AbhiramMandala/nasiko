@@ -1,47 +1,89 @@
-// Toasts share one fixed column so repeat actions stack instead of piling up
-// on the same spot (overlapping text reads as a stuck message).
-let stack = null;
+/**
+ * Global toast notification manager.
+ *
+ * Consolidated from the former inline-style `showToast()` and the richer
+ * `components/app-toast.js` (which was never a custom element). Now lives here
+ * in the utils layer so platform code can import it without a layer-direction
+ * violation.
+ *
+ * @global toast.success(message, duration?) - Show a success toast (default 3 s)
+ * @global toast.error(message, duration?)   - Show an error toast
+ * @global toast.info(message, duration?)    - Show an info toast
+ */
+import { icons } from './icons.js';
+import { escHtml } from '/common/utils/escape.js';
 
-function toastStack() {
-  if (stack?.isConnected) return stack;
-  stack = document.createElement("div");
-  Object.assign(stack.style, {
-    position: "fixed",
-    bottom: "2rem",
-    left: "50%",
-    transform: "translateX(-50%)",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: "0.5rem",
-    zIndex: "10000",
-    pointerEvents: "none",
-  });
-  document.body.appendChild(stack);
-  return stack;
+const styles = new CSSStyleSheet();
+styles.replaceSync(`@scope (.app-toast-container) {
+  :scope {
+    position: fixed;
+    bottom: var(--s-24);
+    right: var(--s-24);
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-12);
+    pointer-events: none;
+  }
+  .app-toast {
+    padding: var(--s-12) var(--s-16);
+    border-radius: var(--r-8);
+    background-color: var(--color-bg-surface);
+    color: var(--color-text-main);
+    box-shadow: var(--shadow-lg);
+    border: 1px solid var(--color-border);
+    font-size: var(--font-size-sm);
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    max-width: 320px;
+
+    &.is-success { border-left: 4px solid var(--color-success); }
+    &.is-error   { border-left: 4px solid var(--color-error); }
+    &.is-info    { border-left: 4px solid var(--color-primary); }
+  }
+}
+`);
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
+
+class ToastManager {
+  constructor() {
+    this.container = document.createElement('div');
+    this.container.className = 'app-toast-container';
+    document.body.appendChild(this.container);
+  }
+
+  show(message, type = 'info', duration = 3000) {
+    const el = document.createElement('div');
+    el.className = `app-toast is-${type}`;
+    el.innerHTML = `
+      ${this.getIcon(type)}
+      <span class="message">${escHtml(message)}</span>
+    `;
+    this.container.appendChild(el);
+    setTimeout(() => el.remove(), duration);
+  }
+
+  getIcon(type) {
+    switch (type) {
+      case 'success': return icons.check('', 18);
+      case 'error':   return icons.xCircle('', 18);
+      default:        return icons.info('', 18);
+    }
+  }
 }
 
+let manager = null;
+
+export const toast = {
+  show:    (message, type, duration) => { if (!manager) manager = new ToastManager(); manager.show(message, type, duration); },
+  success: (message, duration) => toast.show(message, 'success', duration),
+  error:   (message, duration) => toast.show(message, 'error', duration),
+  info:    (message, duration) => toast.show(message, 'info', duration),
+};
+
+/** Backwards-compatible one-argument alias used by ~20 importers. */
 export function showToast(message) {
-  const toast = document.createElement("div");
-  toast.textContent = message;
-  Object.assign(toast.style, {
-    backgroundColor: "var(--color-bg-surface)",
-    color: "var(--color-text-main)",
-    padding: "0.75rem 1.5rem",
-    borderRadius: "var(--radius-md)",
-    boxShadow: "var(--shadow-lg)",
-    border: "1px solid var(--color-border)",
-    fontSize: "var(--font-size-sm)",
-    maxWidth: "min(90vw, 400px)",
-    textAlign: "center",
-    wordBreak: "break-word",
-    opacity: "0",
-    transition: "opacity 200ms",
-  });
-  toastStack().appendChild(toast);
-  requestAnimationFrame(() => { toast.style.opacity = "1"; });
-  setTimeout(() => {
-    toast.style.opacity = "0";
-    setTimeout(() => { toast.remove(); }, 200);
-  }, 3000);
+  toast.info(message);
 }

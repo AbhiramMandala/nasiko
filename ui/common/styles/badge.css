@@ -50,8 +50,8 @@
   font-size: var(--font-size-xs);
   color: var(--color-text-main);
   background: var(--color-neutral-bg);
-  padding: 2px calc(var(--space-xs) + 1px);
-  border-radius: var(--radius-sm);
+  padding: 2px calc(var(--s-8) + 1px);
+  border-radius: var(--r-4);
   white-space: nowrap;
 }
 

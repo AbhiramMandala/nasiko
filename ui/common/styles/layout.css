@@ -2,18 +2,18 @@
 .page-wrap {
   max-width: 1200px;
   margin: 0 auto;
-  padding: var(--space-xl);
+  padding: var(--s-32);
 }
 
 .flex-between {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-sm);
+  gap: var(--s-12);
 }
 
 .flex-center {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--s-12);
 }

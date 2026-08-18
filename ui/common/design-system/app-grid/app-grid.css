@@ -1,0 +1,9 @@
+@scope (app-grid) {
+    :scope {
+      display: grid;
+      grid-template-columns: var(--grid-columns, repeat(auto-fill, minmax(var(--grid-min-width, 300px), 1fr)));
+      gap: var(--grid-gap, var(--s-16));
+      padding: var(--grid-padding, 0);
+      width: 100%;
+    }
+  }

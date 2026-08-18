@@ -39,39 +39,32 @@ workflow-detail-page,
 workflow-new-page,
 workflows-page {
   display: block;
-  padding: var(--space-lg) var(--space-md);
+  padding: var(--s-24) var(--s-16);
 }
 
 /* Hub pages lead with a deeper top pad (their title is the page's first ink). */
 agents-page,
 your-agents-page {
   display: block;
-  padding: var(--space-xl) var(--space-md);
+  padding: var(--s-32) var(--s-16);
 }
 
-/* Pages whose narrow-viewport gutter is the wider --space-xl. */
-access-control-page,
+/* Pages whose narrow-viewport gutter is the wider --s-32. */
 add-agent-github-page,
-departments-page,
-group-mappings-page,
 llm-router-page,
 mcp-page,
 observability-session-page,
 resources-page,
-runtime-page,
 settings-page,
-team-access-page,
-teams-page,
-tokenops-page,
-users-page {
+tokenops-page {
   display: block;
-  padding: var(--space-lg) var(--space-xl);
+  padding: var(--s-24) var(--s-32);
 }
 
 /* Session trace: uniform gutter at every width (dense three-pane detail). */
 session-trace-page {
   display: block;
-  padding: var(--space-lg);
+  padding: var(--s-24);
 }
 
 /* ── Pages with bespoke host geometry ────────────────────────────────────── */
@@ -81,15 +74,15 @@ add-agent-page {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: var(--space-2xl) var(--space-md);
+  padding: var(--s-48) var(--s-16);
 }
 
 /* Setup CLI: full-bleed step column, no desktop card padding. */
 setup-cli-page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-lg);
-  padding: var(--space-lg) var(--space-xl);
+  gap: var(--s-24);
+  padding: var(--s-24) var(--s-32);
   min-height: 100%;
 }
 
@@ -100,7 +93,7 @@ chat-page {
   display: flex;
   flex-direction: column;
   height: calc(100dvh - var(--app-header-height));
-  padding: 0 var(--space-md);
+  padding: 0 var(--s-16);
   overflow: hidden;
 }
 
@@ -120,13 +113,8 @@ orchestrator-page {
   flex-direction: column;
   align-items: center;
   min-height: calc(100dvh - var(--app-header-height));
-  padding: var(--space-md);
-  padding-top: var(--space-lg);
-  /* No `overflow` here, deliberately. Any value but `visible` makes this a
-     scroll container, and `.input-wrap`'s `position: sticky` would then stick to
-     *this* box — which grows with its content and never scrolls, so the composer
-     would never actually stick. The scroller is the document below 1024px and
-     the module shell above it. */
+  padding: var(--s-16);
+  padding-top: var(--s-24);
 }
 
 /* ── Module shell ─────────────────────────────────────────────────────────────
@@ -163,7 +151,7 @@ module-shell > [hidden] {
    that margin, doubling the space before the title. */
 @media (max-width: 1023.98px) {
   module-shell {
-    padding: var(--space-lg) var(--space-md);
+    padding: var(--s-24) var(--s-16);
   }
 
   module-shell > [data-view] {
@@ -182,7 +170,7 @@ login-page {
   align-items: center;
   justify-content: center;
   overflow: auto;
-  background: light-dark(var(--white), var(--neutral-900));
+  background: var(--bg-page);
 }
 
 /* ── Desktop: the floating content card ──────────────────────────────────── */
@@ -203,19 +191,12 @@ login-page {
   workflow-detail-page,
   workflow-new-page,
   workflows-page,
-  access-control-page,
   add-agent-github-page,
-  departments-page,
-  group-mappings-page,
   llm-router-page,
   mcp-page,
   observability-session-page,
   resources-page,
-  runtime-page,
-  settings-page,
-  team-access-page,
-  teams-page,
-  users-page {
+  settings-page {
     padding: var(--card-content-pad);
   }
 
@@ -235,15 +216,29 @@ login-page {
     (see the `module-shell` block below), because the nav belongs to the shell
     and outlives every view switch.
   */
+  agents-page,
+  builds-page,
+  executions-page,
+  flows-page,
   mcp-page,
-  runtime-page {
+  resources-page,
+  sessions-page,
+  settings-page,
+  workflows-page,
+  your-agents-page {
     padding-left: calc(224px + var(--s-64));
+    /* Anchor for the absolutely-placed nav. Previously the page was body's
+       direct child and app-module-nav.js positioned it from there; under the
+       router the page sits inside #outlet, so the nav needs its host to
+       establish the containing block explicitly. */
+    position: relative;
   }
 
   /* The shell clears the nav column once, for every view it hosts; a view
      keeping its own left pad on top of that would double the inset. */
   module-shell {
     padding-left: calc(224px + var(--s-64));
+    position: relative;
   }
 
   module-shell > [data-view] {
@@ -252,102 +247,52 @@ login-page {
 
   /*
     Orchestrator is the one module-nav page whose content is a centered column
-    rather than left-aligned, so it needs a box to center *in*. That box is the
-    space right of the nav gutter — same inset as every other module-nav page on
-    the left, the card's content pad on the right (the `import` view below is the
-    same construction).
+    rather than left-aligned, so the plain left gutter above would center it in
+    the space *right* of the nav — a constant ~136px off the card's own center,
+    which reads as the whole page tilting right.
 
-    Not padded symmetrically to center the column on the card instead: the nav is
-    the sole occupant of the left gutter, so a card-centered column reads as
-    sitting left of center against it — and every state has to agree. The empty
-    state and the pre-upgrade skeleton are narrower than the composer column, so
-    when this box was the card, each needed its own compensating padding to look
-    centered, and the three states landed on three different center lines. One box
-    here, and the hero, the skeleton, the empty state and the transcript all share
-    it. Also removes the old `max()` floor: the left gutter is now unconditional,
-    so the column can never reach into the nav.
+    Padding both sides by the same amount keeps it centered on the card at any
+    width. The `max()` floor is what stops the two requirements from fighting:
+    below ~1400px the centered 820px column would reach into the nav's gutter,
+    so there the gutter wins and the column narrows instead of overlapping.
   */
   module-shell[data-active-view="orchestrate"] {
-    padding-inline: calc(224px + var(--s-64)) var(--s-64);
-    /* The shell is the page's one scroller: it fills the card exactly, and
-       everything inside it — hero, agent grid, transcript — scrolls together
-       against its border box, which is the card edge. That is the point: an
-       inner scroller (`.messages` used to be one) parks its scrollbar at the
-       content column's edge, floating inboard of the card. The composer is
-       `position: sticky` (orchestrator-page.css) so it still stays put.
+    padding-inline: max(
+      calc(224px + var(--s-64)),
+      calc((100% - var(--orch-column-w)) / 2)
+    );
+    /* Pinned-composer layout: the host fills the card exactly and clips, and
+       `.messages` inside the view is the only scroller. Keyed on the active view,
+       not on the element being present: hidden views stay in the DOM, so a
+       `:has()` on the orchestrator view would clip the scrolling tables its
+       sibling views are. Desktop only — see the base rule above.
 
-       Keyed on the active view, not on the element being present: hidden views
-       stay in the DOM, so a `:has()` on the orchestrator view would catch the
-       scrolling tables its sibling views are. Desktop only — see the base rule
-       above.
-
-       Block padding is symmetric and thin so the hero column can be centered in
-       what's left (see the view rule below); a deep top pad would push the
-       "centered" block visibly low. */
-    padding-block: var(--space-md);
+       The pad is a third of what it was (16dvh, i.e. 128px on a 800px-tall
+       window): in a box that clips, every pixel above the hero is a pixel the
+       composer and the workflow banner below it can lose. It scales with height
+       so a tall window still gets air, and the `max()` floor keeps a short one
+       from crowding the title against the card edge. */
+    padding-top: max(var(--s-32), 6dvh);
     height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     min-height: 0;
-    /* `body` is a flex column and global.css gives its children `flex: 1 1 0%`,
-       which makes flex resolution — not the `height` above — the shell's used
-       main size, and an *indefinite* one: the view's `height: 100%` resolved to
-       `auto`, so the hero sat at the top of a box 200px taller than itself with
-       nothing for `justify-content` to center. `flex: none` hands sizing back to
-       `height`; chat-page does the same for the same reason (below). */
-    flex: none;
-    /* Explicit on both axes: `overflow-y: auto` alone computes `overflow-x` to
-       `auto` too, which is a stray horizontal scrollbar on a page that never
-       overflows sideways. */
-    overflow: hidden auto;
+    overflow: hidden;
+  }
+
+  /* Once a reply arrives the hero collapses and the transcript needs the room,
+     so the deep pad above becomes a thin one. `.has-response` is a runtime class
+     on the view, but the padding belongs to the shell — hence `:has()` rather
+     than a rule on the view, which could not reach it. */
+  module-shell[data-active-view="orchestrate"]:has(> orchestrator-page.has-response) {
+    padding-top: var(--s-16);
   }
 
   /* The view fills that box and does the flex-column work itself; its own
      padding would double the shell's. */
   module-shell[data-active-view="orchestrate"] > orchestrator-page {
-    /* `min-height`, not `height`: the view fills the shell so a short hero can be
-       centered in it, and grows past it so a long transcript or agent list scrolls
-       the shell rather than being clipped by a box the size of the viewport. */
-    min-height: 100%;
-    /* `safe` because this column can outgrow its box: with plain `center` the
-       overflow splits across both edges and the top half is unreachable — no
-       scroll position reaches above a flex container's start edge. */
-    justify-content: safe center;
+    height: 100%;
+    min-height: 0;
     padding: 0;
-  }
-
-  /* Once a transcript exists the column is top-aligned: centering it means every
-     streamed token re-centers the whole conversation, so the text the user is
-     reading slides up as the response grows. */
-  module-shell[data-active-view="orchestrate"] > orchestrator-page.has-response {
-    justify-content: flex-start;
-  }
-
-  /*
-    Import agent: nav gutter on the left, the card's standard content pad on the
-    right, so the chooser spans the whole card instead of a narrow column.
-    Mirroring the 288px nav gutter on the right (to center the block on the card)
-    cost ~290px of the row the three chooser cards share and squeezed every card
-    title onto two lines — width beats a perfectly symmetric frame here. The
-    hero, headings and cards all center themselves inside this box.
-
-    A flex *column* (over the shell's base `block`) is what gives the view a
-    definite height to center in: the card's `min-height` (global.css) is the
-    flex container's, and the stretched view inherits it without this file
-    restating that calc. Column, not row, so a module nav that has not upgraded
-    to its absolute position yet still stacks above the view instead of being
-    laid out beside it. No `height`/`overflow` here — unlike orchestrate this
-    page has no internal scroller, so it must be free to outgrow the card and
-    let the document scroll.
-  */
-  module-shell[data-active-view="import"] {
-    display: flex;
-    flex-direction: column;
-    padding-inline: calc(224px + var(--s-64)) var(--s-64);
-  }
-
-  module-shell[data-active-view="import"] > add-agent-page {
-    flex: 1;
-    justify-content: center;
-    padding-inline: 0;
+    overflow: hidden;
   }
 
   /* Chat fills the floating card exactly (topbar + 16px card margins). */
@@ -355,12 +300,5 @@ login-page {
     height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     min-height: 0;
     flex: none;
-  }
-
-  /* An orchestrator session opened from the module nav keeps that nav, so the
-     transcript clears its gutter. Keyed on `:has` — a direct agent chat renders
-     no nav (chat-page.js) and must keep the full width. */
-  chat-page:has(> app-module-nav) {
-    padding-left: calc(224px + var(--s-64));
   }
 }

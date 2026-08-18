@@ -9,6 +9,7 @@
     "scope-required": 0,
     "not-defined-belongs-in-not-defined-css": 0,
     "no-hardcoded-color": 4,
+    "design-system-colors-are-tokens": 0,
     "url-policy": 0,
     "ee-element-in-shared-css": 0
   }

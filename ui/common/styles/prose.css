@@ -22,12 +22,12 @@
   }
 
   :is(h1, h2, h3, h4, h5, h6, p) {
-    margin: var(--space-sm) 0;
+    margin: var(--s-12) 0;
   }
 
   :is(ul, ol) {
-    margin: var(--space-sm) 0;
-    padding-left: var(--space-xl);
+    margin: var(--s-12) 0;
+    padding-left: var(--s-32);
   }
 
   li {
@@ -39,8 +39,8 @@
   }
 
   blockquote {
-    margin: var(--space-sm) 0;
-    padding-left: var(--space-md);
+    margin: var(--s-12) 0;
+    padding-left: var(--s-16);
     border-left-width: 3px;
   }
 }

@@ -1,0 +1,378 @@
+/* LLM router — KPI strip, config cards grid, provider catalog, config form. */
+
+@scope (llm-router-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+  .page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--s-16);
+    margin-bottom: var(--s-24);
+  }
+
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--s-4) 0 0;
+    max-width: 70ch;
+  }
+
+  /* ── KPI strip — hairline-separated, Chivo Mono gold values ───────────── */
+  .kpi-strip {
+    display: flex;
+    border-top: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: var(--s-32);
+  }
+
+  .kpi {
+    flex: 1;
+    padding: var(--s-16);
+    border-left: 1px solid var(--color-border);
+
+    &:first-child { border-left: none; padding-left: 0; }
+  }
+
+  .kpi-label {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin-bottom: var(--s-8);
+  }
+
+  .kpi-value {
+    font-size: var(--font-size-xl);
+    font-weight: 500;
+    color: var(--color-text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .kpi-value.is-mono {
+    font-family: var(--font-mono);
+    color: var(--fg-brand);
+  }
+
+  /* ── Section headers ──────────────────────────────────────────────────── */
+  .section-head { margin-bottom: var(--s-16); }
+
+  .section-title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    font-family: var(--font-sans);
+    margin: 0 0 var(--s-4);
+  }
+
+  .section-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--color-border);
+    margin: var(--s-32) 0;
+  }
+
+  /* ── Config cards ─────────────────────────────────────────────────────── */
+  .config-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--s-16);
+  }
+
+  /* Surface: common/styles/surface.css */
+  .config-card {
+    padding: var(--s-16);
+
+    & .config-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: var(--s-12);
+    }
+
+    & .config-name {
+      font-weight: 600;
+      font-size: var(--font-size-base);
+    }
+
+    & .config-tools {
+      display: flex;
+      gap: var(--s-4);
+      flex-shrink: 0;
+    }
+
+    & .config-meta {
+      display: flex;
+      gap: var(--s-8);
+      margin: var(--s-8) 0 var(--s-12);
+    }
+
+    & .tier-rows {
+      display: flex;
+      flex-direction: column;
+      border-top: 1px solid var(--color-border);
+    }
+
+    & .tier-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: var(--s-12);
+      padding: var(--s-8) 0;
+      border-bottom: 1px solid var(--color-border);
+      font-size: var(--font-size-sm);
+    }
+
+    & .tier-label { color: var(--color-text-muted); }
+
+    & .tier-model {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-xs);
+      color: var(--color-text-main);
+    }
+
+    & .secret-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: var(--s-12);
+      padding-top: var(--s-8);
+      font-size: var(--font-size-sm);
+    }
+
+    & .secret-name {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-xs);
+      color: var(--color-text-muted);
+    }
+  }
+
+  /* Gold "Default" pill — brand tint on the shared .badge base */
+  .badge--brand {
+    color: var(--fg-caution-emphasis);
+    background: var(--bg-secondary-brand);
+  }
+
+  .badge.is-mono { font-family: var(--font-mono); }
+
+  .icon-btn {
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
+    border-radius: var(--r-8);
+    color: var(--color-text-muted);
+    background: transparent;
+
+    &:hover:not(:disabled) {
+      background: var(--bg-surface-hover);
+      color: var(--color-text-main);
+    }
+  }
+
+  .star-btn.is-default {
+    color: var(--fg-brand);
+    opacity: 1;
+
+    & svg { fill: currentColor; }
+  }
+
+  .danger-btn:hover:not(:disabled) { color: var(--color-error); }
+
+  /* ── Empty state ──────────────────────────────────────────────────────── */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: var(--s-32) var(--s-16);
+    background: var(--bg-surface);
+    border-radius: var(--r-8);
+  }
+
+  .empty-tile {
+    width: 48px;
+    height: 48px;
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-muted);
+    margin-bottom: var(--s-16);
+  }
+
+  .empty-title {
+    font-family: var(--font-display);
+    font-size: var(--font-size-lg);
+    font-weight: 500;
+    margin-bottom: var(--s-4);
+  }
+
+  .empty-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0 0 var(--s-16);
+  }
+
+  /* ── Provider grid ────────────────────────────────────────────────────── */
+  .provider-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: var(--s-16);
+  }
+
+  /* Surface + hover lift: common/styles/surface.css */
+  .provider-card {
+    padding: var(--s-16);
+    cursor: pointer;
+
+    &:focus-visible {
+      outline: 2px solid var(--color-primary);
+      outline-offset: 2px;
+    }
+
+    & .provider-head {
+      display: flex;
+      align-items: center;
+      gap: var(--s-12);
+      margin-bottom: var(--s-16);
+    }
+
+    & .provider-glyph {
+      width: 30px;
+      height: 30px;
+      border-radius: var(--r-8);
+      background: var(--color-bg-surface);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-weight: 500;
+      font-size: var(--font-size-sm);
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+
+    & .provider-name {
+      font-weight: 600;
+      text-transform: capitalize;
+      flex: 1;
+    }
+
+    & .provider-add {
+      display: inline-flex;
+      color: var(--color-text-muted);
+    }
+
+    &:hover .provider-add { color: var(--fg-brand); }
+
+    & .provider-chips {
+      display: flex;
+      gap: var(--s-8);
+      flex-wrap: wrap;
+    }
+  }
+
+  /* ── Configure form view ──────────────────────────────────────────────── */
+  .form-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-16);
+    margin-bottom: var(--s-24);
+    max-width: 720px;
+    margin-inline: auto;
+    width: 100%;
+  }
+
+  .back-btn {
+    width: var(--control-h-lg);
+    height: var(--control-h-lg);
+    border-radius: var(--r-10);
+    background: var(--bg-surface);
+    color: var(--color-text-main);
+    flex-shrink: 0;
+
+    &:hover { background: var(--bg-surface-hover); }
+    & svg { width: 20px; height: 20px; }
+  }
+
+  .config-form {
+    /* Centered readable column — the raw 600px cap left half the card as
+       dead space on wide screens */
+    max-width: 720px;
+    margin-inline: auto;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-24);
+  }
+
+  .field label {
+    font-weight: 600;
+    font-size: var(--font-size-sm);
+    margin-bottom: var(--s-8);
+  }
+
+  .field .hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-top: var(--s-8);
+  }
+
+  .group-title {
+    font-weight: 600;
+    font-size: var(--font-size-base);
+    margin: 0 0 var(--s-8);
+  }
+
+  .group-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0 0 var(--s-12);
+  }
+
+  .radio-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    margin-bottom: var(--s-12);
+    font-size: var(--font-size-base);
+
+    & input[type="radio"] { accent-color: var(--yellow-600); }
+    & label { margin: 0; font-weight: 400; }
+  }
+
+  .form-actions {
+    display: flex;
+    gap: var(--s-12);
+    align-items: center;
+  }
+
+  .link-btn {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    cursor: pointer;
+
+    &:hover { color: var(--color-text-main); }
+  }
+
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    font-size: var(--font-size-sm);
+
+    & input { accent-color: var(--yellow-600); }
+    & label { margin: 0; font-weight: 400; }
+  }
+
+  .form-error {
+    color: var(--fg-error);
+    font-size: var(--font-size-sm);
+  }
+}

@@ -1,0 +1,39 @@
+/**
+ * typography tokens
+ *
+ * Type tokens: families, sizes, line heights, weights.
+ * 
+ *  --font-size-* carry clamp() so the scale is fluid; --lh-* and --fw-*
+ *  are unitless so they compose with any size.
+ *
+ * Generated-adjacent: tokens/tokens.json is derived from this folder by
+ * `node ui/scripts/gen-tokens.mjs`. Editing a value here means regenerating it.
+ */
+:root {
+     Neither family existed, so every leading and weight in the component tree
+     was a literal — which is why a type-scale change could not be mechanical. */
+  --lh-none: 1;
+  --lh-tight: 1.2;
+  --lh-snug: 1.35;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.65;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  /* Typography - Fluid sizing with clamp() (DS sizes carry the same clamps
+     in Flutter: body 14–18, titles 36–44) */
+  --font-size-xs: clamp(0.7rem, 0.9vw, 0.75rem);
+  --font-size-sm: clamp(0.8rem, 1vw, 0.875rem);
+  --font-size-base: clamp(0.9rem, 1.2vw, 1rem);
+  --font-size-lg: clamp(1rem, 1.3vw, 1.125rem);
+  --font-size-xl: clamp(1.1rem, 1.5vw, 1.25rem);
+  --font-size-2xl: clamp(1.25rem, 2vw, 1.5rem);
+  --font-size-3xl: clamp(1.5rem, 2.5vw, 1.875rem);
+  --font-size-4xl: clamp(1.75rem, 3vw, 2.25rem);
+  /* Font stacks */
+  --font-display: 'Chivo Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-body: var(--font-sans);
+  --font-mono: 'Chivo Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}

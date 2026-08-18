@@ -1,0 +1,45 @@
+/*
+ * confirm-dialog renders into a generic <app-modal>, so it tags that element
+ * with `.confirm-dialog` and scopes against the marker — scoping to `app-modal`
+ * would leak these rules into every other modal on the page.
+ */
+@scope (.confirm-dialog) {
+  .confirm-dialog-body {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: 0;
+    line-height: 1.5;
+  }
+  .confirm-dialog-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--s-12);
+  }
+  .confirm-btn, .cancel-btn {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--control-h-lg);
+    padding: 0 var(--s-16);
+    border-radius: var(--r-10);
+    font-size: var(--font-size-sm);
+    font-weight: var(--fw-medium);
+    cursor: pointer;
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
+  }
+  .cancel-btn {
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-surface);
+    color: var(--color-text-muted);
+  }
+  .cancel-btn:hover { background: var(--bg-input); }
+  .confirm-btn {
+    border: none;
+    background: var(--color-text-main);
+    color: var(--color-bg-surface);
+  }
+  .confirm-btn:hover { opacity: 0.9; }
+  .confirm-btn.danger {
+    background: var(--color-error);
+    color: var(--white);
+  }
+}

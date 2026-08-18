@@ -1,0 +1,22 @@
+@scope (app-empty-state) {
+    :scope {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: var(--s-16);
+      padding: var(--s-48) var(--s-32);
+      text-align: center;
+      border: 1px dashed var(--color-border);
+      border-radius: var(--r-12);
+      background: var(--color-bg-surface);
+    }
+    .icon {
+      color: var(--color-text-muted);
+      line-height: 1;
+      & svg { width: 2.5rem; height: 2.5rem; }
+    }
+    .title { margin: 0; font-size: var(--font-size-lg); font-weight: 600; }
+    .desc  { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-sm); max-width: 40ch; }
+    .action { display: flex; gap: var(--s-12); flex-wrap: wrap; justify-content: center; }
+  }

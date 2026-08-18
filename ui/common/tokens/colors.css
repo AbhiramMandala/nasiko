@@ -1,0 +1,121 @@
+/**
+ * colour tokens — semantic
+ *
+ * What components actually reference. Every value here resolves to a ramp step
+ * in palette.css, usually through light-dark() so one name serves both themes.
+ *
+ * Four groups:
+ *   1. Shell chrome   — the ink plane. Deliberately NOT theme-switched.
+ *   2. Semantic       — --bg-* / --fg-* / --border-*. The main vocabulary.
+ *   3. Syntax         — code highlighting.
+ *   4. Legacy aliases — --color-* kept so old component CSS re-skins unchanged.
+ *                       Do not use in new code.
+ *
+ * No raw colour values. See palette.css.
+ */
+:root {
+  --shell-bg:             var(--sand-900); /* flat ink: topbar + rail + backdrop */
+  --shell-control:        var(--sand-800); /* dark-chrome control fill (rest) */
+  --shell-control-hover:  var(--ink-control-hover);
+  --shell-control-active: var(--sand-900);
+  --shell-fg:             var(--white);
+  /* sand-500, not white@62%: the ink plane is warm (#242628 family), and a cool
+     grey glyph read as a different palette beside the gold selected state. */
+  --shell-fg-muted:       var(--sand-500);
+  --shell-selected:       var(--yellow-200); /* pale-gold selected fill #F7E19C */
+  --shell-logo-glow:      drop-shadow(0 4px 16px color-mix(in srgb, var(--yellow-200) 16%, transparent));
+  --shell-shadow:         0 12px 32px color-mix(in srgb, var(--black) 32%, transparent);
+  --shell-border-subtle:  color-mix(in srgb, var(--white) 8%, transparent);
+  --shell-border-kbd:     color-mix(in srgb, var(--white) 16%, transparent);
+  --shell-hover:          color-mix(in srgb, var(--white) 6%, transparent);
+  --shell-scrollbar:      color-mix(in srgb, var(--white) 18%, transparent);
+  --bg-base:            light-dark(var(--white), var(--black));
+  --bg-group:           light-dark(var(--sand-50), var(--neutral-900));
+  --bg-page:            light-dark(var(--white), var(--neutral-900));
+  --bg-surface:         light-dark(var(--sand-50), var(--neutral-800));
+  --bg-surface-hover:   light-dark(var(--sand-100), var(--neutral-700));
+  --bg-surface-active:  light-dark(var(--sand-200), var(--neutral-600));
+  --bg-subtle:          light-dark(var(--sand-100), var(--neutral-800));
+  --bg-inset:           light-dark(var(--sand-300), var(--neutral-700));
+  --bg-overlay:         light-dark(var(--overlay-light), var(--overlay-dark));
+  --bg-popover:         light-dark(var(--white), var(--neutral-700));
+  --bg-disabled:        light-dark(var(--sand-200), var(--neutral-700));
+  --bg-neutral:         light-dark(var(--neutral-200), var(--neutral-700));
+  --bg-action:          light-dark(var(--sand-800), var(--neutral-100));
+  --bg-action-hover:    light-dark(var(--sand-700), var(--neutral-300));
+  --bg-inverse:         light-dark(var(--neutral-900), var(--neutral-100));
+  --bg-code:            light-dark(var(--neutral-900), var(--neutral-950));
+  --bg-track:           light-dark(var(--neutral-300), var(--neutral-600));
+  --bg-brand:           var(--yellow-600);
+  --bg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-400));
+  --bg-brand-active:    var(--yellow-500);
+  --bg-brand-subtle:    light-dark(var(--yellow-200), var(--yellow-900));
+  --bg-secondary-brand:        light-dark(var(--yellow-100), var(--yellow-900));
+  --bg-secondary-brand-hover:  light-dark(var(--yellow-200), var(--yellow-800));
+  --bg-secondary-brand-active: light-dark(var(--yellow-100), var(--yellow-900));
+  --bg-caution-subtle:         light-dark(var(--yellow-50), var(--neutral-800));
+  --bg-success:         light-dark(var(--green-100), var(--green-900));
+  --bg-warning:         light-dark(var(--orange-100), var(--orange-900));
+  --bg-error:           light-dark(var(--red-100), var(--red-900));
+  --bg-information:     light-dark(var(--blue-100), var(--blue-900));
+  --fg-primary:         light-dark(var(--sand-900), var(--neutral-100));
+  --fg-secondary:       light-dark(var(--sand-700), var(--neutral-400));
+  --fg-disabled:        light-dark(var(--sand-500), var(--neutral-600));
+  --fg-on-action:       light-dark(var(--white), var(--neutral-900));
+  --fg-code:            light-dark(var(--neutral-100), var(--neutral-200));
+  --fg-brand:           light-dark(var(--yellow-600), var(--yellow-400));
+  --fg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-300));
+  --fg-brand-link:      var(--fg-brand);
+  --fg-brand-highlight: light-dark(var(--yellow-500), var(--yellow-400));
+  --fg-caution:         light-dark(var(--yellow-700), var(--yellow-300));
+  --fg-caution-emphasis: light-dark(var(--yellow-800), var(--yellow-200));
+  --fg-success:         light-dark(var(--green-600), var(--green-400));
+  --fg-warning:         light-dark(var(--orange-600), var(--orange-400));
+  --fg-error:           light-dark(var(--red-600), var(--red-400));
+  --fg-information:     light-dark(var(--blue-600), var(--blue-400));
+  --border-primary:     light-dark(var(--sand-200), var(--neutral-700));
+  --border-secondary:   var(--fg-brand);
+  --border-hover:       var(--fg-brand);
+  --border-subtle:      light-dark(var(--sand-100), var(--neutral-800));
+  --border-emphasis:    light-dark(var(--sand-300), var(--neutral-600));
+  --border-success:     light-dark(var(--green-300), var(--green-600));
+  --border-error:       light-dark(var(--red-300), var(--red-600));
+  --border-warning:     light-dark(var(--orange-300), var(--orange-600));
+  --border-information: light-dark(var(--blue-300), var(--blue-600));
+  --border-disabled:    light-dark(var(--sand-200), var(--neutral-700));
+  --color-primary: var(--fg-brand);
+  --color-primary-hover: var(--fg-brand-hover);
+  /* --color-primary-muted removed — was unused */
+  --color-primary-subtle: var(--bg-secondary-brand);
+  --color-primary-ring: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  --color-on-primary: var(--fg-on-action);
+  --color-success: var(--fg-success);
+  --color-success-bg: var(--bg-success);
+  --color-success-border: var(--border-success);
+  --color-warning: var(--fg-warning);
+  --color-warning-bg: var(--bg-warning);
+  --color-warning-border: var(--border-warning);
+  --color-error: var(--fg-error);
+  --color-error-bg: var(--bg-error);
+  --color-error-border: var(--border-error);
+  --color-info: var(--fg-information);
+  --color-info-bg: var(--bg-information);
+  --color-info-border: var(--border-information);
+  --color-neutral: var(--fg-secondary);
+  --color-neutral-bg: var(--bg-subtle);
+  --color-neutral-border: var(--border-primary);
+  /* Page canvas / raised surfaces.
+     --color-bg-base is the sand wash used for table heads, code wells, hovers.
+     --color-bg-surface is the white plane cards / inputs sit on. */
+  --color-bg-base: var(--bg-group);
+  --color-bg-surface: light-dark(var(--white), var(--neutral-800));
+  /* Chrome sitting directly on the ink shell (rare — most chrome is the shell itself) */
+  --bg-canvas-card: light-dark(var(--shell-control), var(--neutral-800));
+  --border-canvas: light-dark(transparent, var(--neutral-700));
+  /* Inputs are flat sand wells on the white plane — no stroke */
+  --bg-input: light-dark(var(--sand-50), var(--neutral-900));
+  --color-text-main: var(--fg-primary);
+  --color-text-prose: light-dark(var(--neutral-600), var(--neutral-300));
+  --color-text-muted: var(--fg-secondary);
+  --color-border: var(--border-primary);
+}

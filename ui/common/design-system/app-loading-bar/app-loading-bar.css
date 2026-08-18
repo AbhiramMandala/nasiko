@@ -1,0 +1,21 @@
+@scope (app-loading-bar) {
+    :scope {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 3px;
+      background: var(--color-primary);
+      z-index: 9999;
+      opacity: 0;
+      pointer-events: none;
+
+      &.visible {
+        animation: app-loading-bar-pulse 1.2s ease-in-out infinite;
+      }
+    }
+  }
+  @keyframes app-loading-bar-pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
