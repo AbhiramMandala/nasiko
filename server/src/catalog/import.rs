@@ -317,7 +317,11 @@ pub(crate) async fn build_and_deploy(
 
     // Deploy container — UUID-keyed (see build_agent_spec) so import re-targets the
     // existing workload on re-import and can't collide cross-team on the name.
-    let mut env_vars = std::collections::HashMap::new();
+    // Seed from agent_env (per-agent secrets + platform OPENAI_*/PORT fallback) like
+    // every other deploy path (agents/upload.rs, deployments.rs::restart) — this path
+    // used to start from an empty map, so imported agents booted with no LLM env at
+    // all and failed on their first call with a 401.
+    let mut env_vars = state.agent_env(agent_id).await;
     crate::llm_router::wiring::inject_agent_llm_env(
         &state.db,
         &mut env_vars,
@@ -325,6 +329,8 @@ pub(crate) async fn build_and_deploy(
         Some(owner_id),
     )
     .await;
+    // Per-agent MCP gateway credential (rotates on re-import).
+    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env_vars, agent_id).await;
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
         &meta.name,
@@ -966,7 +972,11 @@ pub(crate) async fn import_registry(
         };
 
         // Deploy — UUID-keyed (see build_agent_spec).
-        let mut env_vars = std::collections::HashMap::new();
+        // Seed from agent_env (per-agent secrets + platform OPENAI_*/PORT fallback) like
+        // every other deploy path (agents/upload.rs, deployments.rs::restart) — this path
+        // used to start from an empty map, so imported agents booted with no LLM env at
+        // all and failed on their first call with a 401.
+        let mut env_vars = state.agent_env(agent_id).await;
         crate::llm_router::wiring::inject_agent_llm_env(
             &state.db,
             &mut env_vars,
@@ -974,6 +984,8 @@ pub(crate) async fn import_registry(
             Some(owner_id),
         )
         .await;
+        // Per-agent MCP gateway credential (rotates on redeploy).
+        crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env_vars, agent_id).await;
         let mut spec = crate::agents::build_agent_spec(
             agent_id,
             &agent_name,

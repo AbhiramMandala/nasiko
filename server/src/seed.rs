@@ -146,6 +146,8 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             Some(owner_id),
         )
         .await;
+        // Per-agent MCP gateway credential (rotates on every re-seed).
+        crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env, agent.id).await;
 
         // UUID-keyed (see agents::build_agent_spec) so a re-seed re-targets the same
         // workload rather than leaving a name-keyed orphan.

@@ -278,13 +278,13 @@ where
         .merge(mcp::public_api_router());
 
     // Agent-facing MCP gateway (`POST /api/mcp`) — deliberately mounted OUTSIDE
-    // `require_auth`. An agent's only credential is the short-lived delegation
-    // JWT (`agent_proxy.rs` strips the caller's real `Authorization`/`Cookie`
-    // before forwarding to a container), so this route validates that token
-    // itself via `mcp::require_delegation` instead of a user session JWT.
+    // `require_auth`. Agents authenticate with their deploy-time gateway
+    // credential (`Authorization: Bearer $MCP_GATEWAY_TOKEN`) and the user
+    // identity is resolved from the request's `traceparent` via the flow
+    // record — both validated inside the handler itself
+    // (docs/MCP_GATEWAY_AGENT_AUTH.md).
     let mcp_agent_gateway = Router::new()
         .nest("/api", mcp::agent_gateway_router())
-        .layer(middleware::from_fn(mcp::require_delegation))
         .with_state(state.clone());
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());

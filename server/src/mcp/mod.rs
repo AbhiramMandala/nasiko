@@ -8,6 +8,7 @@ pub mod build;
 mod handlers;
 pub mod openapi;
 mod service;
+pub mod wiring;
 
 use axum::{
     Json, Router,
@@ -25,11 +26,11 @@ use nasiko_mcp_gateway::McpError;
 use crate::auth::Claims;
 use crate::state::AppState;
 
-pub use handlers::gateway::require_delegation;
 pub use handlers::sharing::grant_response;
 
-/// Agent-facing MCP JSON-RPC gateway — `POST /api/mcp` — mounted with
-/// [`require_delegation`], NOT `require_auth`.
+/// Agent-facing MCP JSON-RPC gateway — `POST /api/mcp` — NOT behind
+/// `require_auth`: the handler authenticates the agent's deploy-time gateway
+/// credential and resolves the user from the flow record itself.
 pub fn agent_gateway_router() -> Router<AppState> {
     Router::new().route("/mcp", post(handlers::gateway::mcp_gateway))
 }
@@ -202,39 +203,33 @@ pub fn composio_callback_router() -> Router<AppState> {
 pub struct ApiResponse {
     status: StatusCode,
     data: serde_json::Value,
-    message: std::borrow::Cow<'static, str>,
+    message: &'static str,
 }
 
 impl ApiResponse {
-    pub fn ok(data: serde_json::Value, message: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+    pub fn ok(data: serde_json::Value, message: &'static str) -> Self {
         Self {
             status: StatusCode::OK,
             data,
-            message: message.into(),
+            message,
         }
     }
 
-    pub fn created(
-        data: serde_json::Value,
-        message: impl Into<std::borrow::Cow<'static, str>>,
-    ) -> Self {
+    pub fn created(data: serde_json::Value, message: &'static str) -> Self {
         Self {
             status: StatusCode::CREATED,
             data,
-            message: message.into(),
+            message,
         }
     }
 
     /// 202 — request accepted, processing continues asynchronously (queued
     /// build jobs; see `handlers::upload`).
-    pub fn accepted(
-        data: serde_json::Value,
-        message: impl Into<std::borrow::Cow<'static, str>>,
-    ) -> Self {
+    pub fn accepted(data: serde_json::Value, message: &'static str) -> Self {
         Self {
             status: StatusCode::ACCEPTED,
             data,
-            message: message.into(),
+            message,
         }
     }
 }
@@ -247,7 +242,7 @@ impl IntoResponse for ApiResponse {
             Json(json!({
                 "data": self.data,
                 "status_code": code,
-                "message": self.message.as_ref(),
+                "message": self.message,
             })),
         )
             .into_response()

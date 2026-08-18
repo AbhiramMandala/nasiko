@@ -185,8 +185,8 @@ impl A2aClient {
     }
 
     /// Like [`send_message`], plus per-call headers layered on top of the
-    /// client-wide `extra_headers` (e.g. a delegation token scoped to the one
-    /// specific agent being called, which differs per call unlike `traceparent`).
+    /// client-wide `extra_headers` (for headers that differ per call, unlike
+    /// the client-wide `traceparent`).
     pub async fn send_message_with_headers(
         &self,
         endpoint: &str,

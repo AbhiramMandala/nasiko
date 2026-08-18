@@ -885,6 +885,14 @@ pub(crate) async fn delete(
         }
     };
 
+    // Tombstone the agent's MCP gateway credential — a destroyed agent's leaked
+    // env must not keep authenticating at /api/mcp. Best-effort: the soft
+    // delete above already stands, and the gateway's flow-participant check
+    // still bounds any residual credential to flows actively routed here.
+    if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke(&state.db, id).await {
+        tracing::warn!(%e, %id, "delete agent: gateway token revoke failed");
+    }
+
     // Every real deploy path keys the running container on the agent's UUID, never the
     // display name (see build_agent_spec's doc comment) — so the UUID-keyed id must always
     // be tried, not just when an `agent_deployments` row happens to confirm it. Relying

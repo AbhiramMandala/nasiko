@@ -14,7 +14,7 @@ use crate::error::OrchestratorError;
 use crate::events::OrchestratorEvent;
 use crate::guard::CallGuard;
 use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
-use crate::tool::{A2aTool, DelegationContext};
+use crate::tool::A2aTool;
 
 /// Attribute one completion's total token cost evenly across the tool calls
 /// it produced — the API gives one usage figure per completion, not per tool
@@ -84,7 +84,6 @@ pub struct Orchestrator {
     a2a_client: Arc<A2aClient>,
     context: ContextManager,
     guard: Option<Arc<dyn CallGuard>>,
-    delegation: Option<DelegationContext>,
 }
 
 impl Orchestrator {
@@ -98,7 +97,6 @@ impl Orchestrator {
             a2a_client,
             context,
             guard: None,
-            delegation: None,
         }
     }
 
@@ -109,13 +107,6 @@ impl Orchestrator {
 
     pub fn with_guard(mut self, guard: Arc<dyn CallGuard>) -> Self {
         self.guard = Some(guard);
-        self
-    }
-
-    /// Attach the calling user's identity so every agent this orchestrator
-    /// invokes receives a per-agent MCP delegation token (see `A2aTool`).
-    pub fn with_delegation(mut self, delegation: DelegationContext) -> Self {
-        self.delegation = Some(delegation);
         self
     }
 
@@ -356,7 +347,6 @@ impl Orchestrator {
         let registry = self.registry.clone();
         let agents_ctx = AgentCallContext {
             a2a_client: self.a2a_client.clone(),
-            delegation: self.delegation.clone(),
         };
         let mut context = self.context.clone();
         let guard = self.guard.clone();
@@ -411,8 +401,7 @@ impl Orchestrator {
         let mut defs = Vec::new();
 
         for agent in agents {
-            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone())
-                .with_delegation(self.delegation.clone());
+            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone());
             defs.push(ToolDyn::definition(&tool, String::new()).await);
             builder = builder.static_tool(tool);
         }
@@ -469,13 +458,10 @@ impl Orchestrator {
     }
 }
 
-/// Bundles the two things needed to actually reach an agent — the shared HTTP
-/// client and (optionally) the calling user's identity for per-agent MCP
-/// delegation tokens — so `run_stream_inner` doesn't need them as separate
-/// arguments.
+/// What's needed to actually reach an agent — the shared HTTP client. (Agents
+/// carry their own MCP gateway credential; no per-call user token exists.)
 struct AgentCallContext {
     a2a_client: Arc<A2aClient>,
-    delegation: Option<DelegationContext>,
 }
 
 /// Inner streaming implementation. Sends events to the channel as orchestration progresses.
@@ -540,10 +526,8 @@ async fn run_stream_inner(
     let mut builder = ToolSet::builder();
     let mut tool_defs = Vec::new();
     for agent in &agents {
-        // Streaming loop: keep BOTH features — delegation (per-agent MCP token,
-        // this branch) and live progress relay (main).
+        // Streaming loop: each agent call relays live progress into the stream.
         let tool = A2aTool::new(agent.clone(), agents_ctx.a2a_client.clone())
-            .with_delegation(agents_ctx.delegation.clone())
             .with_progress(tx.clone())
             .with_file_parts(file_parts.to_vec());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);

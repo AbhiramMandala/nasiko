@@ -614,6 +614,9 @@ pub(crate) async fn upload_and_deploy(
     // configured. Injected before the build job is enqueued so the worker deploys with it.
     crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(owner_id))
         .await;
+    // Per-agent MCP gateway credential — injected before the build job is
+    // enqueued, same as the LLM wiring above, so the worker deploys with it.
+    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env, agent_id).await;
 
     let upload_id = build_id.to_string();
 

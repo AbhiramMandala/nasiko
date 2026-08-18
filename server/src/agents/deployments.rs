@@ -352,6 +352,9 @@ pub(crate) async fn restart_deployment(
         Some(info.owner_id),
     )
     .await;
+    // Per-agent MCP gateway credential (rotates on restart; reaches the pod via
+    // the K8s secret refresh below, or the Docker recreate's env).
+    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut secrets, info.agent_id).await;
 
     if let Some(k8s_name) = &info.k8s_deployment_name {
         // ── K8s path: scale-to-1 (avoids tearing down and recreating the Deployment) ──

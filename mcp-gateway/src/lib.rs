@@ -19,6 +19,7 @@
 //! `redis::Client`, and pooled `reqwest::Client`, then calls into the pure
 //! functions exposed here.
 
+pub mod agent_tokens;
 pub mod aggregator;
 pub mod authorizer;
 pub mod cache;

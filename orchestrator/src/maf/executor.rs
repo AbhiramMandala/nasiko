@@ -84,13 +84,30 @@ pub async fn run_maf(
         .bind(&flow_metadata)
         .execute(db)
         .await;
+        // Participant record — the MCP gateway / LLM router only authorize this
+        // step's agent for calls carrying this trace id if it is recorded here
+        // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4). Same synchronous pre-call write
+        // as the flows row; a failed insert denies (never escalates) downstream.
+        if let Err(e) = sqlx::query(
+            "INSERT INTO flow_participants (flow_id, agent_id) VALUES ($1, $2)
+             ON CONFLICT (flow_id, agent_id) DO NOTHING",
+        )
+        .bind(&trace_id)
+        .bind(step.agent_id)
+        .execute(db)
+        .await
+        {
+            tracing::warn!(
+                error = %e, flow_id = %trace_id, agent_id = %step.agent_id,
+                "flow participant record failed — the step agent's MCP/LLM calls will be denied"
+            );
+        }
 
         let raw_response = match call_agent(
             client,
             &step.agent_endpoint,
             &execution_id.to_string(),
             &user_id.to_string(),
-            &step.agent_id.to_string(),
             &actual_prompt,
             &traceparent,
         )
@@ -697,7 +714,6 @@ async fn call_agent(
     endpoint: &str,
     context_id: &str,
     user_id: &str,
-    agent_id: &str,
     prompt: &str,
     traceparent: &str,
 ) -> Result<String, String> {
@@ -727,40 +743,28 @@ async fn call_agent(
     let url_jsonrpc = format!("{base}/jsonrpc");
     let url_root = format!("{base}/");
 
-    // Mint a delegation token so this agent can call back into `/api/mcp`
-    // proving "I am agent_id, acting for user_id" — mirrors `agent_proxy.rs`
-    // and `a2a_dispatch.rs`. Best-effort: if JWT_SECRET is unset, MCP
-    // delegation is simply unavailable to this agent rather than failing the
-    // whole MAF step.
-    let delegation_token = std::env::var("JWT_SECRET").ok().and_then(|secret| {
-        nasiko_auth::jwt::mint_delegation_token(&secret, user_id, agent_id).ok()
-    });
-
+    // No per-request MCP credential: the agent authenticates to `/api/mcp`
+    // with its own deploy-time MCP_GATEWAY_TOKEN, and the user binding rides
+    // the forwarded traceparent + the flow_participants record written before
+    // this call (docs/MCP_GATEWAY_AGENT_AUTH.md).
     let resp = {
-        let mut r = client
+        let r = client
             .post(&url_jsonrpc)
             .header("X-User-Id", user_id)
             .header("A2A-Version", "1.0")
-            .header("traceparent", traceparent);
-        if let Some(token) = &delegation_token {
-            r = r.header("x-nasiko-agent-token", token);
-        }
-        let r = r
+            .header("traceparent", traceparent)
             .json(&body)
             .timeout(std::time::Duration::from_secs(300))
             .send()
             .await
             .map_err(|e| e.to_string())?;
         if r.status() == reqwest::StatusCode::NOT_FOUND {
-            let mut r2 = client
+            client
                 .post(&url_root)
                 .header("X-User-Id", user_id)
                 .header("A2A-Version", "1.0")
-                .header("traceparent", traceparent);
-            if let Some(token) = &delegation_token {
-                r2 = r2.header("x-nasiko-agent-token", token);
-            }
-            r2.json(&body)
+                .header("traceparent", traceparent)
+                .json(&body)
                 .timeout(std::time::Duration::from_secs(300))
                 .send()
                 .await

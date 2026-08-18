@@ -9,22 +9,11 @@ use crate::a2a::{A2aClient, A2aClientError, AgentStreamEvent};
 use crate::events::OrchestratorEvent;
 use crate::registry::AgentInfo;
 
-/// Identity for minting a per-agent MCP delegation token on each tool call —
-/// see `nasiko_auth::jwt::mint_delegation_token`. `None` when `JWT_SECRET` is
-/// unset or the caller isn't a real user (delegation is then simply
-/// unavailable to agents invoked via this tool, not a hard failure).
-#[derive(Clone)]
-pub struct DelegationContext {
-    pub user_id: String,
-    pub jwt_secret: String,
-}
-
 /// Wraps a remote A2A agent as a Rig `Tool` so the orchestrator LLM can invoke it.
 #[derive(Clone)]
 pub struct A2aTool {
     agent: AgentInfo,
     client: Arc<A2aClient>,
-    delegation: Option<DelegationContext>,
     /// When set, the agent is called via streaming and its live progress
     /// (internal tool activity + reply chunks) is relayed as
     /// `SubStatus`/`SubContent` orchestrator events.
@@ -53,18 +42,9 @@ impl A2aTool {
         Self {
             agent,
             client,
-            delegation: None,
             progress: None,
             file_parts: vec![],
         }
-    }
-
-    /// Attach a delegation context so calls to this agent carry a
-    /// `x-nasiko-agent-token`, letting the invoked agent call back into
-    /// `/api/mcp` on behalf of `delegation.user_id`.
-    pub fn with_delegation(mut self, delegation: Option<DelegationContext>) -> Self {
-        self.delegation = delegation;
-        self
     }
 
     /// Attach file parts from the user's upload to forward to the agent.
@@ -135,23 +115,16 @@ impl Tool for A2aTool {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         tracing::info!(agent = %self.agent.name, message = %args.message, "invoking A2A agent");
 
-        // Delegation: mint a per-target agent token so the invoked agent can
-        // call back into /api/mcp on behalf of the user. Carried on whichever
-        // transport (streaming or non-streaming) actually makes the call.
-        let mut headers = Vec::new();
-        if let Some(d) = &self.delegation
-            && let Ok(token) =
-                nasiko_auth::jwt::mint_delegation_token(&d.jwt_secret, &d.user_id, &self.agent.id)
-        {
-            headers.push(("x-nasiko-agent-token".to_string(), token));
-        }
+        // No per-call user credential: the invoked agent authenticates to
+        // /api/mcp with its own deploy-time MCP_GATEWAY_TOKEN; the user binding
+        // rides the client-wide `traceparent` + the flow_participants record
+        // the platform's CallGuard writes before this call.
 
         // Streaming first when a progress channel is attached; the match below
-        // decides per error whether falling back to non-streaming is safe. The
-        // delegation headers ride along on the streaming request too.
+        // decides per error whether falling back to non-streaming is safe.
         let streamed = match self.progress {
             Some(ref orch_tx) => {
-                match self.call_streaming(&args, orch_tx.clone(), &headers).await {
+                match self.call_streaming(&args, orch_tx.clone(), &[]).await {
                     Ok(text) => Some(text),
                     // Setup-stage failures (endpoint rejects the method / not an
                     // A2A stream): the agent never started work, safe to retry
@@ -181,7 +154,7 @@ impl Tool for A2aTool {
                         &self.agent.endpoint,
                         &args.message,
                         args.context_id.as_deref(),
-                        &headers,
+                        &[],
                         &self.file_parts,
                     )
                     .await
@@ -280,11 +253,12 @@ mod tests {
         .to_string()
     }
 
-    /// Without a delegation context, an invoked agent must receive NO
-    /// `x-nasiko-agent-token` header at all — proving the tool doesn't mint a
-    /// stray/empty token when no user identity is attached.
+    /// The invoked agent must receive NO per-call credential header — the
+    /// delegation-token scheme is gone (agents authenticate to /api/mcp with
+    /// their own deploy-time MCP_GATEWAY_TOKEN); a stray header here would
+    /// leak a caller-scoped secret into agent containers again.
     #[tokio::test]
-    async fn call_without_delegation_sends_no_agent_token_header() {
+    async fn call_sends_no_agent_token_header() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/")
@@ -295,79 +269,6 @@ mod tests {
             .await;
 
         let tool = A2aTool::new(test_agent(&server.url()), Arc::new(A2aClient::new()));
-        let result = tool
-            .call(A2aToolArgs {
-                message: "hi".into(),
-                context_id: None,
-            })
-            .await;
-
-        mock.assert_async().await;
-        assert!(result.is_ok());
-    }
-
-    /// With a delegation context, the invoked agent must receive a
-    /// well-formed `x-nasiko-agent-token` whose `act` claim is THIS agent's id
-    /// — never another agent's, even if multiple tools share one `A2aClient`.
-    #[tokio::test]
-    async fn call_with_delegation_sends_token_scoped_to_this_agent() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/")
-            .match_header(
-                "x-nasiko-agent-token",
-                mockito::Matcher::Regex(".+".to_string()),
-            )
-            .with_status(200)
-            .with_body(a2a_response_body())
-            .create_async()
-            .await;
-
-        let agent = test_agent(&server.url());
-        let tool = A2aTool::new(agent.clone(), Arc::new(A2aClient::new())).with_delegation(Some(
-            DelegationContext {
-                user_id: "user-42".to_string(),
-                jwt_secret: "test-secret".to_string(),
-            },
-        ));
-        let result = tool
-            .call(A2aToolArgs {
-                message: "hi".into(),
-                context_id: None,
-            })
-            .await;
-        assert!(result.is_ok());
-        mock.assert_async().await;
-
-        // Independently decode the token the mock received is a red-herring —
-        // mockito doesn't expose captured headers post-hoc, so instead mint
-        // the same way and validate the claim shape directly:
-        let token =
-            nasiko_auth::jwt::mint_delegation_token("test-secret", "user-42", &agent.id).unwrap();
-        let (user_id, act) =
-            nasiko_auth::jwt::validate_delegation_token("test-secret", &token).unwrap();
-        assert_eq!(user_id, "user-42");
-        assert_eq!(act, agent.id);
-    }
-
-    /// A garbage/empty `jwt_secret` in the delegation context must never
-    /// panic the tool call — `mint_delegation_token` is infallible over any
-    /// string secret, but this locks in that invariant at the call site too.
-    #[tokio::test]
-    async fn call_with_empty_secret_does_not_panic() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/")
-            .with_status(200)
-            .with_body(a2a_response_body())
-            .create_async()
-            .await;
-
-        let tool = A2aTool::new(test_agent(&server.url()), Arc::new(A2aClient::new()))
-            .with_delegation(Some(DelegationContext {
-                user_id: String::new(),
-                jwt_secret: String::new(),
-            }));
         let result = tool
             .call(A2aToolArgs {
                 message: "hi".into(),

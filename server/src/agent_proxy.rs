@@ -243,6 +243,12 @@ pub async fn agent_proxy(
         .bind(&metadata)
         .execute(&state.db)
         .await;
+        // Membership record for the flow: the MCP gateway / LLM router only
+        // authorize this agent's calls if it is a recorded participant of the
+        // traceparent-named flow. Rides the same synchronous, pre-forward write
+        // as the flows row so it is guaranteed present before the agent can
+        // call back into the platform.
+        crate::flows::record_participant(&state.db, &flow_ctx.flow_id, agent_id).await;
     }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so
@@ -279,16 +285,10 @@ pub async fn agent_proxy(
             if claims.is_superuser { "true" } else { "false" },
         );
 
-    // Mint a short-lived MCP delegation token so the agent can call back into
-    // /api/mcp on this user's behalf (the agent forwards this inbound header to
-    // MCP_GATEWAY_URL). Mirrors the orchestrator path (a2a_dispatch → A2aTool);
-    // best-effort — skipped if JWT_SECRET is unset rather than failing the proxy.
-    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
-        && let Ok(token) =
-            nasiko_auth::jwt::mint_delegation_token(&jwt_secret, &claims.sub, &agent_id_str)
-    {
-        forwarded = forwarded.header("x-nasiko-agent-token", token);
-    }
+    // No per-request MCP credential is forwarded: the agent calls /api/mcp with
+    // its own deploy-time MCP_GATEWAY_TOKEN, and the gateway resolves the user
+    // from the traceparent via the flows row + flow_participants record written
+    // above (docs/MCP_GATEWAY_AGENT_AUTH.md).
 
     // Best-effort: record the session ↔ trace correlation so observability
     // can map Tempo traces back to chat sessions for agents that don't set
