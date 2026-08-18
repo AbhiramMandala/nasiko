@@ -141,47 +141,81 @@ pub(crate) fn round6(v: f64) -> f64 {
     (v * 1_000_000.0).round() / 1_000_000.0
 }
 
-/// Curated seed rows for `model_pricing`: `(provider, model, input, output,
-/// cache_create, cache_read)` — USD per 1M tokens, best-effort public list
-/// rates. This is the offline baseline only: the LLM router's pricing-sync
-/// loop (`oss/llm-router/src/routing/pricing_sync.rs`) refreshes rows from the
-/// Portkey price book once provider keys are configured. VERIFY against
-/// current provider pricing before relying on cost figures.
+/// One curated seed row for `model_pricing` — USD per 1M tokens,
+/// best-effort public list rates.
+pub struct SeedPrice {
+    pub provider: &'static str,
+    pub model: &'static str,
+    pub input_per_1m: f64,
+    pub output_per_1m: f64,
+    pub cache_creation_per_1m: Option<f64>,
+    pub cache_read_per_1m: Option<f64>,
+}
+
+/// Declare a [`SeedPrice`] with less noise.
+macro_rules! seed {
+    ($provider:literal, $model:literal, $in:expr, $out:expr) => {
+        SeedPrice {
+            provider: $provider,
+            model: $model,
+            input_per_1m: $in,
+            output_per_1m: $out,
+            cache_creation_per_1m: None,
+            cache_read_per_1m: None,
+        }
+    };
+    ($provider:literal, $model:literal, $in:expr, $out:expr, $cw:expr, $cr:expr) => {
+        SeedPrice {
+            provider: $provider,
+            model: $model,
+            input_per_1m: $in,
+            output_per_1m: $out,
+            cache_creation_per_1m: Some($cw),
+            cache_read_per_1m: Some($cr),
+        }
+    };
+}
+
+/// Curated seed rows for `model_pricing`: USD per 1M tokens, best-effort
+/// public list rates. This is the offline baseline only: the LLM router's
+/// pricing-sync loop (`oss/llm-router/src/routing/pricing_sync.rs`) refreshes
+/// rows from the Portkey price book once provider keys are configured. VERIFY
+/// against current provider pricing before relying on cost figures.
 ///
 /// Deliberately code, not a migration: price updates ship with the binary
 /// instead of requiring a new migration per price change.
-pub const SEED_PRICING: &[(&str, &str, f64, f64, Option<f64>, Option<f64>)] = &[
-    ("openai", "gpt-4o", 2.50, 10.00, None, None),
-    ("openai", "gpt-4o-mini", 0.15, 0.60, None, None),
-    ("openai", "gpt-4.1", 2.00, 8.00, None, None),
-    ("openai", "gpt-4.1-mini", 0.40, 1.60, None, None),
-    ("openai", "gpt-4.1-nano", 0.10, 0.40, None, None),
-    ("openai", "gpt-4-turbo", 10.00, 30.00, None, None),
-    ("openai", "gpt-3.5-turbo", 0.50, 1.50, None, None),
-    ("openai", "o1-preview", 15.00, 60.00, None, None),
-    ("openai", "o1-mini", 3.00, 12.00, None, None),
-    ("openai", "o3", 10.00, 40.00, None, None),
-    ("openai", "o3-mini", 1.10, 4.40, None, None),
-    ("openai", "text-embedding-3-small", 0.02, 0.00, None, None),
-    ("openai", "text-embedding-3-large", 0.13, 0.00, None, None),
-    ("anthropic", "claude-opus-4", 15.00, 75.00, Some(18.75), Some(1.50)),
-    ("anthropic", "claude-sonnet-4", 3.00, 15.00, Some(3.75), Some(0.30)),
-    ("anthropic", "claude-haiku-4", 0.80, 4.00, Some(1.00), Some(0.08)),
-    ("anthropic", "claude-3-5-sonnet", 3.00, 15.00, None, None),
-    ("anthropic", "claude-3-5-haiku", 0.80, 4.00, None, None),
-    ("anthropic", "claude-3-5-sonnet-20241022", 3.00, 15.00, Some(3.75), Some(0.30)),
-    ("anthropic", "claude-3-5-haiku-20241022", 0.80, 4.00, Some(1.00), Some(0.08)),
-    ("google", "gemini-2.5-pro", 1.25, 10.00, None, None),
-    ("google", "gemini-2.5-flash", 0.15, 0.60, None, None),
-    ("gemini", "gemini-1.5-pro", 1.25, 5.00, None, None),
-    ("gemini", "gemini-1.5-flash", 0.075, 0.30, None, None),
-    ("gemini", "gemini-2.0-flash", 0.10, 0.40, None, None),
-    ("groq", "llama-3.3-70b-versatile", 0.59, 0.79, None, None),
-    ("groq", "llama-3.1-8b-instant", 0.05, 0.08, None, None),
-    ("deepseek", "deepseek-chat", 0.14, 0.28, Some(0.014), Some(0.014)),
-    ("deepseek", "deepseek-reasoner", 0.55, 2.19, None, None),
-    ("deepseek", "deepseek-v4-flash", 0.14, 0.28, None, None),
-    ("deepseek", "deepseek-v4-pro", 0.55, 2.19, None, None),
+pub const SEED_PRICING: &[SeedPrice] = &[
+    seed!("openai", "gpt-4o", 2.50, 10.00),
+    seed!("openai", "gpt-4o-mini", 0.15, 0.60),
+    seed!("openai", "gpt-4.1", 2.00, 8.00),
+    seed!("openai", "gpt-4.1-mini", 0.40, 1.60),
+    seed!("openai", "gpt-4.1-nano", 0.10, 0.40),
+    seed!("openai", "gpt-4-turbo", 10.00, 30.00),
+    seed!("openai", "gpt-3.5-turbo", 0.50, 1.50),
+    seed!("openai", "o1-preview", 15.00, 60.00),
+    seed!("openai", "o1-mini", 3.00, 12.00),
+    seed!("openai", "o3", 10.00, 40.00),
+    seed!("openai", "o3-mini", 1.10, 4.40),
+    seed!("openai", "text-embedding-3-small", 0.02, 0.00),
+    seed!("openai", "text-embedding-3-large", 0.13, 0.00),
+    seed!("anthropic", "claude-opus-4", 15.00, 75.00, 18.75, 1.50),
+    seed!("anthropic", "claude-sonnet-4", 3.00, 15.00, 3.75, 0.30),
+    seed!("anthropic", "claude-haiku-4", 0.80, 4.00, 1.00, 0.08),
+    seed!("anthropic", "claude-3-5-sonnet", 3.00, 15.00),
+    seed!("anthropic", "claude-3-5-haiku", 0.80, 4.00),
+    seed!("anthropic", "claude-3-5-sonnet-20241022", 3.00, 15.00, 3.75, 0.30),
+    seed!("anthropic", "claude-3-5-haiku-20241022", 0.80, 4.00, 1.00, 0.08),
+    seed!("google", "gemini-2.5-pro", 1.25, 10.00),
+    seed!("google", "gemini-2.5-flash", 0.15, 0.60),
+    seed!("gemini", "gemini-1.5-pro", 1.25, 5.00),
+    seed!("gemini", "gemini-1.5-flash", 0.075, 0.30),
+    seed!("gemini", "gemini-2.0-flash", 0.10, 0.40),
+    seed!("groq", "llama-3.3-70b-versatile", 0.59, 0.79),
+    seed!("groq", "llama-3.1-8b-instant", 0.05, 0.08),
+    seed!("deepseek", "deepseek-chat", 0.14, 0.28, 0.014, 0.014),
+    seed!("deepseek", "deepseek-reasoner", 0.55, 2.19),
+    seed!("deepseek", "deepseek-v4-flash", 0.14, 0.28),
+    seed!("deepseek", "deepseek-v4-pro", 0.55, 2.19),
 ];
 
 /// Seed `model_pricing` from [`SEED_PRICING`] at server boot.
@@ -193,7 +227,7 @@ pub const SEED_PRICING: &[(&str, &str, f64, f64, Option<f64>, Option<f64>)] = &[
 /// to NULL / [`StaticPricing`]).
 pub async fn seed_model_pricing(db: &sqlx::PgPool) {
     let mut inserted = 0u32;
-    for (provider, model, input, output, cache_create, cache_read) in SEED_PRICING {
+    for row in SEED_PRICING {
         let res = sqlx::query(
             "INSERT INTO model_pricing \
              (provider, model, input_price_per_1m, output_price_per_1m, \
@@ -204,18 +238,18 @@ pub async fn seed_model_pricing(db: &sqlx::PgPool) {
                  WHERE provider = $1 AND model = $2 AND effective_until IS NULL \
              )",
         )
-        .bind(provider)
-        .bind(model)
-        .bind(input)
-        .bind(output)
-        .bind(cache_create)
-        .bind(cache_read)
+        .bind(row.provider)
+        .bind(row.model)
+        .bind(row.input_per_1m)
+        .bind(row.output_per_1m)
+        .bind(row.cache_creation_per_1m)
+        .bind(row.cache_read_per_1m)
         .execute(db)
         .await;
         match res {
             Ok(done) => inserted += done.rows_affected() as u32,
             Err(e) => {
-                tracing::warn!(%provider, %model, error = %e, "model pricing seed failed (non-fatal)")
+                tracing::warn!(provider = row.provider, model = row.model, error = %e, "model pricing seed failed (non-fatal)")
             }
         }
     }
