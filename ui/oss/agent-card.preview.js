@@ -23,19 +23,25 @@ const baseAgent = {
   },
   skills: [
     {
+      id: "cluster-provisioning",
       name: "Cluster Provisioning",
       description: "Create new vClusters with specified resource blueprints, networking policies, and storage configurations.",
-      sample_query: "Create a new vCluster with 4 GPU nodes for team-ml",
+      tags: ["cluster", "provisioning"],
+      examples: ["Create a new vCluster with 4 GPU nodes for team-ml"],
     },
     {
+      id: "cluster-scaling",
       name: "Cluster Scaling",
       description: "Scale cluster resources up or down based on workload demands with pre-flight safety checks.",
-      sample_query: "Scale gpu-cluster-prod to 8 GPU nodes",
+      tags: ["cluster", "scaling"],
+      examples: ["Scale gpu-cluster-prod to 8 GPU nodes"],
     },
     {
+      id: "cluster-readiness",
       name: "Cluster Readiness Scoring",
       description: "Compute a readiness score (0-100) for clusters based on node health, networking, storage, and GPU accessibility.",
-      sample_query: "What is the readiness score for gpu-cluster-prod?",
+      tags: ["cluster", "health"],
+      examples: ["What is the readiness score for gpu-cluster-prod?"],
     },
   ],
 };
@@ -200,7 +206,7 @@ export default {
     [{ method: "GET", path: /^\/api\/mcp\/agents\/[^/]+\/connectors\/mc-github\/tools$/ }, mcpEnvelope({
       tools: [
         { name: "create_issue", description: "Open a new issue in a repository.", stance: "allow", last_synced_at: null },
-        { name: "merge_pull_request", description: "Merge an open pull request.", stance: "deny", last_synced_at: null },
+        { name: "merge_pull_request", description: "Merge an open pull request.", stance: "block", last_synced_at: null },
         { name: "list_repos", description: "List repositories visible to the connected account.", stance: "allow", last_synced_at: null },
       ],
     })],
@@ -217,7 +223,7 @@ export default {
     })],
     [{ method: "GET", path: /^\/api\/mcp\/agents\/[^/]+\/tools$/ }, mcpEnvelope({
       rules: [
-        { connector_id: "mc-github", tool_pattern: "merge_pull_request", stance: "deny" },
+        { connector_id: "mc-github", tool_pattern: "merge_pull_request", stance: "block" },
       ],
     })],
     [{ method: "PUT", path: /^\/api\/mcp\/agents\// }, mcpEnvelope({})],

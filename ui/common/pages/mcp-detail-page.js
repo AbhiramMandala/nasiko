@@ -8,6 +8,7 @@ import { navigate } from '../core/router.js';
 import styles from './mcp-detail-page.css' with { type: 'css' };
 import '../design-system/app-skeleton/app-skeleton.js';
 import '../design-system/auto-complete/auto-complete.js';
+import { call } from '../core/data-sources.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const AUTH_LABELS = {
@@ -49,7 +50,7 @@ class McpDetailPage extends HTMLElement {
 
   async #load() {
     try {
-      const resp = await window.fetchMcpConnectorDetail(this.#connectorId);
+      const resp = await call('fetchMcpConnectorDetail', this.#connectorId);
       this.#connector = resp?.data ?? resp;
     } catch {
       this.#connector = null;
@@ -79,7 +80,7 @@ class McpDetailPage extends HTMLElement {
 
   async #loadAgents() {
     try {
-      const resp = await window.fetchAgents('', 1, 100);
+      const resp = await call('fetchAgents', '', 1, 100);
       this.#agents = resp?.data || [];
     } catch {
       this.#agents = [];
@@ -161,7 +162,7 @@ class McpDetailPage extends HTMLElement {
     const pre = this.querySelector('#mdp-logs-pre');
     if (!pre) return;
     try {
-      const resp = await window.fetchMcpBuildLogs(this.#connectorId, 500);
+      const resp = await call('fetchMcpBuildLogs', this.#connectorId, 500);
       const logs = typeof resp?.data === 'string' ? resp.data : (resp?.data ?? '');
       pre.textContent = logs || '(no logs)';
     } catch (e) {
@@ -223,7 +224,7 @@ class McpDetailPage extends HTMLElement {
     if (!section) return;
     let connected = false;
     try {
-      const resp = await window.fetchMcpCredentialStatus(c.connector_id);
+      const resp = await call('fetchMcpCredentialStatus', c.connector_id);
       connected = !!resp?.data?.connected;
     } catch { /* leave disconnected */ }
     section.innerHTML = `
@@ -246,7 +247,7 @@ class McpDetailPage extends HTMLElement {
       const err = section.querySelector('#mdp-cred-error');
       err.hidden = true;
       try {
-        const resp = await window.setMcpCredential(c.connector_id, value);
+        const resp = await call('setMcpCredential', c.connector_id, value);
         if (resp?.data?.connected === false) {
           err.textContent = 'Stored, but verification failed: ' + (resp.data.error || 'unknown error');
           err.hidden = false;
@@ -259,7 +260,7 @@ class McpDetailPage extends HTMLElement {
     });
     section.querySelector('#mdp-cred-remove')?.addEventListener('click', async () => {
       try {
-        await window.deleteMcpCredential(c.connector_id);
+        await call('deleteMcpCredential', c.connector_id);
         this.#renderCredentialSection(c);
       } catch (e) { showToast('Remove failed: ' + e.message); }
     });
@@ -270,7 +271,7 @@ class McpDetailPage extends HTMLElement {
     if (!section) return;
     let status = { authorized: false, expires_at: null };
     try {
-      const resp = await window.fetchMcpOauthStatus(c.connector_id);
+      const resp = await call('fetchMcpOauthStatus', c.connector_id);
       status = resp?.data ?? status;
     } catch { /* leave unauthorized */ }
     const expiry = status.expires_at ? ' - expires ' + new Date(status.expires_at).toLocaleString() : '';
@@ -290,7 +291,7 @@ class McpDetailPage extends HTMLElement {
       const err = section.querySelector('#mdp-oauth-error');
       err.hidden = true;
       try {
-        const resp = await window.authorizeMcpOauth(c.connector_id);
+        const resp = await call('authorizeMcpOauth', c.connector_id);
         const url = resp?.data?.authorization_url;
         if (url) window.open(url, 'mcp-oauth', 'width=600,height=720');
       } catch (e) {
@@ -300,7 +301,7 @@ class McpDetailPage extends HTMLElement {
     });
     section.querySelector('#mdp-oauth-revoke')?.addEventListener('click', async () => {
       try {
-        await window.revokeMcpOauthToken(c.connector_id);
+        await call('revokeMcpOauthToken', c.connector_id);
         this.#renderOauthSection(c);
       } catch (e) { showToast('Revoke failed: ' + e.message); }
     });
@@ -355,7 +356,7 @@ class McpDetailPage extends HTMLElement {
     if (!body || !this.#selectedAgentId) return;
     body.innerHTML = '<app-skeleton lines="3" style="padding:var(--s-16)"></app-skeleton>';
     try {
-      const resp = await window.fetchAgentMcpConnectors(this.#selectedAgentId);
+      const resp = await call('fetchAgentMcpConnectors', this.#selectedAgentId);
       this.#agentConnectors = resp?.data?.connectors || [];
     } catch (e) {
       body.innerHTML = '<div class="mdp-empty"><p>Failed to load: ' + escHtml(e.message) + '</p></div>';
@@ -382,7 +383,7 @@ class McpDetailPage extends HTMLElement {
 
     body.querySelector('.mdp-access-toggle')?.addEventListener('change', async (e) => {
       try {
-        await window.setAgentMcpConnectorAccess(this.#selectedAgentId, this.#connectorId, e.target.checked);
+        await call('setAgentMcpConnectorAccess', this.#selectedAgentId, this.#connectorId, e.target.checked);
         this.#loadAgentAccess();
       } catch (err) {
         e.target.checked = !e.target.checked;
@@ -404,7 +405,7 @@ class McpDetailPage extends HTMLElement {
     if (!this.#agentTools.has(this.#connectorId)) {
       editor.innerHTML = '<app-skeleton lines="3"></app-skeleton>';
       try {
-        const resp = await window.fetchAgentMcpConnectorTools(this.#selectedAgentId, this.#connectorId);
+        const resp = await call('fetchAgentMcpConnectorTools', this.#selectedAgentId, this.#connectorId);
         this.#agentTools.set(this.#connectorId, resp?.data?.tools || []);
       } catch (e) {
         editor.innerHTML = '<p class="mdp-form-error">Failed to load tools: ' + escHtml(e.message) + '</p>';
@@ -432,7 +433,7 @@ class McpDetailPage extends HTMLElement {
       }));
       const statusEl = editor.querySelector('#mdp-save-status');
       try {
-        await window.saveAgentMcpToolRules(this.#selectedAgentId, rules);
+        await call('saveAgentMcpToolRules', this.#selectedAgentId, rules);
         statusEl.textContent = 'Saved';
         statusEl.className = 'mdp-save-status is-ok';
       } catch (e) {
@@ -467,7 +468,7 @@ class McpDetailPage extends HTMLElement {
       });
       if (!confirmed) return;
       try {
-        await window.deleteMcpConnector(this.#connectorId);
+        await call('deleteMcpConnector', this.#connectorId);
         navigate('/mcp');
       } catch (e) {
         showToast('Failed to delete: ' + e.message);

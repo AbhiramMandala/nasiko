@@ -11,6 +11,9 @@ import "/common/design-system/app-card/app-card.js";
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 
+// your-agents-page.css is <link>ed by the host page, not imported here: a sheet
+// pulled in by this module only exists once the module does, which is too late
+// to style the static shell the page paints before then (see web/agents.html).
 
 // In MPA mode, your-agents-page.css was <link>ed in the HTML. In SPA mode the
 // router lazy-loads this module, so we adopt the sheet here too.
@@ -110,7 +113,7 @@ class YourAgentsPage extends HTMLElement {
   }
 
   async #pollSettingUp() {
-    const result = await window.fetchContainers("", 1, 100);
+    const result = await call('fetchContainers', "", 1, 100);
     const freshAgents = result.data || [];
     const freshMap = new Map();
     for (const a of freshAgents) freshMap.set(a.id, a);
@@ -527,8 +530,13 @@ class YourAgentsPage extends HTMLElement {
       } else if (action === "restart" || action === "stop") {
         const name = btn.dataset.name;
         const original = btn.innerHTML;
-        btn.disabled = true;
-        btn.textContent = action === "restart" ? "Restarting..." : "Stopping...";
+        // These are fixed-size icon buttons: swapping in a label overflows the
+        // square and lands on the card body. Swap the icon for a same-size
+        // spinner and lock the card's other lifecycle buttons instead.
+        const siblings = [...btn.closest(".agent-card-actions").querySelectorAll("[data-action]")];
+        for (const b of siblings) b.disabled = true;
+        btn.setAttribute("aria-busy", "true");
+        btn.innerHTML = `<span class="setup-spinner"></span>`;
         try {
           const res = await apiFetch(
             `/containers/${encodeURIComponent(name)}/${action}`,
@@ -538,11 +546,15 @@ class YourAgentsPage extends HTMLElement {
           showToast(
             `${action === "restart" ? "Restarted" : "Stopped"} ${name}`,
           );
-          this.#load();
+          await this.#load();
         } catch (err) {
           showToast(`Failed to ${action}: ${err.message}`);
-          btn.disabled = false;
+        } finally {
+          // #load() usually replaces these nodes; restore anyway so a failed
+          // reload can't leave the card stuck on a spinner.
+          btn.removeAttribute("aria-busy");
           btn.innerHTML = original;
+          for (const b of siblings) b.disabled = false;
         }
       } else if (action === "delete") {
         const name = btn.dataset.name;

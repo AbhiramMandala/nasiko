@@ -245,16 +245,26 @@ login-page {
     padding-left: 0;
   }
 
+  module-shell > [data-view] {
+    padding-left: 0;
+  }
+
   /*
     Orchestrator is the one module-nav page whose content is a centered column
-    rather than left-aligned, so the plain left gutter above would center it in
-    the space *right* of the nav — a constant ~136px off the card's own center,
-    which reads as the whole page tilting right.
+    rather than left-aligned, so it needs a box to center *in*. That box is the
+    space right of the nav gutter — same inset as every other module-nav page on
+    the left, the card's content pad on the right (the `import` view below is the
+    same construction).
 
-    Padding both sides by the same amount keeps it centered on the card at any
-    width. The `max()` floor is what stops the two requirements from fighting:
-    below ~1400px the centered 820px column would reach into the nav's gutter,
-    so there the gutter wins and the column narrows instead of overlapping.
+    Not padded symmetrically to center the column on the card instead: the nav is
+    the sole occupant of the left gutter, so a card-centered column reads as
+    sitting left of center against it — and every state has to agree. The empty
+    state and the pre-upgrade skeleton are narrower than the composer column, so
+    when this box was the card, each needed its own compensating padding to look
+    centered, and the three states landed on three different center lines. One box
+    here, and the hero, the skeleton, the empty state and the transcript all share
+    it. Also removes the old `max()` floor: the left gutter is now unconditional,
+    so the column can never reach into the nav.
   */
   module-shell[data-active-view="orchestrate"] {
     padding-inline: max(
@@ -300,5 +310,12 @@ login-page {
     height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     min-height: 0;
     flex: none;
+  }
+
+  /* An orchestrator session opened from the module nav keeps that nav, so the
+     transcript clears its gutter. Keyed on `:has` — a direct agent chat renders
+     no nav (chat-page.js) and must keep the full width. */
+  chat-page:has(> app-module-nav) {
+    padding-left: calc(224px + var(--s-64));
   }
 }

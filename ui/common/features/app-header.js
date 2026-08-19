@@ -27,6 +27,10 @@ import { navigate as routerNavigate } from '../core/router.js';
    key would have kept them expanded forever. Toggling still persists per user. */
 const RAIL_KEY = "app-rail-expanded-v2";
 
+/* Collapsed is the default rail state. The key is versioned so the change reaches
+   users who already toggled the old rail open — a stored `true` under the previous
+   key would have kept them expanded forever. Toggling still persists per user. */
+
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@keyframes ah-skel-pulse {
   0%, 100% { opacity: 1; }
@@ -448,7 +452,7 @@ export class AppHeader extends HTMLElement {
   }
 
   static get observedAttributes() {
-    return ["nav-links", "brand-title", "brand-url"];
+    return ["nav-links", "brand-title", "brand-url", "active-module"];
   }
 
   attributeChangedCallback() {
@@ -635,7 +639,6 @@ export class AppHeader extends HTMLElement {
           ${isAuthenticated ? `
           <div class="rail-identity">
             <app-user-menu current-user="${escHtml(currentUser)}"></app-user-menu>
-            <span class="identity-name">${escHtml(currentUser)}</span>
           </div>` : ""}
         </div>
       </nav>

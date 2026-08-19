@@ -80,6 +80,9 @@
     font-weight: 500;
     line-height: 20px;
     color: var(--color-text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   /* Keep the per-card menu inside the card's right edge */
   app-action-menu .aam-menu { left: auto; right: 0; }
@@ -120,7 +123,6 @@
     align-items: center;
     gap: var(--s-8);
     margin-top: auto;
-    padding-top: var(--s-4);
   }
   .wf-dot {
     width: 6px;

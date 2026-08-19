@@ -2,6 +2,7 @@ import { icons } from '/common/utils/icons.js';
 import { fetchApi, apiFetch } from '/common/services/api.js';
 import { authService } from '/common/services/auth-service.js';
 import { showToast } from '/common/utils/toast.js';
+import { confirmDialog } from '/common/design-system/confirm-dialog/confirm-dialog.js';
 import { ansiToHtml } from '/common/utils/ansi.js';
 import { attachSlidingIndicator } from '/common/utils/tab-indicator.js';
 import styles from './agent-card-page.css' with { type: 'css' };
@@ -166,6 +167,17 @@ class AgentCardPage extends HTMLElement {
         </div>`;
   }
 
+  #backUrl() {
+    const ref = document.referrer;
+    try {
+      const url = ref ? new URL(ref) : null;
+      if (url && url.origin === location.origin && url.pathname !== location.pathname) {
+        return url.pathname + url.search;
+      }
+    } catch { /* invalid referrer */ }
+    return '/agents.html?view=your-agents';
+  }
+
   #heroHtml(a, displayName) {
     const tagsHtml = (a.tags || []).slice(0, 3).map(t =>
       `<span class="acp-tag">${escHtml(t)}</span>`
@@ -238,7 +250,7 @@ class AgentCardPage extends HTMLElement {
           ${skills.length ? `
           <section class="acp-section">
             <h2 class="acp-section-title">Skills</h2>
-            <p class="acp-section-sub">What this agent can do. Click a skill to start a session with a sample query.</p>
+            <p class="acp-section-sub">What this agent can do.</p>
             <div class="acp-skills-grid">${skillsHtml}</div>
           </section>` : ''}
 
@@ -358,7 +370,13 @@ class AgentCardPage extends HTMLElement {
 
   async #deleteAgent(btn) {
     const displayName = this.#agent.display_name || this.#agent.name;
-    if (!confirm(`Delete "${displayName}"? This removes the agent from the registry, revokes all grants, and stops its container.`)) return;
+    const confirmed = await confirmDialog({
+      title: `Delete ${displayName}`,
+      message: 'This removes the agent from the registry, revokes all grants, and stops its container. This action cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
     const original = btn.innerHTML;
     btn.disabled = true;
     btn.label = 'Deleting...';
@@ -887,7 +905,13 @@ class AgentCardPage extends HTMLElement {
   }
 
   async #revokeGrant(kind, granteeId) {
-    if (!confirm('Revoke this access grant?')) return;
+    const confirmed = await confirmDialog({
+      title: 'Revoke access',
+      message: 'Revoke this access grant? The user or team will lose access to this agent.',
+      confirmLabel: 'Revoke',
+      danger: true,
+    });
+    if (!confirmed) return;
     const paths = { user: 'users', team: 'teams', department: 'departments', agent: 'agents' };
     try {
       const res = await apiFetch(
@@ -1152,7 +1176,13 @@ class AgentCardPage extends HTMLElement {
 
   async #submitTransfer() {
     if (!this.#transferPicked) return;
-    if (!confirm(`Transfer ownership to ${this.#transferPicked.label}? This cannot be undone from here.`)) return;
+    const transferConfirmed = await confirmDialog({
+      title: 'Transfer ownership',
+      message: `Transfer ownership to <strong>${this.#transferPicked.label}</strong>? This cannot be undone.`,
+      confirmLabel: 'Transfer',
+      danger: true,
+    });
+    if (!transferConfirmed) return;
     const err = this.querySelector('#acp-transfer-error');
     err.hidden = true;
     try {
@@ -1233,7 +1263,7 @@ class AgentCardPage extends HTMLElement {
   #connectorCardHtml(c) {
     const name = c.display_name || c.name || 'Connector';
     const tools = this.#connectorTools.get(c.connector_id) || [];
-    const allowed = tools.filter((t) => t.stance !== 'deny').length;
+    const allowed = tools.filter((t) => t.stance !== 'block').length;
     const summary = c.enabled === false
       ? 'Disabled'
       : tools.length ? `${allowed} of ${tools.length} tools allowed` : 'No tools synced yet';
@@ -1277,9 +1307,9 @@ class AgentCardPage extends HTMLElement {
             <span class="acp-mcp-tool-desc">${escHtml(t.description || '')}</span>
             <div class="acp-stance">
               <button type="button" class="acp-stance-btn is-allow" data-tool-index="${i}" data-stance="allow"
-                aria-pressed="${t.stance !== 'deny'}" ${disabled ? 'disabled' : ''}>Allow</button>
-              <button type="button" class="acp-stance-btn is-block" data-tool-index="${i}" data-stance="deny"
-                aria-pressed="${t.stance === 'deny'}" ${disabled ? 'disabled' : ''}>Block</button>
+                aria-pressed="${t.stance !== 'block'}" ${disabled ? 'disabled' : ''}>Allow</button>
+              <button type="button" class="acp-stance-btn is-block" data-tool-index="${i}" data-stance="block"
+                aria-pressed="${t.stance === 'block'}" ${disabled ? 'disabled' : ''}>Block</button>
             </div>
           </div>`).join('')}
       </div>`;
@@ -1327,7 +1357,7 @@ class AgentCardPage extends HTMLElement {
       const rules = tools.map((t) => ({
         connector_id: connectorId,
         tool_pattern: t.name,
-        stance: t.stance === 'deny' ? 'deny' : 'allow',
+        stance: t.stance === 'block' ? 'block' : 'allow',
       }));
       await call('saveAgentMcpToolRules', this.#agent.id, rules);
     } catch (e) {

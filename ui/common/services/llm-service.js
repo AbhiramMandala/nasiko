@@ -20,6 +20,14 @@ const createLlmConfig = async (body) => {
   });
 };
 
+const updateLlmConfig = async (id, body) => {
+  return fetchApi(`/llm-configs/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
 const deleteLlmConfig = async (id) => {
   return fetchApi(`/llm-configs/${encodeURIComponent(id)}`, { method: 'DELETE' });
 };
@@ -39,7 +47,7 @@ const fetchLlmProviders = async () => {
 const fetchSecretsList = async () => fetchApi('/secrets');
 
 registerAll({
-  fetchLlmConfigs, createLlmConfig, deleteLlmConfig,
+  fetchLlmConfigs, createLlmConfig, updateLlmConfig, deleteLlmConfig,
   setDefaultLlmConfig, clearDefaultLlmConfig,
   fetchLlmProviders, fetchSecretsList,
 }, { replace: true });

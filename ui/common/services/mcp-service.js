@@ -13,6 +13,10 @@ const fetchMcpConnectors = async () => {
   return fetchApi('/mcp/connectors');
 };
 
+const fetchMcpConnectorDetail = async (id) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(id)}`);
+};
+
 const registerMcpConnector = async (body) => {
   return fetchApi('/mcp/connectors', {
     method: 'POST',
@@ -151,7 +155,7 @@ const saveAgentMcpToolRules = async (agentId, rules) => {
 };
 
 registerAll({
-  fetchMcpConnectors, registerMcpConnector, probeMcpConnector,
+  fetchMcpConnectors, fetchMcpConnectorDetail, registerMcpConnector, probeMcpConnector,
   updateMcpConnector, deleteMcpConnector,
   uploadMcpServerZip, uploadMcpServerGithub,
   fetchMcpMyUploads, fetchMcpBuildStatus, fetchMcpBuildLogs,

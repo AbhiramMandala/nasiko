@@ -29,7 +29,7 @@ export default {
   scenarios: {
     drafting: async (page) => {
       await page.evaluate(() => {
-        __dataSources.registerAll({ generateWorkflow: () => new Promise(() => {}); // never settles
+        __dataSources.registerAll({ generateWorkflow: () => new Promise(() => {}), // never settles
       }) }, { replace: true });
       await page.fill("#wf-desc", "Draft three caption variations each weekday, review the tone, then queue the approved ones for publishing.");
       await page.click("#draft-btn");

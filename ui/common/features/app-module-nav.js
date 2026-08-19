@@ -7,6 +7,8 @@
  * either `{ label, url }` (link, active by path match) or
  * `{ label, section }` (in-page section — clicking dispatches a bubbling
  * `module-nav-select` CustomEvent with `{ section }` for the host page).
+ * A link item may also carry `sessionId` (orchestrator chats): that row gets a
+ * delete button which removes the chat server-side and drops the row.
  *
  * Desktop (≥1024px): a 200px column pinned to the content card's left edge —
  * the host page component gets matching left padding from
@@ -197,7 +199,7 @@ app-module-nav:not(:defined) { display: block; }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .row, .group-head .chev, .group-items, .mobile-toggle .chev { transition: none; }
+    .row, .row-del, .group-head .chev, .group-items, .mobile-toggle .chev { transition: none; }
     .skel-row { animation: none; opacity: 0.6; }
   }
 }
@@ -346,6 +348,13 @@ export class AppModuleNav extends HTMLElement {
   };
 
   #handleClick = (e) => {
+    const del = e.target.closest("[data-delete-session]");
+    if (del) {
+      e.preventDefault();
+      e.stopPropagation();
+      this.#deleteSession(del);
+      return;
+    }
     if (e.target.closest("[data-mobile-toggle]")) {
       this.#mobileOpen = !this.#mobileOpen;
       this.classList.toggle("mobile-open", this.#mobileOpen);
@@ -391,6 +400,48 @@ export class AppModuleNav extends HTMLElement {
     }
   };
 
+  /** Delete the chat session a row points at (orchestrator session rows).
+   *  The rendered tree is also the cached tree, so drop the row from `#nav`
+   *  and rewrite the cache — otherwise the next page load repaints it. */
+  async #deleteSession(btn) {
+    const sessionId = btn.dataset.deleteSession;
+    const wrap = btn.closest(".row-del-wrap");
+    btn.disabled = true;
+    try {
+      await callOptional('deleteSession', sessionId);
+    } catch (e) {
+      console.warn("deleteSession failed:", e);
+      btn.disabled = false;
+      return;
+    }
+
+    wrap?.remove();
+    if (this.#nav?.groups) {
+      this.#nav = {
+        ...this.#nav,
+        groups: this.#nav.groups
+          .map((g) => (g.items ? { ...g, items: g.items.filter((i) => i.sessionId !== sessionId) } : g))
+          // A group emptied by the deletion would render as a stray heading,
+          // the same reason fetchModuleNav omits it when there are no sessions.
+          .filter((g) => !g.items || g.items.length),
+      };
+      this.#render();
+      try {
+        sessionStorage.setItem(
+          `app-module-nav:${this.getAttribute("module")}`,
+          JSON.stringify(this.#nav),
+        );
+      } catch { /* quota exceeded */ }
+    }
+
+    // Deleting the chat that is on screen leaves a transcript with no session
+    // behind it — send the user back to the orchestrator entry point.
+    if (new URLSearchParams(window.location.search).get("session_id") === sessionId) {
+      routerNavigate('/');
+    }
+  }
+
+
   #normalizePath(p) {
     return p
       .replace(/\/index\.html$/, "/")
@@ -415,7 +466,9 @@ export class AppModuleNav extends HTMLElement {
       </div>`;
   }
 
-  #itemHtml(item) {
+  /** `cls` is the row's second class — `child` for a group item, `group-head`
+   *  for an itemless group rendered as a single heading-level row. */
+  #itemHtml(item, cls = "child") {
     if (item.section != null) {
       const active = this.getAttribute("active-section") === item.section;
       // `url` names the page that owns the sections: a link so the row works
@@ -429,8 +482,36 @@ export class AppModuleNav extends HTMLElement {
         <span class="row-label">${escHtml(item.label)}</span></${item.url ? "a" : "button"}>`;
     }
     const active = this.#isActive(item.url);
-    return `<a class="row child${active ? " is-active" : ""}" href="${escHtml(item.url)}"
+    const link = `<a class="row ${cls}${active ? " is-active" : ""}" href="${escHtml(item.url)}"
       ${active ? 'aria-current="page"' : ""}><span class="row-label">${escHtml(item.label)}</span></a>`;
+    if (item.sessionId == null) return link;
+    return `<div class="row-del-wrap">${link}
+      <button type="button" class="row-del" data-delete-session="${escHtml(item.sessionId)}"
+        title="Delete chat" aria-label="Delete chat ${escHtml(item.label)}">${icons.trash("", 13)}</button>
+    </div>`;
+  }
+
+  /** A group with no items is a single heading-level row, not a collapsible
+   *  group (Orchestrator's "Orchestrate a task") — no chevron, since there is
+   *  nothing to collapse. It takes either form an item can: a `section` (a view
+   *  of this same document) or a plain `url`. */
+  #groupHtml(g) {
+    if (!g.items?.length && (g.url || g.section != null)) {
+      return this.#itemHtml(g, "group-head");
+    }
+    return `
+      <div class="group${this.#collapsed.has(g.label) ? " is-collapsed" : ""}">
+        <button type="button" class="row group-head" data-group="${escHtml(g.label)}"
+          aria-expanded="${!this.#collapsed.has(g.label)}">
+          <span class="chev">${icons.chevronDown("", 12)}</span>
+          <span class="row-label">${escHtml(g.label)}</span>
+        </button>
+        <div class="group-items">
+          <div class="items-clip">
+            ${(g.items || []).map((item) => this.#itemHtml(item)).join("")}
+          </div>
+        </div>
+      </div>`;
   }
 
   #render() {
@@ -470,20 +551,7 @@ export class AppModuleNav extends HTMLElement {
         <span class="mod-title">${escHtml(nav.title)}</span>
       </div>
       <nav class="mod-groups" aria-label="${escHtml(nav.title)} navigation">
-        ${nav.groups.map((g) => `
-          <div class="group${this.#collapsed.has(g.label) ? " is-collapsed" : ""}">
-            <button type="button" class="row group-head" data-group="${escHtml(g.label)}"
-              aria-expanded="${!this.#collapsed.has(g.label)}">
-              <span class="chev">${icons.chevronDown("", 12)}</span>
-              <span class="row-label">${escHtml(g.label)}</span>
-            </button>
-            <div class="group-items">
-              <div class="items-clip">
-                ${g.items.map((item) => this.#itemHtml(item)).join("")}
-              </div>
-            </div>
-          </div>
-        `).join("")}
+        ${nav.groups.map((g) => this.#groupHtml(g)).join("")}
       </nav>`;
   }
 }
