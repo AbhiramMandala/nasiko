@@ -814,6 +814,29 @@
     }
   }
 
+  /* The three children the picker markup emits. Ported from main alongside the
+     method-card itself — the card landed without them, which left the icon at
+     the card's 14px svg rule instead of 22px and the title/description
+     unstyled. Placed after .upload-method-card so the icon's own svg rule wins
+     on order (both selectors are equal specificity). */
+  .upload-method-icon {
+    display: flex;
+    color: var(--color-text-muted);
+    & svg { width: 22px; height: 22px; }
+  }
+
+  .upload-method-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-text-main);
+  }
+
+  .upload-method-desc {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    line-height: 1.4;
+  }
+
   /* Sliding indicator takes over the (neutral, not gold) active bar */
   .upload-tabs.has-tab-indicator .upload-tab.is-active { border-bottom-color: transparent; }
   .upload-tabs .tab-indicator { background: var(--bg-inverse); }
