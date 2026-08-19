@@ -10,6 +10,7 @@
  * @attr {string} search-placeholder - Placeholder text for the search input
  * @attr {boolean} search - Show the search input
  * @attr {string} detail - CSS selector or element name to render a detail panel on row click
+ * @attr {string} empty-message - Shown when a fetch returns no rows (default: "Nothing here yet")
  * @fires loading-start - Before each fetch — bubbles
  * @fires loading-end - After each fetch — bubbles
  * @note Columns are inferred from the first item's keys, or define `<col data-key="…" data-label="…">` children.

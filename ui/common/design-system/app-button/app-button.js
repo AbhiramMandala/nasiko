@@ -3,7 +3,9 @@
  *
  * @element app-button
  * @attr {string} variant - Visual style: `primary` (default) | `secondary` | `ghost` | `danger` | `dark`
- * @attr {string} size - Size modifier: `sm` (--control-h-sm) | (default) --control-h-lg
+ * @attr {string} size - Size modifier: `sm` — the compact control height (--control-h-sm).
+ *   Omit for the default, large height (--control-h-lg). `lg` is not a value: the `is-lg`
+ *   rule was removed, so it would land on the base height by accident rather than by design.
  * @attr {boolean} disabled - Disables the button
  * @attr {boolean} loading - Shows a spinner and disables the button
  * @attr {string} type - HTML button type: `button` (default) | `submit` | `reset`
