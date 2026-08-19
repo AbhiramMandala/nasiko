@@ -1442,6 +1442,15 @@ class AgentCardPage extends HTMLElement {
             </dl>
           </section>
           <section class="acp-section">
+            <h2 class="acp-section-title">Features</h2>
+            <p class="acp-section-sub">Agent-level feature flags. Changes take effect on next restart.</p>
+            <label class="acp-field acp-toggle-field">
+              <span class="acp-field-label">Prompt Comments</span>
+              <input type="checkbox" id="acp-feature-prompt-comments" ${(a.metadata?.features?.prompt_comments === 'enabled') ? 'checked' : ''} />
+              <span class="acp-field-hint">Enable automatic instruction maintenance (prompt comments). The agent can record, prune, and manage workspace instructions with rationale annotations.</span>
+            </label>
+          </section>
+          <section class="acp-section">
             <secrets-manager id="acp-secrets" scope="agent" defer
               agent-id="${escAttr(a.id)}"
               heading="Secrets"
@@ -1458,6 +1467,25 @@ class AgentCardPage extends HTMLElement {
   #wireSettings() {
     const identityForm = this.querySelector('#acp-identity-form');
     identityForm?.addEventListener('submit', (e) => this.#saveIdentity(e));
+
+    const promptCommentsToggle = this.querySelector('#acp-feature-prompt-comments');
+    promptCommentsToggle?.addEventListener('change', (e) => this.#toggleFeature('prompt_comments', e.target.checked));
+  }
+
+  async #toggleFeature(key, enabled) {
+    const metadata = { ...(this.#agent.metadata || {}), features: { ...(this.#agent.metadata?.features || {}), [key]: enabled ? 'enabled' : 'disabled' } };
+    try {
+      await fetchApi(`/agents/${encodeURIComponent(this.#agent.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metadata }),
+      });
+    } catch (err) {
+      showToast(`Failed to update feature: ${err.message}`);
+      return;
+    }
+    this.#agent.metadata = metadata;
+    showToast(`${key.replace(/_/g, ' ')} ${enabled ? 'enabled' : 'disabled'} — restart the agent to apply`);
   }
 
   async #saveIdentity(e) {

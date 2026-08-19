@@ -381,7 +381,8 @@ impl AppState {
         env
     }
 
-    /// Build the full environment for an agent container: platform-level vars + agent-specific secrets.
+    /// Build the full environment for an agent container: platform-level vars + agent-specific secrets
+    /// + feature flags from metadata.
     pub async fn agent_env(
         &self,
         agent_id: uuid::Uuid,
@@ -391,6 +392,25 @@ impl AppState {
             env.entry(key).or_insert(value);
         }
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
+
+        // Inject feature flags from agents.metadata.features as env vars.
+        if let Ok(row) = sqlx::query_scalar::<_, serde_json::Value>(
+            "SELECT metadata FROM agents WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(agent_id)
+        .fetch_one(&self.db)
+        .await
+        {
+            if let Some(features) = row.get("features").and_then(|f| f.as_object()) {
+                for (key, value) in features {
+                    if let Some(val) = value.as_str() {
+                        let env_key = format!("NASIKO_{}", key.to_uppercase());
+                        env.entry(env_key).or_insert_with(|| val.to_string());
+                    }
+                }
+            }
+        }
+
         env
     }
 }
