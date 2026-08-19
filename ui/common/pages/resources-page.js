@@ -16,6 +16,10 @@ import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
+// The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
+// gutter it pins into. Nothing imported it, so under the client router the
+// gutter was reserved and the nav never upgraded.
+import '/common/features/app-module-nav.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -41,6 +45,7 @@ class ResourcesPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <app-module-nav module="observability"></app-module-nav>
       <div class="page-head">
         <div>
           <h1 class="title-page">Resources</h1>

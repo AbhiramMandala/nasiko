@@ -17,6 +17,10 @@ import '/common/features/wf-run-steps.js';
 import styles from './executions-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
+// The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
+// gutter it pins into. Nothing imported it, so under the client router the
+// gutter was reserved and the nav never upgraded.
+import '/common/features/app-module-nav.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -38,6 +42,7 @@ class ExecutionsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <app-module-nav module="orchestrator"></app-module-nav>
       <h1 class="title-page page-title">All executions</h1>
       <div class="tabs" role="tablist">
         <button type="button" class="tab is-active" role="tab" data-tab="active" aria-selected="true">Active</button>

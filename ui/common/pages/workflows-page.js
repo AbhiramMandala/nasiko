@@ -17,6 +17,10 @@ import styles from './workflows-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';
+// The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
+// gutter it pins into. Nothing imported it, so under the client router the
+// gutter was reserved and the nav never upgraded.
+import '/common/features/app-module-nav.js';
 
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -37,6 +41,7 @@ class WorkflowsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <app-module-nav module="orchestrator"></app-module-nav>
       <header class="page-head">
         <div class="page-head-text">
           <h1 class="title-page">Workflows</h1>

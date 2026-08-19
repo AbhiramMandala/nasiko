@@ -711,6 +711,22 @@ app-header:not(:defined) {
   view-transition-name: app-header;
 }
 
+/* Same problem one level down. The module nav is the same nav on both sides of
+   a navigation *within* a module (Agents → Builds, Settings → Secrets), but it
+   lives inside each page component, so with no name of its own it rode the
+   `root` group and dimmed and slid with the page body on every click — the
+   "whole page flickers" report. Modules whose rows are in-page sections (MCP,
+   most of Settings) never navigate at all, which is why only the link rows did
+   it. Named, it gets its own group: the UA cross-fade blends the two halves
+   with `plus-lighter`, so identical content holds steady, and it still fades
+   properly when a navigation enters or leaves a module and the nav is only on
+   one side. No frozen `animation: none` here for that reason — unlike the
+   header, this element is not on every page. */
+app-module-nav,
+app-module-nav:not(:defined) {
+  view-transition-name: app-module-nav;
+}
+
 /* Frozen regardless of prefers-reduced-motion: the shell is the same shell on
    both sides of the navigation, so there is nothing to animate between. */
 ::view-transition-old(app-header),

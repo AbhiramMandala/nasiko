@@ -27,23 +27,30 @@ import { registerAll, resolveOptional } from '/common/core/data-sources.js';
 const BASE_ITEMS = () => [
   // rail: true → shown as a rail module icon; everything else is reachable
   // through the module tree navs and the ⌘F nav search.
-  { title: "Orchestrator", url: "/", icon: "brain", rail: true },
-  // On the rail: without it the only route to the workflow list was to open
-  // "Create workflow" and back out of it.
-  { title: "Workflows", url: "/workflows", icon: "workflow", rail: true },
-  { title: "Executions", url: "/executions", icon: "play" },
-  { title: "Agents", url: "/agents", icon: "bot", rail: true },
-  { title: "Sessions", url: "/sessions", icon: "activity", rail: true },
-  { title: "MCP gateway", url: "/mcp", icon: "server", rail: true },
+  //
+  // module → which MODULE_NAVS tree a page belongs to. The rail item carrying
+  // the same key stays selected while any of its children is open, so a child
+  // page never leaves the rail with nothing highlighted.
+  { title: "Orchestrator", url: "/", icon: "brain", rail: true, module: "orchestrator" },
+  // Not on the rail: workflows are the Orchestrator module's second group, and
+  // a second rail icon into the same tree read as a separate module.
+  { title: "Workflows", url: "/workflows", icon: "workflow", module: "orchestrator" },
+  { title: "Executions", url: "/executions", icon: "play", module: "orchestrator" },
+  { title: "Agents", url: "/agents", icon: "bot", rail: true, module: "agents" },
+  { title: "Sessions", url: "/sessions", icon: "activity", rail: true, module: "observability" },
+  { title: "MCP gateway", url: "/mcp", icon: "server", rail: true, module: "mcp" },
   { title: "LLM router", url: "/llm-router", icon: "route", rail: true },
   { title: "TokenOps", url: "/tokenops", icon: "banknote", rail: true },
-  { title: "Your Agents", url: "/your-agents", icon: "user" },
-  { title: "Add Agent", url: "/add-agent", icon: "plus" },
+  { title: "Your Agents", url: "/your-agents", icon: "user", module: "agents" },
+  { title: "Add Agent", url: "/add-agent", icon: "plus", module: "agents" },
   { title: "Set up CLI", url: "/setup-cli", icon: "terminal" },
-  { title: "Flows", url: "/flows", icon: "cornerUpRight" },
-  { title: "Builds", url: "/builds", icon: "cube" },
-  { title: "Secrets", url: "/secrets", icon: "lock" },
-  { title: "Settings", url: "/settings", icon: "settings", rail: true },
+  { title: "Flows", url: "/flows", icon: "cornerUpRight", module: "observability" },
+  // In the Observability module tree but missing here, so ⌘F couldn't find it
+  // and the rail lost its selection on the page.
+  { title: "Resources", url: "/resources", icon: "activity", module: "observability" },
+  { title: "Builds", url: "/builds", icon: "cube", module: "agents" },
+  { title: "Secrets", url: "/secrets", icon: "lock", module: "settings" },
+  { title: "Settings", url: "/settings", icon: "settings", rail: true, module: "settings" },
 ];
 
 // In-card module tree navs (app-module-nav). Items are either page links

@@ -4,6 +4,10 @@ import { initialView, syncView } from '/common/utils/module-view.js';
 
 import styles from './settings-page.css' with { type: 'css' };
 import { call } from '../core/data-sources.js';
+// The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
+// gutter it pins into. Nothing imported it, so under the client router the
+// gutter was reserved and the nav never upgraded.
+import '/common/features/app-module-nav.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -48,6 +52,7 @@ class SettingsPage extends HTMLElement {
     this.#section = initialView(TABS.map(t => t.key), TABS[0].key);
 
     this.innerHTML = `
+      <app-module-nav module="settings"></app-module-nav>
       <div class="content">
         ${TABS.map(t => `
           <div class="panel-head${t.key === this.#section ? ' is-active' : ''}" data-panel-head="${t.key}">

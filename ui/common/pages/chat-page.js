@@ -14,6 +14,10 @@ registerAll({ transcribeAudio }, { replace: true });
 
 import styles from './chat-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
+// The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
+// gutter it pins into. Nothing imported it, so under the client router the
+// gutter was reserved and the nav never upgraded.
+import '/common/features/app-module-nav.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class ChatPage extends HTMLElement {

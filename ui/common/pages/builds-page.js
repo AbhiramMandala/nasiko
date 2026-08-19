@@ -1,6 +1,10 @@
 import '/common/features/smart-table.js';
 
 import styles from './builds-page.css' with { type: 'css' };
+// The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
+// gutter it pins into. Nothing imported it, so under the client router the
+// gutter was reserved and the nav never upgraded.
+import '/common/features/app-module-nav.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const STATUS_VARIANTS = { success: 'success', building: 'info', failed: 'error', queued: 'neutral', cancelled: 'warning' };
@@ -15,6 +19,7 @@ class BuildsPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
     this.innerHTML = `
+      <app-module-nav module="agents"></app-module-nav>
       <header class="page-head">
         <div>
           <h1 class="title-page">Builds</h1>

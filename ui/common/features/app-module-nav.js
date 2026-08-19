@@ -305,10 +305,14 @@ export class AppModuleNav extends HTMLElement {
 
     let fresh = null;
     try {
-      this.#nav = await callOptional('fetchModuleNav', module);
-      try {
-        sessionStorage.setItem(cacheKey, JSON.stringify(this.#nav));
-      } catch { /* quota exceeded */ }
+      // Into `fresh`, not `this.#nav`: the empty-answer guard below reads `fresh`,
+      // so assigning the fetch to `this.#nav` left `fresh` permanently null. Every
+      // cold-cache load therefore fell into that guard, overwrote the tree it had
+      // just fetched with null and deleted the element. It only ever survived on a
+      // warm sessionStorage cache — which is why the module nav was there on a
+      // second visit and gone on the first. Nor is the answer cached here: the
+      // guard exists precisely to keep a degraded one out of the cache.
+      fresh = await callOptional('fetchModuleNav', module);
     } catch (e) {
       console.warn("fetchModuleNav failed:", e);
     }

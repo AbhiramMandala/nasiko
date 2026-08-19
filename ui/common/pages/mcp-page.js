@@ -182,7 +182,10 @@ class McpPage extends HTMLElement {
     let connResp;
     let toolkitsResp;
     try {
-      [connResp, uploadsResp, toolkitsResp] = await Promise.all([
+      // My-uploads is fetched but unread — the slot is skipped rather than bound
+      // to an undeclared name, which threw a ReferenceError under strict mode and
+      // took the whole catalog down the error path on every load.
+      [connResp, , toolkitsResp] = await Promise.all([
         call('fetchMcpConnectors'),
         call('fetchMcpMyUploads').catch(() => ({ data: [] })),
         call('fetchMcpToolkits').catch(() => ({ data: { toolkits: [] } })),

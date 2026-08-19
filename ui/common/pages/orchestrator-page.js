@@ -8,6 +8,10 @@ import { transcribeBlob } from '/common/utils/voice-utils.js';
 import { registerAll } from '/common/core/data-sources.js';
 import '/common/features/voice-input.js';
 import '/common/features/agent-steps.js';
+// Both render branches below mount an <app-module-nav>, and page-layout.css holds
+// the desktop gutter it pins into. Nothing imported it, so it never upgraded: an
+// empty static block in the empty state, and no nav at all in the hero.
+import '/common/features/app-module-nav.js';
 
 const transcribeAudio = transcribeBlob;
 registerAll({ transcribeAudio }, { replace: true });
@@ -32,6 +36,7 @@ class OrchestratorPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <app-module-nav module="orchestrator"></app-module-nav>
       <div class="hero-icon" aria-hidden="true">${icons.route('', 24)}</div>
       <h1 class="title">Orchestrate a task</h1>
       <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it</p>

@@ -34,6 +34,7 @@ class SessionsPage extends HTMLElement {
 
   #render() {
     this.innerHTML = `
+      <app-module-nav module="observability"></app-module-nav>
       <div class="sessions-header">
         <div class="sessions-header-info">
           <h1 class="title-page">Execution history</h1>

@@ -240,34 +240,12 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   }
   .rail-item .rail-label { display: none; }
 
-  /* Instant hover tooltip. The collapsed rail shows a glyph and nothing else, and
-     the native title= tip only appears after ~1s — too late to be the label. Dark
-     pill right of the icon per the NightOwl mock. */
+  /* Instant hover label for the collapsed rail comes from the data-tooltip
+     attribute and app-tooltip.js — the native title= tip only appears after ~1s, too late to
+     be the label. No ::after pill here: this sheet used to draw one from
+     attr(data-tip), an attribute the markup never emitted, so every rail item
+     grew an empty dark box on hover beside the real tooltip. */
   .rail-item { position: relative; }
-  .rail-item::after {
-    content: attr(data-tip);
-    position: absolute;
-    left: calc(100% + var(--s-8));
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 90;
-    padding: 5px var(--s-8);
-    border-radius: var(--r-6);
-    background: var(--shell-bg);
-    color: var(--shell-fg);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 16px;
-    white-space: nowrap;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity var(--transition-fast);
-  }
-  .rail-item:hover::after,
-  .rail-item:focus-visible::after { opacity: 1; }
-  /* The expanded rail and the mobile sheet already render the name inline. */
-  :scope.is-expanded .rail-item::after,
-  .mobile-nav .rail-item::after { content: none; }
 
   /* Expanded rail keeps its scroll container — labelled rows are tall, no pill. */
   :scope.is-expanded .rail {
@@ -398,9 +376,19 @@ export class AppHeader extends HTMLElement {
   };
 
   #onRouteChange = () => {
-    // Update rail active indicators and mobile nav highlights
+    // Update rail active indicators and mobile nav highlights.
+    // The module fallback has to be reapplied here, not just in #railItem:
+    // under the client router the rail is rendered once and only this handler
+    // runs on navigation, so recomputing from #isActive alone dropped the
+    // parent highlight and left the rail blank on every child route.
+    const activeModule = this.#activeModule(this.#navLinks());
     this.querySelectorAll(".rail-item").forEach((a) => {
-      a.classList.toggle("is-active", this.#isActive(a.getAttribute("href")));
+      const module = a.dataset.module;
+      const active = this.#isActive(a.getAttribute("href"))
+        || (!!module && module === activeModule);
+      a.classList.toggle("is-active", active);
+      if (active) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
     });
     // Close mobile nav on navigation
     if (this.#mobileOpen) {
@@ -573,7 +561,7 @@ export class AppHeader extends HTMLElement {
     // 18px on the ink rail; topbar utility icons stay at 1.
     const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('', 18, 1.75) : icons.cube('', 18, 1.75);
     return `<a href="${escHtml(href)}" class="rail-item${active ? " is-active" : ""}"
-      aria-label="${titleEsc}" data-tooltip="${titleEsc}" ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
+      aria-label="${titleEsc}" data-tooltip="${titleEsc}"${link.module ? ` data-module="${escHtml(link.module)}"` : ""} ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
   }
 
   #renderSkeleton() {

@@ -1,5 +1,6 @@
 import { icons } from '/common/utils/icons.js';
 import '/common/features/secrets-manager.js';
+import '/common/features/app-module-nav.js';
 
 import styles from './secrets-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -8,8 +9,9 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 // (GET|POST /api/secrets, DELETE /api/secrets/{name}); this page only supplies
 // the page chrome around it.
 //
-// A view of the Settings module page (web/settings.html, `?view=secrets`), so it
-// renders no module nav of its own — the shell owns one nav for every view.
+// Was a view of the Settings module page, hosted in a `module-shell` that owned
+// one nav for every view. Under the client router `/secrets` mounts straight
+// into the outlet with no shell above it, so the page carries its own nav.
 class SecretsPage extends HTMLElement {
   #initialized = false;
 
@@ -17,6 +19,7 @@ class SecretsPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
     this.innerHTML = `
+      <app-module-nav module="settings"></app-module-nav>
       <header class="page-head">
         <h1 class="title-page">Secrets</h1>
         <p class="page-sub">API credentials stored in this workspace. Router configs and agents reference secrets by name.</p>

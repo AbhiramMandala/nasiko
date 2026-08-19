@@ -42,10 +42,15 @@ export function dismissSplash() {
   if (_dismissed) return;
   _dismissed = true;
 
-  const elapsed = Date.now() - (_readyAt || Date.now());
-  const remaining = Math.max(0, SPLASH_MIN_MS - elapsed);
+  // ponytail: splash disabled — reveal immediately instead of holding for the
+  // brand mark. Uncomment the block below (and the <app-splash> tags in the
+  // index.html files) to restore it.
+  _revealApp();
 
-  setTimeout(() => _fadeOut(), remaining);
+  // const elapsed = Date.now() - (_readyAt || Date.now());
+  // const remaining = Math.max(0, SPLASH_MIN_MS - elapsed);
+  //
+  // setTimeout(() => _fadeOut(), remaining);
 }
 
 function _fadeOut() {

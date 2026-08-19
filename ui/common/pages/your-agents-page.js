@@ -18,6 +18,10 @@ import { call } from '../core/data-sources.js';
 // In MPA mode, your-agents-page.css was <link>ed in the HTML. In SPA mode the
 // router lazy-loads this module, so we adopt the sheet here too.
 import yourAgentsStyles from './your-agents-page.css' with { type: 'css' };
+// The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
+// gutter it pins into. Nothing imported it, so under the client router the
+// gutter was reserved and the nav never upgraded.
+import '/common/features/app-module-nav.js';
 if (!document.adoptedStyleSheets.includes(yourAgentsStyles)) {
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, yourAgentsStyles];
 }
@@ -221,6 +225,7 @@ class YourAgentsPage extends HTMLElement {
    *  your-agents view. */
   #shell() {
     return `
+      <app-module-nav module="agents"></app-module-nav>
       <div class="page-header">
         <div class="page-header-top">
           <div>

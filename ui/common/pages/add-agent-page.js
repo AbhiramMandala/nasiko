@@ -4,6 +4,10 @@ import '/common/design-system/app-modal/app-modal.js';
 import styles from './add-agent-page.css' with { type: 'css' };
 import '/common/design-system/app-button/app-button.js';
 import { navigate as routerNavigate } from '../core/router.js';
+// Importing an agent is a step in the Agent registry module, so it carries that
+// module's tree. add-agent-page.css already had the `align-self: stretch` rule
+// for the mobile disclosure bar; nothing was mounting the element it styles.
+import '/common/features/app-module-nav.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -38,6 +42,7 @@ function agentNameError(name) {
 class AddAgentPage extends HTMLElement {
   connectedCallback() {
     this.innerHTML = `
+      <app-module-nav module="agents"></app-module-nav>
       <span class="page-icon">${icons.cube('', 28)}</span>
       <h1 class="title-page">Import new agent</h1>
       <p class="page-subtitle">Choose how you would like to register your agent.</p>
