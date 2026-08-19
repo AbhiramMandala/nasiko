@@ -184,8 +184,8 @@ export class SmartTable extends HTMLElement {
     if (!this.dataFn) {
       // A declared data-fn that will not resolve is a real bug — say so on
       // screen. No declared name means the owner sets `.dataFn` directly and
-      // calls refresh() itself (see runtime-page), so an early refresh here is
-      // expected and must stay silent.
+      // calls refresh() itself, as several edition pages do, so an early
+      // refresh here is expected and must stay silent.
       if (this.#dataFnName) {
         this.#showError(`No data source named "${this.#dataFnName}".`);
         console.error(

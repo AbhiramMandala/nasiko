@@ -43,25 +43,16 @@ const missing = new Set();
  * Re-registering the same name throws, because the old `window` assignment
  * silently overwrote and the failure surfaced later as "wrong data on one page".
  * Pass `{ replace: true }` when overriding on purpose (tests, a page-scoped
- * filter variant — see `users-page`'s previous `window.fetchUsers` monkey-patch,
- * which this replaces).
- *
- * Values, not only functions: the two registrations that are plain data —
- * `navExtension` (an object of hooks) and `setupCliSteps` (an array) — were
- * dropped on the floor by a `typeof fn === 'function'` guard here and in
- * `registerAll`, silently. On EE that meant `nav-ext.js` registered nothing, so
- * `navigation.js` fell back to the base nav and every enterprise item (Users,
- * Departments, Teams, Access Control, Team Access, Group Mappings, Agent
- * Runtime, the whole org module tree) was missing from the sidebar. Only
- * undefined is rejected now — a name must map to something.
+ * filter variant — this replaces the per-page `window.fetch*` monkey-patching
+ * that used to do the same job).
  *
  * @param {string} name
- * @param {Function|object} fn
+ * @param {Function} fn
  * @param {{ replace?: boolean }} [opts]
  */
 export function register(name, fn, { replace = false } = {}) {
   if (typeof name !== 'string' || !name) throw new TypeError('register() needs a name');
-  if (fn === undefined || fn === null) throw new TypeError(`register("${name}") needs a value`);
+  if (typeof fn !== 'function') throw new TypeError(`register("${name}") needs a function`);
   if (sources.has(name) && !replace) {
     throw new Error(
       `Data source "${name}" is already registered. Two definitions of the same name used to be ` +
@@ -75,17 +66,12 @@ export function register(name, fn, { replace = false } = {}) {
 
 /**
  * Register many at once — the shape a service module exports.
- *
- * Skips only `undefined`, so a module can spread an optional export without
- * guarding it. Anything else registers — see `register` on why filtering to
- * functions here silently deleted EE's navigation.
- *
- * @param {Record<string, Function|object>} map
+ * @param {Record<string, Function>} map
  * @param {{ replace?: boolean }} [opts]
  */
 export function registerAll(map, opts) {
   for (const [name, fn] of Object.entries(map)) {
-    if (fn !== undefined) register(name, fn, opts);
+    if (typeof fn === 'function') register(name, fn, opts);
   }
 }
 
@@ -111,7 +97,7 @@ export function override(name, fn) {
  */
 export function resolve(name) {
   const fn = resolveOptional(name);
-  if (fn !== undefined) return fn;
+  if (fn) return fn;
   missing.add(name);
   throw new Error(
     `No data source named "${name}". ${suggest(name)}\n` +

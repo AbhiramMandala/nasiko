@@ -2,7 +2,6 @@
   "_comment": "Measured architectural debt, per rule. Every number here is something someone chose not to fix yet. Counts may go down but never up. Regenerate with `node ui/scripts/ui-lint.mjs --update-baseline`.",
   "counts": {
     "layer-direction": 0,
-    "oss-must-not-import-ee": 0,
     "no-private-escape-helper": 0,
     "no-window-data-function": 0,
     "teardown-required": 0,
@@ -11,6 +10,7 @@
     "no-hardcoded-color": 4,
     "design-system-colors-are-tokens": 0,
     "url-policy": 0,
-    "ee-element-in-shared-css": 0
+    "public-must-not-import-private": 0,
+    "private-element-in-shared-code": 0
   }
 }

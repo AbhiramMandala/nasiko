@@ -22,11 +22,11 @@ import { resolve, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { glob } from 'node:fs/promises';
 
+import { importGlobs, resolveMount } from './editions.mjs';
+
 const uiRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(uiRoot, '..');
 const commonRoot = resolve(uiRoot, 'common');
-/** The EE components mount (`EeComponents` in ee/server/src/main.rs). */
-const eeComponentsRoot = resolve(repoRoot, 'ui/ee/components');
 
 const SPEC_PATTERNS = [
   /(?:^|\s)(?:import|export)[^'"\n]*from\s*['"]([^'"]+)['"]/gm,
@@ -34,13 +34,10 @@ const SPEC_PATTERNS = [
   /import\(\s*['"]([^'"]+)['"]/gm,
 ];
 
-const SEARCH = [
-  'ui/common/**/*.js',
-  'ui/oss/*.js',
-  'ui/ee/components/**/*.js',
-  'ui/ee/web/**/*.js',
-  'ui/ee/registry/**/*.js',
-];
+// The shared tree, plus whatever each edition declares in its edition.json.
+// Hardcoding the per-edition globs here would publish the private layout — see
+// the comment at the top of editions.mjs.
+const SEARCH = ['ui/common/**/*.js', ...importGlobs()];
 
 const SKIP = (p) => p.includes('/vendor/') || p.includes('/.preview/') || p.endsWith('.preview.js');
 
@@ -60,8 +57,9 @@ for (const pattern of SEARCH) {
     }
     for (const spec of specs) {
       let target;
+      const mounted = resolveMount(spec);
       if (spec.startsWith('/common/')) target = resolve(commonRoot, spec.slice('/common/'.length));
-      else if (spec.startsWith('/components/')) target = resolve(eeComponentsRoot, spec.slice('/components/'.length));
+      else if (mounted) target = resolve(repoRoot, mounted);
       else if (spec.startsWith('.')) target = resolve(dirname(abs), spec);
       else continue; // bare specifier, or a site-root path resolved by the server overlay
       checked++;

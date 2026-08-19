@@ -6,12 +6,15 @@ use axum::response::{IntoResponse, Response};
 use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
 use rust_embed::Embed;
 
+// `NASIKO_UI` is resolved by build.rs — see the comment there for why these
+// paths cannot be literals (this crate sits at a different depth in the
+// public repo, where the `oss/` prefix is stripped).
 #[derive(Embed)]
-#[folder = "../../ui/oss/"]
+#[folder = "$NASIKO_UI/oss/"]
 struct OssAssets;
 
 #[derive(Embed)]
-#[folder = "../../ui/common/"]
+#[folder = "$NASIKO_UI/common/"]
 #[prefix = "common/"]
 struct CommonAssets;
 
