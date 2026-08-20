@@ -1,30 +1,36 @@
 //! Detect local coding agents and report their sessions to Nasiko.
 //!
-//! `nasiko agents discover` answers "what coding agents are on this machine".
-//! `nasiko agents install <id>` goes further: it registers that agent in
-//! the control plane and installs a hook that durably queues completed turns
-//! for delivery to the cluster active when they were captured.
+//! `nasiko integrations` answers "what coding agents are on this machine".
+//! `nasiko integration install <id>` goes further: it registers that agent in
+//! the control plane and installs a hook so every session it runs shows up in
+//! `nasiko observe sessions` with tokens, latency and cost — the same views
+//! deployed agents get.
+//!
+//! Nothing here changes the observability read path: spans are emitted under
+//! the attribute names that path already reads (see [`otlp`]), so no server
+//! change is needed for a local session to appear.
 
 mod agents;
 mod catalog;
 mod control_plane;
 mod launcher;
 mod model;
-mod queue;
+mod otlp;
 mod report;
 mod state;
-mod sync;
 
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 use agents::Agent;
 use catalog::Support;
-use state::{AgentState, InstallationBinding, IntegrationState};
+use state::{AgentState, DEFAULT_OTLP_ENDPOINT, IntegrationState};
 
-/// Options accepted by `nasiko agents install`.
+/// Options accepted by `nasiko integration install`.
 pub struct InstallOptions<'a> {
     pub agent_id: &'a str,
+    /// OTLP/HTTP collector to send spans to. Defaults to the local stack.
+    pub otlp_endpoint: Option<&'a str>,
     /// Keep prompt and response text out of exported spans.
     pub no_content: bool,
 }
@@ -37,28 +43,26 @@ pub fn status() -> Result<()> {
     let settings = IntegrationState::load()?;
 
     println!(
-        "{:<10} {:<10} {:<11} {:<20} CONFIG",
-        "AGENT", "DETECTED", "CONNECTED", "VERSION"
+        "{:<10} {:<10} {:<22} CONFIG",
+        "AGENT", "DETECTED", "REPORTING"
     );
-    println!("{}", "-".repeat(88));
+    println!("{}", "-".repeat(78));
     for agent in Agent::ALL.iter().copied() {
         let spec = agent.spec();
-        let reporting = reporting_details(agent, &settings);
         println!(
-            "{:<10} {:<10} {:<11} {:<20} {}",
+            "{:<10} {:<10} {:<22} {}",
             spec.id,
             if detect(agent).is_present() {
                 "yes"
             } else {
                 "-"
             },
-            if reporting.connected { "yes" } else { "no" },
-            reporting.version,
+            reporting_status(agent, &settings),
             tildify(&agent.config_path()),
         );
     }
 
-    println!("\nInstall session reporting:  nasiko agents install <agent>");
+    println!("\nInstall session reporting:  nasiko integration install <agent>");
     Ok(())
 }
 
@@ -68,43 +72,31 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
     require_instrumentable(agent)?;
     require_present(agent)?;
 
+    let endpoint = options.otlp_endpoint.unwrap_or(DEFAULT_OTLP_ENDPOINT);
     let spec = agent.spec();
-    let registration = control_plane::register_agent(agent)?;
+    let created = control_plane::register_agent(agent)?;
     println!(
         "{} agent '{}' in the control plane",
-        if registration.created {
-            "Registered"
-        } else {
-            "Found"
-        },
-        registration.agent_name
+        if created { "Registered" } else { "Found" },
+        spec.agent_name
     );
 
     let artifacts = agent.install()?;
     let (script, registration) = persist_installed_artifacts(
         artifacts,
-        || {
-            save_agent_state(
-                agent,
-                &registration.agent_name,
-                !options.no_content,
-                &registration.binding,
-            )
-        },
+        || save_agent_state(agent, endpoint, !options.no_content),
         || agent.uninstall(),
     )?;
 
     println!("Installed hook              {}", tildify(&script));
     println!("Installed integration       {}", tildify(&registration));
+    println!("Reporting spans to          {endpoint}");
     println!(
         "\nStart a new {} session, then: nasiko observe sessions",
         spec.display_name
     );
     if agent.restart_required() {
         println!("Restart OpenCode first so it loads the new plugin.");
-    }
-    if agent == Agent::Codex {
-        println!("In Codex, run /hooks and trust the new Nasiko command hooks.");
     }
     Ok(())
 }
@@ -133,79 +125,6 @@ pub fn report(agent_id: &str) -> Result<()> {
     report::run(resolve(agent_id)?)
 }
 
-pub fn sync() -> Result<()> {
-    sync::run()
-}
-
-/// Discover and install every supported local coding agent after a successful
-/// account connection. One broken adapter must not block the others.
-pub fn auto_install_detected() -> Result<()> {
-    let settings = IntegrationState::load()?;
-    let agents: Vec<_> = Agent::ALL
-        .iter()
-        .copied()
-        .filter(|agent| agent.spec().support == Support::Instrumented)
-        .filter(|agent| detect(*agent).is_present())
-        .collect();
-    if agents.is_empty() {
-        println!("No supported local coding agents detected.");
-        return Ok(());
-    }
-
-    println!("\nConfiguring detected coding agents for this account...");
-    let mut installed = 0usize;
-    for agent in agents {
-        let spec = agent.spec();
-        if settings.get(spec.id).is_some() {
-            println!(
-                "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: nasiko agents install {}",
-                spec.display_name, spec.id
-            );
-            installed += 1;
-            continue;
-        }
-        let no_content = settings
-            .get(spec.id)
-            .is_some_and(|state| !state.capture_content);
-        match install(InstallOptions {
-            agent_id: spec.id,
-            no_content,
-        }) {
-            Ok(()) => installed += 1,
-            Err(error) => eprintln!(
-                "warning: automatic {} setup failed: {error:#}\n  Retry with: nasiko agents install {}",
-                spec.display_name, spec.id
-            ),
-        }
-    }
-    println!("Automatic coding-agent setup completed for {installed} agent(s).");
-    Ok(())
-}
-
-/// Run automatic setup only when the active cluster has a usable login.
-pub fn auto_install_if_authenticated() {
-    let Ok((cluster, entry)) = crate::config::active_cluster() else {
-        return;
-    };
-    let Some(token) = entry.token.as_deref() else {
-        println!(
-            "Coding-agent setup skipped for {cluster}: not authenticated. Run `nasiko auth login`."
-        );
-        return;
-    };
-    if crate::config::token_expired(token) == Some(true) {
-        println!(
-            "Coding-agent setup skipped for {cluster}: login expired. Run `nasiko auth login`."
-        );
-        return;
-    }
-    if let Err(error) = auto_install_detected() {
-        eprintln!(
-            "warning: automatic coding-agent discovery failed: {error:#}\n  Retry with: nasiko agents discover"
-        );
-    }
-}
-
 // ─── Detection ───────────────────────────────────────────────────────────────
 
 /// What was found on disk for one agent.
@@ -231,67 +150,24 @@ fn detect(agent: Agent) -> Detection {
     }
 }
 
-struct ReportingDetails {
-    connected: bool,
-    version: String,
-    status: String,
-}
-
-fn reporting_details(agent: Agent, settings: &IntegrationState) -> ReportingDetails {
+/// The REPORTING column: what Nasiko is doing for this agent right now.
+fn reporting_status(agent: Agent, settings: &IntegrationState) -> String {
     let spec = agent.spec();
     if spec.support == Support::DetectOnly {
-        return ReportingDetails {
-            connected: false,
-            version: "-".into(),
-            status: Support::DetectOnly.label().to_string(),
-        };
+        return Support::DetectOnly.label().to_string();
     }
     let expected = agent
         .install_version()
         .expect("instrumented adapter has a version");
-    let Some(state) = settings.get(spec.id) else {
-        return ReportingDetails {
-            connected: false,
-            version: "-".into(),
-            status: "not installed".into(),
-        };
-    };
     match agent.installed_version() {
-        Some(version) if version == expected => match state.hook_version {
-            version if version == expected => ReportingDetails {
-                connected: true,
-                version: format!("v{version}"),
-                status: format!("active (v{version})"),
-            },
-            // Script and saved state are from different install versions.
-            _ => ReportingDetails {
-                connected: false,
-                version: format!("v{version} (state v{})", state.hook_version),
-                status: "needs reinstall".into(),
-            },
+        Some(version) if version == expected => match settings.get(spec.id) {
+            Some(state) if state.hook_version == expected => format!("active (v{version})"),
+            // Script present but no config: the hook would refuse to report.
+            Some(_) | None => "needs reinstall".to_string(),
         },
-        Some(version) => ReportingDetails {
-            connected: false,
-            version: format!("v{version} -> v{expected}"),
-            status: format!("stale (v{version}; current v{expected})"),
-        },
-        None => ReportingDetails {
-            connected: false,
-            version: "-".into(),
-            status: "not installed".into(),
-        },
+        Some(version) => format!("stale (v{version}; current v{expected})"),
+        None => "not installed".to_string(),
     }
-}
-
-fn reporting_status(agent: Agent, settings: &IntegrationState) -> String {
-    reporting_details(agent, settings).status
-}
-
-/// One adapter's session-reporting status for router-specific status commands.
-/// LLM routing and telemetry remain separate lifecycles.
-pub(crate) fn reporting_status_for(agent_id: &str) -> Result<String> {
-    let agent = resolve(agent_id)?;
-    Ok(reporting_status(agent, &IntegrationState::load()?))
 }
 
 // ─── Install steps ───────────────────────────────────────────────────────────
@@ -331,21 +207,16 @@ fn require_present(agent: Agent) -> Result<()> {
     )
 }
 
-fn save_agent_state(
-    agent: Agent,
-    agent_name: &str,
-    capture_content: bool,
-    binding: &InstallationBinding,
-) -> Result<()> {
+fn save_agent_state(agent: Agent, endpoint: &str, capture_content: bool) -> Result<()> {
     let spec = agent.spec();
     let mut settings = IntegrationState::load()?;
     settings.agents.insert(
         spec.id.to_string(),
         AgentState {
-            agent_name: agent_name.to_string(),
+            agent_name: spec.agent_name.to_string(),
+            otlp_endpoint: endpoint.to_string(),
             capture_content,
             hook_version: agent.install_version().expect("instrumented adapter"),
-            binding: Some(binding.clone()),
         },
     );
     settings.save()
@@ -399,19 +270,27 @@ mod tests {
     }
 
     #[test]
-    fn allows_installing_an_instrumented_agent() {
-        assert!(require_instrumentable(claude()).is_ok());
-        assert!(require_instrumentable(catalog::find("codex").unwrap()).is_ok());
-        assert!(require_instrumentable(catalog::find("cursor").unwrap()).is_ok());
+    fn refuses_to_install_a_detect_only_agent() {
+        let error = require_instrumentable(catalog::find("codex").unwrap())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("not yet instrumented"));
+        assert!(error.contains("claude"));
     }
 
     #[test]
-    fn reports_uninstalled_instrumented_agents_as_not_installed() {
+    fn allows_installing_an_instrumented_agent() {
+        assert!(require_instrumentable(claude()).is_ok());
+    }
+
+    #[test]
+    fn reports_detect_only_agents_as_such() {
         let settings = IntegrationState::default();
 
         let status = reporting_status(catalog::find("codex").unwrap(), &settings);
 
-        assert_eq!(status, "not installed");
+        assert_eq!(status, "detect-only");
     }
 
     #[test]
@@ -466,9 +345,9 @@ mod tests {
         let expected = claude().install_version().unwrap();
         let state = AgentState {
             agent_name: "claude-code".into(),
+            otlp_endpoint: DEFAULT_OTLP_ENDPOINT.into(),
             capture_content: true,
             hook_version: expected.saturating_sub(1),
-            binding: None,
         };
         assert_ne!(state.hook_version, expected);
     }

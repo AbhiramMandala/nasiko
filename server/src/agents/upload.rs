@@ -854,9 +854,10 @@ async fn record_uploaded_version(
 
 // ─── Build-time OTel patching ────────────────────────────────────────────────
 
-/// Python bootstrap script injected as `_nasiko_otel_boot.py` and loaded via
-/// `PYTHONSTARTUP`. Runs before the agent's own code, so the agent doesn't need
-/// to call `init_telemetry()` or install any OTel packages explicitly.
+/// Python bootstrap script injected as `_nasiko_otel_boot.py` and installed as
+/// `sitecustomize.py` inside the container's `site-packages`. Runs before the
+/// agent's own code for both interactive and script invocations, so the agent
+/// doesn't need to call `init_telemetry()` or install any OTel packages explicitly.
 ///
 /// What it does:
 /// - Sets up W3C TraceContext propagation (`traceparent` on all outbound HTTP)
@@ -974,17 +975,23 @@ fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::pa
         return;
     }
 
-    // Append to Dockerfile: install OTel deps, copy bootstrap, set PYTHONSTARTUP.
-    // Inserted before the last CMD/ENTRYPOINT line so the layer order is correct.
-    // `PIP_BREAK_SYSTEM_PACKAGES=1` is scoped to this RUN layer (not a persistent
-    // ENV) and keeps the install working on a distro-managed interpreter, where
-    // PEP 668 otherwise aborts with `error: externally-managed-environment`.
-    // pip older than 23.1 doesn't know the flag and simply ignores the env var.
+    // Append to Dockerfile: install OTel deps, copy bootstrap, install as
+    // sitecustomize.py. Inserted before the last CMD/ENTRYPOINT line so the
+    // layer order is correct.
+    //
+    // `PIP_BREAK_SYSTEM_PACKAGES=1` is scoped to this RUN layer (not a
+    // persistent ENV) and keeps the install working on a distro-managed
+    // interpreter, where PEP 668 otherwise aborts with
+    // `error: externally-managed-environment`.
+    //
+    // We use `sitecustomize.py` instead of `PYTHONSTARTUP` because the latter
+    // only fires for interactive Python sessions (REPL), not `python main.py`.
     let patch = format!(
         "\n# ── Nasiko OTel auto-instrumentation (injected at build time) ──\n\
          RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip install --no-cache-dir {OTEL_PIP_PACKAGES}\n\
          COPY _nasiko_otel_boot.py /opt/nasiko/_nasiko_otel_boot.py\n\
-         ENV PYTHONSTARTUP=/opt/nasiko/_nasiko_otel_boot.py\n"
+         RUN SITE_PKG=$(python -c \"import site; print(site.getsitepackages()[0])\") && \
+             cp /opt/nasiko/_nasiko_otel_boot.py \"$SITE_PKG/sitecustomize.py\"\n"
     );
 
     // Find the last CMD or ENTRYPOINT line and insert before it.

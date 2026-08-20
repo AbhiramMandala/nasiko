@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use super::handler;
 use super::logs::{LogLine, LogQuery, parse_container_logs, parse_loki_logs, query_proxy_logs};
+use crate::auth::Claims;
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -50,6 +51,61 @@ pub(super) async fn resolve_agent(db: &PgPool, agent_ref: &str) -> Option<(Uuid,
     }
 }
 
+/// Resolve an agent without revealing inaccessible same-name or UUID rows.
+pub(super) async fn resolve_accessible_agent(
+    state: &AppState,
+    claims: &Claims,
+    agent_ref: &str,
+) -> Option<(Uuid, String)> {
+    let candidates: Vec<(Uuid, String)> = if let Ok(id) = agent_ref.parse::<Uuid>() {
+        sqlx::query_as("SELECT id, name FROM agents WHERE id = $1 AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_all(&state.db)
+            .await
+            .ok()?
+    } else {
+        sqlx::query_as(
+            "SELECT id, name FROM agents WHERE name = $1 AND deleted_at IS NULL ORDER BY id",
+        )
+        .bind(agent_ref)
+        .fetch_all(&state.db)
+        .await
+        .ok()?
+    };
+
+    for (id, name) in candidates {
+        if crate::acl::can_access_agent(state, claims, id).await {
+            return Some((id, name));
+        }
+    }
+    None
+}
+
+pub(super) async fn agent_name_fully_accessible(
+    state: &AppState,
+    claims: &Claims,
+    agent_name: &str,
+) -> bool {
+    if claims.is_superuser {
+        return true;
+    }
+    let Ok(ids) = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL",
+    )
+    .bind(agent_name)
+    .fetch_all(&state.db)
+    .await
+    else {
+        return false;
+    };
+    for id in ids {
+        if !crate::acl::can_access_agent(state, claims, id).await {
+            return false;
+        }
+    }
+    true
+}
+
 // ---------------------------------------------------------------------------
 // Public orchestrator factories
 // ---------------------------------------------------------------------------
@@ -67,6 +123,7 @@ pub fn router() -> Router<AppState> {
 pub fn protected_router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/session/list", get(handler::get_all_sessions))
+        .route("/session/ensure", post(handler::ensure_session))
         .route("/session/{session_id}", get(handler::get_session_details))
         .route("/trace/{trace_id}", get(handler::get_trace_details))
         .route("/span/{trace_id}/{span_id}", get(handler::get_span_details))
@@ -143,10 +200,12 @@ fn default_limit() -> usize {
 )]
 pub(crate) async fn agent_logs(
     State(state): State<AppState>,
+    claims: Claims,
     Path(agent_ref): Path<String>,
     Query(params): Query<LogParams>,
 ) -> Response {
-    let Some((agent_id, agent_name)) = resolve_agent(&state.db, &agent_ref).await else {
+    let Some((agent_id, agent_name)) = resolve_accessible_agent(&state, &claims, &agent_ref).await
+    else {
         return (
             StatusCode::NOT_FOUND,
             format!("Agent '{}' not found", agent_ref),
@@ -187,10 +246,11 @@ pub(crate) async fn agent_logs(
     }
 
     // ── Source 3: Loki (optional — fails soft when the stack is absent) ─────
-    if let Ok(entries) = state
-        .observability
-        .query_logs(&agent_name, q.since, q.until, q.limit)
-        .await
+    if agent_name_fully_accessible(&state, &claims, &agent_name).await
+        && let Ok(entries) = state
+            .observability
+            .query_logs(&agent_name, q.since, q.until, q.limit)
+            .await
     {
         all_logs.extend(parse_loki_logs(entries));
     }
@@ -233,9 +293,11 @@ pub(crate) async fn agent_logs(
 )]
 pub(crate) async fn agent_logs_stream(
     State(state): State<AppState>,
+    claims: Claims,
     Path(agent_ref): Path<String>,
 ) -> Response {
-    let Some((agent_id, _agent_name)) = resolve_agent(&state.db, &agent_ref).await else {
+    let Some((agent_id, _agent_name)) = resolve_accessible_agent(&state, &claims, &agent_ref).await
+    else {
         return (
             StatusCode::NOT_FOUND,
             format!("Agent '{}' not found", agent_ref),

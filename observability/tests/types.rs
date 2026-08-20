@@ -153,6 +153,14 @@ fn trace_token_totals_zero_when_no_attributes() {
 }
 
 #[test]
+fn trace_token_totals_ignore_replayed_span_ids() {
+    let span = gen_ai_span("replayed", "gpt-4o", 200, 100);
+    let trace = make_trace(vec![span.clone(), span]);
+
+    assert_eq!(trace.token_totals(), (200, 100, Some("gpt-4o".into())));
+}
+
+#[test]
 fn trace_token_totals_by_model_splits_mixed_traces() {
     let trace = make_trace(vec![
         gen_ai_span("s1", "gpt-4o", 200, 100),

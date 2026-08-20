@@ -2,9 +2,6 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use nasiko_types::{
-    CodingAgentTimestampQuality, CodingAgentToolAssociation, CodingAgentToolCallStatus,
-};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -13,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::super::catalog::{self, AgentSpec, Support};
 use super::super::launcher;
-use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn};
+use super::super::model::{LlmCall, SessionSnapshot, Turn};
 
 pub const INSTALL_VERSION: u32 = 3;
 pub const SPEC: AgentSpec = AgentSpec {
@@ -215,7 +212,6 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
     let mut owners: HashMap<String, usize> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut calls: HashMap<String, (usize, usize)> = HashMap::new();
-    let mut tools: HashMap<String, (usize, usize)> = HashMap::new();
     let mut fallback_turns: HashSet<usize> = HashSet::new();
     let mut previous_at: Option<DateTime<Utc>> = None;
     let mut adjacent_user: Option<usize> = None;
@@ -276,7 +272,6 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
                 started_at: at,
                 ended_at: at,
                 calls: Vec::new(),
-                tool_calls: Vec::new(),
             });
             if entry.uuid.is_none() && entry.leaf_uuid.is_none() {
                 fallback_turns.insert(owner);
@@ -293,12 +288,9 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
                             pending.started_at,
                             pending.ended_at,
                             &mut turns,
-                            AssistantIndexes {
-                                owners: &mut owners,
-                                calls: &mut calls,
-                                tools: &mut tools,
-                                fallback_turns: &mut fallback_turns,
-                            },
+                            &mut owners,
+                            &mut calls,
+                            &mut fallback_turns,
                         );
                     } else {
                         remaining.push(pending);
@@ -307,38 +299,6 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
                 pending_assistants = remaining;
             }
             continue;
-        }
-
-        if entry.kind == "user" {
-            let results = entry.tool_results();
-            if !results.is_empty() {
-                if let Some(owner) = parent_owner {
-                    for result in results {
-                        if let Some(&(tool_owner, index)) = tools.get(&result.id) {
-                            let tool = &mut turns[tool_owner].tool_calls[index];
-                            tool.output = result.output;
-                            tool.error = result.error;
-                            tool.status = if result.is_error {
-                                CodingAgentToolCallStatus::Failed
-                            } else {
-                                CodingAgentToolCallStatus::Succeeded
-                            };
-                            tool.ended_at = entry.timestamp;
-                            tool.duration_ms = tool
-                                .started_at
-                                .zip(tool.ended_at)
-                                .map(|(start, end)| (end - start).num_milliseconds().max(0) as u64);
-                        }
-                    }
-                    if let Some(uuid) = &entry.uuid {
-                        owners.insert(uuid.clone(), owner);
-                    }
-                }
-                if let Some(at) = entry.timestamp {
-                    previous_at = Some(at);
-                }
-                continue;
-            }
         }
 
         if let Some(prompt) = entry.user_prompt() {
@@ -352,7 +312,6 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
                 started_at: at,
                 ended_at: at,
                 calls: Vec::new(),
-                tool_calls: Vec::new(),
             });
             owners.insert(identity, owner);
             adjacent_user = Some(owner);
@@ -381,12 +340,9 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
                 previous_at.unwrap_or(at),
                 at,
                 &mut turns,
-                AssistantIndexes {
-                    owners: &mut owners,
-                    calls: &mut calls,
-                    tools: &mut tools,
-                    fallback_turns: &mut fallback_turns,
-                },
+                &mut owners,
+                &mut calls,
+                &mut fallback_turns,
             );
         } else if let (Some(uuid), Some(owner)) = (&entry.uuid, parent_owner) {
             // Tool results and metadata preserve ancestry to the open turn.
@@ -407,48 +363,16 @@ struct PendingAssistant {
     ended_at: DateTime<Utc>,
 }
 
-struct AssistantIndexes<'a> {
-    owners: &'a mut HashMap<String, usize>,
-    calls: &'a mut HashMap<String, (usize, usize)>,
-    tools: &'a mut HashMap<String, (usize, usize)>,
-    fallback_turns: &'a mut HashSet<usize>,
-}
-
 fn attach_assistant(
     entry: &Entry,
     owner: usize,
     started_at: DateTime<Utc>,
     ended_at: DateTime<Utc>,
     turns: &mut [Turn],
-    indexes: AssistantIndexes<'_>,
+    owners: &mut HashMap<String, usize>,
+    calls: &mut HashMap<String, (usize, usize)>,
+    fallback_turns: &mut HashSet<usize>,
 ) {
-    let AssistantIndexes {
-        owners,
-        calls,
-        tools,
-        fallback_turns,
-    } = indexes;
-    // Async hook records can be appended before an older assistant record.
-    let started_at = started_at.min(ended_at);
-    for tool in entry.tool_uses(ended_at) {
-        if let Some(&(old_owner, index)) = tools.get(&tool.id) {
-            let existing = &mut turns[old_owner].tool_calls[index];
-            existing.name = tool.name;
-            existing.kind = tool.kind;
-            existing.model_call_id = tool.model_call_id;
-            existing.arguments = tool.arguments;
-            existing.started_at = existing.started_at.or(tool.started_at);
-            if matches!(
-                existing.status,
-                CodingAgentToolCallStatus::Pending | CodingAgentToolCallStatus::Running
-            ) {
-                existing.status = tool.status;
-            }
-        } else {
-            tools.insert(tool.id.clone(), (owner, turns[owner].tool_calls.len()));
-            turns[owner].tool_calls.push(tool);
-        }
-    }
     if let Some(call) = entry.llm_call(started_at, ended_at) {
         let call_id = call.uuid.clone();
         let call_owner = if let Some(&(old_owner, call_index)) = calls.get(&call_id) {
@@ -652,85 +576,6 @@ impl Entry {
             .collect();
         (!parts.is_empty()).then(|| parts.join("\n"))
     }
-
-    fn tool_uses(&self, at: DateTime<Utc>) -> Vec<ToolCall> {
-        if self.kind != "assistant" {
-            return Vec::new();
-        }
-        let model_call_id = self.uuid.clone();
-        self.message
-            .as_ref()
-            .and_then(|message| message.content.as_ref())
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|block| block["type"] == "tool_use")
-            .filter_map(|block| {
-                Some(ToolCall {
-                    id: block.get("id")?.as_str()?.to_string(),
-                    name: block
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    kind: "tool".into(),
-                    model_call_id: model_call_id.clone(),
-                    status: CodingAgentToolCallStatus::Running,
-                    arguments: block.get("input").cloned(),
-                    output: None,
-                    raw: None,
-                    error: None,
-                    started_at: Some(at),
-                    ended_at: None,
-                    duration_ms: None,
-                    association: CodingAgentToolAssociation::Exact,
-                    timestamp_quality: CodingAgentTimestampQuality::Inferred,
-                })
-            })
-            .collect()
-    }
-
-    fn tool_results(&self) -> Vec<ToolResult> {
-        if self.kind != "user" {
-            return Vec::new();
-        }
-        self.message
-            .as_ref()
-            .and_then(|message| message.content.as_ref())
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|block| block["type"] == "tool_result")
-            .filter_map(|block| {
-                let is_error = block
-                    .get("is_error")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let output = block.get("content").cloned();
-                Some(ToolResult {
-                    id: block.get("tool_use_id")?.as_str()?.to_string(),
-                    error: is_error.then(|| value_text(output.as_ref())),
-                    output,
-                    is_error,
-                })
-            })
-            .collect()
-    }
-}
-
-struct ToolResult {
-    id: String,
-    output: Option<Value>,
-    error: Option<String>,
-    is_error: bool,
-}
-
-fn value_text(value: Option<&Value>) -> String {
-    value
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| value.and_then(|value| serde_json::to_string(value).ok()))
-        .unwrap_or_else(|| "tool failed".into())
 }
 
 fn nonempty(text: &str) -> Option<String> {
@@ -912,55 +757,5 @@ mod tests {
     fn ignores_local_command_control_records() {
         let input = r#"{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"content":"<local-command-stdout>ok</local-command-stdout>"}}"#;
         assert!(turns_from_lines(input).is_empty());
-    }
-
-    #[test]
-    fn joins_parallel_tool_uses_and_polymorphic_results_by_native_id() {
-        let input = r#"
-{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"content":"inspect"}}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-01-01T00:00:01Z","message":{"model":"m","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"path":"redacted.txt"}},{"type":"tool_use","id":"tool-2","name":"Shell","input":{"command":"redacted"}}],"usage":{"input_tokens":1,"output_tokens":2}}}
-{"type":"user","uuid":"r1","parentUuid":"a1","timestamp":"2026-01-01T00:00:02Z","message":{"content":[{"type":"tool_result","tool_use_id":"tool-2","content":[{"type":"text","text":"denied"}],"is_error":true},{"type":"tool_result","tool_use_id":"tool-1","content":{"lines":3}}]}}
-{"type":"assistant","uuid":"a2","parentUuid":"r1","timestamp":"2026-01-01T00:00:03Z","message":{"model":"m","stop_reason":"end_turn","content":"done","usage":{"input_tokens":1,"output_tokens":1}}}
-"#;
-        let turn = &turns_from_lines(input)[0];
-        assert_eq!(turn.tool_calls.len(), 2);
-        assert_eq!(turn.tool_calls[0].model_call_id.as_deref(), Some("a1"));
-        assert_eq!(
-            turn.tool_calls[0].status,
-            CodingAgentToolCallStatus::Succeeded
-        );
-        assert_eq!(turn.tool_calls[0].output, Some(json!({"lines": 3})));
-        assert_eq!(turn.tool_calls[1].status, CodingAgentToolCallStatus::Failed);
-        assert_eq!(
-            turn.tool_calls[1].timestamp_quality,
-            CodingAgentTimestampQuality::Inferred
-        );
-    }
-
-    #[test]
-    fn duplicate_assistant_tool_use_preserves_the_terminal_result() {
-        let input = r#"
-{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"content":"inspect"}}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-01-01T00:00:01Z","message":{"model":"m","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"path":"a"}}],"usage":{"input_tokens":1,"output_tokens":2}}}
-{"type":"user","uuid":"r1","parentUuid":"a1","timestamp":"2026-01-01T00:00:02Z","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-01-01T00:00:03Z","message":{"model":"m","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"path":"a"}}],"usage":{"input_tokens":1,"output_tokens":2}}}
-"#;
-        let tool = &turns_from_lines(input)[0].tool_calls[0];
-        assert_eq!(tool.status, CodingAgentToolCallStatus::Succeeded);
-        assert_eq!(tool.output, Some(json!("ok")));
-        assert!(tool.ended_at.is_some());
-        assert_eq!(tool.duration_ms, Some(1000));
-    }
-
-    #[test]
-    fn clamps_llm_start_when_async_records_are_appended_out_of_order() {
-        let input = r#"
-{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"content":"hi"}}
-{"type":"attachment","uuid":"hook","parentUuid":"u1","timestamp":"2026-01-01T00:00:02Z"}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-01-01T00:00:01Z","message":{"model":"m","stop_reason":"end_turn","content":"done","usage":{"input_tokens":1,"output_tokens":2}}}
-"#;
-        let turn = &turns_from_lines(input)[0];
-
-        assert_eq!(turn.calls[0].started_at, turn.calls[0].ended_at);
     }
 }

@@ -1,10 +1,6 @@
 //! Agent-independent representation of one completed coding-agent session.
 
 use chrono::{DateTime, Utc};
-use nasiko_types::{
-    CodingAgentTimestampQuality, CodingAgentToolAssociation, CodingAgentToolCallStatus,
-};
-use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub struct LlmCall {
@@ -27,25 +23,6 @@ pub struct Turn {
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
     pub calls: Vec<LlmCall>,
-    pub tool_calls: Vec<ToolCall>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub model_call_id: Option<String>,
-    pub status: CodingAgentToolCallStatus,
-    pub arguments: Option<Value>,
-    pub output: Option<Value>,
-    pub raw: Option<String>,
-    pub error: Option<String>,
-    pub started_at: Option<DateTime<Utc>>,
-    pub ended_at: Option<DateTime<Utc>>,
-    pub duration_ms: Option<u64>,
-    pub association: CodingAgentToolAssociation,
-    pub timestamp_quality: CodingAgentTimestampQuality,
 }
 
 impl Turn {

@@ -313,7 +313,30 @@ window.fetchSpanDetail = async (traceId, spanId) => {
 };
 
 window.fetchChatSession = async (sessionId) => {
-  return fetchApi(`/chat/sessions/${encodeURIComponent(sessionId)}`);
+  const messages = [];
+  const seenCursors = new Set();
+  let prevCursor = '';
+
+  // The first page is the newest 500 messages. Walk backwards and prepend each
+  // older page so callers always receive the complete transcript in time order.
+  // The bound and cursor-cycle check turn a broken server cursor into an error
+  // rather than an infinite request loop or a silently truncated transcript.
+  for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+    const params = new URLSearchParams({ limit: '500' });
+    if (prevCursor) params.set('prev_cursor', prevCursor);
+    const page = await fetchApi(`/chat/sessions/${encodeURIComponent(sessionId)}/messages?${params}`);
+    messages.unshift(...(page.data ?? []));
+    if (!page.has_more) return { data: messages };
+
+    const nextCursor = page.prev_cursor;
+    if (!nextCursor || seenCursors.has(nextCursor)) {
+      throw new Error('Chat message pagination returned an invalid cursor');
+    }
+    seenCursors.add(nextCursor);
+    prevCursor = nextCursor;
+  }
+
+  throw new Error('Chat transcript exceeds the 50,000 message read limit');
 };
 
 // Used by the Execution history table and the orchestrator sidebar's session

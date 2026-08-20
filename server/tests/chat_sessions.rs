@@ -202,7 +202,7 @@ async fn list_sessions_scoped_to_owner() {
     let page = list_sessions(&server, uid, "").await;
     let data = page["data"].as_array().unwrap();
     assert_eq!(data.len(), 1, "admin should only see their own session");
-    assert_eq!(data[0]["title"].as_str().unwrap(), "admin-session");
+    assert_eq!(data[0]["title"].as_str().unwrap(), "New chat");
 
     server.cleanup().await;
 }
@@ -428,6 +428,317 @@ async fn list_messages_returns_404_for_other_users_session() {
         res.status(),
         404,
         "other user must not read another user's messages"
+    );
+
+    server.cleanup().await;
+}
+
+fn external_turn_body(turn_id: &str) -> Value {
+    json!({
+        "turn_id": turn_id,
+        "user_content": "Fix the failing test",
+        "assistant_content": "Fixed the test and verified it",
+        "assistant_usage": {
+            "input_tokens": 120,
+            "output_tokens": 45,
+            "model": "claude-test",
+            "duration_ms": 900,
+            "cost_usd": "0.00125000",
+            "estimated": false,
+            "trace_id": "trace-external-turn"
+        }
+    })
+}
+
+async fn post_external_turn(
+    server: &common::TestServer,
+    uid: &str,
+    username: &str,
+    sid: &str,
+    turn_id: &str,
+) -> reqwest::Response {
+    post_external_turn_body(server, uid, username, sid, &external_turn_body(turn_id)).await
+}
+
+async fn post_external_turn_body(
+    server: &common::TestServer,
+    uid: &str,
+    username: &str,
+    sid: &str,
+    body: &Value,
+) -> reqwest::Response {
+    common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/chat/sessions/{sid}/external-turns"))),
+        uid,
+        username,
+    )
+    .json(body)
+    .send()
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn external_turn_first_insert_and_repeat_are_idempotent() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "external-turn").await;
+    let sid = session["session_id"].as_str().unwrap();
+
+    let first = post_external_turn(&server, uid, "admin", sid, "stable-turn-1").await;
+    assert_eq!(first.status(), 201);
+    let first: Value = first.json().await.unwrap();
+    assert_eq!(first["inserted"], true);
+    assert_eq!(first["user_message"]["role"], "user");
+    assert_eq!(first["assistant_message"]["role"], "assistant");
+    assert_eq!(first["assistant_message"]["input_tokens"], 120);
+    assert_eq!(first["assistant_message"]["cost_usd"], "0.00125000");
+
+    let repeat = post_external_turn(&server, uid, "admin", sid, "stable-turn-1").await;
+    assert_eq!(repeat.status(), 200);
+    let repeat: Value = repeat.json().await.unwrap();
+    assert_eq!(repeat["inserted"], false);
+    assert_eq!(repeat["user_message"]["id"], first["user_message"]["id"]);
+    assert_eq!(
+        repeat["assistant_message"]["id"],
+        first["assistant_message"]["id"]
+    );
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM chat_messages WHERE session_id = $1 AND external_turn_id = $2",
+    )
+    .bind(sid)
+    .bind("stable-turn-1")
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(count, 2);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn external_turn_denies_non_owner() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_id = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, admin_id, "private-external-turn").await;
+    let sid = session["session_id"].as_str().unwrap();
+    let other = create_user(&server, admin_id, "external-other").await;
+    let other_id = other["id"].as_str().unwrap();
+
+    let response = post_external_turn(&server, other_id, "external-other", sid, "denied").await;
+    assert_eq!(response.status(), 404);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE session_id = $1")
+        .bind(sid)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn concurrent_external_turn_requests_create_one_pair() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "concurrent-external-turn").await;
+    let sid = session["session_id"].as_str().unwrap();
+
+    let (left, right) = tokio::join!(
+        post_external_turn(&server, uid, "admin", sid, "concurrent-turn"),
+        post_external_turn(&server, uid, "admin", sid, "concurrent-turn")
+    );
+    let mut statuses = [left.status().as_u16(), right.status().as_u16()];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [200, 201]);
+
+    let roles: Vec<String> = sqlx::query_scalar(
+        "SELECT role FROM chat_messages WHERE session_id = $1 AND external_turn_id = $2 ORDER BY role",
+    )
+    .bind(sid)
+    .bind("concurrent-turn")
+    .fetch_all(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(roles, ["assistant", "user"]);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn external_turn_rejects_changed_content_replay() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "changed-content").await;
+    let sid = session["session_id"].as_str().unwrap();
+    let turn_id = "changed-content-turn";
+
+    assert_eq!(
+        post_external_turn(&server, uid, "admin", sid, turn_id)
+            .await
+            .status(),
+        201
+    );
+
+    let mut changed_user = external_turn_body(turn_id);
+    changed_user["user_content"] = json!("Different prompt");
+    assert_eq!(
+        post_external_turn_body(&server, uid, "admin", sid, &changed_user)
+            .await
+            .status(),
+        409
+    );
+
+    let mut changed_assistant = external_turn_body(turn_id);
+    changed_assistant["assistant_content"] = json!("Different response");
+    assert_eq!(
+        post_external_turn_body(&server, uid, "admin", sid, &changed_assistant)
+            .await
+            .status(),
+        409
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn external_turn_rejects_changed_usage_or_trace_replay() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "changed-usage").await;
+    let sid = session["session_id"].as_str().unwrap();
+    let turn_id = "changed-usage-turn";
+
+    assert_eq!(
+        post_external_turn(&server, uid, "admin", sid, turn_id)
+            .await
+            .status(),
+        201
+    );
+
+    let mut changed_usage = external_turn_body(turn_id);
+    changed_usage["assistant_usage"]["output_tokens"] = json!(46);
+    assert_eq!(
+        post_external_turn_body(&server, uid, "admin", sid, &changed_usage)
+            .await
+            .status(),
+        409
+    );
+
+    let mut changed_trace = external_turn_body(turn_id);
+    changed_trace["assistant_usage"]["trace_id"] = json!("different-trace");
+    assert_eq!(
+        post_external_turn_body(&server, uid, "admin", sid, &changed_trace)
+            .await
+            .status(),
+        409
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn concurrent_different_external_turn_payloads_do_not_create_a_hybrid() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "concurrent-different-turn").await;
+    let sid = session["session_id"].as_str().unwrap();
+    let turn_id = "concurrent-different";
+    let mut left_body = external_turn_body(turn_id);
+    left_body["user_content"] = json!("left user");
+    left_body["assistant_content"] = json!("left assistant");
+    left_body["assistant_usage"]["trace_id"] = json!("left-trace");
+    let mut right_body = external_turn_body(turn_id);
+    right_body["user_content"] = json!("right user");
+    right_body["assistant_content"] = json!("right assistant");
+    right_body["assistant_usage"]["trace_id"] = json!("right-trace");
+
+    let (left, right) = tokio::join!(
+        post_external_turn_body(&server, uid, "admin", sid, &left_body),
+        post_external_turn_body(&server, uid, "admin", sid, &right_body)
+    );
+    let mut statuses = [left.status().as_u16(), right.status().as_u16()];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [201, 409]);
+
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT role, content, trace_id FROM chat_messages WHERE session_id = $1 AND external_turn_id = $2 ORDER BY role",
+    )
+    .bind(sid)
+    .bind(turn_id)
+    .fetch_all(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    let assistant = &rows[0];
+    let user = &rows[1];
+    let is_left = user.1 == "left user";
+    assert_eq!(
+        assistant.1,
+        if is_left {
+            "left assistant"
+        } else {
+            "right assistant"
+        }
+    );
+    assert_eq!(
+        assistant.2.as_deref(),
+        Some(if is_left { "left-trace" } else { "right-trace" })
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn external_turn_rejects_partial_pair_without_repairing_it() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "partial-turn").await;
+    let sid = session["session_id"].as_str().unwrap();
+    let turn_id = "partial-turn-id";
+
+    sqlx::query(
+        "INSERT INTO chat_messages (session_id, external_turn_id, role, content) VALUES ($1, $2, 'assistant', $3)",
+    )
+    .bind(sid)
+    .bind(turn_id)
+    .bind("orphan assistant")
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let response = post_external_turn(&server, uid, "admin", sid, turn_id).await;
+    assert_eq!(response.status(), 409);
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT role, content FROM chat_messages WHERE session_id = $1 AND external_turn_id = $2",
+    )
+    .bind(sid)
+    .bind(turn_id)
+    .fetch_all(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [("assistant".to_string(), "orphan assistant".to_string())]
     );
 
     server.cleanup().await;

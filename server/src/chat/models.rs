@@ -48,6 +48,7 @@ pub struct ChatSessionView {
 pub struct ChatMessage {
     pub id: Uuid,
     pub session_id: String,
+    pub external_turn_id: Option<String>,
     pub role: String,
     pub content: String,
     pub file_parts: Option<sqlx::types::Json<serde_json::Value>>,
@@ -119,4 +120,12 @@ pub struct MessageUsage {
     pub cost_usd: Option<rust_decimal::Decimal>,
     pub estimated: Option<bool>,
     pub trace_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExternalTurn {
+    pub turn_id: String,
+    pub user_content: String,
+    pub assistant_content: String,
+    pub assistant_usage: Option<MessageUsage>,
 }

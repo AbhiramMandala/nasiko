@@ -58,7 +58,13 @@ pub fn static_price_per_1m(model: &str) -> Option<PricePer1M> {
         ("o3", (10.00, 40.00)),
         ("o1-mini", (3.00, 12.00)),
         ("o1", (15.00, 60.00)),
-        // Anthropic
+        // Anthropic. Claude 5 rates are carried forward from the equivalent
+        // Claude 4 tier and are unverified — see
+        // oss/migrations/0007_seed_claude_5_pricing.sql. They must stay above
+        // the generic "claude" entry, which would otherwise price Opus as
+        // Sonnet.
+        ("claude-opus-5", (15.00, 75.00)),
+        ("claude-sonnet-5", (3.00, 15.00)),
         ("claude-opus-4", (15.00, 75.00)),
         ("claude-4-opus", (15.00, 75.00)),
         ("claude-sonnet-4", (3.00, 15.00)),

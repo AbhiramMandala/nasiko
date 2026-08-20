@@ -6,7 +6,7 @@
 //! genuinely belong to the server: agent-name resolution (DB) and the
 //! FinOps insights LLM call.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
@@ -121,6 +121,16 @@ fn parse_iso_param(
 
 fn parse_iso_or_default(iso: Option<&str>, default_days_ago: i64) -> DateTime<Utc> {
     parse_iso(iso).unwrap_or_else(|| Utc::now() - Duration::days(default_days_ago))
+}
+
+fn session_trace_window(
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    (
+        created_at - Duration::minutes(5),
+        updated_at + Duration::minutes(5),
+    )
 }
 
 fn encode_span_id(span_id: &str) -> String {
@@ -307,6 +317,8 @@ pub struct SessionDetail {
     pub token_usage: TokenUsageSummary,
     pub cost_summary: FullCostSummary,
     pub latency_p50: Option<f64>,
+    pub latency_p99: Option<f64>,
+    pub metrics_complete: bool,
     pub traces: Vec<TraceEntry>,
     pub pagination: Pagination,
 }
@@ -666,6 +678,13 @@ pub struct ObservabilityService {
     config: Arc<Config>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum EnsureSessionOutcome {
+    Created,
+    Existing,
+    Conflict,
+}
+
 impl ObservabilityService {
     pub fn from_state(state: &crate::state::AppState) -> Self {
         Self {
@@ -691,6 +710,112 @@ impl ObservabilityService {
         .map_err(|e| ObservabilityError::Internal(e.to_string()))
     }
 
+    /// Ensure a `chat_sessions` row exists for an external coding agent session.
+    ///
+    /// An existing session is idempotent only when both its user and agent match.
+    pub async fn ensure_session(
+        &self,
+        session_id: &str,
+        agent_name: &str,
+        user_id_str: &str,
+    ) -> Result<EnsureSessionOutcome, ObservabilityError> {
+        let user_id: uuid::Uuid = user_id_str
+            .parse()
+            .map_err(|_| ObservabilityError::BadRequest("invalid user id".into()))?;
+
+        // Agent names are unique per owner, not globally. An integration may
+        // only attach sessions to the caller's own active agent.
+        let agent_id: uuid::Uuid = sqlx::query_scalar(
+            "SELECT id FROM agents WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(agent_name)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+        .ok_or_else(|| ObservabilityError::NotFound(format!("agent '{}' not found", agent_name)))?;
+
+        let created: Option<bool> = sqlx::query_scalar(
+            r#"INSERT INTO chat_sessions (session_id, user_id, agent_id, title)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (session_id) DO UPDATE
+                 SET session_id = EXCLUDED.session_id
+                 WHERE chat_sessions.user_id = EXCLUDED.user_id
+                   AND chat_sessions.agent_id = EXCLUDED.agent_id
+               RETURNING xmax = 0"#,
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(agent_id)
+        .bind("Coding session")
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        Ok(match created {
+            Some(true) => EnsureSessionOutcome::Created,
+            Some(false) => EnsureSessionOutcome::Existing,
+            None => EnsureSessionOutcome::Conflict,
+        })
+    }
+
+    async fn authorize_session(
+        &self,
+        session_id: &str,
+        user_id: &str,
+        is_superuser: bool,
+        resource: &str,
+    ) -> Result<(DateTime<Utc>, DateTime<Utc>), ObservabilityError> {
+        let caller: uuid::Uuid = user_id
+            .parse()
+            .map_err(|_| ObservabilityError::Internal("invalid user id in claims".into()))?;
+        sqlx::query_as(
+            r#"SELECT created_at, updated_at FROM chat_sessions
+               WHERE session_id = $1 AND deleted_at IS NULL
+                 AND ($2 OR user_id = $3)"#,
+        )
+        .bind(session_id)
+        .bind(is_superuser)
+        .bind(caller)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+        .ok_or_else(|| ObservabilityError::NotFound(format!("{resource} not found")))
+    }
+
+    pub async fn authorize_session_access(
+        &self,
+        session_id: &str,
+        user_id: &str,
+        is_superuser: bool,
+    ) -> Result<(), ObservabilityError> {
+        self.authorize_session(session_id, user_id, is_superuser, "session")
+            .await
+            .map(|_| ())
+    }
+
+    async fn trace_session_id(
+        &self,
+        trace_id: &str,
+        trace: &nasiko_observability::TraceDetails,
+    ) -> Result<String, ObservabilityError> {
+        if let Some(session_id) = trace.spans.iter().find_map(|span| {
+            span.attributes
+                .get("session.id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        }) {
+            return Ok(session_id);
+        }
+
+        sqlx::query_scalar("SELECT session_id FROM session_traces WHERE trace_id = $1")
+            .bind(trace_id)
+            .fetch_optional(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+            .ok_or_else(|| ObservabilityError::NotFound("trace not found".into()))
+    }
+
     // ── 1. session/list ──────────────────────────────────────────────────────
 
     /// Row for a session the trace store knows about: token counts, latency and
@@ -701,6 +826,7 @@ impl ObservabilityService {
         details: &nasiko_observability::SessionDetails,
     ) -> SessionSummary {
         let total_tokens = details.input_tokens + details.output_tokens;
+        let complete = details.metrics_complete;
         let started_at = details.traces.iter().map(|t| t.root_span.started_at).min();
         let ended_at = details
             .traces
@@ -715,7 +841,7 @@ impl ObservabilityService {
             id: session_id.clone(),
             session_id,
             agent_id: agent_name,
-            num_traces: Some(details.traces.len() as u32),
+            num_traces: Some(details.trace_count as u32),
             start_time: started_at.map(fmt_ts),
             // Flutter's DateTime.parse requires a non-empty string — fall back
             // to start_time when no end time is known.
@@ -724,13 +850,14 @@ impl ObservabilityService {
             first_input: details.traces.first().and_then(|t| t.input_content.clone()),
             last_output: details.traces.last().and_then(|t| t.output_content.clone()),
             token_usage: TokenUsageSummary {
-                total: (total_tokens > 0).then_some(total_tokens),
+                total: (complete && total_tokens > 0).then_some(total_tokens),
             },
-            trace_latency_ms_p50: details.latency_ms_p50,
-            trace_latency_ms_p99: None,
+            trace_latency_ms_p50: complete.then_some(details.latency_ms_p50).flatten(),
+            trace_latency_ms_p99: complete.then_some(details.latency_ms_p99).flatten(),
             cost_summary: SimpleCostSummary {
                 total: CostEntry {
-                    cost: (details.cost.total_usd > 0.0).then_some(details.cost.total_usd),
+                    cost: (complete && details.cost.total_usd > 0.0)
+                        .then_some(details.cost.total_usd),
                 },
             },
             session_annotations: vec![],
@@ -899,9 +1026,16 @@ impl ObservabilityService {
     pub async fn get_session_details(
         &self,
         session_id: &str,
+        user_id: &str,
+        is_superuser: bool,
     ) -> Result<SessionDetailResponse, ObservabilityError> {
-        let end = Utc::now();
-        let start = end - Duration::days(7);
+        // Anchor Tempo's seven-day maximum query range to this session rather
+        // than to today. Otherwise an old session that still exists in
+        // Postgres can never find its historical traces.
+        let (created_at, updated_at) = self
+            .authorize_session(session_id, user_id, is_superuser, "session")
+            .await?;
+        let (start, end) = session_trace_window(created_at, updated_at);
         let details = self.provider.get_session(session_id, start, end).await?;
 
         let trace_entries: Vec<TraceEntry> = details
@@ -964,9 +1098,9 @@ impl ObservabilityService {
                 session: SessionDetail {
                     id: details.session_id.clone(),
                     session_id: details.session_id.clone(),
-                    num_traces: details.traces.len(),
+                    num_traces: details.trace_count,
                     token_usage: TokenUsageSummary {
-                        total: Some(total_tokens),
+                        total: details.metrics_complete.then_some(total_tokens),
                     },
                     cost_summary: FullCostSummary {
                         total: CostWithTokens {
@@ -983,10 +1117,12 @@ impl ObservabilityService {
                         },
                     },
                     latency_p50: details.latency_ms_p50,
+                    latency_p99: details.latency_ms_p99,
+                    metrics_complete: details.metrics_complete,
                     traces: trace_entries,
                     pagination: Pagination {
                         end_cursor,
-                        has_next_page: false,
+                        has_next_page: details.has_more_traces,
                     },
                 },
             },
@@ -998,8 +1134,26 @@ impl ObservabilityService {
     pub async fn get_trace_details(
         &self,
         trace_id: &str,
+        user_id: &str,
+        is_superuser: bool,
     ) -> Result<TraceDetailResponse, ObservabilityError> {
-        let trace = self.provider.get_trace(trace_id).await?;
+        let mut trace = self
+            .provider
+            .get_trace(trace_id)
+            .await
+            .map_err(|e| match e {
+                ObservabilityError::NotFound(_) => {
+                    ObservabilityError::NotFound("trace not found".into())
+                }
+                other => other,
+            })?;
+        let mut seen_spans = HashSet::new();
+        trace
+            .spans
+            .retain(|span| seen_spans.insert(span.span_id.clone()));
+        let project_session_id = self.trace_session_id(trace_id, &trace).await?;
+        self.authorize_session(&project_session_id, user_id, is_superuser, "trace")
+            .await?;
 
         let (total_input, total_output, model_used) = trace.token_totals();
         let cost = self
@@ -1011,14 +1165,6 @@ impl ObservabilityService {
             (Some(s), Some(e)) => Some((e - s).num_milliseconds().max(0) as f64),
             _ => None,
         };
-
-        // Extract session.id from any span that carries it.
-        let project_session_id = trace.spans.iter().find_map(|s| {
-            s.attributes
-                .get("session.id")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
 
         let num_spans = trace.spans.len();
         let (root_nodes, span_lookup) = build_span_tree(&trace.spans);
@@ -1039,7 +1185,7 @@ impl ObservabilityService {
             data: TraceDetailData {
                 trace: TraceDetail {
                     id: trace_id.to_string(),
-                    project_session_id,
+                    project_session_id: Some(project_session_id),
                     num_spans,
                     latency_ms: trace_latency_ms,
                     cost_summary: NestedCostSummary {
@@ -1067,8 +1213,42 @@ impl ObservabilityService {
         &self,
         trace_id: &str,
         span_id: &str,
+        user_id: &str,
+        is_superuser: bool,
     ) -> Result<SpanDetailResponse, ObservabilityError> {
-        let details = self.provider.get_span(trace_id, span_id).await?;
+        // Resolve and authorize the trace's session before looking up the span
+        // or its Loki content, so inaccessible traces reveal no span existence.
+        let trace = self
+            .provider
+            .get_trace(trace_id)
+            .await
+            .map_err(|e| match e {
+                ObservabilityError::NotFound(_) => {
+                    ObservabilityError::NotFound("span not found".into())
+                }
+                other => other,
+            })?;
+        let session_id = self
+            .trace_session_id(trace_id, &trace)
+            .await
+            .map_err(|e| match e {
+                ObservabilityError::NotFound(_) => {
+                    ObservabilityError::NotFound("span not found".into())
+                }
+                other => other,
+            })?;
+        self.authorize_session(&session_id, user_id, is_superuser, "span")
+            .await?;
+        let details = self
+            .provider
+            .get_span(trace_id, span_id)
+            .await
+            .map_err(|e| match e {
+                ObservabilityError::NotFound(_) => {
+                    ObservabilityError::NotFound("span not found".into())
+                }
+                other => other,
+            })?;
         let span = &details.span;
 
         let (input_tokens, output_tokens, _) = extract_token_attrs(&span.attributes);
@@ -1221,8 +1401,28 @@ impl ObservabilityService {
         _team_id: Option<&str>,
         start_time: Option<&str>,
         end_time: Option<&str>,
+        accessible_agent_ids: Option<&[uuid::Uuid]>,
     ) -> Result<FinopsDashboardResponse, ObservabilityError> {
-        let agents = self.get_agent_names().await?;
+        let accessible: Option<HashSet<uuid::Uuid>> =
+            accessible_agent_ids.map(|ids| ids.iter().copied().collect());
+        let mut agents = self.get_agent_names().await?;
+        if let Some(accessible) = &accessible {
+            let mut inaccessible_names = HashSet::new();
+            for (id, name) in sqlx::query_as::<_, (uuid::Uuid, String)>(
+                "SELECT id, name FROM agents WHERE deleted_at IS NULL",
+            )
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+            {
+                if !accessible.contains(&id) {
+                    inaccessible_names.insert(name);
+                }
+            }
+            agents.retain(|(id, name, _, _)| {
+                accessible.contains(id) && !inaccessible_names.contains(name)
+            });
+        }
         let total_agents = agents.len();
 
         let start = parse_iso_or_default(start_time, 30);
@@ -1241,12 +1441,15 @@ impl ObservabilityService {
         // agents that have since been deleted, so the summary total stays
         // honest even when the per-agent rows below can't show them.
         // Fail-soft, matching the per-agent finops calls.
-        let hours_rows = hours_meter::windowed_agent_hours(&self.db, start, now, None)
+        let mut hours_rows = hours_meter::windowed_agent_hours(&self.db, start, now, None)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "container hours aggregation failed");
                 vec![]
             });
+        if let Some(accessible) = &accessible {
+            hours_rows.retain(|row| accessible.contains(&row.agent_id));
+        }
         let total_container_hours = round6(hours_rows.iter().map(|r| r.hours).sum());
         let hours_by_agent: HashMap<uuid::Uuid, f64> =
             hours_rows.iter().map(|r| (r.agent_id, r.hours)).collect();
@@ -1434,6 +1637,7 @@ Data: {}"#,
         end_time: Option<&str>,
         agent_id: Option<&str>,
         bucket: Option<&str>,
+        accessible_agent_ids: Option<&[uuid::Uuid]>,
     ) -> Result<AgentHoursResponse, ObservabilityError> {
         /// Hard cap on series length so a caller can't request an unbounded
         /// (e.g. epoch-to-now hourly) response.
@@ -1481,9 +1685,14 @@ Data: {}"#,
             return Ok(empty_agent_hours_response(start, end, bucket.is_some()));
         }
 
-        let rows = hours_meter::windowed_agent_hours(&self.db, start, end, agent_filter)
+        let accessible: Option<HashSet<uuid::Uuid>> =
+            accessible_agent_ids.map(|ids| ids.iter().copied().collect());
+        let mut rows = hours_meter::windowed_agent_hours(&self.db, start, end, agent_filter)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+        if let Some(accessible) = &accessible {
+            rows.retain(|row| accessible.contains(&row.agent_id));
+        }
 
         let total_hours = round6(rows.iter().map(|r| r.hours).sum());
         let agents = rows
@@ -1507,7 +1716,7 @@ Data: {}"#,
                     hours_meter::windowed_hours_series(&self.db, start, end, b, agent_filter)
                         .await
                         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-                let per_agent = hours_meter::windowed_hours_series_by_agent(
+                let mut per_agent = hours_meter::windowed_hours_series_by_agent(
                     &self.db,
                     start,
                     end,
@@ -1516,6 +1725,9 @@ Data: {}"#,
                 )
                 .await
                 .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+                if let Some(accessible) = &accessible {
+                    per_agent.retain(|row| accessible.contains(&row.agent_id));
+                }
 
                 let mut by_bucket: HashMap<DateTime<Utc>, Vec<AgentHoursBucketAgent>> =
                     HashMap::new();
@@ -1534,10 +1746,18 @@ Data: {}"#,
                 Some(
                     totals
                         .into_iter()
-                        .map(|row| AgentHoursBucket {
-                            start: fmt_ts(row.bucket_start),
-                            total_hours: round6(row.hours),
-                            agents: by_bucket.remove(&row.bucket_start).unwrap_or_default(),
+                        .map(|row| {
+                            let agents = by_bucket.remove(&row.bucket_start).unwrap_or_default();
+                            let total_hours = if accessible.is_some() {
+                                round6(agents.iter().map(|agent| agent.hours).sum())
+                            } else {
+                                round6(row.hours)
+                            };
+                            AgentHoursBucket {
+                                start: fmt_ts(row.bucket_start),
+                                total_hours,
+                                agents,
+                            }
                         })
                         .collect(),
                 )
@@ -1623,5 +1843,23 @@ fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse 
         },
         status_code: 200,
         message: "FinOps dashboard data retrieved successfully".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone, Utc};
+
+    use super::session_trace_window;
+
+    #[test]
+    fn session_trace_window_is_anchored_to_historical_session() {
+        let created = Utc.with_ymd_and_hms(2025, 1, 2, 3, 4, 5).unwrap();
+        let updated = Utc.with_ymd_and_hms(2025, 1, 2, 4, 4, 5).unwrap();
+
+        let (start, end) = session_trace_window(created, updated);
+
+        assert_eq!(start, Utc.with_ymd_and_hms(2025, 1, 2, 2, 59, 5).unwrap());
+        assert_eq!(end, Utc.with_ymd_and_hms(2025, 1, 2, 4, 9, 5).unwrap());
     }
 }

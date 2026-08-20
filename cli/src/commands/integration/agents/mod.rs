@@ -1,6 +1,6 @@
 //! Closed set of supported coding agents and immediate adapter delegation.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -45,8 +45,7 @@ impl Agent {
         match self {
             Self::Claude => Some(claude::INSTALL_VERSION),
             Self::OpenCode => Some(opencode::INSTALL_VERSION),
-            Self::Codex => Some(codex::INSTALL_VERSION),
-            Self::Cursor => Some(cursor::INSTALL_VERSION),
+            Self::Codex | Self::Cursor => None,
         }
     }
 
@@ -54,8 +53,7 @@ impl Agent {
         match self {
             Self::Claude => claude::install(),
             Self::OpenCode => opencode::install(),
-            Self::Codex => codex::install(),
-            Self::Cursor => cursor::install(),
+            _ => bail!("{} has no hook installer", self.spec().display_name),
         }
     }
 
@@ -63,8 +61,7 @@ impl Agent {
         match self {
             Self::Claude => claude::uninstall(),
             Self::OpenCode => opencode::uninstall(),
-            Self::Codex => codex::uninstall(),
-            Self::Cursor => cursor::uninstall(),
+            _ => bail!("{} has no hook installer", self.spec().display_name),
         }
     }
 
@@ -72,8 +69,7 @@ impl Agent {
         match self {
             Self::Claude => claude::installed_version(),
             Self::OpenCode => opencode::installed_version(),
-            Self::Codex => codex::installed_version(),
-            Self::Cursor => cursor::installed_version(),
+            Self::Codex | Self::Cursor => None,
         }
     }
 
@@ -81,8 +77,7 @@ impl Agent {
         match self {
             Self::Claude => claude::snapshot(raw, deadline),
             Self::OpenCode => opencode::snapshot(raw),
-            Self::Codex => codex::snapshot(raw),
-            Self::Cursor => cursor::snapshot(raw),
+            _ => bail!("{} has no report parser", self.spec().display_name),
         }
     }
 
@@ -103,7 +98,5 @@ mod tests {
     fn instrumented_adapters_have_independent_install_versions() {
         assert_eq!(Agent::Claude.install_version(), Some(3));
         assert_eq!(Agent::OpenCode.install_version(), Some(4));
-        assert_eq!(Agent::Codex.install_version(), Some(2));
-        assert_eq!(Agent::Cursor.install_version(), Some(2));
     }
 }

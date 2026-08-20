@@ -17,28 +17,22 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstallationBinding {
-    pub cluster_name: String,
-    pub cluster_url: String,
-    pub principal_id: Uuid,
-}
+/// Default OTLP/HTTP collector — the one `just infra` starts
+/// (`oss/docker-compose.infra.yml:57`).
+pub const DEFAULT_OTLP_ENDPOINT: &str = "http://localhost:4318";
 
 /// Per-agent settings recorded at install time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentState {
     /// Name this agent is registered under in the control plane.
     pub agent_name: String,
+    /// OTLP/HTTP base URL spans are posted to.
+    pub otlp_endpoint: String,
     /// Whether prompt text may be attached to spans.
     pub capture_content: bool,
     /// Version of the installed hook script.
     pub hook_version: u32,
-    /// Immutable delivery destination selected by the explicit installation.
-    /// Legacy state without this field fails closed and must be reinstalled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binding: Option<InstallationBinding>,
 }
 
 /// Every installed integration, keyed by catalog id.
@@ -88,7 +82,6 @@ pub struct SessionLock {
 pub struct SessionProgress {
     pub exported_turn_ids: HashSet<String>,
     pub uploaded_turn_ids: HashSet<String>,
-    pub captured_turn_ids: HashSet<String>,
     /// A count-only file cannot be mapped safely after transcript edits. Its
     /// first ID-aware run deliberately replays complete turns once.
     pub migrated_legacy_counts: bool,
@@ -151,7 +144,6 @@ impl SessionLock {
                     .map_or(legacy.uploaded_messages, Vec::len),
                 exported_turn_ids: None,
                 uploaded_turn_ids: None,
-                captured_turn_ids: None,
             };
             write_watermark_path(&watermark_path, &conservative)?;
         }
@@ -178,27 +170,6 @@ impl SessionLock {
             current.uploaded_turn_ids = Some(Vec::new());
             migrated = true;
         }
-        if current.captured_turn_ids.is_none() {
-            // Only turns completed by both old delivery paths can safely be
-            // treated as captured by the replacement pipeline.
-            let exported: HashSet<_> = current
-                .exported_turn_ids
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .cloned()
-                .collect();
-            let captured = current
-                .uploaded_turn_ids
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .filter(|id| exported.contains(*id))
-                .cloned()
-                .collect();
-            current.captured_turn_ids = Some(captured);
-            migrated = true;
-        }
         if migrated {
             write_watermark_path(&self.watermark_path, &current)?;
         }
@@ -213,17 +184,16 @@ impl SessionLock {
                 .unwrap_or_default()
                 .into_iter()
                 .collect(),
-            captured_turn_ids: current
-                .captured_turn_ids
-                .unwrap_or_default()
-                .into_iter()
-                .collect(),
             migrated_legacy_counts,
         })
     }
 
-    pub fn mark_captured(&self, turn_ids: &[String]) -> Result<()> {
-        self.mark(turn_ids, |watermark| &mut watermark.captured_turn_ids)
+    pub fn mark_exported(&self, turn_ids: &[String]) -> Result<()> {
+        self.mark(turn_ids, |watermark| &mut watermark.exported_turn_ids)
+    }
+
+    pub fn mark_uploaded(&self, turn_ids: &[String]) -> Result<()> {
+        self.mark(turn_ids, |watermark| &mut watermark.uploaded_turn_ids)
     }
 
     fn mark(
@@ -284,8 +254,6 @@ struct Watermark {
     exported_turn_ids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     uploaded_turn_ids: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    captured_turn_ids: Option<Vec<String>>,
 }
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
@@ -416,16 +384,6 @@ mod tests {
         assert!(IntegrationState::default().get("claude").is_none());
     }
 
-    #[test]
-    fn legacy_agent_state_loads_without_inventing_a_destination() {
-        let state: IntegrationState = serde_json::from_str(
-            r#"{"agents":{"claude":{"agent_name":"claude-code","capture_content":true,"hook_version":1}}}"#,
-        )
-        .unwrap();
-
-        assert!(state.get("claude").unwrap().binding.is_none());
-    }
-
     fn test_lock(dir: &Path) -> SessionLock {
         SessionLock::acquire(&dir.join("session.lock"), dir.join("session.json")).unwrap()
     }
@@ -445,6 +403,27 @@ mod tests {
     }
 
     #[test]
+    fn progress_updates_are_monotonic_and_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = test_lock(dir.path());
+        let ids = ["a", "b", "c"].map(str::to_string);
+        guard.progress().unwrap();
+        guard.mark_exported(&ids[..2]).unwrap();
+        guard.mark_uploaded(&ids[1..]).unwrap();
+        guard.mark_exported(&ids[..1]).unwrap();
+
+        let progress = guard.progress().unwrap();
+        assert_eq!(
+            progress.exported_turn_ids,
+            ids[..2].iter().cloned().collect()
+        );
+        assert_eq!(
+            progress.uploaded_turn_ids,
+            ids[1..].iter().cloned().collect()
+        );
+    }
+
+    #[test]
     fn legacy_counts_trigger_a_conservative_one_time_replay() {
         let dir = tempfile::tempdir().unwrap();
         let guard = test_lock(dir.path());
@@ -456,7 +435,6 @@ mod tests {
         let progress = guard.progress().unwrap();
         assert!(progress.exported_turn_ids.is_empty());
         assert!(progress.uploaded_turn_ids.is_empty());
-        assert!(progress.captured_turn_ids.is_empty());
         assert!(progress.migrated_legacy_counts);
 
         let second = guard.progress().unwrap();
@@ -485,26 +463,21 @@ mod tests {
         assert!(progress.migrated_legacy_counts);
         assert!(progress.exported_turn_ids.is_empty());
         assert!(progress.uploaded_turn_ids.is_empty());
-        assert!(progress.captured_turn_ids.is_empty());
     }
 
     #[test]
-    fn captured_ids_migrate_conservatively_from_completed_old_delivery() {
+    fn stable_id_progress_survives_truncation_and_reordering() {
         let dir = tempfile::tempdir().unwrap();
         let guard = test_lock(dir.path());
-        std::fs::write(
-            dir.path().join("session.json"),
-            r#"{"exported_turn_ids":["a","b"],"uploaded_turn_ids":["b","c"]}"#,
-        )
-        .unwrap();
+        let original = ["a", "b", "c"].map(str::to_string);
+        guard.progress().unwrap();
+        guard.mark_exported(&original[..2]).unwrap();
+        guard.mark_uploaded(&original[..1]).unwrap();
 
         let progress = guard.progress().unwrap();
-        assert_eq!(progress.captured_turn_ids, HashSet::from(["b".to_string()]));
-        guard.mark_captured(&["d".to_string()]).unwrap();
-        assert_eq!(
-            guard.progress().unwrap().captured_turn_ids,
-            HashSet::from(["b".to_string(), "d".to_string()])
-        );
+        assert!(progress.exported_turn_ids.contains("a"));
+        assert!(progress.exported_turn_ids.contains("b"));
+        assert_eq!(progress.uploaded_turn_ids, HashSet::from(["a".to_string()]));
     }
 
     #[test]
