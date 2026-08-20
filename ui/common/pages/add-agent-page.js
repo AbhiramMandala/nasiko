@@ -125,7 +125,7 @@ class AddAgentPage extends HTMLElement {
             <span class="setup-label">Setting up…</span>
           </div>
           <p class="setup-hint">Pulling the image and starting the container. This may take a few
-            minutes. You can close this dialog — it keeps running — but don't leave the page.</p>
+            minutes. You can close this dialog and it will continue running in the background</p>
         </div>
         <div data-slot="footer">
           <button type="button" class="btn-outline" id="oci-cancel">Cancel</button>
@@ -198,7 +198,7 @@ class AddAgentPage extends HTMLElement {
         if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
         setBusy(false);  // drops the unload guard, so it can't outlive the import
         // Don't yank someone who dismissed the dialog and moved on.
-        if (dialogEl.open) routerNavigate('/your-agents');
+        if (dialogEl.open) window.location.href = '/agents.html?view=your-agents';
         else this.#toast('Agent imported. See Your agents.');
       } catch (err) {
         setBusy(false);
