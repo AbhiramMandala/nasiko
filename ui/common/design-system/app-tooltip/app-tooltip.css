@@ -29,6 +29,15 @@
     will-change: opacity, transform;
   }
 
+  /* Side-anchored: this is the icon-rail label, and it has to read as smaller
+     than the 32px button it names, 4px away from it. At the default s4 padding
+     it came out 24px against 32 — three quarters of the item, which reads as a
+     second tile beside it rather than a label for it. s2 puts it at 20px, and
+     the 12/16 type is unchanged. */
+  :scope[data-placement="right"] {
+    padding: var(--s-2) var(--s-8);
+  }
+
   /* On a pinned light theme the tooltip inverts against the sand content
      plane, so it sits one ramp step lighter with a softer shadow. */
   :root[data-theme="light"] :scope {

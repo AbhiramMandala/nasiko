@@ -14,6 +14,10 @@
  *   - Defaults to below the trigger with 4px gap
  *   - Flips above when the tooltip would overflow the viewport bottom
  *   - Horizontally centered on the trigger, clamped to viewport edges
+ *   - `data-tooltip-placement="right"` instead anchors to the trigger's right
+ *     edge, vertically centred, flipping to the left when there is no room.
+ *     That is the icon-rail case: a 32px button in a 32px-wide column has no
+ *     room below it, and a label beside it is what the user is reading anyway.
  *
  * The tooltip is rendered as a singleton floating `<div>` appended to
  * `<body>` (portal pattern) — avoids overflow:hidden clipping from any
@@ -38,6 +42,7 @@ import { FAST, EASE_ENTER, EASE_EXIT } from '../../core/motion.js';
 const OPEN_DELAY  = 120;   // ms — debounce before showing
 const CLOSE_DELAY = 80;    // ms — debounce before hiding
 const GAP         = 4;     // px between trigger and tooltip
+const MARGIN      = 8;     // px minimum clearance from the viewport edge
 const FADE_MS     = FAST;  // 150ms fade
 
 // ── Singleton tooltip element ──────────────────────────────────────────
@@ -72,24 +77,52 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, _sheet];
 function _position(trigger) {
   const el = _getEl();
   const rect = trigger.getBoundingClientRect();
-  const tipW = el.offsetWidth;
-  const tipH = el.offsetHeight;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
+
+  // The placement is reflected onto the tooltip as well as read from the
+  // trigger, because the box itself differs: a side-anchored tooltip labels an
+  // icon and is sized as a label (app-tooltip.css). Set it BEFORE measuring —
+  // reading offsetHeight first measured the default box and left the tooltip
+  // 2px off-centre against the item it was labelling.
+  const side = trigger.dataset.tooltipPlacement === 'right' ? 'right' : 'below';
+  el.dataset.placement = side;
+
+  const tipW = el.offsetWidth;
+  const tipH = el.offsetHeight;
+
+  if (side === 'right') {
+    // Beside the trigger, vertically centred on it.
+    let left = rect.right + GAP;
+    let transformOrigin = 'center left';
+    // Flip to the left edge when the tooltip would run off the right.
+    if (left + tipW > vw - MARGIN) {
+      left = rect.left - GAP - tipW;
+      transformOrigin = 'center right';
+    }
+    const top = Math.max(
+      MARGIN,
+      Math.min(rect.top + rect.height / 2 - tipH / 2, vh - tipH - MARGIN),
+    );
+    el.style.top = `${Math.round(top)}px`;
+    el.style.left = `${Math.round(Math.max(MARGIN, left))}px`;
+    el.style.transformOrigin = transformOrigin;
+    return;
+  }
 
   // Prefer below
   let top = rect.bottom + GAP;
   let transformOrigin = 'top center';
 
   // Flip above if overflows bottom
-  if (top + tipH > vh - 8) {
+  if (top + tipH > vh - MARGIN) {
     top = rect.top - GAP - tipH;
     transformOrigin = 'bottom center';
   }
 
   // Center horizontally on trigger, clamp to viewport
   let left = rect.left + rect.width / 2 - tipW / 2;
-  left = Math.max(8, Math.min(left, vw - tipW - 8));
+  left = Math.max(MARGIN, Math.min(left, vw - tipW - MARGIN));
 
   el.style.top = `${Math.round(top)}px`;
   el.style.left = `${Math.round(left)}px`;
@@ -98,7 +131,23 @@ function _position(trigger) {
 
 // ── Show / hide ────────────────────────────────────────────────────────
 
+/** `text` may be a string or a getter, resolved when the tooltip is shown. */
+function _resolve(text) {
+  return (typeof text === 'function' ? text() : text) ?? '';
+}
+
 function _show(trigger, text) {
+  // Resolved before anything else: a trigger whose label has gone away is a
+  // trigger with nothing to say. app-header drops `data-tooltip` from its rail
+  // items while the rail is expanded — the row shows the label itself there, so
+  // a tooltip would be repeating it — and this is what makes that take effect
+  // without re-attaching listeners.
+  const label = _resolve(text);
+  if (!label) {
+    if (_visible && _currentTrigger === trigger) _hideImmediate();
+    return;
+  }
+
   clearTimeout(_closeTimer);
   _closeTimer = null;
 
@@ -115,7 +164,7 @@ function _show(trigger, text) {
   _openTimer = setTimeout(() => {
     _openTimer = null;
     const el = _getEl();
-    el.textContent = text;
+    el.textContent = label;
 
     if (!el.parentNode) document.body.appendChild(el);
 
@@ -193,8 +242,8 @@ function _hideImmediate() {
 /**
  * Attach tooltip behaviour to an element.
  *
- * @param {HTMLElement} el       Trigger element
- * @param {string}      text     Tooltip label
+ * @param {HTMLElement} el              Trigger element
+ * @param {string|(() => string|undefined)} text  Label, or a getter for it
  * @param {object}      [opts]
  * @param {boolean}     [opts.forceBelow]  Always position below (no flip)
  * @returns {() => void} Cleanup function (removes listeners)
@@ -255,7 +304,9 @@ export function scanTooltips(root = document.body) {
   for (const el of root.querySelectorAll('[data-tooltip]')) {
     if (_tracked.has(el)) continue;
     _tracked.add(el);
-    attachTooltip(el, el.dataset.tooltip);
+    // A getter, not the value: the attribute may be added and removed over the
+    // element's life (see _show), and re-reading it costs nothing.
+    attachTooltip(el, () => el.dataset.tooltip);
   }
 }
 
@@ -278,14 +329,14 @@ export function observeTooltips() {
         if (node.nodeType !== 1) continue;
         if (node.dataset?.tooltip && !_tracked.has(node)) {
           _tracked.add(node);
-          attachTooltip(node, node.dataset.tooltip);
+          attachTooltip(node, () => node.dataset.tooltip);
         }
         // Also scan children
         if (node.querySelectorAll) {
           for (const child of node.querySelectorAll('[data-tooltip]')) {
             if (_tracked.has(child)) continue;
             _tracked.add(child);
-            attachTooltip(child, child.dataset.tooltip);
+            attachTooltip(child, () => child.dataset.tooltip);
           }
         }
       }
