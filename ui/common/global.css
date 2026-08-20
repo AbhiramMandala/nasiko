@@ -210,7 +210,6 @@ main.app-shell {
   body:has(> app-header) > main#outlet > * {
     max-width: none;
     margin-inline: 0;
-    min-height: 100%;
   }
 
   body:has(> app-header) > main.app-shell {
@@ -221,6 +220,26 @@ main.app-shell {
   body:has(> app-header) > main.app-shell > * {
     max-width: none;
   }
+}
+
+/*
+  The router's outlet is a passthrough, but it is also the box the mounted page
+  takes its height from. That used to be `min-height: 100%` on the page — a
+  percentage against an auto-height parent, which computes to `auto`, so the page
+  box was only ever as tall as its content. Anything the page pinned to its own
+  edges shrank with it: the module nav, pinned top and bottom inside the page,
+  rendered 212px tall with 228px of rows and grew a scrollbar on a full-height
+  card, because a short page (an error state, an empty list) left nothing to
+  stretch it. A flex column has no such ambiguity — the page fills the outlet,
+  and still grows past it when its content is taller.
+*/
+main#outlet {
+  display: flex;
+  flex-direction: column;
+}
+
+main#outlet > * {
+  flex: 1 0 auto;
 }
 
 /* Prevent media from overflowing their containers */

@@ -365,6 +365,14 @@ export class AppHeader extends HTMLElement {
   #toggleTimer = 0;
 
   #handleKeyDown = (e) => {
+    // ⌘B is the conventional sidebar toggle and the browser does not bind it.
+    // Additive only — the topbar button is unchanged and remains the discoverable
+    // way in; this is the shortcut people expect to already work.
+    if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "B")) {
+      e.preventDefault();
+      this.#toggleRail();
+      return;
+    }
     const isShortcut =
       ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "f")) || e.key === "\\";
     if (isShortcut) {
@@ -399,9 +407,7 @@ export class AppHeader extends HTMLElement {
 
   #handleClick = (e) => {
     if (e.target.closest("[data-rail-toggle]")) {
-      this.#expanded = !this.#expanded;
-      localStorage.setItem(RAIL_KEY, this.#expanded);
-      this.#applyExpanded({ animate: true });
+      this.#toggleRail();
       return;
     }
     if (e.target.closest("[data-mobile-menu]")) {
@@ -422,6 +428,32 @@ export class AppHeader extends HTMLElement {
     }
   };
 
+  /** The button and ⌘B are the same action, so they share one path. */
+  #toggleRail() {
+    this.#expanded = !this.#expanded;
+    localStorage.setItem(RAIL_KEY, this.#expanded);
+    this.#applyExpanded({ animate: true });
+  }
+
+  /**
+   * Up and Down walk the rail, Home/End jump to its ends — the same axis the
+   * module nav answers to, since to the user they are one column of navigation.
+   * Tab order is untouched; this only adds the keys a list implies.
+   */
+  #handleRailKeyDown = (e) => {
+    const item = e.target.closest(".rail-item");
+    if (!item) return;
+    const step = { ArrowDown: 1, ArrowUp: -1 }[e.key];
+    if (step === undefined && e.key !== "Home" && e.key !== "End") return;
+    const items = [...this.querySelectorAll(".rail .rail-item")];
+    if (!items.length) return;
+    e.preventDefault();
+    if (e.key === "Home") { items[0].focus(); return; }
+    if (e.key === "End") { items[items.length - 1].focus(); return; }
+    const at = items.indexOf(item);
+    items[Math.min(items.length - 1, Math.max(0, at + step))]?.focus();
+  };
+
   /** `animate` is the user hitting the toggle; a page load must not animate. */
   #applyExpanded({ animate = false } = {}) {
     if (animate) {
@@ -433,6 +465,7 @@ export class AppHeader extends HTMLElement {
       this.#toggleTimer = setTimeout(() => this.classList.remove("is-toggling"), 400);
     }
     this.classList.toggle("is-expanded", this.#expanded);
+    this.querySelector("[data-rail-toggle]")?.setAttribute("aria-expanded", String(this.#expanded));
     document.documentElement.style.setProperty(
       "--app-sidebar-width",
       this.#expanded ? "var(--app-sidebar-width-expanded)" : "var(--app-sidebar-width-collapsed)"
@@ -452,6 +485,8 @@ export class AppHeader extends HTMLElement {
     document.removeEventListener("keydown", this.#handleKeyDown);
     this.removeEventListener("click", this.#handleClick);
     this.addEventListener("click", this.#handleClick);
+    this.removeEventListener("keydown", this.#handleRailKeyDown);
+    this.addEventListener("keydown", this.#handleRailKeyDown);
     // SPA: re-render active states when the router changes the page
     document.removeEventListener("route-change", this.#onRouteChange);
     document.addEventListener("route-change", this.#onRouteChange);
@@ -491,6 +526,8 @@ export class AppHeader extends HTMLElement {
   disconnectedCallback() {
     document.removeEventListener("keydown", this.#handleKeyDown);
     this.removeEventListener("click", this.#handleClick);
+    this.removeEventListener("keydown", this.#handleRailKeyDown);
+    clearTimeout(this.#toggleTimer);
   }
 
   async loadNavigation() {
@@ -601,7 +638,8 @@ export class AppHeader extends HTMLElement {
         ${window.nasikoChrome?.workspaceSwitcher
           ? `<workspace-switcher></workspace-switcher>`
           : `<span class="identity-chip" title="${escHtml(currentUser || "Nasiko")}">${escHtml(this.#initials())}</span>`}
-        <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button">
+        <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button"
+          aria-expanded="${this.#expanded}">
           ${icons.panelLeft("", 16, 1)}
         </button>
         <div class="nav-cluster">
@@ -651,6 +689,7 @@ export class AppHeader extends HTMLElement {
       userMenu.addEventListener("user-remove", (e) =>
         this.#removeUser(e.detail.username),
       );
+      userMenu.addEventListener("user-add-account", () => this.#addAccount());
       userMenu.addEventListener("user-logout", () => this.#logout());
     }
 
@@ -680,6 +719,12 @@ export class AppHeader extends HTMLElement {
       const userMenu = this.querySelector("app-user-menu");
       if (userMenu) userMenu.users = authService.getUsers();
     }
+  }
+
+  #addAccount() {
+    window.location.href =
+      "/login/?add_account=true&redirect=" +
+      encodeURIComponent(window.location.pathname);
   }
 
   async #logout() {

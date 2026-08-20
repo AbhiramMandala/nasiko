@@ -25,7 +25,7 @@ import { navigate as routerNavigate } from '../core/router.js';
 import { icons } from "../utils/icons.js";
 import { escHtml } from '/common/utils/escape.js';
 import { callOptional } from '../core/data-sources.js';
-import { initialView, syncView, VIEW_PARAM } from '../utils/module-view.js';
+import { initialView, syncView } from '../utils/module-view.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav is
@@ -147,42 +147,53 @@ app-module-nav:not(:defined) { display: block; }
   }
 
   .child { padding-left: 26px; }
-  /* Keyed on .row, not .child: an itemless group renders as a heading-level
-     link row (#groupHtml) and takes the same active state. */
-  .row.is-active {
+  .child.is-active {
     background: var(--bg-surface-hover);
     color: var(--fg-primary);
     font-weight: 500;
   }
-  .row.is-active:hover { background: var(--bg-surface-hover); }
+  .child.is-active:hover { background: var(--bg-surface-hover); }
 
-  /* A row with a delete button (orchestrator session rows). The button is a
-     sibling of the link, not a child: interactive content cannot nest inside
-     an anchor. Revealed on hover/focus, like the Execution history table's. */
-  .row-del-wrap { position: relative; }
-  .row-del-wrap .row { padding-right: 26px; }
+  /* Session rows. A chat row's delete button overlays the row's right edge and
+     only appears while that row is hovered or holds focus, so forty chat titles
+     are not forty trash icons. It had no styling whatsoever before — a bare
+     button following the link inside a plain block wrapper — so every session in
+     the Orchestrator nav carried a stray icon on its own line underneath it. */
+  .row-del-wrap {
+    position: relative;
+    display: flex;
+    min-width: 0;
+  }
+  .row-del-wrap .row { flex: 1; min-width: 0; }
   .row-del {
     position: absolute;
-    right: var(--s-4);
-    top: 50%;
-    translate: 0 -50%;
-    display: inline-grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    padding: 0;
+    inset-block: 0;
+    right: 2px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
     border: none;
-    border-radius: var(--r-8);
+    border-radius: var(--r-6);
     background: transparent;
     color: var(--fg-secondary);
     cursor: pointer;
     opacity: 0;
-    transition: opacity var(--transition-fast), color var(--transition-fast);
+    transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
   }
   .row-del-wrap:hover .row-del,
-  .row-del:focus-visible { opacity: 1; }
-  .row-del:hover { color: var(--color-error); }
-  .row-del[disabled] { opacity: 0.4; cursor: default; }
+  .row-del-wrap:focus-within .row-del { opacity: 1; }
+  .row-del:hover { background: var(--bg-input); color: var(--fg-primary); }
+  .row-del:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--fg-brand);
+    outline-offset: -2px;
+  }
+  .row-del[disabled] { opacity: 0.4; cursor: progress; }
+  /* Reserve the button's width while it is showing, so a long chat title
+     ellipsises instead of running underneath it. */
+  .row-del-wrap:hover .row .row-label,
+  .row-del-wrap:focus-within .row .row-label { padding-right: 22px; }
 
   /* Skeleton while fetchModuleNav resolves */
   .skel-row {
@@ -285,6 +296,7 @@ export class AppModuleNav extends HTMLElement {
 
   connectedCallback() {
     this.addEventListener("click", this.#handleClick);
+    this.addEventListener("keydown", this.#handleKeyDown);
     // SPA: update active state when the router changes page
     document.removeEventListener("route-change", this.#onRouteChange);
     document.addEventListener("route-change", this.#onRouteChange);
@@ -293,6 +305,7 @@ export class AppModuleNav extends HTMLElement {
 
   disconnectedCallback() {
     this.removeEventListener("click", this.#handleClick);
+    this.removeEventListener("keydown", this.#handleKeyDown);
   }
 
   /** Pages may set data directly instead of going through fetchModuleNav. */
@@ -381,6 +394,53 @@ export class AppModuleNav extends HTMLElement {
     });
   };
 
+  /**
+   * The rows are a list, so Up and Down walk it and Home/End jump to its ends;
+   * Right and Left open and close a group, and Left from a child jumps to the
+   * group heading that owns it. Enter and Space stay native — every row is a
+   * real link or button, and this only adds the axis a list implies.
+   *
+   * Tab order is untouched: this is a shortcut for someone already inside the
+   * nav, not a roving-tabindex widget, so nothing about reaching or leaving the
+   * nav from the keyboard changes.
+   */
+  #handleKeyDown = (e) => {
+    const row = e.target.closest(".row");
+    if (!row) return;
+
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      if (row.matches(".group-head") && row.dataset.group) {
+        const wantCollapsed = e.key === "ArrowLeft";
+        if (wantCollapsed === this.#collapsed.has(row.dataset.group)) return;
+        e.preventDefault();
+        row.click();
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        const owner = row.closest(".group")?.querySelector(".group-head");
+        if (owner) { e.preventDefault(); owner.focus(); }
+      }
+      return;
+    }
+
+    const step = { ArrowDown: 1, ArrowUp: -1 }[e.key];
+    if (step === undefined && e.key !== "Home" && e.key !== "End") return;
+    const rows = this.#reachableRows();
+    if (!rows.length) return;
+    e.preventDefault();
+    if (e.key === "Home") { rows[0].focus(); return; }
+    if (e.key === "End") { rows[rows.length - 1].focus(); return; }
+    const at = rows.indexOf(row);
+    rows[Math.min(rows.length - 1, Math.max(0, at + step))]?.focus();
+  };
+
+  /** Rows the user can actually reach — a collapsed group's children cannot. */
+  #reachableRows() {
+    return [...this.querySelectorAll(".row")].filter(
+      (r) => r.matches(".group-head") || !r.closest(".group.is-collapsed"),
+    );
+  }
+
   #handleClick = (e) => {
     const del = e.target.closest("[data-delete-session]");
     if (del) {
@@ -405,18 +465,15 @@ export class AppModuleNav extends HTMLElement {
     const section = e.target.closest("[data-section]");
     if (section) {
       // A section row may carry a `url` (its sections live on another page of
-      // the module — Settings' panels next to the sibling /secrets route). From
-      // that other page there is nothing here to switch, so route to the owning
-      // page and let it pick the section out of `?view=`; swallowing the click
-      // was what used to pin the content to one panel. Path only, not
-      // `#isActive`: the href always names a *different* view of the same page,
-      // so a query-aware match would report "not here" and reload the page it
-      // is already on.
+      // the module). From that other page there is nothing here to switch, so
+      // follow the link and let the owning page pick the section out of the URL
+      // — swallowing the click was what used to pin the content to one panel.
+      // Every module now keeps its sections in one document (module-shell), so
+      // no nav entry takes this branch today; it is the seam that keeps a
+      // multi-document module working if one is added back.
       const href = section.getAttribute("href");
-      if (href && !this.#isSamePath(href)) {
-        e.preventDefault();
+      if (href && !this.#isActive(href.split("#")[0])) {
         document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
-        routerNavigate(href);
         return;
       }
       this.setAttribute("active-section", section.dataset.section);
@@ -486,16 +543,9 @@ export class AppModuleNav extends HTMLElement {
       .replace(/\/+$/, "") || "/";
   }
 
-  /** Same page, ignoring the query — "does this url land on the document we
-   *  are already in". */
-  #isSamePath(url) {
-    return this.#normalizePath(url.split("?")[0])
-      === this.#normalizePath(window.location.pathname);
-  }
-
   #isActive(url) {
-    const [, query] = url.split("?");
-    if (!this.#isSamePath(url)) return false;
+    const [path, query] = url.split("?");
+    if (this.#normalizePath(path) !== this.#normalizePath(window.location.pathname)) return false;
     if (!query) return true;
     const want = new URLSearchParams(query);
     const have = new URLSearchParams(window.location.search);
@@ -515,17 +565,13 @@ export class AppModuleNav extends HTMLElement {
   #itemHtml(item, cls = "child") {
     if (item.section != null) {
       const active = this.getAttribute("active-section") === item.section;
-      // `url` names the page that owns the sections: a real link so the row
-      // works from anywhere in the module (and middle-click/copy-link do the
-      // right thing), while on the owning page the click handler switches the
-      // panel in place. The section travels as `?view=` — the one spelling
-      // module-view.js, app-tabs and every linking page already agree on.
-      // ponytail: plain concatenation, since an owning-page url never carries a
-      // query of its own; build it with `new URL()` the day one does.
+      // `url` names the page that owns the sections: a link so the row works
+      // from anywhere in the module, and on the owning page it only moves the
+      // hash (no reload) while the click handler switches the panel.
       const tag = item.url
-        ? `a href="${escHtml(`${item.url}?${VIEW_PARAM}=${encodeURIComponent(item.section)}`)}"`
+        ? `a href="${escHtml(item.url)}#${escHtml(item.section)}"`
         : `button type="button"`;
-      return `<${tag} class="row ${cls}${active ? " is-active" : ""}"
+      return `<${tag} class="row child${active ? " is-active" : ""}"
         data-section="${escHtml(item.section)}" ${active ? 'aria-current="true"' : ""}>
         <span class="row-label">${escHtml(item.label)}</span></${item.url ? "a" : "button"}>`;
     }
@@ -578,9 +624,7 @@ export class AppModuleNav extends HTMLElement {
     // would otherwise light up next to that page's own active row.
     if (!this.getAttribute("active-section")) {
       const sections = nav.groups
-        // `|| []`: an itemless group is a heading-level link row, and
-        // flatMapping its undefined `items` used to throw in the filter below.
-        .flatMap((g) => g.items || [])
+        .flatMap((g) => g.items)
         .filter((i) => i.section != null && (!i.url || this.#isActive(i.url)))
         .map((i) => i.section);
       if (sections.length) {
