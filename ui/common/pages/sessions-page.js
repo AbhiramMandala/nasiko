@@ -9,7 +9,7 @@ import '../design-system/app-button/app-button.js';
 import '../design-system/app-empty-state/app-empty-state.js';
 import '../features/app-module-nav.js';
 import { escHtml } from '/common/utils/escape.js';
-import { call, callOptional } from '../core/data-sources.js';
+import { call } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';
 
 
@@ -28,6 +28,9 @@ class SessionsPage extends HTMLElement {
   #nextCursor = null;
   #loadingMore = false;
   #filter = '';
+  /// null = not checked yet. Only resolved when the history comes back empty,
+  /// since that is the only place it changes what we render.
+  #hasAgents = null;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -96,26 +99,28 @@ class SessionsPage extends HTMLElement {
     if (more) moreBtn?.setAttribute('loading', '');
 
     try {
-      // Chat sessions are the primary source; observability stats (traces,
-      // tokens, latency) are joined in by session id — best-effort, the page
-      // works without them. Both are asked for the same window so the stats
-      // request only does work for rows that are about to be shown.
-      const offset = more ? this.#sessions.length : 0;
-      const [chatRes, obsRes] = await Promise.allSettled([
-        call('fetchSessions', '', PAGE_SIZE, more ? this.#nextCursor : null),
-        callOptional('fetchObservabilitySessions',PAGE_SIZE, offset) ?? Promise.reject(),
-      ]);
-      if (chatRes.status === 'rejected') throw chatRes.reason;
-
-      // `chatRes.value`, not a bare `res`: there was no such variable, so every
-      // load threw a ReferenceError into the catch below and the page rendered
-      // "Failed to load sessions" with a Retry button while the API was
-      // answering 200. The observability join stays best-effort.
-      const res = chatRes.value;
+      // One request: `/chat/sessions` already returns trace_count, total_tokens
+      // and latency_p50_ms per row (migration 041, SESSION_LIST_SELECT), so the
+      // second observability/session/list call this used to fire was redundant —
+      // and its result was never read. Referencing an undefined `res` below is
+      // what turned an empty history into "Failed to load sessions".
+      const res = await call('fetchSessions', '', PAGE_SIZE, more ? this.#nextCursor : null);
       const page = res?.data || [];
       this.#nextCursor = res?.next_cursor || null;
 
       this.#sessions = more ? [...this.#sessions, ...page] : page;
+      // Chat routes every query to a deployed agent, so with an empty fleet the
+      // "Start a Chat" CTA leads straight into a failure. Ask for one agent to
+      // decide which CTA the empty state gets — its own try/catch, because a
+      // fleet-count hiccup must not report the session list as broken.
+      if (!more && !page.length && this.#hasAgents === null) {
+        try {
+          const agents = await call('fetchAgents', '', 1, 1);
+          this.#hasAgents = (agents?.total ?? agents?.data?.length ?? 0) > 0;
+        } catch {
+          this.#hasAgents = true; // unknown — keep the normal CTA
+        }
+      }
       this.#applyFilter();
     } catch {
       // A failed "load more" must not discard the pages already on screen.
@@ -180,13 +185,24 @@ class SessionsPage extends HTMLElement {
           description="Try a different search term."
           icon='${icons.search()}'>
         </app-empty-state>`;
+      } else if (this.#hasAgents === false) {
+        list.innerHTML = `<app-empty-state
+          title="No agents to run yet"
+          description="Chat routes every query to a deployed agent. Import one and its queries, traces and token counts show up here."
+          icon='${icons.plus()}'>
+          <app-button variant="dark" size="sm" id="btn-empty-import">Import agent</app-button>
+        </app-empty-state>`;
+        this.querySelector('#btn-empty-import')?.addEventListener('click',
+          () => routerNavigate('/add-agent'));
       } else {
         list.innerHTML = `<app-empty-state
           title="No sessions yet"
-          description="Start a conversation from the orchestrator or an agent page."
+          description="Ask the orchestrator a question and every query, trace and token count shows up here."
           icon='${icons.send()}'>
-          <a href="/" style="text-decoration:none"><app-button variant="dark" size="sm">Start a Chat</app-button></a>
+          <app-button variant="dark" size="sm" id="btn-empty-chat">Start a Chat</app-button>
         </app-empty-state>`;
+        this.querySelector('#btn-empty-chat')?.addEventListener('click',
+          () => routerNavigate('/chat?agent_name=Orchestrator'));
       }
       return;
     }

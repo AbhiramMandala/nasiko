@@ -689,7 +689,6 @@ export class AppHeader extends HTMLElement {
       userMenu.addEventListener("user-remove", (e) =>
         this.#removeUser(e.detail.username),
       );
-      userMenu.addEventListener("user-add-account", () => this.#addAccount());
       userMenu.addEventListener("user-logout", () => this.#logout());
     }
 
@@ -719,12 +718,6 @@ export class AppHeader extends HTMLElement {
       const userMenu = this.querySelector("app-user-menu");
       if (userMenu) userMenu.users = authService.getUsers();
     }
-  }
-
-  #addAccount() {
-    window.location.href =
-      "/login/?add_account=true&redirect=" +
-      encodeURIComponent(window.location.pathname);
   }
 
   async #logout() {
