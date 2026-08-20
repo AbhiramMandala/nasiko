@@ -98,7 +98,7 @@
     },
     "app-card": {
       "element": "app-card",
-      "summary": "Unified entity card — the web counterpart of nasiko_ui's `NasikoCard` (Flutter): title/version/subtitle/description/tags/author, a left accent bar keyed on `variant`, and header actions (a menu, or retry/delete in the error state).",
+      "summary": "Unified entity card — the web counterpart of nasiko_ui's `NasikoCard` (Flutter): title/version/subtitle/description/tags/author, per-`variant` state bodies, and header actions (a menu, or retry/delete in the error state).",
       "source": "common/design-system/app-card/app-card.js",
       "attributes": {
         "card-title": {
@@ -131,7 +131,7 @@
             "error"
           ],
           "default": "normal",
-          "description": "`normal` (default) | `setting-up` | `active` | `error` — left accent bar + body"
+          "description": "`normal` (default) | `setting-up` | `active` | `error` — selects the state body"
         },
         "disabled": {
           "type": "boolean",
@@ -192,15 +192,15 @@
         },
         "setting-up-title": {
           "type": "string",
-          "description": "Bold headline in the setting-up body (variant=\"setting-up\")"
+          "description": "Status line, shown after a spinner (variant=\"setting-up\")"
         },
         "setting-up-body": {
           "type": "string",
-          "description": "Status line in the setting-up body (variant=\"setting-up\")"
+          "description": "Muted hint under the status line (variant=\"setting-up\")"
         },
         "setting-up-progress": {
           "type": "number",
-          "description": "0-100; omit for an indeterminate bar (variant=\"setting-up\")"
+          "description": "0-100 determinate bar; omit and the spinner is the only progress affordance (variant=\"setting-up\")"
         }
       },
       "excludedFromCatalog": [

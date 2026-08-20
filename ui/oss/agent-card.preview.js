@@ -285,7 +285,7 @@ export default {
       await page.waitForSelector('.acp-stat-value', { timeout: 5000 });
     },
     "viewer": async (page) => {
-           // Non-manager: Overview, Configure and Logs tabs, no topbar actions.
+      // Non-manager: Overview, Configure and Logs tabs, no topbar actions.
       await gotoAgent(page, 'a-viewer');
       await page.waitForSelector('.acp-stat-value', { timeout: 5000 });
     },
