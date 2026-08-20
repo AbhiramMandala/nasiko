@@ -284,7 +284,10 @@ where
     // itself via `mcp::require_delegation` instead of a user session JWT.
     let mcp_agent_gateway = Router::new()
         .nest("/api", mcp::agent_gateway_router())
-        .layer(middleware::from_fn(mcp::require_delegation))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            mcp::require_delegation,
+        ))
         .with_state(state.clone());
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());

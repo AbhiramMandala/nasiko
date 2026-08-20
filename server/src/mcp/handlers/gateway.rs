@@ -26,7 +26,17 @@ const HEADER_AGENT_TOKEN: &str = "x-nasiko-agent-token";
 
 /// Auth layer for `POST /api/mcp` — validates the delegation token and inserts a
 /// `Claims { sub: user_id, .. }`, replacing `require_auth` for this one route.
-pub async fn require_delegation(mut req: Request, next: Next) -> Response {
+///
+/// Because it replaces `require_auth`, it must repeat that middleware's
+/// subject-liveness check itself. A delegation token is minted for a user and
+/// stays valid until it expires, so without this a token issued before an
+/// offboarding keeps working afterwards — and this route is not covered by any
+/// other boundary check.
+pub async fn require_delegation(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
     let jwt_secret = match std::env::var("JWT_SECRET") {
         Ok(s) => s,
         Err(_) => return (StatusCode::UNAUTHORIZED, "delegation auth unavailable").into_response(),
@@ -47,6 +57,22 @@ pub async fn require_delegation(mut req: Request, next: Next) -> Response {
         )
             .into_response();
     };
+    // Fail closed on a DB error, matching `require_auth`.
+    let alive: bool = match user_id.parse::<uuid::Uuid>() {
+        Ok(uid) => sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)",
+        )
+        .bind(uid)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(false),
+        // A non-UUID subject can never match a row; treat as absent.
+        Err(_) => false,
+    };
+    if !alive {
+        return (StatusCode::UNAUTHORIZED, "delegating user no longer exists").into_response();
+    }
+
     req.extensions_mut().insert(Claims {
         sub: user_id,
         username: String::new(),
