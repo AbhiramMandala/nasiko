@@ -17,6 +17,31 @@
  * @module router
  */
 
+// ── View-transition contract with core/motion.js ────────────────────────
+
+/**
+ * `view-transition-name` the router gives the outgoing and incoming page for
+ * the length of a swap. Paired with the `::view-transition-*(page-content)`
+ * rules in core/motion.js.
+ *
+ * It is applied imperatively rather than declared in CSS on purpose: a
+ * non-`none` `view-transition-name` makes the element a stacking context *and*
+ * a containing block for fixed-position descendants, and pages host
+ * fixed-position UI (`app-tooltip`, `auto-complete`) that would then be
+ * positioned against the page instead of the viewport. Scoped to the
+ * transition, that side effect never outlives the animation.
+ */
+const VT_PAGE_NAME = 'page-content';
+
+/**
+ * Marks a router-driven (same-document) transition on the document element so
+ * motion.js can style it apart from the cross-document one that
+ * `@view-transition { navigation: auto }` runs. Without the discriminator an
+ * in-app navigation animated the `root` snapshot — the whole viewport,
+ * including the opaque content card — instead of the page inside it.
+ */
+const VT_SWAP_CLASS = 'vt-page-swap';
+
 // ── Route matching ──────────────────────────────────────────────────────
 
 /**
@@ -69,6 +94,15 @@ class Router {
   #excludePrefixes = new Set();
   /** @type {((path: string) => boolean)|null} */
   #authGuard = null;
+  /**
+   * The in-flight view transition, or null. A second navigation started while
+   * one is running makes the browser skip the first; without this guard the
+   * skipped transition's cleanup would strip `.vt-page-swap` and the page name
+   * out from under its successor, and the successor would animate the whole
+   * viewport again.
+   * @type {ViewTransition|null}
+   */
+  #activeTransition = null;
 
   /**
    * Register a route.
@@ -287,10 +321,32 @@ class Router {
     };
 
     if (animate && document.startViewTransition) {
-      const transition = document.startViewTransition(swap);
-      transition.finished.then(() => {
-        document.dispatchEvent(new CustomEvent('loading-end', { bubbles: true }));
+      // Name the page on both sides of the swap so the capture is scoped to it
+      // rather than falling back to the full-viewport `root` snapshot. The
+      // outgoing page has to be named before `startViewTransition` (the old
+      // state is captured on the way in); the incoming one inside the callback,
+      // which is where it first exists.
+      const rootEl = document.documentElement;
+      rootEl.classList.add(VT_SWAP_CLASS);
+      if (this.#currentPage) this.#currentPage.style.viewTransitionName = VT_PAGE_NAME;
+
+      const transition = document.startViewTransition(() => {
+        swap();
+        this.#currentPage.style.viewTransitionName = VT_PAGE_NAME;
       });
+      this.#activeTransition = transition;
+
+      // `finished` rejects when the update callback throws — the loading bar
+      // used to hang forever in that case, since only the fulfilled path
+      // cleared it.
+      const cleanup = () => {
+        if (this.#activeTransition !== transition) return;
+        this.#activeTransition = null;
+        rootEl.classList.remove(VT_SWAP_CLASS);
+        if (this.#currentPage) this.#currentPage.style.viewTransitionName = '';
+        document.dispatchEvent(new CustomEvent('loading-end', { bubbles: true }));
+      };
+      transition.finished.then(cleanup, cleanup);
     } else {
       swap();
       document.dispatchEvent(new CustomEvent('loading-end', { bubbles: true }));
