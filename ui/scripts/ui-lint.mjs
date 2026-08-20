@@ -36,6 +36,7 @@ import {
   lintGlobs,
   privateElementNames,
   resolveMount,
+  serviceBarrels,
 } from './editions.mjs';
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
@@ -377,23 +378,28 @@ const rules = [
   },
 
   {
-    id: 'ee-service-must-be-in-barrel',
+    id: 'service-must-be-in-barrel',
     enforce: 'zero',
-    why: 'An EE service registers its data functions as an import side effect, so a service nothing imports is a ' +
+    why: 'A service registers its data functions as an import side effect, so a service nothing imports is a ' +
          'service the client router never loads — the page mounts, calls into an empty registry and renders its ' +
          'error state. Standalone documents name their own service; the router path only ever loads the barrel. ' +
-         'Every module in ui/ee/web/services/ must therefore be imported by ui/ee/web/services/data-functions.js.',
+         'Every *-service.js beside a barrel must therefore be imported by it. Which editions have a barrel comes ' +
+         'from their edition.json "serviceBarrel", not a path literal here: ui/scripts/ is published, so naming an ' +
+         'enterprise directory would ship the private layout — and readdirSync on a directory the public repo does ' +
+         'not have would throw rather than no-op.',
     check({ rel, source, isJs }) {
-      if (!isJs || rel !== EE_SERVICE_BARREL) return [];
+      if (!isJs || !SERVICE_BARRELS.includes(rel)) return [];
       const imported = new Set(importsOf(source).map((s) => basename(s)));
-      return readdirSync(resolve(REPO, dirname(EE_SERVICE_BARREL)))
+      return readdirSync(resolve(REPO, dirname(rel)))
         .filter((f) => f.endsWith('-service.js') && !imported.has(f))
         .map((f) => ({ file: rel, line: 1, message: `does not import ${f} — the router path will not register it` }));
     },
   },
 ];
 
-const EE_SERVICE_BARREL = 'ui/ee/web/services/data-functions.js';
+// Declared per edition in edition.json. Empty where no edition declares one,
+// which is the correct behaviour in the public repo.
+const SERVICE_BARRELS = serviceBarrels();
 
 // Keep in sync with utils/url-policy.js ALLOWED_PARAMS.
 const ALLOWED_URL_KEYS = new Set([

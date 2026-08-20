@@ -69,6 +69,9 @@ function load(name) {
       prefix: `${dir}/${sub}/`,
     })),
     privateElements: raw.privateElements ?? [],
+    // Optional: the module that must import every *-service.js in its directory,
+    // because a service registers its data functions as an import side effect.
+    serviceBarrel: raw.serviceBarrel ? `${dir}/${raw.serviceBarrel}` : null,
   };
 }
 
@@ -120,6 +123,9 @@ export function editionLayerOf(rel) {
   }
   return ed.layer;
 }
+
+/** Service-barrel paths for the editions that declare one, repo-relative. */
+export const serviceBarrels = () => EDITIONS.map((e) => e.serviceBarrel).filter(Boolean);
 
 /** Custom-element names owned by editions that are NOT published. */
 export const privateElementNames = () => PRIVATE_EDITIONS.flatMap((e) => e.privateElements);
