@@ -46,13 +46,22 @@ const missing = new Set();
  * filter variant — this replaces the per-page `window.fetch*` monkey-patching
  * that used to do the same job).
  *
+ * Values, not only functions: the two registrations that are plain data —
+ * `navExtension` (an object of hooks) and `setupCliSteps` (an array) — were
+ * dropped on the floor by a `typeof fn === 'function'` guard here and in
+ * `registerAll`, silently. On EE that meant `nav-ext.js` registered nothing, so
+ * `navigation.js` fell back to the base nav and every enterprise item (Users,
+ * Departments, Teams, Access Control, Team Access, Group Mappings, Agent
+ * Runtime, the whole org module tree) was missing from the sidebar. Only
+ * undefined is rejected now — a name must map to something.
+ *
  * @param {string} name
- * @param {Function} fn
+ * @param {Function|object} fn
  * @param {{ replace?: boolean }} [opts]
  */
 export function register(name, fn, { replace = false } = {}) {
   if (typeof name !== 'string' || !name) throw new TypeError('register() needs a name');
-  if (typeof fn !== 'function') throw new TypeError(`register("${name}") needs a function`);
+  if (fn === undefined || fn === null) throw new TypeError(`register("${name}") needs a value`);
   if (sources.has(name) && !replace) {
     throw new Error(
       `Data source "${name}" is already registered. Two definitions of the same name used to be ` +
@@ -66,12 +75,17 @@ export function register(name, fn, { replace = false } = {}) {
 
 /**
  * Register many at once — the shape a service module exports.
- * @param {Record<string, Function>} map
+ *
+ * Skips only `undefined`, so a module can spread an optional export without
+ * guarding it. Anything else registers — see `register` on why filtering to
+ * functions here silently deleted EE's navigation.
+ *
+ * @param {Record<string, Function|object>} map
  * @param {{ replace?: boolean }} [opts]
  */
 export function registerAll(map, opts) {
   for (const [name, fn] of Object.entries(map)) {
-    if (typeof fn === 'function') register(name, fn, opts);
+    if (fn !== undefined) register(name, fn, opts);
   }
 }
 
@@ -97,7 +111,7 @@ export function override(name, fn) {
  */
 export function resolve(name) {
   const fn = resolveOptional(name);
-  if (fn) return fn;
+  if (fn !== undefined) return fn;
   missing.add(name);
   throw new Error(
     `No data source named "${name}". ${suggest(name)}\n` +

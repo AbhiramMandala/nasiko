@@ -30,6 +30,14 @@ import { resolve, dirname, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { glob } from 'node:fs/promises';
 
+import {
+  editionOf,
+  editionLayerOf,
+  lintGlobs,
+  privateElementNames,
+  resolveMount,
+} from './editions.mjs';
+
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 const UI = resolve(SCRIPTS, '..');
 const REPO = resolve(UI, '..');
@@ -74,11 +82,17 @@ function layerOf(rel) {
   }
   if (rel.startsWith('ui/common/features/')) return LAYER.COMPONENT;
   if (rel.startsWith('ui/common/pages/')) return LAYER.PAGE;
-  // Enterprise page components: Domain layer. They import downward into the
-  // shared design system and platform; nothing in ui/oss/ or ui/common/ may import them.
-  if (rel.startsWith('ui/ee/components/')) return LAYER.DOMAIN;
-  if (rel.startsWith('ui/ee/web/services/') || rel.startsWith('ui/oss/')) return LAYER.APPLICATION;
-  if (rel.startsWith('ui/ee/')) return LAYER.APPLICATION;
+  // Per-edition layers come from ui/<edition>/edition.json rather than a list of
+  // edition names here, because this file is published to the public repo. An
+  // edition's page components typically sit at DOMAIN — they import downward into
+  // the shared design system and platform, and nothing in ui/common/ may import
+  // them — with the rest of the edition at APPLICATION.
+  const declared = editionLayerOf(rel);
+  if (declared) {
+    const layer = LAYER[declared.toUpperCase().replace(/-/g, '_')];
+    if (layer === undefined) throw new Error(`${rel}: edition declares unknown layer "${declared}"`);
+    return layer;
+  }
   return LAYER.COMPONENT;
 }
 
@@ -87,9 +101,10 @@ function layerOf(rel) {
  * sheets in styles/ or the token files. These are the sheets that must be
  * @scope-wrapped, because adopting puts them on the document.
  *
- * Deliberately excludes ui/ee/components/ — ee-page-layout.css lives there but is
- * <link>ed, not adopted, so a page element's box exists at first paint. It is a
- * peer of styles/page-layout.css, which this rule has always skipped.
+ * Deliberately excludes the per-edition component directories — an edition's
+ * page-layout sheet is <link>ed, not adopted, so a page element's box exists at
+ * first paint. Those are peers of styles/page-layout.css, which this rule has
+ * always skipped.
  * @param {string} rel
  */
 function isComponentCss(rel) {
@@ -119,9 +134,11 @@ function findRawColours(rel, source) {
 /** Resolve an import specifier to a repo-relative path, or null if not local. */
 function resolveSpec(fromRel, spec) {
   if (spec.startsWith('/common/')) return 'ui/common/' + spec.slice('/common/'.length);
-  // The EE components mount (`EeComponents` in ee/server/src/main.rs). Mapping it
-  // here is what lets `oss-must-not-import-ee` see an oss/ file reaching for it.
-  if (spec.startsWith('/components/')) return 'ui/ee/components/' + spec.slice('/components/'.length);
+  // Server-mounted specifiers, declared per edition (e.g. `/components/` -> that
+  // edition's components dir). Mapping them here is what lets the boundary rule
+  // below see a public file reaching for a private edition's mount.
+  const mounted = resolveMount(spec);
+  if (mounted) return mounted;
   if (spec.startsWith('.')) {
     return relative(REPO, resolve(dirname(resolve(REPO, fromRel)), spec)).replace(/\\/g, '/');
   }
@@ -173,15 +190,28 @@ const rules = [
   },
 
   {
-    id: 'oss-must-not-import-ee',
+    id: 'public-must-not-import-private',
     enforce: 'zero',
-    why: 'oss/ is synced verbatim to the public repo (CLAUDE.md). An ee/ reference there breaks the public build ' +
-         'and leaks enterprise code.',
+    why: 'ui/common/ and the published editions are synced to the public repo (see the UI allowlist in ' +
+         'scripts/sync-oss.sh). A reference into a private edition there breaks the public build and leaks ' +
+         'enterprise code. Renamed from the earlier oss/ee-specific rule, which compared paths against "oss/" ' +
+         'and "ee/" while every path it is given is prefixed "ui/" — so it matched nothing and its zero meant ' +
+         'nothing. Fixed here.',
     check({ rel, source, isJs }) {
-      if (!isJs || !rel.startsWith('oss/')) return [];
+      if (!isJs) return [];
+      const from = editionOf(rel);
+      if (!rel.startsWith('ui/common/') && !from?.isPublic) return [];
       return importsOf(source)
-        .filter((s) => (resolveSpec(rel, s) || '').startsWith('ee/'))
-        .map((s) => ({ file: rel, line: lineOf(source, source.indexOf(s)), message: `imports ${s}` }));
+        .filter((spec) => {
+          const target = resolveSpec(rel, spec);
+          const to = target ? editionOf(target) : null;
+          return to !== null && !to.isPublic;
+        })
+        .map((spec) => ({
+          file: rel,
+          line: lineOf(source, source.indexOf(spec)),
+          message: `imports ${spec}`,
+        }));
     },
   },
 
@@ -284,7 +314,7 @@ const rules = [
     why: 'Colours must come from design tokens or a re-skin cannot be mechanical. Syntax highlighting and brand ' +
          'marks are the legitimate exceptions and are in the baseline.',
     check({ rel, source, isJs }) {
-      if (!rel.startsWith('ui/oss/') && !rel.startsWith('ui/ee/')) return [];
+      if (!editionOf(rel)) return [];
       if (rel.includes('/vendor/') || rel === 'ui/common/global.css') return [];
       return findRawColours(rel, source);
     },
@@ -323,18 +353,24 @@ const rules = [
   },
 
   {
-    id: 'ee-element-in-shared-css',
+    id: 'private-element-in-shared-code',
     enforce: 'ratchet',
-    why: 'ui/oss/ and ui/common/ are synced to the public repo. An enterprise-only element name in a shared stylesheet ships ' +
-         'selectors for a page the OSS binary cannot serve, and is a layering violation the compiler cannot catch. ' +
-         'Now zero: those components live in ui/ee/components/ and their host geometry in ' +
-         'ui/ee/components/ee-page-layout.css. Keep it there.',
-    check({ rel, source, isJs }) {
-      if (isJs || !rel.startsWith('ui/common/')) return [];
+    why: 'ui/common/ is synced to the public repo. An element name owned by a private edition, appearing in a ' +
+         'shared stylesheet, ships selectors for a page the public binary cannot serve, and is a layering ' +
+         'violation the compiler cannot catch. Now zero: those components and their host geometry live in the ' +
+         'owning edition. Keep them there. Names come from each manifest\'s "privateElements", so the public ' +
+         'repo has nothing to check — it cannot leak what it does not ship.',
+    check({ rel, source }) {
+      // Stylesheets AND scripts: a private page name in a shared comment is
+      // still a private page name published to the public repo, and two of
+      // those were sitting in ui/common/ when this rule only read CSS.
+      if (!rel.startsWith('ui/common/')) return [];
       const out = [];
-      for (const el of EE_ONLY_ELEMENTS) {
+      for (const el of PRIVATE_ELEMENTS) {
         const i = source.indexOf(el);
-        if (i >= 0) out.push({ file: rel, line: lineOf(source, i), message: `references EE-only element ${el}` });
+        if (i >= 0) {
+          out.push({ file: rel, line: lineOf(source, i), message: `references private-edition element ${el}` });
+        }
       }
       return out;
     },
@@ -367,19 +403,15 @@ const ALLOWED_URL_KEYS = new Set([
   'limit', 'offset', 'cursor', 'q', 'status',
 ]);
 
-const EE_ONLY_ELEMENTS = [
-  'users-page', 'teams-page', 'departments-page', 'access-control-page',
-  'team-access-page', 'group-mappings-page', 'runtime-page',
-];
+// Declared by each non-public edition in its edition.json. Empty in the public
+// repo, which is correct.
+const PRIVATE_ELEMENTS = privateElementNames();
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SEARCH = [
-  'ui/common/**/*.{js,css}',
-  'ui/oss/*.{js,css,html}',
-  'ui/ee/components/**/*.{js,css}',
-  'ui/ee/web/**/*.{js,css,html}',
-];
+// The shared tree, plus whatever each edition declares. Hardcoding the
+// per-edition globs here would publish the private layout — see editions.mjs.
+const SEARCH = ['ui/common/**/*.{js,css}', ...lintGlobs()];
 const SKIP = (p) => p.includes('/vendor/') || p.includes('/tests/') || p.includes('/node_modules/');
 
 const findings = new Map(rules.map((r) => [r.id, []]));
