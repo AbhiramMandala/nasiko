@@ -26,6 +26,13 @@ if (!document.adoptedStyleSheets.includes(yourAgentsStyles)) {
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, yourAgentsStyles];
 }
 
+function statusClass(status) {
+  if (status === "running") return "is-running";
+  if (status === "error" || status === "failed") return "is-error";
+  if (status === "deploying" || status === "starting") return "is-pending";
+  return "is-stopped";
+}
+
 function parseImageTag(image) {
   if (!image) return { name: "", version: "" };
   const parts = image.split(":");
@@ -159,11 +166,28 @@ class YourAgentsPage extends HTMLElement {
     const version = a.version || imgVersion;
     const tags = (a.tags || []).map((t) => ({ label: t }));
 
-    const footerButtonsHtml = isRunning
-      ? `
+    // app-card only paints the setting-up body when it has content to show
+    // (its `_hasSettingUpBody` gate), so variant="setting-up" alone renders a
+    // bare card — the live build status has to be passed in as the status line.
+    const setupStatus =
+      a._uploadInfo?.status_message ||
+      (a.status === "starting" ? "Starting container…" : "Agent is being deployed…");
+
+    const sourceType = a._uploadInfo?.upload_type;
+    const sourceLabel = sourceType === "github" ? "GitHub" : sourceType === "zip" ? "Zip" : null;
+
+    // Mid-provision: no lifecycle actions. Deploying an agent that is already
+    // deploying, or deleting it out from under its own build, both fail.
+    const footerButtonsHtml = isPending
+      ? ""
+      : isRunning
+        ? `
         <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
-        <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square("", 12)}</button>`
-      : `<button type="button" slot="footer" class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>`;
+        <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square("", 12)}</button>
+        <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash("", 14)}</button>`
+        : `
+        <button type="button" slot="footer" class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>
+        <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash("", 14)}</button>`;
 
     // data-agent-id is the hook the status poller keys on to swap a single
     // card in place; without it the poller can't find the node and the whole
@@ -176,14 +200,14 @@ class YourAgentsPage extends HTMLElement {
       variant="${variant}"
       href="/agent-card?id=${escAttr(a.id)}"
       ${isError ? `error-title="Agent failed" error-body="Container exited with an error."` : ""}
-      ${!isError && a.description ? `description="${escAttr(a.description)}"` : ""}
+      ${isPending ? `setting-up-title="${escAttr(setupStatus)}" setting-up-body="This may take a few minutes. Status updates automatically."` : ""}
+      ${!isError && !isPending && a.description ? `description="${escAttr(a.description)}"` : ""}
       ${tags.length ? `tags="${escAttr(JSON.stringify(tags))}"` : ""}
     >
+      <span slot="leading" class="status-dot ${statusClass(a.status)}" title="${escAttr(a.status || "")}"></span>
+      ${sourceLabel ? `<span slot="trailing" class="agent-card-source">${sourceLabel}</span>` : ""}
       ${isError ? `<a slot="footer" data-action="view-logs" href="/flows?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
       ${footerButtonsHtml}
-      <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">
-        ${icons.trash("", 14)}
-      </button>
     </app-card>
   `;
   }
@@ -282,7 +306,7 @@ class YourAgentsPage extends HTMLElement {
     return Array.from(
       { length: 4 },
       () => `
-      <div class="agent-card skeleton-card">
+      <div class="card skeleton-card">
         <div class="skel-line skel-line--name"></div>
         <div class="skel-tags">
           <div class="skel-tag"></div>
@@ -346,7 +370,7 @@ class YourAgentsPage extends HTMLElement {
             description="Deploy your first agent from the catalog or add a new one."
             icon='${icons.layers("", 40)}'>
             <a href="/agents" class="empty-action-link">Browse catalog</a>
-            <a href="/add-agent" class="empty-action-link empty-action-link--secondary">Add agent</a>
+            <a href="/add-agent" class="empty-action-link empty-action-link--secondary">Import agent</a>
           </app-empty-state>
         </div>`;
       return;
@@ -538,7 +562,7 @@ class YourAgentsPage extends HTMLElement {
         // These are fixed-size icon buttons: swapping in a label overflows the
         // square and lands on the card body. Swap the icon for a same-size
         // spinner and lock the card's other lifecycle buttons instead.
-        const siblings = [...btn.closest(".agent-card-actions").querySelectorAll("[data-action]")];
+        const siblings = [...btn.closest(".ac-footer").querySelectorAll("[data-action]")];
         for (const b of siblings) b.disabled = true;
         btn.setAttribute("aria-busy", "true");
         btn.innerHTML = `<span class="setup-spinner"></span>`;

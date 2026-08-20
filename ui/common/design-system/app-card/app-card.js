@@ -1,8 +1,8 @@
 /**
  * Unified entity card — the web counterpart of nasiko_ui's `NasikoCard`
- * (Flutter): title/version/subtitle/description/tags/author, a left accent
- * bar keyed on `variant`, and header actions (a menu, or retry/delete in the
- * error state). This is the ONE card primitive for entity/list grids — pages
+ * (Flutter): title/version/subtitle/description/tags/author, per-`variant`
+ * state bodies, and header actions (a menu, or retry/delete in the error
+ * state). This is the ONE card primitive for entity/list grids — pages
  * should render this instead of hand-rolling their own `.foo-card` markup
  * and CSS (AGENTS.md: "Compose, don't hand-roll").
  *
@@ -17,6 +17,10 @@
  *   `backgroundInformationOverlay`) don't exist on the web side yet, so
  *   there's nothing faithful to render it with. Add those tokens to
  *   `global.css` first if a real popover is wanted.
+ * - `NasikoCard`'s left accent bar is not reproduced. The product design
+ *   carries card state with a status dot plus the state body (see
+ *   your-agents-page), and a coloured bar inset into the shared `.card`
+ *   surface read as a second border against its rounded edge.
  * - Adds an optional `slot="footer"` (a bottom actions row with a hairline
  *   top border) that `NasikoCard` has no equivalent for — Flutter call
  *   sites compose a footer outside the card, but list-grid cards on the web
@@ -30,7 +34,7 @@
  * @attr {string} subtitle - Supporting line shown below the title row
  * @attr {string} description - Body copy, clamped to 2 lines
  * @attr {string} author - Attribution line shown below the description
- * @attr {string} variant - `normal` (default) | `setting-up` | `active` | `error` — left accent bar + body
+ * @attr {string} variant - `normal` (default) | `setting-up` | `active` | `error` — selects the state body
  * @attr {boolean} disabled - Muted appearance; suppresses hover/selection/menu
  * @attr {boolean} selected - Persistent selected elevation (ignored when disabled/error)
  * @attr {boolean} clickable - Renders the card as an interactive target; fires `card-click`
@@ -45,9 +49,9 @@
  * @attr {string} error-details - Extra detail exposed via a "Know more" tooltip (variant="error")
  * @attr {boolean} retry - Shows a retry icon button in the error header; fires `card-retry`
  * @attr {boolean} delete - Shows a delete icon button in the error header; fires `card-delete`
- * @attr {string} setting-up-title - Bold headline in the setting-up body (variant="setting-up")
- * @attr {string} setting-up-body - Status line in the setting-up body (variant="setting-up")
- * @attr {number} setting-up-progress - 0-100; omit for an indeterminate bar (variant="setting-up")
+ * @attr {string} setting-up-title - Status line, shown after a spinner (variant="setting-up")
+ * @attr {string} setting-up-body - Muted hint under the status line (variant="setting-up")
+ * @attr {number} setting-up-progress - 0-100 determinate bar; omit and the spinner is the only progress affordance (variant="setting-up")
  * @attr {string} max-width - CSS max-width applied to the host
  * @slot leading - Custom leading element (overrides `icon`)
  * @slot title-badge - Small inline element rendered right after the title
@@ -79,6 +83,7 @@ export class AppCard extends HTMLElement {
   }
 
   #initialized = false;
+  #slots = null;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -87,9 +92,34 @@ export class AppCard extends HTMLElement {
   }
 
   attributeChangedCallback(name) {
-    if (!this.isConnected) return;
+    // Parser-created elements are upgraded already-connected, so every
+    // attribute present in the markup fires this before connectedCallback.
+    // Rendering there is both wasted work and wrong: #captureSlots has not
+    // run yet on the first of those calls. Let connectedCallback do the one
+    // initial render; only genuine post-mount changes re-render.
+    if (!this.#initialized || !this.isConnected) return;
     if (name === 'max-width') { this.#syncMaxWidth(); return; }
     this.render();
+  }
+
+  /** Light-DOM slotted children, captured once.
+   *
+   *  render() rebuilds innerHTML, which detaches them, and re-homes them into
+   *  the shadow-ish structure it just built (.ac-footer, .ac-leading-slot, …).
+   *  After that they are no longer `:scope >` children, so a re-render that
+   *  re-queried the light DOM found nothing and silently dropped them —
+   *  a card that changed any attribute lost its footer buttons. Authored
+   *  slot content is fixed at construction, so caching the nodes is enough. */
+  #captureSlots() {
+    if (!this.#slots) {
+      this.#slots = {
+        leading: this.querySelector(':scope > [slot="leading"]'),
+        badge: this.querySelector(':scope > [slot="title-badge"]'),
+        trailing: this.querySelector(':scope > [slot="trailing"]'),
+        footer: [...this.querySelectorAll(':scope > [slot="footer"]')],
+      };
+    }
+    return this.#slots;
   }
 
   #syncMaxWidth() {
@@ -142,12 +172,15 @@ export class AppCard extends HTMLElement {
     const isMuted = disabled;
 
     // Light-DOM slotted overrides — captured before innerHTML wipes them.
-    const leadingSlot = this.querySelector(':scope > [slot="leading"]');
-    const badgeSlot = this.querySelector(':scope > [slot="title-badge"]');
-    const trailingSlot = this.querySelector(':scope > [slot="trailing"]');
-    const footerSlot = [...this.querySelectorAll(':scope > [slot="footer"]')];
+    const { leading: leadingSlot, badge: badgeSlot, trailing: trailingSlot, footer: footerSlot } =
+      this.#captureSlots();
 
     const cardClasses = [
+      // `card` is surface.css's one product-card surface — plane, radius,
+      // brand wash, shadow, hover lift. app-card must not re-declare any of
+      // that or the two copies drift and this card stops matching the ones
+      // agents-page renders. See the class list in common/styles/surface.css.
+      'card',
       'ac-card',
       // The gradient resting fill is a "setting-up progress" affordance in
       // nasiko_ui — it only applies when there's setting-up body content to
@@ -160,12 +193,6 @@ export class AppCard extends HTMLElement {
       canInteract ? 'is-clickable' : '',
     ].filter(Boolean).join(' ');
 
-    const accentClass = disabled ? null
-      : isSettingUp ? 'is-setting-up'
-      : isActive ? 'is-active'
-      : isError ? 'is-error'
-      : null;
-
     const leadingHtml = leadingSlot ? `<span class="ac-leading-slot"></span>` : iconAttr
       ? `<span class="ac-leading${isError ? ' is-error' : ''}${isSettingUp ? ' is-setting-up' : ''}${disabled ? ' is-disabled' : ''}">${iconAttr}</span>`
       : '';
@@ -174,8 +201,8 @@ export class AppCard extends HTMLElement {
     const overflow = tags.length - tagsToShow.length;
     const tagsHtml = tags.length ? `
       <div class="ac-tags">
-        ${tagsToShow.map((t) => `<span class="ac-tag${isMuted ? ' is-muted' : ''}">${t.icon || ''}${escHtml(t.label)}</span>`).join('')}
-        ${overflow > 0 ? `<span class="ac-tag${isMuted ? ' is-muted' : ''}" title="${escHtml(tags.slice(maxVisible).map((t) => t.label).join(', '))}">+${overflow}</span>` : ''}
+        ${tagsToShow.map((t) => `<span class="tag ac-tag${isMuted ? ' is-muted' : ''}">${t.icon || ''}${escHtml(t.label)}</span>`).join('')}
+        ${overflow > 0 ? `<span class="tag tag--more ac-tag${isMuted ? ' is-muted' : ''}" title="${escHtml(tags.slice(maxVisible).map((t) => t.label).join(', '))}">+${overflow}</span>` : ''}
       </div>` : '';
 
     let actionsHtml = '';
@@ -200,11 +227,9 @@ export class AppCard extends HTMLElement {
     } else if (hasSettingUpBody) {
       const pct = suProgressAttr != null ? Math.max(0, Math.min(100, Number(suProgressAttr))) : null;
       bodyHtml = `
-        ${suTitle ? `<p class="ac-su-title">${escHtml(suTitle)}</p>` : ''}
+        ${suTitle ? `<p class="ac-su-title"><span class="ac-su-spinner"></span>${escHtml(suTitle)}</p>` : ''}
         ${suBody ? `<p class="ac-su-body">${escHtml(suBody)}</p>` : ''}
-        <div class="ac-progress${pct == null ? ' is-indeterminate' : ''}">
-          <i${pct == null ? '' : ` style="width:${pct}%"`}></i>
-        </div>`;
+        ${pct == null ? '' : `<div class="ac-progress"><i style="width:${pct}%"></i></div>`}`;
     } else {
       bodyHtml = `
         ${subtitle ? `<p class="ac-subtitle${isMuted ? ' is-muted' : ''}">${escHtml(subtitle)}</p>` : ''}
@@ -215,11 +240,10 @@ export class AppCard extends HTMLElement {
 
     this.innerHTML = `
       <div class="${cardClasses}">
-        ${accentClass ? `<span class="ac-accent ${accentClass}"></span>` : ''}
         <div class="ac-header">
           ${leadingHtml}
           <div class="ac-title-wrap">
-            <span class="ac-title${isMuted || isError ? ' is-muted' : ''}">${escHtml(title)}</span>
+            <span class="ac-title${isMuted ? ' is-muted' : ''}">${escHtml(title)}</span>
             <span class="ac-badge-slot"></span>
             ${version ? `<span class="ac-version${isMuted ? ' is-muted' : ''}">${escHtml(version)}</span>` : ''}
           </div>
@@ -252,11 +276,19 @@ export class AppCard extends HTMLElement {
       });
     }
 
-    this.querySelector('[data-action="retry"]')?.addEventListener('click', (e) => {
+    // Bind ONLY the header controls this card rendered itself. A subtree-wide
+    // `[data-action="delete"]` also matched a slotted footer button of the same
+    // name and swallowed its click with stopPropagation(), so the page's own
+    // delegated handler never fired — the delete button silently did nothing.
+    // `.ac-icon-btn` is the guard: a slotted node in .ac-actions never has it.
+    const own = (action) =>
+      this.querySelector(`.ac-actions > .ac-icon-btn[data-action="${action}"]`);
+
+    own('retry')?.addEventListener('click', (e) => {
       e.stopPropagation();
       this.dispatchEvent(new CustomEvent('card-retry', { bubbles: true }));
     });
-    this.querySelector('[data-action="delete"]')?.addEventListener('click', (e) => {
+    own('delete')?.addEventListener('click', (e) => {
       e.stopPropagation();
       this.dispatchEvent(new CustomEvent('card-delete', { bubbles: true }));
     });

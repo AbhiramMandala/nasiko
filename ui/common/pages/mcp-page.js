@@ -13,7 +13,6 @@
  *       The catalog grid merges those two client-side rather than using
  *       GET /api/mcp/catalog: the catalog view has no is_connected, ownership,
  *       version, or owner_username, all of which the cards and tabs need.
- *       `call('fetchMcpMyUploads')` → GET /api/mcp/connectors/my-uploads
  *       plus register/probe/update/delete, credential + OAuth management,
  *       connect/disconnect (`/mcp/connect`, `/mcp/connections`),
  *       upload (zip/GitHub) + build status/logs, and the per-agent
@@ -30,6 +29,7 @@ import { escHtml } from '/common/utils/escape.js';
 import '/common/design-system/app-button/app-button.js';
 import { call } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';
+import { initialView } from '../utils/module-view.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -69,12 +69,11 @@ class McpPage extends HTMLElement {
   #initialized = false;
   #connectors = [];
   #toolkits = [];
-  #uploads = [];
   #agents = [];
   #selectedAgentId = '';
   #agentConnectors = [];
   #agentTools = new Map(); // connector_id → [{name, description, stance}]
-  #catalogScope = 'all'; // key into CATALOG_SCOPES
+  #catalogScope = initialView(Object.keys(CATALOG_SCOPES), 'all'); // key into CATALOG_SCOPES
   #catalogTab = 'all'; // all | available | connected
   #connectTargetId = ''; // service awaiting an API key in the connect modal
 
@@ -102,37 +101,6 @@ class McpPage extends HTMLElement {
           <app-skeleton class="tk-skel-tab" height="0.9rem"></app-skeleton>
         </div>
         <div class="tk-grid" id="catalog-grid" aria-busy="true">${this.#catalogSkeletonCards()}</div>
-      </div>
-
-      <div id="uploads-section" hidden>
-        <h2 class="section-title">My uploads</h2>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Name</th><th>Status</th><th>Message</th><th>Endpoint</th><th class="th-actions"></th>
-            </tr></thead>
-            <tbody id="uploads-tbody"></tbody>
-          </table>
-        </div>
-        <div class="logs-panel" id="logs-panel" hidden>
-          <div class="logs-head">
-            <span class="logs-title">${icons.terminal('', 14)} Build logs — <span id="logs-name"></span></span>
-            <app-button variant="icon" id="logs-close">${icons.x('', 14)}</app-button>
-          </div>
-          <pre id="logs-pre"></pre>
-        </div>
-      </div>
-
-      <h2 class="section-title">Agent access</h2>
-      <div class="agent-access-card">
-        <div class="agent-picker">
-          <label for="agent-select">Agent</label>
-          <auto-complete id="agent-select" placeholder="Search agents…" aria-label="Agent"></auto-complete>
-          <span class="agent-picker-hint">Choose which connectors this agent may call, and set per-tool allow/deny rules.</span>
-        </div>
-        <div id="agent-access-body">
-          <div class="agent-access-empty">${icons.network('', 28)}<p>Select an agent to manage its connector access</p></div>
-        </div>
       </div>
 
       ${this.#registerModalHtml()}
@@ -182,12 +150,8 @@ class McpPage extends HTMLElement {
     let connResp;
     let toolkitsResp;
     try {
-      // My-uploads is fetched but unread — the slot is skipped rather than bound
-      // to an undeclared name, which threw a ReferenceError under strict mode and
-      // took the whole catalog down the error path on every load.
-      [connResp, , toolkitsResp] = await Promise.all([
+      [connResp, toolkitsResp] = await Promise.all([
         call('fetchMcpConnectors'),
-        call('fetchMcpMyUploads').catch(() => ({ data: [] })),
         call('fetchMcpToolkits').catch(() => ({ data: { toolkits: [] } })),
       ]);
     } catch (e) {
@@ -1030,51 +994,6 @@ class McpPage extends HTMLElement {
       }
       this.#replaceCard(c);
     }
-    section.hidden = false;
-    const chipClass = { Active: 'is-ok', Deploying: 'is-building', Failed: 'is-error' };
-    const tbody = this.querySelector('#uploads-tbody');
-    tbody.innerHTML = this.#uploads.map((u) => {
-      const info = u.upload_info || {};
-      const cls = chipClass[info.upload_status] || 'is-off';
-      return `
-        <tr data-id="${escHtml(u.connector_id)}" data-name="${escHtml(u.connector_name)}">
-          <td class="cell-name"><span class="name-main">${escHtml(u.connector_name)}</span></td>
-          <td><span class="chip ${cls}">${escHtml(info.upload_status || 'Unknown')}</span></td>
-          <td class="cell-muted">${escHtml(info.error_detail || info.status_message || '—')}</td>
-          <td class="cell-url">${escHtml(u.url || '—')}</td>
-          <td class="cell-actions">
-            <app-button variant="icon" class="act-logs" title="Build logs">${icons.terminal('', 14)}</app-button>
-          </td>
-        </tr>`;
-    }).join('');
-    tbody.querySelectorAll('.act-logs').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const tr = btn.closest('tr');
-        this.#showBuildLogs(tr.dataset.id, tr.dataset.name);
-      });
-    });
-  }
-
-  async #showBuildLogs(connectorId, name) {
-    const panel = this.querySelector('#logs-panel');
-    panel.hidden = false;
-    panel.scrollIntoView({ block: 'nearest' });
-    this.querySelector('#logs-name').textContent = name;
-    const pre = this.querySelector('#logs-pre');
-    pre.textContent = 'Loading logs…';
-    try {
-      const resp = await call('fetchMcpBuildLogs', connectorId, 200);
-      const logs = typeof resp?.data === 'string' ? resp.data : (resp?.data ?? '');
-      pre.textContent = logs || '(no logs)';
-    } catch (e) {
-      pre.textContent = `Failed to load logs: ${e.message}`;
-    }
-    newCard.querySelector('.act-connect')
-      ?.addEventListener('click', () => this.#connectService(c.connector_id));
-    newCard.querySelector('.act-disconnect')
-      ?.addEventListener('click', () => this.#disconnectService(c.connector_id));
-    newCard.querySelector('.tk-logo img')
-      ?.addEventListener('error', (e) => e.target.remove());
   }
 
   #openUpload() {

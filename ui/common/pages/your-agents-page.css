@@ -6,6 +6,15 @@
   @keyframes skel-pulse { from, to { opacity: 1; } }
 }
 
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  @keyframes pulse-dot { from, to { opacity: 1; } }
+}
+
 @scope (your-agents-page) {
   /* Host box — display, padding, the desktop card padding and (where the page
      has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
@@ -161,8 +170,8 @@
   /* ── Grid ────────────────────────────────────────────────────────────────── */
   .agents-grid {
     display: grid;
-    /* Landscape cards: 3-up width with a compressed vertical rhythm (see
-       .agent-card) so each card reads short and wide, not boxy or oversized. */
+    /* Landscape cards: 3-up width, so each card reads short and wide rather
+       than boxy. The card box itself is <app-card>'s. */
     grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
     gap: var(--s-16);
   }
@@ -203,110 +212,67 @@
   }
 
   /* ── Card ────────────────────────────────────────────────────────────────
-     The real, data-loaded card is now <app-card> (common/design-system/app-card/app-card.js
-     — the nasiko_ui NasikoCard counterpart); it carries its own box, accent
-     bar, title/tags/description and error body, styled from global.css DS
-     tokens. `.agent-card` survives here ONLY as the box for the JS-rendered
-     loading skeleton below (#skeletonCards()) — its layout must keep tracking
-     <app-card>'s if that ever changes size. */
-  .agent-card {
-    /* Anchors `.agent-card-source`. Without it that badge resolved against
-       whichever ancestor happened to be positioned, so every card's badge
-       stacked in one corner of the page instead of sitting on its own card. */
-    position: relative;
-    padding: var(--s-12) var(--s-16);
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-8);
+     The data-loaded card is <app-card> (common/design-system/app-card/) — the
+     web counterpart of nasiko_ui's NasikoCard. It owns the box, the
+     title/version/tags/description, and the per-`variant` bodies (normal /
+     setting-up / active / error), all from global DS tokens. What stays here is
+     only what the page slots INTO that card, plus the loading skeleton's box. */
+
+  /* Status dot — slotted as app-card's `leading`, so it sits left of the title.
+     This is the card's only resting-state status signal (app-card has no accent
+     bar), so it has to separate running / stopped / pending / error on its own.
+     States mirror statusClass() in your-agents-page.js. */
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--fg-disabled);
+    flex-shrink: 0;
   }
+  .status-dot.is-running { background: var(--fg-success); }
+  .status-dot.is-error   { background: var(--fg-error); }
+  /* Info, not brand: pending shares the blue the setting-up border and status
+     line use, so one state reads as one colour. */
+  .status-dot.is-pending {
+    background: var(--color-info);
+    animation: pulse-dot 1.5s ease-in-out infinite;
+  }
+
+  /* Build source (GitHub / Zip) — slotted as app-card's `trailing`, the
+     header-right control area. Hover-reveal, as in main: it is provenance,
+     not something worth resting-state attention. */
+  .agent-card-source {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    line-height: 1;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  app-card:hover .agent-card-source,
+  app-card:focus-within .agent-card-source { opacity: 1; }
+
+  /* Sits in the error card's footer next to the lifecycle buttons */
   .error-logs-link {
-    color: var(--color-text-main);
+    color: var(--fg-primary);
     font-weight: 500;
+    font-size: 13px;
     text-decoration: underline;
   }
 
-  /* ── Setting-up state ──────────────────────────────────────────────────── */
-  .agent-card-setup {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-8);
-  }
-  .setup-progress {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
+  /* Icon-sized spinner swapped in for a lifecycle button's icon while its
+     request is in flight (the setting-up state itself is app-card's progress
+     bar now, not a spinner). */
   .setup-spinner {
     width: 14px;
     height: 14px;
-    border: 2px solid var(--color-border);
-    border-top-color: var(--color-info);
+    border: 2px solid var(--border-primary);
+    border-top-color: var(--fg-brand);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     flex-shrink: 0;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .setup-label {
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--color-info);
-  }
-  .setup-source {
-    display: inline-block;
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    color: var(--color-text-muted);
-    background: var(--bg-input);
-    padding: 2px 8px;
-    border-radius: var(--r-4);
-    width: fit-content;
-  }
-  .setup-hint {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    margin: 0;
-  }
-
-  /* ── Setting-up state ──────────────────────────────────────────────────── */
-  .agent-card-setup {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-8);
-  }
-  .setup-progress {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .setup-spinner {
-    width: 14px;
-    height: 14px;
-    border: 2px solid var(--color-border);
-    border-top-color: var(--color-info);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    flex-shrink: 0;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .setup-label {
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--color-info);
-  }
-  .setup-source {
-    display: inline-block;
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    color: var(--color-text-muted);
-    background: var(--bg-input);
-    padding: 2px 8px;
-    border-radius: var(--r-4);
-    width: fit-content;
-  }
-  .setup-hint {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    margin: 0;
   }
 
   /* Action row — hairline-separated footer; margin-top:auto keeps it aligned
@@ -330,7 +296,7 @@
     padding: 0 var(--s-12);
     border: 1px solid var(--color-border);
     border-radius: var(--r-8);
-    background: var(--color-bg-surface);
+    background: var(--color-bg-base);
     color: var(--color-text-main);
     font-size: 13px;
     font-weight: 500;
@@ -387,7 +353,16 @@
   }
 
   /* ── Skeleton cards ──────────────────────────────────────────────────────── */
-  .skeleton-card { min-height: 240px; }
+  /* Surface comes from the shared `.card` (common/styles/surface.css) — the
+     same one <app-card> uses — so the box doesn't change when data lands.
+     Layout only here, matching .ac-card's padding and rhythm. */
+  .skeleton-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-12);
+    min-height: 192px;
+    padding: var(--s-16);
+  }
   .skel-line {
     height: 0.85em;
     border-radius: var(--r-4);

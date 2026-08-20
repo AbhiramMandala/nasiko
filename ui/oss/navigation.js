@@ -20,7 +20,7 @@
  */
 
 import '/common/services/data-functions.js';
-import { registerAll, resolveOptional } from '/common/core/data-sources.js';
+import { call, registerAll, resolveOptional } from '/common/core/data-sources.js';
 
 // rail: true → shown as a rail module icon; everything else is reachable
 // through the module tree navs and the ⌘F nav search.
@@ -60,9 +60,10 @@ const MODULE_NAVS = {
   orchestrator: {
     title: 'Orchestrator', icon: 'brain',
     groups: [
-      { label: 'Session', items: [
-        { label: 'Orchestrate a task', url: '/' },
-      ]},
+      // A group with a url and no items is a heading-level link (see
+      // app-module-nav's #groupHtml) — the entry point sits above the session
+      // list, not inside it.
+      { label: 'Orchestrate a task', url: '/' },
       { label: 'Workflows', items: [
         { label: 'All workflows', url: '/workflows' },
         { label: 'Executions', url: '/executions' },
@@ -74,18 +75,22 @@ const MODULE_NAVS = {
     groups: [
       // Scope rows filter the unified catalog grid; ownership scopes apply
       // to custom MCP servers only (toolkits are platform-registered).
+      // Every `section` here must be a key of CATALOG_SCOPES in
+      // common/pages/mcp-page.js — a row naming anything else highlights and
+      // then does nothing, which is what `created-by-you` and `uploads` did.
+      // No separate uploads row: an upload IS a custom server, so it is already
+      // under "My servers", carrying its own "Setting up" / "Build failed" chip.
       { label: 'MCP servers', items: [
         { label: 'All', section: 'all' },
-        { label: 'Created by you', section: 'created-by-you' },
+        { label: 'My servers', section: 'my-servers' },
         { label: 'Shared with me', section: 'shared-with-me' },
-        { label: 'My uploads', section: 'uploads' },
       ]},
       { label: 'Toolkits', items: [
         { label: 'All toolkits', section: 'toolkits' },
       ]},
-      { label: 'Access', items: [
-        { label: 'Agent access', section: 'agent-access' },
-      ]},
+      // No "Agent access" row: access is granted per connector on
+      // /mcp-detail (Access & security) and per agent on the agent card's
+      // Configure tab. There is no page-level view of it for a row to open.
     ],
   },
   agents: {
@@ -106,7 +111,6 @@ const MODULE_NAVS = {
     groups: [
       { label: 'Home', items: [
         { label: 'Execution history', url: '/sessions' },
-        { label: 'Live flows', url: '/flows' },
         { label: 'Resources', url: '/resources' },
       ]},
     ],
@@ -114,17 +118,50 @@ const MODULE_NAVS = {
   settings: {
     title: 'Settings', icon: 'settings',
     groups: [
+      // `url` on a section item names the page that owns the panels. Secrets is
+      // a sibling route, not a panel of this page, so from /secrets there is no
+      // settings-page listening for `module-nav-select` — without the url these
+      // four rows highlighted and did nothing, pinning the content to Secrets.
       { label: 'Workspace', items: [
-        { label: 'General', section: 'general' },
-        { label: 'Flow limits', section: 'limits' },
-        { label: 'Registry', section: 'registry' },
+        { label: 'General', section: 'general', url: '/settings' },
+        { label: 'Flow limits', section: 'limits', url: '/settings' },
+        { label: 'Registry', section: 'registry', url: '/settings' },
       ]},
       { label: 'Security', items: [
-        { label: 'Single sign-on', section: 'sso' },
+        { label: 'Single sign-on', section: 'sso', url: '/settings' },
         { label: 'Secrets', url: '/secrets' },
       ]},
     ],
   },
+};
+
+// Orchestrator chats listed under the Session group. `agent_name: null` is the
+// marker for a session the orchestrator routed (a direct agent chat carries the
+// agent's name and belongs to that agent, not here). The API has no filter for
+// it, so over-fetch one page and filter client-side.
+const ORCH_SESSION_ROWS = 15;
+const orchestratorSessionItems = async () => {
+  try {
+    const res = await call('fetchSessions', '', 50);
+    return (res?.data || [])
+      .filter((s) => !s.agent_name)
+      .slice(0, ORCH_SESSION_ROWS)
+      .map((s) => ({
+        // Present ⇒ app-module-nav renders the row's delete affordance.
+        sessionId: s.session_id,
+        // Titles are auto-generated and often the literal "New chat", which
+        // makes every row look the same — fall back to the last message.
+        // Sliced: a last_message is a whole markdown answer, and the row
+        // ellipsises anyway — no reason to carry KBs of it through the cache.
+        label: ((s.title && s.title !== 'New chat' ? s.title : s.last_message) || 'New chat')
+          .replace(/\s+/g, ' ').trim().slice(0, 60),
+        // Same target as an Execution history row: chat-page loads the
+        // transcript and posts to /orchestrator/a2a when there's no agent_id.
+        url: `/chat?session_id=${encodeURIComponent(s.session_id)}&agent_name=Orchestrator`,
+      }));
+  } catch {
+    return []; // a flaky request must not blank the sidebar
+  }
 };
 
 /**
@@ -184,7 +221,13 @@ const fetchModuleNav = async (module) => {
   // on — it restated the first five rows of the table beside it, and the table
   // is filterable, sortable and complete. Truncated duplicates of the primary
   // content are noise, and it cost an extra API call per page load.
-  const base = nav ? { ...nav, groups: [...nav.groups] } : null;
+  let base = nav ? { ...nav, groups: [...nav.groups] } : null;
+  if (module === 'orchestrator' && base) {
+    const sessions = await orchestratorSessionItems();
+    // Last, below Workflows; omitted entirely when empty, since a group with
+    // no items and no url renders as a stray heading.
+    if (sessions.length) base = { ...base, groups: [...base.groups, { label: 'Session', items: sessions }] };
+  }
   const ext = await extension();
   if (!ext.moduleNav) return base;
   try {

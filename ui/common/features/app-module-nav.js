@@ -25,7 +25,7 @@ import { navigate as routerNavigate } from '../core/router.js';
 import { icons } from "../utils/icons.js";
 import { escHtml } from '/common/utils/escape.js';
 import { callOptional } from '../core/data-sources.js';
-import { initialView, syncView } from '../utils/module-view.js';
+import { initialView, syncView, VIEW_PARAM } from '../utils/module-view.js';
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav is
@@ -147,12 +147,42 @@ app-module-nav:not(:defined) { display: block; }
   }
 
   .child { padding-left: 26px; }
-  .child.is-active {
+  /* Keyed on .row, not .child: an itemless group renders as a heading-level
+     link row (#groupHtml) and takes the same active state. */
+  .row.is-active {
     background: var(--bg-surface-hover);
     color: var(--fg-primary);
     font-weight: 500;
   }
-  .child.is-active:hover { background: var(--bg-surface-hover); }
+  .row.is-active:hover { background: var(--bg-surface-hover); }
+
+  /* A row with a delete button (orchestrator session rows). The button is a
+     sibling of the link, not a child: interactive content cannot nest inside
+     an anchor. Revealed on hover/focus, like the Execution history table's. */
+  .row-del-wrap { position: relative; }
+  .row-del-wrap .row { padding-right: 26px; }
+  .row-del {
+    position: absolute;
+    right: var(--s-4);
+    top: 50%;
+    translate: 0 -50%;
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: var(--r-8);
+    background: transparent;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--transition-fast), color var(--transition-fast);
+  }
+  .row-del-wrap:hover .row-del,
+  .row-del:focus-visible { opacity: 1; }
+  .row-del:hover { color: var(--color-error); }
+  .row-del[disabled] { opacity: 0.4; cursor: default; }
 
   /* Skeleton while fetchModuleNav resolves */
   .skel-row {
@@ -375,15 +405,18 @@ export class AppModuleNav extends HTMLElement {
     const section = e.target.closest("[data-section]");
     if (section) {
       // A section row may carry a `url` (its sections live on another page of
-      // the module). From that other page there is nothing here to switch, so
-      // follow the link and let the owning page pick the section out of the URL
-      // — swallowing the click was what used to pin the content to one panel.
-      // Every module now keeps its sections in one document (module-shell), so
-      // no nav entry takes this branch today; it is the seam that keeps a
-      // multi-document module working if one is added back.
+      // the module — Settings' panels next to the sibling /secrets route). From
+      // that other page there is nothing here to switch, so route to the owning
+      // page and let it pick the section out of `?view=`; swallowing the click
+      // was what used to pin the content to one panel. Path only, not
+      // `#isActive`: the href always names a *different* view of the same page,
+      // so a query-aware match would report "not here" and reload the page it
+      // is already on.
       const href = section.getAttribute("href");
-      if (href && !this.#isActive(href.split("#")[0])) {
+      if (href && !this.#isSamePath(href)) {
+        e.preventDefault();
         document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
+        routerNavigate(href);
         return;
       }
       this.setAttribute("active-section", section.dataset.section);
@@ -453,9 +486,16 @@ export class AppModuleNav extends HTMLElement {
       .replace(/\/+$/, "") || "/";
   }
 
+  /** Same page, ignoring the query — "does this url land on the document we
+   *  are already in". */
+  #isSamePath(url) {
+    return this.#normalizePath(url.split("?")[0])
+      === this.#normalizePath(window.location.pathname);
+  }
+
   #isActive(url) {
-    const [path, query] = url.split("?");
-    if (this.#normalizePath(path) !== this.#normalizePath(window.location.pathname)) return false;
+    const [, query] = url.split("?");
+    if (!this.#isSamePath(url)) return false;
     if (!query) return true;
     const want = new URLSearchParams(query);
     const have = new URLSearchParams(window.location.search);
@@ -475,13 +515,17 @@ export class AppModuleNav extends HTMLElement {
   #itemHtml(item, cls = "child") {
     if (item.section != null) {
       const active = this.getAttribute("active-section") === item.section;
-      // `url` names the page that owns the sections: a link so the row works
-      // from anywhere in the module, and on the owning page it only moves the
-      // hash (no reload) while the click handler switches the panel.
+      // `url` names the page that owns the sections: a real link so the row
+      // works from anywhere in the module (and middle-click/copy-link do the
+      // right thing), while on the owning page the click handler switches the
+      // panel in place. The section travels as `?view=` — the one spelling
+      // module-view.js, app-tabs and every linking page already agree on.
+      // ponytail: plain concatenation, since an owning-page url never carries a
+      // query of its own; build it with `new URL()` the day one does.
       const tag = item.url
-        ? `a href="${escHtml(item.url)}#${escHtml(item.section)}"`
+        ? `a href="${escHtml(`${item.url}?${VIEW_PARAM}=${encodeURIComponent(item.section)}`)}"`
         : `button type="button"`;
-      return `<${tag} class="row child${active ? " is-active" : ""}"
+      return `<${tag} class="row ${cls}${active ? " is-active" : ""}"
         data-section="${escHtml(item.section)}" ${active ? 'aria-current="true"' : ""}>
         <span class="row-label">${escHtml(item.label)}</span></${item.url ? "a" : "button"}>`;
     }
@@ -534,7 +578,9 @@ export class AppModuleNav extends HTMLElement {
     // would otherwise light up next to that page's own active row.
     if (!this.getAttribute("active-section")) {
       const sections = nav.groups
-        .flatMap((g) => g.items)
+        // `|| []`: an itemless group is a heading-level link row, and
+        // flatMapping its undefined `items` used to throw in the filter below.
+        .flatMap((g) => g.items || [])
         .filter((i) => i.section != null && (!i.url || this.#isActive(i.url)))
         .map((i) => i.section);
       if (sections.length) {

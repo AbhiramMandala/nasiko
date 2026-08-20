@@ -8,8 +8,10 @@ export default {
         { id: "a-003", tags: ["devops","kubernetes"], description: "Infrastructure automation, CI/CD pipelines, and deployments.", name: "devops-agent", display_name: "DevOps Agent", image: "nasiko/devops:0.3.1", status: "stopped", version: "0.3.1" },
         { id: "a-004", tags: ["testing","quality"], description: "Test generation, quality checks, and coverage analysis.", name: "qa-agent", display_name: "QA Agent", image: "nasiko/qa:latest", status: "running", version: "1.0.0" },
         { id: "a-005", tags: ["documentation"], name: "docs-agent", display_name: "Docs Agent", image: "nasiko/docs:0.2.0", status: "error", version: "0.2.0" },
+        { id: "a-006", tags: ["data"], description: "ETL and warehouse queries.", name: "data-agent", display_name: "Data Agent", image: "nasiko/data:0.1.0", status: "deploying", version: "0.1.0" },
+        { id: "a-007", tags: ["support"], description: "Answers customer tickets.", name: "support-agent", display_name: "Support Agent", image: "nasiko/support:0.1.0", status: "starting", version: "0.1.0" },
       ],
-      total: 5,
+      total: 7,
     }],
     ["GET /api/secrets", [
       { name: "OPENAI_API_KEY" },
@@ -31,19 +33,19 @@ export default {
       await page.waitForTimeout(400);
     },
     "filter-running": async (page) => {
-      await page.waitForSelector(".agent-card-name");
+      await page.waitForSelector("app-card .ac-title");
       await page.click('.type-tab[data-status="running"]');
       await page.waitForTimeout(200);
     },
     "filter-failed": async (page) => {
-      await page.waitForSelector(".agent-card-name");
+      await page.waitForSelector("app-card .ac-title");
       await page.click('.type-tab[data-status="failed"]');
       await page.waitForTimeout(200);
     },
     // Freezes the tab indicator mid-flight: stretch the transition, click a
     // far tab, capture while the gold bar is between the two labels.
     "tab-slide-mid": async (page) => {
-      await page.waitForSelector(".agent-card-name");
+      await page.waitForSelector("app-card .ac-title");
       await page.addStyleTag({
         content: ".tab-indicator { transition-duration: 4s !important; transition-timing-function: linear !important; }",
       });
@@ -53,12 +55,12 @@ export default {
     // With reduced motion the indicator must land instantly on the new tab.
     "tab-reduced-motion": async (page) => {
       await page.emulateMedia({ reducedMotion: "reduce" });
-      await page.waitForSelector(".agent-card-name");
+      await page.waitForSelector("app-card .ac-title");
       await page.click('.type-tab[data-status="running"]');
       await page.waitForTimeout(80);
     },
     "sort-status": async (page) => {
-      await page.waitForSelector(".agent-card-name");
+      await page.waitForSelector("app-card .ac-title");
       await page.selectOption("#sort-select", "status");
       await page.waitForTimeout(200);
     },

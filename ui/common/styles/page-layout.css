@@ -292,6 +292,32 @@ login-page {
     justify-content: flex-start;
   }
 
+  /*
+    Import agent: nav gutter on the left, the card's standard content pad on the
+    right, so the chooser spans the whole card instead of a narrow column.
+    Mirroring the 288px nav gutter on the right (to centre the block on the card)
+    cost ~290px of the row the three chooser cards share and squeezed every card
+    title onto two lines — width beats a perfectly symmetric frame here. The
+    hero, headings and cards all centre themselves inside this box.
+
+    Vertically centred in the card: `min-height` is restated as the card's own
+    calc rather than left to the `min-height: 100%` global.css gives a
+    router-mounted page — that percentage resolves against the outlet's *height*,
+    which is auto (the card sizes by `min-height`), so it collapsed to the
+    content height and `justify-content` had nothing to centre in. The base
+    rule's block padding is symmetric so the centred block does not read low.
+    `safe` for the same reason as orchestrator above — this column can outgrow
+    the card, and plain `center` would split the overflow across both edges and
+    leave the top half out of scroll reach.
+
+    Must follow the nav-gutter group above, whose `padding-left` this replaces.
+  */
+  add-agent-page {
+    padding-inline: calc(224px + var(--s-64)) var(--s-64);
+    min-height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
+    justify-content: safe center;
+  }
+
   /* Chat fills the floating card exactly (topbar + 16px card margins). */
   chat-page {
     height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));

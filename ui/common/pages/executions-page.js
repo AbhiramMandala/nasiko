@@ -149,7 +149,7 @@ class ExecutionsPage extends HTMLElement {
           icon: icons.play('', 32),
           title: 'Your active runs will appear here',
           sub: 'Monitor live workflow executions, track progress across each step, and inspect outputs as they are generated.',
-          action: `<a class="cta-btn is-secondary" href="/workflows">Browse workflows</a>`,
+          action: `<a class="cta-btn" href="/workflows">Browse workflows</a>`,
         });
         return;
       }
@@ -165,7 +165,7 @@ class ExecutionsPage extends HTMLElement {
         icon: icons.workflow('', 32),
         title: 'No finished runs yet',
         sub: 'Completed and failed workflow runs land here with their full step timelines.',
-        action: `<a class="cta-btn is-secondary" href="/workflows">Browse workflows</a>`,
+        action: `<a class="cta-btn" href="/workflows">Browse workflows</a>`,
       });
       return;
     }

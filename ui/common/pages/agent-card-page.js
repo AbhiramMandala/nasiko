@@ -160,22 +160,11 @@ class AgentCardPage extends HTMLElement {
             <app-button variant="ghost" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</app-button>` : '';
     return `
         <div class="acp-topbar">
-          <a class="acp-back" href="/your-agents" title="Back to Your Agents" aria-label="Back to Your Agents">
+          <a class="acp-back" href="/agents" data-action="back" title="Back" aria-label="Back">
             ${icons.x('', 16)}
           </a>
           <div class="acp-topbar-actions">${actions}</div>
         </div>`;
-  }
-
-  #backUrl() {
-    const ref = document.referrer;
-    try {
-      const url = ref ? new URL(ref) : null;
-      if (url && url.origin === location.origin && url.pathname !== location.pathname) {
-        return url.pathname + url.search;
-      }
-    } catch { /* invalid referrer */ }
-    return '/agents.html?view=your-agents';
   }
 
   #heroHtml(a, displayName) {
@@ -345,6 +334,13 @@ class AgentCardPage extends HTMLElement {
     const btn = e.target.closest('[data-action]');
     if (!btn || !this.#agent) return;
     const action = btn.dataset.action;
+    // Back returns to wherever the card was opened from (hub, your-agents,
+    // chat). ponytail: history.back() over tracking a "came from" param; the
+    // href is the fallback for a deep link with no in-app history to pop.
+    if (action === 'back') {
+      if (history.length > 1) { e.preventDefault(); history.back(); }
+      return;
+    }
     if (action === 'restart') this.#runContainerAction(btn, 'restart', 'Restarting...');
     else if (action === 'stop') this.#runContainerAction(btn, 'stop', 'Stopping...');
     else if (action === 'delete') this.#deleteAgent(btn);

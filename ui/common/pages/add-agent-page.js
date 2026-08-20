@@ -195,8 +195,11 @@ class AddAgentPage extends HTMLElement {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reference }),
         });
-        if (!res.ok) throw new Error(await res.text());
-        routerNavigate('/your-agents');
+        if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+        setBusy(false);  // drops the unload guard, so it can't outlive the import
+        // Don't yank someone who dismissed the dialog and moved on.
+        if (dialogEl.open) routerNavigate('/your-agents');
+        else this.#toast('Agent imported. See Your agents.');
       } catch (err) {
         setBusy(false);
         if (!dialogEl.open) { this.#toast(`Import failed: ${err.message}`); return; }

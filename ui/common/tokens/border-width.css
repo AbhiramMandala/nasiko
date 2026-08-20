@@ -11,8 +11,8 @@
  */
 :root {
   /* border_width.dart defines hairline(0.5)/thin(1)/base(2)/thick(3)/
-     thicker(4) — only thin/base existed here. --bw-4 added for the first
-     consumer that needs it (app-card's left accent bar); hairline/thick
-     are still gaps if a future component needs them. */
+     thicker(4) — only thin/base existed here. --bw-4 mirrors thicker(4); its
+     original consumer (app-card's left accent bar) is gone, so it has none
+     right now. hairline/thick are still gaps if a component needs them. */
   --bw-1: 1px; --bw-2: 2px; --bw-4: 4px;
 }

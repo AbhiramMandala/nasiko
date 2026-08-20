@@ -4,7 +4,6 @@
  *
  * @element app-user-menu
  * @attr {string} current-user - JSON `{ name, email, avatar }` for the logged-in user
- * @fires user-add-account - "Add account" clicked — bubbles
  * @fires user-logout - "Logout" clicked — bubbles
  */
 import { icons } from "../utils/icons.js";
@@ -333,10 +332,6 @@ export class AppUserMenu extends HTMLElement {
     this.querySelector('[data-user-toggle]')?.addEventListener('click', e => {
       e.stopPropagation();
       this.#visible ? this.hide() : this.#showDropdown();
-    });
-
-    this.querySelector('[data-add-account]')?.addEventListener('click', () => {
-      this.dispatchEvent(new CustomEvent('user-add-account', { bubbles: true }));
     });
 
     this.querySelector('[data-logout]')?.addEventListener('click', () => {
