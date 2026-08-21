@@ -21,6 +21,7 @@ nasiko-flow.workspace = true
 nasiko-mcp-gateway.workspace = true
 nasiko-secrets.workspace = true
 nasiko-github = { workspace = true }
+nasiko-oidc = { workspace = true }
 nasiko-oci.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker", "simulated"] }
 nasiko-react-agent.workspace = true
@@ -40,6 +41,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 redis = { workspace = true }
+rustls = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
