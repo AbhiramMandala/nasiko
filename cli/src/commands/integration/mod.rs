@@ -98,6 +98,9 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
     if agent.restart_required() {
         println!("Restart OpenCode first so it loads the new plugin.");
     }
+    if agent == Agent::Codex {
+        println!("In Codex, run /hooks and trust the new Nasiko command hooks.");
+    }
     Ok(())
 }
 
@@ -270,27 +273,19 @@ mod tests {
     }
 
     #[test]
-    fn refuses_to_install_a_detect_only_agent() {
-        let error = require_instrumentable(catalog::find("codex").unwrap())
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains("not yet instrumented"));
-        assert!(error.contains("claude"));
-    }
-
-    #[test]
     fn allows_installing_an_instrumented_agent() {
         assert!(require_instrumentable(claude()).is_ok());
+        assert!(require_instrumentable(catalog::find("codex").unwrap()).is_ok());
+        assert!(require_instrumentable(catalog::find("cursor").unwrap()).is_ok());
     }
 
     #[test]
-    fn reports_detect_only_agents_as_such() {
+    fn reports_uninstalled_instrumented_agents_as_not_installed() {
         let settings = IntegrationState::default();
 
         let status = reporting_status(catalog::find("codex").unwrap(), &settings);
 
-        assert_eq!(status, "detect-only");
+        assert_eq!(status, "not installed");
     }
 
     #[test]
