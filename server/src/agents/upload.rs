@@ -854,9 +854,10 @@ async fn record_uploaded_version(
 
 // ─── Build-time OTel patching ────────────────────────────────────────────────
 
-/// Python bootstrap script injected as `_nasiko_otel_boot.py` and loaded via
-/// `PYTHONSTARTUP`. Runs before the agent's own code, so the agent doesn't need
-/// to call `init_telemetry()` or install any OTel packages explicitly.
+/// Python bootstrap script injected as `_nasiko_otel_boot.py` and installed as
+/// `sitecustomize.py` inside the container's `site-packages`. Runs before the
+/// agent's own code for both interactive and script invocations, so the agent
+/// doesn't need to call `init_telemetry()` or install any OTel packages explicitly.
 ///
 /// What it does:
 /// - Sets up W3C TraceContext propagation (`traceparent` on all outbound HTTP)
@@ -974,17 +975,23 @@ fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::pa
         return;
     }
 
-    // Append to Dockerfile: install OTel deps, copy bootstrap, set PYTHONSTARTUP.
-    // Inserted before the last CMD/ENTRYPOINT line so the layer order is correct.
-    // `PIP_BREAK_SYSTEM_PACKAGES=1` is scoped to this RUN layer (not a persistent
-    // ENV) and keeps the install working on a distro-managed interpreter, where
-    // PEP 668 otherwise aborts with `error: externally-managed-environment`.
-    // pip older than 23.1 doesn't know the flag and simply ignores the env var.
+    // Append to Dockerfile: install OTel deps, copy bootstrap, install as
+    // sitecustomize.py. Inserted before the last CMD/ENTRYPOINT line so the
+    // layer order is correct.
+    //
+    // `PIP_BREAK_SYSTEM_PACKAGES=1` is scoped to this RUN layer (not a
+    // persistent ENV) and keeps the install working on a distro-managed
+    // interpreter, where PEP 668 otherwise aborts with
+    // `error: externally-managed-environment`.
+    //
+    // We use `sitecustomize.py` instead of `PYTHONSTARTUP` because the latter
+    // only fires for interactive Python sessions (REPL), not `python main.py`.
     let patch = format!(
         "\n# ── Nasiko OTel auto-instrumentation (injected at build time) ──\n\
          RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip install --no-cache-dir {OTEL_PIP_PACKAGES}\n\
          COPY _nasiko_otel_boot.py /opt/nasiko/_nasiko_otel_boot.py\n\
-         ENV PYTHONSTARTUP=/opt/nasiko/_nasiko_otel_boot.py\n"
+         RUN SITE_PKG=$(python -c \"import site; print(site.getsitepackages()[0])\") && \
+             cp /opt/nasiko/_nasiko_otel_boot.py \"$SITE_PKG/sitecustomize.py\"\n"
     );
 
     // Find the last CMD or ENTRYPOINT line and insert before it.
@@ -2059,9 +2066,7 @@ pub(crate) async fn list_upload_agents(
                         agent_name: r.agent_name,
                         icon_url: r.icon_url,
                         upload_info: UploadInfoResponse {
-                            upload_type: r
-                                .metadata
-                                .get("upload_type")
+                            upload_type: r.metadata.get("upload_type")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("zip")
                                 .to_string(),
@@ -2113,8 +2118,7 @@ mod otel_patch_tests {
         // `node:20-slim` matches neither "python" nor a Python toolchain, but it
         // does contain "slim" — the old check patched it and the injected `pip`
         // layer failed the build outright.
-        let original =
-            "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
+        let original = "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
 
         assert_eq!(
             patch(original, "node-slim"),
@@ -2138,7 +2142,7 @@ mod otel_patch_tests {
         );
 
         assert!(patched.contains("pip install"), "expected the pip layer");
-        assert!(patched.contains("ENV PYTHONSTARTUP=/opt/nasiko/_nasiko_otel_boot.py"));
+        assert!(patched.contains("sitecustomize.py"));
 
         let pip_at = patched.find("pip install").unwrap();
         let entrypoint_at = patched.find("ENTRYPOINT").unwrap();

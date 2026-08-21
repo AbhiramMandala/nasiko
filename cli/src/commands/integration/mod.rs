@@ -162,11 +162,14 @@ fn reporting_status(agent: Agent, settings: &IntegrationState) -> String {
     let expected = agent
         .install_version()
         .expect("instrumented adapter has a version");
+    let Some(state) = settings.get(spec.id) else {
+        return "not installed".to_string();
+    };
     match agent.installed_version() {
-        Some(version) if version == expected => match settings.get(spec.id) {
-            Some(state) if state.hook_version == expected => format!("active (v{version})"),
-            // Script present but no config: the hook would refuse to report.
-            Some(_) | None => "needs reinstall".to_string(),
+        Some(version) if version == expected => match state.hook_version {
+            version if version == expected => format!("active (v{version})"),
+            // Script and saved state are from different install versions.
+            _ => "needs reinstall".to_string(),
         },
         Some(version) => format!("stale (v{version}; current v{expected})"),
         None => "not installed".to_string(),
