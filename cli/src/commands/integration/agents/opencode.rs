@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::super::catalog::{self, AgentSpec, Support};
+use super::super::catalog::{AgentSpec, Support};
 use super::super::launcher;
 use super::super::model::{LlmCall, SessionSnapshot, Turn};
 
@@ -92,14 +92,7 @@ struct Part {
 }
 
 pub fn config_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("OPENCODE_CONFIG_DIR").filter(|value| !value.is_empty()) {
-        return PathBuf::from(path);
-    }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| catalog::home().join(".config"))
-        .join("opencode")
+    crate::commands::opencode::config_path()
 }
 
 pub fn install() -> Result<(PathBuf, PathBuf)> {

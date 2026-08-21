@@ -3,7 +3,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
@@ -15,6 +14,7 @@ use crate::commands::llm_config::fetch_config_by_ref;
 use crate::config::{self, ClusterEntry, Config};
 
 pub const STATE_VERSION: u32 = 1;
+const INTEGRATION_SOURCE: &str = "nasiko-cli-coding-agent-router";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionBinding {
@@ -52,68 +52,6 @@ pub struct RoutingCredential {
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
-pub fn disconnect_preflight(display_name: &str, process_names: &[&str], force: bool) -> Result<()> {
-    let running = running_processes(process_names);
-    enforce_disconnect_preflight(display_name, &running, force)
-}
-
-fn enforce_disconnect_preflight(display_name: &str, running: &[String], force: bool) -> Result<()> {
-    if running.is_empty() {
-        return Ok(());
-    }
-    let names = running.join(", ");
-    if force {
-        eprintln!(
-            "warning: disconnecting while {display_name} is running ({names}); open sessions may fail API requests until restarted"
-        );
-        return Ok(());
-    }
-    bail!(
-        "{display_name} is still running ({names}). Close all {display_name} sessions, then rerun this command. To disconnect immediately anyway, use `--force`; open sessions may fail API requests."
-    )
-}
-
-#[cfg(unix)]
-fn running_processes(process_names: &[&str]) -> Vec<String> {
-    process_names
-        .iter()
-        .filter(|name| {
-            Command::new("pgrep")
-                .args(["-x", name])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
-        })
-        .map(|name| (*name).to_string())
-        .collect()
-}
-
-#[cfg(windows)]
-fn running_processes(process_names: &[&str]) -> Vec<String> {
-    process_names
-        .iter()
-        .filter(|name| {
-            let image = format!("{name}.exe");
-            Command::new("tasklist")
-                .args(["/FI", &format!("IMAGENAME eq {image}"), "/NH"])
-                .output()
-                .is_ok_and(|output| {
-                    output.status.success()
-                        && String::from_utf8_lossy(&output.stdout)
-                            .to_ascii_lowercase()
-                            .contains(&image.to_ascii_lowercase())
-                })
-        })
-        .map(|name| (*name).to_string())
-        .collect()
-}
-
-#[cfg(not(any(unix, windows)))]
-fn running_processes(_process_names: &[&str]) -> Vec<String> {
-    Vec::new()
-}
-
 #[derive(Deserialize)]
 struct Envelope<T> {
     data: T,
@@ -128,7 +66,7 @@ pub fn prepare(
     let (cluster, entry, principal_id) = require_current_login()?;
     let client = Client::from_cluster_entry(&entry);
     let (agent_id, agent_name) = match agent_reference {
-        Some(reference) => resolve_owned_agent(&client, reference, &principal_id, spec.id)?,
+        Some(reference) => resolve_owned_agent(&client, reference, &principal_id)?,
         None => ensure_local_agent(&client, &spec, &principal_id)?,
     };
     let (resolved_config, previous_llm_config_id) =
@@ -158,91 +96,6 @@ pub fn require_current_login() -> Result<(String, ClusterEntry, String)> {
     Ok((cluster, entry, principal))
 }
 
-pub fn account_scoped_agent_name(
-    client: &Client,
-    entry: &ClusterEntry,
-    base_name: &str,
-) -> Result<String> {
-    let username = authenticated_account_username(client, entry)?;
-    account_scoped_agent_name_for_username(&username, base_name)
-}
-
-pub fn authenticated_account_username(client: &Client, entry: &ClusterEntry) -> Result<String> {
-    // Access-key based connections may store the access identifier in the
-    // config's `username` field. The authenticated server profile is the
-    // authority for account-scoped agent names; config is only a compatibility
-    // fallback for older control planes without `/users/me`.
-    let profile: Option<Value> = client.get_json("/users/me").ok();
-    authoritative_account_username(profile.as_ref(), entry.username.as_deref())
-        .context("Nasiko account profile is missing a username")
-}
-
-/// The account's real email, for human-facing agent labels (`register_agent`'s
-/// `display_name`) — distinct from `authenticated_account_username`, whose
-/// slug feeds `name` and must stay filesystem/DNS-safe. Falls back to the
-/// configured username (not an email) only when the profile can't be reached,
-/// same compatibility path `authenticated_account_username` takes.
-pub fn authenticated_account_email(client: &Client, entry: &ClusterEntry) -> Result<String> {
-    let profile: Option<Value> = client.get_json("/users/me").ok();
-    authoritative_account_field(profile.as_ref(), "email", entry.username.as_deref())
-        .context("Nasiko account profile is missing an email")
-}
-
-pub fn account_scoped_agent_name_for_username(username: &str, base_name: &str) -> Result<String> {
-    let username = normalize_agent_name_part(username);
-    if username.is_empty() {
-        bail!("Nasiko account username cannot be used in an agent name");
-    }
-    Ok(format!("{username}-{base_name}"))
-}
-
-fn authoritative_account_username(
-    profile: Option<&Value>,
-    configured_username: Option<&str>,
-) -> Option<String> {
-    authoritative_account_field(profile, "username", configured_username)
-}
-
-/// Reads `field` off the authenticated `/users/me` profile (flat or
-/// `{"data": {...}}`-enveloped), falling back to `configured_fallback` when the
-/// profile is unavailable or the field is blank.
-fn authoritative_account_field(
-    profile: Option<&Value>,
-    field: &str,
-    configured_fallback: Option<&str>,
-) -> Option<String> {
-    profile
-        .and_then(|profile| {
-            profile
-                .get(field)
-                .or_else(|| profile.get("data").and_then(|data| data.get(field)))
-        })
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            configured_fallback
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-        })
-        .map(str::to_string)
-}
-
-fn normalize_agent_name_part(value: &str) -> String {
-    let mut normalized = String::new();
-    let mut separator = false;
-    for character in value.chars().flat_map(char::to_lowercase) {
-        if character.is_ascii_alphanumeric() {
-            normalized.push(character);
-            separator = false;
-        } else if !separator && !normalized.is_empty() {
-            normalized.push('-');
-            separator = true;
-        }
-    }
-    normalized.trim_end_matches('-').to_string()
-}
-
 fn usable_login_token(entry: &ClusterEntry) -> Result<&str> {
     let token = entry
         .token
@@ -258,18 +111,10 @@ pub fn resolve_owned_agent(
     client: &Client,
     reference: &str,
     principal_id: &str,
-    integration_id: &str,
 ) -> Result<(String, String)> {
     let agent = client
         .get_agent(reference)?
         .ok_or_else(|| anyhow::anyhow!("agent '{reference}' not found"))?;
-    if agent
-        .get("coding_agent_integration_id")
-        .and_then(Value::as_str)
-        != Some(integration_id)
-    {
-        bail!("agent '{reference}' is not the {integration_id} coding-agent integration");
-    }
     owned_agent_fields(&agent, principal_id, reference)
 }
 
@@ -298,11 +143,50 @@ pub fn ensure_local_agent(
     spec: &AgentSpec<'_>,
     principal_id: &str,
 ) -> Result<(String, String)> {
+    let mut offset = 0;
+    loop {
+        let path = format!("/agents?owner={principal_id}&limit=100&offset={offset}");
+        let agents: Vec<Value> = client.get_json(&path)?;
+        if let Some(agent) = agents.iter().find(|agent| {
+            agent.get("owner_id").and_then(Value::as_str) == Some(principal_id)
+                && agent
+                    .get("metadata")
+                    .and_then(|metadata| metadata.get("integration_id"))
+                    .and_then(Value::as_str)
+                    == Some(spec.id)
+        }) {
+            return owned_agent_fields(agent, principal_id, spec.default_name);
+        }
+        if agents.len() < 100 {
+            break;
+        }
+        offset += 100;
+    }
+
+    let suffix: String = principal_id
+        .chars()
+        .filter(|character| *character != '-')
+        .take(8)
+        .collect();
+    let name = format!("{}-{suffix}", spec.default_name);
+    if let Some(agent) = client.get_agent(&name)?
+        && agent.get("owner_id").and_then(Value::as_str) == Some(principal_id)
+    {
+        return owned_agent_fields(&agent, principal_id, &name);
+    }
+
     let agent: Value = client.post_json(
-        "/agents/coding-integrations",
-        &json!({"integration_id": spec.id}),
+        "/agents",
+        &json!({
+            "name": name,
+            "display_name": spec.display_name,
+            "description": format!("Local {} traffic routed through Nasiko", spec.display_name),
+            "version": "1.0.0",
+            "tags": ["local", "coding-agent", "llm-router"],
+            "metadata": {"source": INTEGRATION_SOURCE, "integration_id": spec.id},
+        }),
     )?;
-    owned_agent_fields(&agent, principal_id, spec.default_name)
+    owned_agent_fields(&agent, principal_id, &name)
 }
 
 pub fn configure_agent(client: &Client, agent_id: &str, llm_config: Option<&str>) -> Result<Value> {
@@ -501,53 +385,6 @@ fn normalize_url(url: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn disconnect_preflight_preserves_state_when_agent_is_running() {
-        let error = enforce_disconnect_preflight("Claude Code", &["claude".to_string()], false)
-            .unwrap_err();
-
-        assert!(error.to_string().contains("Close all Claude Code sessions"));
-        assert!(error.to_string().contains("--force"));
-    }
-
-    #[test]
-    fn forced_disconnect_allows_active_agent_with_warning_path() {
-        assert!(enforce_disconnect_preflight("OpenCode", &["opencode".to_string()], true).is_ok());
-    }
-
-    #[test]
-    fn disconnect_preflight_allows_stopped_agent() {
-        assert!(enforce_disconnect_preflight("Codex", &[], false).is_ok());
-    }
-
-    #[test]
-    fn account_names_are_safe_and_stable_for_agent_registration() {
-        assert_eq!(
-            normalize_agent_name_part("ankitkumarnath"),
-            "ankitkumarnath"
-        );
-        assert_eq!(
-            normalize_agent_name_part("Ankit Kumar_Nath"),
-            "ankit-kumar-nath"
-        );
-        assert_eq!(normalize_agent_name_part("--Alice--"), "alice");
-    }
-
-    #[test]
-    fn authenticated_profile_username_wins_over_access_identifier() {
-        let profile = json!({"username": "ankit"});
-        assert_eq!(
-            authoritative_account_username(Some(&profile), Some("NASK_access_identifier")),
-            Some("ankit".into())
-        );
-
-        let enveloped = json!({"data": {"username": "alice"}});
-        assert_eq!(
-            authoritative_account_username(Some(&enveloped), Some("NASK_other")),
-            Some("alice".into())
-        );
-    }
     use base64::Engine as _;
     use std::collections::HashMap;
 
@@ -574,28 +411,7 @@ mod tests {
             .with_body(r#"{"data":{"id":"agent-id","name":"shared","owner_id":"other"}}"#)
             .create();
         let client = Client::for_test(&server.url(), None);
-        assert!(resolve_owned_agent(&client, "shared", "me", "claude").is_err());
-        request.assert();
-    }
-
-    #[test]
-    fn caller_controlled_metadata_cannot_select_a_routing_agent() {
-        let mut server = mockito::Server::new();
-        let request = server
-            .mock("GET", "/api/agents/spoofed")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"data":{"id":"agent-id","name":"spoofed","owner_id":"me","coding_agent_integration_id":null,"metadata":{"integration_id":"claude"}}}"#,
-            )
-            .create();
-        let client = Client::for_test(&server.url(), None);
-        let error = resolve_owned_agent(&client, "spoofed", "me", "claude").unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("not the claude coding-agent integration")
-        );
+        assert!(resolve_owned_agent(&client, "shared", "me").is_err());
         request.assert();
     }
 

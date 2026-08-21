@@ -172,6 +172,13 @@ fn reporting_status(agent: Agent, settings: &IntegrationState) -> String {
     }
 }
 
+/// One adapter's session-reporting status for router-specific status commands.
+/// LLM routing and telemetry remain separate lifecycles.
+pub(crate) fn reporting_status_for(agent_id: &str) -> Result<String> {
+    let agent = resolve(agent_id)?;
+    Ok(reporting_status(agent, &IntegrationState::load()?))
+}
+
 // ─── Install steps ───────────────────────────────────────────────────────────
 
 fn resolve(agent_id: &str) -> Result<Agent> {

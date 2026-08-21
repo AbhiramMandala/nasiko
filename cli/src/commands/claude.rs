@@ -1,32 +1,17 @@
 //! Connect Claude Code to the Nasiko LLM router and issue on-demand credentials.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::api::Client;
-use crate::commands::{agents::resolve_agent_id, llm_config::fetch_config_by_ref};
-use crate::config;
+use crate::commands::coding_agent_router::{self, AgentSpec, ConnectionBinding};
 
-const STATE_VERSION: u32 = 1;
 const DEFAULT_AGENT_NAME: &str = "claude-code";
-const INTEGRATION_SOURCE: &str = "nasiko-cli-claude-router";
-
-#[derive(Deserialize)]
-struct Envelope<T> {
-    data: T,
-}
-
-#[derive(Deserialize)]
-struct RoutingToken {
-    token: String,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct SavedValue {
@@ -37,11 +22,8 @@ struct SavedValue {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConnectionState {
-    version: u32,
-    cluster: String,
-    cluster_url: String,
-    agent_id: String,
-    agent_name: String,
+    #[serde(flatten)]
+    binding: ConnectionBinding,
     settings_path: PathBuf,
     helper_command: String,
     original_env_present: bool,
@@ -52,19 +34,22 @@ struct ConnectionState {
 /// One-time setup. Claude subsequently invokes the hidden credential helper itself.
 pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
     which::which("claude").context("Claude Code is not installed or 'claude' is not on PATH")?;
-    require_current_login()?;
-
-    let (cluster, entry) = config::active_cluster()?;
-    let client = Client::from_cluster_entry(&entry);
-    let (agent_id, agent_name) = match agent {
-        Some(reference) => (resolve_agent_id(reference)?, reference.to_string()),
-        None => ensure_local_agent(&client)?,
-    };
-    let resolved = configure_agent(&client, &agent_id, llm_config)?;
-
     if state_path().exists() {
-        disconnect_internal(false)?;
+        bail!(
+            "Claude Code is already connected; run `nasiko disconnect claude` before reconnecting"
+        );
     }
+    let executable = std::env::current_exe().context("cannot locate the nasiko executable")?;
+    let prepared = coding_agent_router::prepare(
+        AgentSpec {
+            id: "claude",
+            display_name: "Claude Code",
+            default_name: DEFAULT_AGENT_NAME,
+        },
+        agent,
+        llm_config,
+        executable,
+    )?;
 
     let settings_path = claude_settings_path();
     let mut settings = read_json_object(&settings_path)?;
@@ -80,37 +65,49 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
     let env = ensure_env_object(&mut settings)?;
     env.insert(
         "ANTHROPIC_BASE_URL".into(),
-        Value::String(entry.url.trim_end_matches('/').to_string()),
+        Value::String(prepared.entry.url.trim_end_matches('/').to_string()),
     );
     settings.insert("apiKeyHelper".into(), Value::String(helper_command.clone()));
 
     let state = ConnectionState {
-        version: STATE_VERSION,
-        cluster: cluster.clone(),
-        cluster_url: entry.url.clone(),
-        agent_id,
-        agent_name,
+        binding: prepared.binding.clone(),
         settings_path: settings_path.clone(),
         helper_command,
         original_env_present,
         original_helper,
         original_base_url,
     };
-    write_json_atomic(&state_path(), &serde_json::to_value(&state)?)?;
-    if let Err(error) = write_json_atomic(&settings_path, &Value::Object(settings)) {
-        let _ = fs::remove_file(state_path());
-        return Err(error);
+    let install_result = (|| -> Result<()> {
+        coding_agent_router::atomic_write_json(&state_path(), &state)?;
+        if let Err(error) = write_json_atomic(&settings_path, &Value::Object(settings)) {
+            let _ = fs::remove_file(state_path());
+            return Err(error);
+        }
+        Ok(())
+    })();
+    if let Err(error) = install_result {
+        return match coding_agent_router::rollback_config(&prepared) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(error.context(format!(
+                "local install failed and the prior Nasiko LLM config could not be restored: {rollback:#}"
+            ))),
+        };
     }
 
-    let provider = resolved
+    let provider = prepared
+        .resolved_config
         .get("provider")
         .and_then(Value::as_str)
         .unwrap_or("router");
-    let model = resolved
+    let model = prepared
+        .resolved_config
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or("policy-selected");
-    println!("Connected Claude Code to Nasiko ({cluster}, {provider}/{model}).");
+    println!(
+        "Connected Claude Code to Nasiko ({}, {provider}/{model}).",
+        state.binding.cluster
+    );
     println!("Run `claude` normally. Disconnect with: nasiko disconnect claude");
     Ok(())
 }
@@ -136,7 +133,7 @@ fn disconnect_internal(print: bool) -> Result<()> {
     restore_env(
         &mut settings,
         "ANTHROPIC_BASE_URL",
-        &Value::String(state.cluster_url.trim_end_matches('/').to_string()),
+        &Value::String(state.binding.cluster_url.trim_end_matches('/').to_string()),
         &state.original_base_url,
         state.original_env_present,
     )?;
@@ -160,20 +157,14 @@ pub fn status() -> Result<()> {
         .get("env")
         .and_then(Value::as_object)
         .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
-        == Some(&Value::String(state.cluster_url.clone()));
-    let auth = config::load()?
-        .clusters
-        .get(&state.cluster)
-        .and_then(|entry| entry.token.as_deref())
-        .map(|token| match config::token_expired(token) {
-            Some(true) => "expired",
-            Some(false) => "authenticated",
-            None => "unknown",
-        })
-        .unwrap_or("not logged in");
+        == Some(&Value::String(state.binding.cluster_url.clone()));
+    let auth = coding_agent_router::auth_status(&state.binding)?;
     println!("Claude Code: connected");
-    println!("Cluster:     {} ({})", state.cluster, state.cluster_url);
-    println!("Agent:       {}", state.agent_name);
+    println!(
+        "Cluster:     {} ({})",
+        state.binding.cluster, state.binding.cluster_url
+    );
+    println!("Agent:       {}", state.binding.agent_name);
     println!("Nasiko auth: {auth}");
     println!(
         "Settings:    {}",
@@ -191,25 +182,7 @@ pub fn credential() -> Result<()> {
     let state = load_state()?.ok_or_else(|| {
         anyhow::anyhow!("Claude Code is not connected; run: nasiko connect claude")
     })?;
-    let cfg = config::load()?;
-    let entry = cfg
-        .clusters
-        .get(&state.cluster)
-        .ok_or_else(|| anyhow::anyhow!("Nasiko cluster '{}' no longer exists", state.cluster))?;
-    if entry.url.trim_end_matches('/') != state.cluster_url.trim_end_matches('/') {
-        bail!("connected Nasiko cluster URL changed; run: nasiko connect claude");
-    }
-    let token = entry
-        .token
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("not logged in to Nasiko; run: nasiko auth login"))?;
-    if config::token_expired(token) == Some(true) {
-        bail!("Nasiko session expired; run: nasiko auth login");
-    }
-    let client = Client::from_cluster_entry(entry);
-    let response: Envelope<RoutingToken> =
-        client.post_json_quiet(&format!("/agents/{}/llm-token", state.agent_id), &json!({}))?;
-    println!("{}", response.data.token);
+    println!("{}", coding_agent_router::credential(&state.binding)?.token);
     Ok(())
 }
 
@@ -217,10 +190,15 @@ pub fn credential() -> Result<()> {
 pub fn run(agent: &str, llm_config: Option<&str>, args: &[String]) -> Result<()> {
     let claude = which::which("claude")
         .context("Claude Code is not installed or 'claude' is not on PATH")?;
-    let agent_id = resolve_agent_id(agent)?;
-    let client = Client::from_active_cluster()?;
-    configure_agent(&client, &agent_id, llm_config)?;
-    let response: Envelope<RoutingToken> =
+    let (_, entry, principal) = coding_agent_router::require_current_login()?;
+    let client = Client::from_cluster_entry(&entry);
+    let (agent_id, _) = coding_agent_router::resolve_owned_agent(&client, agent, &principal)?;
+    coding_agent_router::configure_agent(&client, &agent_id, llm_config)?;
+    #[derive(Deserialize)]
+    struct Envelope {
+        data: coding_agent_router::RoutingCredential,
+    }
+    let response: Envelope =
         client.post_json(&format!("/agents/{agent_id}/llm-token"), &json!({}))?;
     let status = Command::new(claude)
         .args(args)
@@ -238,113 +216,20 @@ pub fn run(agent: &str, llm_config: Option<&str>, args: &[String]) -> Result<()>
     Ok(())
 }
 
-fn require_current_login() -> Result<()> {
-    let (_, entry) = config::active_cluster()?;
-    let token = entry
-        .token
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("not logged in to Nasiko; run: nasiko auth login"))?;
-    if config::token_expired(token) == Some(true) {
-        bail!("Nasiko session expired; run: nasiko auth login");
-    }
-    Ok(())
-}
-
-fn ensure_local_agent(client: &Client) -> Result<(String, String)> {
-    let owner = client
-        .current_user_id()
-        .ok_or_else(|| anyhow::anyhow!("invalid Nasiko login; run: nasiko auth login"))?;
-    let agents: Vec<Value> = client.get_json("/agents?limit=100")?;
-    if let Some(agent) = agents.iter().find(|agent| {
-        agent.get("owner_id").and_then(Value::as_str) == Some(owner.as_str())
-            && (agent
-                .get("metadata")
-                .and_then(|metadata| metadata.get("source"))
-                .and_then(Value::as_str)
-                == Some(INTEGRATION_SOURCE)
-                || agent
-                    .get("metadata")
-                    .and_then(|metadata| metadata.get("integration_id"))
-                    .and_then(Value::as_str)
-                    == Some("claude"))
-    }) {
-        let id = agent
-            .get("id")
-            .and_then(Value::as_str)
-            .context("Claude routing agent is missing an id")?;
-        let name = agent
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(DEFAULT_AGENT_NAME);
-        return Ok((id.to_string(), name.to_string()));
-    }
-
-    let suffix: String = owner.chars().filter(|c| *c != '-').take(8).collect();
-    let name = format!("{DEFAULT_AGENT_NAME}-{suffix}");
-    if let Some(agent) = client.get_agent(&name)?
-        && agent.get("owner_id").and_then(Value::as_str) == Some(owner.as_str())
-    {
-        let id = agent
-            .get("id")
-            .and_then(Value::as_str)
-            .context("Claude routing agent is missing an id")?;
-        return Ok((id.to_string(), name));
-    }
-    let agent: Value = client.post_json(
-        "/agents",
-        &json!({
-            "name": name,
-            "display_name": "Claude Code",
-            "description": "Local Claude Code traffic routed through Nasiko",
-            "version": "1.0.0",
-            "tags": ["local", "coding-agent", "llm-router"],
-            "metadata": {"source": INTEGRATION_SOURCE},
-        }),
-    )?;
-    let id = agent
-        .get("id")
-        .and_then(Value::as_str)
-        .context("created Claude routing agent is missing an id")?;
-    Ok((id.to_string(), name))
-}
-
-fn configure_agent(client: &Client, agent_id: &str, llm_config: Option<&str>) -> Result<Value> {
-    let path = format!("/agents/{agent_id}/llm-config");
-    let response: Value = if let Some(reference) = llm_config {
-        let config = fetch_config_by_ref(client, reference)?;
-        let config_id = config
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("LLM config is missing an id"))?;
-        client.patch_json(
-            &path,
-            &json!({"llm_config_id": config_id}),
-        )?
-    } else {
-        client.get_json(&path)?
-    };
-    let resolved = response
-        .get("data")
-        .and_then(|data| data.get("llm_config"))
-        .filter(|value| !value.is_null())
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no Nasiko LLM config is available; create a default config or pass --config <name>"
-            )
-        })?;
-    Ok(resolved)
-}
-
 fn state_path() -> PathBuf {
-    home_dir()
-        .join(".nasiko")
-        .join("integrations")
-        .join("claude.json")
+    coding_agent_router::state_path("claude")
 }
 
 fn claude_settings_path() -> PathBuf {
-    home_dir().join(".claude").join("settings.json")
+    claude_settings_path_from(std::env::var_os("CLAUDE_CONFIG_DIR"), home_dir())
+}
+
+fn claude_settings_path_from(config_dir: Option<std::ffi::OsString>, home: PathBuf) -> PathBuf {
+    config_dir
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"))
+        .join("settings.json")
 }
 
 fn home_dir() -> PathBuf {
@@ -365,14 +250,11 @@ fn load_state() -> Result<Option<ConnectionState>> {
     if !path.exists() {
         return Ok(None);
     }
-    let content =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    let state: ConnectionState = serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-    if state.version != STATE_VERSION {
+    let state: ConnectionState = coding_agent_router::read_json(&path)?.expect("path exists");
+    if state.binding.version != coding_agent_router::STATE_VERSION {
         bail!(
             "unsupported Claude connection state version {}",
-            state.version
+            state.binding.version
         );
     }
     Ok(Some(state))
@@ -464,39 +346,7 @@ fn restore_env(
 }
 
 fn write_json_atomic(path: &Path, value: &Value) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
-    fs::create_dir_all(parent)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    }
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temp = parent.join(format!(".nasiko-{}-{nonce}.tmp", std::process::id()));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let result = (|| -> Result<()> {
-        let mut file = options.open(&temp)?;
-        file.write_all(serde_json::to_string_pretty(value)?.as_bytes())?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        fs::rename(&temp, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result.with_context(|| format!("failed to write {}", path.display()))
+    coding_agent_router::atomic_write_json(path, value)
 }
 
 #[cfg(test)]
@@ -504,10 +354,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn routing_token_response_deserializes() {
-        let response: Envelope<RoutingToken> =
-            serde_json::from_value(json!({"data": {"token": "jwt"}})).unwrap();
-        assert_eq!(response.data.token, "jwt");
+    fn old_version_one_connection_state_remains_compatible() {
+        let state: ConnectionState = serde_json::from_value(json!({
+            "version": 1,
+            "cluster": "local",
+            "cluster_url": "http://localhost:8080",
+            "agent_id": "agent-id",
+            "agent_name": "claude-code",
+            "settings_path": "/tmp/settings.json",
+            "helper_command": "nasiko __claude-token",
+            "original_env_present": false,
+            "original_helper": {"present": false},
+            "original_base_url": {"present": false}
+        }))
+        .unwrap();
+        assert_eq!(state.binding.version, 1);
+        assert!(state.binding.integration_id.is_none());
+        assert_eq!(state.binding.cluster, "local");
+        assert!(state.binding.principal_id.is_none());
+        assert!(state.binding.executable.is_none());
+    }
+
+    #[test]
+    fn claude_config_dir_overrides_the_default_home_path() {
+        assert_eq!(
+            claude_settings_path_from(Some("/custom/claude".into()), "/home/me".into()),
+            PathBuf::from("/custom/claude/settings.json")
+        );
+        assert_eq!(
+            claude_settings_path_from(None, "/home/me".into()),
+            PathBuf::from("/home/me/.claude/settings.json")
+        );
     }
 
     #[test]
