@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use nasiko_utils::display::opt_dash;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tabled::Tabled;
 use ureq::Agent;
 
@@ -83,12 +84,46 @@ pub struct Client {
     token: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ExternalTurnResponse {
+    inserted: bool,
+    user_message: ExternalTurnMessage,
+    assistant_message: ExternalTurnMessage,
+}
+
+#[derive(Deserialize)]
+struct ExternalTurnMessage {
+    external_turn_id: Option<String>,
+    role: String,
+}
+
 impl Client {
     pub fn from_active_cluster() -> Result<Self> {
         let (_, entry) = config::active_cluster()?;
+        Ok(Self::from_cluster_entry(&entry))
+    }
+
+    pub(crate) fn from_cluster_entry(entry: &config::ClusterEntry) -> Self {
         let agent = Agent::new_with_config(
             ureq::config::Config::builder()
                 .timeout_global(None)
+                .http_status_as_error(false)
+                .build(),
+        );
+        Self {
+            agent,
+            base_url: entry.url.clone(),
+            token: entry.token.clone(),
+        }
+    }
+
+    /// Integration hooks have a hard host timeout, unlike interactive CLI
+    /// commands. Keep this constructor scoped so broad API behavior is unchanged.
+    pub(crate) fn from_active_cluster_with_timeout(timeout: Duration) -> Result<Self> {
+        let (_, entry) = config::active_cluster()?;
+        let agent = Agent::new_with_config(
+            ureq::config::Config::builder()
+                .timeout_global(Some(timeout))
                 .http_status_as_error(false)
                 .build(),
         );
@@ -239,6 +274,22 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
+    /// Authenticated JSON POST without terminal status output. Credential helpers
+    /// must write only the credential itself to stdout.
+    pub(crate) fn post_json_quiet<T: for<'de> Deserialize<'de>, B: Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let url = self.api_url(path);
+        let mut resp = self
+            .auth_post(&url)
+            .send_json(body)
+            .context("cannot reach control plane")?;
+        check_status(&mut resp, &url)?;
+        Ok(resp.body_mut().read_json()?)
+    }
+
     pub fn put_json<T: for<'de> Deserialize<'de>, B: Serialize>(
         &self,
         path: &str,
@@ -291,6 +342,80 @@ impl Client {
             .context("cannot reach control plane")?;
         check_status(&mut resp, &url)?;
         Ok(())
+    }
+
+    /// POST a JSON body, treating 409 Conflict as success.
+    ///
+    /// Returns `true` when the resource was created and `false` when it already
+    /// existed, so callers that only need the resource to *exist* can be run
+    /// repeatedly without special-casing an error string.
+    pub fn post_json_allow_conflict<B: Serialize>(&self, path: &str, body: &B) -> Result<bool> {
+        let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
+        let url = self.api_url(path);
+        let mut resp = self
+            .auth_post(&url)
+            .send_json(body)
+            .context("cannot reach control plane")?;
+        if resp.status().as_u16() == 409 {
+            return Ok(false);
+        }
+        check_status(&mut resp, &url)?;
+        Ok(true)
+    }
+
+    /// POST a JSON body, treating 200 OK and 201 Created as success.
+    ///
+    /// Returns `true` when the resource was created (201) and `false` when it
+    /// already existed (200). Used by the ensure-session endpoint.
+    pub fn post_json_allow_ok<B: Serialize>(&self, path: &str, body: &B) -> Result<bool> {
+        let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
+        let url = self.api_url(path);
+        let mut resp = self
+            .auth_post(&url)
+            .send_json(body)
+            .context("cannot reach control plane")?;
+        let status = resp.status().as_u16();
+        if status == 200 {
+            return Ok(false);
+        }
+        if status == 201 {
+            return Ok(true);
+        }
+        check_status(&mut resp, &url)?;
+        Ok(true)
+    }
+
+    /// Persist an idempotent external turn and validate the endpoint contract.
+    /// Only 200 replay and 201 insertion responses are accepted.
+    pub(crate) fn post_external_turn<B: Serialize>(
+        &self,
+        path: &str,
+        turn_id: &str,
+        body: &B,
+    ) -> Result<bool> {
+        let url = self.api_url(path);
+        let mut resp = self
+            .auth_post(&url)
+            .send_json(body)
+            .context("cannot reach control plane")?;
+        let status = resp.status().as_u16();
+        if status != 200 && status != 201 {
+            check_status(&mut resp, &url)?;
+            bail!("unexpected HTTP {status} from {url}; expected 200 or 201");
+        }
+        let response: ExternalTurnResponse = resp
+            .body_mut()
+            .read_json()
+            .with_context(|| format!("invalid external-turn response from {url}"))?;
+        let valid = response.inserted == (status == 201)
+            && response.user_message.role == "user"
+            && response.assistant_message.role == "assistant"
+            && response.user_message.external_turn_id.as_deref() == Some(turn_id)
+            && response.assistant_message.external_turn_id.as_deref() == Some(turn_id);
+        if !valid {
+            bail!("external-turn response from {url} did not match turn {turn_id}");
+        }
+        Ok(response.inserted)
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {
@@ -908,34 +1033,12 @@ impl Client {
         drop(spin);
 
         if failed {
-            if let Some(msg) = self.version_conflict_message(build_id) {
-                bail!("{msg}");
-            }
             bail!("build failed");
         }
         if !succeeded {
             bail!("build did not complete successfully");
         }
         Ok(())
-    }
-
-    /// Checks `/agents/uploads/{build_id}` for a `VERSION_CONFLICT:` error
-    /// detail and formats it into a helpful message, instead of the generic
-    /// "build failed" [`poll_build_status`] would otherwise print.
-    ///
-    /// Wire format: `VERSION_CONFLICT:<version>:<suggested>:<message>`.
-    fn version_conflict_message(&self, build_id: &str) -> Option<String> {
-        let item: serde_json::Value = self.get_json(&format!("/agents/uploads/{build_id}")).ok()?;
-        let detail = item.get("error_details")?.get(0)?.as_str()?;
-        let rest = detail.strip_prefix("VERSION_CONFLICT:")?;
-        let mut parts = rest.splitn(3, ':');
-        let _version = parts.next()?;
-        let suggested = parts.next()?;
-        let message = parts.next().unwrap_or("").trim();
-        Some(format!(
-            "Import failed: {message}.\n\nSuggested next version: {suggested}\n\n\
-             Update the version and import again."
-        ))
     }
 
     /// Upload a zip file to `POST /api/mcp/connectors/upload` and return the
@@ -1266,20 +1369,6 @@ impl Client {
             .collect())
     }
 
-    /// The exact history status of one specific version ("pushed", "active",
-    /// "archived"), or `None` if this version has never been recorded at
-    /// all. Unlike [`Client::used_versions`], this does NOT exclude
-    /// `"pushed"` rows — `push` needs to see them to reject re-pushing an
-    /// already-pushed version instead of silently repointing its registry
-    /// tag.
-    pub fn version_status(&self, agent_id: &str, version: &str) -> Result<Option<String>> {
-        Ok(self
-            .version_history(agent_id)?
-            .into_iter()
-            .find(|v| v.version == version)
-            .map(|v| v.status))
-    }
-
     /// Looks up an agent by UUID or name. `None` if it doesn't exist yet.
     pub fn get_agent(&self, id_or_name: &str) -> Result<Option<serde_json::Value>> {
         Ok(self
@@ -1394,47 +1483,6 @@ mod tests {
             .create();
         let client = Client::for_test(&srv.url(), None);
         assert!(client.used_versions("a1").is_err());
-    }
-
-    // ─── version_status: sees "pushed" rows that used_versions hides ───────────
-
-    #[test]
-    fn version_status_finds_a_pushed_row() {
-        let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/a1/versions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"data": [
-                    {"version": "1.0.0", "status": "active", "is_active": true,
-                     "can_rollback": false, "created_at": "2024-01-01T00:00:00Z"},
-                    {"version": "2.0.0", "status": "pushed", "is_active": false,
-                     "can_rollback": false, "created_at": "2024-01-02T00:00:00Z"}
-                ]}"#,
-            )
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-        assert_eq!(
-            client.version_status("a1", "2.0.0").unwrap(),
-            Some("pushed".to_string())
-        );
-    }
-
-    #[test]
-    fn version_status_is_none_for_an_unrecorded_version() {
-        let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/a1/versions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"data": [
-                    {"version": "1.0.0", "status": "active", "is_active": true,
-                     "can_rollback": false, "created_at": "2024-01-01T00:00:00Z"}
-                ]}"#,
-            )
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-        assert_eq!(client.version_status("a1", "9.9.9").unwrap(), None);
     }
 
     #[test]
@@ -1614,6 +1662,87 @@ mod tests {
         assert!(
             err.to_string().contains("no Dockerfile found"),
             "got: {err}"
+        );
+    }
+
+    #[test]
+    fn external_turn_accepts_and_validates_created_response() {
+        let mut srv = mockito::Server::new();
+        srv.mock("POST", "/api/chat/sessions/s1/external-turns")
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"inserted":true,"user_message":{"role":"user","external_turn_id":"t1"},"assistant_message":{"role":"assistant","external_turn_id":"t1"}}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), None);
+
+        assert!(
+            client
+                .post_external_turn(
+                    "/chat/sessions/s1/external-turns",
+                    "t1",
+                    &serde_json::json!({"turn_id":"t1"}),
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn external_turn_accepts_validated_replay_response() {
+        let mut srv = mockito::Server::new();
+        srv.mock("POST", "/api/chat/sessions/s1/external-turns")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"inserted":false,"user_message":{"role":"user","external_turn_id":"t1"},"assistant_message":{"role":"assistant","external_turn_id":"t1"}}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), None);
+
+        assert!(
+            !client
+                .post_external_turn(
+                    "/chat/sessions/s1/external-turns",
+                    "t1",
+                    &serde_json::json!({"turn_id":"t1"}),
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn external_turn_rejects_non_200_201_success_status() {
+        let mut srv = mockito::Server::new();
+        srv.mock("POST", "/api/chat/sessions/s1/external-turns")
+            .with_status(202)
+            .create();
+        let client = Client::for_test(&srv.url(), None);
+
+        let error = client
+            .post_external_turn(
+                "/chat/sessions/s1/external-turns",
+                "t1",
+                &serde_json::json!({"turn_id":"t1"}),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("expected 200 or 201"));
+    }
+
+    #[test]
+    fn external_turn_rejects_mismatched_response_shape() {
+        let mut srv = mockito::Server::new();
+        srv.mock("POST", "/api/chat/sessions/s1/external-turns")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"inserted":false,"user_message":{"role":"user","external_turn_id":"other"},"assistant_message":{"role":"assistant","external_turn_id":"other"}}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), None);
+
+        assert!(
+            client
+                .post_external_turn(
+                    "/chat/sessions/s1/external-turns",
+                    "t1",
+                    &serde_json::json!({"turn_id":"t1"}),
+                )
+                .is_err()
         );
     }
 }

@@ -22,6 +22,7 @@ const HELP_TEXT: &str = "\
   up         Start local Nasiko cluster (agent devs)
   down       Stop local Nasiko cluster
   connect    Register a CP by URL
+  disconnect Disconnect an integration
   use        Switch active cluster
   clusters   List configured control planes
   auth       Authentication (login/status/logout)
@@ -33,6 +34,7 @@ const HELP_TEXT: &str = "\
   validate   Validate agent directory structure
 
 \x1b[33mTest:\x1b[0m
+  claude     Run Claude Code through the Nasiko LLM router
   build      Build agent Docker image
   run        Build + run agent locally
   chat       Send a message via A2A protocol (--tui for full-screen)
@@ -116,26 +118,37 @@ enum CpCommands {
     Up,
     /// Stop local Nasiko cluster
     Down,
-    /// Register a CP by URL
+    /// Register a CP by URL, or connect Claude Code
     #[command(after_help = "Config: ~/.nasiko/config.json")]
     Connect {
-        /// Control plane URL
-        url: String,
+        /// Control-plane URL, or `claude`
+        target: String,
         #[arg(long)]
         name: Option<String>,
+        /// Existing routing agent name or UUID (Claude only)
+        #[arg(long)]
+        agent: Option<String>,
+        /// Nasiko LLM config name or UUID (Claude only)
+        #[arg(long)]
+        config: Option<String>,
     },
+    /// Disconnect a local integration
+    Disconnect { target: String },
     /// Switch active control plane
     Use { name: String },
     /// List configured control planes
     Clusters,
     /// Control plane health + metrics
-    Status,
+    Status { target: Option<String> },
     /// Authentication commands
     #[command(after_help = "Config: ~/.nasiko/config.json")]
     Auth {
         #[command(subcommand)]
         command: AuthCommands,
     },
+    /// Internal Claude Code credential helper
+    #[command(name = "__claude-token", hide = true)]
+    ClaudeToken,
 }
 
 #[derive(Subcommand)]
@@ -179,16 +192,42 @@ fn main() -> Result<()> {
         Commands::Cp(cmd) => match cmd {
             CpCommands::Up => commands::dev::start(false),
             CpCommands::Down => commands::dev::stop(),
-            CpCommands::Connect { url, name } => commands::cluster::connect(&url, name.as_deref()),
+            CpCommands::Connect {
+                target,
+                name,
+                agent,
+                config,
+            } => {
+                if target == "claude" {
+                    if name.is_some() {
+                        anyhow::bail!("--name applies only when connecting a control-plane URL");
+                    }
+                    commands::claude::connect(agent.as_deref(), config.as_deref())
+                } else {
+                    if agent.is_some() || config.is_some() {
+                        anyhow::bail!("--agent and --config apply only to `nasiko connect claude`");
+                    }
+                    commands::cluster::connect(&target, name.as_deref())
+                }
+            }
+            CpCommands::Disconnect { target } => match target.as_str() {
+                "claude" => commands::claude::disconnect(),
+                _ => anyhow::bail!("unknown integration '{target}' (expected: claude)"),
+            },
             CpCommands::Use { name } => commands::cluster::use_cluster(&name),
             CpCommands::Clusters => commands::cluster::list(),
-            CpCommands::Status => commands::status::status(),
+            CpCommands::Status { target } => match target.as_deref() {
+                Some("claude") => commands::claude::status(),
+                Some(other) => anyhow::bail!("unknown status target '{other}' (expected: claude)"),
+                None => commands::status::status(),
+            },
             CpCommands::Auth { command } => match command {
                 AuthCommands::Login => commands::auth::login(),
                 AuthCommands::Status => commands::auth::status(),
                 AuthCommands::Logout => commands::auth::logout(),
                 AuthCommands::Whoami => commands::auth::whoami(),
             },
+            CpCommands::ClaudeToken => commands::claude::credential(),
         },
         Commands::Reg(cmd) => match cmd {
             RegistryCommands::Registry { command } => nasiko::dispatch_registry(command),

@@ -3,6 +3,7 @@ pub mod auth;
 pub mod build;
 pub mod card;
 pub mod chat;
+pub mod claude;
 pub mod cluster;
 pub mod deploy;
 pub mod deployments;
