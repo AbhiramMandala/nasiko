@@ -28,7 +28,6 @@ use sqlx::PgPool;
 type SyncResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const PORTKEY_BASE_URL: &str = "https://configs.portkey.ai";
-const OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
 
 /// Delay before the first sync so it never competes with boot-critical work.
 const INITIAL_DELAY: Duration = Duration::from_secs(10);
@@ -88,49 +87,7 @@ pub async fn sync_all(db: &PgPool, http: &reqwest::Client) {
             ),
         }
     }
-    match sync_openrouter(db, http).await {
-        Ok(n) => {
-            total += n;
-            tracing::info!(
-                provider = "openrouter",
-                models = n,
-                "synced model pricing from openrouter"
-            );
-        }
-        Err(e) => tracing::warn!(
-            provider = "openrouter",
-            error = %e,
-            "model pricing sync failed; keeping existing rows"
-        ),
-    }
     tracing::info!(total_models = total, "model pricing sync complete");
-}
-
-async fn sync_openrouter(db: &PgPool, http: &reqwest::Client) -> SyncResult<usize> {
-    let url = std::env::var("OPENROUTER_MODELS_URL")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| OPENROUTER_MODELS_URL.to_string());
-    let body = http
-        .get(url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
-    let rows: Vec<PricingRow> = body
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or("OpenRouter model catalog is missing data")?
-        .iter()
-        .filter_map(PricingRow::from_openrouter)
-        .collect();
-    if rows.is_empty() {
-        return Ok(0);
-    }
-
-    replace_provider_rows(db, "openrouter", &rows, "synced from openrouter").await?;
-    Ok(rows.len())
 }
 
 async fn sync_provider(
@@ -155,45 +112,38 @@ async fn sync_provider(
         return Ok(0);
     }
 
-    replace_provider_rows(db, internal, &rows, "synced from portkey").await?;
-    Ok(rows.len())
-}
-
-async fn replace_provider_rows(
-    db: &PgPool,
-    provider: &str,
-    rows: &[PricingRow],
-    notes: &str,
-) -> SyncResult<()> {
     let mut tx = db.begin().await?;
+    // Replace this provider's rows wholesale — the dataset is small and fully
+    // Portkey-owned, so mirroring is simpler and safer than row-wise diffing.
     sqlx::query("DELETE FROM model_pricing WHERE provider = $1")
-        .bind(provider)
+        .bind(internal)
         .execute(&mut *tx)
         .await?;
-    if provider == "gemini" {
+    // Older seed migrations wrote Gemini rows under the `google` provider;
+    // fold them into `gemini` so the legacy spelling can't shadow the sync.
+    if internal == "gemini" {
         sqlx::query("DELETE FROM model_pricing WHERE provider = 'google'")
             .execute(&mut *tx)
             .await?;
     }
-    for row in rows {
+    for row in &rows {
         sqlx::query(
             r#"INSERT INTO model_pricing
                  (provider, model, input_price_per_1m, output_price_per_1m,
                   cache_creation_price_per_1m, cache_read_price_per_1m, notes)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+               VALUES ($1, $2, $3, $4, $5, $6, 'synced from portkey')"#,
         )
-        .bind(provider)
+        .bind(internal)
         .bind(&row.model)
         .bind(row.input)
         .bind(row.output)
         .bind(row.cache_creation)
         .bind(row.cache_read)
-        .bind(notes)
         .execute(&mut *tx)
         .await?;
     }
     tx.commit().await?;
-    Ok(())
+    Ok(rows.len())
 }
 
 /// Names of models in `general/{source}.json` whose `type.primary` is a text
@@ -258,24 +208,6 @@ impl PricingRow {
             cache_read: usd_per_1m(payg, "cache_read_input_token"),
         })
     }
-
-    fn from_openrouter(entry: &Value) -> Option<Self> {
-        let model = entry.get("id")?.as_str()?.to_string();
-        let pricing = entry.get("pricing")?;
-        let per_token = |key: &str| pricing.get(key)?.as_str()?.parse::<f64>().ok();
-        let input = per_token("prompt")? * 1_000_000.0;
-        let output = per_token("completion")? * 1_000_000.0;
-        if input < 0.0 || output < 0.0 {
-            return None;
-        }
-        Some(Self {
-            model,
-            input: Decimal::from_f64_retain(input)?.round_dp(4),
-            output: Decimal::from_f64_retain(output)?.round_dp(4),
-            cache_creation: None,
-            cache_read: None,
-        })
-    }
 }
 
 /// `pay_as_you_go.{key}.price` (cents/token) → USD per 1M tokens, rounded to
@@ -325,29 +257,6 @@ mod tests {
             "pricing_config": { "pay_as_you_go": { "request_token": { "price": 0.00001 } } }
         });
         assert!(PricingRow::from_portkey("no-output", &entry).is_none());
-    }
-
-    #[test]
-    fn converts_openrouter_usd_per_token_to_usd_per_1m() {
-        let row = PricingRow::from_openrouter(&serde_json::json!({
-            "id": "openai/gpt-4o-mini",
-            "pricing": {"prompt": "0.00000015", "completion": "0.0000006"}
-        }))
-        .unwrap();
-        assert_eq!(row.model, "openai/gpt-4o-mini");
-        assert_eq!(row.input, Decimal::new(15, 2));
-        assert_eq!(row.output, Decimal::new(6, 1));
-    }
-
-    #[test]
-    fn skips_variable_openrouter_prices() {
-        assert!(
-            PricingRow::from_openrouter(&serde_json::json!({
-                "id": "openrouter/auto",
-                "pricing": {"prompt": "-1", "completion": "-1"}
-            }))
-            .is_none()
-        );
     }
 
     #[test]

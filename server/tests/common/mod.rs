@@ -352,6 +352,8 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         loki_url: "http://localhost:3100".into(),
         observability_enabled: false,
         tenant_id: None,
+        model_pricing_sync_enabled: false,
+        model_pricing_sync_interval_secs: 86_400,
         flow_max_depth: 5,
         flow_max_fan_out: 20,
         flow_max_tokens: 100_000,
