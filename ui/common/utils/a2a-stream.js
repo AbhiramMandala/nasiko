@@ -24,8 +24,11 @@
  *     onTraceMeta(meta) {}  // { trace_id }
  *     onUsageMeta(meta) {}  // usage footer (tokens/cost), when present
  *     onError(message)  {}  // stream-level failure text
+ *     signal            {}  // AbortSignal — REQUIRED from a component; abort it
+ *                           // in disconnectedCallback or the reader keeps
+ *                           // pulling into detached DOM after navigation.
  *   });
- *   // out = { text, progressText, traceId, usage, failed, errorMessage }
+ *   // out = { text, progressText, traceId, usage, failed, errorMessage, aborted }
  */
 
 function textOfParts(parts) {
@@ -58,6 +61,10 @@ function normalizeTaskState(state) {
 }
 
 export async function readA2aStream(res, handlers = {}) {
+  // `handlers.signal` is how a component stops this loop. Without it the reader
+  // kept pulling — and the handlers kept writing — after the element had been
+  // removed from the DOM, because nothing connected navigation to the stream.
+  const signal = handlers.signal;
   const out = {
     text: "",
     progressText: "",
@@ -65,6 +72,8 @@ export async function readA2aStream(res, handlers = {}) {
     usage: null,
     failed: false,
     errorMessage: null,
+    /** True when the caller aborted; the caller should render nothing further. */
+    aborted: false,
   };
   // Tracked separately from out.progressText: activity is reported for the
   // whole stream, progressText only until a reply exists.
@@ -203,14 +212,42 @@ export async function readA2aStream(res, handlers = {}) {
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop();
-    for (const line of lines) handleLine(line);
+  // Cancelling the reader is what actually unblocks a pending `read()`; checking
+  // the signal alone would only take effect after the next frame arrived, which
+  // for an idle stream could be never.
+  //
+  // Note the consequence: `reader.cancel()` resolves the pending read as
+  // `{ done: true }`, which is indistinguishable from a stream that ended
+  // normally. So `aborted` is decided from the signal in `finally`, not from the
+  // shape of the loop exit — setting it inside the loop meant a mid-stream abort
+  // reported `aborted: false` and the caller happily persisted a partial reply.
+  const onAbort = () => reader.cancel().catch(() => {});
+  if (signal) {
+    if (signal.aborted) {
+      await reader.cancel().catch(() => {});
+      out.aborted = true;
+      return out;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
   }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done || signal?.aborted) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) handleLine(line);
+    }
+  } finally {
+    if (signal?.aborted) out.aborted = true;
+    signal?.removeEventListener('abort', onAbort);
+  }
+  // Everything below writes through the caller's handlers, so it must not run
+  // after a cancellation: the element that owns those handlers is being removed.
+  if (out.aborted) return out;
+
   buffer += decoder.decode();
   if (buffer) handleLine(buffer); // trailing frame without final newline
 

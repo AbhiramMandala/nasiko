@@ -91,6 +91,9 @@ pub struct CreateAgent {
     pub skills: Option<Vec<Skill>>,
     pub tags: Option<Vec<String>>,
     pub metadata: Option<serde_json::Value>,
+    /// `push`/`deploy` already send this; previously silently dropped since
+    /// this struct had no field to catch it, leaving `agents.image` NULL
+    /// until the first update/reupload set it.
     pub image: Option<String>,
 }
 
@@ -108,10 +111,6 @@ pub struct UpdateAgent {
     pub metadata: Option<serde_json::Value>,
     pub status: Option<String>,
     pub image: Option<String>,
-    /// If `true`, replace an already-used version instead of rejecting it.
-    /// Only set when the user explicitly confirms or passes `--overwrite`.
-    #[serde(default)]
-    pub allow_overwrite: bool,
     /// `true` (the default) for a real deploy — the new version becomes
     /// active, archiving whatever was running before. `nasiko push` sets
     /// this `false`: it only makes an image available in the registry

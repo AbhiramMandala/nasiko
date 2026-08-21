@@ -108,10 +108,6 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Explicit consent to replace an already-used version's content in place
-        /// (only takes effect together with --version; interactive runs are asked instead)
-        #[arg(long)]
-        overwrite: bool,
     },
     /// Push image to cluster OCI registry (without deploying)
     Push {
@@ -126,10 +122,6 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Explicit consent to replace an already-used version's content in place
-        /// (only takes effect together with --version; interactive runs are asked instead)
-        #[arg(long)]
-        overwrite: bool,
     },
     /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
     #[command(
@@ -905,7 +897,6 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
             platform.as_deref(),
             version_prompt::VersionFlags {
                 version: version.as_deref(),
-                overwrite: false,
                 yes,
             },
         ),
@@ -938,7 +929,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable_path,
             version,
             yes,
-            overwrite,
         } => commands::deploy::deploy_with_version_flags(
             &image,
             name.as_deref(),
@@ -947,7 +937,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             &env,
             version_prompt::VersionFlags {
                 version: version.as_deref(),
-                overwrite,
                 yes,
             },
             writable,
@@ -958,13 +947,11 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             name,
             version,
             yes,
-            overwrite,
         } => commands::push::push_with_version_flags(
             &image,
             name.as_deref(),
             version_prompt::VersionFlags {
                 version: version.as_deref(),
-                overwrite,
                 yes,
             },
         ),
@@ -1366,53 +1353,6 @@ pub fn dispatch_registry(cmd: RegistrySubCommands) -> Result<()> {
             artifact_type,
             json,
         } => commands::registry::list(artifact_type.as_deref(), json),
-    }
-}
-
-// ─── Coding-agent integrations ──────────────────────────────────────────────
-
-#[derive(Subcommand)]
-pub enum IntegrationSubCommands {
-    /// Show which coding agents are on this machine and their reporting status
-    Status,
-    /// Register a coding agent and start reporting its sessions to Nasiko
-    Install {
-        /// Agent to install (e.g. claude or opencode)
-        agent: String,
-        /// OTLP/HTTP collector to send spans to
-        #[arg(long, value_name = "URL")]
-        otlp_endpoint: Option<String>,
-        /// Report tokens, latency and cost, but omit conversation text from spans
-        #[arg(long)]
-        no_content: bool,
-    },
-    /// Stop reporting a coding agent's sessions and remove its hook
-    Uninstall {
-        /// Agent to uninstall (e.g. claude or opencode)
-        agent: String,
-    },
-    /// Export one session's new turns. Invoked by the installed hook, not by hand.
-    #[command(hide = true)]
-    Report {
-        #[arg(long)]
-        agent: String,
-    },
-}
-
-pub fn dispatch_integration(cmd: IntegrationSubCommands) -> Result<()> {
-    match cmd {
-        IntegrationSubCommands::Status => commands::integration::status(),
-        IntegrationSubCommands::Install {
-            agent,
-            otlp_endpoint,
-            no_content,
-        } => commands::integration::install(commands::integration::InstallOptions {
-            agent_id: &agent,
-            otlp_endpoint: otlp_endpoint.as_deref(),
-            no_content,
-        }),
-        IntegrationSubCommands::Uninstall { agent } => commands::integration::uninstall(&agent),
-        IntegrationSubCommands::Report { agent } => commands::integration::report(&agent),
     }
 }
 
