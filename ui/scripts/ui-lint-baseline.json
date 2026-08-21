@@ -7,10 +7,11 @@
     "teardown-required": 0,
     "scope-required": 0,
     "not-defined-belongs-in-not-defined-css": 0,
-    "no-hardcoded-color": 4,
     "design-system-colors-are-tokens": 0,
     "url-policy": 0,
     "public-must-not-import-private": 0,
-    "private-element-in-shared-code": 0
+    "private-element-in-shared-code": 0,
+    "no-attach-shadow": 0,
+    "domain-must-not-import-domain": 2
   }
 }

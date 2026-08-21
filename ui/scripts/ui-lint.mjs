@@ -298,7 +298,7 @@ const rules = [
     enforce: 'zero',
     why: 'A :not(:defined) rule in a component sheet does not exist at first paint (the sheet is adopted by its ' +
          'module), so it cannot reserve geometry — and if it contradicts the linked rule it causes the exact ' +
-         'layout shift the contract prevents. app-chatbox cost ~82px of CLS this way.',
+         'layout shift the contract prevents. voice-input cost ~82px of CLS this way.',
     check({ rel, source, isJs }) {
       if (isJs || !isComponentCss(rel)) return [];
       const out = [];
@@ -310,13 +310,73 @@ const rules = [
   },
 
   {
-    id: 'no-hardcoded-color',
+    id: 'no-attach-shadow',
+    enforce: 'zero',
+    why: 'Every component is light-DOM (core/element.js: 69 of 69, zero attachShadow calls). One shadow root ' +
+         'breaks the model in three places at once: the adopted stylesheets in document.adoptedStyleSheets stop ' +
+         'applying, @scope wrappers no longer bound anything, and querySelector from a parent stops finding the ' +
+         'child. Documented in ARCHITECTURE.md since the start; this is the check that makes it true.',
+    check({ rel, source, isJs }) {
+      if (!isJs || rel.includes('/vendor/')) return [];
+      // Blank comments in place, preserving newlines so line numbers hold. The
+      // rule is documented in element.js's own JSDoc, and matching that prose
+      // would make the rule fail on the file that states it.
+      const bare = source.replace(/\/\*[\s\S]*?\*\/|(^|[^:])\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, ' '));
+      return [...bare.matchAll(/\battachShadow\s*\(/g)].map((m) => ({
+        file: rel,
+        line: lineOf(bare, m.index),
+        message: 'calls attachShadow() — components are light-DOM',
+      }));
+    },
+  },
+
+  {
+    id: 'domain-must-not-import-domain',
     enforce: 'ratchet',
-    why: 'Colours must come from design tokens or a re-skin cannot be mechanical. Syntax highlighting and brand ' +
-         'marks are the legitimate exceptions and are in the baseline.',
+    why: 'A page component may import downward into the design system and platform, never sideways into another ' +
+         'page component. Sideways is how two pages quietly become one unit that cannot be moved, deleted or ' +
+         'published separately — and it is invisible to layer-direction, which only compares layer numbers and so ' +
+         'reads DOMAIN -> DOMAIN as level. Shared behaviour belongs in features/ or design-system/. A file may ' +
+         'still import its ' +
+         'own stylesheet, since that is not a peer module. Baseline 2, both the same shape: departments-page and ' +
+         'teams-page each import /components/user-picker.js, a shared widget that happens to live in the ' +
+         'page-component directory. It is not a page, so it should not be at this layer — moving it down to a ' +
+         'features/ directory clears both at once. Ratcheted rather than zero because that move is a structural ' +
+         'decision, and a rule that fails on arrival gets switched off.',
+    check({ rel, source, isJs }) {
+      if (!isJs || layerOf(rel) !== LAYER.DOMAIN) return [];
+      // The page components sit as siblings in one flat directory, so "another
+      // directory" does not separate them — the discriminator is another JS
+      // module at the same layer. A component's own stylesheet is not a peer.
+      return importsOf(source)
+        .filter((spec) => {
+          const target = resolveSpec(rel, spec);
+          return target && target !== rel && target.endsWith('.js') && layerOf(target) === LAYER.DOMAIN;
+        })
+        .map((spec) => ({
+          file: rel,
+          line: lineOf(source, source.indexOf(spec)),
+          message: `imports peer page component ${spec}`,
+        }));
+    },
+  },
+
+  {
+    id: 'no-hardcoded-color',
+    enforce: 'zero',
+    why: 'Colours must come from design tokens or a re-skin cannot be mechanical. Frozen at zero: the ratchet ran ' +
+         'from 67 down to 4, and those last four were third-party brand marks in a preview fixture — not a debt to ' +
+         'pay but a category that does not belong to the rule. Fixtures and vendored code are exempt; everything ' +
+         'that ships must resolve through var().',
     check({ rel, source, isJs }) {
       if (!editionOf(rel)) return [];
       if (rel.includes('/vendor/') || rel === 'ui/common/global.css') return [];
+      // Preview fixtures are inputs to the browser suite, not shipped surface.
+      // The four that kept this rule off zero were third-party brand marks
+      // (#ea4335, #0acf83, #0078d4, #111111) in mcp.preview.js — a re-skin must
+      // NOT recolour someone else's logo, so tokenising them would be wrong.
+      // Exempting fixtures is what lets the rule be frozen at zero.
+      if (rel.endsWith('.preview.js') || rel.includes('/.preview/')) return [];
       return findRawColours(rel, source);
     },
   },
