@@ -15,7 +15,7 @@
  */
 import { authService } from "../services/auth-service.js";
 import { icons } from "../utils/icons.js";
-import { confirmDialog } from "../design-system/confirm-dialog/confirm-dialog.js";
+import { confirmDialog } from "../design-system/app-modal/app-modal.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
 import { escHtml } from '/common/utils/escape.js';
@@ -152,6 +152,9 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   /* Small screens: drop the history cluster, let search flex, keep menu */
   @media (max-width: 1023.98px) {
     .nav-cluster { display: none; }
+     /* Rail is hidden below 1024px, so its toggle would just duplicate the
+       mobile menu button. */
+    [data-rail-toggle] { display: none; }
     .search-field { width: auto; flex: 1; min-width: 0; }
     .search-field .kbd-hint { display: none; }
     .topbar-spacer { display: none; }
@@ -244,12 +247,7 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
      attribute and app-tooltip.js — the native title= tip only appears after ~1s, too late to
      be the label. No ::after pill here: this sheet used to draw one from
      attr(data-tip), an attribute the markup never emitted, so every rail item
-     grew an empty dark box on hover beside the real tooltip.
-
-     It anchors to the right (data-tooltip-placement) rather than below: the
-     collapsed rail is a 32px column against the viewport's left edge, so below
-     the item there is another item, and beside it there is the whole page. The
-     expanded rail drops the attribute entirely — see #applyExpanded. */
+     grew an empty dark box on hover beside the real tooltip. */
   .rail-item { position: relative; }
 
   /* Expanded rail keeps its scroll container — labelled rows are tall, no pill. */
@@ -471,31 +469,10 @@ export class AppHeader extends HTMLElement {
     }
     this.classList.toggle("is-expanded", this.#expanded);
     this.querySelector("[data-rail-toggle]")?.setAttribute("aria-expanded", String(this.#expanded));
-    this.#syncRailTooltips();
     document.documentElement.style.setProperty(
       "--app-sidebar-width",
       this.#expanded ? "var(--app-sidebar-width-expanded)" : "var(--app-sidebar-width-collapsed)"
     );
-  }
-
-  /**
-   * A rail item labels itself with a tooltip only while it is an icon.
-   *
-   * Expanded, the row carries the label, so a tooltip repeats it on top of the
-   * page — and toggling the rail does not re-render, so the attribute is synced
-   * here rather than only being decided in #railItem. The label is read from
-   * aria-label, which every rail item carries and which never changes.
-   */
-  #syncRailTooltips() {
-    for (const item of this.querySelectorAll(".rail .rail-item")) {
-      if (this.#expanded) {
-        item.removeAttribute("data-tooltip");
-        continue;
-      }
-      const label = item.getAttribute("aria-label");
-      if (label) item.dataset.tooltip = label;
-      item.dataset.tooltipPlacement = "right";
-    }
   }
 
   static get observedAttributes() {
@@ -612,8 +589,7 @@ export class AppHeader extends HTMLElement {
     return navLinks.find(l => this.#isActive(l.url))?.module;
   }
 
-  /** `tooltip: false` for the mobile sheet — those rows show their own labels. */
-  #railItem(link, activeModule, { tooltip = true } = {}) {
+  #railItem(link, activeModule) {
     const href = link.url;
     // A child page (Workflows, Builds, Import agent, Secrets, Team access …)
     // has no rail item of its own; the rail item for its module carries the
@@ -624,15 +600,8 @@ export class AppHeader extends HTMLElement {
     // Rail glyphs: 1.25 stroke — the mockup's 1px chrome weight reads wispy at
     // 18px on the ink rail; topbar utility icons stay at 1.
     const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('', 18, 1.75) : icons.cube('', 18, 1.75);
-    // No data-tooltip while the rail is expanded: the row is already showing
-    // this exact string, so a tooltip would only cover the page with it. The
-    // attribute is also synced on toggle (#applyExpanded), since toggling does
-    // not re-render.
-    const tip = tooltip && !this.#expanded
-      ? ` data-tooltip="${titleEsc}" data-tooltip-placement="right"`
-      : "";
     return `<a href="${escHtml(href)}" class="rail-item${active ? " is-active" : ""}"
-      aria-label="${titleEsc}"${tip}${link.module ? ` data-module="${escHtml(link.module)}"` : ""} ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
+      aria-label="${titleEsc}" data-tooltip="${titleEsc}"${link.module ? ` data-module="${escHtml(link.module)}"` : ""} ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
   }
 
   #renderSkeleton() {
@@ -703,7 +672,7 @@ export class AppHeader extends HTMLElement {
         </div>
       </nav>
       <div class="mobile-nav">
-        ${mainLinks.concat(settingsLinks).map(l => this.#railItem(l, activeModule, { tooltip: false })).join("")}
+        ${mainLinks.concat(settingsLinks).map(l => this.#railItem(l)).join("")}
       </div>
       ${navLinks.length ? `<app-nav-search></app-nav-search>` : ""}
     `;
@@ -723,7 +692,6 @@ export class AppHeader extends HTMLElement {
       userMenu.addEventListener("user-remove", (e) =>
         this.#removeUser(e.detail.username),
       );
-      userMenu.addEventListener("user-add-account", () => this.#addAccount());
       userMenu.addEventListener("user-logout", () => this.#logout());
     }
 
@@ -753,12 +721,6 @@ export class AppHeader extends HTMLElement {
       const userMenu = this.querySelector("app-user-menu");
       if (userMenu) userMenu.users = authService.getUsers();
     }
-  }
-
-  #addAccount() {
-    window.location.href =
-      "/login/?add_account=true&redirect=" +
-      encodeURIComponent(window.location.pathname);
   }
 
   async #logout() {

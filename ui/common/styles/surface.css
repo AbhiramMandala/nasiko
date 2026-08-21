@@ -17,6 +17,9 @@
    `card` class would be a large markup diff for the same result. Add a name here
    when a page grows a new card; don't re-declare the surface in the page sheet. */
 .card,
+/* The extracted agent catalog card — an element, not a class, because it is a
+   real component (common/design-system/app-card). */
+app-card,
 .agent-card,
 .wf-card,
 .method-card,
@@ -63,6 +66,7 @@
   :root { --card-lift: none; }
 }
 .card,
+app-card,
 .agent-card,
 .wf-card,
 .method-card,

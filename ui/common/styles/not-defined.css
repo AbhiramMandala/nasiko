@@ -47,17 +47,16 @@ app-grid:not(:defined) {
 }
 
 /* Content placeholders */
-/* app-card — the unified entity-card primitive (mirrors nasiko_ui's
-   NasikoCard). Reserves the sand-well plane + hairline border so pages that
-   render it directly (no page-level .pre-card skeleton) don't shift on
-   upgrade. */
+/* Agent catalog card — the one card component. 192px matches a rendered card
+   (name + tags + two-line description + action row), so a grid of them does not
+   shift when the element upgrades. Keep in step with the `[loading]` min-height
+   in common/design-system/app-card/app-card.css. */
 app-card:not(:defined) {
   display: block;
-  min-height: 140px;
+  min-height: 192px;
   background: var(--bg-group);
   border: 1px solid var(--border-primary);
-  border-radius: var(--r-8);
-  animation: skel-pulse 1.5s ease-in-out infinite;
+  border-radius: var(--r-12);
 }
 
 app-stat-card:not(:defined) {
@@ -68,6 +67,16 @@ app-stat-card:not(:defined) {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--r-12);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+
+/* Charts. 200px matches the default `height` in app-chart.js — a dashboard of
+   panels must not reflow when the chart modules land. Keep the two in step. */
+app-chart:not(:defined) {
+  display: block;
+  min-height: 200px;
+  border-radius: var(--r-8);
+  background: var(--bg-track);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
 
@@ -134,12 +143,17 @@ app-tabs:not(:defined) > [data-tab] ~ [data-tab] {
   display: none;
 }
 
-voice-input:not(:defined) {
+/*
+  Matches the upgraded composer's paint, not a generic input's: <app-chatbox> is a
+  filled --bg-input well with no resting border. The old reservation here was a
+  white ringed box with a shadow, so every load of the chat and orchestrator pages
+  popped from outlined-white to flat-sand on upgrade.
+*/
+app-chatbox:not(:defined) {
   display: block;
   min-height: 170px;
   border-radius: var(--r-12);
-  background: var(--color-bg-surface);
-  box-shadow: inset 0 0 0 1px var(--color-border), var(--shadow-sm);
+  background: var(--bg-input);
 }
 
 /*
@@ -149,7 +163,7 @@ voice-input:not(:defined) {
   declaring it there painted 170px and then collapsed to 88px on upgrade — ~82px
   of layout shift on the page, caused by the very rule meant to prevent it.
 */
-orchestrator-page .input-wrap voice-input:not(:defined) {
+orchestrator-page .input-wrap app-chatbox:not(:defined) {
   min-height: 88px;
 }
 
@@ -166,6 +180,7 @@ orchestrator-page .input-wrap voice-input:not(:defined) {
 @media (prefers-reduced-motion: reduce) {
   app-card:not(:defined),
   app-stat-card:not(:defined),
+  app-chart:not(:defined),
   app-skeleton:not(:defined),
   smart-table:not(:defined) {
     animation: none;
@@ -364,7 +379,7 @@ chat-page:not(:defined) .chat-skel {
 }
 
 .chat-skel__input {
-  /* Measured against the upgraded <voice-input> in chat-page (112px). */
+  /* Measured against the upgraded <app-chatbox> in chat-page (112px). */
   height: 112px;
   border-radius: var(--r-12);
 }

@@ -45,10 +45,41 @@ export class BaseLayout extends HTMLElement {
   }
 
   /**
+   * Map a `gap`/`padding` token name onto the spacing scale, and repair the
+   * `justify` shorthand names.
+   *
+   * BaseLayout mirrors the raw attribute value into the custom property, which
+   * meant the documented token names never worked: `gap="sm"` produced
+   * `--stack-gap: sm`, so `gap: sm` was invalid at computed-value time, the
+   * declaration was dropped, and the element fell back to `gap: normal` — i.e.
+   * 0, which is *less* gap than omitting the attribute (the sheets default to
+   * --s-16). Same for `padding`, and `justify="between"` produced the invalid
+   * `justify-content: between`. Anything not a known token passes through, so a
+   * raw length (`gap="10px"`) still works.
+   * @type {Record<string, Record<string, string>>}
+   */
+  static tokenMaps = {
+    gap: {
+      xs: 'var(--s-4)', sm: 'var(--s-8)', md: 'var(--s-16)',
+      lg: 'var(--s-24)', xl: 'var(--s-32)',
+    },
+    padding: {
+      xs: 'var(--s-4)', sm: 'var(--s-8)', md: 'var(--s-16)',
+      lg: 'var(--s-24)', xl: 'var(--s-32)',
+    },
+    justify: {
+      start: 'flex-start', center: 'center', end: 'flex-end',
+      between: 'space-between', around: 'space-around', evenly: 'space-evenly',
+    },
+  };
+
+  /**
    * @param {string} name
    * @param {string} value
    */
   updateProperty(name, value) {
-    this.style.setProperty(`--${this.#prefix}-${name}`, value);
+    const map = /** @type {typeof BaseLayout} */ (this.constructor).tokenMaps[name];
+    const resolved = map?.[value] ?? value;
+    this.style.setProperty(`--${this.#prefix}-${name}`, resolved);
   }
 }

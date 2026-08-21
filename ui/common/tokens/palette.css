@@ -53,6 +53,10 @@
   --sand-600: #8C8278;
   --sand-700: #645C52;
   --sand-800: #3A3430;
+  /* Figma calls this "sand/800+1": one step off sand-800, used only for
+     dividers inside the dark notification drawer. Numbered 750 because the ramp
+     runs light-to-dark and #4A4540 is lighter than --sand-800 (#3A3430). */
+  --sand-750: #4A4540;
   --sand-900: #242628;
   /* Legacy warm cream canvas ramp — superseded by --sand-*, kept as aliases */
   --cream-50:  var(--sand-50);
@@ -61,15 +65,16 @@
   --cream-300: var(--sand-300);
   --cream-400: var(--sand-400);
   --orange-100: #FFEDD5; --orange-300: #FDBA74; --orange-400: #FB923C; --orange-600: #EA580C; --orange-900: #7C2D12;
-  --red-100:    #FEE2E2; --red-300:    #FCA5A5; --red-400:    #F87171; --red-600:    #DC2626; --red-900:    #7F1D1D;
+  --red-100:    #FEE2E2; --red-200:    #FECACA; --red-300:    #FCA5A5; --red-400:    #F87171; --red-600:    #DC2626; --red-700:    #B91C1C; --red-900:    #7F1D1D;
   --purple-400: #C084FC; --purple-500: #A855F7;
   --blue-100:   #DBEAFE; --blue-300:   #93C5FD; --blue-400:   #60A5FA; --blue-600:   #2563EB; --blue-900:   #1E3A8A;
-  --teal-400:   #2DD4BF; --teal-500:   #14B8A6;
+  --teal-300:   #5EEAD4; --teal-400:   #2DD4BF; --teal-500:   #14B8A6;
   --green-100:  #DCFCE7; --green-300:  #86EFAC; --green-400:  #4ADE80; --green-600:  #16A34A; --green-900:  #14532D;
   /* Darkest neutral. mcp-page.css referenced --neutral-950 with an inline
      `#0c0c0c` fallback because the ramp stopped at 900; declaring it removes the
      last raw hex from that file's dark-mode path. */
   --neutral-950: #0c0c0c;
+
 
   /* ==== Ink-plane chrome, and overlay tints ====
      The shell is a fixed dark plane that does not theme-switch, so a couple of

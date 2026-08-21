@@ -1,0 +1,190 @@
+/*
+  app-table — the design-system table: search, sortable columns, an optional
+  row-detail panel, and numbered page navigation.
+
+  Ported from features/smart-table.css onto the current token vocabulary
+  (--bg-*/--fg-*/--border-* instead of the older --color-* aliases). Two rules
+  here are load-bearing and easy to undo by accident:
+
+   1. `.td.is-plain` (a label-less action column) is position:sticky at the
+      right edge. Every other cell is nowrap, so on a wide table the action
+      buttons are exactly the part that overflows the scroller — pinned, they
+      stay hit-testable at rest. The separator is an inset box-shadow, not a
+      border-left: with border-collapse, borders on a sticky cell paint
+      unreliably in Chrome.
+   2. The pinned cell repaints the row's hover fill, or a hovered row appears
+      to stop short of the right edge.
+*/
+@keyframes app-table-loading-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 0.85; }
+}
+
+@scope (app-table) {
+  :scope { display: block; }
+
+  .table-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-16);
+    width: 100%;
+  }
+
+  /* The search box is an <app-input> with a leading icon slot — the table owns
+     the debounce, not the paint. */
+  .search-field { max-width: 320px; }
+
+  .scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    border: var(--bw-1) solid var(--border-primary);
+    border-radius: var(--r-8);
+  }
+  .scroll.is-loading {
+    animation: app-table-loading-pulse 1.4s ease-in-out infinite;
+    pointer-events: none;
+    cursor: wait;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .scroll.is-loading { animation: none; opacity: 0.6; }
+  }
+
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    border-spacing: 0;
+    margin: 0;
+    background: var(--bg-base);
+  }
+  .thead { background: var(--bg-subtle); }
+
+  .th {
+    text-align: left;
+    padding: var(--s-12) var(--s-16);
+    font-weight: 600;
+    font-size: var(--font-size-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-secondary);
+    border-bottom: var(--bw-1) solid var(--border-primary);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+
+    &:hover { background: var(--bg-surface-hover); }
+    &:focus-visible { outline: 2px solid var(--fg-brand); outline-offset: -2px; }
+  }
+  .th-content { display: flex; align-items: center; gap: var(--s-8); }
+
+  .sort-icon {
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    color: var(--fg-secondary);
+    opacity: 0.3;
+    &.is-active { opacity: 1; color: var(--fg-brand); }
+  }
+
+  .td {
+    padding: var(--s-12) var(--s-16);
+    border-bottom: var(--bw-1) solid var(--border-primary);
+    font-size: var(--font-size-sm);
+    color: var(--fg-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    &.is-wrap { white-space: normal; overflow: visible; text-overflow: clip; }
+  }
+  .tbody {
+    & tr:last-child .td { border-bottom: none; }
+    & tr:hover { background: var(--bg-subtle); }
+    & tr.is-clickable { cursor: pointer; }
+  }
+
+  .th.is-plain,
+  .td.is-plain {
+    position: sticky;
+    right: 0;
+    z-index: 1;
+    text-align: right;
+    box-shadow: inset 1px 0 0 var(--border-primary);
+  }
+  .th.is-plain { background: var(--bg-subtle); }
+  .td.is-plain { background: var(--bg-base); }
+  .tbody tr:hover .td.is-plain { background: var(--bg-subtle); }
+
+  .skel-bar {
+    height: 0.75em;
+    background: var(--border-primary);
+    border-radius: var(--r-4);
+  }
+
+  .empty {
+    padding: var(--s-48) var(--s-16);
+    text-align: center;
+    color: var(--fg-secondary);
+    font-style: italic;
+    font-size: var(--font-size-sm);
+  }
+
+  .detail-list { display: flex; flex-direction: column; gap: var(--s-12); }
+  .detail-item {
+    display: grid;
+    grid-template-columns: minmax(8rem, 30%) 1fr;
+    gap: var(--s-12);
+    padding-bottom: var(--s-12);
+    border-bottom: var(--bw-1) solid var(--border-primary);
+    &:last-child { border-bottom: none; padding-bottom: 0; }
+  }
+  .detail-key {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--fg-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding-top: 2px;
+  }
+  .detail-val {
+    font-size: var(--font-size-sm);
+    color: var(--fg-primary);
+    word-break: break-all;
+    font-family: var(--font-mono);
+  }
+
+  /* ── Page navigation ──────────────────────────────────────────────────────
+     Prev / windowed page numbers / Next. The numbers are the point: the old
+     prev-next-only pager could not reach page 12 of 40 in fewer than eleven
+     clicks. `.page-gap` is the ellipsis between windows and is inert. */
+  .pagination {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: var(--s-4);
+    padding: var(--s-8) 0;
+    &[hidden] { display: none; }
+  }
+  .pages {
+    display: flex;
+    align-items: center;
+    gap: var(--s-4);
+  }
+  .page-gap {
+    min-width: var(--control-h-sm);
+    text-align: center;
+    font-size: var(--font-size-sm);
+    color: var(--fg-secondary);
+    user-select: none;
+  }
+  .pagination app-button { flex-shrink: 0; }
+
+  .error {
+    background: var(--bg-error);
+    color: var(--fg-error);
+    border: var(--bw-1) solid var(--border-error);
+    border-radius: var(--r-8);
+    padding: var(--s-16);
+    font-size: var(--font-size-sm);
+    &[hidden] { display: none; }
+  }
+}

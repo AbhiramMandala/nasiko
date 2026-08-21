@@ -2,8 +2,13 @@
     :scope {
       position: fixed;
       top: 0;
+      /* Anchored left+right rather than `width: 100vw`. 100vw INCLUDES the
+         scrollbar gutter, and global.css sets `scrollbar-gutter: stable` on
+         html, so a 100vw box is always wider than the content area — which
+         overflows horizontally on every page that mounts this bar. Insetting
+         both edges resolves against the viewport minus that gutter. */
       left: 0;
-      width: 100vw;
+      right: 0;
       height: 3px;
       background: var(--color-primary);
       z-index: 9999;

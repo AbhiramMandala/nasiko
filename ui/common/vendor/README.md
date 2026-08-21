@@ -10,6 +10,7 @@ replace them wholesale when upgrading.
 | `dompurify.esm.js` | `dompurify`    | 3.2.6   | `https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.es.mjs` |
 | `highlight.esm.js` | `highlight.js` | 11.11.1 | `https://cdn.jsdelivr.net/npm/highlight.js@11.11.1/es/common/+esm` (common-languages bundle) |
 | `lit-all.esm.js`   | `lit` + `@lit/context` | 3.3.3 / 1.x | Built locally — see "Rebuilding lit-all.esm.js" below. **Prepend `// @ts-nocheck` after rebuilding.** |
+| `chart.esm.js`     | `chart.js`     | 4.5.1   | `https://esm.sh/chart.js@4.5.1/es2022/auto.bundle.mjs` (the `auto` entry: every controller/scale pre-registered, `@kurkle/color` inlined). **Prepend `// @ts-nocheck`.** |
 
 To upgrade: download the new version from the URL above (bump the version in
 the path), strip any trailing `//# sourceMappingURL=...` line (the `.map`
@@ -83,3 +84,11 @@ hand-write declarations.
 ---
 
 Consumed by `/common/utils/markdown.js`: `marked`, `dompurify`, `highlight.js`.
+
+Consumed by `/common/design-system/app-chart/app-chart.js`: `chart.js`.
+
+`chart.esm.js` needs the same `// @ts-nocheck` first line as `lit-all.esm.js`, for the
+same reason — it is minified output and `tsc --checkJs` walks into it. The plain
+`/+esm` build on jsDelivr is **not** usable here: it leaves `@kurkle/color` as an
+absolute CDN import, which 404s with no import map. Use the esm.sh URL above,
+which inlines it (verify with `grep -E "from ['\"][^./]" chart.esm.js` — must be empty).

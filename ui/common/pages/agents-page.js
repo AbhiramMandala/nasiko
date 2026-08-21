@@ -1,9 +1,10 @@
 import { icons } from "/common/utils/icons.js";
 import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
+import "/common/design-system/app-card/app-card.js";
 import "/common/design-system/app-empty-state/app-empty-state.js";
 import "/common/design-system/app-skeleton/app-skeleton.js";
 import "/common/features/app-module-nav.js";
-import { escHtml } from '/common/utils/escape.js';
+import { escHtml, escAttr } from '/common/utils/escape.js';
 import { call, callOptional } from '../core/data-sources.js';
 
 
@@ -12,16 +13,8 @@ import { call, callOptional } from '../core/data-sources.js';
 // here too. The CSS import assertion returns the same CSSStyleSheet instance on
 // repeat calls (module caching), so double-adoption is harmless.
 import agentsStyles from './agents-page.css' with { type: 'css' };
-import { navigate as routerNavigate } from '../core/router.js';
 if (!document.adoptedStyleSheets.includes(agentsStyles)) {
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, agentsStyles];
-}
-
-function statusClass(status) {
-  if (status === "running") return "is-running";
-  if (status === "error" || status === "failed") return "is-error";
-  if (status === "deploying" || status === "starting") return "is-pending";
-  return "is-stopped";
 }
 
 class AgentsPage extends HTMLElement {
@@ -62,20 +55,7 @@ class AgentsPage extends HTMLElement {
       this.#renderGrid();
     });
 
-    // Whole card opens details; explicit links (Details/Chat) keep their own hrefs.
-    const openCard = (card) => {
-      routerNavigate(`/agent-card?id=${card.dataset.agentId}`);
-    };
-    this.querySelector("#agents-grid").addEventListener("click", (e) => {
-      if (e.target.closest("a")) return;
-      const card = e.target.closest(".card[data-agent-id]");
-      if (card) openCard(card);
-    });
-    this.querySelector("#agents-grid").addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" || e.target.closest("a")) return;
-      const card = e.target.closest(".card[data-agent-id]");
-      if (card) openCard(card);
-    });
+    // Card activation (click / Enter) is owned by <app-card>.
 
     this.#loadAgents();
   }
@@ -167,20 +147,9 @@ class AgentsPage extends HTMLElement {
   }
 
   #skeletonCards() {
-    return Array.from(
-      { length: 6 },
-      () => `
-      <div class="card skeleton-card">
-        <div class="skel-line skel-line--name"></div>
-        <div class="skel-tags">
-          <div class="skel-tag"></div>
-          <div class="skel-tag"></div>
-        </div>
-        <div class="skel-line skel-line--desc1"></div>
-        <div class="skel-line skel-line--desc2"></div>
-      </div>
-    `,
-    ).join("");
+    // The skeleton is the same component in its loading state, so the card's
+    // geometry is defined once and cannot drift from the loaded card.
+    return Array.from({ length: 6 }, () => `<app-card loading></app-card>`).join("");
   }
 
   #renderGrid() {
@@ -215,33 +184,16 @@ class AgentsPage extends HTMLElement {
     }
 
     grid.innerHTML = filtered
-      .map((a) => {
-        const name = a.display_name || a.name;
-        const allTags = a.tags || [];
-        const shown = allTags.slice(0, 2);
-        const extra = allTags.length - shown.length;
-        const tags =
-          shown.map((t) => `<span class="tag">${escHtml(t)}</span>`).join("") +
-          (extra > 0 ? `<span class="tag tag--more">+${extra}</span>` : "");
-        const version = a.version ? `v${String(a.version).replace(/^v/, "")}` : "";
-
-        return `
-        <div class="card" data-agent-id="${encodeURIComponent(a.id)}" role="link" tabindex="0"
-          aria-label="Open ${escHtml(name)} details">
-          <div class="card-top">
-            ${a.status ? `<span class="status-dot ${statusClass(a.status)}" title="${escHtml(a.status)}"></span>` : ""}
-            <span class="card-name">${escHtml(name)}</span>
-            ${version ? `<span class="card-version">${escHtml(version)}</span>` : ""}
-          </div>
-          <div class="card-tags">${tags}</div>
-          <div class="card-desc">${escHtml(a.description || "")}</div>
-          <div class="card-foot">
-            <a class="card-link" href="/agent-card?id=${encodeURIComponent(a.id)}">Details</a>
-            <a class="card-chat-btn" href="/chat?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(name)}">Chat ${icons.arrowUpRight("", 13)}</a>
-          </div>
-        </div>
-      `;
-      })
+      .map(
+        (a) => `
+        <app-card
+          agent-id="${escAttr(a.id)}"
+          name="${escAttr(a.display_name || a.name)}"
+          ${a.version ? `version="${escAttr(String(a.version))}"` : ""}
+          ${a.status ? `status="${escAttr(a.status)}"` : ""}
+          description="${escAttr(a.description || "")}"
+          tags="${escAttr(JSON.stringify(a.tags || []))}"></app-card>`,
+      )
       .join("");
   }
 

@@ -1,0 +1,159 @@
+@keyframes skel-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes skel-pulse { from, to { opacity: 1; } }
+}
+
+@scope (app-chart) {
+  :scope {
+    display: block;
+    width: 100%;
+  }
+
+  /* Chart.js sizes its canvas to the parent box, so the height has to live on a
+     positioned wrapper — not on the canvas, which the library overwrites. */
+  .chart-plot {
+    position: relative;
+    width: 100%;
+  }
+
+  .chart-plot canvas {
+    display: block;
+  }
+
+  /* Donut hole. Pointer-events off so it never eats a segment's tooltip. */
+  /* Sized by the app-chart-centre plugin from the chart's plot rectangle, not
+     by `inset: 0` — see the note on that plugin. These are the pre-layout
+     defaults it overwrites. */
+  .chart-center {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    text-align: center;
+  }
+
+  .chart-center-value {
+    font-size: var(--font-size-lg);
+    font-weight: var(--fw-semibold);
+    color: var(--fg-primary);
+    line-height: 1.1;
+  }
+
+  .chart-center-label {
+    font-size: var(--font-size-xs);
+    color: var(--fg-secondary);
+  }
+
+  .chart-empty {
+    margin: 0;
+    padding: var(--s-24) 0;
+    text-align: center;
+    font-size: var(--font-size-sm);
+    color: var(--fg-secondary);
+  }
+
+  .chart-skeleton {
+    height: 200px;
+    border-radius: var(--r-8);
+    background: var(--bg-track);
+    animation: skel-pulse 1.5s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .chart-skeleton { animation: none; opacity: 0.6; }
+  }
+
+  /* ── Row forms: hbar and progress ────────────────────────────────────────
+     A four-column grid, not a flex row, so the labels and the trailing values
+     align down the list however long any one label is — the alignment IS the
+     ranking. The delta column is `auto` and collapses to nothing when no row
+     carries one. */
+  .chart-rows {
+    display: grid;
+    grid-template-columns: minmax(60px, max-content) 1fr max-content auto;
+    align-items: center;
+    gap: var(--s-12) var(--s-12);
+  }
+
+  .chart-row {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: center;
+  }
+
+  .chart-row-label {
+    font-size: var(--font-size-sm);
+    color: var(--fg-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chart-row-track {
+    display: block;
+    height: 8px;
+    border-radius: var(--r-full);
+    background: var(--bg-track);
+  }
+
+  /* The fill carries the series colour as `color`, set inline from the slot, so
+     one rule paints both the solid bar and the ticked meter below. */
+  .chart-row-fill {
+    display: block;
+    height: 100%;
+    min-width: 8px;
+    border-radius: var(--r-full);
+    background: currentColor;
+  }
+
+  /* A ranked list has no track: the longest bar IS the scale, and a grey rail
+     behind every row would imply a fixed maximum that a ranking does not have.
+     The progress form below is the opposite case — there the maximum is 100 and
+     the track is the point. */
+  .is-hbar .chart-row-track {
+    background: none;
+  }
+
+  /* Progress meters are ticked rather than solid: a segmented meter reads as
+     "N of a fixed budget" where a solid bar reads as a magnitude, and the ticks
+     double as the non-colour encoding that keeps the rows distinguishable when
+     the hues are not. */
+  .is-progress .chart-row-track {
+    border-radius: var(--r-4);
+    background: repeating-linear-gradient(
+      90deg, var(--bg-track) 0 3px, transparent 3px 5px);
+  }
+
+  .is-progress .chart-row-fill {
+    border-radius: var(--r-4);
+    background: repeating-linear-gradient(
+      90deg, currentColor 0 3px, transparent 3px 5px);
+  }
+
+  .chart-row-value {
+    font-size: var(--font-size-sm);
+    font-weight: var(--fw-medium);
+    color: var(--fg-primary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .chart-row-delta {
+    font-size: var(--font-size-xs);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+
+    &.is-up      { color: var(--fg-success); }
+    &.is-down    { color: var(--fg-error); }
+    &.is-neutral { color: var(--fg-secondary); }
+  }
+}

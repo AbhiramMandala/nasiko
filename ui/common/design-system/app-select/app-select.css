@@ -1,0 +1,147 @@
+/*
+  app-select — matched to Figma "Design System V2" › ↳Select › Select (4581:45)
+  and Select (inline) (4510:30).
+
+  The trigger shares every metric with app-input's box (control/height 32|28,
+  horizontal-padding 12|8, content-gap 8, radius 8|6, border ramp default
+  #d4ccc0 → hover #bb8f06, focus ring 1px #bb8f06 inset -4 radius 10|8), so the
+  rules below mirror that sheet rather than inventing a second scale.
+
+  Figma-specific to select: the chevron is 16px in fg/default/icon-secondary
+  (#bb8f06 = --fg-icon-secondary), not the body ink, and it sits inside the
+  right padding. `appearance: none` removes the platform arrow; the popup list
+  itself stays native (see the JSDoc).
+*/
+@scope (app-select) {
+  :scope {
+    display: block;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-8);
+  }
+
+  .label-row {
+    display: flex;
+    align-items: center;
+    font-size: var(--font-size-sm);
+    line-height: var(--font-body-sm-line);
+    color: var(--fg-primary);
+  }
+
+  .req { color: var(--fg-error); }
+
+  .select-box {
+    position: relative;
+    display: flex;
+    align-items: center;
+    height: var(--control-h-md);
+    background: var(--bg-base);
+    border: var(--bw-1) solid var(--border-primary);
+    border-radius: var(--r-8);
+    transition: border-color var(--transition-fast);
+  }
+
+  select {
+    appearance: none;
+    flex: 1 0 0;
+    min-width: 0;
+    height: 100%;
+    /* Right padding leaves room for the absolutely-positioned chevron:
+       12 (padding) + 16 (icon) + 8 (content-gap) = 36. */
+    padding: 0 36px 0 var(--s-12);
+    border: 0;
+    outline: none;
+    background: none;
+    font-family: inherit;
+    font-size: var(--font-size-sm);
+    line-height: var(--font-body-sm-line);
+    color: var(--fg-primary);
+    cursor: pointer;
+  }
+
+  /* The placeholder option is disabled + selected, so it is the only way the
+     trigger shows secondary ink — matching Figma's "Select role" trigger. */
+  select:has(option[value='']:checked) { color: var(--fg-secondary); }
+
+  .chevron {
+    position: absolute;
+    right: var(--s-12);
+    display: flex;
+    pointer-events: none;
+    color: var(--fg-icon-secondary);
+
+    & svg { width: var(--icon-xs); height: var(--icon-xs); }
+  }
+
+  .hint-row {
+    font-size: var(--font-size-tertiary);
+    line-height: var(--font-body-tertiary-line);
+    color: var(--fg-secondary);
+  }
+
+  /* ── Size sm ──────────────────────────────────────────────────────────── */
+  .is-sm {
+    & .select-box {
+      height: var(--control-h-sm);
+      border-radius: var(--r-6);
+    }
+
+    & select {
+      padding: 0 30px 0 var(--s-8);
+      font-size: var(--font-size-tertiary);
+      line-height: var(--font-body-tertiary-line);
+    }
+
+    & .chevron {
+      right: var(--s-8);
+
+      & svg { width: 12px; height: 12px; }
+    }
+  }
+
+  /* ── Statuses — same ramp as app-input ────────────────────────────────── */
+  .is-default .select-box:hover,
+  .is-hover .select-box {
+    border-color: var(--border-secondary);
+  }
+
+  .select-box:focus-within,
+  .is-focus .select-box {
+    border-color: var(--border-primary);
+  }
+
+  .select-box:focus-within::after,
+  .is-focus .select-box::after {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border: var(--bw-1) solid var(--fg-brand);
+    border-radius: var(--r-10);
+    pointer-events: none;
+  }
+
+  .is-sm .select-box:focus-within::after,
+  .is-sm.is-focus .select-box::after {
+    border-radius: var(--r-8);
+  }
+
+  .is-error .select-box { border-color: var(--border-error); }
+  .is-error .hint-row .hint { color: var(--fg-error); }
+  .is-success .select-box { border-color: var(--border-success); }
+
+  .is-disabled {
+    opacity: 0.5;
+
+    & .label-row { color: var(--fg-disabled); }
+
+    & .select-box {
+      background: var(--bg-disabled);
+      border-color: var(--border-disabled);
+    }
+
+    & select { cursor: not-allowed; }
+  }
+}

@@ -11,8 +11,11 @@
  * @note The internal <dialog> is a regular DOM child (no Shadow DOM). The `close` event fires
  *       on the internal <dialog> and does NOT bubble — listen on `el.querySelector('dialog')`.
  * @note Backdrop click and the X button are handled internally.
+ * @note `confirmDialog()` at the bottom of this file is the imperative form of this
+ *       same component — a yes/no <app-modal> built in JS. It is not a second modal.
  */
 import { icons } from "../../utils/icons.js";
+import "../app-button/app-button.js";
 import styles from './app-modal.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -96,3 +99,55 @@ export class AppModal extends HTMLElement {
   }
 }
 if (!customElements.get("app-modal")) customElements.define("app-modal", AppModal);
+
+/**
+ * Imperative <app-modal>: a yes/no confirmation (replaces browser `confirm()`).
+ * Returns a Promise that resolves `true` on confirm, `false` on cancel/close.
+ *
+ * No markup or styles of its own — the footer slot is display:contents so the
+ * modal's own <footer> lays the buttons out, and app-button paints them.
+ *
+ * @param {object} opts
+ * @param {string} opts.title - Modal heading
+ * @param {string} opts.message - Body text (supports HTML)
+ * @param {string} [opts.confirmLabel='Confirm'] - Primary button label
+ * @param {string} [opts.cancelLabel='Cancel'] - Secondary button label
+ * @param {boolean} [opts.danger=false] - Styles the confirm button as destructive
+ */
+export function confirmDialog({
+  title,
+  message,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  danger = false,
+}) {
+  return new Promise((resolve) => {
+    const modal = document.createElement("app-modal");
+    modal.setAttribute("heading", title);
+
+    modal.innerHTML = `
+      <p style="margin:0; font-size:var(--font-size-sm); color:var(--color-text-muted); line-height:1.5;">${message}</p>
+      <div data-slot="footer" style="display:contents">
+        <app-button variant="tertiary" data-role="cancel">${cancelLabel}</app-button>
+        <app-button variant="${danger ? "danger" : "primary"}" data-role="confirm">${confirmLabel}</app-button>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+    let resolved = false;
+
+    const cleanup = (result) => {
+      if (resolved) return;
+      resolved = true;
+      modal.close();
+      modal.remove();
+      resolve(result);
+    };
+
+    modal.querySelector('[data-role="cancel"]').addEventListener("click", () => cleanup(false));
+    modal.querySelector('[data-role="confirm"]').addEventListener("click", () => cleanup(true));
+    modal.querySelector("dialog")?.addEventListener("close", () => cleanup(false));
+
+    modal.open();
+  });
+}

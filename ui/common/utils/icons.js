@@ -38,6 +38,30 @@ const f = (body, viewBox, defaultSize = 24) =>
     `style="width:${size}px;height:${size}px;flex-shrink:0"` +
     `${cls ? ` class="${cls}"` : ''}>${body}</svg>`;
 
+/**
+ * Hand glyph sizing back to CSS inside `root`.
+ *
+ * Every icon above writes its size into the svg's `style` attribute, and an
+ * inline style beats every stylesheet rule — so a component that declares
+ * `& svg { width: var(--icon-xs) }` had no effect at all, and its glyphs
+ * rendered at whatever px the call site passed (24 by default). Call this over
+ * the rendered subtree and the component's own rule wins again.
+ *
+ * The svg keeps its `width`/`height` **attributes**: presentation attributes
+ * lose to CSS, so they stay as the fallback for anything CSS doesn't size —
+ * which is why this is opt-in per component rather than a change to the icons
+ * themselves. Doing it in `icons.js` would newly activate a dead `svg { width }`
+ * rule in ten page sheets and `styles/btn.css` at once.
+ *
+ * @param {ParentNode} root
+ */
+export function unsizeIcons(root) {
+  for (const svg of root.querySelectorAll('svg')) {
+    svg.style.removeProperty('width');
+    svg.style.removeProperty('height');
+  }
+}
+
 export const icons = {
   // ── Navigation ───────────────────────────────────────────────────────────
   search: s(`<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>`),
@@ -96,6 +120,8 @@ export const icons = {
   checkCircle: s(`<path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>`),
   xCircle:     s(`<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>`),
   info:        s(`<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>`),
+  /* Figma's alert-02 — the warning AND error glyph on the toast (752:17346). */
+  alertTriangle: s(`<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>`),
   faceFrown:   s(`<path d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>`),
 
   // ── Files & content ──────────────────────────────────────────────────────

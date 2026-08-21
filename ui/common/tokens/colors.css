@@ -32,10 +32,14 @@
   --bg-base:            light-dark(var(--white), var(--black));
   --bg-group:           light-dark(var(--sand-50), var(--neutral-900));
   --bg-page:            light-dark(var(--white), var(--neutral-900));
-  --bg-surface:         light-dark(var(--sand-50), var(--neutral-800));
-  --bg-surface-hover:   light-dark(var(--sand-100), var(--neutral-700));
-  --bg-surface-active:  light-dark(var(--sand-200), var(--neutral-600));
+  --bg-surface:         light-dark(var(--sand-100), var(--neutral-800));
+  --bg-surface-hover:   light-dark(var(--sand-200), var(--neutral-700));
+  --bg-surface-active:  light-dark(var(--sand-300), var(--neutral-600));
   --bg-subtle:          light-dark(var(--sand-100), var(--neutral-800));
+  /* Figma bg/default/surface-subtle (sand/200) — nested surfaces and secondary
+     panels. Distinct from --bg-subtle above, which is a separate older name
+     still referenced by --color-neutral-bg; do not merge them. */
+  --bg-surface-subtle:  light-dark(var(--sand-200), var(--neutral-700));
   --bg-inset:           light-dark(var(--sand-300), var(--neutral-700));
   --bg-overlay:         light-dark(var(--overlay-light), var(--overlay-dark));
   --bg-popover:         light-dark(var(--white), var(--neutral-700));
@@ -48,7 +52,7 @@
   --bg-track:           light-dark(var(--neutral-300), var(--neutral-600));
   --bg-brand:           var(--yellow-600);
   --bg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-400));
-  --bg-brand-active:    var(--yellow-500);
+  --bg-brand-active:    var(--yellow-600);
   --bg-brand-subtle:    light-dark(var(--yellow-200), var(--yellow-900));
   --bg-secondary-brand:        light-dark(var(--yellow-100), var(--yellow-900));
   --bg-secondary-brand-hover:  light-dark(var(--yellow-200), var(--yellow-800));
@@ -67,22 +71,95 @@
   --fg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-300));
   --fg-brand-link:      var(--fg-brand);
   --fg-brand-highlight: light-dark(var(--yellow-500), var(--yellow-400));
+  /* Figma fg/default/icon-* — icons get their own roles because a secondary
+     icon is brand-coloured while secondary *text* is sand/700. */
+  --fg-icon-primary:    light-dark(var(--sand-900), var(--neutral-100));
+  --fg-icon-secondary:  light-dark(var(--yellow-600), var(--yellow-400));
+  --fg-icon-hover:      light-dark(var(--yellow-800), var(--yellow-300));
   --fg-caution:         light-dark(var(--yellow-700), var(--yellow-300));
   --fg-caution-emphasis: light-dark(var(--yellow-800), var(--yellow-200));
   --fg-success:         light-dark(var(--green-600), var(--green-400));
   --fg-warning:         light-dark(var(--orange-600), var(--orange-400));
   --fg-error:           light-dark(var(--red-600), var(--red-400));
   --fg-information:     light-dark(var(--blue-600), var(--blue-400));
-  --border-primary:     light-dark(var(--sand-200), var(--neutral-700));
+  --border-primary:     light-dark(var(--sand-300), var(--neutral-700));
   --border-secondary:   var(--fg-brand);
-  --border-hover:       var(--fg-brand);
+  --border-hover:       light-dark(var(--yellow-800), var(--yellow-300));
   --border-subtle:      light-dark(var(--sand-100), var(--neutral-800));
   --border-emphasis:    light-dark(var(--sand-300), var(--neutral-600));
   --border-success:     light-dark(var(--green-300), var(--green-600));
-  --border-error:       light-dark(var(--red-300), var(--red-600));
+  --border-error:       light-dark(var(--red-200), var(--red-600));
+  /* Figma border/default/error-secondary — the full-strength red outline on a
+     destructive *secondary* button, distinct from the soft --border-error
+     used for error surfaces. */
+  --border-error-secondary: light-dark(var(--red-600), var(--red-400));
   --border-warning:     light-dark(var(--orange-300), var(--orange-600));
   --border-information: light-dark(var(--blue-300), var(--blue-600));
-  --border-disabled:    light-dark(var(--sand-200), var(--neutral-700));
+
+  /* ── Constants and the dark notification overlay ──────────────────────────
+     Figma's fg/constant and information-overlay roles. These deliberately do NOT
+     use light-dark(): "constant" means the value is fixed regardless of theme
+     (text on a brand pill is white in both), and the information-overlay plane
+     is an always-dark floating surface, not a themed one. Wrapping either in
+     light-dark() would invert it in dark mode and destroy the contrast the
+     Figma spec annotates (fg/feedback/information-overlay is documented as
+     4.6:1 on sand/800).
+
+     These three close the gap app-card.js records: its error-state "Know more"
+     falls back to a native title tooltip because the inverse-surface tokens
+     did not exist on the web side. They do now. */
+  --fg-constant-white:          var(--white);
+  --fg-constant-black:          var(--sand-900);
+  --fg-constant-black-secondary: var(--sand-800);
+  --bg-information-overlay:     var(--sand-800);
+  --fg-information-overlay:     var(--sand-400);
+  --border-information-overlay: var(--sand-750);
+  --border-disabled:    light-dark(var(--sand-300), var(--neutral-700));
+
+  /* ── Data-visualisation series ────────────────────────────────────────────
+     The categorical scale: identity, not magnitude. Slots are assigned in this
+     fixed order and never cycled — colour follows the entity, so a filter that
+     drops series 2 must not repaint series 3. An 8th series does NOT get a
+     generated hue; it folds into "Other" (--fg-secondary).
+
+     One set serves both themes. These are pastels, chosen to sit on the tinted
+     chart panel, and unlike the rest of the palette they need no second
+     dark-mode selection: they clear 3:1 against the dark surface as they stand.
+
+     What that costs on the LIGHT panel, measured rather than guessed: contrast
+     runs 1.1–2.2:1. That is the intended look for a filled mark whose value is
+     written beside it, and it is why <app-chart> always ships a legend and
+     direct labels — the relief that makes a sub-3:1 fill legible. It is thin
+     for a 2px *line*, the one form where the pastel carries the reading alone.
+
+     How far the scale actually stretches, by adjacent-pair separation under
+     simulated deuteranopia and in normal vision:
+
+       up to 5 series   clean — worst pair ΔE 19.1 (deutan), 21.4 (normal)
+       6 series         green/orange fall to ΔE 6.6 (deutan): legal only
+                        because every mark here is directly labelled
+       7 series         orange/red are ΔE 9.3 in NORMAL vision — under the 15
+                        floor, i.e. hard to tell apart for everyone
+
+     No reordering fixes the 7-slot case (across all pairs, blue/purple are
+     ΔE 1.3 under deuteranopia). Past five series the answer is a grouped
+     "Other" bucket or small multiples, not more hues. Slots 6 and 7 are for
+     palettes and swatches, not for a seven-series chart.
+
+     Sequential (magnitude) and diverging (polarity) scales are deliberately
+     absent — nothing needs one yet, and a ramp invented ahead of its first use
+     is a ramp nobody validated.
+
+     Chart chrome is NOT here. Grid lines are --border-primary, tick and legend
+     text is --fg-secondary, an unfilled meter track is --bg-track. A chart is a
+     surface like any other; it does not get private greys. */
+  --viz-1: var(--yellow-300);
+  --viz-2: var(--blue-400);
+  --viz-3: var(--teal-300);
+  --viz-4: var(--purple-400);
+  --viz-5: var(--green-300);
+  --viz-6: var(--orange-300);
+  --viz-7: var(--red-300);
   --color-primary: var(--fg-brand);
   --color-primary-hover: var(--fg-brand-hover);
   /* --color-primary-muted removed — was unused */

@@ -51,6 +51,7 @@ your-agents-page {
 
 /* Pages whose narrow-viewport gutter is the wider --s-32. */
 add-agent-github-page,
+design-system-page,
 llm-router-page,
 mcp-page,
 observability-session-page,
@@ -196,6 +197,7 @@ login-page {
   workflow-new-page,
   workflows-page,
   add-agent-github-page,
+  design-system-page,
   llm-router-page,
   mcp-page,
   observability-session-page,

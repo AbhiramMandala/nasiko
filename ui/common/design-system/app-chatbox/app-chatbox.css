@@ -18,7 +18,7 @@
   to { --textarea-fade: 0px; }
 }
 
-@scope (voice-input) {
+@scope (app-chatbox) {
     :scope {
       display: block;
       width: 100%;
@@ -37,7 +37,7 @@
       --pad-y: 16px;
       --pad-x: 20px;
     }
-    .voice-input { display: block; width: 100%; }
+    .chatbox { display: block; width: 100%; }
     .input-area {
       position: relative;
       width: 100%;

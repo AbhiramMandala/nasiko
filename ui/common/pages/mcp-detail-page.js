@@ -2,7 +2,7 @@ import { icons } from '../utils/icons.js';
 import { escHtml } from '../utils/escape.js';
 import { fetchApi } from '../services/api.js';
 import { showToast } from '../utils/toast.js';
-import { confirmDialog } from '../design-system/confirm-dialog/confirm-dialog.js';
+import { confirmDialog } from '../design-system/app-modal/app-modal.js';
 import { attachSlidingIndicator } from '../utils/tab-indicator.js';
 import { navigate } from '../core/router.js';
 import styles from './mcp-detail-page.css' with { type: 'css' };

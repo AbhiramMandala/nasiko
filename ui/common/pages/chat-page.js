@@ -1,6 +1,6 @@
 import { apiFetch } from '/common/services/api.js';
 import { isAbort, userMessage } from '/common/core/errors.js';
-import "../features/voice-input.js";
+import "../design-system/app-chatbox/app-chatbox.js";
 import "../features/agent-steps.js";
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
@@ -101,11 +101,11 @@ class ChatPage extends HTMLElement {
         ${this.#sessionId ? '' : this.#renderWelcome()}
       </div>
       <div class="input-area">
-        <voice-input
+        <app-chatbox
           id="chat-input"
           placeholder="Type a message..."
           transcription-callback="transcribeAudio"
-        ></voice-input>
+        ></app-chatbox>
       </div>
     `;
   }
@@ -202,7 +202,7 @@ class ChatPage extends HTMLElement {
       }
     });
 
-    chatInput.addEventListener("voice-input-submit", async (e) => {
+    chatInput.addEventListener("chatbox-submit", async (e) => {
       const content = e.detail.value;
       if (!content) {
         chatInput.setLoading(false);

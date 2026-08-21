@@ -49,6 +49,7 @@ const BASE_ROUTES = [
   { path: '/settings',        tag: 'settings-page',            module: '/common/pages/settings-page.js',            title: 'Nasiko — Settings' },
   { path: '/setup-cli',       tag: 'setup-cli-page',           module: '/common/pages/setup-cli-page.js',           title: 'Nasiko — Set up CLI' },
   { path: '/resources',       tag: 'resources-page',           module: '/common/pages/resources-page.js',           title: 'Nasiko — Resources' },
+  { path: '/design-system',   tag: 'design-system-page',       module: '/common/pages/design-system-page.js',       title: 'Nasiko — Design System' },
 ];
 
 // ── Route extension seam (same pattern as nav-ext.js) ───────────────────

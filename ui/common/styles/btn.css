@@ -1,6 +1,6 @@
 /* Icon button — 28×28 compact, transparent, hover bg.
    Element-qualified: the same class name is also put on bare <svg> icons inside
-   buttons (voice-input, app-user-menu), and an unqualified rule painted the
+   buttons (app-chatbox, app-user-menu), and an unqualified rule painted the
    hover background behind the glyph. */
 button.btn-icon,
 a.btn-icon {

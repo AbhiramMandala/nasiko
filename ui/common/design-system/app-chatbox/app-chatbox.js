@@ -1,24 +1,29 @@
 /**
- * Textarea with voice recording, optional file attachment, and submit on Enter.
+ * The chat composer: an auto-growing textarea with voice recording, file
+ * attachment, and submit-on-Enter. Used by the orchestrator and chat pages, and
+ * demoed on the design-system page.
  *
- * @element voice-input
+ * @element app-chatbox
  * @attr {string} placeholder - Textarea placeholder text
  * @attr {boolean} no-attachments - Hide the file attachment button
  * @attr {string} transcription-callback - Name of a data-source function returning transcribed text
  * @prop {string} value - Get/set the textarea value
- * @fires voice-input-submit - User submits; `detail: { value: string, files: [] }` — bubbles
+ * @fires chatbox-submit - User submits; `detail: { value: string, files: [] }` — bubbles.
+ *   The box goes into its loading state on submit; the owner calls
+ *   `setLoading(false)` (or `setLoading(true)` then false) when the reply lands.
+ * @note Keyboard: Enter submits, Shift+Enter newlines, F8 / Alt+R toggles
+ *       recording, `/` focuses the box from anywhere on the page.
  */
-import { VoiceRecorder } from '../utils/voice-utils.js';
-import { icons } from '../utils/icons.js';
-import { showToast } from '../utils/toast.js';
-import { resolveOptional } from '../core/data-sources.js';
-import '../design-system/app-stack/app-stack.js';
-import '../design-system/app-row/app-row.js';
+import { VoiceRecorder } from '../../utils/voice-utils.js';
+import { icons } from '../../utils/icons.js';
+import { showToast } from '../../utils/toast.js';
+import { resolveOptional } from '../../core/data-sources.js';
+import { escHtml } from '../../utils/escape.js';
 
-import styles from './voice-input.css' with { type: 'css' };
+import styles from './app-chatbox.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-export class VoiceInputForm extends HTMLElement {
+export class AppChatbox extends HTMLElement {
   #loading = false;
   constructor() {
     super();
@@ -67,7 +72,7 @@ export class VoiceInputForm extends HTMLElement {
     const placeholder = this.getAttribute("placeholder") || "Type your message...";
 
     this.innerHTML = `
-      <form class="voice-input" onsubmit="return false;">
+      <form class="chatbox" onsubmit="return false;">
         <div class="input-area" id="inputWrapper">
           <textarea
             class="textarea"
@@ -209,7 +214,7 @@ export class VoiceInputForm extends HTMLElement {
     const files = [...this.attachedFiles];
     this.setState("loading");
     this.dispatchEvent(
-      new CustomEvent("voice-input-submit", {
+      new CustomEvent("chatbox-submit", {
         bubbles: true,
         detail: { value: query, files },
       }),
@@ -275,7 +280,7 @@ export class VoiceInputForm extends HTMLElement {
     if (!this.fileList) return;
     this.fileList.innerHTML = this.attachedFiles.map((f) => `
       <div class="file-item">
-        <span>${f.name} (${(f.size / 1024).toFixed(1)}KB)</span>
+        <span>${escHtml(f.name)} (${(f.size / 1024).toFixed(1)}KB)</span>
         <button class="file-remove" data-id="${f.id}" title="Remove file" aria-label="Remove file">
           ${icons.x("", 14)}
         </button>
@@ -308,4 +313,4 @@ export class VoiceInputForm extends HTMLElement {
   }
 }
 
-customElements.define("voice-input", VoiceInputForm);
+customElements.define("app-chatbox", AppChatbox);

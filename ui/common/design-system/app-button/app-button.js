@@ -1,23 +1,38 @@
 /**
  * Styled button with variants, sizes, loading spinner, and disabled state.
  *
+ * Matched to Figma "Design System V2" › ↳Button › Button (node 11:4247). Figma
+ * models Type × Tone as two axes; this component keeps one flat `variant`, so
+ * Tone=destructive is spelled `danger` (Type=primary) and `danger-secondary`
+ * (Type=secondary). See the header of app-button.css for the full mapping.
+ *
  * @element app-button
- * @attr {string} variant - Visual style: `primary` (default) | `secondary` | `ghost` | `danger` | `dark`
- * @attr {string} size - Size modifier: `sm` — the compact control height (--control-h-sm).
- *   Omit for the default, large height (--control-h-lg). `lg` is not a value: the `is-lg`
- *   rule was removed, so it would land on the base height by accident rather than by design.
+ * @attr {string} variant - Visual style: `primary` (default, dark fill) | `secondary` (brand tint) |
+ *   `tertiary` (white + hairline border; `outline` is an alias) | `ghost` | `danger` |
+ *   `danger-secondary` | `dark` (alias of `primary`, kept for existing call sites) | `icon`
+ * @attr {string} size - Size modifier: `sm` (28px) | `md` (32px) | (default) 36px
+ * @attr {boolean} icon-only - Squares the button to its size's control height with no
+ *   padding, per Figma's Icon Button frame (4158:1100) — which is the same Type × Tone
+ *   × Size matrix as the text button, so `variant` still supplies the colour.
+ *   `variant="icon"` remains as the ghost-coloured shorthand used across mcp-page
+ *   and the EE pages.
  * @attr {boolean} disabled - Disables the button
  * @attr {boolean} loading - Shows a spinner and disables the button
  * @attr {string} type - HTML button type: `button` (default) | `submit` | `reset`
  * @prop {boolean} disabled - Get/set disabled state
- * @note Content goes in the default slot.
+ * @note Content goes in the default slot. The button sizes any icon in it —
+ *       20px at the default size, 16 at `md`, 12 at `sm` — so pass a bare
+ *       `icons.plus()` and let the size attribute pick the glyph size.
  */
 import styles from './app-button.css' with { type: 'css' };
+import { unsizeIcons } from '../../utils/icons.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 
 export class AppButton extends HTMLElement {
-  static get observedAttributes() { return ['variant', 'size', 'disabled', 'loading', 'type']; }
+  static get observedAttributes() {
+    return ['variant', 'size', 'disabled', 'loading', 'type', 'icon-only'];
+  }
   constructor() { super(); }
   get disabled() { return this.hasAttribute('disabled'); }
   set disabled(val) { val ? this.setAttribute('disabled', '') : this.removeAttribute('disabled'); }
@@ -43,13 +58,24 @@ export class AppButton extends HTMLElement {
     const loading  = this.hasAttribute('loading');
     const disabled = this.hasAttribute('disabled') || loading;
     const content  = this.querySelector('.content')?.innerHTML ?? this.innerHTML;
-    const classes  = ['btn', `is-${variant}`, size ? `is-${size}` : ''].filter(Boolean).join(' ');
+    // `variant="icon"` is the ghost-coloured square; `icon-only` squares any variant.
+    const iconOnly = this.hasAttribute('icon-only') || variant === 'icon';
+    const classes  = ['btn', `is-${variant}`, size ? `is-${size}` : '',
+                      iconOnly ? 'is-icon-only' : ''].filter(Boolean).join(' ');
 
     this.innerHTML = `
       <button class="${classes}" type="${type}"${disabled ? ' disabled' : ''}>
         ${loading ? '<span class="spinner" aria-hidden="true"></span>' : ''}
         <span class="content">${content}</span>
       </button>`;
+
+    // icons.js writes each glyph's size into the svg's `style` attribute, and an
+    // inline style beats every stylesheet rule — so the icon ramp above (l 20,
+    // m 16, s 12) had no effect and every button drew whatever px its call site
+    // passed, 24 by default. Dropping the inline size hands the ramp back to the
+    // sheet, so a call site passes a bare `icons.plus()` and the size attribute
+    // decides the glyph.
+    unsizeIcons(this);
   }
 }
 customElements.define('app-button', AppButton);

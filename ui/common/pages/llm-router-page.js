@@ -15,7 +15,7 @@ import '/common/design-system/app-skeleton/app-skeleton.js';
 import styles from './llm-router-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import { showToast } from '../utils/toast.js';
-import { confirmDialog } from '../design-system/confirm-dialog/confirm-dialog.js';
+import { confirmDialog } from '../design-system/app-modal/app-modal.js';
 import '/common/design-system/app-button/app-button.js';
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';

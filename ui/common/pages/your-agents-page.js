@@ -3,8 +3,7 @@ import { icons } from "/common/utils/icons.js";
 import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
-import { confirmDialog } from "/common/design-system/confirm-dialog/confirm-dialog.js";
-import "/common/design-system/app-modal/app-modal.js";
+import { confirmDialog } from "/common/design-system/app-modal/app-modal.js";
 import "/common/design-system/app-empty-state/app-empty-state.js";
 import "/common/design-system/app-skeleton/app-skeleton.js";
 import "/common/design-system/app-card/app-card.js";
@@ -157,14 +156,12 @@ class YourAgentsPage extends HTMLElement {
     const isRunning = a.status === "running";
     const isError = a.status === "error" || a.status === "failed";
     const isPending = a.status === "deploying" || a.status === "starting";
-    // Maps to <app-card variant>: running -> the green "active" accent,
-    // error/failed -> the red "error" body, deploying/starting -> the
-    // brand "setting-up" accent (genuinely mid-provisioning), everything
-    // else (stopped) -> "normal" — same as nasiko_ui's NasikoCard default.
-    const variant = isError ? "error" : isRunning ? "active" : isPending ? "setting-up" : "normal";
+    // Status goes straight to <app-card status>, which maps
+    // running / error|failed / deploying|starting / else to its status dot —
+    // the same mapping this page used to compute for app-card's accent bar.
     const { version: imgVersion } = parseImageTag(a.image);
     const version = a.version || imgVersion;
-    const tags = (a.tags || []).map((t) => ({ label: t }));
+    const tags = a.tags || [];
 
     // app-card only paints the setting-up body when it has content to show
     // (its `_hasSettingUpBody` gate), so variant="setting-up" alone renders a
@@ -189,15 +186,12 @@ class YourAgentsPage extends HTMLElement {
         <button type="button" slot="footer" class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>
         <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash("", 14)}</button>`;
 
-    // data-agent-id is the hook the status poller keys on to swap a single
-    // card in place; without it the poller can't find the node and the whole
-    // grid re-renders, losing scroll position.
     return `
     <app-card
       data-agent-id="${escAttr(a.id)}"
-      card-title="${escAttr(name)}"
-      ${version ? `version="v${escAttr(String(version).replace(/^v/, ""))}"` : ""}
-      variant="${variant}"
+      name="${escAttr(name)}"
+      ${version ? `version="${escAttr(String(version).replace(/^v/, ""))}"` : ""}
+      ${a.status ? `status="${escAttr(a.status)}"` : ""}
       href="/agent-card?id=${escAttr(a.id)}"
       ${isError ? `error-title="Agent failed" error-body="Container exited with an error."` : ""}
       ${isPending ? `setting-up-title="${escAttr(setupStatus)}" setting-up-body="This may take a few minutes. Status updates automatically."` : ""}

@@ -6,7 +6,7 @@ import { readA2aStream, frameRenderer, nearBottom, scrollerFor, stickToBottom } 
 import { usageChipsHtml } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
 import { registerAll } from '/common/core/data-sources.js';
-import '/common/features/voice-input.js';
+import '/common/design-system/app-chatbox/app-chatbox.js';
 import '/common/features/agent-steps.js';
 // Both render branches below mount an <app-module-nav>, and page-layout.css holds
 // the desktop gutter it pins into. Nothing imported it, so it never upgraded: an
@@ -49,11 +49,11 @@ class OrchestratorPage extends HTMLElement {
       </div>
       <div class="messages" id="messages"></div>
       <div class="input-wrap">
-        <voice-input
-          id="voice-input"
+        <app-chatbox
+          id="chatbox"
           placeholder="Describe the task you want to execute..."
           transcription-callback="transcribeAudio"
-        ></voice-input>
+        ></app-chatbox>
       </div>
       <a class="wf-banner" href="/workflow-new">
         <span class="wf-banner-icon" aria-hidden="true">${icons.workflow('', 20)}</span>
@@ -67,7 +67,7 @@ class OrchestratorPage extends HTMLElement {
 
     this.#loadRecentAgents();
 
-    const voiceInput = this.querySelector('#voice-input');
+    const chatbox = this.querySelector('#chatbox');
     const messagesEl = this.querySelector('#messages');
 
     // Copy code blocks (delegated on messages container)
@@ -95,12 +95,12 @@ class OrchestratorPage extends HTMLElement {
       }
     });
 
-    voiceInput.addEventListener('voice-input-submit', async (e) => {
+    chatbox.addEventListener('chatbox-submit', async (e) => {
       const { value: content, files } = e.detail;
       if (!content && files.length === 0) return;
 
-      voiceInput.reset();
-      voiceInput.setLoading(true);
+      chatbox.reset();
+      chatbox.setLoading(true);
       this.classList.add('has-response');
 
       // Append user message
@@ -177,7 +177,7 @@ class OrchestratorPage extends HTMLElement {
           this.#appendMsg(messagesEl, 'assistant', `Error: ${userMessage(err)}`);
         }
       } finally {
-        voiceInput.setLoading(false);
+        chatbox.setLoading(false);
       }
     });
   }
