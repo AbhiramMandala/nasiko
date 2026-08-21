@@ -237,6 +237,14 @@ impl AppState {
         let worker_state = state.clone();
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
 
+        if let Some(endpoint) = state.config.coding_agent_otlp_endpoint.clone() {
+            tokio::spawn(crate::coding_agent_otlp::run(
+                state.db.clone(),
+                state.http_client.clone(),
+                endpoint,
+            ));
+        }
+
         // Container-hours meter: records per-instance run sessions for billing
         // (see agents/hours_meter.rs). 0 disables — used by tests that drive
         // reconcile_once directly.
@@ -246,17 +254,6 @@ impl AppState {
                 state.runtime.clone(),
                 state.config.agent_runtime.clone(),
                 std::time::Duration::from_secs(state.config.container_hours_poll_secs),
-            ));
-        }
-
-        // Mirror LLM pricing from Portkey into model_pricing on a schedule, so
-        // cost calculation stays current without hand-written seed migrations.
-        // Fails soft; the seed rows + StaticPricing remain the floor.
-        if state.config.model_pricing_sync_enabled {
-            tokio::spawn(nasiko_observability::pricing_sync::run(
-                state.db.clone(),
-                state.http_client.clone(),
-                state.config.model_pricing_sync_interval_secs,
             ));
         }
 

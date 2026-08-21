@@ -1,4 +1,4 @@
-use nasiko_utils::{env_bool, env_or, env_parse, required_env};
+use nasiko_utils::{env_or, env_parse, required_env};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -44,6 +44,9 @@ pub struct Config {
     pub otel_sample_ratio: String,
     pub otel_collector_endpoint: String,
     pub otel_capture_content: bool,
+    /// OTLP/HTTP JSON base endpoint used only by the durable coding-agent
+    /// telemetry outbox. Unset leaves receipts pending and disables its worker.
+    pub coding_agent_otlp_endpoint: Option<String>,
     pub tempo_url: String,
     pub loki_url: String,
     /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
@@ -59,15 +62,6 @@ pub struct Config {
     /// multi-tenant deployment. This crate has no notion of what a "tenant"
     /// is; it only passes the value through.
     pub tenant_id: Option<String>,
-    /// When true, a background worker periodically mirrors LLM token pricing
-    /// from Portkey's public dataset (`configs.portkey.ai`) into the
-    /// `model_pricing` table. Fails soft — a fetch error leaves existing rows
-    /// untouched. See `nasiko_observability::pricing_sync`.
-    pub model_pricing_sync_enabled: bool,
-    /// How often the pricing sync runs, in seconds. Provider list prices change
-    /// rarely, so daily (86400) is the default; the sync also runs once ~10s
-    /// after boot. Floored at 60s.
-    pub model_pricing_sync_interval_secs: u64,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
@@ -293,6 +287,10 @@ impl Config {
             )
             .map(|v| v == "true")
             .unwrap_or(true),
+            coding_agent_otlp_endpoint: std::env::var("CODING_AGENT_OTLP_ENDPOINT")
+                .ok()
+                .map(|value| value.trim_end_matches('/').to_owned())
+                .filter(|value| !value.is_empty()),
             tempo_url: env_or("TEMPO_URL", ""),
             loki_url: env_or("LOKI_URL", ""),
             // Enabled only when BOTH backends are explicitly configured; a
@@ -301,8 +299,6 @@ impl Config {
             observability_enabled: std::env::var("TEMPO_URL").is_ok_and(|v| !v.is_empty())
                 && std::env::var("LOKI_URL").is_ok_and(|v| !v.is_empty()),
             tenant_id: std::env::var("TENANT_ID").ok(),
-            model_pricing_sync_enabled: env_bool("MODEL_PRICING_SYNC_ENABLED", true),
-            model_pricing_sync_interval_secs: env_parse("MODEL_PRICING_SYNC_INTERVAL_SECS", 86_400),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),

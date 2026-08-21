@@ -1,27 +1,29 @@
-//! Shared lock, export, and persistence pipeline for adapter snapshots.
+//! Hook-time parsing and durable capture. Network delivery belongs to `sync`.
 
 use anyhow::{Result, bail};
 use chrono::Utc;
+use nasiko_types::{
+    CODING_AGENT_EVENT_VERSION, CapturePolicy, CodingAgentEventV1, CodingAgentLlmCall,
+    CodingAgentSession, CodingAgentSource, CodingAgentTurn, coding_agent_event_id,
+    coding_agent_session_id,
+};
 use std::collections::HashSet;
 use std::io::Read;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::agents::Agent;
-use super::control_plane;
 use super::model::Turn;
-use super::otlp::{self, ExportContext};
-use super::state::{self, IntegrationState};
+use super::queue::{self, QueueDestination, QueueRecord};
+use super::state::{self, IntegrationState, SessionLock};
 
 const REPORT_BUDGET: Duration = Duration::from_secs(9);
-const NETWORK_TIMEOUT: Duration = Duration::from_secs(2);
-const CONTROL_PLANE_RESERVE: Duration = Duration::from_secs(4);
 
 pub fn run(agent: Agent) -> Result<()> {
     let deadline = Instant::now() + REPORT_BUDGET;
     let raw = read_payload()?;
     let snapshot = agent.snapshot(&raw, deadline)?;
     let spec = agent.spec();
-    let server_session_id = server_session_id(spec.id, &snapshot.session_id);
     let settings = IntegrationState::load()?;
     let Some(agent_state) = settings.get(spec.id) else {
         bail!(
@@ -29,6 +31,18 @@ pub fn run(agent: Agent) -> Result<()> {
             spec.display_name,
             spec.id
         );
+    };
+    let (cluster_name, cluster) = crate::config::active_cluster()?;
+    let principal_id = cluster
+        .token
+        .as_deref()
+        .and_then(crate::config::token_subject)
+        .and_then(|subject| uuid::Uuid::parse_str(&subject).ok())
+        .ok_or_else(|| anyhow::anyhow!("active cluster token has no valid user UUID subject"))?;
+    let destination = QueueDestination {
+        cluster_name,
+        cluster_url: cluster.url,
+        principal_id,
     };
     let lock = state::lock_session(
         spec.id,
@@ -50,85 +64,96 @@ pub fn run(agent: Agent) -> Result<()> {
             snapshot.session_id
         ));
     }
-    let pending_spans = pending_turns(&completed, &progress.exported_turn_ids);
-    let pending_messages = pending_turns(&completed, &progress.uploaded_turn_ids);
-
-    let context = ExportContext {
-        endpoint: &agent_state.otlp_endpoint,
-        service_name: &agent_state.agent_name,
-        session_id: &server_session_id,
-        capture_content: agent_state.capture_content,
-    };
-    for turn in &pending_spans {
-        let reserve = if pending_messages.is_empty() {
-            Duration::ZERO
-        } else {
-            CONTROL_PLANE_RESERVE
-        };
-        let Ok(timeout) = network_timeout_with_reserve(deadline, reserve) else {
-            log(&format!(
-                "session {} — report deadline reached; remaining spans deferred",
-                snapshot.session_id
-            ));
-            break;
-        };
-        match otlp::export_turns_with_timeout(&context, std::slice::from_ref(turn), timeout) {
-            Ok(spans) => {
-                if let Err(error) = lock.mark_exported(std::slice::from_ref(&turn.uuid)) {
-                    log(&format!(
-                        "session {} turn {} — span progress write failed: {error}",
-                        snapshot.session_id, turn.uuid
-                    ));
-                    break;
-                }
-                log(&format!(
-                    "session {} turn {} — exported {spans} span(s)",
-                    snapshot.session_id, turn.uuid
-                ));
-            }
-            Err(error) => {
-                log(&format!(
-                    "session {} turn {} — span export failed: {error}",
-                    snapshot.session_id, turn.uuid
-                ));
-                break;
-            }
-        }
+    let pending = pending_turns(&completed, &progress.captured_turn_ids);
+    for turn in &pending {
+        let record = QueueRecord::new(
+            destination.clone(),
+            canonical_event(
+                spec.id,
+                &agent_state.agent_name,
+                &snapshot.session_id,
+                turn,
+                agent_state.capture_content,
+            ),
+        );
+        queue_then_mark(&record, &lock)?;
     }
+    drop(lock);
 
-    if !pending_messages.is_empty() {
-        let result = (|| {
-            control_plane::ensure_session(
-                &server_session_id,
-                &agent_state.agent_name,
-                network_timeout(deadline)?,
-            )?;
-            control_plane::persist_turns(
-                &server_session_id,
-                &agent_state.agent_name,
-                &pending_messages,
-                &lock,
-                deadline,
-                network_timeout,
-            )
-        })();
-        match result {
-            Ok(()) => log(&format!(
-                "session {} — persisted {} external turn(s)",
-                snapshot.session_id,
-                pending_messages.len()
-            )),
-            Err(error) => log(&format!(
-                "session {} — external turns deferred: {error}",
-                snapshot.session_id
-            )),
-        }
+    if !pending.is_empty() {
+        spawn_sync()?;
+        log(&format!(
+            "session {} — queued {} completed turn(s) for {}",
+            snapshot.session_id,
+            pending.len(),
+            destination.cluster_name
+        ));
     }
     Ok(())
 }
 
-fn server_session_id(agent_id: &str, raw_session_id: &str) -> String {
-    format!("{agent_id}:{raw_session_id}")
+fn canonical_event(
+    agent_id: &str,
+    agent_name: &str,
+    source_session_id: &str,
+    turn: &Turn,
+    capture_content: bool,
+) -> CodingAgentEventV1 {
+    CodingAgentEventV1 {
+        version: CODING_AGENT_EVENT_VERSION,
+        event_id: coding_agent_event_id(agent_id, source_session_id, &turn.uuid),
+        captured_at: turn.ended_at,
+        source: CodingAgentSource {
+            agent_id: agent_id.to_string(),
+            agent_name: agent_name.to_string(),
+        },
+        session: CodingAgentSession {
+            id: coding_agent_session_id(agent_id, source_session_id),
+            source_id: source_session_id.to_string(),
+        },
+        turn: CodingAgentTurn {
+            id: turn.uuid.clone(),
+            prompt: capture_content.then(|| turn.prompt.clone()),
+            response: capture_content.then(|| turn.response.clone()).flatten(),
+            started_at: turn.started_at,
+            ended_at: turn.ended_at,
+            llm_calls: turn
+                .calls
+                .iter()
+                .map(|call| CodingAgentLlmCall {
+                    id: call.uuid.clone(),
+                    provider: call.provider.clone(),
+                    model: call.model.clone(),
+                    input_tokens: call.input_tokens,
+                    output_tokens: call.output_tokens,
+                    cache_read_tokens: call.cache_read_tokens,
+                    cache_creation_tokens: call.cache_creation_tokens,
+                    started_at: call.started_at,
+                    ended_at: call.ended_at,
+                })
+                .collect(),
+        },
+        capture_policy: if capture_content {
+            CapturePolicy::Content
+        } else {
+            CapturePolicy::MetadataOnly
+        },
+    }
+}
+
+fn queue_then_mark(record: &QueueRecord, lock: &SessionLock) -> Result<()> {
+    ordered_commit(
+        || queue::enqueue(record).map(|_| ()),
+        || lock.mark_captured(std::slice::from_ref(&record.event.turn.id)),
+    )
+}
+
+fn ordered_commit(
+    enqueue: impl FnOnce() -> Result<()>,
+    mark: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    enqueue()?;
+    mark()
 }
 
 fn complete_turns(turns: &[Turn]) -> Vec<Turn> {
@@ -139,24 +164,22 @@ fn complete_turns(turns: &[Turn]) -> Vec<Turn> {
         .collect()
 }
 
-fn pending_turns(turns: &[Turn], completed: &HashSet<String>) -> Vec<Turn> {
+fn pending_turns(turns: &[Turn], captured: &HashSet<String>) -> Vec<Turn> {
     turns
         .iter()
-        .filter(|turn| !completed.contains(&turn.uuid))
+        .filter(|turn| !captured.contains(&turn.uuid))
         .cloned()
         .collect()
 }
 
-fn network_timeout(deadline: Instant) -> Result<Duration> {
-    network_timeout_with_reserve(deadline, Duration::ZERO)
-}
-
-fn network_timeout_with_reserve(deadline: Instant, reserve: Duration) -> Result<Duration> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining <= reserve {
-        bail!("report deadline reached");
-    }
-    Ok((remaining - reserve).min(NETWORK_TIMEOUT))
+fn spawn_sync() -> Result<()> {
+    Command::new(std::env::current_exe()?)
+        .args(["integration", "sync"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(())
 }
 
 fn read_payload() -> Result<String> {
@@ -174,6 +197,7 @@ mod tests {
     use super::super::model::LlmCall;
     use super::*;
     use chrono::{DateTime, Utc};
+    use std::cell::Cell;
 
     fn turn(id: &str, complete: bool) -> Turn {
         let at = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
@@ -213,49 +237,42 @@ mod tests {
     }
 
     #[test]
-    fn span_and_message_progress_filter_independently() {
+    fn captured_progress_filters_completed_turns() {
         let turns = [turn("a", true), turn("b", true)];
         assert_eq!(
             pending_turns(&turns, &HashSet::from(["a".to_string()]))[0].uuid,
             "b"
         );
-        assert_eq!(
-            pending_turns(&turns, &HashSet::from(["b".to_string()]))[0].uuid,
-            "a"
-        );
     }
 
     #[test]
-    fn network_timeout_obeys_request_and_report_budgets() {
-        assert!(
-            network_timeout(Instant::now() + Duration::from_millis(50)).unwrap()
-                <= Duration::from_millis(50)
+    fn queue_failure_never_advances_the_watermark() {
+        let marked = Cell::new(false);
+        let result = ordered_commit(
+            || Err(anyhow::anyhow!("disk full")),
+            || {
+                marked.set(true);
+                Ok(())
+            },
         );
-        assert_eq!(
-            network_timeout(Instant::now() + Duration::from_secs(5)).unwrap(),
-            NETWORK_TIMEOUT
-        );
-        assert!(
-            network_timeout_with_reserve(
-                Instant::now() + Duration::from_secs(3),
-                CONTROL_PLANE_RESERVE
-            )
-            .is_err()
-        );
+        assert!(result.is_err());
+        assert!(!marked.get());
     }
 
     #[test]
-    fn server_session_ids_are_scoped_by_external_agent_id() {
-        let claude_session = server_session_id("claude", "same");
-        let opencode_session = server_session_id("opencode", "same");
-        assert_eq!(claude_session, "claude:same");
-        assert_eq!(opencode_session, "opencode:same");
-        assert_ne!(claude_session, opencode_session);
-
+    fn canonical_identity_is_stable_and_content_policy_is_enforced() {
         let turn = turn("same-turn", true);
+        let first = canonical_event("claude", "claude-code", "same", &turn, false);
+        let second = canonical_event("claude", "claude-code", "same", &turn, false);
+        assert_eq!(first.event_id, second.event_id);
+        assert_eq!(first, second);
+        assert_eq!(first.session.id, "claude:same");
+        assert!(first.turn.prompt.is_none());
+        assert!(first.turn.response.is_none());
+        assert!(first.validate().is_ok());
         assert_ne!(
-            otlp::trace_id_for_turn("claude-code", &claude_session, &turn),
-            otlp::trace_id_for_turn("opencode", &opencode_session, &turn)
+            first.event_id,
+            canonical_event("opencode", "opencode", "same", &turn, false).event_id
         );
     }
 }

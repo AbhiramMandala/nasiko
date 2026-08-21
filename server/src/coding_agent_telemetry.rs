@@ -103,35 +103,28 @@ async fn process_event(
 
     let mut tx = state.db.begin().await?;
     let agent_id: Option<Uuid> = sqlx::query_scalar(
-        r#"SELECT id FROM agents
-           WHERE owner_id = $1 AND name = $2
-             AND coding_agent_integration_id = $3
-             AND deleted_at IS NULL"#,
+        "SELECT id FROM agents WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL",
     )
     .bind(user_id)
     .bind(&event.source.agent_name)
-    .bind(&event.source.agent_id)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(agent_id) = agent_id else {
         return Err(ProcessError::Rejected(format!(
-            "active owned {} coding-agent integration '{}' not found",
-            event.source.agent_id, event.source.agent_name
+            "active owned agent '{}' not found",
+            event.source.agent_name
         )));
     };
     let server_session_id = scoped_session_id(agent_id, &event.session.source_id);
 
     sqlx::query(
-        r#"INSERT INTO chat_sessions
-              (session_id, user_id, agent_id, title, created_at, updated_at)
-           VALUES ($1, $2, $3, 'Coding session', $4, $5)
+        r#"INSERT INTO chat_sessions (session_id, user_id, agent_id, title)
+           VALUES ($1, $2, $3, 'Coding session')
            ON CONFLICT (session_id) DO NOTHING"#,
     )
     .bind(&server_session_id)
     .bind(user_id)
     .bind(agent_id)
-    .bind(event.turn.started_at)
-    .bind(event.turn.ended_at)
     .execute(&mut *tx)
     .await?;
     let session_matches: bool = sqlx::query_scalar(
@@ -193,28 +186,15 @@ async fn process_event(
 
     if event.capture_policy == CapturePolicy::Content {
         let turn = external_turn(event, &server_session_id);
-        persist_external_turn(
-            &mut tx,
-            &server_session_id,
-            &turn,
-            event.turn.started_at,
-            false,
-        )
-        .await
-        .map_err(|error| match error {
-            PersistExternalTurnError::Incomplete | PersistExternalTurnError::Conflict => {
-                ProcessError::Rejected(error.to_string())
-            }
-            PersistExternalTurnError::Database(error) => ProcessError::Internal(error.into()),
-        })?;
+        persist_external_turn(&mut tx, &server_session_id, &turn)
+            .await
+            .map_err(|error| match error {
+                PersistExternalTurnError::Incomplete | PersistExternalTurnError::Conflict => {
+                    ProcessError::Rejected(error.to_string())
+                }
+                PersistExternalTurnError::Database(error) => ProcessError::Internal(error.into()),
+            })?;
     }
-    sqlx::query(
-        "UPDATE chat_sessions SET created_at = LEAST(created_at, $2) WHERE session_id = $1",
-    )
-    .bind(&server_session_id)
-    .bind(event.turn.started_at)
-    .execute(&mut *tx)
-    .await?;
     tx.commit().await?;
     Ok(CodingAgentEventStatus::Accepted)
 }
@@ -268,12 +248,5 @@ fn external_turn(event: &CodingAgentEventV1, session_id: &str) -> ExternalTurn {
             estimated: None,
             trace_id: Some(crate::coding_agent_otlp::trace_id_for_event(&scoped_event)),
         }),
-        assistant_metadata: Some(serde_json::Map::from_iter([(
-            "coding_agent".to_string(),
-            json!({
-                "capture_policy": "content",
-                "tool_calls": event.turn.tool_calls,
-            }),
-        )])),
     }
 }

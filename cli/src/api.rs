@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
+use nasiko_types::{CodingAgentEventBatchRequest, CodingAgentEventBatchResponse};
 use nasiko_utils::display::opt_dash;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use tabled::Tabled;
 use ureq::Agent;
 
@@ -84,19 +84,6 @@ pub struct Client {
     token: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct ExternalTurnResponse {
-    inserted: bool,
-    user_message: ExternalTurnMessage,
-    assistant_message: ExternalTurnMessage,
-}
-
-#[derive(Deserialize)]
-struct ExternalTurnMessage {
-    external_turn_id: Option<String>,
-    role: String,
-}
-
 impl Client {
     pub fn from_active_cluster() -> Result<Self> {
         let (_, entry) = config::active_cluster()?;
@@ -104,9 +91,16 @@ impl Client {
     }
 
     pub(crate) fn from_cluster_entry(entry: &config::ClusterEntry) -> Self {
+        Self::from_cluster_entry_with_timeout(entry, None)
+    }
+
+    pub(crate) fn from_cluster_entry_with_timeout(
+        entry: &config::ClusterEntry,
+        timeout: Option<std::time::Duration>,
+    ) -> Self {
         let agent = Agent::new_with_config(
             ureq::config::Config::builder()
-                .timeout_global(None)
+                .timeout_global(timeout)
                 .http_status_as_error(false)
                 .build(),
         );
@@ -115,23 +109,6 @@ impl Client {
             base_url: entry.url.clone(),
             token: entry.token.clone(),
         }
-    }
-
-    /// Integration hooks have a hard host timeout, unlike interactive CLI
-    /// commands. Keep this constructor scoped so broad API behavior is unchanged.
-    pub(crate) fn from_active_cluster_with_timeout(timeout: Duration) -> Result<Self> {
-        let (_, entry) = config::active_cluster()?;
-        let agent = Agent::new_with_config(
-            ureq::config::Config::builder()
-                .timeout_global(Some(timeout))
-                .http_status_as_error(false)
-                .build(),
-        );
-        Ok(Self {
-            agent,
-            base_url: entry.url.clone(),
-            token: entry.token,
-        })
     }
 
     /// Build a client against an arbitrary base URL (mock server in tests),
@@ -363,59 +340,23 @@ impl Client {
         Ok(true)
     }
 
-    /// POST a JSON body, treating 200 OK and 201 Created as success.
-    ///
-    /// Returns `true` when the resource was created (201) and `false` when it
-    /// already existed (200). Used by the ensure-session endpoint.
-    pub fn post_json_allow_ok<B: Serialize>(&self, path: &str, body: &B) -> Result<bool> {
-        let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
-        let url = self.api_url(path);
-        let mut resp = self
-            .auth_post(&url)
-            .send_json(body)
-            .context("cannot reach control plane")?;
-        let status = resp.status().as_u16();
-        if status == 200 {
-            return Ok(false);
-        }
-        if status == 201 {
-            return Ok(true);
-        }
-        check_status(&mut resp, &url)?;
-        Ok(true)
-    }
-
-    /// Persist an idempotent external turn and validate the endpoint contract.
-    /// Only 200 replay and 201 insertion responses are accepted.
-    pub(crate) fn post_external_turn<B: Serialize>(
+    pub(crate) fn post_coding_agent_batch(
         &self,
-        path: &str,
-        turn_id: &str,
-        body: &B,
-    ) -> Result<bool> {
+        body: &CodingAgentEventBatchRequest,
+    ) -> Result<CodingAgentEventBatchResponse> {
+        let path = "/telemetry/coding-agent/events/batch";
         let url = self.api_url(path);
         let mut resp = self
             .auth_post(&url)
             .send_json(body)
             .context("cannot reach control plane")?;
-        let status = resp.status().as_u16();
-        if status != 200 && status != 201 {
-            check_status(&mut resp, &url)?;
-            bail!("unexpected HTTP {status} from {url}; expected 200 or 201");
-        }
-        let response: ExternalTurnResponse = resp
+        check_status(&mut resp, &url)?;
+        let envelope: serde_json::Value = resp
             .body_mut()
             .read_json()
-            .with_context(|| format!("invalid external-turn response from {url}"))?;
-        let valid = response.inserted == (status == 201)
-            && response.user_message.role == "user"
-            && response.assistant_message.role == "assistant"
-            && response.user_message.external_turn_id.as_deref() == Some(turn_id)
-            && response.assistant_message.external_turn_id.as_deref() == Some(turn_id);
-        if !valid {
-            bail!("external-turn response from {url} did not match turn {turn_id}");
-        }
-        Ok(response.inserted)
+            .with_context(|| format!("invalid coding-agent batch response from {url}"))?;
+        unwrap_data(envelope)
+            .with_context(|| format!("invalid coding-agent batch response from {url}"))
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {
@@ -1662,87 +1603,6 @@ mod tests {
         assert!(
             err.to_string().contains("no Dockerfile found"),
             "got: {err}"
-        );
-    }
-
-    #[test]
-    fn external_turn_accepts_and_validates_created_response() {
-        let mut srv = mockito::Server::new();
-        srv.mock("POST", "/api/chat/sessions/s1/external-turns")
-            .with_status(201)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"inserted":true,"user_message":{"role":"user","external_turn_id":"t1"},"assistant_message":{"role":"assistant","external_turn_id":"t1"}}"#)
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-
-        assert!(
-            client
-                .post_external_turn(
-                    "/chat/sessions/s1/external-turns",
-                    "t1",
-                    &serde_json::json!({"turn_id":"t1"}),
-                )
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn external_turn_accepts_validated_replay_response() {
-        let mut srv = mockito::Server::new();
-        srv.mock("POST", "/api/chat/sessions/s1/external-turns")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"inserted":false,"user_message":{"role":"user","external_turn_id":"t1"},"assistant_message":{"role":"assistant","external_turn_id":"t1"}}"#)
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-
-        assert!(
-            !client
-                .post_external_turn(
-                    "/chat/sessions/s1/external-turns",
-                    "t1",
-                    &serde_json::json!({"turn_id":"t1"}),
-                )
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn external_turn_rejects_non_200_201_success_status() {
-        let mut srv = mockito::Server::new();
-        srv.mock("POST", "/api/chat/sessions/s1/external-turns")
-            .with_status(202)
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-
-        let error = client
-            .post_external_turn(
-                "/chat/sessions/s1/external-turns",
-                "t1",
-                &serde_json::json!({"turn_id":"t1"}),
-            )
-            .unwrap_err();
-        assert!(error.to_string().contains("expected 200 or 201"));
-    }
-
-    #[test]
-    fn external_turn_rejects_mismatched_response_shape() {
-        let mut srv = mockito::Server::new();
-        srv.mock("POST", "/api/chat/sessions/s1/external-turns")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"inserted":false,"user_message":{"role":"user","external_turn_id":"other"},"assistant_message":{"role":"assistant","external_turn_id":"other"}}"#)
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-
-        assert!(
-            client
-                .post_external_turn(
-                    "/chat/sessions/s1/external-turns",
-                    "t1",
-                    &serde_json::json!({"turn_id":"t1"}),
-                )
-                .is_err()
         );
     }
 }

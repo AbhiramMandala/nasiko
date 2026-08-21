@@ -95,10 +95,6 @@ pub fn quarantine(path: &Path, record: &QueueRecord) -> Result<PathBuf> {
     quarantine_at(root, path, record)
 }
 
-pub fn reject_invalid(record: &QueueRecord, error: &str) -> Result<PathBuf> {
-    reject_invalid_at(&super::state::integrations_dir(), record, error)
-}
-
 pub fn records() -> Result<Vec<(PathBuf, QueueRecord)>> {
     records_at(&super::state::integrations_dir())
 }
@@ -165,9 +161,7 @@ fn records_at(root: &Path) -> Result<Vec<(PathBuf, QueueRecord)>> {
             {
                 match load(&path) {
                     Ok(record)
-                        if record
-                            .next_attempt_at
-                            .is_none_or(|next_attempt| next_attempt <= now) =>
+                        if record.next_attempt_at.is_none_or(|next_attempt| next_attempt <= now) =>
                     {
                         records.push((path, record));
                         if records.len() >= MAX_SCAN_RECORDS {
@@ -220,29 +214,16 @@ fn quarantine_at(root: &Path, path: &Path, record: &QueueRecord) -> Result<PathB
     Ok(destination)
 }
 
-fn reject_invalid_at(root: &Path, record: &QueueRecord, error: &str) -> Result<PathBuf> {
-    let mut rejected = record.clone();
-    rejected.delivery_state = DeliveryState::Rejected;
-    rejected.last_error = Some(format!("invalid event: {error}"));
-    rejected.updated_at = Utc::now();
-    let destination = root
-        .join("rejected")
-        .join(cluster_hash(&record.destination))
-        .join(format!("{}.json", record.event.event_id));
-    create_owner_dirs(destination.parent().expect("rejected event has parent"))?;
-    atomic_owner_write(&destination, &serde_json::to_vec(&rejected)?)?;
-    Ok(destination)
-}
-
 fn quarantine_invalid_at(root: &Path, path: &Path) -> Result<()> {
     let cluster = path
         .parent()
         .and_then(Path::file_name)
         .context("invalid queue record has no cluster directory")?;
-    let destination = root.join("rejected").join("malformed").join(cluster).join(
-        path.file_name()
-            .context("invalid queue record has no filename")?,
-    );
+    let destination = root
+        .join("rejected")
+        .join("malformed")
+        .join(cluster)
+        .join(path.file_name().context("invalid queue record has no filename")?);
     create_owner_dirs(destination.parent().expect("invalid quarantine has parent"))?;
     std::fs::rename(path, &destination)
         .with_context(|| format!("failed to quarantine malformed record {}", path.display()))?;
@@ -368,7 +349,6 @@ mod tests {
                     started_at: at,
                     ended_at: at,
                     llm_calls: vec![],
-                    tool_calls: vec![],
                 },
                 capture_policy: CapturePolicy::MetadataOnly,
             },
@@ -483,22 +463,6 @@ mod tests {
         assert_eq!(records[0].0, ready_path);
         assert!(!malformed.exists());
         assert!(dir.path().join("rejected").join("malformed").exists());
-    }
-
-    #[test]
-    fn invalid_event_can_be_quarantined_before_it_enters_the_queue() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut invalid = record("one", "https://one.example");
-        invalid.event.source.agent_name = "bad\0agent".into();
-        let error = invalid.event.validate().unwrap_err();
-
-        let rejected = reject_invalid_at(dir.path(), &invalid, &error).unwrap();
-        assert!(rejected.starts_with(dir.path().join("rejected")));
-        assert!(!dir.path().join("queue").exists());
-        let stored: QueueRecord =
-            serde_json::from_slice(&std::fs::read(rejected).unwrap()).unwrap();
-        assert_eq!(stored.delivery_state, DeliveryState::Rejected);
-        assert!(stored.last_error.unwrap().contains("NUL"));
     }
 
     #[test]

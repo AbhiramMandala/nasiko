@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
+use super::external_turn::{PersistExternalTurnError, persist_external_turn};
 use super::models::*;
 
 const MAX_FILES_PER_UPLOAD: usize = 10;
@@ -989,72 +990,13 @@ async fn save_external_turn(
         }
     }
 
-    let user_timestamp = Utc::now();
-    let user_inserted = sqlx::query_as::<_, ChatMessage>(
-        r#"INSERT INTO chat_messages
-               (session_id, external_turn_id, role, content, timestamp)
-           VALUES ($1, $2, 'user', $3, $4)
-           ON CONFLICT (session_id, external_turn_id, role) DO NOTHING
-           RETURNING *"#,
-    )
-    .bind(&session_id)
-    .bind(turn_id)
-    .bind(&body.user_content)
-    .bind(user_timestamp)
-    .fetch_optional(&mut *tx)
-    .await;
-    let user_inserted = match user_inserted {
-        Ok(row) => row,
-        Err(e) => {
-            tracing::error!(%e, session_id, turn_id, "save_external_turn: user insert failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    let persisted = match persist_external_turn(&mut tx, &session_id, &body).await {
+        Ok(persisted) => persisted,
+        Err(PersistExternalTurnError::Incomplete) => {
+            let _ = tx.rollback().await;
+            return (StatusCode::CONFLICT, "external turn is incomplete").into_response();
         }
-    };
-
-    let usage = body.assistant_usage.as_ref();
-
-    if user_inserted.is_none() {
-        let messages = sqlx::query_as::<_, ChatMessage>(
-            r#"SELECT * FROM chat_messages
-               WHERE session_id = $1 AND external_turn_id = $2
-                 AND role IN ('user', 'assistant')
-               ORDER BY CASE role WHEN 'user' THEN 0 ELSE 1 END"#,
-        )
-        .bind(&session_id)
-        .bind(turn_id)
-        .fetch_all(&mut *tx)
-        .await;
-        let mut messages = match messages {
-            Ok(messages) if messages.len() == 2 => messages,
-            Ok(messages) => {
-                tracing::error!(
-                    session_id,
-                    turn_id,
-                    count = messages.len(),
-                    "save_external_turn: incomplete persisted turn"
-                );
-                let _ = tx.rollback().await;
-                return (StatusCode::CONFLICT, "external turn is incomplete").into_response();
-            }
-            Err(e) => {
-                tracing::error!(%e, session_id, turn_id, "save_external_turn: replay lookup failed");
-                let _ = tx.rollback().await;
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        };
-        let assistant_message = messages.pop().expect("turn message count checked");
-        let user_message = messages.pop().expect("turn message count checked");
-        let exact_replay = user_message.content == body.user_content
-            && assistant_message.content == body.assistant_content
-            && assistant_message.input_tokens == usage.and_then(|u| u.input_tokens)
-            && assistant_message.output_tokens == usage.and_then(|u| u.output_tokens)
-            && assistant_message.model.as_deref() == usage.and_then(|u| u.model.as_deref())
-            && assistant_message.duration_ms == usage.and_then(|u| u.duration_ms)
-            && assistant_message.cost_usd == usage.and_then(|u| u.cost_usd)
-            && assistant_message.usage_estimated == usage.and_then(|u| u.estimated)
-            && assistant_message.trace_id.as_deref() == usage.and_then(|u| u.trace_id.as_deref());
-
-        if !exact_replay {
+        Err(PersistExternalTurnError::Conflict) => {
             let _ = tx.rollback().await;
             return (
                 StatusCode::CONFLICT,
@@ -1062,72 +1004,12 @@ async fn save_external_turn(
             )
                 .into_response();
         }
-
-        if let Err(e) = tx.commit().await {
-            tracing::error!(%e, session_id, turn_id, "save_external_turn: replay commit failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-        return (
-            StatusCode::OK,
-            Json(ExternalTurnResponse {
-                inserted: false,
-                user_message,
-                assistant_message,
-            }),
-        )
-            .into_response();
-    }
-
-    let user_message = user_inserted.expect("user insertion checked");
-    let assistant_inserted = sqlx::query_as::<_, ChatMessage>(
-        r#"INSERT INTO chat_messages
-               (session_id, external_turn_id, role, content, timestamp,
-                input_tokens, output_tokens, model, duration_ms, cost_usd,
-                usage_estimated, trace_id)
-           VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7, $8, $9, $10, $11)
-           ON CONFLICT (session_id, external_turn_id, role) DO NOTHING
-           RETURNING *"#,
-    )
-    .bind(&session_id)
-    .bind(turn_id)
-    .bind(&body.assistant_content)
-    .bind(user_timestamp + chrono::Duration::microseconds(1))
-    .bind(usage.and_then(|u| u.input_tokens))
-    .bind(usage.and_then(|u| u.output_tokens))
-    .bind(usage.and_then(|u| u.model.as_deref()))
-    .bind(usage.and_then(|u| u.duration_ms))
-    .bind(usage.and_then(|u| u.cost_usd))
-    .bind(usage.and_then(|u| u.estimated))
-    .bind(usage.and_then(|u| u.trace_id.as_deref()))
-    .fetch_optional(&mut *tx)
-    .await;
-    let assistant_message = match assistant_inserted {
-        Ok(Some(row)) => row,
-        Ok(None) => {
-            tracing::error!(
-                session_id,
-                turn_id,
-                "save_external_turn: assistant row pre-existed without user row"
-            );
-            let _ = tx.rollback().await;
-            return (StatusCode::CONFLICT, "external turn is incomplete").into_response();
-        }
-        Err(e) => {
-            tracing::error!(%e, session_id, turn_id, "save_external_turn: assistant insert failed");
+        Err(PersistExternalTurnError::Database(e)) => {
+            tracing::error!(%e, session_id, turn_id, "save_external_turn: persistence failed");
             let _ = tx.rollback().await;
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-
-    if let Err(e) = sqlx::query("UPDATE chat_sessions SET updated_at = now() WHERE session_id = $1")
-        .bind(&session_id)
-        .execute(&mut *tx)
-        .await
-    {
-        tracing::error!(%e, session_id, turn_id, "save_external_turn: session touch failed");
-        let _ = tx.rollback().await;
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
 
     if let Err(e) = tx.commit().await {
         tracing::error!(%e, session_id, turn_id, "save_external_turn: commit failed");
@@ -1135,11 +1017,15 @@ async fn save_external_turn(
     }
 
     (
-        StatusCode::CREATED,
+        if persisted.inserted {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
         Json(ExternalTurnResponse {
-            inserted: true,
-            user_message,
-            assistant_message,
+            inserted: persisted.inserted,
+            user_message: persisted.user_message,
+            assistant_message: persisted.assistant_message,
         }),
     )
         .into_response()

@@ -1396,9 +1396,6 @@ pub enum IntegrationSubCommands {
     Install {
         /// Agent to install (e.g. claude or opencode)
         agent: String,
-        /// OTLP/HTTP collector to send spans to
-        #[arg(long, value_name = "URL")]
-        otlp_endpoint: Option<String>,
         /// Report tokens, latency and cost, but omit conversation text from spans
         #[arg(long)]
         no_content: bool,
@@ -1414,22 +1411,22 @@ pub enum IntegrationSubCommands {
         #[arg(long)]
         agent: String,
     },
+    /// Validate and deliver queued coding-agent events
+    Sync,
 }
 
 pub fn dispatch_integration(cmd: IntegrationSubCommands) -> Result<()> {
     match cmd {
         IntegrationSubCommands::Status => commands::integration::status(),
-        IntegrationSubCommands::Install {
-            agent,
-            otlp_endpoint,
-            no_content,
-        } => commands::integration::install(commands::integration::InstallOptions {
-            agent_id: &agent,
-            otlp_endpoint: otlp_endpoint.as_deref(),
-            no_content,
-        }),
+        IntegrationSubCommands::Install { agent, no_content } => {
+            commands::integration::install(commands::integration::InstallOptions {
+                agent_id: &agent,
+                no_content,
+            })
+        }
         IntegrationSubCommands::Uninstall { agent } => commands::integration::uninstall(&agent),
         IntegrationSubCommands::Report { agent } => commands::integration::report(&agent),
+        IntegrationSubCommands::Sync => commands::integration::sync(),
     }
 }
 

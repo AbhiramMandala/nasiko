@@ -8,6 +8,8 @@ pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
+pub mod coding_agent_otlp;
+pub mod coding_agent_telemetry;
 pub mod flows;
 pub mod github;
 pub mod llm_configs;
@@ -249,6 +251,7 @@ where
         .merge(build_routes)
         .merge(degradable_routes)
         .merge(chat::router())
+        .merge(coding_agent_telemetry::router())
         .merge(maf::router())
         .merge(secrets::router())
         .merge(llm_configs::router())
@@ -284,10 +287,7 @@ where
     // itself via `mcp::require_delegation` instead of a user session JWT.
     let mcp_agent_gateway = Router::new()
         .nest("/api", mcp::agent_gateway_router())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            mcp::require_delegation,
-        ))
+        .layer(middleware::from_fn(mcp::require_delegation))
         .with_state(state.clone());
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());

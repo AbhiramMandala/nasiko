@@ -2,10 +2,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use nasiko_types::{
-    CapturePolicy, CodingAgentEventV1, CodingAgentTimestampQuality, CodingAgentToolAssociation,
-    CodingAgentToolCallStatus,
-};
+use nasiko_types::{CapturePolicy, CodingAgentEventV1};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -251,7 +248,8 @@ pub(crate) fn trace_payload(event: &CodingAgentEventV1) -> Value {
         "",
         "coding_agent.turn",
         1,
-        (event.turn.started_at, event.turn.ended_at),
+        event.turn.started_at,
+        event.turn.ended_at,
         root_attributes,
     )];
     spans.extend(event.turn.llm_calls.iter().map(|call| {
@@ -285,79 +283,10 @@ pub(crate) fn trace_payload(event: &CodingAgentEventV1) -> Value {
             &root_id,
             &format!("chat {}", call.model),
             3,
-            (call.started_at, call.ended_at),
+            call.started_at,
+            call.ended_at,
             attributes,
         )
-    }));
-    spans.extend(event.turn.tool_calls.iter().map(|tool| {
-        let mut attributes = common_attributes(event);
-        attributes.extend([
-            string_attr("gen_ai.operation.name", "execute_tool"),
-            string_attr("tool.call.id", &tool.id),
-            string_attr("tool.name", &tool.name),
-            string_attr("tool.kind", &tool.kind),
-            string_attr("tool.status", tool_status(tool.status)),
-            string_attr("tool.association", tool_association(tool.association)),
-            string_attr(
-                "tool.timestamp_quality",
-                timestamp_quality(tool.timestamp_quality),
-            ),
-            int_attr("tool.duration_ms", tool.duration_ms.unwrap_or(0)),
-        ]);
-        if let Some(model_call_id) = &tool.model_call_id {
-            attributes.push(string_attr("gen_ai.model_call.id", model_call_id));
-            if let Some(call) = event
-                .turn
-                .llm_calls
-                .iter()
-                .find(|call| &call.id == model_call_id)
-            {
-                attributes.extend([
-                    string_attr("gen_ai.provider.name", &call.provider),
-                    string_attr("gen_ai.request.model", &call.model),
-                ]);
-            }
-        }
-        if event.capture_policy == CapturePolicy::Content {
-            if let Some(arguments) = &tool.arguments {
-                attributes.push(string_attr("tool.arguments", &bounded_json(arguments)));
-            }
-            if let Some(output) = &tool.output {
-                attributes.push(string_attr("tool.result", &bounded_json(output)));
-            }
-            if let Some(error) = &tool.error {
-                attributes.push(string_attr(
-                    "error.message",
-                    &truncate_chars(error, MAX_CONTENT_CHARS),
-                ));
-            }
-        }
-        let started_at = tool.started_at.unwrap_or(event.turn.started_at);
-        let ended_at = tool.ended_at.unwrap_or(started_at).max(started_at);
-        let mut value = span(
-            &trace_id,
-            &scoped_id(
-                "tool-span",
-                &event.source.agent_name,
-                &event.session.id,
-                &tool.id,
-                16,
-            ),
-            &root_id,
-            &format!("execute_tool {}", tool.name),
-            1,
-            (started_at, ended_at),
-            attributes,
-        );
-        value["status"] = match tool.status {
-            CodingAgentToolCallStatus::Succeeded => json!({"code": 1}),
-            CodingAgentToolCallStatus::Failed
-            | CodingAgentToolCallStatus::Denied
-            | CodingAgentToolCallStatus::TimedOut
-            | CodingAgentToolCallStatus::Cancelled => json!({"code": 2}),
-            _ => json!({}),
-        };
-        value
     }));
     json!({
         "resourceSpans": [{
@@ -373,15 +302,17 @@ pub(crate) fn log_payload(event: &CodingAgentEventV1) -> Value {
     let input = calls
         .iter()
         .fold(0_u64, |total, call| total.saturating_add(call.input_tokens));
-    let output = calls.iter().fold(0_u64, |total, call| {
-        total.saturating_add(call.output_tokens)
-    });
+    let output = calls
+        .iter()
+        .fold(0_u64, |total, call| total.saturating_add(call.output_tokens));
     let cache_read = calls.iter().fold(0_u64, |total, call| {
         total.saturating_add(call.cache_read_tokens)
     });
-    let cache_creation = calls.iter().fold(0_u64, |total, call| {
-        total.saturating_add(call.cache_creation_tokens)
-    });
+    let cache_creation = calls
+        .iter()
+        .fold(0_u64, |total, call| {
+            total.saturating_add(call.cache_creation_tokens)
+        });
     let mut attributes = common_attributes(event);
     attributes.extend([
         string_attr("coding_agent.turn.id", &event.turn.id),
@@ -399,93 +330,24 @@ pub(crate) fn log_payload(event: &CodingAgentEventV1) -> Value {
         int_attr("gen_ai.usage.cache_read_input_tokens", cache_read),
         int_attr("gen_ai.usage.cache_creation_input_tokens", cache_creation),
     ]);
-    let root_span_id = scoped_id(
-        "root-span",
-        &event.source.agent_name,
-        &event.session.id,
-        &event.turn.id,
-        16,
-    );
-    let mut records = vec![json!({
-        "timeUnixNano": unix_nanos(event.turn.ended_at),
-        "observedTimeUnixNano": unix_nanos(event.captured_at),
-        "severityNumber": 9,
-        "severityText": "INFO",
-        "body": { "stringValue": "coding_agent.turn.completed" },
-        "attributes": attributes,
-        "traceId": trace_id_for_event(event),
-        "spanId": root_span_id,
-    })];
-    records.extend(event.turn.tool_calls.iter().map(|tool| {
-        let mut attributes = common_attributes(event);
-        attributes.extend([
-            string_attr("coding_agent.turn.id", &event.turn.id),
-            string_attr("tool.call.id", &tool.id),
-            string_attr("tool.name", &tool.name),
-            string_attr("tool.kind", &tool.kind),
-            string_attr("tool.status", tool_status(tool.status)),
-            int_attr("tool.duration_ms", tool.duration_ms.unwrap_or(0)),
-        ]);
-        if let Some(model_call_id) = &tool.model_call_id {
-            attributes.push(string_attr("gen_ai.model_call.id", model_call_id));
-        }
-        json!({
-            "timeUnixNano": unix_nanos(tool.ended_at.or(tool.started_at).unwrap_or(event.turn.ended_at)),
-            "observedTimeUnixNano": unix_nanos(event.captured_at),
-            "severityNumber": 9,
-            "severityText": "INFO",
-            "body": { "stringValue": "coding_agent.tool.completed" },
-            "attributes": attributes,
-            "traceId": trace_id_for_event(event),
-            "spanId": scoped_id("tool-span", &event.source.agent_name, &event.session.id, &tool.id, 16),
-        })
-    }));
     json!({
         "resourceLogs": [{
             "resource": { "attributes": resource_attributes(event) },
             "scopeLogs": [{
                 "scope": { "name": "nasiko-server-coding-agent" },
-                "logRecords": records
+                "logRecords": [{
+                    "timeUnixNano": unix_nanos(event.turn.ended_at),
+                    "observedTimeUnixNano": unix_nanos(event.captured_at),
+                    "severityNumber": 9,
+                    "severityText": "INFO",
+                    "body": { "stringValue": "coding_agent.turn.completed" },
+                    "attributes": attributes,
+                    "traceId": trace_id_for_event(event),
+                    "spanId": scoped_id("root-span", &event.source.agent_name, &event.session.id, &event.turn.id, 16),
+                }]
             }]
         }]
     })
-}
-
-fn tool_status(status: CodingAgentToolCallStatus) -> &'static str {
-    match status {
-        CodingAgentToolCallStatus::Pending => "pending",
-        CodingAgentToolCallStatus::Running => "running",
-        CodingAgentToolCallStatus::Succeeded => "succeeded",
-        CodingAgentToolCallStatus::Failed => "failed",
-        CodingAgentToolCallStatus::Denied => "denied",
-        CodingAgentToolCallStatus::TimedOut => "timed_out",
-        CodingAgentToolCallStatus::Cancelled => "cancelled",
-        CodingAgentToolCallStatus::Unknown => "unknown",
-    }
-}
-
-fn tool_association(association: CodingAgentToolAssociation) -> &'static str {
-    match association {
-        CodingAgentToolAssociation::Exact => "exact",
-        CodingAgentToolAssociation::Turn => "turn",
-        CodingAgentToolAssociation::Unknown => "unknown",
-    }
-}
-
-fn timestamp_quality(quality: CodingAgentTimestampQuality) -> &'static str {
-    match quality {
-        CodingAgentTimestampQuality::Exact => "exact",
-        CodingAgentTimestampQuality::Inferred => "inferred",
-        CodingAgentTimestampQuality::Receipt => "receipt",
-        CodingAgentTimestampQuality::Unknown => "unknown",
-    }
-}
-
-fn bounded_json(value: &Value) -> String {
-    truncate_chars(
-        &serde_json::to_string(value).unwrap_or_else(|_| "null".into()),
-        MAX_CONTENT_CHARS,
-    )
 }
 
 pub(crate) fn trace_id_for_event(event: &CodingAgentEventV1) -> String {
@@ -521,10 +383,10 @@ fn span(
     parent_span_id: &str,
     name: &str,
     kind: u8,
-    times: (DateTime<Utc>, DateTime<Utc>),
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
     attributes: Vec<Value>,
 ) -> Value {
-    let (started_at, ended_at) = times;
     json!({
         "traceId": trace_id, "spanId": span_id, "parentSpanId": parent_span_id,
         "name": name, "kind": kind,
@@ -592,7 +454,6 @@ mod tests {
     use chrono::TimeZone;
     use nasiko_types::{
         CODING_AGENT_EVENT_VERSION, CodingAgentLlmCall, CodingAgentSession, CodingAgentSource,
-        CodingAgentTimestampQuality, CodingAgentToolAssociation, CodingAgentToolCall,
         CodingAgentTurn, coding_agent_event_id, coding_agent_session_id,
     };
 
@@ -631,7 +492,6 @@ mod tests {
                         ended_at: end,
                     })
                     .collect(),
-                tool_calls: vec![],
             },
             capture_policy: policy,
         }
@@ -708,59 +568,5 @@ mod tests {
         let payload = trace_payload(&event);
         let value = attr(&spans(&payload)[0]["attributes"], "gen_ai.input.messages").unwrap()["stringValue"].as_str().unwrap();
         assert_eq!(value.chars().count(), MAX_CONTENT_CHARS);
-    }
-
-    #[test]
-    fn tool_spans_and_linked_logs_are_deterministic_and_policy_safe() {
-        let mut event = event(CapturePolicy::Content);
-        event.turn.tool_calls.push(CodingAgentToolCall {
-            id: "native-1".into(),
-            name: "shell".into(),
-            kind: "tool".into(),
-            model_call_id: Some("one".into()),
-            status: CodingAgentToolCallStatus::Failed,
-            arguments: Some(json!({"command": "secret-command"})),
-            output: Some(json!("secret-result")),
-            raw: None,
-            error: Some("secret-error".into()),
-            started_at: Some(event.turn.started_at),
-            ended_at: Some(event.turn.ended_at),
-            duration_ms: Some(2333),
-            association: CodingAgentToolAssociation::Exact,
-            timestamp_quality: CodingAgentTimestampQuality::Exact,
-        });
-        let trace = trace_payload(&event);
-        let tool = &spans(&trace)[3];
-        assert_eq!(tool["parentSpanId"], spans(&trace)[0]["spanId"]);
-        assert_eq!(tool["kind"], 1);
-        assert_eq!(tool["status"]["code"], 2);
-        assert_eq!(
-            attr(&tool["attributes"], "gen_ai.operation.name").unwrap()["stringValue"],
-            "execute_tool"
-        );
-        assert_eq!(trace_payload(&event), trace);
-
-        let logs = log_payload(&event);
-        let records = logs["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
-            .as_array()
-            .unwrap();
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[1]["spanId"], tool["spanId"]);
-        let encoded = serde_json::to_string(&logs).unwrap();
-        assert!(!encoded.contains("secret-command"));
-        assert!(!encoded.contains("secret-result"));
-        assert!(!encoded.contains("secret-error"));
-
-        event.capture_policy = CapturePolicy::MetadataOnly;
-        event.turn.prompt = None;
-        event.turn.response = None;
-        event.turn.tool_calls[0].arguments = None;
-        event.turn.tool_calls[0].output = None;
-        event.turn.tool_calls[0].error = None;
-        assert!(
-            !serde_json::to_string(&trace_payload(&event))
-                .unwrap()
-                .contains("error.message")
-        );
     }
 }

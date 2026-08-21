@@ -62,7 +62,7 @@ fn script_body(agent_id: &str, version: u32) -> Result<String> {
     Ok(format!(
         r#"#!/usr/bin/env bash
 # Managed by nasiko - do not edit. nasiko-hook-version: {version}
-# Reports this session's turns to Nasiko as OTel spans.
+# Captures this session's completed turns for Nasiko.
 mkdir -p {log_dir}
 {exe} integration report --agent {agent_id} >>{log} 2>&1 || true
 exit 0

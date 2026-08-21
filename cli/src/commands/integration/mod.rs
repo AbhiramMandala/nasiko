@@ -2,35 +2,29 @@
 //!
 //! `nasiko integrations` answers "what coding agents are on this machine".
 //! `nasiko integration install <id>` goes further: it registers that agent in
-//! the control plane and installs a hook so every session it runs shows up in
-//! `nasiko observe sessions` with tokens, latency and cost — the same views
-//! deployed agents get.
-//!
-//! Nothing here changes the observability read path: spans are emitted under
-//! the attribute names that path already reads (see [`otlp`]), so no server
-//! change is needed for a local session to appear.
+//! the control plane and installs a hook that durably queues completed turns
+//! for delivery to the cluster active when they were captured.
 
 mod agents;
 mod catalog;
 mod control_plane;
 mod launcher;
 mod model;
-mod otlp;
+mod queue;
 mod report;
 mod state;
+mod sync;
 
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 use agents::Agent;
 use catalog::Support;
-use state::{AgentState, DEFAULT_OTLP_ENDPOINT, IntegrationState};
+use state::{AgentState, IntegrationState};
 
 /// Options accepted by `nasiko integration install`.
 pub struct InstallOptions<'a> {
     pub agent_id: &'a str,
-    /// OTLP/HTTP collector to send spans to. Defaults to the local stack.
-    pub otlp_endpoint: Option<&'a str>,
     /// Keep prompt and response text out of exported spans.
     pub no_content: bool,
 }
@@ -72,7 +66,6 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
     require_instrumentable(agent)?;
     require_present(agent)?;
 
-    let endpoint = options.otlp_endpoint.unwrap_or(DEFAULT_OTLP_ENDPOINT);
     let spec = agent.spec();
     let created = control_plane::register_agent(agent)?;
     println!(
@@ -84,13 +77,12 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
     let artifacts = agent.install()?;
     let (script, registration) = persist_installed_artifacts(
         artifacts,
-        || save_agent_state(agent, endpoint, !options.no_content),
+        || save_agent_state(agent, !options.no_content),
         || agent.uninstall(),
     )?;
 
     println!("Installed hook              {}", tildify(&script));
     println!("Installed integration       {}", tildify(&registration));
-    println!("Reporting spans to          {endpoint}");
     println!(
         "\nStart a new {} session, then: nasiko observe sessions",
         spec.display_name
@@ -126,6 +118,10 @@ pub fn uninstall(agent_id: &str) -> Result<()> {
 /// Hook entry point — see [`report`].
 pub fn report(agent_id: &str) -> Result<()> {
     report::run(resolve(agent_id)?)
+}
+
+pub fn sync() -> Result<()> {
+    sync::run()
 }
 
 // ─── Detection ───────────────────────────────────────────────────────────────
@@ -213,14 +209,13 @@ fn require_present(agent: Agent) -> Result<()> {
     )
 }
 
-fn save_agent_state(agent: Agent, endpoint: &str, capture_content: bool) -> Result<()> {
+fn save_agent_state(agent: Agent, capture_content: bool) -> Result<()> {
     let spec = agent.spec();
     let mut settings = IntegrationState::load()?;
     settings.agents.insert(
         spec.id.to_string(),
         AgentState {
             agent_name: spec.agent_name.to_string(),
-            otlp_endpoint: endpoint.to_string(),
             capture_content,
             hook_version: agent.install_version().expect("instrumented adapter"),
         },
@@ -343,7 +338,6 @@ mod tests {
         let expected = claude().install_version().unwrap();
         let state = AgentState {
             agent_name: "claude-code".into(),
-            otlp_endpoint: DEFAULT_OTLP_ENDPOINT.into(),
             capture_content: true,
             hook_version: expected.saturating_sub(1),
         };
