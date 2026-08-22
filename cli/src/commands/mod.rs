@@ -5,6 +5,7 @@ pub mod card;
 pub mod chat;
 pub mod claude;
 pub mod cluster;
+pub mod codex;
 pub mod coding_agent_router;
 pub mod deploy;
 pub mod deployments;

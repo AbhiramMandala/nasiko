@@ -121,7 +121,7 @@ enum CpCommands {
     /// Register a CP by URL, or connect a supported coding agent
     #[command(after_help = "Config: ~/.nasiko/config.json")]
     Connect {
-        /// Control-plane URL, `claude`, or `opencode`
+        /// Control-plane URL, `claude`, `codex`, or `opencode`
         target: String,
         #[arg(long)]
         name: Option<String>,
@@ -201,12 +201,13 @@ fn main() -> Result<()> {
                 agent,
                 config,
             } => {
-                if matches!(target.as_str(), "claude" | "opencode") {
+                if matches!(target.as_str(), "claude" | "codex" | "opencode") {
                     if name.is_some() {
                         anyhow::bail!("--name applies only when connecting a control-plane URL");
                     }
                     match target.as_str() {
                         "claude" => commands::claude::connect(agent.as_deref(), config.as_deref()),
+                        "codex" => commands::codex::connect(agent.as_deref(), config.as_deref()),
                         "opencode" => {
                             commands::opencode::connect(agent.as_deref(), config.as_deref())
                         }
@@ -215,7 +216,7 @@ fn main() -> Result<()> {
                 } else {
                     if agent.is_some() || config.is_some() {
                         anyhow::bail!(
-                            "--agent and --config apply only to `nasiko connect claude|opencode`"
+                            "--agent and --config apply only to `nasiko connect claude|codex|opencode`"
                         );
                     }
                     commands::cluster::connect(&target, name.as_deref())
@@ -223,16 +224,22 @@ fn main() -> Result<()> {
             }
             CpCommands::Disconnect { target } => match target.as_str() {
                 "claude" => commands::claude::disconnect(),
+                "codex" => commands::codex::disconnect(),
                 "opencode" => commands::opencode::disconnect(),
-                _ => anyhow::bail!("unknown integration '{target}' (expected: claude or opencode)"),
+                _ => anyhow::bail!(
+                    "unknown integration '{target}' (expected: claude, codex, or opencode)"
+                ),
             },
             CpCommands::Use { name } => commands::cluster::use_cluster(&name),
             CpCommands::Clusters => commands::cluster::list(),
             CpCommands::Status { target } => match target.as_deref() {
                 Some("claude") => commands::claude::status(),
+                Some("codex") => commands::codex::status(),
                 Some("opencode") => commands::opencode::status(),
                 Some(other) => {
-                    anyhow::bail!("unknown status target '{other}' (expected: claude or opencode)")
+                    anyhow::bail!(
+                        "unknown status target '{other}' (expected: claude, codex, or opencode)"
+                    )
                 }
                 None => commands::status::status(),
             },
@@ -245,9 +252,10 @@ fn main() -> Result<()> {
             CpCommands::ClaudeToken => commands::claude::credential(),
             CpCommands::CodingAgentToken { agent } => match agent.as_str() {
                 "claude" => commands::claude::credential(),
+                "codex" => commands::codex::credential(),
                 "opencode" => commands::opencode::credential(),
                 _ => anyhow::bail!(
-                    "unknown credential target '{agent}' (expected: claude or opencode)"
+                    "unknown credential target '{agent}' (expected: claude, codex, or opencode)"
                 ),
             },
         },
@@ -294,6 +302,34 @@ mod tests {
         assert_eq!(target, "opencode");
         assert_eq!(agent.as_deref(), Some("local-agent"));
         assert_eq!(config.as_deref(), Some("production"));
+    }
+
+    #[test]
+    fn parses_codex_routing_commands() {
+        let connect = Cli::try_parse_from([
+            "nasiko", "connect", "codex", "--agent", "agent", "--config", "config",
+        ])
+        .unwrap();
+        assert!(matches!(
+            connect.command,
+            Commands::Cp(CpCommands::Connect { target, .. }) if target == "codex"
+        ));
+
+        let status = Cli::try_parse_from(["nasiko", "status", "codex"]).unwrap();
+        assert!(matches!(
+            status.command,
+            Commands::Cp(CpCommands::Status { target }) if target.as_deref() == Some("codex")
+        ));
+        let disconnect = Cli::try_parse_from(["nasiko", "disconnect", "codex"]).unwrap();
+        assert!(matches!(
+            disconnect.command,
+            Commands::Cp(CpCommands::Disconnect { target }) if target == "codex"
+        ));
+        let helper = Cli::try_parse_from(["nasiko", "__coding-agent-token", "codex"]).unwrap();
+        assert!(matches!(
+            helper.command,
+            Commands::Cp(CpCommands::CodingAgentToken { agent }) if agent == "codex"
+        ));
     }
 
     #[test]

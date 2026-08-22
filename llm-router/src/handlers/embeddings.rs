@@ -64,6 +64,8 @@ async fn embeddings_core(
             provider,
             model,
             usage: resp.usage.clone(),
+            cached_tokens: None,
+            reasoning_tokens: None,
             latency_ms,
             streaming: false,
             finish_reason: None,

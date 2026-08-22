@@ -31,6 +31,23 @@ use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::routing::{self, BoundarySignals, Mode, RouteInputs};
 use crate::usage::{self, UsageRecord};
 
+pub(crate) struct RoutedRequest {
+    pub agent_id: String,
+    pub owner_id: String,
+    pub resolved: crate::resolver::ResolvedConfig,
+    pub flow_id: Option<String>,
+}
+
+pub(crate) fn authenticate_request(
+    headers: &HeaderMap,
+    cfg: &crate::config::GatewayConfig,
+) -> Result<(String, String), GatewayError> {
+    let authz = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    verify_agent_jwt(authz, cfg)
+}
+
 /// Axum handler for the OpenAI surface (`POST /v1/chat/completions`).
 pub async fn chat_completions(
     State(ctx): State<LlmRouterCtx>,
@@ -90,8 +107,7 @@ async fn chat_core(
     format: InboundFormat,
     force_stream: Option<bool>,
 ) -> Result<Response, GatewayError> {
-    let authz = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
-    let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
+    let (agent_id, owner_id) = authenticate_request(headers, &ctx.cfg)?;
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id, %owner_id, ?format,
@@ -119,14 +135,85 @@ async fn chat_core(
         provider: Some(format.provider_label()),
         model: req.model.as_deref(),
     };
-    let mut resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
-
-    // Model routing: the resolver fixed the provider/key/params; the router may override
-    // the *model* at a conversation boundary (else it stays the resolved model). Signals are
-    // derived at the gateway from the agent-forwarded traceparent; no trace context ⇒ inert,
-    // so the resolved model is used (behaviour identical to before this layer).
-    let signals = derive_boundary_signals(headers, &ctx.db).await;
     let query = routing::latest_user_query(&req.messages);
+    let routed =
+        resolve_routed_request(ctx, store, headers, agent_id, owner_id, hint, query).await?;
+    let RoutedRequest {
+        agent_id,
+        owner_id,
+        resolved,
+        flow_id,
+    } = routed;
+    tracing::info!(
+        target: "nasiko::llm_router::chat",
+        %agent_id,
+        litellm_model = %resolved.litellm_model,
+        provider = %resolved.provider,
+        fallback_models = ?resolved.fallback_models,
+        streaming = req.is_streaming(),
+        "chat_core: final model selected — dispatching to provider"
+    );
+
+    let started = Instant::now();
+    let platform_paid = resolved.platform_paid;
+
+    if req.is_streaming() {
+        let (stream, (provider, model)) =
+            fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req).await?;
+        let renderer = inbound.chat_stream_renderer();
+        return stream_chat(StreamChatArgs {
+            ctx,
+            renderer,
+            provider_stream: stream,
+            provider,
+            model,
+            agent_id,
+            owner_id,
+            started,
+            flow_id,
+            platform_paid,
+        });
+    }
+
+    // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
+    let (resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req).await?;
+    let latency_ms = started.elapsed().as_millis() as i64;
+
+    usage::spawn_log(
+        ctx.db.clone(),
+        UsageRecord {
+            owner_id,
+            agent_id,
+            operation_type: "direct_llm",
+            provider,
+            model,
+            usage: resp.usage.clone(),
+            cached_tokens: None,
+            reasoning_tokens: None,
+            latency_ms,
+            streaming: false,
+            finish_reason: resp.choices.first().and_then(|c| c.finish_reason.clone()),
+            flow_id,
+            platform_paid,
+        },
+    );
+
+    Ok(Json(inbound.render_chat_response(resp)).into_response())
+}
+
+pub(crate) async fn resolve_routed_request(
+    ctx: &LlmRouterCtx,
+    store: &dyn RegistryStore,
+    headers: &HeaderMap,
+    agent_id: String,
+    owner_id: String,
+    hint: RequestHint<'_>,
+    query: Option<String>,
+) -> Result<RoutedRequest, GatewayError> {
+    let mut resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
+    // Model routing: the resolver fixed provider/key/params; routing may override only model.
+    let signals = derive_boundary_signals(headers, &ctx.db).await;
     let decision = routing::route_model(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
@@ -175,66 +262,16 @@ async fn chat_core(
         );
         resolved.fallback_models.clear();
     }
-    tracing::info!(
-        target: "nasiko::llm_router::chat",
-        %agent_id,
-        litellm_model = %resolved.litellm_model,
-        provider = %resolved.provider,
-        fallback_models = ?resolved.fallback_models,
-        streaming = req.is_streaming(),
-        "chat_core: final model selected — dispatching to provider"
-    );
-
-    let started = Instant::now();
-    // Attribution for the usage row: the flow id this call belongs to (from the
-    // agent-forwarded traceparent) and who paid for it.
     let flow_id = headers
         .get(TRACEPARENT_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(parse_flow_id);
-    let platform_paid = resolved.platform_paid;
-
-    if req.is_streaming() {
-        let (stream, (provider, model)) =
-            fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req).await?;
-        let renderer = inbound.chat_stream_renderer();
-        return stream_chat(StreamChatArgs {
-            ctx,
-            renderer,
-            provider_stream: stream,
-            provider,
-            model,
-            agent_id,
-            owner_id,
-            started,
-            flow_id,
-            platform_paid,
-        });
-    }
-
-    // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) =
-        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req).await?;
-    let latency_ms = started.elapsed().as_millis() as i64;
-
-    usage::spawn_log(
-        ctx.db.clone(),
-        UsageRecord {
-            owner_id,
-            agent_id,
-            operation_type: "direct_llm",
-            provider,
-            model,
-            usage: resp.usage.clone(),
-            latency_ms,
-            streaming: false,
-            finish_reason: resp.choices.first().and_then(|c| c.finish_reason.clone()),
-            flow_id,
-            platform_paid,
-        },
-    );
-
-    Ok(Json(inbound.render_chat_response(resp)).into_response())
+    Ok(RoutedRequest {
+        agent_id,
+        owner_id,
+        resolved,
+        flow_id,
+    })
 }
 
 /// Derive the model-routing [`BoundarySignals`] for this request (S5).
@@ -432,6 +469,8 @@ impl Drop for UsageGuard {
                 provider: self.provider.clone(),
                 model: self.model.clone(),
                 usage: st.usage.clone(),
+                cached_tokens: None,
+                reasoning_tokens: None,
                 latency_ms: self.started.elapsed().as_millis() as i64,
                 streaming: true,
                 finish_reason: st.finish_reason.clone(),

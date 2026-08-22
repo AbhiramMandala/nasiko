@@ -23,6 +23,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use tower_http::decompression::RequestDecompressionLayer;
 
 pub mod auth;
 pub mod config;
@@ -186,6 +187,7 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
             "/v1/chat/completions",
             post(handlers::chat::chat_completions),
         )
+        .route("/v1/responses", post(handlers::responses::responses))
         // Anthropic Messages surface — an Anthropic-SDK agent (`ANTHROPIC_BASE_URL`)
         // POSTs here; the inbound parser normalizes to the same IR (P2.3).
         .route("/v1/messages", post(handlers::chat::messages))
@@ -199,9 +201,48 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
         .route("/v1/embeddings", post(handlers::embeddings::embeddings))
         .route("/v1/models", get(handlers::models::models))
         .with_state(ctx)
+        .layer(RequestDecompressionLayer::new())
 }
 
 /// `GET /v1/health` → `{"status":"ok"}`.
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode};
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use serde_json::{Value, json};
+    use std::future::poll_fn;
+    use tower::Service;
+    use tower_http::decompression::RequestDecompressionLayer;
+
+    #[tokio::test]
+    async fn request_decompression_accepts_codex_zstd_json() {
+        async fn echo(Json(value): Json<Value>) -> Json<Value> {
+            Json(value)
+        }
+
+        let mut app = Router::new()
+            .route("/responses", post(echo))
+            .layer(RequestDecompressionLayer::new());
+        let expected =
+            json!({"model":"gpt-5.4","stream":true,"input":[{"role":"user","content":"hello"}]});
+        let compressed = zstd::stream::encode_all(expected.to_string().as_bytes(), 1).unwrap();
+        let request = Request::post("/responses")
+            .header("content-type", "application/json")
+            .header("content-encoding", "zstd")
+            .body(Body::from(compressed))
+            .unwrap();
+        poll_fn(|context| <Router as Service<Request<Body>>>::poll_ready(&mut app, context))
+            .await
+            .unwrap();
+        let response = app.call(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
+    }
 }

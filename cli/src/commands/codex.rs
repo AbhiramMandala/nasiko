@@ -67,16 +67,13 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
             };
         }
     };
-    let provider = prepared.resolved_config["provider"]
-        .as_str()
-        .expect("provider was validated during installation");
     println!(
-        "Connected Codex routing to Nasiko ({}, {provider}/{model}).",
+        "Connected Codex routing to Nasiko ({}, openai/{model}).",
         prepared.binding.cluster
     );
     println!("Config:                    {}", config_path.display());
     println!("Provider:                  nasiko ({model})");
-    println!("Session reporting is separate: nasiko agents install codex");
+    println!("Session reporting is separate: nasiko integration install codex");
     Ok(())
 }
 
@@ -85,7 +82,7 @@ fn install_prepared(
     codex: &Path,
     executable: &Path,
 ) -> Result<(PathBuf, String)> {
-    let model = responses_model(&prepared.resolved_config)?.to_string();
+    let model = openai_model(&prepared.resolved_config)?.to_string();
     let config_path = config_path();
     let original_config = fs::read(&config_path).ok();
     let mut document = read_config(&config_path)?;
@@ -123,13 +120,15 @@ fn install_prepared(
     Ok((config_path, model))
 }
 
-fn responses_model(config: &serde_json::Value) -> Result<&str> {
+fn openai_model(config: &serde_json::Value) -> Result<&str> {
     let provider = config
         .get("provider")
         .and_then(serde_json::Value::as_str)
         .context("resolved Nasiko LLM config is missing a provider")?;
-    if !matches!(provider, "openai" | "anthropic" | "gemini") {
-        bail!("Codex Responses routing does not support provider '{provider}'");
+    if provider != "openai" {
+        bail!(
+            "Codex Responses routing supports only provider 'openai'; resolved provider was '{provider}'"
+        );
     }
     config
         .get("model")
@@ -139,12 +138,11 @@ fn responses_model(config: &serde_json::Value) -> Result<&str> {
         .context("resolved Nasiko LLM config is missing a model")
 }
 
-pub fn disconnect(force: bool) -> Result<()> {
+pub fn disconnect() -> Result<()> {
     let Some(state) = load_state()? else {
         println!("Codex routing: not connected");
         return Ok(());
     };
-    coding_agent_router::disconnect_preflight("Codex", &["codex"], force)?;
     let mut document = read_config(&state.config_path)?;
     restore_if_unchanged(
         &mut document,
@@ -172,7 +170,6 @@ pub fn disconnect(force: bool) -> Result<()> {
     fs::remove_file(state_path()).context("failed to remove Codex routing state")?;
     println!("Disconnected Codex routing from Nasiko.");
     println!("Session reporting, hooks, auth, history, and the registered agent were kept.");
-    println!("Restart Codex so the restored provider settings take effect.");
     Ok(())
 }
 
@@ -624,23 +621,18 @@ base_url = "https://user.example"
     }
 
     #[test]
-    fn codex_provider_validation_accepts_responses_providers() {
-        for (provider, model) in [
-            ("openai", "gpt-5.4"),
-            ("anthropic", "claude-opus-4"),
-            ("gemini", "gemini-2.5-pro"),
-        ] {
-            assert_eq!(
-                responses_model(&serde_json::json!({"provider":provider,"model":model})).unwrap(),
-                model
-            );
-        }
+    fn codex_provider_validation_accepts_only_openai() {
+        assert_eq!(
+            openai_model(&serde_json::json!({"provider":"openai","model":"gpt-5.4"})).unwrap(),
+            "gpt-5.4"
+        );
         let error =
-            responses_model(&serde_json::json!({"provider":"other","model":"m"})).unwrap_err();
+            openai_model(&serde_json::json!({"provider":"anthropic","model":"claude-opus-4"}))
+                .unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("does not support provider 'other'")
+                .contains("supports only provider 'openai'")
         );
     }
 
