@@ -200,7 +200,7 @@ fn warn_attempt(attempt: &ResolvedConfig, err: &ProviderError, i: usize, total: 
 /// model. Asks the provider whether `err` names a droppable param; if so and it isn't
 /// one we've already dropped (and we're under the cap), strips it from the working
 /// request + config and records it. Returns `true` when the caller should retry.
-fn try_drop_param(
+pub(crate) fn try_drop_param(
     provider: &dyn ProviderClient,
     err: &ProviderError,
     req: &mut ChatRequest,

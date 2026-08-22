@@ -67,8 +67,11 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
             };
         }
     };
+    let provider = prepared.resolved_config["provider"]
+        .as_str()
+        .expect("provider was validated during installation");
     println!(
-        "Connected Codex routing to Nasiko ({}, openai/{model}).",
+        "Connected Codex routing to Nasiko ({}, {provider}/{model}).",
         prepared.binding.cluster
     );
     println!("Config:                    {}", config_path.display());
@@ -82,7 +85,7 @@ fn install_prepared(
     codex: &Path,
     executable: &Path,
 ) -> Result<(PathBuf, String)> {
-    let model = openai_model(&prepared.resolved_config)?.to_string();
+    let model = responses_model(&prepared.resolved_config)?.to_string();
     let config_path = config_path();
     let original_config = fs::read(&config_path).ok();
     let mut document = read_config(&config_path)?;
@@ -120,15 +123,13 @@ fn install_prepared(
     Ok((config_path, model))
 }
 
-fn openai_model(config: &serde_json::Value) -> Result<&str> {
+fn responses_model(config: &serde_json::Value) -> Result<&str> {
     let provider = config
         .get("provider")
         .and_then(serde_json::Value::as_str)
         .context("resolved Nasiko LLM config is missing a provider")?;
-    if provider != "openai" {
-        bail!(
-            "Codex Responses routing supports only provider 'openai'; resolved provider was '{provider}'"
-        );
+    if !matches!(provider, "openai" | "anthropic" | "gemini") {
+        bail!("Codex Responses routing does not support provider '{provider}'");
     }
     config
         .get("model")
@@ -621,18 +622,23 @@ base_url = "https://user.example"
     }
 
     #[test]
-    fn codex_provider_validation_accepts_only_openai() {
-        assert_eq!(
-            openai_model(&serde_json::json!({"provider":"openai","model":"gpt-5.4"})).unwrap(),
-            "gpt-5.4"
-        );
+    fn codex_provider_validation_accepts_responses_providers() {
+        for (provider, model) in [
+            ("openai", "gpt-5.4"),
+            ("anthropic", "claude-opus-4"),
+            ("gemini", "gemini-2.5-pro"),
+        ] {
+            assert_eq!(
+                responses_model(&serde_json::json!({"provider":provider,"model":model})).unwrap(),
+                model
+            );
+        }
         let error =
-            openai_model(&serde_json::json!({"provider":"anthropic","model":"claude-opus-4"}))
-                .unwrap_err();
+            responses_model(&serde_json::json!({"provider":"other","model":"m"})).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("supports only provider 'openai'")
+                .contains("does not support provider 'other'")
         );
     }
 

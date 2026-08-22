@@ -31,6 +31,7 @@ use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::routing::{self, BoundarySignals, Mode, RouteInputs};
 use crate::usage::{self, UsageRecord};
 
+#[derive(Clone)]
 pub(crate) struct RoutedRequest {
     pub agent_id: String,
     pub owner_id: String,

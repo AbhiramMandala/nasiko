@@ -1,4 +1,7 @@
-//! Native OpenAI Responses forwarding for Codex and other Responses clients.
+//! OpenAI Responses endpoint for Codex and other Responses clients.
+//!
+//! OpenAI requests remain native passthroughs. Anthropic and Gemini requests use
+//! the documented lossy translation and carry `x-nasiko-responses-translation`.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -15,12 +18,16 @@ use serde_json::{Value, json};
 use super::chat::{RoutedRequest, authenticate_request, resolve_routed_request};
 use crate::LlmRouterCtx;
 use crate::error::GatewayError;
+use crate::inbound::responses::{
+    ResponsesRequest, ResponsesStreamRenderer, TerminalOutcome, parse_request, render_response,
+};
 use crate::ir::Usage;
-use crate::providers::fallback;
+use crate::providers::{ProviderError, fallback, provider_for};
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint};
 use crate::usage::{self, UsageRecord};
 
 const MAX_INSPECTION_BYTES: usize = 1024 * 1024;
+const TRANSLATION_HEADER: &str = "x-nasiko-responses-translation";
 const REQUEST_HEADERS: &[&str] = &[
     "x-codex-turn-state",
     "x-codex-turn-metadata",
@@ -112,30 +119,45 @@ async fn responses_core(
         query,
     )
     .await?;
-    if routed.resolved.provider != "openai" {
-        return Err(GatewayError::BadRequest(format!(
-            "Responses routing currently supports only provider 'openai'; resolved provider was '{}'",
-            routed.resolved.provider
-        )));
-    }
-
-    validate_fallbacks(&routed)?;
-    let object = body.as_object_mut().expect("Responses body was validated");
-    object.insert("model".into(), Value::String(routed.resolved.model.clone()));
-    if let Some(temperature) = routed.resolved.temperature {
-        object.insert("temperature".into(), json!(temperature));
-    }
-    if let Some(max_tokens) = routed.resolved.max_tokens {
-        object.insert("max_output_tokens".into(), json!(max_tokens));
-    }
-
     let attempts = fallback::build_attempts(&routed.resolved, &ctx.cfg);
+    let native_primary = routed.resolved.provider == "openai";
+    let mut translated = if native_primary {
+        None
+    } else {
+        Some(parse_request(&body)?)
+    };
     let mut last_response = None;
     let mut last_error = None;
     for attempt in attempts {
-        body.as_object_mut()
-            .expect("Responses body was validated")
-            .insert("model".into(), Value::String(attempt.model.clone()));
+        let native = native_primary && attempt.provider == "openai";
+        if !native {
+            let parsed = match translated.as_ref() {
+                Some(parsed) => parsed,
+                None => {
+                    translated = Some(parse_request(&body)?);
+                    translated.as_ref().expect("inserted above")
+                }
+            };
+            let started = Instant::now();
+            match translated_attempt(ctx, &routed, &attempt, parsed, started).await {
+                Ok(response) => return Ok(response),
+                Err(TranslatedAttemptError::Terminal(response)) => return Ok(response),
+                Err(TranslatedAttemptError::Configuration(error)) => return Err(error),
+                Err(TranslatedAttemptError::Retry(error)) => {
+                    last_error = Some(error.into());
+                    continue;
+                }
+            }
+        }
+
+        let object = body.as_object_mut().expect("Responses body was validated");
+        object.insert("model".into(), Value::String(attempt.model.clone()));
+        if let Some(temperature) = attempt.temperature {
+            object.insert("temperature".into(), json!(temperature));
+        }
+        if let Some(max_tokens) = attempt.max_tokens {
+            object.insert("max_output_tokens".into(), json!(max_tokens));
+        }
         let started = Instant::now();
         let mut guard = AttemptGuard::new(ctx, &routed, &attempt, started, stream);
         let mut request = ctx
@@ -173,9 +195,18 @@ async fn responses_core(
         let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
         return if stream {
             guard.disarm();
-            stream_response(ctx, upstream, routed, attempt.model, started, status)
+            stream_response(ctx, upstream, routed, attempt.clone(), started, status)
         } else {
-            nonstream_response(ctx, upstream, routed, attempt.model, started, status, guard).await
+            nonstream_response(
+                ctx,
+                upstream,
+                routed,
+                attempt.clone(),
+                started,
+                status,
+                guard,
+            )
+            .await
         };
     }
     last_response.map(Ok).unwrap_or_else(|| {
@@ -187,17 +218,205 @@ fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
     error.is_connect() || error.is_timeout()
 }
 
-fn validate_fallbacks(routed: &RoutedRequest) -> Result<(), GatewayError> {
-    for fallback in &routed.resolved.fallback_models {
-        if let Some((provider, _)) = fallback.split_once('/')
-            && provider != "openai"
-        {
-            return Err(GatewayError::BadRequest(format!(
-                "Responses fallback '{fallback}' is unsupported: cross-provider fallbacks are not allowed"
-            )));
+enum TranslatedAttemptError {
+    Terminal(Response),
+    Configuration(GatewayError),
+    Retry(ProviderError),
+}
+
+async fn translated_attempt(
+    ctx: &LlmRouterCtx,
+    routed: &RoutedRequest,
+    attempt: &crate::resolver::ResolvedConfig,
+    parsed: &ResponsesRequest,
+    started: Instant,
+) -> Result<Response, TranslatedAttemptError> {
+    if !parsed.advisory_fields.is_empty() {
+        tracing::warn!(
+            provider = %attempt.provider,
+            advisory_fields = ?parsed.advisory_fields,
+            "lossy Responses translation accepted advisory controls"
+        );
+    }
+    let mut guard = AttemptGuard::new(ctx, routed, attempt, started, parsed.stream);
+    let provider = provider_for(&attempt.provider, &ctx.http, &ctx.cfg).map_err(|error| {
+        guard.fail("routing", &error);
+        TranslatedAttemptError::Configuration(error)
+    })?;
+    let mut request = parsed.chat.clone();
+    let mut config = attempt.clone();
+    let mut dropped = Vec::new();
+    loop {
+        if parsed.stream {
+            match provider.chat_stream(&request, &config).await {
+                Ok(stream) => {
+                    let response =
+                        translated_stream_response(ctx, routed, attempt, parsed, stream, started)
+                            .map_err(|error| {
+                            guard.fail("stream_setup", &error);
+                            TranslatedAttemptError::Retry(ProviderError::Parse(error.to_string()))
+                        })?;
+                    guard.disarm();
+                    return Ok(response);
+                }
+                Err(error) => {
+                    if fallback::try_drop_param(
+                        &*provider,
+                        &error,
+                        &mut request,
+                        &mut config,
+                        &mut dropped,
+                    ) {
+                        continue;
+                    }
+                    guard.fail("provider", &error);
+                    return Err(classify_translated_error(error));
+                }
+            }
+        } else {
+            match provider.chat(&request, &config).await {
+                Ok(chat) => {
+                    let finish_reason = chat
+                        .choices
+                        .first()
+                        .and_then(|choice| choice.finish_reason.clone());
+                    let usage = chat.usage.clone().map(|usage| ResponseUsage {
+                        usage,
+                        cached_tokens: None,
+                        reasoning_tokens: None,
+                    });
+                    let value = render_response(chat, &attempt.model, &parsed.tool_kinds).map_err(
+                        |error| {
+                            guard.fail("render", &error);
+                            classify_translated_error(ProviderError::Parse(error.to_string()))
+                        },
+                    )?;
+                    let finish_reason = response_outcome(&value)
+                        .map(outcome_finish_reason)
+                        .or(finish_reason);
+                    guard.disarm();
+                    log_response_usage(
+                        ctx,
+                        routed.clone(),
+                        attempt,
+                        started,
+                        false,
+                        usage,
+                        finish_reason,
+                    );
+                    return Ok(mark_lossy(Json(value).into_response()));
+                }
+                Err(error) => {
+                    if fallback::try_drop_param(
+                        &*provider,
+                        &error,
+                        &mut request,
+                        &mut config,
+                        &mut dropped,
+                    ) {
+                        continue;
+                    }
+                    guard.fail("provider", &error);
+                    return Err(classify_translated_error(error));
+                }
+            }
         }
     }
-    Ok(())
+}
+
+fn classify_translated_error(error: ProviderError) -> TranslatedAttemptError {
+    if error.retryable() {
+        return TranslatedAttemptError::Retry(error);
+    }
+    let (status, message) = match &error {
+        ProviderError::Status {
+            status, message, ..
+        } if (400..500).contains(status) => (
+            StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_REQUEST),
+            message.clone(),
+        ),
+        _ => (StatusCode::BAD_GATEWAY, error.to_string()),
+    };
+    TranslatedAttemptError::Terminal(mark_lossy(responses_error(
+        status,
+        message,
+        if status.is_client_error() {
+            "invalid_request_error"
+        } else {
+            "upstream_error"
+        },
+    )))
+}
+
+fn translated_stream_response(
+    ctx: &LlmRouterCtx,
+    routed: &RoutedRequest,
+    attempt: &crate::resolver::ResolvedConfig,
+    parsed: &ResponsesRequest,
+    provider_stream: futures::stream::BoxStream<
+        'static,
+        Result<crate::ir::ChatChunk, ProviderError>,
+    >,
+    started: Instant,
+) -> Result<Response, GatewayError> {
+    let usage_state = Arc::new(Mutex::new(ResponseStreamState::default()));
+    let guard = ResponsesUsageGuard {
+        ctx: ctx.clone(),
+        routed: Some((routed.clone(), attempt.clone())),
+        started,
+        state: Arc::clone(&usage_state),
+    };
+    let model = attempt.model.clone();
+    let mut renderer = ResponsesStreamRenderer::new(model.clone(), parsed.tool_kinds.clone());
+    let stream = async_stream::stream! {
+        let _guard = guard;
+        for frame in renderer.start() { yield Ok::<String, std::io::Error>(frame); }
+        futures::pin_mut!(provider_stream);
+        while let Some(item) = provider_stream.next().await {
+            match item {
+                Ok(mut chunk) => {
+                    chunk.model = model.clone();
+                    if let Some(usage) = chunk.usage.clone() {
+                        usage_state.lock().unwrap_or_else(|error| error.into_inner()).details = Some(ResponseUsage {
+                            usage,
+                            cached_tokens: None,
+                            reasoning_tokens: None,
+                        });
+                    }
+                    if let Some(reason) = chunk.choices.first().and_then(|choice| choice.finish_reason.clone()) {
+                        usage_state.lock().unwrap_or_else(|error| error.into_inner()).finish_reason = Some(reason);
+                    }
+                    for frame in renderer.render(chunk) { yield Ok(frame); }
+                }
+                Err(error) => {
+                    usage_state.lock().unwrap_or_else(|error| error.into_inner()).finish_reason = Some("failed:stream".into());
+                    for frame in renderer.fail(error.to_string()) { yield Ok(frame); }
+                    return;
+                }
+            }
+        }
+        for frame in renderer.finish() { yield Ok(frame); }
+        if let Some(outcome) = renderer.outcome() {
+            usage_state.lock().unwrap_or_else(|error| error.into_inner()).finish_reason =
+                Some(outcome_finish_reason(outcome));
+        }
+    };
+    Response::builder()
+        .header(CONTENT_TYPE, "text/event-stream")
+        .header(CACHE_CONTROL, "no-cache")
+        .header(TRANSLATION_HEADER, "lossy")
+        .body(Body::from_stream(stream))
+        .map_err(|error| {
+            GatewayError::Internal(format!("failed to build Responses stream: {error}"))
+        })
+}
+
+fn mark_lossy(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        TRANSLATION_HEADER,
+        "lossy".parse().expect("static header value"),
+    );
+    response
 }
 
 fn forward_request_headers(
@@ -216,7 +435,7 @@ async fn nonstream_response(
     ctx: &LlmRouterCtx,
     upstream: reqwest::Response,
     routed: RoutedRequest,
-    model: String,
+    attempt: crate::resolver::ResolvedConfig,
     started: Instant,
     status: StatusCode,
     mut guard: AttemptGuard,
@@ -233,8 +452,20 @@ async fn nonstream_response(
     let details = parsed
         .as_ref()
         .and_then(|value| response_usage(value.get("usage")));
+    let finish_reason = parsed
+        .as_ref()
+        .and_then(response_outcome)
+        .map(outcome_finish_reason);
     guard.disarm();
-    log_response_usage(ctx, routed, model, started, false, details);
+    log_response_usage(
+        ctx,
+        routed,
+        &attempt,
+        started,
+        false,
+        details,
+        finish_reason,
+    );
     build_success_response(status, &headers, Body::from(bytes))
 }
 
@@ -242,15 +473,15 @@ fn stream_response(
     ctx: &LlmRouterCtx,
     upstream: reqwest::Response,
     routed: RoutedRequest,
-    model: String,
+    attempt: crate::resolver::ResolvedConfig,
     started: Instant,
     status: StatusCode,
 ) -> Result<Response, GatewayError> {
     let headers = upstream.headers().clone();
-    let state = Arc::new(Mutex::new(None));
+    let state = Arc::new(Mutex::new(ResponseStreamState::default()));
     let guard = ResponsesUsageGuard {
         ctx: ctx.clone(),
-        routed: Some((routed, model)),
+        routed: Some((routed, attempt)),
         started,
         state: Arc::clone(&state),
     };
@@ -335,11 +566,11 @@ struct SseInspector {
     event: Vec<u8>,
     oversized: bool,
     separator_tail: Vec<u8>,
-    state: Arc<Mutex<Option<ResponseUsage>>>,
+    state: Arc<Mutex<ResponseStreamState>>,
 }
 
 impl SseInspector {
-    fn new(state: Arc<Mutex<Option<ResponseUsage>>>) -> Self {
+    fn new(state: Arc<Mutex<ResponseStreamState>>) -> Self {
         Self {
             event: Vec::new(),
             oversized: false,
@@ -397,7 +628,7 @@ fn separator_len_at_end(buffer: &[u8]) -> Option<usize> {
     }
 }
 
-fn inspect_event(event: &[u8], state: &Arc<Mutex<Option<ResponseUsage>>>) {
+fn inspect_event(event: &[u8], state: &Arc<Mutex<ResponseStreamState>>) {
     let text = String::from_utf8_lossy(event);
     let data = text
         .lines()
@@ -410,15 +641,48 @@ fn inspect_event(event: &[u8], state: &Arc<Mutex<Option<ResponseUsage>>>) {
     let Ok(value) = serde_json::from_str::<Value>(&data) else {
         return;
     };
-    if value.get("type").and_then(Value::as_str) != Some("response.completed") {
+    let Some(outcome) = terminal_event_outcome(value.get("type").and_then(Value::as_str)) else {
         return;
-    }
+    };
     let details = value
         .get("response")
         .and_then(|response| response_usage(response.get("usage")));
-    if let Some(details) = details {
-        *state.lock().unwrap_or_else(|error| error.into_inner()) = Some(details);
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    state.details = details;
+    state.finish_reason = Some(outcome_finish_reason(outcome));
+}
+
+fn terminal_event_outcome(kind: Option<&str>) -> Option<TerminalOutcome> {
+    match kind {
+        Some("response.completed") => Some(TerminalOutcome::Completed),
+        Some("response.incomplete") => Some(TerminalOutcome::Incomplete),
+        Some("response.failed") => Some(TerminalOutcome::Failed),
+        _ => None,
     }
+}
+
+fn response_outcome(response: &Value) -> Option<TerminalOutcome> {
+    match response.get("status").and_then(Value::as_str) {
+        Some("completed") => Some(TerminalOutcome::Completed),
+        Some("incomplete") => Some(TerminalOutcome::Incomplete),
+        Some("failed") => Some(TerminalOutcome::Failed),
+        _ => None,
+    }
+}
+
+fn outcome_finish_reason(outcome: TerminalOutcome) -> String {
+    match outcome {
+        TerminalOutcome::Completed => "completed",
+        TerminalOutcome::Incomplete => "incomplete",
+        TerminalOutcome::Failed => "failed:response",
+    }
+    .into()
+}
+
+#[derive(Clone, Default)]
+struct ResponseStreamState {
+    details: Option<ResponseUsage>,
+    finish_reason: Option<String>,
 }
 
 #[derive(Clone)]
@@ -449,22 +713,30 @@ fn response_usage(value: Option<&Value>) -> Option<ResponseUsage> {
 
 struct ResponsesUsageGuard {
     ctx: LlmRouterCtx,
-    routed: Option<(RoutedRequest, String)>,
+    routed: Option<(RoutedRequest, crate::resolver::ResolvedConfig)>,
     started: Instant,
-    state: Arc<Mutex<Option<ResponseUsage>>>,
+    state: Arc<Mutex<ResponseStreamState>>,
 }
 
 impl Drop for ResponsesUsageGuard {
     fn drop(&mut self) {
-        let Some((routed, model)) = self.routed.take() else {
+        let Some((routed, attempt)) = self.routed.take() else {
             return;
         };
-        let details = self
+        let state = self
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        log_response_usage(&self.ctx, routed, model, self.started, true, details);
+        log_response_usage(
+            &self.ctx,
+            routed,
+            &attempt,
+            self.started,
+            true,
+            state.details,
+            state.finish_reason,
+        );
     }
 }
 
@@ -489,7 +761,7 @@ impl AttemptGuard {
                 owner_id: routed.owner_id.clone(),
                 agent_id: routed.agent_id.clone(),
                 operation_type: "direct_llm",
-                provider: "openai".into(),
+                provider: attempt.provider.clone(),
                 model: attempt.model.clone(),
                 usage: None,
                 cached_tokens: None,
@@ -538,10 +810,11 @@ impl Drop for AttemptGuard {
 fn log_response_usage(
     ctx: &LlmRouterCtx,
     routed: RoutedRequest,
-    model: String,
+    attempt: &crate::resolver::ResolvedConfig,
     started: Instant,
     streaming: bool,
     details: Option<ResponseUsage>,
+    finish_reason: Option<String>,
 ) {
     let cached_tokens = details.as_ref().and_then(|details| details.cached_tokens);
     let reasoning_tokens = details
@@ -553,16 +826,16 @@ fn log_response_usage(
             owner_id: routed.owner_id,
             agent_id: routed.agent_id,
             operation_type: "direct_llm",
-            provider: "openai".into(),
-            model,
+            provider: attempt.provider.clone(),
+            model: attempt.model.clone(),
             usage: details.map(|details| details.usage),
             cached_tokens,
             reasoning_tokens,
             latency_ms: started.elapsed().as_millis() as i64,
             streaming,
-            finish_reason: None,
+            finish_reason,
             flow_id: routed.flow_id,
-            platform_paid: routed.resolved.platform_paid,
+            platform_paid: attempt.platform_paid,
         },
     );
 }
@@ -687,14 +960,18 @@ mod tests {
     }
 
     fn ctx(base: String) -> LlmRouterCtx {
+        let provider_base = base.clone();
         LlmRouterCtx {
             db: PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             http: reqwest::Client::new(),
             cfg: Arc::new(GatewayConfig {
                 agent_jwt_secret: SECRET.into(),
                 openai_api_base: base,
+                anthropic_api_base: provider_base.clone(),
+                gemini_api_base: provider_base,
                 platform_openai_api_key: "upstream-key".into(),
                 platform_anthropic_api_key: "anthropic-key".into(),
+                platform_gemini_api_key: "gemini-key".into(),
                 ..Default::default()
             }),
             cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
@@ -803,6 +1080,7 @@ mod tests {
         );
         assert_eq!(response.headers()["openai-model"], "resolved-model");
         assert_eq!(response.headers()["x-ratelimit-remaining-requests"], "9");
+        assert!(!response.headers().contains_key(TRANSLATION_HEADER));
         let value: Value = serde_json::from_slice(&body(response).await).unwrap();
         assert_eq!(value["id"], "resp_1");
         request.assert_async().await;
@@ -836,22 +1114,315 @@ mod tests {
         .unwrap();
         assert_eq!(response.headers()[CONTENT_TYPE], "text/event-stream");
         assert_eq!(response.headers()["x-codex-turn-state"], "turn-state-1");
+        assert!(!response.headers().contains_key(TRANSLATION_HEADER));
         assert_eq!(body(response).await, sse.as_bytes());
         request.assert_async().await;
     }
 
     #[tokio::test]
-    async fn unsupported_provider_and_upstream_errors_are_explicit() {
-        let error = responses_core(
-            &ctx("http://unused".into()),
+    async fn anthropic_text_and_custom_tool_calls_render_as_responses() {
+        let mut server = mockito::Server::new_async().await;
+        let request = server.mock("POST", "/messages")
+            .match_header("x-api-key", "anthropic-key")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "model":"resolved-model",
+                "system":"be useful",
+                "messages":[{"role":"user","content":"edit"}],
+                "tools":[{"name":"apply_patch","input_schema":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}}]
+            })))
+            .with_status(200).with_header("content-type", "application/json")
+            .with_body(json!({
+                "id":"msg_1","type":"message","role":"assistant",
+                "content":[{"type":"text","text":"Applying."},{"type":"tool_use","id":"call_keep","name":"apply_patch","input":{"input":"*** Begin Patch"}}],
+                "stop_reason":"tool_use","usage":{"input_tokens":8,"output_tokens":4}
+            }).to_string()).create_async().await;
+        let response = responses_core(
+            &ctx(server.url()),
             &Store::new("anthropic"),
             &headers(),
-            json!({"model":"requested","input":[]}),
+            json!({
+                "instructions":"be useful","input":[{"role":"user","content":"edit"}],
+                "tools":[{"type":"custom","name":"apply_patch","description":"patch files"}]
+            }),
         )
         .await
-        .unwrap_err();
-        assert!(error.to_string().contains("only provider 'openai'"));
+        .unwrap();
+        assert_eq!(response.headers()[TRANSLATION_HEADER], "lossy");
+        let value: Value = serde_json::from_slice(&body(response).await).unwrap();
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["output"][0]["content"][0]["text"], "Applying.");
+        assert_eq!(value["output"][1]["type"], "custom_tool_call");
+        assert_eq!(value["output"][1]["call_id"], "call_keep");
+        assert_eq!(value["output"][1]["input"], "*** Begin Patch");
+        assert_eq!(value["usage"]["total_tokens"], 12);
+        request.assert_async().await;
+    }
 
+    #[tokio::test]
+    async fn gemini_text_and_function_calls_render_as_responses() {
+        let mut server = mockito::Server::new_async().await;
+        let request = server.mock("POST", "/models/resolved-model:generateContent")
+            .match_header("x-goog-api-key", "gemini-key")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "contents":[{"role":"user","parts":[{"text":"weather"}]}],
+                "tools":[{"functionDeclarations":[{"name":"weather","parameters":{"type":"object"}}]}]
+            })))
+            .with_status(200).with_header("content-type", "application/json")
+            .with_body(json!({
+                "responseId":"gem_1","candidates":[{"content":{"role":"model","parts":[{"text":"Checking."},{"functionCall":{"name":"weather","args":{"city":"Paris"}}}]},"finishReason":"STOP"}],
+                "usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}
+            }).to_string()).create_async().await;
+        let response = responses_core(
+            &ctx(server.url()),
+            &Store::new("gemini"),
+            &headers(),
+            json!({
+                "input":[{"role":"user","content":"weather"}],
+                "tools":[{"type":"function","name":"weather","parameters":{"type":"object"}}]
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.headers()[TRANSLATION_HEADER], "lossy");
+        let value: Value = serde_json::from_slice(&body(response).await).unwrap();
+        assert_eq!(value["output"][0]["content"][0]["text"], "Checking.");
+        assert_eq!(value["output"][1]["type"], "function_call");
+        assert_eq!(value["output"][1]["name"], "weather");
+        assert_eq!(value["model"], "resolved-model");
+        request.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn provider_blocking_reasons_render_failed_without_calls() {
+        for (provider, path, provider_body) in [
+            (
+                "anthropic",
+                "/messages",
+                json!({
+                    "id":"m","content":[{"type":"tool_use","id":"c","name":"f","input":{}}],
+                    "stop_reason":"refusal","usage":{"input_tokens":1,"output_tokens":1}
+                }),
+            ),
+            (
+                "gemini",
+                "/models/resolved-model:generateContent",
+                json!({
+                    "candidates":[{"content":{"parts":[{"functionCall":{"name":"f","args":{}}}]},"finishReason":"SAFETY"}],
+                    "usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}
+                }),
+            ),
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            server
+                .mock("POST", path)
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(provider_body.to_string())
+                .create_async()
+                .await;
+            let response = responses_core(
+                &ctx(server.url()),
+                &Store::new(provider),
+                &headers(),
+                json!({"input":"hi","tools":[{"type":"function","name":"f"}]}),
+            )
+            .await
+            .unwrap();
+            let value: Value = serde_json::from_slice(&body(response).await).unwrap();
+            assert_eq!(value["status"], "failed", "{provider}: {value}");
+            assert_eq!(value["error"]["code"], "content_filter");
+            assert!(value["output"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn translated_stream_has_terminal_response_event_and_no_done_sentinel() {
+        let mut server = mockito::Server::new_async().await;
+        let upstream = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_s\",\"usage\":{\"input_tokens\":2}}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+        server
+            .mock("POST", "/messages")
+            .match_body(mockito::Matcher::PartialJson(json!({"stream":true})))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(upstream)
+            .create_async()
+            .await;
+        let response = responses_core(
+            &ctx(server.url()),
+            &Store::new("anthropic"),
+            &headers(),
+            json!({"stream":true,"input":[{"role":"user","content":"hi"}]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.headers()[TRANSLATION_HEADER], "lossy");
+        let body = String::from_utf8(body(response).await).unwrap();
+        assert!(body.contains("event: response.created"));
+        assert!(body.contains("event: response.output_text.delta"));
+        assert!(body.contains("event: response.completed"));
+        assert!(body.contains("\"total_tokens\":3"));
+        assert!(!body.contains("[DONE]"));
+    }
+
+    #[tokio::test]
+    async fn translated_max_tokens_is_incomplete_nonstream_and_stream() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id":"m1","content":[{"type":"text","text":"partial"}],
+                    "stop_reason":"max_tokens","usage":{"input_tokens":2,"output_tokens":3}
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let response = responses_core(
+            &ctx(server.url()),
+            &Store::new("anthropic"),
+            &headers(),
+            json!({"input":"hi","stream":false}),
+        )
+        .await
+        .unwrap();
+        let value: Value = serde_json::from_slice(&body(response).await).unwrap();
+        assert_eq!(value["status"], "incomplete");
+        assert_eq!(value["incomplete_details"]["reason"], "max_output_tokens");
+
+        server.reset();
+        server
+            .mock("POST", "/messages")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(concat!(
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m2\",\"usage\":{\"input_tokens\":2}}}\n\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":3}}\n\n",
+                "data: {\"type\":\"message_stop\"}\n\n"
+            ))
+            .create_async().await;
+        let response = responses_core(
+            &ctx(server.url()),
+            &Store::new("anthropic"),
+            &headers(),
+            json!({"input":"hi","stream":true}),
+        )
+        .await
+        .unwrap();
+        let stream = String::from_utf8(body(response).await).unwrap();
+        assert_eq!(stream.matches("event: response.incomplete").count(), 1);
+        assert!(!stream.contains("event: response.completed"));
+        assert!(stream.contains("\"reason\":\"max_output_tokens\""));
+    }
+
+    #[tokio::test]
+    async fn malformed_or_premature_translated_stream_fails_exactly_once() {
+        for (provider, path, payload) in [
+            ("anthropic", "/messages", "data: {not-json}\n\n"),
+            (
+                "anthropic",
+                "/messages",
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\"}}\n\n",
+            ),
+            (
+                "gemini",
+                "/models/resolved-model:streamGenerateContent?alt=sse",
+                "data: {\"error\":{\"code\":503,\"message\":\"down\"}}\n\n",
+            ),
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            server
+                .mock("POST", path)
+                .with_status(200)
+                .with_header("content-type", "text/event-stream")
+                .with_body(payload)
+                .create_async()
+                .await;
+            let response = responses_core(
+                &ctx(server.url()),
+                &Store::new(provider),
+                &headers(),
+                json!({"input":"hi","stream":true}),
+            )
+            .await
+            .unwrap();
+            let stream = String::from_utf8(body(response).await).unwrap();
+            assert_eq!(
+                stream.matches("event: response.failed").count(),
+                1,
+                "{stream}"
+            );
+            assert!(!stream.contains("event: response.completed"), "{stream}");
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_translated_tool_call_returns_failed_response() {
+        let mut server = mockito::Server::new_async().await;
+        server.mock("POST", "/models/resolved-model:generateContent")
+            .with_status(200).with_header("content-type", "application/json")
+            .with_body(json!({
+                "candidates":[{"content":{"parts":[{"functionCall":{"name":"custom","args":{"wrong":true}}}]},"finishReason":"STOP"}]
+            }).to_string()).create_async().await;
+        let response = responses_core(
+            &ctx(server.url()),
+            &Store::new("gemini"),
+            &headers(),
+            json!({"input":"hi","tools":[{"type":"custom","name":"custom"}]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value = serde_json::from_slice(&body(response).await).unwrap();
+        assert_eq!(value["status"], "failed");
+        assert_eq!(value["error"]["code"], "invalid_tool_call");
+        assert!(value["output"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unsupported_provider_configuration_is_terminal_internal_error() {
+        let context = ctx("http://unused".into());
+        let attempt = crate::resolver::ResolvedConfig {
+            provider: "unsupported".into(),
+            model: "model".into(),
+            litellm_model: "unsupported/model".into(),
+            api_key: "key".into(),
+            fallback_models: vec![],
+            temperature: None,
+            max_tokens: None,
+            has_llm_config: true,
+            pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid: false,
+        };
+        let routed = RoutedRequest {
+            agent_id: AGENT.into(),
+            owner_id: OWNER.into(),
+            resolved: attempt.clone(),
+            flow_id: None,
+        };
+        let parsed = parse_request(&json!({"input":"hi"})).unwrap();
+        let result = translated_attempt(&context, &routed, &attempt, &parsed, Instant::now()).await;
+        assert!(matches!(
+            result,
+            Err(TranslatedAttemptError::Configuration(
+                GatewayError::Internal(_)
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn native_upstream_errors_are_passed_through() {
         let mut server = mockito::Server::new_async().await;
         server
             .mock("POST", "/responses")
@@ -936,7 +1507,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_provider_fallback_retries_and_cross_provider_is_rejected() {
+    async fn same_provider_and_cross_provider_fallbacks_are_supported() {
         let mut server = mockito::Server::new_async().await;
         let primary = server
             .mock("POST", "/responses")
@@ -972,18 +1543,39 @@ mod tests {
         primary.assert_async().await;
         fallback.assert_async().await;
 
-        let error = responses_core(
+        let anthropic = server
+            .mock("POST", "/messages")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "model":"claude-opus-4",
+                "messages":[{"role":"user","content":"hello"}]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id":"msg_fallback","type":"message","role":"assistant",
+                    "content":[{"type":"text","text":"from claude"}],
+                    "stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":2}
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let response = responses_core(
             &ctx(server.url()),
             &Store {
                 provider: "openai",
                 fallback_models: vec!["anthropic/claude-opus-4".into()],
             },
             &headers(),
-            json!({"model":"requested","input":[]}),
+            json!({"model":"requested","input":[{"role":"user","content":"hello"}]}),
         )
         .await
-        .unwrap_err();
-        assert!(error.to_string().contains("cross-provider"));
+        .unwrap();
+        let value: Value = serde_json::from_slice(&body(response).await).unwrap();
+        assert_eq!(value["model"], "claude-opus-4");
+        assert_eq!(value["output"][0]["content"][0]["text"], "from claude");
+        anthropic.assert_async().await;
     }
 
     #[tokio::test]
@@ -1020,6 +1612,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!response.headers().contains_key(TRANSLATION_HEADER));
         bad_request.assert_async().await;
         unused_fallback.assert_async().await;
 
@@ -1057,6 +1650,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn translated_provider_400_is_responses_shaped_and_does_not_fallback() {
+        let mut server = mockito::Server::new_async().await;
+        let rejected = server
+            .mock("POST", "/messages")
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"type":"error","error":{"message":"bad tool schema"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let fallback = server
+            .mock("POST", "/models/gemini-fallback:generateContent")
+            .with_status(200)
+            .expect(0)
+            .create_async()
+            .await;
+        let response = responses_core(
+            &ctx(server.url()),
+            &Store {
+                provider: "anthropic",
+                fallback_models: vec!["gemini/gemini-fallback".into()],
+            },
+            &headers(),
+            json!({"input":"hello"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[TRANSLATION_HEADER], "lossy");
+        let value: Value = serde_json::from_slice(&body(response).await).unwrap();
+        assert_eq!(value["error"]["type"], "invalid_request_error");
+        assert_eq!(value["error"]["code"], "invalid_request_error");
+        rejected.assert_async().await;
+        fallback.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn huge_malformed_sse_event_is_passed_through() {
         let mut server = mockito::Server::new_async().await;
         let sse = format!(
@@ -1083,7 +1713,7 @@ mod tests {
 
     #[test]
     fn oversized_sse_event_is_skipped_and_later_completion_is_inspected() {
-        let state = Arc::new(Mutex::new(None));
+        let state = Arc::new(Mutex::new(ResponseStreamState::default()));
         let mut inspector = SseInspector::new(Arc::clone(&state));
         let oversized = format!("data: {}", "x".repeat(MAX_INSPECTION_BYTES + 1));
         for chunk in oversized.as_bytes().chunks(8191) {
@@ -1103,9 +1733,39 @@ mod tests {
         let usage = state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .details
             .clone()
             .expect("completion usage should be captured");
         assert_eq!(usage.usage.total_tokens, Some(3));
+        assert_eq!(
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .finish_reason
+                .as_deref(),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn inspector_accounts_for_all_terminal_outcomes() {
+        for (event, expected) in [
+            ("response.completed", "completed"),
+            ("response.incomplete", "incomplete"),
+            ("response.failed", "failed:response"),
+        ] {
+            let state = Arc::new(Mutex::new(ResponseStreamState::default()));
+            inspect_event(
+                format!(
+                    "data: {{\"type\":\"{event}\",\"response\":{{\"usage\":{{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}}}}"
+                )
+                .as_bytes(),
+                &state,
+            );
+            let state = state.lock().unwrap_or_else(|error| error.into_inner());
+            assert_eq!(state.finish_reason.as_deref(), Some(expected));
+            assert_eq!(state.details.as_ref().unwrap().usage.total_tokens, Some(3));
+        }
     }
 
     #[tokio::test]
@@ -1133,7 +1793,11 @@ mod tests {
         };
         let mut guard =
             AttemptGuard::new(&context, &routed, &routed.resolved, Instant::now(), false);
-        assert!(guard.record.is_some());
+        let record = guard.record.as_ref().unwrap();
+        assert_eq!(record.provider, "openai");
+        assert_eq!(record.model, "model");
+        assert!(record.platform_paid);
+        assert!(record.finish_reason.is_none());
         guard.disarm();
         assert!(guard.record.is_none());
     }
