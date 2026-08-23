@@ -13,20 +13,6 @@
     margin-bottom: var(--s-24);
   }
 
-  .back-btn {
-    width: var(--control-h-lg);
-    height: var(--control-h-lg);
-    border: 1px solid transparent;
-    border-radius: var(--r-10);
-    background: var(--color-bg-base);
-    color: var(--color-text-main);
-    flex-shrink: 0;
-    cursor: pointer;
-
-    &:hover { border-color: var(--color-border); }
-    & svg { width: 20px; height: 20px; }
-  }
-
   .page-title {
     font-family: var(--font-display);
     font-size: var(--font-size-2xl);
@@ -39,48 +25,9 @@
   }
 
   /* ── KPI strip ────────────────────────────────────────────────────────── */
-  .kpi-strip {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    border-block: 1px solid var(--color-border);
-    padding: var(--s-16) 0;
-    margin-bottom: var(--s-24);
-  }
-
-  .kpi {
-    padding: 0 var(--s-24);
-    border-left: 1px solid var(--color-border);
-    min-width: 0;
-
-    &:first-child { border-left: none; padding-left: 0; }
-  }
-
-  /* Mobile: clean 2-column stat grid — hairline only between the columns */
-  @media (max-width: 760px) {
-    .kpi-strip {
-      grid-template-columns: 1fr 1fr;
-      gap: var(--s-24) 0;
-    }
-    .kpi { border-left: none; padding-left: 0; }
-    .kpi:nth-child(2n) {
-      border-left: 1px solid var(--color-border);
-      padding-left: var(--s-24);
-    }
-  }
-
-  .kpi-label {
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--color-text-main);
-    margin-bottom: var(--s-8);
-    white-space: nowrap;
-  }
-
-  .kpi-value {
-    font-size: var(--font-size-base);
-    font-family: var(--font-mono);
-    color: var(--color-text-main);
-  }
+  /* Only the gap below the strip: everything inside it belongs to
+     <app-stat-row>, and re-declaring any of it here would win on proximity. */
+  app-stat-row { margin-bottom: var(--s-24); }
 
   /* ── Three panes ──────────────────────────────────────────────────────── */
   .panes {
@@ -266,20 +213,9 @@
     flex-wrap: wrap;
   }
 
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-full, 999px);
-    background: var(--color-bg-surface);
-    font-size: var(--font-size-xs);
-    color: var(--color-text-main);
-    white-space: nowrap;
-
-    & svg { width: 12px; height: 12px; color: var(--color-text-muted); }
-  }
+  /* Metric badges are <app-badge variant="neutral">; it owns the pill, so the
+     only thing left here is the leading glyph's tint. */
+  app-badge svg { color: var(--color-text-muted); }
 
   /* ── Traces pane ──────────────────────────────────────────────────────── */
   .span-row {
@@ -303,6 +239,10 @@
       border-color: var(--fg-brand-highlight, var(--yellow-400));
     }
   }
+
+  /* The row is a flex line with a growing `.span-name`; the latency badge must
+     not be what gives way when the name is long. */
+  .span-row app-badge { flex-shrink: 0; }
 
   .span-tree {
     color: var(--color-text-muted);
@@ -357,45 +297,11 @@
     }
   }
 
-  .badge-kind {
-    font-size: var(--font-size-xs);
-    padding: 3px 10px;
-    border-radius: var(--r-6);
-    background: var(--bg-neutral);
-    color: var(--color-text-muted);
-  }
-
   .detail-chips {
     display: flex;
     gap: var(--s-12);
     flex-wrap: wrap;
     margin-bottom: var(--s-16);
-  }
-
-  .tabs {
-    display: flex;
-    gap: var(--s-24);
-    border-bottom: 1px solid var(--color-border);
-    margin-bottom: var(--s-16);
-  }
-
-  .tab-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-8);
-    padding: var(--s-8) 0 var(--s-12);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--color-text-muted);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-
-    & svg { width: 14px; height: 14px; }
-
-    &.is-active {
-      color: var(--fg-brand);
-      border-bottom-color: var(--fg-brand-highlight);
-    }
   }
 
   .detail-section-title {

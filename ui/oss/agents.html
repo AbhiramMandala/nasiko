@@ -43,11 +43,9 @@
         <p class="subtitle">Discover and chat with the agents deployed on this cluster.</p>
       </div>
       <div class="controls">
-        <div class="search-wrap">
-          <span class="search-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:18px;height:18px;flex-shrink:0"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg></span>
-          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability" />
-          <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:16px;height:16px;flex-shrink:0"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-        </div>
+        <app-search id="search-input" class="search-wrap" size="md"
+            placeholder="Search agents by name, skill, or capability"
+            aria-label="Search agents"></app-search>
       </div>
       <div class="type-tabs" id="category-tabs" role="tablist">
         <div class="skel-tab"></div>
@@ -58,42 +56,12 @@
         <div class="skel-tab"></div>
       </div>
       <div class="grid" id="agents-grid">
-        <div class="card skeleton-card">
-          <div class="skel-line skel-line--name"></div>
-          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
-          <div class="skel-line skel-line--desc1"></div>
-          <div class="skel-line skel-line--desc2"></div>
-        </div>
-        <div class="card skeleton-card">
-          <div class="skel-line skel-line--name"></div>
-          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
-          <div class="skel-line skel-line--desc1"></div>
-          <div class="skel-line skel-line--desc2"></div>
-        </div>
-        <div class="card skeleton-card">
-          <div class="skel-line skel-line--name"></div>
-          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
-          <div class="skel-line skel-line--desc1"></div>
-          <div class="skel-line skel-line--desc2"></div>
-        </div>
-        <div class="card skeleton-card">
-          <div class="skel-line skel-line--name"></div>
-          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
-          <div class="skel-line skel-line--desc1"></div>
-          <div class="skel-line skel-line--desc2"></div>
-        </div>
-        <div class="card skeleton-card">
-          <div class="skel-line skel-line--name"></div>
-          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
-          <div class="skel-line skel-line--desc1"></div>
-          <div class="skel-line skel-line--desc2"></div>
-        </div>
-        <div class="card skeleton-card">
-          <div class="skel-line skel-line--name"></div>
-          <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
-          <div class="skel-line skel-line--desc1"></div>
-          <div class="skel-line skel-line--desc2"></div>
-        </div>
+        <app-card loading></app-card>
+        <app-card loading></app-card>
+        <app-card loading></app-card>
+        <app-card loading></app-card>
+        <app-card loading></app-card>
+        <app-card loading></app-card>
       </div>
     </agents-page>
   </body>

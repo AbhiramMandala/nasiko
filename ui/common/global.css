@@ -401,6 +401,16 @@ label {
   color: var(--color-text-main);
 }
 
+/* Design-system components render their own <label> and space it themselves —
+   app-input/app-select via their .field gap, app-switch/app-radio/app-checkbox
+   via the .row that IS the label. The bare-form margin above is not theirs: it
+   doubled the label gap on every labelled field, and on the three control rows
+   it added 8px of empty box below the control, so anything centred beside one
+   (the Agent JSON toggle's <> glyph) sat 4px low. */
+:is(app-checkbox, app-input, app-radio, app-select, app-switch) label {
+  margin: 0;
+}
+
 :is(input[type="text"], input[type="email"], input[type="password"],
   input[type="search"], input[type="url"], input[type="tel"],
   input[type="number"], input[type="date"], input[type="time"],

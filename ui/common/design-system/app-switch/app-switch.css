@@ -61,7 +61,10 @@
     width: 16px; /* toggle/thumb/lg/size */
     height: 16px;
     border-radius: var(--r-full);
-    background: var(--bg-base);
+    /* Constant white, NOT --bg-base: that token flips with the theme, so in
+       dark mode the thumb painted near-black on the grey track and the toggle
+       read as a hole. Figma specifies #ffffff for both themes (see the header). */
+    background: var(--fg-constant-white);
     transition: transform var(--transition-fast), background var(--transition-fast);
   }
 

@@ -20,3 +20,16 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+
+/* Form-level error line — the message for a failure that belongs to the form,
+   not to one field (a rejected save, a failed probe). A message that DOES
+   belong to a field goes through that control's own error state instead —
+   `<app-input state="error" hint="…">` — which reddens its border and styles
+   the text; this class has no field to attach to. Five page stylesheets each
+   declared their own copy of this, drifting across two tokens for the same
+   colour and two sizes. */
+.form-error {
+  margin: 0;
+  color: var(--fg-error);
+  font-size: var(--font-size-xs);
+}

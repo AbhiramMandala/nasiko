@@ -30,48 +30,9 @@
      Host headline numbers are a handful of single current values, so they are
      stat tiles rather than a chart. Same hairline-bounded strip as the
      observability session page so the two pages read as one system. */
-  .kpi-strip {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    border-block: 1px solid var(--color-border);
-    padding: var(--s-16) 0;
-    margin-bottom: var(--s-24);
-    gap: var(--s-16);
-  }
-
-  .kpi {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-4);
-    padding-left: var(--s-16);
-    border-left: 1px solid var(--color-border);
-    min-width: 0;
-  }
-
-  .kpi:first-child {
-    padding-left: 0;
-    border-left: none;
-  }
-
-  .kpi-label {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-  }
-
-  /* Proportional figures on purpose: tabular-nums gives every digit the width
-     of a zero, which reads loose at stat-tile size. Tabular is reserved for the
-     table columns below, where digits must align vertically. */
-  .kpi-value {
-    font-size: var(--font-size-xl);
-    font-weight: 600;
-    color: var(--color-text-main);
-    line-height: 1.1;
-  }
-
-  .kpi-sub {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-  }
+  /* Only the gap below the strip: everything inside it belongs to
+     <app-stat-row>, and re-declaring any of it here would win on proximity. */
+  app-stat-row { margin-bottom: var(--s-24); }
 
   /* ── Group cards ──────────────────────────────────────────────────────── */
   .groups {
@@ -207,33 +168,11 @@
     --fill: transparent;
   }
 
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-4);
-    padding: 0 var(--s-8);
-    height: 20px;
-    border-radius: var(--r-6);
-    font-size: var(--font-size-xs);
-    background: var(--color-bg-base);
-    border: 1px solid var(--color-border);
-    color: var(--color-text-muted);
-    white-space: nowrap;
-  }
-
-  .row .chip {
-    background: var(--color-bg-surface);
-  }
-
-  .chip.is-running {
-    color: var(--fg-success);
-    border-color: var(--border-success);
-  }
-
-  .chip.is-stopped {
-    color: var(--fg-error);
-    border-color: var(--border-error, var(--color-border));
-  }
+  /* State and the "Updated" stamp are <app-badge>es; the badge owns the pill,
+     so all that is left is the leading glyph's tint and not letting the state
+     badge be what gives way when a container name is long. */
+  app-badge svg { color: var(--color-text-muted); }
+  .cell-name app-badge { flex-shrink: 0; }
 
   .pane-empty {
     color: var(--color-text-muted);
@@ -264,11 +203,6 @@
   }
 
   @media (max-width: 760px) {
-    .kpi {
-      padding-left: 0;
-      border-left: none;
-    }
-
     /* Four columns cannot survive a phone; stack and let each metric label
        itself via .metric-note. */
     .row {

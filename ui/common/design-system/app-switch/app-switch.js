@@ -16,7 +16,8 @@
  * @attr {string} layout - `inline` (default, control then label) |
  *   `settings` (label left, control pushed to the far right — Figma
  *   Layout=Settings, for settings rows).
- * @attr {string} name|value - Forwarded to the inner `<input type="checkbox">`.
+ * @attr {string} name|value|aria-label - Forwarded to the inner `<input type="checkbox">`.
+ *   Pass `aria-label` when there is no visible `label`.
  * @prop {boolean} checked - Get/set on state.
  * @prop {HTMLInputElement} input - The inner input.
  * @fires change - Bubbles from the inner input.
@@ -28,7 +29,7 @@ let uid = 0;
 
 export class AppSwitch extends HTMLElement {
   static get observedAttributes() {
-    return ['checked', 'disabled', 'size', 'state', 'label', 'hint', 'layout', 'name', 'value'];
+    return ['checked', 'disabled', 'size', 'state', 'label', 'hint', 'layout', 'name', 'value', 'aria-label'];
   }
 
   #id = `app-switch-${++uid}`;
@@ -53,10 +54,14 @@ export class AppSwitch extends HTMLElement {
     const label    = this.getAttribute('label');
     const hint     = this.getAttribute('hint');
     const name     = this.getAttribute('name');
+    // A control with no visible `label` still needs an accessible name, and the
+    // inner input is what an AT reads — the host is not focusable.
+    const aria     = this.getAttribute('aria-label');
     const value    = this.getAttribute('value');
 
     const control = `
       <input id="${this.#id}" type="checkbox" role="switch"${name ? ` name="${name}"` : ''}${
+        aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
         value === null ? '' : ` value="${value.replace(/"/g, '&quot;')}"`}${
         checked ? ' checked' : ''}${disabled ? ' disabled' : ''}>
       <span class="track" aria-hidden="true"><span class="thumb"></span></span>`;

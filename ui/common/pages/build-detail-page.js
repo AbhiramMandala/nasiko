@@ -8,6 +8,10 @@
 import { apiFetch } from '/common/services/api.js';
 import { connectSSE } from '/common/services/sse.js';
 import { icons } from '/common/utils/icons.js';
+import '/common/design-system/app-badge/app-badge.js';
+import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-skeleton/app-skeleton.js';
 
 import styles from './build-detail-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
@@ -21,12 +25,17 @@ class BuildDetailPage extends HTMLElement {
   #evtSource = null;
 
   #toolbar(sub = '') {
+    // Back sits at the leading edge, ahead of the title — the same place every
+    // detail page puts it — and is the design system's tertiary icon button
+    // rather than a page-local `.back-link` anchor. `href` keeps it a real link
+    // (the SPA router intercepts it), so no click handler is needed.
     return `<header class="page-head">
+      <app-button variant="tertiary" size="sm" icon-only href="/builds"
+        aria-label="Back to builds" title="Back to builds">${icons.chevronLeft()}</app-button>
       <div>
         <h1 class="title-page">Build detail</h1>
         ${sub ? `<p class="page-sub">${sub}</p>` : ''}
       </div>
-      <a class="back-link" href="/builds">${icons.chevronLeft('', 16)}Back to builds</a>
     </header>`;
   }
 
@@ -36,14 +45,13 @@ class BuildDetailPage extends HTMLElement {
     this.#buildId = new URLSearchParams(location.search).get('id');
     if (!this.#buildId) {
       this.innerHTML = `${this.#toolbar()}
-        <div class="empty-state">
-          <div class="empty-tile">${icons.briefcase('', 20)}</div>
-          <div class="empty-title">No build selected</div>
-          <p class="empty-sub">Open a build from the list to inspect it.</p>
-        </div>`;
+        <app-empty-state
+          title="No build selected"
+          description="Open a build from the list to inspect it."
+          icon='${icons.briefcase("", 40)}'></app-empty-state>`;
       return;
     }
-    this.innerHTML = `${this.#toolbar()}<div class="skel-block" style="height:300px"></div>`;
+    this.innerHTML = `${this.#toolbar()}<app-skeleton height="300px"></app-skeleton>`;
     this.#load();
   }
 
@@ -60,11 +68,10 @@ class BuildDetailPage extends HTMLElement {
     } catch { /* fall through to not-found */ }
     if (!build) {
       this.innerHTML = `${this.#toolbar()}
-        <div class="empty-state">
-          <div class="empty-tile">${icons.faceFrown('', 20)}</div>
-          <div class="empty-title">Build not found</div>
-          <p class="empty-sub">This build may have been pruned or the ID is wrong.</p>
-        </div>`;
+        <app-empty-state
+          title="Build not found"
+          description="This build may have been pruned or the ID is wrong."
+          icon='${icons.faceFrown("", 40)}'></app-empty-state>`;
       return;
     }
 
@@ -77,7 +84,7 @@ class BuildDetailPage extends HTMLElement {
       <div class="kpi-strip">
         <div class="kpi">
           <div class="kpi-label">Status</div>
-          <div class="kpi-value"><span class="badge badge--${variant}"><span class="badge__dot"></span>${escHtml(build.status)}</span></div>
+          <div class="kpi-value"><app-badge variant="${variant}" dot>${escHtml(build.status)}</app-badge></div>
         </div>
         <div class="kpi">
           <div class="kpi-label">Version</div>

@@ -1,11 +1,11 @@
 // Sessions page fixtures
 const sessionsData = [
-  { session_id: "s-001", agent_name: "Coding Agent", agent_id: "a-001", last_message: "Fixed the DNS resolution issue in the container networking layer", message_count: 12, created_at: "2026-07-03T14:22:00Z", updated_at: "2026-07-03T15:10:00Z" },
-  { session_id: "s-002", agent_name: "Research Agent", agent_id: "a-002", last_message: "Here's the summary of Kubernetes operator patterns and best practices for implementing CRDs", message_count: 8, created_at: "2026-07-03T09:15:00Z", updated_at: "2026-07-03T10:45:00Z" },
-  { session_id: "s-003", agent_name: "Docs Agent", agent_id: "a-005", last_message: "Generated API documentation for 12 endpoints including request/response schemas", message_count: 5, created_at: "2026-07-02T16:30:00Z", updated_at: "2026-07-02T17:00:00Z" },
-  { session_id: "s-004", agent_name: "DevOps Agent", agent_id: "a-003", last_message: "Optimized the CI pipeline — build time reduced by 40% after parallelizing test stages", message_count: 22, created_at: "2026-06-30T11:45:00Z", updated_at: "2026-06-30T14:30:00Z" },
-  { session_id: "s-005", agent_name: "QA Agent", agent_id: "a-004", last_message: "Created 24 integration tests covering the auth flow and token refresh edge cases", message_count: 15, created_at: "2026-06-25T08:00:00Z", updated_at: "2026-06-25T09:20:00Z" },
-  { session_id: "s-006", agent_name: "Coding Agent", agent_id: "a-001", last_message: "Refactored the routing engine to use a trait-based design for better testability", message_count: 31, created_at: "2026-06-20T10:00:00Z", updated_at: "2026-06-20T12:00:00Z" },
+  { session_id: "s-001", agent_name: "Coding Agent", agent_id: "a-001", last_message: "Fixed the DNS resolution issue in the container networking layer", message_count: 12, created_at: "2026-07-03T14:22:00Z", updated_at: "2026-07-03T15:10:00Z", trace_count: 4, total_tokens: 18400, latency_p50_ms: 1240 },
+  { session_id: "s-002", agent_name: "Research Agent", agent_id: "a-002", last_message: "Here's the summary of Kubernetes operator patterns and best practices for implementing CRDs", message_count: 8, created_at: "2026-07-03T09:15:00Z", updated_at: "2026-07-03T10:45:00Z", trace_count: 2, total_tokens: 7200, latency_p50_ms: 890 },
+  { session_id: "s-003", agent_name: "Docs Agent", agent_id: "a-005", last_message: "Generated API documentation for 12 endpoints including request/response schemas", message_count: 5, created_at: "2026-07-02T16:30:00Z", updated_at: "2026-07-02T17:00:00Z", trace_count: 0, total_tokens: null, latency_p50_ms: null },
+  { session_id: "s-004", agent_name: "DevOps Agent", agent_id: "a-003", last_message: "Optimized the CI pipeline — build time reduced by 40% after parallelizing test stages", message_count: 22, created_at: "2026-06-30T11:45:00Z", updated_at: "2026-06-30T14:30:00Z", trace_count: 9, total_tokens: 52300, latency_p50_ms: 2150 },
+  { session_id: "s-005", agent_name: "QA Agent", agent_id: "a-004", last_message: "Created 24 integration tests covering the auth flow and token refresh edge cases", message_count: 15, created_at: "2026-06-25T08:00:00Z", updated_at: "2026-06-25T09:20:00Z", trace_count: 3, total_tokens: 4100, latency_p50_ms: 640 },
+  { session_id: "s-006", agent_name: "Coding Agent", agent_id: "a-001", last_message: "Refactored the routing engine to use a trait-based design for better testability", message_count: 31, created_at: "2026-06-20T10:00:00Z", updated_at: "2026-06-20T12:00:00Z", trace_count: 12, total_tokens: 121000, latency_p50_ms: 3400 },
 ];
 
 export default {

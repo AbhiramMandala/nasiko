@@ -136,9 +136,4 @@
   .attr-key { color: var(--color-text-muted); }
   .attr-val { color: var(--color-text-main); word-break: break-all; }
 
-  .empty-state {
-    text-align: center;
-    padding: var(--s-32);
-    color: var(--color-text-muted);
-  }
 }

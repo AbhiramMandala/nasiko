@@ -18,8 +18,9 @@
  * @attr {boolean} loading - Swaps the trailing slot for a spinner.
  * @attr {boolean} disabled
  * @attr {string} placeholder - Defaults to "Search".
- * @attr {string} value - Initial value. Also `name`, `autocomplete`, `maxlength`,
- *   `inputmode`, `aria-label` (the box has no label of its own — pass one).
+ * @attr {string} value - Initial value.
+ * @attr {string} name|autocomplete|maxlength|inputmode|aria-label - Forwarded to the
+ *   inner `<input>`; pass `aria-label`, the box has no label of its own.
  * @cssprop --search-bg - Resting fill. Default `--bg-base` (white). Set it on the
  *   *surface*, not the field: the fill depends on the plane the field sits on.
  * @prop {string} value - Get/set the current value.
@@ -56,6 +57,10 @@ export class AppSearch extends HTMLElement {
   }
 
   get input() { return this.querySelector('input'); }
+
+  /** The host is not focusable — a `focus()` on it would silently do nothing,
+   *  so hand it to the control inside. */
+  focus(options) { this.input?.focus(options); }
 
   connectedCallback() {
     this.render();

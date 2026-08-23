@@ -38,7 +38,11 @@
     display: flex;
     align-items: center;
     height: var(--control-h-md);
-    background: var(--bg-base);
+    /* The trigger reads as a filled control, not a white one: sand-50 in light,
+       neutral-900 in dark — which is exactly --bg-input, the shared field fill.
+       Figma's Select frame paints it white; this is a deliberate deviation, so
+       figma-parity expects the fill token, not #ffffff. */
+    background: var(--bg-input);
     border: var(--bw-1) solid var(--border-primary);
     border-radius: var(--r-8);
     transition: border-color var(--transition-fast);
@@ -65,6 +69,28 @@
   /* The placeholder option is disabled + selected, so it is the only way the
      trigger shows secondary ink — matching Figma's "Select role" trigger. */
   select:has(option[value='']:checked) { color: var(--fg-secondary); }
+
+  /* Leading glyph — 16px at md, 12px at sm, in secondary ink: the same rules
+     app-input.css gives its own `leading` slot, so the two controls prefix
+     identically. Unlike the chevron this is a real flex item, not an overlay:
+     an absolutely-positioned glyph forces every consumer to hand-patch the
+     select's left padding to clear it, which is what this replaces. */
+  [data-slot='leading'] {
+    display: flex;
+    flex-shrink: 0;
+    color: var(--fg-secondary);
+
+    & svg { width: var(--icon-xs); height: var(--icon-xs); }
+  }
+
+  /* The box takes the leading padding and the content gap; the select gives up
+     its own left padding so the text sits one gap after the glyph. */
+  .select-box:has([data-slot='leading']) {
+    padding-left: var(--s-12);
+    gap: var(--s-8);
+
+    & select { padding-left: 0; }
+  }
 
   .chevron {
     position: absolute;
@@ -99,6 +125,13 @@
       right: var(--s-8);
 
       & svg { width: 12px; height: 12px; }
+    }
+
+    & [data-slot='leading'] svg { width: 12px; height: 12px; }
+
+    & .select-box:has([data-slot='leading']) {
+      padding-left: var(--s-8);
+      gap: var(--s-6);
     }
   }
 

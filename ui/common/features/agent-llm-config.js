@@ -2,6 +2,8 @@ import { fetchApi } from '/common/services/api.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/design-system/app-modal/app-modal.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-radio/app-radio.js';
+import '/common/design-system/app-select/app-select.js';
 import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
 import { escHtml } from '/common/utils/escape.js';
@@ -45,77 +47,23 @@ styles.replaceSync(`@scope (agent-llm-config) {
     text-align: right;
   }
 
-  /* Action buttons */
+  /* Action buttons are <app-button>s; this row only lays them out. */
   .actions { display: flex; gap: var(--s-12); flex-wrap: wrap; align-items: center; }
-  .btn-override {
-    min-height: var(--control-h-md);
-    padding: 0 var(--s-16);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: transparent;
-    color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: border-color 0.15s, background 0.15s;
-  }
-  .btn-override:hover {
-    border-color: var(--border-hover);
-    background: var(--bg-surface-hover);
-  }
-  .btn-override:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
-  }
-  .btn-revert {
-    min-height: var(--control-h-md);
-    padding: 0 var(--s-16);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: border-color 0.15s, background 0.15s;
-  }
-  .btn-revert:hover {
-    border-color: var(--border-hover);
-    background: var(--bg-surface-hover);
-  }
 
-  /* Modal form fields */
+  /* Modal form — the controls are <app-radio>/<app-select>, so all that is left
+     here is the stack rhythm and the indent that ties a field set to the radio
+     above it (28px = the radio's 20px control + its 8px label gap). */
   .modal-desc {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
     margin-bottom: var(--s-16);
   }
-  .radio-row {
-    display: flex; align-items: center; gap: var(--s-8);
-    margin-bottom: var(--s-12); font-size: var(--font-size-sm);
-  }
-  .radio-row input[type="radio"] { accent-color: var(--yellow-600); }
-  .radio-row label { margin: 0; font-weight: 400; cursor: pointer; }
-  .radio-sub {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    margin: -4px 0 var(--s-12) 22px;
-  }
-  .pin-fields { margin-top: var(--s-12); padding-left: 22px; }
-  .field { margin-bottom: var(--s-16); }
-  .field label {
-    display: block; font-size: var(--font-size-sm); font-weight: 600;
-    color: var(--color-text-main); margin-bottom: var(--s-8);
-  }
-  .field select {
-    width: 100%; height: var(--control-h-md); padding: 0 var(--s-12);
-    border: 1px solid transparent; border-radius: var(--r-8);
-    background-color: var(--bg-input); color: var(--color-text-main);
-    font-size: var(--font-size-sm); font-family: inherit; padding-right: 30px;
-  }
-  .field select:focus {
-    outline: none; border-color: var(--border-hover);
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
+  .mode-group { display: flex; flex-direction: column; gap: var(--s-16); }
+  .pin-fields {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-16);
+    padding-left: var(--s-28);
   }
 
   .msg { color: var(--color-text-muted); font-style: italic; }
@@ -208,8 +156,8 @@ class AgentLlmConfig extends HTMLElement {
       <p class="subtitle">${subtitle}</p>
       ${cardHtml}
       <div class="actions">
-        ${pinned ? `<button class="btn-revert" data-action="revert" type="button">Revert to default</button>` : ''}
-        <button class="btn-override" data-action="override" type="button">${pinned ? 'Change model' : 'Override model'}</button>
+        <app-button variant="primary" data-action="override">${pinned ? 'Change model' : 'Override model'}</app-button>
+        ${pinned ? `<app-button variant="tertiary" data-action="revert">Revert to default</app-button>` : ''}
       </div>
     `;
 
@@ -260,53 +208,40 @@ class AgentLlmConfig extends HTMLElement {
 
       body.innerHTML = `
         <p class="modal-desc">Choose how this agent selects an LLM.</p>
-        <div class="radio-row">
-          <input type="radio" id="pin-mode-config" name="pin-mode" value="config" ${mode === 'config' ? 'checked' : ''} />
-          <label for="pin-mode-config">Use workspace configuration</label>
-        </div>
-        ${mode === 'config' ? `
-          <div class="pin-fields">
-            <div class="field">
-              <label for="pick-config">Configuration</label>
-              <select id="pick-config">
+        <div class="mode-group" id="pin-mode-group">
+          <app-radio name="pin-mode" value="config" label="Use workspace configuration"
+            ${mode === 'config' ? 'checked' : ''}></app-radio>
+          ${mode === 'config' ? `
+            <div class="pin-fields">
+              <app-select id="pick-config" label="Configuration">
                 <option value="" ${!draftConfigId ? 'selected' : ''}>Workspace default${defaultCfg ? ` (${escHtml(defaultCfg.name)})` : ''}</option>
                 ${configOptions}
-              </select>
-            </div>
-          </div>` : ''}
-        <div class="radio-row">
-          <input type="radio" id="pin-mode-pin" name="pin-mode" value="pin" ${mode === 'pin' ? 'checked' : ''} />
-          <label for="pin-mode-pin">Pin a model</label>
-        </div>
-        ${mode === 'pin' ? `
-          <div class="pin-fields">
-            <div class="field">
-              <label for="pin-provider">Provider</label>
-              <select id="pin-provider">
+              </app-select>
+            </div>` : ''}
+          <app-radio name="pin-mode" value="pin" label="Pin a model"
+            ${mode === 'pin' ? 'checked' : ''}></app-radio>
+          ${mode === 'pin' ? `
+            <div class="pin-fields">
+              <app-select id="pin-provider" label="Provider">
                 <option value="" disabled ${draftProvider ? '' : 'selected'}>Choose provider</option>
                 ${this.#providers.map((p) => `
-                  <option value="${escHtml(p.provider)}" ${p.provider === draftProvider ? 'selected' : ''}>
-                    ${escHtml(this.#cap(p.provider))}
-                  </option>`).join('')}
-              </select>
-            </div>
-            ${draftProvider ? `
-            <div class="field">
-              <label for="pin-model">Model</label>
-              <select id="pin-model">
-                <option value="" disabled ${draftModel ? '' : 'selected'}>Choose model</option>
-                ${modelsHtml}
-              </select>
+                  <option value="${escHtml(p.provider)}" ${p.provider === draftProvider ? 'selected' : ''}>${escHtml(this.#cap(p.provider))}</option>`).join('')}
+              </app-select>
+              ${draftProvider ? `
+                <app-select id="pin-model" label="Model">
+                  <option value="" disabled ${draftModel ? '' : 'selected'}>Choose model</option>
+                  ${modelsHtml}
+                </app-select>` : ''}
             </div>` : ''}
-          </div>` : ''}
+        </div>
       `;
 
-      // Wire radio toggles
-      body.querySelectorAll('input[name="pin-mode"]').forEach((r) => {
-        r.addEventListener('change', () => {
-          mode = r.value;
-          renderBody();
-        });
+      // Delegated on the group: renderBody() replaces every <app-radio>, and the
+      // change event bubbles up from the input each one owns.
+      body.querySelector('#pin-mode-group').addEventListener('change', (e) => {
+        if (e.target.name !== 'pin-mode') return;
+        mode = e.target.value;
+        renderBody();
       });
 
       // Wire config picker
@@ -328,7 +263,7 @@ class AgentLlmConfig extends HTMLElement {
     };
 
     footer.innerHTML = `
-      <app-button variant="secondary" data-action="modal-cancel">Cancel</app-button>
+      <app-button variant="tertiary" data-action="modal-cancel">Cancel</app-button>
       <app-button variant="primary" data-action="modal-save">Save changes</app-button>
     `;
 

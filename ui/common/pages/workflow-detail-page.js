@@ -17,7 +17,9 @@ import { showToast } from '/common/utils/toast.js';
 import { timeAgo } from '/common/utils/date-utils.js';
 import { fmtDuration, fmtTokens } from '/common/utils/units.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
+import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/features/wf-step-editor.js';
 import '/common/features/wf-run-steps.js';
 
@@ -28,7 +30,8 @@ import { call } from '../core/data-sources.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const POLL_MS = 1500;
-const EXEC_BADGES = { success: 'badge--success', failed: 'badge--error', running: 'badge--warning', pending: 'badge--neutral' };
+/** Execution status → <app-badge> variant. */
+const EXEC_VARIANTS = { success: 'success', failed: 'error', running: 'warning', pending: 'neutral' };
 
 class WorkflowDetailPage extends HTMLElement {
   #initialized = false;
@@ -49,11 +52,12 @@ class WorkflowDetailPage extends HTMLElement {
     if (!this.#workflowId) {
       this.innerHTML = `
         <div class="col">
-          <div class="not-found">
-            <span class="empty-tile">${icons.workflow('', 24)}</span>
-            <p class="not-found-title">No workflow selected</p>
-            <p class="not-found-sub">Open a workflow from the <a href="/workflows">library</a>.</p>
-          </div>
+          <app-empty-state
+            title="No workflow selected"
+            description="Open one from the workflows library to review its steps and runs."
+            icon='${icons.workflow('', 40)}'>
+            <app-button variant="tertiary" href="/workflows">Browse workflows</app-button>
+          </app-empty-state>
         </div>`;
       return;
     }
@@ -88,12 +92,12 @@ class WorkflowDetailPage extends HTMLElement {
     } catch {
       this.innerHTML = `
         <div class="col">
-          <div class="not-found">
-            <span class="empty-tile">${icons.faceFrown('', 24)}</span>
-            <p class="not-found-title">Workflow not found</p>
-            <p class="not-found-sub">It may have been deleted. Back to the
-              <a href="/workflows">library</a>.</p>
-          </div>
+          <app-empty-state
+            title="Workflow not found"
+            description="It may have been deleted."
+            icon='${icons.faceFrown('', 40)}'>
+            <app-button variant="tertiary" href="/workflows">Back to workflows</app-button>
+          </app-empty-state>
         </div>`;
       return;
     }
@@ -120,7 +124,8 @@ class WorkflowDetailPage extends HTMLElement {
     this.innerHTML = `
       <div class="col">
         <header class="page-head">
-          <a class="back-btn" href="/workflows" aria-label="Back to workflows">${icons.chevronLeft('', 16)}</a>
+          <app-button variant="tertiary" icon-only href="/workflows"
+            aria-label="Back to workflows">${icons.chevronLeft()}</app-button>
           <input class="name-input" id="wf-name" value="${escHtml(wf.name)}" aria-label="Workflow name" />
           <app-button variant="primary" size="sm" id="run-btn">${icons.play('', 12)} Run</app-button>
         </header>
@@ -129,8 +134,8 @@ class WorkflowDetailPage extends HTMLElement {
           placeholder="Describe what this workflow is for">${escHtml(wf.description || wf.maf_json?.description || '')}</textarea>
 
         <div class="badges">
-          <span class="badge badge--muted">${steps.length === 1 ? '1 step' : `${steps.length} steps`}</span>
-          <span class="badge badge--muted">${escHtml(runs)}</span>
+          <app-badge variant="neutral">${steps.length === 1 ? '1 step' : `${steps.length} steps`}</app-badge>
+          <app-badge variant="neutral">${escHtml(runs)}</app-badge>
         </div>
 
         <section class="sec">
@@ -196,14 +201,17 @@ class WorkflowDetailPage extends HTMLElement {
     const list = this.querySelector('#exec-list');
     if (!list) return;
     if (!this.#executions.length) {
-      list.innerHTML = `<p class="exec-empty">This workflow hasn't run yet. Hit Run to start the
-        first execution.</p>`;
+      list.innerHTML = `
+        <app-empty-state
+          title="No runs yet"
+          description="This workflow hasn't run yet. Hit Run to start the first execution."
+        ></app-empty-state>`;
       return;
     }
     list.innerHTML = this.#executions.map((e) => `
       <button type="button" class="exec-row" data-exec="${escHtml(e.id)}">
         <span class="exec-num">#${e.execution_number}</span>
-        <span class="badge ${EXEC_BADGES[e.status] || 'badge--neutral'}"><span class="badge__dot"></span>${escHtml(e.status)}</span>
+        <app-badge variant="${EXEC_VARIANTS[e.status] || 'neutral'}" dot>${escHtml(e.status)}</app-badge>
         <span class="exec-meta">${escHtml(timeAgo(e.created_at))}</span>
         <span class="exec-meta">${e.duration_ms != null ? fmtDuration(e.duration_ms) : ''}</span>
         <span class="exec-meta">${fmtTokens(e.tokens_used)}</span>
@@ -272,7 +280,7 @@ class WorkflowDetailPage extends HTMLElement {
       this.#execution = await call('fetchExecution', execId);
     } catch (err) {
       this.querySelector('#run-body').innerHTML =
-        `<p class="exec-empty">Failed to load execution: ${escHtml(err.message)}</p>`;
+        `<p class="load-error">Failed to load execution: ${escHtml(err.message)}</p>`;
       return;
     }
     this.#updateRunView();
@@ -283,7 +291,8 @@ class WorkflowDetailPage extends HTMLElement {
     this.innerHTML = `
       <div class="col">
         <header class="page-head">
-          <button type="button" class="back-btn" id="run-back" aria-label="Back to workflow">${icons.chevronLeft('', 16)}</button>
+          <app-button variant="tertiary" icon-only id="run-back"
+            aria-label="Back to workflow">${icons.chevronLeft()}</app-button>
           <h1 class="title-page run-title" id="run-title">${escHtml(this.#workflow?.name || 'Execution')}</h1>
         </header>
         <div id="run-body">
@@ -310,10 +319,10 @@ class WorkflowDetailPage extends HTMLElement {
 
   #updateRunView() {
     const exec = this.#execution;
-    const statusCls = EXEC_BADGES[exec.status] || 'badge--neutral';
+    const variant = EXEC_VARIANTS[exec.status] || 'neutral';
     this.querySelector('#run-num').textContent = `Execution #${exec.execution_number}`;
     this.querySelector('#run-status').innerHTML =
-      `<span class="badge ${statusCls}"><span class="badge__dot"></span>${escHtml(exec.status)}</span>`;
+      `<app-badge variant="${variant}" dot>${escHtml(exec.status)}</app-badge>`;
 
     const stepCount = exec.step_results?.length || 0;
     const attempts = exec.attempt_count > 1 ? `attempt ${exec.attempt_count}/${exec.max_attempts}` : '';
@@ -323,7 +332,7 @@ class WorkflowDetailPage extends HTMLElement {
       exec.duration_ms != null ? fmtDuration(exec.duration_ms) : '',
       fmtTokens(exec.tokens_used),
       attempts,
-    ].filter(Boolean).map((label) => `<span class="badge badge--muted">${escHtml(label)}</span>`).join('');
+    ].filter(Boolean).map((label) => `<app-badge variant="neutral">${escHtml(label)}</app-badge>`).join('');
 
     const stepsEl = this.querySelector('#run-steps');
     stepsEl.labels = this.#stepLabels();

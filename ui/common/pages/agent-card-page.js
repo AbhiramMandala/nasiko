@@ -1,3 +1,4 @@
+import { setFieldError } from '/common/utils/field-error.js';
 import { icons } from '/common/utils/icons.js';
 import { fetchApi, apiFetch } from '/common/services/api.js';
 import { authService } from '/common/services/auth-service.js';
@@ -5,28 +6,26 @@ import { showToast } from '/common/utils/toast.js';
 import { confirmDialog } from '/common/design-system/app-modal/app-modal.js';
 import { ansiToHtml } from '/common/utils/ansi.js';
 import { attachSlidingIndicator } from '/common/utils/tab-indicator.js';
+import '/common/design-system/app-tabs/app-tabs.js';
 import styles from './agent-card-page.css' with { type: 'css' };
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/features/agent-llm-config.js';
 import '/common/features/secrets-manager.js';
 import { escHtml, escAttr } from '/common/utils/escape.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-input/app-input.js';
+import '/common/design-system/app-radio/app-radio.js';
+import '/common/design-system/app-search/app-search.js';
+import '/common/design-system/app-select/app-select.js';
+import '/common/design-system/app-switch/app-switch.js';
+import '/common/design-system/app-badge/app-badge.js';
+import '/common/design-system/app-table/app-table.js';
+import '/common/design-system/app-tag/app-tag.js';
 import { call } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';
 
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
-
-// Tabs marked `managed` render only for callers who can manage the agent
-// (owner or superuser — `can_manage` from GET /api/agents/{id}).
-const TABS = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'access', label: 'Access & security', managed: true },
-  { key: 'versions', label: 'Versions', managed: true },
-  { key: 'configure', label: 'Configure' },
-  { key: 'settings', label: 'Settings', managed: true },
-  { key: 'logs', label: 'Logs' },
-];
 
 const GRANT_TYPES = [
   { key: 'user', label: 'User', eeOnly: false },
@@ -123,15 +122,14 @@ class AgentCardPage extends HTMLElement {
       <div class="acp-page">
         ${this.#topbarHtml(a)}
         ${this.#heroHtml(a, displayName)}
-        <nav class="acp-tabs">
-          ${this.#visibleTabs().map((t, i) => `<button class="acp-tab${i === 0 ? ' is-active' : ''}" data-tab="${t.key}">${t.label}</button>`).join('')}
-        </nav>
-        ${this.#overviewPanelHtml(a)}
-        ${this.#canManage ? this.#accessPanelHtml() : ''}
-        ${this.#canManage ? this.#versionsPanelHtml() : ''}
-        ${this.#configurePanelHtml(a)}
-        ${this.#canManage ? this.#settingsPanelHtml(a) : ''}
-        ${this.#logsPanelHtml()}
+        <app-tabs>
+          ${this.#overviewPanelHtml(a)}
+          ${this.#canManage ? this.#accessPanelHtml() : ''}
+          ${this.#canManage ? this.#versionsPanelHtml() : ''}
+          ${this.#configurePanelHtml(a)}
+          ${this.#canManage ? this.#settingsPanelHtml(a) : ''}
+          ${this.#logsPanelHtml()}
+        </app-tabs>
       </div>
       ${this.#canManage ? this.#modalsHtml() : ''}
     `;
@@ -149,14 +147,10 @@ class AgentCardPage extends HTMLElement {
     this.#loadResourceUsage();
   }
 
-  #visibleTabs() {
-    return TABS.filter((t) => !t.managed || this.#canManage);
-  }
-
   #topbarHtml(a) {
     const actions = this.#canManage && a.status === 'running' ? `
-            <app-button variant="ghost" data-action="restart" title="Restart agent">${icons.refresh('', 14)} Restart</app-button>
-            <app-button variant="ghost" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</app-button>` : '';
+            <app-button variant="ghost" size="sm" data-action="restart" title="Restart agent">${icons.refresh()} Restart</app-button>
+            <app-button variant="ghost" size="sm" data-action="stop" title="Stop agent">${icons.square()} Stop</app-button>` : '';
     return `
         <div class="acp-topbar">
           <a class="acp-back" href="/agents" data-action="back" title="Back" aria-label="Back">
@@ -179,9 +173,10 @@ class AgentCardPage extends HTMLElement {
           <h1 class="acp-name">${escHtml(displayName)}</h1>
           <span class="acp-version">v${escHtml(a.version || '?')}</span>
           <span class="acp-verified" title="Registered agent">${icons.checkCircle('', 16)}</span>
-          <a class="acp-start-btn" href="/chat?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
-            Start session ${icons.send('', 15)}
-          </a>
+          <app-button class="acp-start-btn" variant="primary"
+            href="/chat?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
+            Start session ${icons.send()}
+          </app-button>
         </div>
 
         <div class="acp-badge-row">
@@ -216,20 +211,19 @@ class AgentCardPage extends HTMLElement {
     const caps = a.capabilities || {};
 
     return `
-        <div class="acp-panel is-active" data-panel="overview">
+        <div class="acp-panel" data-tab="overview" data-label="Overview">
           <div class="acp-overview-head">
             <p class="acp-description">${escHtml(a.description || '')}</p>
-            <label class="acp-json-toggle">
-              <input type="checkbox" id="acp-json-switch" />
-              <span class="acp-json-track" aria-hidden="true"></span>
-              <span class="acp-json-label">Agent JSON</span>
-              ${icons.code('', 15)}
-            </label>
+            <div class="acp-json-toggle">
+              <app-switch id="acp-json-switch" size="sm" label="Agent JSON"></app-switch>
+              ${icons.code('acp-json-icon', 16)}
+            </div>
           </div>
 
           <div id="acp-json-view" hidden>
             <div class="acp-json-block">
-              <button type="button" class="acp-json-copy" title="Copy JSON" aria-label="Copy JSON">${icons.copy('', 15)}</button>
+              <app-button class="acp-json-copy" variant="ghost" size="sm" icon-only
+                title="Copy JSON" aria-label="Copy JSON">${icons.copy()}</app-button>
               <pre><code>${escHtml(JSON.stringify(a, null, 2))}</code></pre>
             </div>
           </div>
@@ -307,23 +301,18 @@ class AgentCardPage extends HTMLElement {
 
   /* ── Tab switching ─────────────────────────────────────────────────────── */
 
+  // app-tabs owns the strip and panel visibility; we only lazy-load on entry.
   #wireTabs() {
-    attachSlidingIndicator(this.querySelector('.acp-tabs'), '.acp-tab', '.is-active');
-    this.querySelector('.acp-tabs').addEventListener('click', (e) => {
-      const tab = e.target.closest('.acp-tab');
-      if (!tab) return;
-      this.querySelectorAll('.acp-tab').forEach(t => t.classList.remove('is-active'));
-      this.querySelectorAll('.acp-panel').forEach(p => p.classList.remove('is-active'));
-      tab.classList.add('is-active');
-      this.querySelector(`[data-panel="${tab.dataset.tab}"]`).classList.add('is-active');
-      if (tab.dataset.tab === 'logs' && !this.#logsLoaded) this.#loadLogs();
-      if (tab.dataset.tab === 'settings' && !this.#secretsLoaded) {
+    this.querySelector('app-tabs').addEventListener('tab-change', (e) => {
+      const key = e.detail.key;
+      if (key === 'logs' && !this.#logsLoaded) this.#loadLogs();
+      if (key === 'settings' && !this.#secretsLoaded) {
         this.#secretsLoaded = true;
         this.querySelector('#acp-secrets')?.refresh();
       }
-      if (tab.dataset.tab === 'access' && !this.#accessLoaded) this.#loadAccess();
-      if (tab.dataset.tab === 'versions' && !this.#versionsLoaded) this.#loadVersions();
-      if (tab.dataset.tab === 'configure' && !this.#configureLoaded) this.#loadConfigure();
+      if (key === 'access' && !this.#accessLoaded) this.#loadAccess();
+      if (key === 'versions' && !this.#versionsLoaded) this.#loadVersions();
+      if (key === 'configure' && !this.#configureLoaded) this.#loadConfigure();
     });
   }
 
@@ -390,7 +379,7 @@ class AgentCardPage extends HTMLElement {
 
   #accessPanelHtml() {
     return `
-        <div class="acp-panel" data-panel="access">
+        <div class="acp-panel" data-tab="access" data-label="Access &amp; security">
           <div id="acp-access-body"><app-skeleton height="240px"></app-skeleton></div>
         </div>`;
   }
@@ -399,7 +388,7 @@ class AgentCardPage extends HTMLElement {
 
   #versionsPanelHtml() {
     return `
-        <div class="acp-panel" data-panel="versions">
+        <div class="acp-panel" data-tab="versions" data-label="Versions">
           <section class="acp-section">
             <div class="acp-versions-head">
               <div>
@@ -407,7 +396,7 @@ class AgentCardPage extends HTMLElement {
                 <p class="acp-section-sub">Every build of this agent. Re-upload to ship a new
                   version, or roll back to a previous image.</p>
               </div>
-              <app-button variant="dark" data-action="reupload">${icons.upload('', 14)} Re-upload</app-button>
+              <app-button variant="primary" data-action="reupload">${icons.upload()} Re-upload</app-button>
             </div>
             <div id="acp-versions-body"><app-skeleton height="200px"></app-skeleton></div>
           </section>
@@ -431,6 +420,9 @@ class AgentCardPage extends HTMLElement {
     this.#renderVersions();
   }
 
+  // Same `<app-table>` treatment as the grants table: the DS owns the head,
+  // hairlines, sorting and empty row. Rows carry `status_label` so the column
+  // sorts on the word it shows rather than on the raw `is_active` flag.
   #renderVersions() {
     const el = this.querySelector('#acp-versions-body');
     if (!el) return;
@@ -443,35 +435,26 @@ class AgentCardPage extends HTMLElement {
       return;
     }
 
-    const statusBadge = (v) => {
-      if (v.is_active) return '<span class="badge badge--brand"><span class="badge__dot"></span>Active</span>';
-      if (v.status === 'archived') return '<span class="badge badge--muted">Archived</span>';
-      return `<span class="badge badge--muted">${escHtml(v.status || '—')}</span>`;
-    };
-
-    el.innerHTML = `
-      <table class="acp-table">
-        <thead>
-          <tr>
-            <th>Version</th><th>Status</th><th>Image</th><th>Changelog</th><th>Built</th><th></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${this.#versions.map((v) => `
-            <tr>
-              <td><code>${escHtml(v.version)}</code></td>
-              <td>${statusBadge(v)}</td>
-              <td class="acp-td-muted"><code>${escHtml(v.image_tag || '—')}</code></td>
-              <td class="acp-td-muted">${escHtml(v.changelog || '—')}</td>
-              <td class="acp-td-muted">${v.created_at ? new Date(v.created_at).toLocaleString() : '—'}</td>
-              <td>
-                ${v.is_active || !v.can_rollback ? '' : `
-                  <app-button variant="ghost" data-action="rollback"
-                    data-version="${escAttr(v.version)}">Roll back</app-button>`}
-              </td>
-            </tr>`).join('')}
-        </tbody>
-      </table>`;
+    el.innerHTML = '<app-table id="acp-versions-table" pagination="none" limit="5"></app-table>';
+    const table = el.querySelector('#acp-versions-table');
+    table.columns = [
+      { key: 'version', label: 'Version', render: (v) => `<code>${escHtml(v)}</code>` },
+      { key: 'status_label', label: 'Status', render: (v, row) => row.is_active
+        ? `<app-badge variant="success" dot>Active</app-badge>`
+        : `<app-badge variant="neutral">${escHtml(v)}</app-badge>` },
+      { key: 'image_tag', label: 'Image', render: (v) => `<code>${escHtml(v || '—')}</code>` },
+      { key: 'changelog', label: 'Changelog', render: (v) => escHtml(v || '—') },
+      { key: 'built', label: 'Built', render: (v) => escHtml(v) },
+      { key: 'actions', label: '', render: (_v, row) => row.is_active || !row.can_rollback ? ''
+        : `<app-button variant="ghost" size="sm" data-action="rollback"
+            data-version="${escAttr(row.version)}">Roll back</app-button>` },
+    ];
+    table.dataFn = () => this.#versions.map((v) => ({
+      ...v,
+      status_label: v.status === 'archived' ? 'Archived' : (v.status || '—'),
+      built: v.created_at ? new Date(v.created_at).toLocaleString() : '—',
+    }));
+    table.refresh();
   }
 
   #wireVersionModals() {
@@ -507,8 +490,10 @@ class AgentCardPage extends HTMLElement {
       this.#showModalError(error, 'Choose a .zip archive to upload.');
       return;
     }
+    const versionField = this.querySelector('#acp-reupload-version');
+    setFieldError(versionField, null);
     if (!version) {
-      this.#showModalError(error, 'A version or bump strategy is required.');
+      setFieldError(versionField, 'A version or bump strategy is required.');
       return;
     }
 
@@ -700,17 +685,16 @@ class AgentCardPage extends HTMLElement {
             <h2 class="acp-section-title">Access</h2>
             <p class="acp-section-sub">Grant access to ${isEe ? 'users, teams, or departments' : 'users or agents'}. ${isEe ? 'Access is automatically inherited by members.' : ''}</p>
           </div>
-          <app-button variant="dark" id="acp-grant-open">${icons.plus('', 14)} Grant access</app-button>
+          <app-button variant="primary" id="acp-grant-open">${icons.plus('', 14)} Grant access</app-button>
         </div>
-        <div class="acp-access-search">
-          ${icons.search('acp-access-search-icon', 14)}
-          <input type="text" id="acp-access-filter" placeholder="Search ${this.#granteeTabDefs().map(d => d.label.toLowerCase()).join(', ')}"
-            value="${escAttr(this.#accessFilter)}" autocomplete="off" />
-        </div>
+        <app-search id="acp-access-filter" size="sm" class="acp-access-search"
+          placeholder="Search ${this.#granteeTabDefs().map(d => d.label.toLowerCase()).join(', ')}"
+          aria-label="Search access grants"
+          value="${escAttr(this.#accessFilter)}" autocomplete="off"></app-search>
         <div class="acp-subtabs" id="acp-grantee-tabs">
           ${this.#granteeTabDefs().map(d => `<button type="button" class="acp-subtab${d.key === this.#granteeTab ? ' is-active' : ''}" data-grantee-tab="${d.key}">${d.label}</button>`).join('')}
         </div>
-        <div id="acp-access-table">${this.#accessTableHtml()}</div>
+        <app-table id="acp-access-table" pagination="none" limit="5"></app-table>
       </section>`;
 
     this.#wireAccess(body);
@@ -718,14 +702,8 @@ class AgentCardPage extends HTMLElement {
 
   #visOptionHtml(value, label, sub, checked) {
     return `
-      <label class="acp-vis-option">
-        <input type="radio" name="acp-visibility" value="${value}" ${checked ? 'checked' : ''} />
-        <span class="acp-vis-radio" aria-hidden="true"></span>
-        <span class="acp-vis-text">
-          <span class="acp-vis-label">${label}</span>
-          <span class="acp-vis-sub">${sub}</span>
-        </span>
-      </label>`;
+      <app-radio class="acp-vis-option" name="acp-visibility" value="${escAttr(value)}"
+        label="${escAttr(label)}" hint="${escAttr(sub)}" ${checked ? 'checked' : ''}></app-radio>`;
   }
 
   #wireAccess(body) {
@@ -735,8 +713,7 @@ class AgentCardPage extends HTMLElement {
     const filter = body.querySelector('#acp-access-filter');
     filter?.addEventListener('input', () => {
       this.#accessFilter = filter.value;
-      this.querySelector('#acp-access-table').innerHTML = this.#accessTableHtml();
-      this.#wireAccessTable();
+      this.#syncAccessTable();
     });
     const granteeTabs = body.querySelector('#acp-grantee-tabs');
     if (granteeTabs) attachSlidingIndicator(granteeTabs, '.acp-subtab', '.is-active', { pill: true });
@@ -746,11 +723,11 @@ class AgentCardPage extends HTMLElement {
       this.#granteeTab = btn.dataset.granteeTab;
       body.querySelectorAll('.acp-subtab').forEach(t =>
         t.classList.toggle('is-active', t.dataset.granteeTab === this.#granteeTab));
-      this.querySelector('#acp-access-table').innerHTML = this.#accessTableHtml();
-      this.#wireAccessTable();
+      this.#syncAccessTable();
     });
     body.querySelector('#acp-grant-open')?.addEventListener('click', () => this.#openGrantModal());
     this.#wireAccessTable();
+    this.#syncAccessTable();
   }
 
   async #setVisibility(isPublic) {
@@ -773,25 +750,49 @@ class AgentCardPage extends HTMLElement {
     return fields.some((f) => (f || '').toLowerCase().includes(q));
   }
 
-  #accessTableHtml() {
+  /**
+   * The grants table is `<app-table>` — the design system's table, so the head,
+   * hairlines, sorting, sticky action column and empty row all come from one
+   * place instead of a per-page `<table>`. Its own search and pager are off: the
+   * section already owns an `<app-search>` that spans every grantee tab, and a
+   * grant list is short enough to read whole.
+   *
+   * Each tab is a different shape, so this hands the element a fresh
+   * `columns` + `dataFn` pair and refreshes it. Rows carry their computed
+   * `grant` string as a real field so the column sorts on what it shows.
+   */
+  #syncAccessTable() {
+    const table = this.querySelector('#acp-access-table');
+    if (!table) return;
+    const { columns, rows } = this.#accessTableView();
+    const label = this.#granteeTabDefs().find(d => d.key === this.#granteeTab)?.label || 'entries';
+    table.setAttribute('empty-message',
+      `No ${label.toLowerCase()} have access yet — use Grant access to share this agent.`);
+    table.columns = columns;
+    table.dataFn = () => rows;
+    table.refresh();
+  }
+
+  #accessTableView() {
     switch (this.#granteeTab) {
-      case 'departments': return this.#departmentsTableHtml();
-      case 'teams': return this.#teamsTableHtml();
-      case 'agents': return this.#agentsTableHtml();
-      default: return this.#usersTableHtml();
+      case 'departments': return this.#departmentsTableView();
+      case 'teams': return this.#teamsTableView();
+      case 'agents': return this.#agentsTableView();
+      default: return this.#usersTableView();
     }
   }
 
-  #accessEmptyHtml() {
-    const label = this.#granteeTabDefs().find(d => d.key === this.#granteeTab)?.label || 'entries';
-    return `
-      <div class="acp-access-empty">
-        <span class="acp-access-empty-title">No ${label.toLowerCase()} have access yet</span>
-        <span class="acp-access-empty-sub">Use Grant access to share this agent.</span>
-      </div>`;
+  /** Dash for an empty cell, so a blank column reads as "none" not as broken. */
+  #cellOrDash(v) {
+    return v === null || v === undefined || v === '' ? '—' : escHtml(String(v));
   }
 
-  #usersTableHtml() {
+  #grantBadge(kind) {
+    const mod = kind === 'Owner' ? ' is-owner' : kind === 'Direct' ? ' is-direct' : '';
+    return `<span class="acp-grant-badge${mod}">${kind}</span>`;
+  }
+
+  #usersTableView() {
     const ownerId = this.#agent.owner_id;
     const direct = this.#directUserIds();
     let rows = this.#access.users.filter((u) => this.#matchesFilter(u.name, u.email));
@@ -800,103 +801,81 @@ class AgentCardPage extends HTMLElement {
       const self = authService.getCurrentUserId() === ownerId ? authService.getCurrentUser() : null;
       rows = [{ id: ownerId, name: self || this.#shortId(ownerId), email: '', role: '' }, ...rows];
     }
-    if (!rows.length) return this.#accessEmptyHtml();
-    return `
-      <table class="acp-table">
-        <thead><tr><th>User</th><th>Email</th><th>Role</th><th>Grant</th><th class="acp-th-actions"></th></tr></thead>
-        <tbody>
-          ${rows.map((u) => {
-            const isOwner = u.id === ownerId;
-            const isDirect = direct.has(u.id);
-            const grant = isOwner
-              ? '<span class="acp-grant-badge is-owner">Owner</span>'
-              : isDirect
-                ? '<span class="acp-grant-badge is-direct">Direct</span>'
-                : '<span class="acp-grant-badge">Inherited</span>';
-            const action = isOwner
-              ? `<button type="button" class="acp-link-btn" data-transfer-open>Transfer ownership</button>`
-              : isDirect
-                ? this.#revokeBtnHtml('user', u.id, u.name)
-                : '';
-            return `
-            <tr>
-              <td class="acp-td-name">${escHtml(u.name)}</td>
-              <td class="acp-td-muted">${escHtml(u.email || '—')}</td>
-              <td class="acp-td-muted">${escHtml(u.role || '—')}</td>
-              <td>${grant}</td>
-              <td class="acp-td-actions">${action}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>`;
+    return {
+      columns: [
+        { key: 'name', label: 'User' },
+        { key: 'email', label: 'Email', render: (v) => this.#cellOrDash(v) },
+        { key: 'role', label: 'Role', render: (v) => this.#cellOrDash(v) },
+        { key: 'grant', label: 'Grant', render: (v) => this.#grantBadge(v) },
+        { key: 'actions', label: '', render: (_v, row) => row.grant === 'Owner'
+          ? `<app-button variant="ghost" size="sm" data-transfer-open>Transfer ownership</app-button>`
+          : row.grant === 'Direct' ? this.#revokeBtnHtml('user', row.id, row.name) : '' },
+      ],
+      rows: rows.map((u) => ({
+        ...u,
+        grant: u.id === ownerId ? 'Owner' : direct.has(u.id) ? 'Direct' : 'Inherited',
+      })),
+    };
   }
 
-  #teamsTableHtml() {
-    const rows = (this.#access.teams || []).filter((t) => this.#matchesFilter(t.name));
-    if (!rows.length) return this.#accessEmptyHtml();
-    return `
-      <table class="acp-table">
-        <thead><tr><th>Team</th><th>Members</th><th>Grant</th><th class="acp-th-actions"></th></tr></thead>
-        <tbody>
-          ${rows.map((t) => `
-            <tr>
-              <td class="acp-td-name">${escHtml(t.name)}</td>
-              <td class="acp-td-muted">${t.members_count ?? '—'}</td>
-              <td><span class="acp-grant-badge is-direct">Direct</span></td>
-              <td class="acp-td-actions">${this.#revokeBtnHtml('team', t.id, t.name)}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>`;
+  #teamsTableView() {
+    return {
+      columns: [
+        { key: 'name', label: 'Team' },
+        { key: 'members_count', label: 'Members', render: (v) => this.#cellOrDash(v) },
+        { key: 'grant', label: 'Grant', render: (v) => this.#grantBadge(v) },
+        { key: 'actions', label: '', render: (_v, row) => this.#revokeBtnHtml('team', row.id, row.name) },
+      ],
+      rows: (this.#access.teams || [])
+        .filter((t) => this.#matchesFilter(t.name))
+        .map((t) => ({ ...t, grant: 'Direct' })),
+    };
   }
 
-  #departmentsTableHtml() {
-    const rows = (this.#access.departments || []).filter((d) => this.#matchesFilter(d.name));
-    if (!rows.length) return this.#accessEmptyHtml();
-    return `
-      <table class="acp-table">
-        <thead><tr><th>Department</th><th>Members</th><th>Teams</th><th class="acp-th-actions"></th></tr></thead>
-        <tbody>
-          ${rows.map((d) => `
-            <tr>
-              <td class="acp-td-name">${escHtml(d.name)}</td>
-              <td class="acp-td-muted">${d.members_count ?? '—'}</td>
-              <td class="acp-td-muted">${d.teams_count ?? '—'}</td>
-              <td class="acp-td-actions">${this.#revokeBtnHtml('department', d.id, d.name)}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>`;
+  #departmentsTableView() {
+    return {
+      columns: [
+        { key: 'name', label: 'Department' },
+        { key: 'members_count', label: 'Members', render: (v) => this.#cellOrDash(v) },
+        { key: 'teams_count', label: 'Teams', render: (v) => this.#cellOrDash(v) },
+        { key: 'actions', label: '', render: (_v, row) => this.#revokeBtnHtml('department', row.id, row.name) },
+      ],
+      rows: (this.#access.departments || []).filter((d) => this.#matchesFilter(d.name)),
+    };
   }
 
-  #agentsTableHtml() {
-    const rows = (this.#access.agents || []).filter((g) => this.#matchesFilter(g.name, g.id));
-    if (!rows.length) return this.#accessEmptyHtml();
-    return `
-      <table class="acp-table">
-        <thead><tr><th>Agent</th><th>Grant</th><th class="acp-th-actions"></th></tr></thead>
-        <tbody>
-          ${rows.map((g) => `
-            <tr>
-              <td class="acp-td-name">${escHtml(g.name || this.#shortId(g.id))}</td>
-              <td><span class="acp-grant-badge is-direct">Direct</span></td>
-              <td class="acp-td-actions">${this.#revokeBtnHtml('agent', g.id, g.name || g.id)}</td>
-            </tr>`).join('')}
-        </tbody>
-      </table>`;
+  #agentsTableView() {
+    return {
+      columns: [
+        { key: 'name', label: 'Agent' },
+        { key: 'grant', label: 'Grant', render: (v) => this.#grantBadge(v) },
+        { key: 'actions', label: '', render: (_v, row) => this.#revokeBtnHtml('agent', row.id, row.name) },
+      ],
+      rows: (this.#access.agents || [])
+        .filter((g) => this.#matchesFilter(g.name, g.id))
+        .map((g) => ({ ...g, name: g.name || this.#shortId(g.id), grant: 'Direct' })),
+    };
   }
 
   #revokeBtnHtml(kind, id, name) {
-    return `<button type="button" class="acp-icon-btn acp-icon-btn--danger" data-revoke-kind="${kind}"
+    return `<app-button variant="ghost" size="sm" icon-only data-revoke-kind="${kind}"
       data-revoke-id="${escAttr(id)}" title="Revoke access for ${escAttr(name)}"
-      aria-label="Revoke access for ${escAttr(name)}">${icons.trash('', 14)}</button>`;
+      aria-label="Revoke access for ${escAttr(name)}">${icons.trash()}</app-button>`;
   }
 
+  // Delegated once on the table: app-table rebuilds its rows on every sort and
+  // refresh, so per-button listeners would not survive the first column click.
   #wireAccessTable() {
     const table = this.querySelector('#acp-access-table');
     if (!table) return;
-    table.querySelectorAll('[data-revoke-kind]').forEach((btn) => {
-      btn.addEventListener('click', () => this.#revokeGrant(btn.dataset.revokeKind, btn.dataset.revokeId));
+    table.addEventListener('click', (e) => {
+      const revoke = e.target.closest('[data-revoke-kind]');
+      if (revoke) {
+        this.#revokeGrant(revoke.dataset.revokeKind, revoke.dataset.revokeId);
+        return;
+      }
+      if (e.target.closest('[data-transfer-open]')) this.#openTransferModal();
     });
-    table.querySelector('[data-transfer-open]')?.addEventListener('click', () => this.#openTransferModal());
   }
 
   async #revokeGrant(kind, granteeId) {
@@ -928,32 +907,37 @@ class AgentCardPage extends HTMLElement {
     return `
       <app-modal id="acp-grant-modal" heading="Grant access">
         <div class="acp-grant-form">
-          <div class="acp-grant-types" id="acp-grant-types" role="radiogroup" aria-label="Grant type"></div>
+          <div class="acp-field">
+            <span class="acp-field-label">Grant type</span>
+            <div class="acp-grant-types" id="acp-grant-types" role="group" aria-label="Grant type"></div>
+          </div>
           <div class="acp-picker">
-            <input type="text" id="acp-grant-query" placeholder="Search users" autocomplete="off" />
+            <app-input id="acp-grant-query" label="User" placeholder="Search users"
+              autocomplete="off"><span data-slot="leading">${icons.search()}</span></app-input>
             <div class="acp-picker-results" id="acp-grant-results" hidden></div>
           </div>
           <div class="acp-picker-picked" id="acp-grant-picked" hidden></div>
-          <p class="acp-form-error" id="acp-grant-error" hidden></p>
+          <p class="form-error" id="acp-grant-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="ghost" id="acp-grant-cancel">Cancel</app-button>
-          <app-button variant="dark" id="acp-grant-submit" disabled>Grant access</app-button>
+          <app-button variant="tertiary" id="acp-grant-cancel">Cancel</app-button>
+          <app-button variant="primary" id="acp-grant-submit" disabled>Grant access</app-button>
         </div>
       </app-modal>
       <app-modal id="acp-transfer-modal" heading="Transfer ownership">
         <div class="acp-grant-form">
           <p class="acp-section-sub">The new owner gains full control of this agent — its grants, secrets, and lifecycle. You keep access only if a grant covers you.</p>
           <div class="acp-picker">
-            <input type="text" id="acp-transfer-query" placeholder="Search users" autocomplete="off" />
+            <app-input id="acp-transfer-query" label="New owner" placeholder="Search users"
+              autocomplete="off"><span data-slot="leading">${icons.search()}</span></app-input>
             <div class="acp-picker-results" id="acp-transfer-results" hidden></div>
           </div>
           <div class="acp-picker-picked" id="acp-transfer-picked" hidden></div>
-          <p class="acp-form-error" id="acp-transfer-error" hidden></p>
+          <p class="form-error" id="acp-transfer-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="ghost" id="acp-transfer-cancel">Cancel</app-button>
-          <app-button variant="dark" id="acp-transfer-submit" disabled>Transfer ownership</app-button>
+          <app-button variant="tertiary" id="acp-transfer-cancel">Cancel</app-button>
+          <app-button variant="primary" id="acp-transfer-submit" disabled>Transfer ownership</app-button>
         </div>
       </app-modal>
       <app-modal id="acp-reupload-modal" heading="Re-upload agent">
@@ -964,37 +948,31 @@ class AgentCardPage extends HTMLElement {
             <span class="acp-field-label">Source archive (.zip)</span>
             <input type="file" id="acp-reupload-file" accept=".zip,application/zip" required />
           </label>
-          <label class="acp-field">
-            <span class="acp-field-label">Version</span>
-            <input type="text" id="acp-reupload-version" value="patch" autocomplete="off" />
+          <div class="acp-field">
+            <app-input id="acp-reupload-version" label="Version" value="patch"
+              autocomplete="off"></app-input>
             <span class="acp-field-hint">A semver string (e.g. 1.2.3), or one of
               <code>auto</code>, <code>patch</code>, <code>minor</code>, <code>major</code>.</span>
-          </label>
-          <label class="acp-field">
-            <span class="acp-field-label">Changelog (optional)</span>
-            <input type="text" id="acp-reupload-changelog" autocomplete="off"
-              placeholder="What changed in this version?" />
-          </label>
-          <p class="acp-form-error" id="acp-reupload-error" hidden></p>
+          </div>
+          <app-input id="acp-reupload-changelog" label="Changelog (optional)"
+            autocomplete="off" placeholder="What changed in this version?"></app-input>
+          <p class="form-error" id="acp-reupload-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="ghost" id="acp-reupload-cancel">Cancel</app-button>
-          <app-button variant="dark" id="acp-reupload-submit">Queue build</app-button>
+          <app-button variant="tertiary" id="acp-reupload-cancel">Cancel</app-button>
+          <app-button variant="primary" id="acp-reupload-submit">Queue build</app-button>
         </div>
       </app-modal>
       <app-modal id="acp-rollback-modal" heading="Roll back version">
         <div class="acp-grant-form">
           <p class="acp-section-sub" id="acp-rollback-summary"></p>
-          <label class="acp-field">
-            <span class="acp-field-label">Reason (optional)</span>
-            <input type="text" id="acp-rollback-reason" autocomplete="off"
-              placeholder="Recorded against the rollback build" />
-          </label>
-          <p class="acp-form-error" id="acp-rollback-error" hidden></p>
+          <app-input id="acp-rollback-reason" label="Reason (optional)" autocomplete="off"
+            placeholder="Recorded against the rollback build"></app-input>
+          <p class="form-error" id="acp-rollback-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="ghost" id="acp-rollback-cancel">Cancel</app-button>
-          <app-button variant="dark" id="acp-rollback-submit">Roll back</app-button>
+          <app-button variant="tertiary" id="acp-rollback-cancel">Cancel</app-button>
+          <app-button variant="primary" id="acp-rollback-submit">Roll back</app-button>
         </div>
       </app-modal>`;
   }
@@ -1006,33 +984,44 @@ class AgentCardPage extends HTMLElement {
     this.#setPicked('grant', null);
     const query = this.querySelector('#acp-grant-query');
     query.value = '';
+    query.setAttribute('label', 'User');
+    query.setAttribute('placeholder', 'Search users');
     this.querySelector('#acp-grant-results').hidden = true;
     this.querySelector('#acp-grant-error').hidden = true;
     this.querySelector('#acp-grant-modal').open();
     query.focus();
   }
 
+  /**
+   * The grant-type chips are `<app-tag selectable>` — the design system's filter
+   * chip, which is what this control has always looked like. A tag toggles
+   * itself, so single-select is enforced here: the tag that fired wins and every
+   * sibling is cleared, and re-clicking the active one keeps it selected rather
+   * than leaving the group with no type.
+   */
   #renderGrantTypes() {
     const isEe = Array.isArray(this.#access?.teams) || Array.isArray(this.#access?.departments);
     const el = this.querySelector('#acp-grant-types');
     el.innerHTML = GRANT_TYPES
       .filter((t) => !t.eeOnly || isEe)
       .map((t) => `
-        <label class="acp-grant-type${t.key === this.#grantType ? ' is-active' : ''}">
-          <input type="radio" name="acp-grant-type" value="${t.key}" ${t.key === this.#grantType ? 'checked' : ''} />
-          ${t.label}
-        </label>`).join('');
-    el.querySelectorAll('input').forEach((radio) => {
-      radio.addEventListener('change', () => {
-        this.#grantType = radio.value;
-        el.querySelectorAll('.acp-grant-type').forEach((l) =>
-          l.classList.toggle('is-active', l.querySelector('input').value === radio.value));
-        this.#setPicked('grant', null);
-        const query = this.querySelector('#acp-grant-query');
-        query.value = '';
-        query.placeholder = `Search ${this.#grantType}s`;
-        this.querySelector('#acp-grant-results').hidden = true;
-      });
+        <app-tag class="acp-grant-type" size="sm" selectable data-key="${t.key}"
+          ${t.key === this.#grantType ? 'selected' : ''}>${t.label}</app-tag>`).join('');
+    el.addEventListener('tag-change', (e) => {
+      const tag = e.target;
+      tag.selected = true;
+      for (const peer of el.querySelectorAll('app-tag')) {
+        if (peer !== tag) peer.selected = false;
+      }
+      if (tag.dataset.key === this.#grantType) return;
+      this.#grantType = tag.dataset.key;
+      this.#setPicked('grant', null);
+      const query = this.querySelector('#acp-grant-query');
+      query.value = '';
+      const type = GRANT_TYPES.find((t) => t.key === this.#grantType);
+      query.setAttribute('label', type ? type.label : 'User');
+      query.setAttribute('placeholder', `Search ${this.#grantType}s`);
+      this.querySelector('#acp-grant-results').hidden = true;
     });
   }
 
@@ -1076,9 +1065,10 @@ class AgentCardPage extends HTMLElement {
     const submit = this.querySelector(`#acp-${which}-submit`);
     if (!chip || !submit) return;
     if (picked) {
-      chip.innerHTML = `<span class="acp-chip">${escHtml(picked.label)}<button type="button" class="acp-chip-x" aria-label="Clear selection">${icons.x('', 12)}</button></span>`;
+      chip.innerHTML = `<app-tag class="acp-chip" size="sm" removable>${escHtml(picked.label)}</app-tag>`;
       chip.hidden = false;
-      chip.querySelector('.acp-chip-x').addEventListener('click', () => this.#setPicked(which, null));
+      // app-tag removes itself on click; the page clears the selection behind it.
+      chip.querySelector('app-tag').addEventListener('tag-remove', () => this.#setPicked(which, null));
     } else {
       chip.innerHTML = '';
       chip.hidden = true;
@@ -1202,7 +1192,7 @@ class AgentCardPage extends HTMLElement {
 
   #configurePanelHtml(a) {
     return `
-        <div class="acp-panel" data-panel="configure">
+        <div class="acp-panel" data-tab="configure" data-label="Configure">
           <section class="acp-section">
             <h2 class="acp-section-title">MCP</h2>
             <p class="acp-section-sub">MCP servers this agent may use. Allow or block each tool individually.</p>
@@ -1244,11 +1234,10 @@ class AgentCardPage extends HTMLElement {
     const list = this.querySelector('#acp-mcp-list');
     if (!list) return;
     if (!this.#connectors.length) {
-      list.innerHTML = `
-        <div class="acp-access-empty">
-          <span class="acp-access-empty-title">No MCP servers available</span>
-          <span class="acp-access-empty-sub">Connect servers on the MCP page to make their tools available here.</span>
-        </div>`;
+      list.innerHTML = `<app-empty-state
+        title="No MCP servers available"
+        description="Connect servers on the MCP page to make their tools available here."
+        icon="${escAttr(icons.server('', 32))}"></app-empty-state>`;
       return;
     }
     list.innerHTML = this.#connectors.map((c) => this.#connectorCardHtml(c)).join('');
@@ -1269,17 +1258,16 @@ class AgentCardPage extends HTMLElement {
     return `
       <div class="acp-mcp-card${c.enabled === false ? ' is-disabled' : ''}" data-connector="${escAttr(c.connector_id)}">
         <div class="acp-mcp-head">
-          <button type="button" class="acp-icon-btn acp-mcp-toggle-open" aria-expanded="${open}"
-            aria-label="${open ? 'Collapse' : 'Expand'} ${escAttr(name)}">
-            ${open ? icons.chevronUp('', 16) : icons.chevronDown('', 16)}
-          </button>
+          <app-button variant="ghost" size="sm" icon-only class="acp-mcp-toggle-open"
+            aria-expanded="${open}"
+            aria-label="${open ? 'Collapse' : 'Expand'} ${escAttr(name)}"
+            >${open ? icons.chevronUp() : icons.chevronDown()}</app-button>
           ${logo}
           <span class="acp-mcp-name">${escHtml(name)}</span>
           <span class="acp-mcp-summary">${escHtml(summary)}</span>
-          <label class="acp-json-toggle acp-mcp-enable" title="${c.enabled === false ? 'Enable' : 'Disable'} ${escAttr(name)}">
-            <input type="checkbox" class="acp-mcp-enable-input" ${c.enabled === false ? '' : 'checked'} />
-            <span class="acp-json-track" aria-hidden="true"></span>
-          </label>
+          <app-switch class="acp-mcp-enable-input" size="sm"
+            aria-label="${c.enabled === false ? 'Enable' : 'Disable'} ${escAttr(name)}"
+            ${c.enabled === false ? '' : 'checked'}></app-switch>
         </div>
         ${open ? this.#connectorToolsHtml(c, tools) : ''}
       </div>`;
@@ -1296,17 +1284,24 @@ class AgentCardPage extends HTMLElement {
     return `
       <div class="acp-mcp-tools">
         ${note}
-        ${tools.map((t, i) => `
+        ${tools.map((t, i) => {
+          const group = `stance-${c.connector_id}-${i}`;
+          const opt = (stance, label, on) => `
+            <label>
+              <input type="radio" name="${escAttr(group)}" value="${stance}"
+                data-tool-index="${i}" ${on ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+              ${label}
+            </label>`;
+          return `
           <div class="acp-mcp-tool${disabled ? ' is-dim' : ''}">
             <span class="acp-mcp-tool-name">${escHtml(t.name)}</span>
             <span class="acp-mcp-tool-desc">${escHtml(t.description || '')}</span>
-            <div class="acp-stance">
-              <button type="button" class="acp-stance-btn is-allow" data-tool-index="${i}" data-stance="allow"
-                aria-pressed="${t.stance !== 'block'}" ${disabled ? 'disabled' : ''}>Allow</button>
-              <button type="button" class="acp-stance-btn is-block" data-tool-index="${i}" data-stance="block"
-                aria-pressed="${t.stance === 'block'}" ${disabled ? 'disabled' : ''}>Block</button>
-            </div>
-          </div>`).join('')}
+            <fieldset class="seg-ctrl acp-stance" aria-label="Tool access for ${escAttr(t.name)}">
+              ${opt('allow', 'Allow', t.stance !== 'block')}
+              ${opt('block', 'Block', t.stance === 'block')}
+            </fieldset>
+          </div>`;
+        }).join('')}
       </div>`;
   }
 
@@ -1320,9 +1315,9 @@ class AgentCardPage extends HTMLElement {
       });
       card.querySelector('.acp-mcp-enable-input').addEventListener('change', (e) =>
         this.#setConnectorEnabled(connectorId, e.target.checked));
-      card.querySelectorAll('.acp-stance-btn').forEach((btn) => {
-        btn.addEventListener('click', () =>
-          this.#setToolStance(connectorId, Number(btn.dataset.toolIndex), btn.dataset.stance));
+      card.querySelectorAll('.acp-stance input[type="radio"]').forEach((radio) => {
+        radio.addEventListener('change', () =>
+          this.#setToolStance(connectorId, Number(radio.dataset.toolIndex), radio.value));
       });
     });
   }
@@ -1366,27 +1361,22 @@ class AgentCardPage extends HTMLElement {
 
   #settingsPanelHtml(a) {
     return `
-        <div class="acp-panel" data-panel="settings">
+        <div class="acp-panel" data-tab="settings" data-label="Settings">
           <section class="acp-section">
             <h2 class="acp-section-title">Agent identity</h2>
             <form class="acp-identity" id="acp-identity-form">
-              <label class="acp-field">
-                <span class="acp-field-label">Display name</span>
-                <input type="text" id="acp-display-name" value="${escAttr(a.display_name || a.name)}" maxlength="120" />
-                <span class="acp-field-hint">Shown wherever this agent appears in Nasiko.</span>
-              </label>
+              <app-input id="acp-display-name" label="Display name"
+                value="${escAttr(a.display_name || a.name)}" maxlength="120"
+                hint="Shown wherever this agent appears in Nasiko."></app-input>
               <label class="acp-field">
                 <span class="acp-field-label">Description</span>
                 <textarea id="acp-description" rows="3">${escHtml(a.description || '')}</textarea>
                 <span class="acp-field-hint">Explain what this agent does for the people you share it with.</span>
               </label>
-              <label class="acp-field">
-                <span class="acp-field-label">Agent ID</span>
-                <input type="text" value="${escAttr(a.id)}" disabled />
-                <span class="acp-field-hint">Generated when the agent was first published.</span>
-              </label>
+              <app-input label="Agent ID" value="${escAttr(a.id)}" readonly
+                hint="Generated when the agent was first published."></app-input>
               <div class="acp-identity-actions">
-                <app-button type="submit" variant="dark">Save changes</app-button>
+                <app-button type="submit" variant="primary">Save changes</app-button>
               </div>
             </form>
           </section>
@@ -1408,7 +1398,7 @@ class AgentCardPage extends HTMLElement {
           <section class="acp-section acp-danger">
             <h3 class="acp-danger-title">Danger zone</h3>
             <p class="acp-section-sub">Deleting this agent removes it from the registry, revokes all grants, and stops its container.</p>
-            <app-button variant="danger" data-action="delete">${icons.trash('', 14)} Delete agent</app-button>
+            <app-button variant="danger" data-action="delete">${icons.trash()} Delete agent</app-button>
           </section>
         </div>`;
   }
@@ -1596,7 +1586,7 @@ class AgentCardPage extends HTMLElement {
 
   #logsPanelHtml() {
     return `
-        <div class="acp-panel" data-panel="logs">
+        <div class="acp-panel" data-tab="logs" data-label="Logs">
           <section class="acp-section">
             <div class="acp-logs-toolbar">
               <div class="acp-logs-toolbar-start">
@@ -1605,15 +1595,13 @@ class AgentCardPage extends HTMLElement {
               <div class="acp-logs-toolbar-end">
                 <label class="acp-logs-tail-label">
                   Lines:
-                  <select class="acp-logs-tail-select" id="acp-logs-tail">
-                    <option value="50">50</option>
-                    <option value="100" selected>100</option>
-                    <option value="500">500</option>
-                  </select>
+                  <app-select size="sm" id="acp-logs-tail"
+                    options='[{"value":"50","label":"50"},{"value":"100","label":"100"},{"value":"500","label":"500"}]'
+                    value="100"></app-select>
                 </label>
-                <button class="acp-logs-follow-btn is-active" id="acp-logs-follow" title="Auto-scroll to latest logs">
-                  ${icons.arrowDown('', 14)} Follow
-                </button>
+                <app-button variant="secondary" size="sm" id="acp-logs-follow"
+                  aria-pressed="true" title="Auto-scroll to latest logs"
+                  >${icons.arrowDown()} Follow</app-button>
               </div>
             </div>
             <div class="acp-logs-viewer" id="acp-logs-viewer">
@@ -1633,7 +1621,10 @@ class AgentCardPage extends HTMLElement {
     const followBtn = this.querySelector('#acp-logs-follow');
     followBtn?.addEventListener('click', () => {
       this.#logsFollowing = !this.#logsFollowing;
-      followBtn.classList.toggle('is-active', this.#logsFollowing);
+      // The on state is the brand-tinted `secondary`; off is the hairline
+      // `tertiary`. Same component either way, so the box never shifts.
+      followBtn.setAttribute('variant', this.#logsFollowing ? 'secondary' : 'tertiary');
+      followBtn.setAttribute('aria-pressed', String(this.#logsFollowing));
       if (this.#logsFollowing) this.#scrollLogsToBottom();
     });
   }

@@ -36,20 +36,19 @@ const DS = resolve(UI, 'common/design-system');
 const OUT = resolve(DS, 'catalog.json');
 const CATALOG_VERSION = '1.0';
 
-/**
- * Components outside `design-system/` that a spec is nonetheless allowed to
- * name. `smart-table` is the only one: it is the sanctioned way to render a
- * collection, and a dashboard without a table is not much of a dashboard.
- * Listed explicitly — a generator's vocabulary should be a decision, not a
- * side effect of where a file happens to live.
- */
-const EXTRA = [{ dir: resolve(UI, 'common/features'), name: 'smart-table' }];
+
 
 /**
  * Attributes a spec may never set, whatever the JSDoc says. These are the
  * styling escape hatches; see invariant 1 above.
  */
 const FORBIDDEN = new Set(['class', 'style', 'part', 'exportparts']);
+
+/** The component's stylesheet, or '' — CSS is where non-reactive attributes get used. */
+function cssFor(jsFile) {
+  const css = jsFile.replace(/\.js$/, '.css');
+  return existsSync(css) ? readFileSync(css, 'utf8') : '';
+}
 
 /** Attribute names whose value is a data-source key, not a literal (layer 6). */
 const DATA_SOURCE_ATTRS = new Set(['data-fn']);
@@ -173,9 +172,12 @@ function parseComponent(file) {
   /** @type {{ attribute: string, reason: string }[]} */
   const excluded = [];
   for (const line of lines) {
-    const m = line.match(/^@attr\s+\{([^}]+)\}\s+([\w-]+)\s*-?\s*(.*)$/);
+    const m = line.match(/^@attr\s+\{([^}]+)\}\s+([\w|-]+)\s*-?\s*(.*)$/);
     if (!m) continue;
-    const [, dtype, name, desc] = m;
+    const [, dtype, names, desc] = m;
+    // One line may document several attributes that share a description:
+    // `@attr {string} aria-label|title|aria-expanded - Forwarded to ...`
+    for (const name of names.split('|')) {
     if (FORBIDDEN.has(name)) {
       throw new Error(
         `${relative(UI, file)}: <${element}> documents a styling attribute "${name}". ` +
@@ -197,16 +199,30 @@ function parseComponent(file) {
     if (/\(required\)/i.test(desc)) spec.required = true;
     spec.description = desc.replace(/\s+/g, ' ').trim();
     attributes[name] = spec;
+    }
   }
 
   // Drift check: the code and the doc must agree on the attribute set.
   const obs = src.match(/observedAttributes\(\)\s*\{[\s\S]*?return\s*\[([^\]]*)\]/);
   if (obs) {
-    const observed = [...obs[1].matchAll(/["']([\w-]+)["']/g)].map((m) => m[1]);
+    // `observedAttributes` may spread a module-level list (`...NATIVE`) — resolve
+    // those too, or every attribute it contributes reads as undocumented.
+    const spread = [...obs[1].matchAll(/\.\.\.([A-Za-z_$][\w$]*)/g)].flatMap((m) => {
+      const decl = src.match(new RegExp(`const\\s+${m[1]}\\s*=\\s*\\[([^\\]]*)\\]`));
+      return decl ? [...decl[1].matchAll(/["']([\w-]+)["']/g)].map((a) => a[1]) : [];
+    });
+    const observed = [...obs[1].matchAll(/["']([\w-]+)["']/g)].map((m) => m[1]).concat(spread);
     const documented = new Set(Object.keys(attributes));
     const withheld = new Set(excluded.map((e) => e.attribute));
     const missing = observed.filter((a) => !documented.has(a) && !FORBIDDEN.has(a) && !withheld.has(a));
-    const phantom = [...documented].filter((a) => !observed.includes(a));
+    // A documented attribute need not be *observed* — observedAttributes governs
+    // re-render on change, and plenty of real attributes are read once in
+    // connectedCallback or consumed only by CSS (`:scope[size="xs"]`). So the
+    // phantom test is "used nowhere", not "unobserved".
+    const used = src + cssFor(file);
+    const phantom = [...documented].filter(
+      (a) => !observed.includes(a) && !new RegExp(`getAttribute\\(['"]${a}['"]|\\[${a}[\\]=]`).test(used),
+    );
     if (missing.length) {
       throw new Error(
         `${relative(UI, file)}: <${element}> observes [${missing.join(', ')}] but has no @attr for them. ` +
@@ -259,7 +275,7 @@ function build() {
     .filter((d) => d.isDirectory())
     .map((d) => ({ dir: DS, name: d.name }));
 
-  for (const { dir, name } of [...dirs, ...EXTRA]) {
+  for (const { dir, name } of [...dirs]) {
     const file = resolve(dir, name.endsWith('.js') ? name : `${name}/${name}.js`);
     const flat = resolve(dir, `${name}.js`);
     const path = existsSync(file) ? file : existsSync(flat) ? flat : null;

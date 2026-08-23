@@ -16,6 +16,10 @@ import { renderMarkdown } from '/common/utils/markdown.js';
 // <app-skeleton> and <app-empty-state> rendered as inert unknown elements.
 import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-stat-row/app-stat-row.js';
+import '/common/design-system/app-badge/app-badge.js';
+import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-tabs/app-tabs.js';
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';
@@ -30,7 +34,6 @@ class ObservabilitySessionPage extends HTMLElement {
   #spans = [];          // flattened {span, depth, traceId}
   #span = null;         // currently-selected span's detail payload
   #selected = null;     // {traceId, spanId}
-  #detailTab = 'info';
   #tracesState = 'loading';  // loading | ready | empty | error
   #chatState = 'loading';    // loading | ready | empty
   #focusTraceId = '';        // ?trace_id= — preselect this trace's root span
@@ -46,10 +49,10 @@ class ObservabilitySessionPage extends HTMLElement {
 
     this.innerHTML = `
       <div class="page-head">
-        <button class="back-btn" id="back-btn" type="button" aria-label="Back">${icons.arrowLeft('', 16)}</button>
+        <app-button variant="tertiary" icon-only id="back-btn" aria-label="Back">${icons.arrowLeft()}</app-button>
         <h1 class="page-title">${escHtml(this.#sessionId)}</h1>
       </div>
-      <div class="kpi-strip" id="kpi-strip"></div>
+      <app-stat-row id="kpi-strip" loading="5"></app-stat-row>
       <div class="panes">
         <section class="pane" id="chat-pane" aria-label="Chat history">
           <h2 class="pane-title">Chat History <button type="button" class="pane-collapse" id="chat-collapse" aria-label="Collapse chat history">${icons.chevronLeft('', 14)}</button></h2>
@@ -87,14 +90,6 @@ class ObservabilitySessionPage extends HTMLElement {
       const row = e.target.closest('.span-row');
       if (row) this.#selectSpan(row.dataset.traceId, row.dataset.spanId);
     });
-    this.querySelector('#detail-pane').addEventListener('click', (e) => {
-      const tab = e.target.closest('.tab-btn');
-      if (tab) {
-        this.#detailTab = tab.dataset.tab;
-        this.#renderDetailTabs();
-      }
-    });
-
     this.#load();
   }
 
@@ -147,6 +142,7 @@ class ObservabilitySessionPage extends HTMLElement {
         'The trace backend could not be reached for this session.',
         icons.xCircle(),
       );
+      this.#renderKpis();
       return;
     }
     this.#session = resp?.data?.session ?? null;
@@ -156,19 +152,23 @@ class ObservabilitySessionPage extends HTMLElement {
 
   #renderKpis() {
     const s = this.#session;
-    if (!s) return;
-    const kpi = (label, value) => `
-      <div class="kpi">
-        <div class="kpi-label">${label}</div>
-        <div class="kpi-value">${value}</div>
-      </div>`;
-    this.querySelector('#kpi-strip').innerHTML = [
-      kpi('Traces count', s.num_traces ?? 0),
-      kpi('Total tokens', (s.token_usage?.total ?? 0).toLocaleString()),
-      kpi('Total cost', `$ ${(s.cost_summary?.total?.cost ?? 0).toFixed(3)}`),
-      kpi('Latency P50', `${((s.latency_p50 ?? 0) / 1000).toFixed(1)} s`),
-      kpi('Latency P99', `${((s.latency_p99 ?? 0) / 1000).toFixed(1)} s`),
-    ].join('');
+    const strip = this.querySelector('#kpi-strip');
+    // No session, no metrics. Leaving the skeleton up would claim the numbers
+    // are still loading, and an emptied strip still paints its two hairlines —
+    // so fold the whole thing away.
+    if (!s) {
+      strip.items = [];
+      strip.hidden = true;
+      return;
+    }
+    strip.hidden = false;
+    strip.items = [
+      { label: 'Traces count', value: s.num_traces ?? 0 },
+      { label: 'Total tokens', value: (s.token_usage?.total ?? 0).toLocaleString() },
+      { label: 'Total cost', value: `$ ${(s.cost_summary?.total?.cost ?? 0).toFixed(3)}` },
+      { label: 'Latency P50', value: `${((s.latency_p50 ?? 0) / 1000).toFixed(1)} s` },
+      { label: 'Latency P99', value: `${((s.latency_p99 ?? 0) / 1000).toFixed(1)} s` },
+    ];
     // The chat pane loads in parallel and often wins the race, rendering its
     // chips before #session exists; refresh them once the totals are in.
     this.#renderChatMeta();
@@ -184,9 +184,9 @@ class ObservabilitySessionPage extends HTMLElement {
     // admitting we don't know — an em dash is the convention elsewhere.
     const num = (v, fmt) => (v == null ? '—' : fmt(v));
     meta.innerHTML = `
-      <span class="chip">${icons.layers('', 12)} ${num(s?.token_usage?.total, (v) => v.toLocaleString())}</span>
-      <span class="chip">${num(s?.cost_summary?.total?.cost, (v) => `$ ${v.toFixed(2)}`)}</span>
-      <span class="chip">${icons.clock('', 12)} ${num(s?.latency_p50, (v) => `${(v / 1000).toFixed(1)} s`)}</span>
+      <app-badge variant="neutral">${icons.layers('', 12)} ${num(s?.token_usage?.total, (v) => v.toLocaleString())}</app-badge>
+      <app-badge variant="neutral">${num(s?.cost_summary?.total?.cost, (v) => `$ ${v.toFixed(2)}`)}</app-badge>
+      <app-badge variant="neutral">${icons.clock('', 12)} ${num(s?.latency_p50, (v) => `${(v / 1000).toFixed(1)} s`)}</app-badge>
     `;
   }
 
@@ -271,7 +271,7 @@ class ObservabilitySessionPage extends HTMLElement {
           <span class="span-icon">${this.#spanIcon(node)}</span>
           <span class="span-name">${escHtml(node.name)}</span>
           <span class="status-dot${this.#isError(node.status_code) ? ' is-error' : ''}"></span>
-          <span class="chip">${icons.clock('', 12)} ${this.#fmtLatency(node.latency_ms)}</span>
+          <app-badge variant="neutral">${icons.clock('', 12)} ${this.#fmtLatency(node.latency_ms)}</app-badge>
         </button>
       `).join('')}
     `;
@@ -299,7 +299,6 @@ class ObservabilitySessionPage extends HTMLElement {
       return;
     }
     this.#span = resp?.data?.span ?? null;
-    this.#detailTab = 'info';
     this.#renderDetail();
   }
 
@@ -315,30 +314,23 @@ class ObservabilitySessionPage extends HTMLElement {
     pane.innerHTML = `
       <div class="detail-head">
         <h3>${escHtml(s.name)}</h3>
-        <span class="badge-kind">${escHtml(s.span_kind || 'internal')}</span>
+        <app-badge variant="info">${escHtml(s.span_kind || 'internal')}</app-badge>
       </div>
       <div class="detail-chips">
-        <span class="chip">${icons.clock('', 12)} ${s.latency_ms != null ? `${Math.round(s.latency_ms)}ms` : '—'}</span>
-        <span class="chip">${icons.layers('', 12)} ${tokens.toLocaleString()}</span>
-        <span class="chip">${icons.code('', 12)} $${cost.toFixed(3)}</span>
-        <span class="chip">${icons.calendar('', 12)} ${this.#fmtDate(s.start_time)}</span>
+        <app-badge variant="neutral">${icons.clock('', 12)} ${s.latency_ms != null ? `${Math.round(s.latency_ms)}ms` : '—'}</app-badge>
+        <app-badge variant="neutral">${icons.layers('', 12)} ${tokens.toLocaleString()}</app-badge>
+        <app-badge variant="neutral">${icons.code('', 12)} $${cost.toFixed(3)}</app-badge>
+        <app-badge variant="neutral">${icons.calendar('', 12)} ${this.#fmtDate(s.start_time)}</app-badge>
       </div>
-      <div class="tabs" role="tablist">
-        <button class="tab-btn${this.#detailTab === 'info' ? ' is-active' : ''}" data-tab="info" type="button">${icons.info('', 14)} Info</button>
-        <button class="tab-btn${this.#detailTab === 'attributes' ? ' is-active' : ''}" data-tab="attributes" type="button">${icons.document('', 14)} Attributes</button>
-      </div>
-      <div id="detail-body"></div>
+      <app-tabs>
+        <div data-tab="info" data-label="Info">${this.#infoTabHtml()}</div>
+        <div data-tab="attributes" data-label="Attributes">${this.#attributesTabHtml()}</div>
+      </app-tabs>
     `;
-    this.#renderDetailTabs();
-  }
-
-  #renderDetailTabs() {
-    this.querySelectorAll('.tab-btn').forEach((b) =>
-      b.classList.toggle('is-active', b.dataset.tab === this.#detailTab));
-    const body = this.querySelector('#detail-body');
-    if (!body) return;
-    body.innerHTML = this.#detailTab === 'info' ? this.#infoTabHtml() : this.#attributesTabHtml();
-    this.#applyClamps(body);
+    // Both panels are rendered up front — app-tabs owns the switch, so there is
+    // no re-render to hang the clamp pass off. Only the visible panel gets a
+    // toggle: #applyClamps measures, and a hidden panel measures as zero.
+    this.#applyClamps(pane);
   }
 
   #infoTabHtml() {

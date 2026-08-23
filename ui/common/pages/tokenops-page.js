@@ -7,38 +7,56 @@
  *       `{ data: { summary, agents, token_usage }, status_code, message }`.
  */
 import styles from './tokenops-page.css' with { type: 'css' };
-import { icons } from '../utils/icons.js';
-// Was "imported" from inside the docblock above, i.e. never — the loading rows
-// rendered as inert unknown elements.
-import '/common/design-system/app-skeleton/app-skeleton.js';
 import { escHtml } from '/common/utils/escape.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-select/app-select.js';
+import '/common/design-system/app-search/app-search.js';
+import '/common/design-system/app-table/app-table.js';
+import '/common/design-system/app-stat-row/app-stat-row.js';
 import { call } from '../core/data-sources.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
+const fmtTokens = (n) => {
+  if (n == null) return '0';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+};
+const fmtCost = (n) => `$${(n ?? 0).toFixed(3)}`;
+const fmtNum = (n) => (n ?? 0).toFixed(1);
+const fmtLatency = (ms) => (ms == null ? '—' : `${(ms / 1000).toFixed(1)}s`);
+const fmtCount = (n) => (n ?? 0).toLocaleString();
+
+/** `csv` is the export value for the column; the table renders `render`. */
 const COLUMNS = [
-  { key: 'agent_name', label: 'Agent' },
-  { key: 'total_tokens', label: 'Tokens', num: true },
-  { key: 'prompt_tokens', label: 'Input', num: true },
-  { key: 'completion_tokens', label: 'Output', num: true },
-  { key: 'cache_tokens', label: 'Cache r/w', num: true },
-  { key: 'operations', label: 'Operations', num: true },
-  { key: 'total_cost', label: 'Total cost', num: true },
-  { key: 'avg_cost_per_operation', label: 'Avg cost/op', num: true },
-  { key: 'container_hours', label: 'Agent hours', num: true },
-  { key: 'avg_latency_ms', label: 'Avg latency', num: true },
-  { key: 'version', label: 'Version' },
+  { key: 'agent_name', label: 'Agent',
+    render: (v, r) => `<span class="agent-name">${escHtml(v || r.agent_id)}</span>`,
+    csv: (r) => r.agent_name },
+  { key: 'total_tokens', label: 'Tokens', render: fmtTokens },
+  { key: 'prompt_tokens', label: 'Input', render: fmtTokens },
+  { key: 'completion_tokens', label: 'Output', render: fmtTokens },
+  // Keyed on the read count so the header sort has a real number to sort on;
+  // the cell shows read / written.
+  { key: 'cache_read_tokens', label: 'Cache r/w',
+    render: (v, r) => `${fmtTokens(v)} / ${fmtTokens(r.cache_creation_tokens)}`,
+    csv: (r) => `${r.cache_read_tokens ?? 0} / ${r.cache_creation_tokens ?? 0}` },
+  { key: 'operations', label: 'Operations', render: fmtCount },
+  { key: 'total_cost', label: 'Total cost', render: fmtCost },
+  { key: 'avg_cost_per_operation', label: 'Avg cost/op', render: fmtCost },
+  { key: 'container_hours', label: 'Agent hours', render: (v) => `${fmtNum(v)} hrs` },
+  { key: 'avg_latency_ms', label: 'Avg latency', render: fmtLatency },
+  { key: 'version', label: 'Version', render: (v) => escHtml(v || '—') },
 ];
 
 const SORTS = [
-  { key: 'total_tokens', label: 'Most tokens' },
-  { key: 'prompt_tokens', label: 'Most input tokens' },
-  { key: 'completion_tokens', label: 'Most output tokens' },
-  { key: 'total_cost', label: 'Highest cost' },
-  { key: 'operations', label: 'Most operations' },
-  { key: 'avg_latency_ms', label: 'Slowest' },
-  { key: 'agent_name', label: 'Name' },
+  { value: 'total_tokens', label: 'Most tokens' },
+  { value: 'prompt_tokens', label: 'Most input tokens' },
+  { value: 'completion_tokens', label: 'Most output tokens' },
+  { value: 'total_cost', label: 'Highest cost' },
+  { value: 'operations', label: 'Most operations' },
+  { value: 'avg_latency_ms', label: 'Slowest' },
+  { value: 'agent_name', label: 'Name' },
 ];
 
 class TokenopsPage extends HTMLElement {
@@ -47,6 +65,9 @@ class TokenopsPage extends HTMLElement {
   #tokenUsage = {};
   #query = '';
   #sort = 'total_tokens';
+  /** The in-flight dashboard fetch — the table awaits it, so its own skeleton
+   *  rows are the page's loading state. */
+  #pending = null;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -59,61 +80,50 @@ class TokenopsPage extends HTMLElement {
           <p class="page-sub">Token spend, usage, and agent activity across the cluster.</p>
         </div>
         <div class="head-actions">
-          <select id="month-select" aria-label="Period">${this.#monthOptions()}</select>
-          <app-button variant="dark" id="export-btn">Export</app-button>
+          <app-select id="month-select" size="md" aria-label="Period"
+            >${this.#monthOptions()}</app-select>
+          <app-button variant="dark" size="md" id="export-btn">Export</app-button>
         </div>
       </div>
 
-      <div class="kpi-strip" id="kpi-strip">${this.#skelKpis(4)}</div>
+      <app-stat-row id="kpi-strip" loading="4"></app-stat-row>
 
       <h2 class="section-title">Agent cost</h2>
       <div class="toolbar">
-        <div class="search-wrap">
-          ${icons.search('', 16)}
-          <input type="search" id="agent-search"
-            placeholder="Search agents by name, skill, or capability..." />
-        </div>
-        <div class="toolbar-spacer"></div>
-        <select id="sort-select" aria-label="Sort">
-          ${SORTS.map((s) => `<option value="${s.key}">${s.label}</option>`).join('')}
-        </select>
+        <app-search id="agent-search" size="md"
+          placeholder="Search agents by name, skill, or capability..."
+          aria-label="Search agents"></app-search>
+        <app-select id="sort-select" size="md" aria-label="Sort"
+          options='${JSON.stringify(SORTS)}'></app-select>
       </div>
-      <div class="cost-table-wrap">
-        <table>
-          <thead>
-            <tr>${COLUMNS.map((c) => `<th${c.num ? ' class="is-num"' : ''}>${c.label}</th>`).join('')}</tr>
-          </thead>
-          <tbody id="cost-tbody">
-            ${Array.from({ length: 3 }, () => `<tr class="skel-row" aria-hidden="true">${COLUMNS.map(() => '<td><app-skeleton height="0.9rem"></app-skeleton></td>').join('')}</tr>`).join('')}
-          </tbody>
-        </table>
-      </div>
+      <app-table id="cost-table" pagination="none"
+        empty-message="No agent activity in this period"></app-table>
 
       <h2 class="section-title">Token usage</h2>
-      <div class="kpi-strip" id="token-strip">${this.#skelKpis(4)}</div>
+      <app-stat-row id="token-strip" loading="4"></app-stat-row>
     `;
+
+    const table = this.querySelector('#cost-table');
+    table.columns = COLUMNS;
+    // Filtering and sorting are in-memory over the one dashboard payload, so
+    // "fetching" a page is just awaiting the load that is already in flight.
+    table.dataFn = async () => {
+      await this.#pending;
+      return this.#visibleAgents();
+    };
 
     this.querySelector('#agent-search').addEventListener('input', (e) => {
       this.#query = e.target.value.trim().toLowerCase();
-      this.#renderTable();
+      table.refresh();
     });
     this.querySelector('#sort-select').addEventListener('change', (e) => {
       this.#sort = e.target.value;
-      this.#renderTable();
+      table.refresh();
     });
     this.querySelector('#month-select').addEventListener('change', () => this.#load());
     this.querySelector('#export-btn').addEventListener('click', () => this.#exportCsv());
 
     this.#load();
-  }
-
-  #skelKpis(n) {
-    return Array.from({ length: n }, () => `
-      <div class="kpi">
-        <div class="skel-line skel-line--label"></div>
-        <div class="skel-line skel-line--value"></div>
-      </div>
-    `).join('');
   }
 
   /**
@@ -134,14 +144,20 @@ class TokenopsPage extends HTMLElement {
   async #load() {
     const select = this.querySelector('#month-select');
     const startTime = select.value;
-    const endTime = select.selectedOptions[0]?.dataset.end;
+    const endTime = select.select?.selectedOptions[0]?.dataset.end;
+    // Assigned before the first await so the table's initial refresh — queued a
+    // microtask after this element's markup was parsed — awaits this fetch
+    // rather than seeing an empty agent list.
+    this.#pending = call('fetchTokenopsDashboard', startTime, endTime);
+    const table = this.querySelector('#cost-table');
+    table.refresh();
     let resp;
     try {
-      resp = await call('fetchTokenopsDashboard', startTime, endTime);
+      resp = await this.#pending;
     } catch (e) {
+      // The table surfaces the failure itself — its dataFn awaits the same
+      // rejected promise.
       console.error('TokenOps dashboard fetch failed:', e);
-      this.querySelector('#cost-tbody').innerHTML =
-        `<tr class="empty-row"><td colspan="${COLUMNS.length}">Failed to load dashboard</td></tr>`;
       return;
     }
     const data = resp?.data ?? resp ?? {};
@@ -149,42 +165,32 @@ class TokenopsPage extends HTMLElement {
     this.#tokenUsage = data.token_usage || {};
     this.#renderSummary(data.summary || {});
     this.#renderTokenUsage(this.#tokenUsage);
-    this.#renderTable();
+    table.refresh();
   }
 
   #renderSummary(s) {
-    this.querySelector('#kpi-strip').innerHTML = `
-      ${this.#kpi('Total cost', this.#fmtCost(s.total_cost),
-        `Based on ${(s.total_operations ?? 0).toLocaleString()} operations`)}
-      ${this.#kpi('Total tokens', this.#fmtTokens(this.#tokenTotal), 'Across all agents')}
-      ${this.#kpi('Total operations', (s.total_operations ?? 0).toLocaleString(),
-        `${(s.operations_last_24h ?? 0).toLocaleString()} in the last 24 hours`)}
-      ${this.#kpi('Active agents', `${s.active_agents ?? 0}`,
-        `${s.total_agents ?? 0} configured · ${this.#fmtNum(s.total_container_hours)} agent hrs`)}
-    `;
+    this.querySelector('#kpi-strip').items = [
+      { label: 'Total cost', value: fmtCost(s.total_cost),
+        sub: `Based on ${fmtCount(s.total_operations)} operations` },
+      { label: 'Total tokens', value: fmtTokens(this.#tokenTotal), sub: 'Across all agents' },
+      { label: 'Total operations', value: fmtCount(s.total_operations),
+        sub: `${fmtCount(s.operations_last_24h)} in the last 24 hours` },
+      { label: 'Active agents', value: `${s.active_agents ?? 0}`,
+        sub: `${s.total_agents ?? 0} configured · ${fmtNum(s.total_container_hours)} agent hrs` },
+    ];
   }
 
   #renderTokenUsage(t) {
     const avg = t.avg_tokens_per_operation ?? 0;
-    this.querySelector('#token-strip').innerHTML = `
-      ${this.#kpi('Input tokens', this.#fmtTokens(t.prompt_tokens), 'Sent to models as prompts')}
-      ${this.#kpi('Output tokens', this.#fmtTokens(t.completion_tokens), 'Generated by models')}
-      ${this.#kpi('Cache tokens',
-        `${this.#fmtTokens((t.cache_read_tokens ?? 0) + (t.cache_creation_tokens ?? 0))}`,
-        `${this.#fmtTokens(t.cache_read_tokens)} read · ${this.#fmtTokens(t.cache_creation_tokens)} written`)}
-      ${this.#kpi('Total tokens', this.#fmtTokens(t.total_tokens),
-        `${this.#fmtTokens(avg)} avg per operation`)}
-    `;
-  }
-
-  #kpi(label, value, sub) {
-    return `
-      <div class="kpi">
-        <div class="kpi-label">${label}</div>
-        <div class="kpi-value">${value}</div>
-        ${sub ? `<div class="kpi-sub">${sub}</div>` : ''}
-      </div>
-    `;
+    this.querySelector('#token-strip').items = [
+      { label: 'Input tokens', value: fmtTokens(t.prompt_tokens), sub: 'Sent to models as prompts' },
+      { label: 'Output tokens', value: fmtTokens(t.completion_tokens), sub: 'Generated by models' },
+      { label: 'Cache tokens',
+        value: fmtTokens((t.cache_read_tokens ?? 0) + (t.cache_creation_tokens ?? 0)),
+        sub: `${fmtTokens(t.cache_read_tokens)} read · ${fmtTokens(t.cache_creation_tokens)} written` },
+      { label: 'Total tokens', value: fmtTokens(t.total_tokens),
+        sub: `${fmtTokens(avg)} avg per operation` },
+    ];
   }
 
   #visibleAgents() {
@@ -198,39 +204,11 @@ class TokenopsPage extends HTMLElement {
     return rows;
   }
 
-  #renderTable() {
-    const tbody = this.querySelector('#cost-tbody');
-    const rows = this.#visibleAgents();
-    if (!rows.length) {
-      tbody.innerHTML = `<tr class="empty-row"><td colspan="${COLUMNS.length}">No agent activity in this period</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = rows.map((a) => `
-      <tr>
-        <td class="agent-name">${escHtml(a.agent_name || a.agent_id)}</td>
-        <td class="is-num">${this.#fmtTokens(a.total_tokens)}</td>
-        <td class="is-num">${this.#fmtTokens(a.prompt_tokens)}</td>
-        <td class="is-num">${this.#fmtTokens(a.completion_tokens)}</td>
-        <td class="is-num">${this.#fmtTokens(a.cache_read_tokens)} / ${this.#fmtTokens(a.cache_creation_tokens)}</td>
-        <td class="is-num">${(a.operations ?? 0).toLocaleString()}</td>
-        <td class="is-num">${this.#fmtCost(a.total_cost)}</td>
-        <td class="is-num">${this.#fmtCost(a.avg_cost_per_operation)}</td>
-        <td class="is-num">${this.#fmtNum(a.container_hours)} hrs</td>
-        <td class="is-num">${this.#fmtLatency(a.avg_latency_ms)}</td>
-        <td>${escHtml(a.version || '—')}</td>
-      </tr>
-    `).join('');
-  }
-
   #exportCsv() {
     const header = COLUMNS.map((c) => c.label).join(',');
-    const lines = this.#visibleAgents().map((a) => [
-      a.agent_name, a.total_tokens ?? 0, a.prompt_tokens ?? 0, a.completion_tokens ?? 0,
-      `${a.cache_read_tokens ?? 0} / ${a.cache_creation_tokens ?? 0}`,
-      a.operations ?? 0, a.total_cost ?? 0,
-      a.avg_cost_per_operation ?? 0, a.container_hours ?? 0,
-      a.avg_latency_ms ?? '', a.version ?? '',
-    ].map((v) => `"${String(v).replaceAll('"', '""')}"`).join(','));
+    const lines = this.#visibleAgents().map((a) => COLUMNS
+      .map((c) => (c.csv ? c.csv(a) : a[c.key] ?? ''))
+      .map((v) => `"${String(v).replaceAll('"', '""')}"`).join(','));
     const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -246,26 +224,6 @@ class TokenopsPage extends HTMLElement {
   get #tokenTotal() {
     return this.#tokenUsage.total_tokens ?? 0;
   }
-
-  #fmtTokens(n) {
-    if (n == null) return '0';
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-    if (n >= 10_000) return `${(n / 1_000).toFixed(1)}K`;
-    return n.toLocaleString();
-  }
-
-  #fmtCost(n) {
-    return `$${(n ?? 0).toFixed(3)}`;
-  }
-
-  #fmtNum(n) {
-    return (n ?? 0).toFixed(1);
-  }
-
-  #fmtLatency(ms) {
-    return ms == null ? '—' : `${(ms / 1000).toFixed(1)}s`;
-  }
-
 }
 
 customElements.define('tokenops-page', TokenopsPage);

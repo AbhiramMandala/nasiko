@@ -17,7 +17,8 @@
  * @attr {string} state - `error` | `hover` | `focus` (visual only)
  * @attr {string} label - Label text beside the control.
  * @attr {string} hint - Subtext under the label (Figma Subtext=Yes).
- * @attr {string} name|value - Forwarded to the inner `<input type="radio">`.
+ * @attr {string} name|value|aria-label - Forwarded to the inner `<input type="radio">`.
+ *   Pass `aria-label` when there is no visible `label`.
  * @prop {boolean} checked - Get/set checked state.
  * @prop {HTMLInputElement} input - The inner input.
  * @fires change - Bubbles from the inner input.
@@ -29,7 +30,7 @@ let uid = 0;
 
 export class AppRadio extends HTMLElement {
   static get observedAttributes() {
-    return ['checked', 'disabled', 'state', 'label', 'hint', 'name', 'value'];
+    return ['checked', 'disabled', 'state', 'label', 'hint', 'name', 'value', 'aria-label'];
   }
 
   #id = `app-radio-${++uid}`;
@@ -62,11 +63,15 @@ export class AppRadio extends HTMLElement {
     const label    = this.getAttribute('label');
     const hint     = this.getAttribute('hint');
     const name     = this.getAttribute('name');
+    // A control with no visible `label` still needs an accessible name, and the
+    // inner input is what an AT reads — the host is not focusable.
+    const aria     = this.getAttribute('aria-label');
     const value    = this.getAttribute('value');
 
     this.innerHTML = `
       <label class="row is-${state} is-${checked ? 'selected' : 'unselected'}" for="${this.#id}">
         <input id="${this.#id}" type="radio"${name ? ` name="${name}"` : ''}${
+        aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
           value === null ? '' : ` value="${value.replace(/"/g, '&quot;')}"`}${
           checked ? ' checked' : ''}${disabled ? ' disabled' : ''}>
         <span class="control" aria-hidden="true"><span class="dot"></span></span>

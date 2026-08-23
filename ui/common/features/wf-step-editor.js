@@ -10,6 +10,11 @@
  * @fires wf-steps-change - Any edit (text, agent, add, remove, reorder).
  */
 import { icons } from '/common/utils/icons.js';
+import '/common/design-system/app-badge/app-badge.js';
+import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-divider/app-divider.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-select/app-select.js';
 
 import styles from './wf-step-editor.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
@@ -76,12 +81,14 @@ class WfStepEditor extends HTMLElement {
     this.#emit();
   };
 
+  // The picker is <app-select>, so `data-index` lives on the host — the inner
+  // <select> the event comes from does not carry it.
   #onChange = (e) => {
-    const select = e.target.closest('select[data-index]');
-    if (!select) return;
-    const step = this.#steps[Number(select.dataset.index)];
-    step.agentId = select.value;
-    step.agentName = select.selectedOptions[0]?.dataset.name || '';
+    const picker = e.target.closest('app-select[data-index]');
+    if (!picker) return;
+    const step = this.#steps[Number(picker.dataset.index)];
+    step.agentId = picker.value;
+    step.agentName = picker.select?.selectedOptions[0]?.dataset.name || '';
     step.suggested = false;
     this.#render();
     this.#emit();
@@ -121,21 +128,22 @@ class WfStepEditor extends HTMLElement {
           <textarea rows="2" data-index="${i}" aria-label="Instructions for step ${n}"
             placeholder="Tell this agent what to do">${escHtml(step.taskDescription)}</textarea>
           <div class="step-tools">
-            <button type="button" class="tool-btn" data-act="up" data-index="${i}"
+            <app-button variant="ghost" size="sm" icon-only data-act="up" data-index="${i}"
               title="Move step up" aria-label="Move step ${n} up"
-              ${i === 0 ? 'disabled' : ''}>${icons.arrowUp('', 14)}</button>
-            <button type="button" class="tool-btn" data-act="down" data-index="${i}"
+              ${i === 0 ? 'disabled' : ''}>${icons.arrowUp()}</app-button>
+            <app-button variant="ghost" size="sm" icon-only data-act="down" data-index="${i}"
               title="Move step down" aria-label="Move step ${n} down"
-              ${last ? 'disabled' : ''}>${icons.arrowDown('', 14)}</button>
-            <span class="tool-sep" aria-hidden="true"></span>
-            <button type="button" class="tool-btn tool-btn--danger" data-act="remove" data-index="${i}"
+              ${last ? 'disabled' : ''}>${icons.arrowDown()}</app-button>
+            <app-divider vertical aria-hidden="true"></app-divider>
+            <app-button variant="ghost" size="sm" icon-only data-act="remove" data-index="${i}"
               title="Remove step" aria-label="Remove step ${n}"
-              ${this.#steps.length <= 1 ? 'disabled' : ''}>${icons.trash('', 14)}</button>
+              ${this.#steps.length <= 1 ? 'disabled' : ''}>${icons.trash()}</app-button>
           </div>
           <div class="agent-row">
             <span class="agent-label">Agent</span>
-            <select data-index="${i}" aria-label="Agent for step ${n}">${this.#agentOptions(step)}</select>
-            ${step.suggested && step.agentId ? '<span class="suggested">Suggested</span>' : ''}
+            <app-select data-index="${i}" aria-label="Agent for step ${n}"
+              >${this.#agentOptions(step)}</app-select>
+            ${step.suggested && step.agentId ? '<app-badge variant="warning">Suggested</app-badge>' : ''}
           </div>
         </div>
         ${last ? '' : '<span class="connector" aria-hidden="true"></span>'}
@@ -145,13 +153,14 @@ class WfStepEditor extends HTMLElement {
   #render() {
     const cards = this.#steps.length
       ? this.#steps.map((s, i) => this.#stepCard(s, i)).join('')
-      : `<div class="steps-empty">
-          <span class="steps-empty-title">No steps yet</span>
-          <span class="steps-empty-sub">Add the first step, then tell it what to do and which agent should run it.</span>
-        </div>`;
+      : `<app-empty-state
+          title="No steps yet"
+          description="Add the first step, then tell it what to do and which agent should run it."
+        ></app-empty-state>`;
     this.innerHTML = `
       ${cards}
-      <button type="button" class="add-step" data-act="add">Add step ${icons.plus('', 13)}</button>`;
+      <app-button variant="ghost" size="sm" class="add-step" data-act="add"
+        >Add step ${icons.plus()}</app-button>`;
   }
 
 }

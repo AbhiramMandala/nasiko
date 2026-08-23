@@ -9,9 +9,9 @@
    1. `.td.is-plain` (a label-less action column) is position:sticky at the
       right edge. Every other cell is nowrap, so on a wide table the action
       buttons are exactly the part that overflows the scroller — pinned, they
-      stay hit-testable at rest. The separator is an inset box-shadow, not a
-      border-left: with border-collapse, borders on a sticky cell paint
-      unreliably in Chrome.
+      stay hit-testable at rest. It carries no vertical rule: the table's only
+      lines are the row hairlines, and a full-height divider before the action
+      column read as two tables sitting side by side.
    2. The pinned cell repaints the row's hover fill, or a hovered row appears
       to stop short of the right edge.
 */
@@ -108,7 +108,6 @@
     right: 0;
     z-index: 1;
     text-align: right;
-    box-shadow: inset 1px 0 0 var(--border-primary);
   }
   .th.is-plain { background: var(--bg-subtle); }
   .td.is-plain { background: var(--bg-base); }

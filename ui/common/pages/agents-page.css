@@ -32,55 +32,15 @@
     flex-wrap: wrap;
     margin-bottom: var(--s-16);
   }
+  /* The box is an <app-search> — icon, clear button, focus ring and all. This
+     only sizes its slot in the toolbar and picks the plane it sits on. */
   .search-wrap {
-    position: relative;
+    display: block;
     flex: 1;
     min-width: 200px;
     max-width: 520px;
+    --search-bg: var(--bg-input);
   }
-  .search-icon {
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--color-text-muted);
-    pointer-events: none;
-    display: flex;
-  }
-  .search-wrap input {
-    width: 100%;
-    min-height: var(--control-h-lg);
-    padding: 0 var(--s-32) 0 38px;
-    border: 1px solid transparent;
-    border-radius: var(--r-8);
-    background: var(--bg-input);
-    font-size: var(--font-size-sm);
-    color: var(--color-text-main);
-    font-family: inherit;
-  }
-  .search-wrap input:focus {
-    outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
-  }
-  .search-wrap input::placeholder { color: var(--color-text-muted); }
-  .search-wrap input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
-  .search-clear {
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--color-text-muted);
-    padding: var(--s-8);
-    border-radius: var(--r-4);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .search-clear:hover { color: var(--color-text-main); }
 
   /* ── Category tabs — gold underline, count suffix ───────────────────────── */
   .type-tabs {

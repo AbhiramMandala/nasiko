@@ -59,6 +59,15 @@ app-card:not(:defined) {
   border-radius: var(--r-12);
 }
 
+/* Metric strip. 92px is a rendered cell (label + 24px value + caption) plus the
+   strip's own 16px block padding, so a page's first paint reserves the same box
+   the element will fill. Keep in step with app-stat-row.css. */
+app-stat-row:not(:defined) {
+  display: block;
+  min-height: 92px;
+  border-block: 1px solid var(--color-border);
+}
+
 app-stat-card:not(:defined) {
   display: block;
   flex: 1;
@@ -94,7 +103,39 @@ app-code-snippet:not(:defined) {
   border-radius: var(--r-8);
 }
 
-smart-table:not(:defined) {
+/* Form primitives. Each draws a control-height box, so reserve that height or
+   every form on the page jogs upward when the modules land. A label or hint
+   above/below the box is the call site's own markup in most layouts, so this
+   reserves the field, not the whole stack. */
+app-input:not(:defined),
+app-select:not(:defined) {
+  display: block;
+  min-height: var(--control-h-md);
+  background: var(--input-bg, var(--bg-base));
+  border: var(--bw-1) solid var(--border-primary);
+  border-radius: var(--r-8);
+}
+
+/* app-search is 36px at md, not 32 — matching app-search.css, so a toolbar that
+   paints before the module lands does not jump when it arrives. */
+app-search:not(:defined) {
+  display: block;
+  min-height: var(--control-h-lg);
+  background: var(--search-bg, var(--bg-base));
+  border: var(--bw-1) solid var(--border-primary);
+  border-radius: var(--r-8);
+}
+
+/* Checkbox, radio and switch are inline rows: a control plus its own label
+   text, so the reserved box is a line, not a field. */
+app-checkbox:not(:defined),
+app-radio:not(:defined),
+app-switch:not(:defined) {
+  display: block;
+  min-height: var(--control-h-sm);
+}
+
+app-table:not(:defined) {
   display: block;
   min-height: 200px;
   background: var(--color-bg-surface);
@@ -182,7 +223,7 @@ orchestrator-page .input-wrap app-chatbox:not(:defined) {
   app-stat-card:not(:defined),
   app-chart:not(:defined),
   app-skeleton:not(:defined),
-  smart-table:not(:defined) {
+  app-table:not(:defined) {
     animation: none;
     opacity: 0.6;
   }
@@ -697,7 +738,7 @@ chat-page:not(:defined) .chat-skel {
   padding: var(--s-16) var(--s-24);
 }
 
-/* Table pages (<smart-table>). Column labels are declared in the component,
+/* Table pages (<app-table>). Column labels are declared in the component,
    not fetched, so the head row paints for real and only the body shimmers.
    --pre-cols carries the page's colgroup widths; the grid tracks and the
    per-cell padding then reproduce the loaded table exactly. */
@@ -740,7 +781,7 @@ chat-page:not(:defined) .chat-skel {
   background: var(--color-border);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
-/* Org/access pages restyle smart-table into the sand table language
+/* Org/access pages restyle app-table into the sand table language
    (no outer stroke, sand header band, sand hairlines) — mirror it. */
 .pre-table--sand {
   --pre-table-stroke: none;

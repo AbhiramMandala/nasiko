@@ -469,32 +469,32 @@ export default {
     },
     // Unified catalog tabs — counts come from the merged toolkit+server set.
     'available-tab': async (page) => {
-      await page.waitForSelector('.tk-card[data-id]');
+      await page.waitForSelector('app-card[data-id]');
       await page.click('.tk-tab[data-tab="available"]');
       await new Promise((r) => setTimeout(r, 300));
     },
     'connected-tab': async (page) => {
-      await page.waitForSelector('.tk-card[data-id]');
+      await page.waitForSelector('app-card[data-id]');
       await page.click('.tk-tab[data-tab="connected"]');
       await new Promise((r) => setTimeout(r, 300));
     },
     // Nav scopes — ownership scopes show custom servers only; the toolkits
     // scope shows Composio cards only.
     'my-servers': async (page) => {
-      await page.waitForSelector('.tk-card[data-id]');
+      await page.waitForSelector('app-card[data-id]');
       await page.click('app-module-nav [data-section="my-servers"]');
       await new Promise((r) => setTimeout(r, 400));
     },
     'toolkits-filter': async (page) => {
-      await page.waitForSelector('.tk-card[data-id]');
+      await page.waitForSelector('app-card[data-id]');
       await page.click('app-module-nav [data-section="toolkits"]');
       await new Promise((r) => setTimeout(r, 400));
     },
     'connector-detail': async (page) => {
       // GitHub is a custom OAuth server — card body click opens the detail
       // modal with meta + OAuth status + owner delete.
-      await page.waitForSelector('.tk-card[data-id]');
-      await page.click('.tk-card[data-id="6f1d2a3b-1111-4a4a-9b9b-000000000001"] .tk-name');
+      await page.waitForSelector('app-card[data-id]');
+      await page.click('app-card[data-id="6f1d2a3b-1111-4a4a-9b9b-000000000001"] .card-name');
       await page.waitForSelector('#detail-modal dialog[open]');
       await page.waitForSelector('#oauth-revoke');
     },
@@ -511,8 +511,8 @@ export default {
     },
     'agent-access-in-detail': async (page) => {
       // Open a connector detail modal, then use the agent picker inside it.
-      await page.waitForSelector('.tk-card[data-id]');
-      await page.click('.tk-card[data-id="6f1d2a3b-1111-4a4a-9b9b-000000000001"] .tk-name');
+      await page.waitForSelector('app-card[data-id]');
+      await page.click('app-card[data-id="6f1d2a3b-1111-4a4a-9b9b-000000000001"] .card-name');
       await page.waitForSelector('#detail-modal dialog[open]');
       await page.click('#detail-agent-select .ac-input');
       await page.fill('#detail-agent-select .ac-input', 'coding');

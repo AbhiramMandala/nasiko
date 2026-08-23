@@ -1,4 +1,4 @@
-import '/common/features/smart-table.js';
+import '/common/design-system/app-table/app-table.js';
 
 import styles from './flows-page.css' with { type: 'css' };
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
@@ -28,15 +28,15 @@ class FlowsPage extends HTMLElement {
           <p class="page-sub">Agent orchestration traces and multi-step flow history.</p>
         </div>
       </header>
-      <smart-table
+      <app-table
         data-fn="fetchFlows"
         search
         search-placeholder="Search flows by agent or query..."
         limit="20"
-      ></smart-table>
+      ></app-table>
     `;
 
-    const table = this.querySelector('smart-table');
+    const table = this.querySelector('app-table');
     table.columns = [
       { key: 'flow_id', label: 'Flow ID', width: '12%', render: (v) => v ? `<a class="cell-id" href="/flow?id=${v}">${v.slice(0, 12)}</a>` : '' },
       { key: 'title', label: 'Query', width: '30%', wrap: true, render: (v) => v ? (v.length > 80 ? v.slice(0, 80) + '...' : v) : '' },

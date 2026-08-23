@@ -2,7 +2,11 @@ import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-badge/app-badge.js';
+import '/common/design-system/app-input/app-input.js';
+import '/common/design-system/app-radio/app-radio.js';
+import '/common/design-system/app-search/app-search.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
+import { escAttr, escHtml } from '/common/utils/escape.js';
 import styles from './add-agent-github-page.css' with { type: 'css' };
 import { navigate as routerNavigate } from '../core/router.js';
 
@@ -21,7 +25,8 @@ class AddAgentGithubPage extends HTMLElement {
 
   connectedCallback() {
     this.innerHTML = `
-      <a class="back-link" href="/add-agent">${icons.chevronLeft('', 14)} Back</a>
+      <app-button class="back-btn" variant="tertiary" size="sm" href="/add-agent">${
+        icons.chevronLeft()} Back</app-button>
       <div class="page-head">
         <div>
           <h1 class="title-page">Import from GitHub</h1>
@@ -35,10 +40,8 @@ class AddAgentGithubPage extends HTMLElement {
             <p class="step-label">Step 1/3</p>
             <p class="step-title">Select repository</p>
             <p class="step-desc">Choose a repository containing the agent source code</p>
-            <div class="search-wrap">
-              ${icons.search('', 16)}
-              <input type="search" class="search-box" placeholder="Filter repositories..." />
-            </div>
+            <app-search class="repo-search" placeholder="Filter repositories..."
+              aria-label="Filter repositories"></app-search>
             <div class="repo-list">
               <div class="repo-item"><app-skeleton height="20px"></app-skeleton></div>
               <div class="repo-item"><app-skeleton height="20px"></app-skeleton></div>
@@ -53,16 +56,11 @@ class AddAgentGithubPage extends HTMLElement {
             <p class="step-title">Configure options</p>
             <p class="step-desc step-two-desc">Please select a repository in step 1 first</p>
             <div class="config-fields" inert>
-              <label class="field">
-                <span class="field-label">Branch</span>
-                <input type="text" class="field-input branch-input" placeholder="main" />
-                <span class="field-hint">Leave blank to use the default branch</span>
-              </label>
-              <label class="field">
-                <span class="field-label">Agent name</span>
-                <input type="text" class="field-input name-input" placeholder="Custom agent name" />
-                <span class="field-hint">Auto-detected from repository name. Override if needed</span>
-              </label>
+              <app-input class="branch-input" label="Branch" placeholder="main"
+                hint="Leave blank to use the default branch" autocomplete="off"></app-input>
+              <app-input class="name-input" label="Agent name" placeholder="Custom agent name"
+                hint="Auto-detected from repository name. Override if needed"
+                autocomplete="off"></app-input>
             </div>
           </div>
 
@@ -84,7 +82,7 @@ class AddAgentGithubPage extends HTMLElement {
       </div>
     `;
 
-    this.querySelector('.search-box').addEventListener('input', (e) => {
+    this.querySelector('.repo-search').addEventListener('input', (e) => {
       const q = e.target.value.toLowerCase();
       const filtered = this.#allRepos.filter(r =>
         r.full_name.toLowerCase().includes(q) ||
@@ -127,12 +125,12 @@ class AddAgentGithubPage extends HTMLElement {
     el.className = 'connect-status connected';
     el.innerHTML = `
       <div class="connect-status-header">
-        ${icons.checkSquare?.('', 16) || '&#x2713;'}
+        ${icons.checkCircle('', 16)}
         <span class="connect-status-title">Connected to GitHub</span>
       </div>
       <p class="connect-status-sub">Logged in as ${this.#githubUsername}</p>
       <div class="connect-status-actions">
-        <app-button size="xs" variant="ghost" class="switch-account-btn">Switch account</app-button>
+        <app-button size="sm" variant="ghost" class="switch-account-btn">Switch account</app-button>
       </div>
     `;
     el.querySelector('.switch-account-btn')?.addEventListener('click', () => this.#logout());
@@ -156,13 +154,13 @@ class AddAgentGithubPage extends HTMLElement {
     // Disable the steps
     const repoList = this.querySelector('.repo-list');
     if (repoList) {
-      repoList.innerHTML = '<div class="repo-item" style="justify-content:center;color:var(--color-text-muted);font-size:var(--font-size-sm);">Connect GitHub to view repositories.</div>';
+      repoList.innerHTML = '<div class="repo-item repo-note">Connect GitHub to view repositories.</div>';
     }
   }
 
   async #startGithubAuth() {
     const btn = this.querySelector('.login-gh-btn');
-    if (btn) { btn.setAttribute('loading', ''); btn.textContent = 'Connecting...'; }
+    if (btn) { btn.setAttribute('loading', ''); btn.label = 'Connecting...'; }
 
     try {
       const res = await apiFetch('/github/login');
@@ -173,7 +171,7 @@ class AddAgentGithubPage extends HTMLElement {
       const popup = window.open(auth_url, 'github-auth', 'width=600,height=700');
       this.#pollForToken(popup);
     } catch (err) {
-      if (btn) { btn.removeAttribute('loading'); btn.textContent = 'Login with GitHub'; }
+      if (btn) { btn.removeAttribute('loading'); btn.label = 'Login with GitHub'; }
       const { showToast } = await import('/common/utils/toast.js');
       showToast(`GitHub connect failed: ${err.message}`);
     }
@@ -201,7 +199,7 @@ class AddAgentGithubPage extends HTMLElement {
       if (popup && popup.closed) {
         clearInterval(timer);
         const btn = this.querySelector('.login-gh-btn');
-        if (btn) { btn.removeAttribute('loading'); btn.textContent = 'Login with GitHub'; }
+        if (btn) { btn.removeAttribute('loading'); btn.label = 'Login with GitHub'; }
         return;
       }
       try {
@@ -251,13 +249,8 @@ class AddAgentGithubPage extends HTMLElement {
       this.#allRepos = Array.isArray(body) ? body : (body?.repositories || []);
       this.#renderRepos(this.#allRepos);
     } catch (err) {
-      repoList.innerHTML = `<p style="color:var(--color-error);padding:var(--s-12) var(--s-16);">Failed to load repos: ${err.message}</p>`;
+      repoList.innerHTML = `<p class="repo-load-error">Failed to load repos: ${escHtml(err.message)}</p>`;
     }
-  }
-
-  #showConnectGithub() {
-    this.innerHTML = '<connect-github redirect="/add-agent-github"></connect-github>';
-    import('/common/features/connect-github.js');
   }
 
   #selectRepo(repo) {
@@ -265,10 +258,8 @@ class AddAgentGithubPage extends HTMLElement {
     this.#branch = repo.default_branch || 'main';
     this.#agentName = repo.name || repo.full_name.split('/').pop() || '';
 
-    const branchInput = this.querySelector('.branch-input');
-    const nameInput = this.querySelector('.name-input');
-    branchInput.value = this.#branch;
-    nameInput.value = this.#agentName;
+    this.querySelector('.branch-input').value = this.#branch;
+    this.querySelector('.name-input').value = this.#agentName;
 
     const fields = this.querySelector('.config-fields');
     fields.removeAttribute('inert');
@@ -278,8 +269,11 @@ class AddAgentGithubPage extends HTMLElement {
 
     this.querySelector('.clone-btn').removeAttribute('disabled');
 
+    // Clicking anywhere on the row selects it, so the radio is checked here
+    // rather than only by its own click. Same `name` on every one, so the
+    // native group keeps them exclusive.
     this.querySelectorAll('.repo-radio').forEach(r => {
-      r.dataset.selected = r.dataset.repo === repo.full_name ? 'true' : 'false';
+      r.checked = r.value === repo.full_name;
     });
   }
 
@@ -297,7 +291,7 @@ class AddAgentGithubPage extends HTMLElement {
   async #submitClone(payload) {
     const btn = this.querySelector('.clone-btn');
     btn.setAttribute('loading', '');
-    btn.textContent = 'Cloning and uploading...';
+    btn.label = 'Cloning and uploading...';
 
     try {
       const res = await apiFetch('/github/clone', {
@@ -320,7 +314,7 @@ class AddAgentGithubPage extends HTMLElement {
       window.location.href = '/agents.html?view=your-agents';
     } catch (err) {
       btn.removeAttribute('loading');
-      btn.textContent = 'Clone and upload';
+      btn.label = 'Clone and upload';
       const { showToast } = await import('/common/utils/toast.js');
       showToast(`Clone failed: ${err.message}`);
     }
@@ -367,29 +361,25 @@ class AddAgentGithubPage extends HTMLElement {
   #showVersionConflictWarning(conflict, payload) {
     const btn = this.querySelector('.clone-btn');
     btn.removeAttribute('loading');
-    btn.textContent = 'Clone and upload';
+    btn.label = 'Clone and upload';
 
     const stepThree = this.querySelector('.step-three');
     this.#clearVersionConflictWarning();
     const warn = document.createElement('div');
     warn.className = 'version-conflict-warning';
-    warn.style.cssText =
-      'margin:8px 0;padding:10px 12px;border-radius:8px;background:var(--color-warning-bg,#3a2f0f);' +
-      'border:1px solid var(--color-warning-border,#8a6d1a);font-size:var(--font-size-sm,13px);';
     const msg = document.createElement('p');
-    msg.style.cssText = 'margin:0 0 8px;';
     msg.textContent = conflict.message;
     warn.appendChild(msg);
 
     const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+    actions.className = 'version-conflict-actions';
 
     // Versions are immutable, so there's no overwrite option — the only way
     // forward is to deploy under a fresh, unused version.
     const bumpBtn = document.createElement('app-button');
     bumpBtn.setAttribute('variant', 'primary');
-    bumpBtn.setAttribute('size', 'xs');
-    bumpBtn.textContent = `Deploy as v${conflict.suggested}`;
+    bumpBtn.setAttribute('size', 'sm');
+    bumpBtn.label = `Deploy as v${conflict.suggested}`;
     bumpBtn.addEventListener(
       'click',
       () => {
@@ -407,18 +397,20 @@ class AddAgentGithubPage extends HTMLElement {
   #renderRepos(repos) {
     const repoList = this.querySelector('.repo-list');
     if (!repos.length) {
-      repoList.innerHTML = '<div class="repo-item" style="justify-content:center;color:var(--color-text-muted);font-size:var(--font-size-sm);">No repositories found.</div>';
+      repoList.innerHTML = '<div class="repo-item repo-note">No repositories found.</div>';
       return;
     }
     repoList.innerHTML = repos.map(r => `
-      <div class="repo-item repo-selectable" data-full-name="${r.full_name}">
-        <span class="repo-radio" data-repo="${r.full_name}" data-selected="${this.#selectedRepo?.full_name === r.full_name}"></span>
+      <div class="repo-item repo-selectable" data-full-name="${escAttr(r.full_name)}">
+        <app-radio class="repo-radio" name="repo" value="${escAttr(r.full_name)}"
+          aria-label="${escAttr(r.full_name)}"
+          ${this.#selectedRepo?.full_name === r.full_name ? 'checked' : ''}></app-radio>
         <div class="repo-info">
-          <span class="repo-name">${r.full_name}</span>
+          <span class="repo-name">${escHtml(r.full_name)}</span>
           <span class="repo-meta">
-            ${r.language ? `<span>${r.language}</span>` : ''}
-            ${r.updated_at ? `<span>${new Date(r.updated_at).toLocaleDateString()}</span>` : ''}
-            ${r.private ? '<app-badge size="xs" variant="neutral">Private</app-badge>' : ''}
+            ${r.language ? `<span>${escHtml(r.language)}</span>` : ''}
+            ${r.updated_at ? `<span>${escHtml(new Date(r.updated_at).toLocaleDateString())}</span>` : ''}
+            ${r.private ? '<app-badge variant="neutral">Private</app-badge>' : ''}
           </span>
         </div>
       </div>

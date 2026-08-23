@@ -13,7 +13,7 @@
  * `listFetcher()` is that one function. Every `data-fn` should be built with it.
  *
  * ─── The envelope contract, settled ────────────────────────────────────────
- * `smart-table` and `data-view` read `response.data` and `response.total`, and
+ * `app-table` and `data-view` read `response.data` and `response.total`, and
  * also accept a bare array. Their own JSDoc claimed `{items, total}`; `items`
  * was never read by either component. CONTROL_PLANE_UI.md §"Data" was right.
  * This module always produces `{ data, total }`, so the ambiguity is gone at
@@ -53,7 +53,7 @@ export function qs(params) {
  * Convert the `(query, page, limit)` triple that `data-fn` is called with into
  * the `limit`/`offset` pair the API expects.
  *
- * `page` is 1-based by convention — `smart-table` starts at 1 — and a missing
+ * `page` is 1-based by convention — `app-table` starts at 1 — and a missing
  * or bogus page must not produce `offset=NaN`, which is what a couple of the
  * hand-written copies did when called with `undefined`.
  *

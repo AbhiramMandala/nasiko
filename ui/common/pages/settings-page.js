@@ -8,6 +8,9 @@ import { call } from '../core/data-sources.js';
 // gutter it pins into. Nothing imported it, so under the client router the
 // gutter was reserved and the nav never upgraded.
 import '/common/features/app-module-nav.js';
+import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-input/app-input.js';
+import '/common/design-system/app-select/app-select.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -64,33 +67,33 @@ class SettingsPage extends HTMLElement {
         <div class="panel${this.#section === 'general' ? ' is-active' : ''}" data-panel="general">
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-router-model">Router model</label>
+              <label>Router model</label>
               <div class="hint">Model the routing engine uses to pick an agent for each query (<code>ROUTER_MODEL</code>).</div>
             </div>
             <div class="setting-control">
-              <input type="text" id="s-router-model" data-field="router_model" placeholder="e.g. gpt-4o" />
+              <app-input type="text" id="s-router-model" data-field="router_model" placeholder="e.g. gpt-4o" aria-label="Router model"></app-input>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-default-provider">Default provider</label>
+              <label>Default provider</label>
               <div class="hint">Provider used when an agent has no LLM config of its own.</div>
             </div>
             <div class="setting-control">
-              <select id="s-default-provider" data-field="default_provider">
+              <app-select id="s-default-provider" data-field="default_provider" aria-label="Default provider">
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
                 <option value="gemini">Gemini</option>
-              </select>
+              </app-select>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-catalog-tabs">Agent catalog tabs</label>
+              <label>Agent catalog tabs</label>
               <div class="hint">Comma-separated agent tags pinned as the catalog's filter tabs. Leave empty to derive tabs from the most common tags across agents.</div>
             </div>
             <div class="setting-control">
-              <input type="text" id="s-catalog-tabs" data-field="catalog_tabs" data-allow-empty placeholder="e.g. devops, finance, support" />
+              <app-input type="text" id="s-catalog-tabs" data-field="catalog_tabs" data-allow-empty placeholder="e.g. devops, finance, support" aria-label="Agent catalog tabs"></app-input>
             </div>
           </div>
           <div class="setting-row">
@@ -107,38 +110,38 @@ class SettingsPage extends HTMLElement {
         <div class="panel${this.#section === 'limits' ? ' is-active' : ''}" data-panel="limits">
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-flow-depth">Max call depth</label>
+              <label>Max call depth</label>
               <div class="hint">How many agent-to-agent hops one flow may chain before it's rejected.</div>
             </div>
             <div class="setting-control">
-              <input type="number" id="s-flow-depth" data-field="max_flow_depth" min="1" />
+              <app-input type="number" id="s-flow-depth" data-field="max_flow_depth" min="1" aria-label="Max call depth"></app-input>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-flow-fanout">Max fan-out</label>
+              <label>Max fan-out</label>
               <div class="hint">Maximum agents a single flow may call in total.</div>
             </div>
             <div class="setting-control">
-              <input type="number" id="s-flow-fanout" data-field="max_flow_fan_out" min="1" />
+              <app-input type="number" id="s-flow-fanout" data-field="max_flow_fan_out" min="1" aria-label="Max fan-out"></app-input>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-flow-tokens">Token budget per flow</label>
+              <label>Token budget per flow</label>
               <div class="hint">Combined prompt + completion tokens a flow may spend.</div>
             </div>
             <div class="setting-control">
-              <input type="number" id="s-flow-tokens" data-field="max_flow_tokens" min="1" />
+              <app-input type="number" id="s-flow-tokens" data-field="max_flow_tokens" min="1" aria-label="Token budget per flow"></app-input>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-flow-timeout">Flow timeout (seconds)</label>
+              <label>Flow timeout (seconds)</label>
               <div class="hint">Wall-clock limit for a whole flow.</div>
             </div>
             <div class="setting-control">
-              <input type="number" id="s-flow-timeout" data-field="flow_timeout_secs" min="1" />
+              <app-input type="number" id="s-flow-timeout" data-field="flow_timeout_secs" min="1" aria-label="Flow timeout (seconds)"></app-input>
             </div>
           </div>
         </div>
@@ -146,11 +149,11 @@ class SettingsPage extends HTMLElement {
         <div class="panel${this.#section === 'registry' ? ' is-active' : ''}" data-panel="registry">
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-registry-url">OCI registry URL</label>
+              <label>OCI registry URL</label>
               <div class="hint">Where imported agent images are pulled from.</div>
             </div>
             <div class="setting-control">
-              <input type="url" id="s-registry-url" data-field="registry_url" data-allow-empty placeholder="https://registry.example.com" />
+              <app-input type="url" id="s-registry-url" data-field="registry_url" data-allow-empty placeholder="https://registry.example.com" aria-label="OCI registry URL"></app-input>
             </div>
           </div>
           <div class="setting-row">
@@ -167,64 +170,64 @@ class SettingsPage extends HTMLElement {
         <div class="panel${this.#section === 'sso' ? ' is-active' : ''}" data-panel="sso">
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-oidc-issuer">Issuer URL</label>
+              <label>Issuer URL</label>
               <div class="hint">Your IdP's discovery base URL, e.g. <code>https://login.microsoftonline.com/&lt;tenant&gt;/v2.0</code>.</div>
             </div>
             <div class="setting-control">
-              <input type="url" id="s-oidc-issuer" data-field="oidc_issuer_url" data-allow-empty />
+              <app-input type="url" id="s-oidc-issuer" data-field="oidc_issuer_url" data-allow-empty aria-label="Issuer URL"></app-input>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-oidc-client-id">Client ID</label>
+              <label>Client ID</label>
             </div>
             <div class="setting-control">
-              <input type="text" id="s-oidc-client-id" data-field="oidc_client_id" data-allow-empty />
+              <app-input type="text" id="s-oidc-client-id" data-field="oidc_client_id" data-allow-empty aria-label="Client ID"></app-input>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-oidc-client-secret">Client secret</label>
+              <label>Client secret</label>
               <!-- No data-allow-empty: the server treats an empty string as
                    "clear the secret" and an absent field as "leave it alone",
                    so a blank box must not be submitted. -->
               <div class="hint" id="s-oidc-secret-state">Write-only — leave blank to keep the stored secret.</div>
             </div>
             <div class="setting-control">
-              <input type="password" id="s-oidc-client-secret" data-field="oidc_client_secret" placeholder="unchanged" />
+              <app-input type="password" id="s-oidc-client-secret" data-field="oidc_client_secret" placeholder="unchanged" aria-label="Client secret"></app-input>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-oidc-redirect">Redirect URI</label>
+              <label>Redirect URI</label>
               <div class="hint">Must match the IdP registration exactly.</div>
             </div>
             <div class="setting-control">
-              <input type="url" id="s-oidc-redirect" data-field="oidc_redirect_uri" data-allow-empty />
+              <app-input type="url" id="s-oidc-redirect" data-field="oidc_redirect_uri" data-allow-empty aria-label="Redirect URI"></app-input>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-oidc-scopes">Scopes</label>
+              <label>Scopes</label>
               <div class="hint">Space-separated. Defaults to <code>openid profile email</code>.</div>
             </div>
             <div class="setting-control">
-              <input type="text" id="s-oidc-scopes" data-field="oidc_scopes" data-allow-empty placeholder="openid profile email" />
+              <app-input type="text" id="s-oidc-scopes" data-field="oidc_scopes" data-allow-empty placeholder="openid profile email" aria-label="Scopes"></app-input>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-oidc-label">Button label</label>
+              <label>Button label</label>
               <div class="hint">Overrides the sign-in button text.</div>
             </div>
             <div class="setting-control">
-              <input type="text" id="s-oidc-label" data-field="oidc_provider_label" data-allow-empty placeholder="Microsoft" />
+              <app-input type="text" id="s-oidc-label" data-field="oidc_provider_label" data-allow-empty placeholder="Microsoft" aria-label="Button label"></app-input>
             </div>
           </div>
         </div>
 
         <div class="save-bar">
-          <button class="save-btn" id="btn-save">Save changes</button>
+          <app-button id="btn-save">Save changes</app-button>
         </div>
       </div>
     `;
@@ -317,7 +320,7 @@ class SettingsPage extends HTMLElement {
         const v = el.value.trim();
         // data-allow-empty fields round-trip '' so they can be cleared.
         if (v || el.hasAttribute('data-allow-empty')) {
-          updated[el.dataset.field] = el.type === 'number' ? Number(v) : v;
+          updated[el.dataset.field] = el.getAttribute('type') === 'number' ? Number(v) : v;
         }
       });
       await call('saveSettings', updated);

@@ -87,84 +87,22 @@
     flex-wrap: wrap;
     margin-bottom: var(--s-16);
   }
+  /* The box is an <app-search> — icon, clear button, focus ring and all. This
+     only sizes its slot in the toolbar and picks the plane it sits on. */
   .search-wrap {
-    position: relative;
+    display: block;
     flex: 1;
     min-width: 200px;
     max-width: 520px;
+    --search-bg: var(--bg-input);
   }
-  .search-icon {
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--color-text-muted);
-    pointer-events: none;
-    display: flex;
-  }
-  .search-wrap input {
-    width: 100%;
-    min-height: var(--control-h-lg);
-    padding: 0 var(--s-32) 0 38px;
-    border: 1px solid transparent;
-    border-radius: var(--r-8);
-    background: var(--bg-input);
-    font-size: var(--font-size-sm);
-    color: var(--color-text-main);
-    font-family: inherit;
-  }
-  .search-wrap input:focus {
-    outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
-  }
-  .search-wrap input::placeholder { color: var(--color-text-muted); }
-  .search-wrap input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
-  .search-clear {
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--color-text-muted);
-    padding: var(--s-8);
-    border-radius: var(--r-4);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .search-clear:hover { color: var(--color-text-main); }
 
-  .sort-wrap { position: relative; display: flex; }
-  .sort-icon {
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--color-text-muted);
-    pointer-events: none;
-    display: flex;
-  }
+  /* <app-select> draws the whole control, sort glyph included — it goes in the
+     component's `leading` slot. The page only keeps the box from shrinking. */
   .sort-select {
-    width: auto;
     flex-shrink: 0;
-    min-height: var(--control-h-lg);
-    padding: 0 var(--s-16) 0 34px;
-    border: 1px solid transparent;
-    border-radius: var(--r-8);
-    background: var(--bg-input);
-    color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    font-family: inherit;
-    cursor: pointer;
-    min-width: 140px;
-  }
-  .sort-select:focus {
-    outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
+    min-width: 160px;
+    --input-bg: var(--bg-input);
   }
 
   /* ── Grid ────────────────────────────────────────────────────────────────── */
@@ -212,22 +150,36 @@
   }
 
   /* ── Card ────────────────────────────────────────────────────────────────
-     The real, data-loaded card is now <app-card> (common/design-system/app-card/
-     — the nasiko_ui NasikoCard counterpart); it carries its own box, accent
-     bar, title/tags/description and error body, styled from global.css DS
-     tokens. `.agent-card` survives here ONLY as the box for the JS-rendered
-     loading skeleton below (#skeletonCards()) — its layout must keep tracking
-     <app-card>'s if that ever changes size. */
-  .agent-card {
-    /* Anchors `.agent-card-source`. Without it that badge resolved against
-       whichever ancestor happened to be positioned, so every card's badge
-       stacked in one corner of the page instead of sitting on its own card. */
-    position: relative;
-    padding: var(--s-12) var(--s-16);
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-8);
+     Every card here is <app-card> (common/design-system/app-card/) — box,
+     status dot, title/tags/description, error and deploying bodies, and the
+     loading skeleton all live there. This page contributes only the two things
+     the component has no opinion on: the error-state logs link and the quiet
+     destructive icon button in the footer. */
+  /* Source badge (GitHub / Zip) — where the agent came from. It sits in
+     <app-card>'s header actions box, top-right, and is revealed on hover: it
+     answers a question you only ask about the card you are already looking at,
+     and a grid of them reads as noise.
+
+     Faded rather than removed, so the box stays reserved — collapsing it would
+     hand the width back to `.card-name` and re-truncate the title on every
+     hover. Also revealed on focus-within, because the card is a link and a
+     keyboard user never hovers. */
+  .agent-card-source {
+    transition: opacity var(--transition-fast);
   }
+
+  /* Only where hover is a real input. On touch there is no hover state to
+     enter, so the badge would simply never be visible. */
+  @media (hover: hover) {
+    .agent-card-source { opacity: 0; }
+
+    app-card:hover .agent-card-source,
+    app-card:focus-within .agent-card-source,
+    app-card:focus-visible .agent-card-source {
+      opacity: 1;
+    }
+  }
+
   .error-logs-link {
     color: var(--fg-primary);
     font-weight: 500;
@@ -235,132 +187,37 @@
     text-decoration: underline;
   }
 
-  /* The setting-up/deploying state (spinner + label + hint) moved into
-     <app-card>, which is what renders these cards now. It had been dead here:
-     the styles survived but nothing emitted the .setup-* markup any more. */
-
-  /* Action row — hairline-separated footer; margin-top:auto keeps it aligned
-     across cards of differing content heights */
-  .agent-card-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--s-8);
-    margin-top: auto;
-    padding-top: var(--s-12);
-    border-top: 1px solid var(--color-border);
-  }
-
-  /* ── Card action buttons — small quiet secondary (28px, r8), matching the
-        agents-page card idiom (quiet Details / contained dark Chat) ───────── */
-  .card-action-btn {
+  /* ── Card action buttons ─────────────────────────────────────────────────
+        Restart / Stop / Deploy are <app-button>s. Delete is not: it is a quiet
+        destructive icon, and the design system has no ghost-danger variant —
+        `danger-secondary` is a red-outlined box, which is too loud for a third
+        button on a card footer. ponytail: this one stays hand-rolled until the
+        design system grows that variant, and it is the only rule left here. */
+  .card-action-btn--danger {
     display: inline-flex;
     align-items: center;
-    gap: var(--s-4);
-    min-height: var(--control-h-sm);
-    padding: 0 var(--s-12);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: var(--color-bg-base);
-    color: var(--color-text-main);
-    font-size: 13px;
-    font-weight: 500;
-    font-family: inherit;
-    cursor: pointer;
-    white-space: nowrap;
-    transition:
-      background var(--transition-fast),
-      color var(--transition-fast),
-      border-color var(--transition-fast);
-  }
-  .card-action-btn svg { flex-shrink: 0; }
-  .card-action-btn:hover:not(:disabled) {
-    background: var(--bg-surface-hover);
-  }
-  .card-action-btn:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 2px;
-  }
-  .card-action-btn:disabled { opacity: 0.6; cursor: default; }
-  /* Contextual primary (Deploy) — contained dark, same as agents-page Chat */
-  .card-action-btn--primary {
-    background: var(--bg-action);
-    border-color: transparent;
-    color: var(--fg-on-action);
-  }
-  .card-action-btn--primary:hover:not(:disabled) {
-    background: var(--bg-action-hover);
-    color: var(--fg-on-action);
-  }
-  /* Delete — icon-only quiet-danger, pushed right of the lifecycle actions */
-  /* Icon-only lifecycle buttons (Restart/Stop) — square quiet buttons; the
-     action name lives in title/aria-label. */
-  .card-action-btn--icon {
-    width: var(--control-h-sm);
-    height: var(--control-h-sm);
-    padding: 0;
     justify-content: center;
-  }
-
-  .card-action-btn--danger {
     margin-left: auto;
     width: var(--control-h-sm);
     height: var(--control-h-sm);
     padding: 0;
-    justify-content: center;
-    border-color: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
     background: transparent;
     color: var(--color-text-muted);
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
   }
+  .card-action-btn--danger svg { flex-shrink: 0; }
   .card-action-btn--danger:hover:not(:disabled) {
     color: var(--color-error);
     background: color-mix(in srgb, var(--color-error) 8%, transparent);
   }
-
-  /* ── Skeleton cards ──────────────────────────────────────────────────────── */
-  /* Surface comes from the shared `.card` (common/styles/surface.css) — the
-     same one <app-card> uses — so the box doesn't change when data lands.
-     Layout only here, matching .ac-card's padding and rhythm. */
-  .skeleton-card {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-12);
-    min-height: 192px;
-    padding: var(--s-16);
+  .card-action-btn--danger:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
   }
-  .skel-line {
-    height: 0.85em;
-    border-radius: var(--r-4);
-    background: var(--color-border);
-    animation: skel-pulse 1.5s ease-in-out infinite;
-  }
-  .skel-line--name { width: 50%; height: 1em; }
-  .skel-line--desc { width: 85%; }
-  .skel-line--desc2 { width: 72%; }
-  .skel-tags {
-    display: flex;
-    gap: var(--s-8);
-  }
-  .skel-tag {
-    width: 64px;
-    height: 20px;
-    border-radius: var(--r-4);
-    background: var(--color-border);
-    animation: skel-pulse 1.5s ease-in-out infinite;
-  }
-  .skel-actions {
-    display: flex;
-    gap: var(--s-8);
-    margin-top: auto;
-    padding-top: var(--s-12);
-    border-top: 1px solid var(--color-border);
-  }
-  .skel-btn {
-    width: 70px;
-    height: var(--control-h-sm);
-    border-radius: var(--r-8);
-    background: var(--color-border);
-    animation: skel-pulse 1.5s ease-in-out infinite;
-  }
+  .card-action-btn--danger:disabled { opacity: 0.6; cursor: default; }
 
   /* ── Modal styles ────────────────────────────────────────────────────────── */
   .env-row {
@@ -369,25 +226,9 @@
     gap: var(--s-8);
     margin-bottom: var(--s-8);
   }
-  .env-row input {
-    padding: var(--s-8) var(--s-12);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: var(--color-bg-surface);
-    color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    font-family: var(--font-mono);
-  }
-  .env-row input:focus { outline: none; border-color: var(--color-primary); }
-  .env-remove {
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--color-error);
-    padding: var(--s-8);
-    border-radius: var(--r-4);
-  }
-  .env-remove:hover { background: var(--color-bg-base); }
+  /* Both boxes are <app-input size="sm">; env vars read better in mono, which
+     is the one thing the design system's field does not decide. */
+  .env-row app-input input { font-family: var(--font-mono); }
   .modal-section { margin-bottom: var(--s-16); }
   .modal-section h3 {
     font-size: var(--font-size-sm);
@@ -400,75 +241,13 @@
     color: var(--color-text-muted);
     margin-bottom: var(--s-12);
   }
-  .add-env-btn, .import-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-8);
-    min-height: var(--control-h-sm);
-    padding: 0 var(--s-12);
-    border: 1px dashed var(--color-border);
-    border-radius: var(--r-8);
-    background: none;
-    color: var(--color-text-muted);
-    font-size: var(--font-size-xs);
-    cursor: pointer;
-  }
-  .add-env-btn:hover, .import-btn:hover {
-    border-color: var(--color-primary);
-    color: var(--color-primary);
-  }
   .secret-chips {
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-8);
     margin-top: var(--s-8);
   }
-  .secret-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    border-radius: var(--r-4);
-    background: var(--color-bg-base);
-    font-size: var(--font-size-xs);
-    font-family: var(--font-mono);
-    color: var(--color-text-main);
-    cursor: pointer;
-    border: 1px solid var(--color-border);
-  }
-  .secret-chip.selected {
-    background: color-mix(in srgb, var(--color-primary) 15%, transparent);
-    border-color: var(--color-primary);
-  }
-  .form-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--s-12);
-    margin-top: var(--s-16);
-  }
-  .btn-deploy {
-    min-height: var(--control-h-lg);
-    padding: 0 var(--s-24);
-    background: var(--color-primary);
-    color: var(--color-on-primary);
-    border: none;
-    border-radius: var(--r-10);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
-  }
-  .btn-deploy:hover:not(:disabled) { background: var(--color-primary-hover); }
-  .btn-deploy:disabled { opacity: 0.6; cursor: not-allowed; }
-  .btn-cancel {
-    min-height: var(--control-h-lg);
-    padding: 0 var(--s-24);
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-10);
-    color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    cursor: pointer;
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
-  }
+  /* <app-tag selectable> is the chip, including its selected fill. Secret names
+     are identifiers, so they keep the mono face. */
+  .secret-chip { font-family: var(--font-mono); }
 }

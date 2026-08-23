@@ -52,12 +52,12 @@ export default {
   scenarios: {
     "configure-form": async (page) => {
       await page.waitForSelector('[data-action="new-config"]');
-      await page.click('.provider-card[data-provider="openai"]');
+      await page.click('app-card[data-provider="openai"]');
       await page.waitForSelector("#config-form");
     },
     "configure-new-secret": async (page) => {
       await page.waitForSelector('[data-action="new-config"]');
-      await page.click('.provider-card[data-provider="anthropic"]');
+      await page.click('app-card[data-provider="anthropic"]');
       await page.waitForSelector("#config-form");
       await page.click("#secret-new");
       await page.waitForTimeout(200);

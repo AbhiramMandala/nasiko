@@ -3,13 +3,16 @@
      has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
      adopted, so it is already in effect at first paint. */
 
+  /* Back button, then the title block — no space-between: the two belong
+     together at the leading edge, not pushed to opposite ends. */
   .page-head {
     display: flex;
     align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--s-16);
+    gap: var(--s-12);
     margin-bottom: var(--s-24);
   }
+  /* Nudge the 28px square onto the title's baseline row. */
+  .page-head app-button { margin-top: 2px; }
 
   .page-sub {
     font-size: var(--font-size-sm);
@@ -17,19 +20,6 @@
     margin: var(--s-4) 0 0;
 
     & .is-mono { font-family: var(--font-mono); }
-  }
-
-  .back-link {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-4);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--color-text-muted);
-    text-decoration: none;
-    white-space: nowrap;
-
-    &:hover { color: var(--fg-brand); }
   }
 
   /* KPI strip — label over value with hairline separators */
@@ -143,38 +133,4 @@
   .log-line .ts { color: var(--sand-600); margin-right: var(--s-12); }
   .log-line.is-error { color: var(--red-400); }
   .log-line.is-muted { color: var(--sand-600); font-style: italic; }
-
-  /* Empty state */
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    padding: var(--s-48) var(--s-16);
-  }
-
-  .empty-tile {
-    width: 48px;
-    height: 48px;
-    border-radius: var(--r-8);
-    background: var(--bg-surface);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--color-text-muted);
-    margin-bottom: var(--s-16);
-  }
-
-  .empty-title {
-    font-family: var(--font-display);
-    font-size: var(--font-size-lg);
-    font-weight: 500;
-    margin-bottom: var(--s-4);
-  }
-
-  .empty-sub {
-    font-size: var(--font-size-sm);
-    color: var(--color-text-muted);
-    margin: 0;
-  }
 }

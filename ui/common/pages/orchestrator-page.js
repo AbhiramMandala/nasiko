@@ -7,6 +7,10 @@ import { usageChipsHtml } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
 import { registerAll } from '/common/core/data-sources.js';
 import '/common/design-system/app-chatbox/app-chatbox.js';
+import '/common/design-system/app-card/app-card.js';
+import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-tag/app-tag.js';
 import '/common/features/agent-steps.js';
 // Both render branches below mount an <app-module-nav>, and page-layout.css holds
 // the desktop gutter it pins into. Nothing imported it, so it never upgraded: an
@@ -17,7 +21,7 @@ const transcribeAudio = transcribeBlob;
 registerAll({ transcribeAudio }, { replace: true });
 
 import styles from './orchestrator-page.css' with { type: 'css' };
-import { escHtml } from '/common/utils/escape.js';
+import { escAttr, escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class OrchestratorPage extends HTMLElement {
@@ -42,9 +46,9 @@ class OrchestratorPage extends HTMLElement {
       <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it</p>
       <div class="recent-agents" id="recent-agents">
         <div class="recent-agents-grid" id="recent-agents-grid">
-          <div class="agent-card-skel"></div>
-          <div class="agent-card-skel"></div>
-          <div class="agent-card-skel"></div>
+          <app-card loading></app-card>
+          <app-card loading></app-card>
+          <app-card loading></app-card>
         </div>
       </div>
       <div class="messages" id="messages"></div>
@@ -55,14 +59,14 @@ class OrchestratorPage extends HTMLElement {
           transcription-callback="transcribeAudio"
         ></app-chatbox>
       </div>
-      <a class="wf-banner" href="/workflow-new">
+      <div class="wf-banner">
         <span class="wf-banner-icon" aria-hidden="true">${icons.workflow('', 20)}</span>
         <span class="wf-banner-text">
           <span class="wf-banner-title">Need multiple coordinated steps or agents?</span>
           <span class="wf-banner-sub">Create a workflow to structure complex tasks and reusable operations.</span>
         </span>
-        <span class="wf-banner-cta">Create workflow</span>
-      </a>
+        <app-button variant="secondary" size="sm" href="/workflow-new">Create workflow</app-button>
+      </div>
     `;
 
     this.#loadRecentAgents();
@@ -244,31 +248,38 @@ class OrchestratorPage extends HTMLElement {
         this.innerHTML = `
           <app-module-nav module="orchestrator"></app-module-nav>
           <div class="empty-wrap">
-            <div class="hero-icon" aria-hidden="true">${icons.layers('', 24)}</div>
-            <h2 class="empty-title">No agents available</h2>
-            <p class="empty-sub">Your orchestrator is ready, but there aren't any agents to run yet. Create a new agent or deploy one from the Artifact Registry to start building workflows.</p>
-             <div class="empty-pills">
-              <span class="process-pill">${icons.layers('', 12)} Pick an agent</span>
-              ${icons.chevronRight('empty-arrow', 12)}
-              <span class="process-pill">${icons.upload('', 12)} Deploy</span>
-              ${icons.chevronRight('empty-arrow', 12)}
-              <span class="process-pill">${icons.route('', 12)} Orchestrate</span>
-            </div>
-            <a class="empty-cta" href="/add-agent">Import agent ${icons.plus('', 13)}</a>
+            <app-empty-state
+              title="No agents available"
+              description="Your orchestrator is ready, but there aren't any agents to run yet. Create a new agent or deploy one from the Artifact Registry to start building workflows."
+              icon='${icons.layers('', 40)}'>
+              <div class="empty-pills">
+                <app-tag size="sm">${icons.layers('', 12)} Pick an agent</app-tag>
+                ${icons.chevronRight('empty-arrow', 12)}
+                <app-tag size="sm">${icons.upload('', 12)} Deploy</app-tag>
+                ${icons.chevronRight('empty-arrow', 12)}
+                <app-tag size="sm">${icons.route('', 12)} Orchestrate</app-tag>
+              </div>
+              <app-button variant="primary" href="/add-agent">Import agent ${icons.plus()}</app-button>
+            </app-empty-state>
           </div>`;
         return;
       }
 
+      // <app-card> is the one card component — it owns the surface, the name
+      // row, the two-line description clamp and the keyboard/click activation
+      // this page used to hand-roll. No `agent-id`, so the card renders no
+      // Details/Chat footer: the whole card is the chat link.
       grid.innerHTML = agents.map(agent => {
         const displayName = agent.display_name || agent.name || agent.id;
+        const href = `/chat?agent_name=${encodeURIComponent(agent.name)}&agent_id=${encodeURIComponent(agent.id)}`;
         return `
-          <a class="agent-card" href="/chat?agent_name=${encodeURIComponent(agent.name)}&agent_id=${encodeURIComponent(agent.id)}">
-            <div class="agent-card-top">
-              <span class="agent-card-name">${escHtml(displayName)}</span>
-              <span class="agent-card-go">${icons.arrowUpRight('', 14)}</span>
-            </div>
-            ${agent.description ? `<div class="agent-card-desc">${escHtml(agent.description)}</div>` : ''}
-          </a>
+          <app-card
+            name="${escAttr(displayName)}"
+            ${agent.description ? `description="${escAttr(agent.description)}"` : ''}
+            href="${escAttr(href)}"
+            aria-label="Chat with ${escAttr(displayName)}">
+            <span slot="actions" class="agent-card-go">${icons.arrowUpRight('', 14)}</span>
+          </app-card>
         `;
       }).join('');
     } catch {

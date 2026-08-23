@@ -22,12 +22,19 @@
  * @attr {string} placeholder - Renders a selected-but-disabled first option.
  * @attr {string} options - JSON array of `"value"` or `{value, label, disabled}`.
  * @attr {boolean} required|disabled
- * @attr {string} name - Forwarded to the inner `<select>`.
+ * @attr {string} name|aria-label - Forwarded to the inner `<select>`.
+ * @attr {string} value - Initially selected value; matched against `options`.
  * @prop {string} value - Get/set the selected value.
  * @prop {HTMLSelectElement} select - The inner select.
+ * @slot [data-slot="leading"] - A prefix glyph inside the trigger, before the
+ *   text — same slot name, metrics and colour as app-input's, so a prefixed
+ *   select and a prefixed field are the same markup. There is no `trailing`
+ *   slot: that edge is the chevron's.
  * @fires change - Bubbles from the inner select.
  * @note Options can be slotted as plain `<option>` children instead of the
  *       `options` attribute; whichever is present wins, attribute first.
+ * @note The leading glyph is sized by the component — 16px at md, 12px at sm —
+ *       so pass a bare `icons.sortBoth()` and don't set a size at the call site.
  */
 import styles from './app-select.css' with { type: 'css' };
 import { icons, unsizeIcons } from '../../utils/icons.js';
@@ -38,16 +45,23 @@ let uid = 0;
 export class AppSelect extends HTMLElement {
   static get observedAttributes() {
     return ['size', 'state', 'label', 'hint', 'placeholder', 'options', 'required',
-            'disabled', 'name', 'value'];
+            'disabled', 'name', 'value', 'aria-label'];
   }
 
   #id = `app-select-${++uid}`;
   /** Slotted <option> markup, captured once — render() replaces innerHTML. */
   #slotted = null;
+  /** Same, for the leading glyph: re-querying after a render would find the
+   *  copy this component wrote and, on the render after that, nothing. */
+  #leading = null;
 
   get value() { return this.select?.value ?? this.getAttribute('value') ?? ''; }
   set value(v) { if (this.select) this.select.value = v; else this.setAttribute('value', v); }
   get select() { return this.querySelector('select'); }
+
+  /** The host is not focusable — a `focus()` on it would silently do nothing,
+   *  so hand it to the control inside. */
+  focus(options) { this.select?.focus(options); }
 
   connectedCallback() { this.render(); }
   attributeChangedCallback() { if (this.isConnected) this.render(); }
@@ -74,6 +88,9 @@ export class AppSelect extends HTMLElement {
     if (this.#slotted === null) {
       this.#slotted = [...this.querySelectorAll('option')].map((o) => o.outerHTML).join('');
     }
+    if (this.#leading === null) {
+      this.#leading = this.querySelector('[data-slot="leading"]')?.outerHTML ?? '';
+    }
 
     const size        = this.getAttribute('size') === 'sm' ? 'sm' : 'md';
     const disabled    = this.hasAttribute('disabled');
@@ -82,13 +99,18 @@ export class AppSelect extends HTMLElement {
     const hint        = this.getAttribute('hint');
     const placeholder = this.getAttribute('placeholder');
     const name        = this.getAttribute('name');
+    // Named like app-input's: the inner <select> is what a screen reader reads,
+    // and a label sitting in another grid column can't point at its generated id.
+    const aria        = this.getAttribute('aria-label');
 
     this.innerHTML = `
       <div class="field is-${size} is-${state}">
         ${label === null ? '' : `<label class="label-row" for="${this.#id}">${
           this.hasAttribute('required') ? '<span class="req">*</span>' : ''}${label}</label>`}
         <div class="select-box">
+          ${this.#leading}
           <select id="${this.#id}"${name ? ` name="${name}"` : ''}${
+            aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
             disabled ? ' disabled' : ''}${this.hasAttribute('required') ? ' required' : ''}>
             ${placeholder === null ? ''
               : `<option value="" disabled selected>${placeholder}</option>`}

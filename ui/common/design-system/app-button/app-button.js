@@ -16,9 +16,17 @@
  *   × Size matrix as the text button, so `variant` still supplies the colour.
  *   `variant="icon"` remains as the ghost-coloured shorthand used across mcp-page
  *   and the EE pages.
+ * @attr {string} href - Renders an `<a class="btn">` instead of a `<button>`, so a
+ *   navigation CTA is the same component as every other button. The SPA router
+ *   intercepts internal anchor clicks, so no click handler is needed. A `disabled`
+ *   (or `loading`) button keeps its `<button disabled>` — an anchor cannot be disabled.
  * @attr {boolean} disabled - Disables the button
  * @attr {boolean} loading - Shows a spinner and disables the button
  * @attr {string} type - HTML button type: `button` (default) | `submit` | `reset`
+ * @attr {string} aria-label|title|aria-expanded - Forwarded to the inner `<button>`,
+ *   which is the focusable element an AT actually names. Required on an `icon-only`
+ *   button: the host is not focusable, so an aria-label left on it is never
+ *   announced — and neither is a disclosure button's `aria-expanded`.
  * @prop {boolean} disabled - Get/set disabled state
  * @note Content goes in the default slot. The button sizes any icon in it —
  *       20px at the default size, 16 at `md`, 12 at `sm` — so pass a bare
@@ -31,7 +39,8 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppButton extends HTMLElement {
   static get observedAttributes() {
-    return ['variant', 'size', 'disabled', 'loading', 'type', 'icon-only'];
+    return ['variant', 'size', 'disabled', 'loading', 'type', 'icon-only',
+            'href', 'aria-label', 'title', 'aria-expanded'];
   }
   constructor() { super(); }
   get disabled() { return this.hasAttribute('disabled'); }
@@ -62,12 +71,21 @@ export class AppButton extends HTMLElement {
     const iconOnly = this.hasAttribute('icon-only') || variant === 'icon';
     const classes  = ['btn', `is-${variant}`, size ? `is-${size}` : '',
                       iconOnly ? 'is-icon-only' : ''].filter(Boolean).join(' ');
+    // A CTA that navigates is still this component: same variants, same sizes,
+    // one definition. `href` goes through the same forwarding (and therefore the
+    // same escaping) as the other pass-through attributes.
+    const linked = this.hasAttribute('href') && !disabled;
+    const forwarded = ['aria-label', 'title', 'aria-expanded', ...(linked ? ['href'] : [])]
+      .filter((a) => this.hasAttribute(a))
+      .map((a) => ` ${a}="${this.getAttribute(a).replace(/"/g, '&quot;')}"`)
+      .join('');
+    const tag = linked ? 'a' : 'button';
 
     this.innerHTML = `
-      <button class="${classes}" type="${type}"${disabled ? ' disabled' : ''}>
+      <${tag} class="${classes}"${linked ? '' : ` type="${type}"`}${forwarded}${!linked && disabled ? ' disabled' : ''}>
         ${loading ? '<span class="spinner" aria-hidden="true"></span>' : ''}
         <span class="content">${content}</span>
-      </button>`;
+      </${tag}>`;
 
     // icons.js writes each glyph's size into the svg's `style` attribute, and an
     // inline style beats every stylesheet rule — so the icon ramp above (l 20,

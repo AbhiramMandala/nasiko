@@ -1,4 +1,5 @@
 import { icons } from '/common/utils/icons.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
 
 import styles from './session-trace-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
@@ -23,7 +24,9 @@ class SessionTracePage extends HTMLElement {
     const traceId = new URLSearchParams(location.search).get('trace_id')
       || this.getAttribute('trace-id');
     if (!traceId) {
-      this.innerHTML = `<div class="empty-state">No trace ID specified.</div>`;
+      this.innerHTML = `<app-empty-state title="No trace ID specified"
+        description="Open a trace from a session to inspect it."
+        icon='${icons.faceFrown("", 40)}'></app-empty-state>`;
       return;
     }
     document.title = `Nasiko — Trace ${traceId.slice(0, 12)}`;
@@ -53,13 +56,10 @@ class SessionTracePage extends HTMLElement {
         <a class="back-link" href="javascript:history.back()">${icons.chevronLeft('', 16)} Back</a>
         <h1>${escHtml(traceId)}</h1>
       </div>
-      <div class="empty-state">
-        <p>This trace isn't linked to a session yet.</p>
-        <p style="font-size:var(--font-size-xs);margin-top:var(--s-12)">
-          Agent spans reach the trace backend a few seconds after a reply finishes.
-          Try refreshing in a moment, or open the session from Execution history.
-        </p>
-      </div>
+      <app-empty-state
+        title="This trace isn't linked to a session yet"
+        description="Agent spans reach the trace backend a few seconds after a reply finishes. Try refreshing in a moment, or open the session from Execution history."
+        icon='${icons.faceFrown("", 40)}'></app-empty-state>
     `;
   }
 

@@ -31,6 +31,17 @@
     display: flex;
     flex-direction: column;
     gap: var(--s-12);
+    cursor: default;
+  }
+
+  /* Only a card that actually activates gets the hand. `href`/`agent-id` are
+     the two that navigate (see #cardHref); `role` is a consumer that owns
+     activation itself, via a delegated handler. A card with none of the three
+     is a static panel, and a pointer on one promises a click that does
+     nothing — which is what the import-method tiles were showing. */
+  :scope[href],
+  :scope[agent-id],
+  :scope[role] {
     cursor: pointer;
   }
 
@@ -38,6 +49,37 @@
     display: flex;
     align-items: center;
     gap: var(--s-8);
+    min-width: 0;
+  }
+
+  /* Keyboard affordance. The card is a link or (with a consumer-set role) a
+     button, so focus has to be visible on it — the pages this component
+     replaced each carried their own copy of this ring. */
+  :scope:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+
+  /* Leading media (an avatar, a provider glyph). The consumer sizes it; the
+     card only stops it being squeezed by a long name. */
+  .card-leading {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  /* Header controls, pushed to the trailing edge of the title row. */
+  .card-actions {
+    display: flex;
+    gap: var(--s-4);
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  /* Consumer-supplied body, in place of the two-line description. It sets its
+     own rhythm — the card only gives it the growth the footer needs to sit at
+     the bottom. */
+  .card-body {
+    flex: 1;
     min-width: 0;
   }
 

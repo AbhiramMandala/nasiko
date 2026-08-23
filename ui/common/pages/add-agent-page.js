@@ -1,8 +1,12 @@
+import { setFieldError } from '/common/utils/field-error.js';
+import { escAttr, escHtml } from '/common/utils/escape.js';
 import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import '/common/design-system/app-modal/app-modal.js';
 import styles from './add-agent-page.css' with { type: 'css' };
 import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-card/app-card.js';
+import '/common/design-system/app-input/app-input.js';
 import { navigate as routerNavigate } from '../core/router.js';
 // Importing an agent is a step in the Agent registry module, so it carries that
 // module's tree. add-agent-page.css already had the `align-self: stretch` rule
@@ -57,35 +61,21 @@ class AddAgentPage extends HTMLElement {
       </a>
 
       <div class="method-grid">
-        <div class="method-card">
-          <div class="method-card-header">
-            <span>${icons.github('', 22)}</span>
-            <span class="method-card-title">Import from GitHub</span>
-          </div>
-          <div class="method-card-req">Requires GitHub authentication</div>
-          <div class="method-card-desc">Pull your agent from a GitHub repository. Keep code and metadata in sync.</div>
-          <button class="method-btn" id="btn-github">Connect GitHub</button>
-        </div>
-
-        <div class="method-card">
-          <div class="method-card-header">
-            <span>${icons.upload('', 22)}</span>
-            <span class="method-card-title">Upload a code package</span>
-          </div>
-          <div class="method-card-req">Include skill.json in the package</div>
-          <div class="method-card-desc">Register your agent with a .zip that includes source and config.</div>
-          <button class="method-btn" id="btn-upload">Upload .zip</button>
-        </div>
-
-        <div class="method-card">
-          <div class="method-card-header">
-            <span>${icons.layers('', 22)}</span>
-            <span class="method-card-title">Import from OCI registry</span>
-          </div>
-          <div class="method-card-req">You'll need the image URL</div>
-          <div class="method-card-desc">Pull a pre-built agent image directly from any OCI-compatible container registry.</div>
-          <button class="method-btn" id="btn-oci">Connect Registry</button>
-        </div>
+        ${this.#methodCard({
+          icon: icons.github('', 22), id: 'btn-github', title: 'Import from GitHub',
+          req: 'Requires GitHub authentication', cta: 'Connect GitHub',
+          desc: 'Pull your agent from a GitHub repository. Keep code and metadata in sync.',
+        })}
+        ${this.#methodCard({
+          icon: icons.upload('', 22), id: 'btn-upload', title: 'Upload a code package',
+          req: 'Include skill.json in the package', cta: 'Upload .zip',
+          desc: 'Register your agent with a .zip that includes source and config.',
+        })}
+        ${this.#methodCard({
+          icon: icons.layers('', 22), id: 'btn-oci', title: 'Import from OCI registry',
+          req: "You'll need the image URL", cta: 'Connect Registry',
+          desc: 'Pull a pre-built agent image directly from any OCI-compatible container registry.',
+        })}
       </div>
 
       <app-modal id="upload-modal" heading="Upload agent package">
@@ -94,29 +84,29 @@ class AddAgentPage extends HTMLElement {
             <span class="field-label">Source archive (.zip)</span>
             <input type="file" id="upload-file" accept=".zip,application/zip" required />
           </label>
-          <label class="field">
-            <span class="field-label">Agent name</span>
-            <input type="text" id="upload-name" autocomplete="off" placeholder="my-agent" />
+          <div class="field">
+            <app-input id="upload-name" label="Agent name" autocomplete="off"
+                       placeholder="my-agent"></app-input>
             <span class="field-hint">Letters, digits, dots, underscores and hyphens; must start with
               a letter, digit or underscore. Pre-filled from the file name.</span>
-          </label>
+          </div>
           <p class="form-error" id="upload-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="outline" id="upload-cancel">Cancel</app-button>
-          <app-button variant="dark" id="upload-submit">Upload and deploy</app-button>
+          <app-button variant="tertiary" id="upload-cancel">Cancel</app-button>
+          <app-button variant="primary" id="upload-submit">Upload and deploy</app-button>
         </div>
       </app-modal>
 
       <app-modal id="oci-modal" heading="Import from OCI registry">
         <div class="upload-form" id="oci-form">
-          <label class="field">
-            <span class="field-label">Artifact reference</span>
-            <input type="text" id="oci-ref" autocomplete="off" spellcheck="false"
-                   placeholder="registry.example.com/owner/my-agent:v1.0" />
+          <div class="field">
+            <app-input id="oci-ref" label="Artifact reference" autocomplete="off"
+                       spellcheck="false"
+                       placeholder="registry.example.com/owner/my-agent:v1.0"></app-input>
             <span class="field-hint">Format <code>registry.host/owner/name[:tag]</code>; defaults to
               <code>:latest</code>. The host must be allow-listed on the server.</span>
-          </label>
+          </div>
           <p class="form-error" id="oci-error" hidden></p>
         </div>
         <div class="agent-card-setup" id="oci-progress" hidden>
@@ -128,8 +118,8 @@ class AddAgentPage extends HTMLElement {
             minutes. You can close this dialog and it will continue running in the background.</p>
         </div>
         <div data-slot="footer">
-          <button type="button" class="btn-outline" id="oci-cancel">Cancel</button>
-          <button type="button" class="btn-dark" id="oci-submit">Import and deploy</button>
+          <app-button variant="tertiary" id="oci-cancel">Cancel</app-button>
+          <app-button variant="primary" id="oci-submit">Import and deploy</app-button>
         </div>
       </app-modal>
     `;
@@ -141,6 +131,19 @@ class AddAgentPage extends HTMLElement {
     this.#checkGithubStatus();
     this.#wireUploadModal();
     this.#wireOciModal();
+  }
+
+  /** One import-method tile. */
+  #methodCard({ icon, id, title, req, desc, cta }) {
+    return `
+      <app-card name="${escAttr(title)}">
+        <span slot="leading">${icon}</span>
+        <div slot="body" class="method-body">
+          <div class="method-card-req">${escHtml(req)}</div>
+          <div class="method-card-desc">${escHtml(desc)}</div>
+          <app-button class="method-btn" variant="primary" block id="${escAttr(id)}">${escHtml(cta)}</app-button>
+        </div>
+      </app-card>`;
   }
 
   /// The import runs synchronously server-side (build/pull + deploy inside the
@@ -183,10 +186,10 @@ class AddAgentPage extends HTMLElement {
       // reference must carry a registry host, otherwise it 400s.
       const [repoWithHost] = reference.split(':');
       if (!repoWithHost.includes('/')) {
-        errorEl.textContent = 'Enter a full reference: registry.host/owner/name[:tag].';
-        errorEl.hidden = false;
+        setFieldError(refEl, 'Enter a full reference: registry.host/owner/name[:tag].');
         return;
       }
+      setFieldError(refEl, null);
 
       setBusy(true);
       try {
@@ -214,12 +217,14 @@ class AddAgentPage extends HTMLElement {
       const res = await apiFetch('/auth/github/token');
       const body = await res.json();
       if (body.status === 'connected') {
-        const card = this.querySelector('#btn-github')?.closest('.method-card');
+        const card = this.querySelector('#btn-github')?.closest('app-card');
         if (!card) return;
         const req = card.querySelector('.method-card-req');
         const btn = this.querySelector('#btn-github');
         if (req) { req.textContent = `Connected as ${body.username || 'GitHub user'}`; req.classList.add('connected'); }
-        if (btn) btn.textContent = 'Import from GitHub';
+        // `label`, not textContent: assigning text to an <app-button> would
+        // replace the inner <button> it rendered with a bare text node.
+        if (btn) btn.label = 'Import from GitHub';
       }
     } catch { /* leave default text */ }
   }
@@ -239,6 +244,7 @@ class AddAgentPage extends HTMLElement {
     this.querySelector('#btn-upload')?.addEventListener('click', () => {
       fileEl.value = '';
       nameEl.value = '';
+      setFieldError(nameEl, null);
       errorEl.hidden = true;
       modal.open();
     });
@@ -262,11 +268,15 @@ class AddAgentPage extends HTMLElement {
         this.#showUploadError('Choose a .zip archive to upload.');
         return;
       }
+      // A message about what is in one control belongs on that control —
+      // `state="error"` + `hint`, which app-input already renders. `.form-error`
+      // is for failures with no single field to blame (the upload itself).
       const invalid = agentNameError(name);
       if (invalid) {
-        this.#showUploadError(invalid);
+        setFieldError(nameEl, invalid);
         return;
       }
+      setFieldError(nameEl, null);
 
       const formData = new FormData();
       formData.append('name', name);

@@ -49,7 +49,17 @@
   }
 
   /* Control rail — reorder pair grouped tight, destructive delete split off
-     behind a hairline so it can't be hit by reflex. */
+     behind a hairline so it can't be hit by reflex. All three are
+     <app-button variant="ghost" size="sm" icon-only>, and the hairline is
+     <app-divider vertical>, which stretches to its flex row by default — pinned
+     to the 14px tick this rail wants.
+
+     Ghost, not `danger-secondary`, for the delete: the DS destructive variants
+     are both filled or outlined red at rest, which in a three-button rail makes
+     the destructive control the loudest thing on the card — and every non-ghost
+     variant paints --bg-disabled when disabled, so on a single-step workflow the
+     one thing drawing the eye was a greyed-out box. Ghost keeps the rail reading
+     as one group. Switch this one attribute if the design wants the red tone. */
   .step-tools {
     grid-column: 3;
     grid-row: 1;
@@ -58,40 +68,12 @@
     gap: var(--s-2);
     margin-top: 7px;
   }
-  .tool-btn {
-    display: grid;
-    place-items: center;
-    width: var(--control-h-sm);
-    height: var(--control-h-sm);
-    border: none;
-    border-radius: var(--r-6);
-    background: transparent;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    transition:
-      background var(--transition-fast),
-      color var(--transition-fast);
-  }
-  .tool-btn:hover:not(:disabled) {
-    background: var(--bg-surface-hover);
-    color: var(--color-text-main);
-  }
-  .tool-btn:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 1px;
-  }
-  .tool-btn:disabled { opacity: 0.3; cursor: default; }
-  .tool-btn--danger { margin-left: var(--s-4); }
-  .tool-btn--danger:hover:not(:disabled) {
-    color: var(--color-error);
-    background: color-mix(in srgb, var(--color-error) 8%, transparent);
-  }
-  .tool-sep {
-    width: 1px;
+  .step-tools app-divider {
+    align-self: center;
     height: 14px;
-    margin-left: var(--s-4);
-    background: var(--bg-inset);
+    margin-inline: var(--s-4);
   }
+  .step-tools app-button[data-act="remove"] { margin-left: var(--s-2); }
 
   /* Instruction well — raised surface inside the sand card */
   textarea {
@@ -115,7 +97,10 @@
   }
   textarea::placeholder { color: var(--color-text-muted); }
 
-  /* Agent row — sits in the instruction column so both fields share an edge */
+  /* Agent row — sits in the instruction column so both fields share an edge.
+     The picker is <app-select> (box, chevron, focus ring and the 32px control
+     height all live there) and "Suggested" is <app-badge variant="warning">;
+     what is left here is how they share the row. */
   .agent-row {
     grid-column: 2;
     grid-row: 2;
@@ -129,39 +114,11 @@
     line-height: 16px;
     color: var(--color-text-muted);
   }
-  select {
+  app-select {
     flex: 1;
     min-width: 0;
-    height: var(--control-h-md);
-    padding: 0 30px 0 var(--s-8);
-    border: 1px solid transparent;
-    border-radius: var(--r-6);
-    /* background-color only — the global select rule draws the DS chevron
-       via background-image, and a `background:` shorthand would erase it. */
-    background-color: var(--color-bg-surface);
-    font-family: inherit;
-    font-size: 13px;
-    color: var(--color-text-main);
   }
-  select:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 1px;
-  }
-  /* "Suggested" reads as a marker on the picker, so give it pill weight rather
-     than leaving bare gold text floating at the row's end. */
-  .suggested {
-    display: inline-flex;
-    align-items: center;
-    height: 20px;
-    padding: 0 var(--s-8);
-    border-radius: var(--r-40);
-    background: var(--bg-secondary-brand);
-    font-size: var(--font-size-xs);
-    line-height: 16px;
-    color: var(--fg-caution);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
+  .agent-row app-badge { flex-shrink: 0; }
 
   /* Narrow screens: there's no room for a control rail, so the controls take
      the top-right of the card and the chip anchors that row instead. */
@@ -186,8 +143,8 @@
     }
     /* Label and marker share a line above a full-width picker. */
     .agent-label { flex: 1; }
-    .suggested { order: 1; }
-    select {
+    .agent-row app-badge { order: 1; }
+    app-select {
       order: 2;
       flex-basis: 100%;
     }
@@ -206,51 +163,10 @@
     background: var(--bg-surface-active);
   }
 
-  .steps-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--s-8);
-    padding: var(--s-32) var(--s-20);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--r-8);
-    background: var(--color-bg-base);
-    text-align: center;
-  }
-  .steps-empty-title {
-    font-size: 13px;
-    font-weight: 500;
-    line-height: 18px;
-    color: var(--color-text-main);
-  }
-  .steps-empty-sub {
-    max-width: 380px;
-    font-size: var(--font-size-xs);
-    line-height: 16px;
-    color: var(--color-text-muted);
-    text-wrap: pretty;
-  }
-
+  /* Empty and add are <app-empty-state> and <app-button variant="ghost"
+     size="sm">; only where the button sits in the column is left. */
   .add-step {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-4);
     align-self: flex-start;
-    min-height: var(--control-h-sm);
     margin-top: var(--s-12);
-    padding: 0 var(--s-12);
-    border: none;
-    border-radius: var(--r-8);
-    background: transparent;
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--color-text-main);
-    cursor: pointer;
-  }
-  .add-step:hover { background: var(--bg-surface-hover); }
-  .add-step:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 2px;
   }
 }

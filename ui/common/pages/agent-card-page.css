@@ -79,29 +79,6 @@
   .acp-tag--more {
     color: var(--color-text-muted);
   }
-  .acp-start-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-8);
-    min-height: var(--control-h-lg);
-    padding: 0 var(--s-24);
-    border-radius: var(--r-10);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    text-decoration: none;
-    white-space: nowrap;
-    flex-shrink: 0;
-    transition: background var(--transition-fast);
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
-  }
-  .acp-start-btn svg { flex-shrink: 0; }
-  .acp-start-btn:hover {
-    background: var(--bg-action-hover);
-    color: var(--fg-on-action);
-  }
-
   /* -- Overview head: description + JSON toggle --------------------------- */
   .acp-overview-head {
     display: flex;
@@ -117,54 +94,15 @@
     margin: 0;
     max-width: 72ch;
   }
+  /* The switch is an <app-switch size="sm">; this row only sits it beside the
+     code glyph. */
   .acp-json-toggle {
     display: inline-flex;
     align-items: center;
     gap: var(--s-8);
-    font-size: var(--font-size-sm);
-    color: var(--color-text-main);
-    cursor: pointer;
     flex-shrink: 0;
-    user-select: none;
   }
-  .acp-json-toggle input {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-  .acp-json-track {
-    width: 34px;
-    height: 20px;
-    border-radius: 999px;
-    background: var(--color-bg-base);
-    border: 1px solid var(--color-border);
-    position: relative;
-    transition: background var(--transition-fast);
-  }
-  .acp-json-track::after {
-    content: "";
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: var(--color-bg-surface);
-    box-shadow: var(--shadow-sm);
-    transition: translate var(--transition-fast);
-  }
-  .acp-json-toggle input:checked + .acp-json-track {
-    background: var(--bg-brand);
-    border-color: var(--bg-brand);
-  }
-  .acp-json-toggle input:checked + .acp-json-track::after {
-    translate: 14px 0;
-  }
-  .acp-json-toggle input:focus-visible + .acp-json-track {
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
-  }
-  .acp-json-toggle svg { color: var(--color-text-muted); }
+  .acp-json-icon { color: var(--color-text-muted); }
 
   /* -- JSON block ---------------------------------------------------------- */
   .acp-json-block {
@@ -183,59 +121,13 @@
     line-height: 1.7;
     color: var(--color-text-main);
   }
+  /* <app-button variant="ghost" icon-only> draws the affordance; the block only
+     says where it sits. */
   .acp-json-copy {
     position: absolute;
     top: var(--s-12);
     right: var(--s-12);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--control-h-sm);
-    height: var(--control-h-sm);
-    border-radius: var(--r-8);
-    border: none;
-    background: transparent;
-    color: var(--color-text-muted);
-    cursor: pointer;
   }
-  .acp-json-copy:hover {
-    background: var(--bg-surface-hover);
-    color: var(--color-text-main);
-  }
-
-  /* -- Tabs -------------------------------------------------------------- */
-  .acp-tabs {
-    display: flex;
-    gap: var(--s-24);
-    border-bottom: 1px solid var(--color-border);
-    margin-bottom: var(--s-24);
-  }
-  .acp-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-8);
-    padding: var(--s-12) var(--s-4);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--color-text-muted);
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    background: none;
-    cursor: pointer;
-  }
-  .acp-tab:hover { color: var(--color-text-main); }
-  .acp-tab.is-active {
-    color: var(--fg-brand);
-    border-bottom-color: var(--fg-brand-highlight);
-    font-weight: 600;
-  }
-  /* The sliding .tab-indicator (tab-indicator.js) supplies the gold bar */
-  .acp-tabs.has-tab-indicator .acp-tab.is-active { border-bottom-color: transparent; }
-
-  /* -- Panels ------------------------------------------------------------ */
-  .acp-panel { display: none; }
-  .acp-panel.is-active { display: block; }
 
   /* -- Sections ---------------------------------------------------------- */
   .acp-section { margin-bottom: var(--s-32); }
@@ -482,45 +374,17 @@
     align-items: center;
     gap: var(--s-12);
   }
+  /* "Lines: [select]" is an inline control row, not a form label above a field:
+     the global `label { margin-bottom }` made its box 36px against the 28px
+     <app-select> inside it, which left it 4px above the Follow button. */
   .acp-logs-tail-label {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
     display: flex;
     align-items: center;
     gap: var(--s-8);
-  }
-  select.acp-logs-tail-select {
+    margin: 0;
     font-size: var(--font-size-xs);
-    height: var(--control-h-sm);
-    padding: 0 var(--s-8);
-    border-radius: var(--r-6);
-    border: none;
-    background-color: var(--bg-input);
-    color: var(--color-text-main);
-    font-family: inherit;
-    cursor: pointer;
-
-    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-  }
-  .acp-logs-follow-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    min-height: var(--control-h-sm);
-    padding: 0 var(--s-12);
-    border-radius: var(--r-4);
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-surface);
+    font-weight: var(--fw-regular);
     color: var(--color-text-muted);
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    cursor: pointer;
-  }
-  .acp-logs-follow-btn:hover { border-color: var(--color-primary); }
-  .acp-logs-follow-btn.is-active {
-    border-color: var(--color-primary);
-    color: var(--color-primary);
-    background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-surface));
   }
 
   .acp-logs-viewer {
@@ -577,84 +441,15 @@
   }
 
   /* -- Shared controls (management tabs) ---------------------------------- */
-  .acp-link-btn {
-    border: none;
-    background: none;
-    padding: 0;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--fg-brand);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .acp-link-btn:hover { text-decoration: underline; }
-  .acp-icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--control-h-sm);
-    height: var(--control-h-sm);
-    border: none;
-    border-radius: var(--r-6);
-    background: transparent;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-  .acp-icon-btn:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
-  .acp-icon-btn--danger:hover { color: var(--color-error); background: var(--color-error-bg); }
-  .acp-form-error {
-    margin: 0;
-    font-size: var(--font-size-xs);
-    color: var(--color-error);
-  }
-
   /* -- Access & security: visibility radios ------------------------------- */
   .acp-vis-options {
     display: flex;
     gap: var(--s-32);
     flex-wrap: wrap;
   }
-  .acp-vis-option {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--s-12);
-    cursor: pointer;
-    max-width: 300px;
-  }
-  .acp-vis-option input {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-  .acp-vis-radio {
-    width: 16px;
-    height: 16px;
-    margin-top: 2px;
-    border-radius: 50%;
-    border: 1px solid var(--color-border);
-    background: var(--color-bg-surface);
-    flex-shrink: 0;
-    transition: border-color var(--transition-fast);
-  }
-  .acp-vis-option input:checked + .acp-vis-radio {
-    border: 5px solid var(--fg-brand-highlight);
-  }
-  .acp-vis-option input:focus-visible + .acp-vis-radio {
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
-  }
-  .acp-vis-text { display: flex; flex-direction: column; gap: 2px; }
-  .acp-vis-label {
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--color-text-main);
-  }
-  .acp-vis-sub {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    line-height: 1.4;
-  }
+  /* Each option is an <app-radio label hint>; the group only caps the column so
+     a long description wraps rather than stretching across the card. */
+  .acp-vis-option { max-width: 300px; }
 
   /* -- Access & security: grants table ------------------------------------ */
   .acp-access-head {
@@ -666,32 +461,11 @@
   }
   .acp-access-head .acp-section-sub { margin-bottom: 0; }
   .acp-access-search {
-    position: relative;
+    display: block;
     margin-bottom: var(--s-12);
+    --search-bg: var(--bg-input);
   }
-  .acp-access-search-icon {
-    position: absolute;
-    top: 50%;
-    left: var(--s-12);
-    translate: 0 -50%;
-    color: var(--color-text-muted);
-    pointer-events: none;
-  }
-  .acp-access-search input {
-    width: 100%;
-    min-height: var(--control-h-sm);
-    padding: 0 var(--s-12) 0 calc(var(--s-12) * 2 + 14px);
-    border: none;
-    border-radius: var(--r-8);
-    background: var(--bg-input);
-    color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    font-family: inherit;
-  }
-  .acp-access-search input:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 1px;
-  }
+
   .acp-subtabs {
     display: flex;
     gap: var(--s-8);
@@ -722,7 +496,6 @@
     background: var(--color-bg-base);
     border-radius: 999px;
   }
-  #acp-access-table { overflow-x: auto; }
   /* Versions tab: title block on the left, Re-upload action on the right. */
   .acp-versions-head {
     display: flex;
@@ -733,32 +506,6 @@
   }
   .acp-versions-head .acp-section-title,
   .acp-versions-head .acp-section-sub { margin-bottom: 0; }
-  /* Long image tags must scroll inside the table, never widen the page. */
-  #acp-versions-body { overflow-x: auto; }
-  .acp-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--font-size-sm);
-  }
-  .acp-table th {
-    text-align: left;
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    color: var(--color-text-muted);
-    padding: var(--s-8) var(--s-12);
-    border-bottom: 1px solid var(--color-border);
-    white-space: nowrap;
-  }
-  .acp-table td {
-    padding: var(--s-12);
-    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
-    vertical-align: middle;
-  }
-  .acp-table tr:last-child td { border-bottom: none; }
-  .acp-th-actions { width: 1%; }
-  .acp-td-name { font-weight: 500; color: var(--color-text-main); }
-  .acp-td-muted { color: var(--color-text-muted); }
-  .acp-td-actions { text-align: right; white-space: nowrap; }
   .acp-grant-badge {
     display: inline-flex;
     align-items: center;
@@ -775,25 +522,6 @@
     color: var(--fg-brand);
     font-weight: 600;
   }
-  .acp-access-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--s-8);
-    padding: var(--s-32) var(--s-16);
-    border-radius: var(--r-8);
-    background: var(--color-bg-base);
-    text-align: center;
-  }
-  .acp-access-empty-title {
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--color-text-main);
-  }
-  .acp-access-empty-sub {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-  }
 
   /* -- Grant / transfer modals -------------------------------------------- */
   .acp-grant-form {
@@ -801,52 +529,15 @@
     flex-direction: column;
     gap: var(--s-16);
   }
+  /* The form owns the rhythm; a lead paragraph must not add its own 16 on top. */
+  .acp-grant-form .acp-section-sub { margin-bottom: 0; }
   .acp-grant-types {
     display: flex;
     gap: var(--s-8);
     flex-wrap: wrap;
   }
-  .acp-grant-type {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-8);
-    padding: var(--s-4) var(--s-12);
-    border-radius: 999px;
-    background: var(--color-bg-base);
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    user-select: none;
-  }
-  .acp-grant-type input {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-  .acp-grant-type.is-active {
-    background: color-mix(in srgb, var(--fg-brand-highlight) 16%, transparent);
-    color: var(--fg-brand);
-    font-weight: 600;
-  }
   .acp-picker { position: relative; }
-  .acp-picker input {
-    width: 100%;
-    min-height: var(--control-h-md);
-    padding: 0 var(--s-12);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: var(--color-bg-surface);
-    color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    font-family: inherit;
-  }
-  .acp-picker input:focus-visible {
-    outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px var(--color-primary-ring);
-  }
+
   .acp-picker-results {
     display: flex;
     flex-direction: column;
@@ -860,6 +551,10 @@
   .acp-picker-option {
     display: flex;
     align-items: baseline;
+    /* A <button> is centred by the UA sheet; as a flex container that centres
+       the whole label+email group in the row instead of starting it at the
+       left edge, which is where a picker option has to begin. */
+    justify-content: flex-start;
     gap: var(--s-12);
     padding: var(--s-8) var(--s-12);
     border: none;
@@ -883,27 +578,6 @@
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
   }
-  .acp-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-8);
-    padding: var(--s-4) var(--s-12);
-    border-radius: 999px;
-    background: var(--color-bg-base);
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    color: var(--color-text-main);
-  }
-  .acp-chip-x {
-    display: inline-flex;
-    border: none;
-    background: none;
-    padding: 0;
-    color: var(--color-text-muted);
-    cursor: pointer;
-  }
-  .acp-chip-x:hover { color: var(--color-text-main); }
-
   /* -- Configure: MCP connector cards -------------------------------------- */
   .acp-mcp-card {
     border-radius: var(--r-8);
@@ -950,7 +624,6 @@
     color: var(--color-text-muted);
     white-space: nowrap;
   }
-  .acp-mcp-enable { gap: 0; }
   .acp-mcp-tools {
     margin: 0 var(--s-8) var(--s-8);
     border-radius: var(--r-8);
@@ -994,38 +667,16 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .acp-stance {
-    display: flex;
-    align-items: center;
-    gap: var(--s-8);
-    flex-shrink: 0;
-  }
-  .acp-stance-btn {
-    min-height: var(--control-h-sm);
-    padding: 0 var(--s-12);
-    border: none;
-    border-radius: var(--r-6);
-    background: transparent;
-    color: var(--color-text-muted);
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    font-family: inherit;
-    cursor: pointer;
-  }
-  .acp-stance-btn:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
-  .acp-stance-btn:disabled { cursor: not-allowed; }
-  .acp-stance-btn.is-allow[aria-pressed="true"] {
-    background: color-mix(in srgb, var(--fg-brand-highlight) 14%, transparent);
-    box-shadow: inset 0 0 0 1px var(--fg-brand-highlight);
-    color: var(--fg-brand);
-    font-weight: 600;
-  }
-  .acp-stance-btn.is-block[aria-pressed="true"] {
+  /* Allow/Block is the shared `.seg-ctrl` segmented radio (styles/seg-ctrl.css).
+     Only two things are local to it here: it must not stretch in the tool row,
+     and Block keeps an error tint — a blocked tool is a security state, not just
+     the other half of a toggle, and the neutral seg-ctrl fill would lose that. */
+  .acp-stance { flex-shrink: 0; }
+  .acp-stance label:has(input[value="block"]:checked) {
     background: var(--color-error-bg);
-    box-shadow: inset 0 0 0 1px var(--color-error);
     color: var(--color-error);
-    font-weight: 600;
   }
+  .acp-stance label:has(:disabled) { cursor: not-allowed; }
 
   /* -- Settings: identity form + danger zone ------------------------------- */
   .acp-identity {
@@ -1037,35 +688,42 @@
   .acp-field {
     display: flex;
     flex-direction: column;
-    gap: var(--s-4);
+    /* input/*/layout/label-gap — the same 8 <app-input>'s own .field uses, so a
+       raw field lines up with a design-system one in the same form. */
+    gap: var(--s-8);
+    /* Some of these wrappers ARE the <label>; the global form-label margin
+       would then add 8px under the field and break the form's rhythm. */
+    margin: 0;
   }
+  /* Matches <app-input>'s own label so a raw field and a design-system field in
+     the same form read alike. */
   .acp-field-label {
     font-size: var(--font-size-sm);
-    font-weight: 600;
     color: var(--color-text-main);
   }
-  .acp-field input,
+  /* ponytail: the file picker and the description textarea stay native — the
+     design system has neither primitive. Every other field is an <app-input>. */
+  .acp-field input[type="file"],
   .acp-field textarea {
     width: 100%;
-    padding: var(--s-12) var(--s-16);
-    border: 1px solid var(--color-border);
+    padding: var(--s-8) var(--s-12);
+    border: var(--bw-1) solid var(--border-primary);
     border-radius: var(--r-8);
-    background: var(--color-bg-surface);
+    background: var(--bg-base);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
+    line-height: var(--font-body-sm-line);
+    letter-spacing: var(--tracking-normal);
+    /* Not `inherit`: the parent <label> is 500, and app-input's value is 400. */
+    font-weight: var(--fw-regular);
     font-family: inherit;
     resize: vertical;
   }
-  .acp-field input:focus-visible,
+  .acp-field input[type="file"]:focus-visible,
   .acp-field textarea:focus-visible {
     outline: none;
     border-color: var(--color-primary);
     box-shadow: 0 0 0 3px var(--color-primary-ring);
-  }
-  .acp-field input:disabled {
-    color: var(--color-text-muted);
-    background: var(--color-bg-base);
-    cursor: not-allowed;
   }
   .acp-field-hint {
     font-size: var(--font-size-xs);

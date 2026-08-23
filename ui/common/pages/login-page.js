@@ -1,5 +1,9 @@
 import { icons } from '../utils/icons.js';
 import '../utils/theme.js'; // side effect: applies the pinned theme (no app-header here)
+import '../design-system/app-input/app-input.js';
+import '../design-system/app-button/app-button.js';
+import { withLoading } from '../utils/async-button.js';
+import { setFieldError, clearFieldErrors } from '../utils/field-error.js';
 import styles from './login-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -127,16 +131,11 @@ class LoginPage extends HTMLElement {
         <p class="subtitle">${subtitle}</p>
         ${showCredentials ? `
           <form id="login-form">
-            <div class="field">
-              <label for="username">Username</label>
-              <input type="text" id="username" placeholder="admin" autocomplete="username" required />
-            </div>
-            <div class="field">
-              <label for="password">Password</label>
-              <input type="password" id="password" placeholder="password" autocomplete="current-password" required />
-            </div>
-            <div class="error-msg" id="error-msg"></div>
-            <button type="submit" class="btn-submit" id="submit-btn">Sign In</button>
+            <app-input id="username" label="Username" type="text" placeholder="admin"
+              autocomplete="username" required></app-input>
+            <app-input id="password" label="Password" type="password" placeholder="password"
+              autocomplete="current-password" required></app-input>
+            <app-button type="submit" id="submit-btn" block>Sign In</app-button>
           </form>
         ` : ''}
         ${oauthSection}
@@ -175,17 +174,23 @@ class LoginPage extends HTMLElement {
     });
   }
 
+  /// A rejected credential implicates both fields, so both redden while the
+  /// message is carried once, under the password.
+  #setFormError(message) {
+    const username = this.querySelector('#username');
+    const password = this.querySelector('#password');
+    if (!message) return clearFieldErrors(username, password);
+    username.setAttribute('state', 'error');
+    setFieldError(password, message);
+  }
+
   #setupForm() {
     const form = this.querySelector('#login-form');
-    const errorMsg = this.querySelector('#error-msg');
     const submitBtn = this.querySelector('#submit-btn');
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      errorMsg.classList.remove('visible');
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Signing in…';
-
+    // withLoading owns the disable/spinner/relabel cycle — an <app-button>
+    // renders an inner <button>, so assigning textContent would wipe it.
+    const signIn = withLoading(submitBtn, 'Signing in…', async () => {
       try {
         const res = await fetch('/api/auth/login', {
           method: 'POST',
@@ -207,12 +212,18 @@ class LoginPage extends HTMLElement {
         // an already-authenticated user.
         window.location.replace('/');
       } catch (err) {
-        errorMsg.textContent = err.message;
-        errorMsg.classList.add('visible');
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Sign In';
+        this.#setFormError(err.message);
       }
+    });
+
+    // Both fields carry the rejected-credential state, and `username` gets it
+    // set by hand above — so editing either one clears the pair.
+    form.addEventListener('input', () => this.#setFormError(null));
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      this.#setFormError(null);
+      signIn();
     });
   }
 }

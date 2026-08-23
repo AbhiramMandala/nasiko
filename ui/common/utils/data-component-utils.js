@@ -1,5 +1,5 @@
 /**
- * Shared utilities for data-fetching components (smart-table, data-view).
+ * Shared utilities for data-fetching components (app-table, data-view).
  * Reduces duplication for event tracking, debounce, and loading animation.
  */
 
@@ -56,7 +56,7 @@ export function debounce(fn, delay = 300) {
 
 /**
  * CSS string for a subtle opacity-pulse loading animation.
- * Pass the BEM class name that should trigger it (e.g. 'smart-table__scroll--loading').
+ * Pass the BEM class name that should trigger it (e.g. 'app-table__scroll--loading').
  *
  * Allowed by AGENTS.md rule 7 exception for data-loading indicators.
  */

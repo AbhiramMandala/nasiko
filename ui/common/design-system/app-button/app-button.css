@@ -90,7 +90,12 @@
     &.is-primary {
       background: var(--fg-constant-black-secondary);
       border-color: var(--border-primary);
-      color: var(--fg-on-action);
+      /* Constant white, NOT --fg-on-action: that token flips with the theme
+         (white / neutral-900) because it partners --bg-action, which flips too.
+         This fill does not — sand/800 in both themes, per Figma — so in dark
+         mode the themed token painted near-black text on a near-black button
+         (#1A1C1E on #3A3430, ~1.3:1). Same for `is-dark` below. */
+      color: var(--fg-constant-white);
 
       &:hover:not(:disabled) {
         background: var(--fg-constant-black);
@@ -196,7 +201,7 @@
     &.is-dark {
       background: var(--fg-constant-black-secondary);
       border-color: var(--border-primary);
-      color: var(--fg-on-action);
+      color: var(--fg-constant-white);
 
       &:hover:not(:disabled) {
         background: var(--fg-constant-black);
@@ -322,4 +327,9 @@
     background: currentColor;
     animation: btn-pulse 1s ease-in-out infinite;
   }
+
+  /* An icon-only button is a square the size of its glyph — a spinner beside it
+     overflows onto whatever the button sits on. While loading, the spinner IS
+     the content. */
+  .btn.is-icon-only .spinner ~ .content { display: none; }
 }

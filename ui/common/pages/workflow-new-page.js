@@ -11,7 +11,10 @@
 import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
+import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-divider/app-divider.js';
+import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/features/wf-step-editor.js';
 
 import styles from './workflow-new-page.css' with { type: 'css' };
@@ -32,15 +35,16 @@ class WorkflowNewPage extends HTMLElement {
     this.innerHTML = `
       <div class="col">
         <header class="page-head">
-          <a class="back-btn" href="/workflows" aria-label="Back to workflows">${icons.chevronLeft('', 16)}</a>
+          <app-button variant="tertiary" icon-only href="/workflows"
+            aria-label="Back to workflows">${icons.chevronLeft()}</app-button>
           <input class="name-input" id="wf-name" placeholder="Name this workflow" aria-label="Workflow name" />
-          <span class="draft-pill">Draft</span>
+          <app-badge variant="neutral">Draft</app-badge>
         </header>
 
         <section class="describe">
           <div class="describe-head">
             <span class="describe-label">What should this workflow do?</span>
-            <button type="button" class="draft-btn" id="draft-btn">${icons.sparkles('', 13)} Draft steps</button>
+            <app-button variant="ghost" size="sm" id="draft-btn">${icons.sparkles()} Draft steps</app-button>
           </div>
           <textarea id="wf-desc" rows="3"
             placeholder="Describe the outcome you want, in one or two sentences."></textarea>
@@ -52,7 +56,7 @@ class WorkflowNewPage extends HTMLElement {
         <section class="steps-sec">
           <div class="steps-head">
             <span class="steps-label">Steps</span>
-            <span class="count-pill" id="step-count">1 step</span>
+            <app-badge variant="neutral" id="step-count">1 step</app-badge>
             <span class="spacer"></span>
             <span class="drafted-note" id="drafted-note" hidden>
               ${icons.sparkles('', 12)} Drafted by Nasiko — edit anything below</span>
@@ -63,20 +67,16 @@ class WorkflowNewPage extends HTMLElement {
               Reading your description and drafting steps
             </div>
             ${Array.from({ length: 3 }, () => `
-              <div class="drafting-card">
-                <span class="drafting-bar is-short"></span>
-                <span class="drafting-bar"></span>
-                <span class="drafting-bar is-mid"></span>
-              </div>`).join('')}
+              <div class="drafting-card"><app-skeleton lines="3"></app-skeleton></div>`).join('')}
           </div>
           <wf-step-editor id="editor"></wf-step-editor>
         </section>
 
-        <hr class="divider" />
+        <app-divider></app-divider>
         <footer class="foot">
           <span class="footnote" id="footnote"></span>
           <div class="foot-actions">
-            <a class="cancel-link" href="/workflows">Cancel</a>
+            <app-button variant="ghost" size="sm" href="/workflows">Cancel</app-button>
             <app-button variant="secondary" size="sm" id="save-btn">Save workflow</app-button>
             <app-button variant="primary" size="sm" id="save-run-btn">${icons.play('', 12)} Save and run</app-button>
           </div>
@@ -128,11 +128,15 @@ class WorkflowNewPage extends HTMLElement {
     this.#drafting = on;
     this.querySelector('#drafting').hidden = !on;
     this.querySelector('#editor').style.display = on ? 'none' : '';
+    // <app-button loading> owns the spinner and the disabled state, so the
+    // page no longer swaps in a spinner glyph of its own. Content is set first
+    // and render() called explicitly: innerHTML is not an observed attribute,
+    // so relying on the `loading` toggle to trigger the re-render would leave
+    // the label unwrapped whenever the attribute value did not actually change.
     const btn = this.querySelector('#draft-btn');
-    btn.disabled = on;
-    btn.innerHTML = on
-      ? `<span class="spin">${icons.loader('', 13)}</span> Drafting…`
-      : `${icons.sparkles('', 13)} Draft steps`;
+    btn.innerHTML = on ? 'Drafting…' : `${icons.sparkles()} Draft steps`;
+    btn.toggleAttribute('loading', on);
+    btn.render();
   }
 
   async #draft() {

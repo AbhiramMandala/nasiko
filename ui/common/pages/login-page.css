@@ -10,6 +10,9 @@
     background: transparent;
     border: none;
     box-shadow: none;
+    /* The <app-input> resting fill is a surface decision, not a field one —
+       one declaration here covers both credential fields. */
+    --input-bg: var(--bg-input);
   }
   .brand {
     display: flex;
@@ -43,42 +46,10 @@
     margin-bottom: var(--s-32);
   }
   form { display: flex; flex-direction: column; gap: var(--s-16); }
-  .field { display: flex; flex-direction: column; gap: var(--s-4); }
-  label {
-    font-size: var(--font-size-xs);
-    font-weight: 500;
-    color: var(--color-text-muted);
-  }
-  input {
-    width: 100%;
-    height: var(--control-h-lg);
-    padding: 0 var(--s-12);
-    border: none;
-    border-radius: var(--r-8);
-    background: var(--bg-input);
-    color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    font-family: inherit;
-  }
-  input::placeholder { color: var(--color-text-muted); }
-  input:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-  .btn-submit {
-    width: 100%;
-    height: var(--control-h-lg);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
-    font-weight: 500;
-    font-size: var(--font-size-sm);
-    border-radius: var(--r-10);
-    cursor: pointer;
-    border: none;
-    margin-top: var(--s-8);
-    transition: background var(--transition-fast);
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
-  }
-  .btn-submit:hover { background: var(--bg-action-hover); }
-  .btn-submit:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-  .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+  #submit-btn { margin-top: var(--s-8); }
+  /* OAuth errors only — they belong to a button, not a field, so there is no
+     app-input hint row to carry them. Credential errors go through
+     <app-input state="error" hint="…"> instead. */
   .error-msg {
     color: var(--color-error);
     font-size: var(--font-size-xs);

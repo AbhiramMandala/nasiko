@@ -25,10 +25,13 @@ import '../design-system/app-modal/app-modal.js';
 import '../design-system/app-skeleton/app-skeleton.js';
 import '../features/app-module-nav.js';
 import '../design-system/auto-complete/auto-complete.js';
-import { escHtml } from '/common/utils/escape.js';
+import { escAttr, escHtml } from '/common/utils/escape.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-card/app-card.js';
+import '/common/design-system/app-input/app-input.js';
+import '/common/design-system/app-select/app-select.js';
+import '/common/design-system/app-switch/app-switch.js';
 import { call } from '../core/data-sources.js';
-import { navigate as routerNavigate } from '../core/router.js';
 import { initialView } from '../utils/module-view.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -89,8 +92,8 @@ class McpPage extends HTMLElement {
           <p class="page-sub">Connect external MCP servers and control which agents can use their tools</p>
         </div>
         <div class="head-actions">
-          <app-button variant="outline" id="upload-btn">${icons.upload('', 14)} Upload MCP server</app-button>
-          <app-button variant="dark" id="register-btn">${icons.plus('', 14)} Register connector</app-button>
+          <app-button variant="tertiary" size="md" id="upload-btn">${icons.upload()} Upload MCP server</app-button>
+          <app-button variant="primary" size="md" id="register-btn">${icons.plus()} Register connector</app-button>
         </div>
       </div>
 
@@ -202,18 +205,7 @@ class McpPage extends HTMLElement {
   }
 
   #catalogSkeletonCards() {
-    return Array.from({ length: 6 }, () => `
-      <div class="tk-card tk-card-skel" aria-hidden="true">
-        <div class="tk-top">
-          <app-skeleton class="tk-skel-logo" height="32px"></app-skeleton>
-          <div class="tk-id">
-            <app-skeleton class="tk-skel-name" height="20px"></app-skeleton>
-            <app-skeleton class="tk-skel-chip" height="20px"></app-skeleton>
-          </div>
-          <app-skeleton class="tk-skel-btn" height="28px"></app-skeleton>
-        </div>
-        <app-skeleton lines="2"></app-skeleton>
-      </div>`).join('');
+    return Array.from({ length: 6 }, () => '<app-card loading></app-card>').join('');
   }
 
   #renderCatalog() {
@@ -256,24 +248,9 @@ class McpPage extends HTMLElement {
         ? 'Nothing connected yet'
         : 'Everything here is already connected'}</div>`;
 
-    grid.querySelectorAll('.tk-card').forEach((card) => {
-      const id = card.dataset.id;
-      card.querySelector('.act-connect')
-        ?.addEventListener('click', () => this.#connectService(id));
-      card.querySelector('.act-disconnect')
-        ?.addEventListener('click', () => this.#disconnectService(id));
-      // Broken logo URLs fall back to the letter avatar underneath.
-      card.querySelector('.tk-logo img')
-        ?.addEventListener('error', (e) => e.target.remove());
-      // Custom server cards navigate to the full detail page.
-      if (card.classList.contains('is-clickable')) {
-        card.addEventListener('click', (e) => {
-          if (!e.target.closest('button')) {
-            routerNavigate('/mcp-detail?id=' + encodeURIComponent(id));
-          }
-        });
-      }
-    });
+    // Whole-card navigation is <app-card>'s own (from `href`); only the card's
+    // action button and the logo fallback need wiring here.
+    grid.querySelectorAll('app-card[data-id]').forEach((card) => this.#wireCard(card));
   }
 
   #catalogEmptyHtml() {
@@ -285,54 +262,52 @@ class McpPage extends HTMLElement {
         ${icons.network('', 32)}
         <h3>No connectable services yet</h3>
         <p>Register an external MCP server or upload your own to give agents new tools.</p>
-        <app-button variant="dark" id="empty-register-btn">${icons.plus('', 14)} Register connector</app-button>
+        <app-button variant="primary" id="empty-register-btn">${icons.plus('', 14)} Register connector</app-button>
       </div>`;
   }
 
   #serviceCardHtml(s) {
     const name = s.display_name || s.name;
-    const isSettingUp = s.kind === 'server' && s.source_kind === 'uploaded_build'
-      && (s.build_status === 'pending' || s.build_status === 'building');
-    const isFailed = s.kind === 'server' && s.source_kind === 'uploaded_build'
-      && s.build_status === 'failed';
-    const chips = [`<span class="tk-chip">${s.tool_count ?? 0} tools</span>`];
-    if (s.version) chips.push(`<span class="tk-chip">${escHtml(s.version)}</span>`);
-    if (s.__shared) {
-      chips.push(`<span class="tk-by">shared by ${escHtml(s.owner_username || 'someone')}</span>`);
-    }
-    const cardCls = isSettingUp ? ' tk-card--setting-up' : isFailed ? ' tk-card--failed' : '';
-    let bodyHtml;
-    if (isSettingUp) {
-      bodyHtml = `<div class="tk-setup"><span class="setup-spinner"></span><span class="tk-setup-label">Building and deploying...</span></div>`;
-    } else if (isFailed) {
-      bodyHtml = `<div class="tk-setup tk-setup--error">${icons.xCircle('', 14)}<span class="tk-setup-label">Build failed</span></div>`;
-    } else {
-      bodyHtml = `<p class="tk-desc">${escHtml(s.description || 'No description provided.')}</p>`;
-    }
+    const isUpload = s.kind === 'server' && s.source_kind === 'uploaded_build';
+    const isSettingUp = isUpload && (s.build_status === 'pending' || s.build_status === 'building');
+    const isFailed = isUpload && s.build_status === 'failed';
+    const tags = [`${s.tool_count ?? 0} tools`];
+    if (s.version) tags.push(s.version);
+    if (s.__shared) tags.push(`shared by ${s.owner_username || 'someone'}`);
+    // Custom servers have a detail page; toolkits do not, so they get no href
+    // and <app-card> leaves them static.
+    const href = s.kind === 'server'
+      ? `/mcp-detail?id=${encodeURIComponent(s.connector_id)}` : '';
+    // Build states reuse the card's own deploying/error bodies rather than a
+    // page-local one — same spinner and same red headline as everywhere else.
+    const state = isSettingUp
+      ? ' status="deploying" deploy-label="Building and deploying..."'
+        + ' deploy-hint="This may take a few minutes. Status updates automatically."'
+      : isFailed
+        ? ' status="failed" error-title="Build failed"'
+          + ' error-body="Open the server to see its build logs."'
+        : ` description="${escAttr(s.description || 'No description provided.')}"`;
     return `
-      <div class="tk-card${s.kind === 'server' ? ' is-clickable' : ''}${cardCls}" data-id="${escHtml(s.connector_id)}">
-        <div class="tk-top">
-          <span class="tk-logo" aria-hidden="true">${escHtml(name.charAt(0))}${s.logo_url
-            ? `<img src="${escHtml(s.logo_url)}" alt="" loading="lazy" />` : ''}</span>
-          <div class="tk-id">
-            <span class="tk-name" title="${escHtml(name)}">${escHtml(name)}</span>
-            <span class="tk-chips">${chips.join('')}</span>
-          </div>
-          ${isSettingUp || isFailed ? '' : this.#serviceActionHtml(s, name)}
-        </div>
-        ${bodyHtml}
-      </div>`;
+      <app-card class="${isSettingUp ? 'is-building' : isFailed ? 'is-failed' : ''}"
+        data-id="${escAttr(s.connector_id)}" card-title="${escAttr(name)}"
+        ${href ? `href="${escAttr(href)}"` : ''}
+        tags="${escAttr(JSON.stringify(tags))}" max-visible-tags="3"${state}>
+        <span slot="leading" class="tk-logo" aria-hidden="true">${escHtml(name.charAt(0))}${s.logo_url
+          ? `<img src="${escAttr(s.logo_url)}" alt="" loading="lazy" />` : ''}</span>
+        ${isSettingUp || isFailed ? '' : this.#serviceActionHtml(s, name)}
+      </app-card>`;
   }
 
+  /** The card's header control, slotted into <app-card>'s actions slot. */
   #serviceActionHtml(s, name) {
     if (s.is_connected) {
-      return `<button class="tk-action is-connected act-disconnect" type="button"
-                title="Disconnect ${escHtml(name)}" aria-label="Disconnect ${escHtml(name)}">
+      return `<button slot="actions" class="tk-action is-connected act-disconnect" type="button"
+                title="Disconnect ${escAttr(name)}" aria-label="Disconnect ${escAttr(name)}">
           <span class="tk-rest">${icons.check('', 14)} Connected</span>
           <span class="tk-hover">${icons.x('', 14)} Disconnect</span>
         </button>`;
     }
-    return `<button class="tk-action tk-action-ghost act-connect" type="button" title="Connect ${escHtml(name)}">${icons.plus('', 14)} Connect</button>`;
+    return `<button slot="actions" class="tk-action tk-action-ghost act-connect" type="button" title="Connect ${escAttr(name)}">${icons.plus('', 14)} Connect</button>`;
   }
 
   // ── Connect / disconnect (shared by toolkits and custom servers) ────────
@@ -416,14 +391,13 @@ class McpPage extends HTMLElement {
     return `
       <app-modal heading="Connect" id="connect-modal">
         <div class="modal-form">
-          <label>API key / token
-            <input type="password" id="connect-cred-value" placeholder="API key / token" autocomplete="off" />
-          </label>
+          <app-input type="password" id="connect-cred-value" label="API key / token"
+            placeholder="API key / token" autocomplete="off"></app-input>
           <div class="form-error" id="connect-error" hidden></div>
         </div>
         <div data-slot="footer">
-          <app-button variant="outline" id="connect-cancel">Cancel</app-button>
-          <app-button variant="dark" id="connect-submit">Connect</app-button>
+          <app-button variant="tertiary" id="connect-cancel">Cancel</app-button>
+          <app-button variant="primary" id="connect-submit">Connect</app-button>
         </div>
       </app-modal>`;
   }
@@ -529,7 +503,7 @@ class McpPage extends HTMLElement {
       </section>
       ${c.is_owner ? `
         <div class="detail-actions">
-          <button class="btn-ghost danger" id="detail-delete" type="button">${icons.trash('', 14)} Delete connector</button>
+          <app-button variant="danger-secondary" size="sm" id="detail-delete">${icons.trash()} Delete connector</app-button>
         </div>` : ''}
     `;
     body.querySelector('#detail-delete')?.addEventListener('click', async () => {
@@ -580,11 +554,12 @@ class McpPage extends HTMLElement {
       <h4 class="detail-subtitle">${icons.key('', 14)} Credential</h4>
       <div class="cred-status">
         <span class="status"><span class="status-dot ${connected ? 'is-ok' : 'is-off'}"></span>${connected ? 'Credential set' : 'No credential set'}</span>
-        ${connected ? `<button class="btn-ghost danger" id="cred-remove" type="button">Remove</button>` : ''}
+        ${connected ? `<app-button variant="danger-secondary" size="sm" id="cred-remove">Remove</app-button>` : ''}
       </div>
       <div class="cred-form">
-        <input type="password" id="cred-value" placeholder="${c.auth_type === 'basic' ? 'username:password' : 'API key / token'}" />
-        <app-button variant="dark" id="cred-save">${connected ? 'Replace' : 'Save'}</app-button>
+        <app-input type="password" id="cred-value" class="cred-input" aria-label="Credential"
+          placeholder="${c.auth_type === 'basic' ? 'username:password' : 'API key / token'}"></app-input>
+        <app-button variant="primary" id="cred-save">${connected ? 'Replace' : 'Save'}</app-button>
       </div>
       <div class="form-error" id="cred-error" hidden></div>
     `;
@@ -630,8 +605,8 @@ class McpPage extends HTMLElement {
         <span class="status"><span class="status-dot ${status.authorized ? 'is-ok' : 'is-off'}"></span>${status.authorized ? `Authorized${escHtml(expiry)}` : 'Not authorized'}</span>
         <span class="cred-actions">
           ${status.authorized
-            ? `<button class="btn-ghost danger" id="oauth-revoke" type="button">Revoke</button>`
-            : `<app-button variant="dark" id="oauth-authorize">${icons.externalLink('', 14)} Authorize</app-button>`}
+            ? `<app-button variant="danger-secondary" size="sm" id="oauth-revoke">Revoke</app-button>`
+            : `<app-button variant="primary" id="oauth-authorize">${icons.externalLink('', 14)} Authorize</app-button>`}
         </span>
       </div>
       <div class="form-error" id="oauth-error" hidden></div>
@@ -664,47 +639,42 @@ class McpPage extends HTMLElement {
     return `
       <app-modal heading="Register connector" id="register-modal">
         <form id="register-form" class="modal-form">
-          <label>Name
-            <input name="name" required placeholder="github" autocomplete="off" />
-          </label>
-          <label>Display name
-            <input name="display_name" placeholder="GitHub" autocomplete="off" />
-          </label>
-          <label>Server URL
-            <div class="url-row">
-              <input name="url" required type="url" placeholder="https://mcp.example.com/mcp" autocomplete="off" />
-              <app-button variant="outline" id="probe-btn">${icons.search('', 14)} Probe</app-button>
-            </div>
-          </label>
+          <app-input name="name" label="Name" required placeholder="github"
+            autocomplete="off"></app-input>
+          <app-input name="display_name" label="Display name" placeholder="GitHub"
+            autocomplete="off"></app-input>
+          <div class="url-row">
+            <app-input name="url" label="Server URL" required type="url"
+              placeholder="https://mcp.example.com/mcp" autocomplete="off"></app-input>
+            <app-button variant="tertiary" size="md" id="probe-btn">${icons.search()} Probe</app-button>
+          </div>
           <div class="probe-result" id="probe-result" hidden></div>
-          <label>Auth type
-            <select name="auth_type" id="register-auth-type">
-              <option value="none">No auth</option>
-              <option value="bearer">API key (bearer)</option>
-              <option value="basic">Basic auth</option>
-              <option value="oauth2">OAuth 2.1</option>
-              <option value="url_param">URL parameter</option>
-            </select>
-          </label>
+          <app-select name="auth_type" id="register-auth-type" label="Auth type">
+            <option value="none">No auth</option>
+            <option value="bearer">API key (bearer)</option>
+            <option value="basic">Basic auth</option>
+            <option value="oauth2">OAuth 2.1</option>
+            <option value="url_param">URL parameter</option>
+          </app-select>
           <div class="auth-fields" data-auth="bearer" hidden>
-            <label>Credential header <span class="opt">(optional, default Authorization)</span>
-              <input name="credential_header_name" placeholder="X-Api-Key" autocomplete="off" />
-            </label>
+            <app-input name="credential_header_name" label="Credential header"
+              hint="Optional — defaults to Authorization" placeholder="X-Api-Key"
+              autocomplete="off"></app-input>
           </div>
           <div class="auth-fields" data-auth="basic" hidden>
-            <label>Username <input name="basic_username" autocomplete="off" /></label>
-            <label>Password <input name="basic_password" type="password" autocomplete="off" /></label>
+            <app-input name="basic_username" label="Username" autocomplete="off"></app-input>
+            <app-input name="basic_password" label="Password" type="password"
+              autocomplete="off"></app-input>
           </div>
           <div class="auth-fields" data-auth="oauth2" hidden>
-            <label>OAuth client ID <span class="opt">(leave blank if the server supports DCR)</span>
-              <input name="oauth_client_id" autocomplete="off" />
-            </label>
-            <label>OAuth client secret
-              <input name="oauth_client_secret" type="password" autocomplete="off" />
-            </label>
+            <app-input name="oauth_client_id" label="OAuth client ID"
+              hint="Leave blank if the server supports DCR" autocomplete="off"></app-input>
+            <app-input name="oauth_client_secret" label="OAuth client secret"
+              type="password" autocomplete="off"></app-input>
           </div>
           <div class="auth-fields" data-auth="url_param" hidden>
-            <label>URL parameter name <input name="url_param_name" placeholder="api_key" autocomplete="off" /></label>
+            <app-input name="url_param_name" label="URL parameter name"
+              placeholder="api_key" autocomplete="off"></app-input>
           </div>
           <label>Description
             <textarea name="description" rows="2" placeholder="What this server's tools do"></textarea>
@@ -712,8 +682,8 @@ class McpPage extends HTMLElement {
           <div class="form-error" id="register-error" hidden></div>
         </form>
         <div data-slot="footer">
-          <app-button variant="outline" id="register-cancel">Cancel</app-button>
-          <app-button variant="dark" id="register-submit">Register</app-button>
+          <app-button variant="tertiary" size="md" id="register-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="register-submit">Register</app-button>
         </div>
       </app-modal>`;
   }
@@ -786,41 +756,40 @@ class McpPage extends HTMLElement {
     return `
       <app-modal heading="Upload MCP server" id="upload-modal">
         <div id="upload-picker" class="upload-picker">
-          <button class="upload-method-card" data-method="zip" type="button">
-            <span class="upload-method-icon">${icons.upload('', 22)}</span>
-            <span class="upload-method-title">Upload a zip</span>
-            <span class="upload-method-desc">Upload a .zip archive containing your MCP server source code</span>
-          </button>
-          <button class="upload-method-card" data-method="github" type="button">
-            <span class="upload-method-icon">${icons.github('', 22)}</span>
-            <span class="upload-method-title">Import from GitHub</span>
-            <span class="upload-method-desc">Clone a GitHub repository containing your MCP server</span>
-          </button>
+          <app-card data-method="zip" role="button" tabindex="0" card-title="Upload a zip"
+            description="Upload a .zip archive containing your MCP server source code">
+            <span slot="leading" class="upload-method-icon">${icons.upload('', 22)}</span>
+          </app-card>
+          <app-card data-method="github" role="button" tabindex="0" card-title="Import from GitHub"
+            description="Clone a GitHub repository containing your MCP server">
+            <span slot="leading" class="upload-method-icon">${icons.github('', 22)}</span>
+          </app-card>
         </div>
         <form id="upload-zip-form" class="modal-form" hidden>
           <label>Source archive (.zip)
             <input name="file" type="file" accept=".zip,application/zip" required />
           </label>
-          <label>Name
-            <input name="name" required placeholder="my-mcp-server" autocomplete="off" />
-            <span class="field-hint">Auto-filled from the file name. You can change it.</span>
-          </label>
-          <label>Version tag <input name="version_tag" placeholder="v1" autocomplete="off" /></label>
+          <app-input name="name" label="Name" required placeholder="my-mcp-server"
+            hint="Auto-filled from the file name. You can change it."
+            autocomplete="off"></app-input>
+          <app-input name="version_tag" label="Version tag" placeholder="v1"
+            autocomplete="off"></app-input>
         </form>
         <form id="upload-github-form" class="modal-form" hidden>
-          <label>Name <input name="name" required placeholder="my-mcp-server" autocomplete="off" /></label>
-          <label>Version tag <input name="version_tag" placeholder="v1" autocomplete="off" /></label>
-          <label>GitHub repository URL
-            <input name="github_url" required type="url" placeholder="https://github.com/org/repo" autocomplete="off" />
-          </label>
+          <app-input name="name" label="Name" required placeholder="my-mcp-server"
+            autocomplete="off"></app-input>
+          <app-input name="version_tag" label="Version tag" placeholder="v1"
+            autocomplete="off"></app-input>
+          <app-input name="github_url" label="GitHub repository URL" required type="url"
+            placeholder="https://github.com/org/repo" autocomplete="off"></app-input>
         </form>
         <div class="form-error" id="upload-error" hidden></div>
         <div class="upload-queued" id="upload-queued" hidden></div>
         <!-- Hidden until a method is picked: the picker step has nothing to
              submit, and Back returns to it. Ids match #wireUploadModal. -->
         <div id="upload-footer" data-slot="footer" hidden>
-          <app-button variant="outline" id="upload-back">Back</app-button>
-          <app-button variant="dark" id="upload-submit">Upload and build</app-button>
+          <app-button variant="tertiary" size="md" id="upload-back">Back</app-button>
+          <app-button variant="primary" size="md" id="upload-submit">Upload and build</app-button>
         </div>
       </app-modal>`;
   }
@@ -840,17 +809,19 @@ class McpPage extends HTMLElement {
       zipForm.hidden = true;
       ghForm.hidden = true;
       footer.hidden = true;
+      modal.setAttribute('hide-footer', '');
       err.hidden = true;
       modal.setAttribute('heading', 'Upload MCP server');
     };
 
-    picker.querySelectorAll('.upload-method-card').forEach((card) => {
+    picker.querySelectorAll('app-card[data-method]').forEach((card) => {
       card.addEventListener('click', () => {
         activeMethod = card.dataset.method;
         picker.hidden = true;
         zipForm.hidden = activeMethod !== 'zip';
         ghForm.hidden = activeMethod !== 'github';
         footer.hidden = false;
+        modal.removeAttribute('hide-footer');
         modal.setAttribute('heading', activeMethod === 'zip' ? 'Upload zip' : 'Import from GitHub');
       });
     });
@@ -876,23 +847,22 @@ class McpPage extends HTMLElement {
     submitBtn.addEventListener('click', async () => {
       err.hidden = true;
       submitBtn.disabled = true;
-      submitBtn.textContent = 'Uploading...';
+      submitBtn.label = 'Uploading...';
       try {
         let resp;
         if (activeMethod === 'zip') {
-          if (!zipForm.reportValidity()) { submitBtn.disabled = false; submitBtn.textContent = 'Upload and build'; return; }
+          if (!zipForm.reportValidity()) return;
           const fd = new FormData();
-          fd.append('name', form.elements.name.value.trim());
-          fd.append('version_tag', form.elements.version_tag.value.trim() || 'v1');
-          fd.append('file', form.elements.file.files[0]);
+          fd.append('name', zipForm.elements.name.value.trim());
+          fd.append('version_tag', zipForm.elements.version_tag.value.trim() || 'v1');
+          fd.append('file', zipForm.elements.file.files[0]);
           resp = await call('uploadMcpServerZip', fd);
         } else {
-          const form = this.querySelector('#upload-github-form');
-          if (!form.reportValidity()) return;
+          if (!ghForm.reportValidity()) return;
           resp = await call('uploadMcpServerGithub', {
-            name: form.elements.name.value.trim(),
-            version_tag: form.elements.version_tag.value.trim() || 'v1',
-            github_url: form.elements.github_url.value.trim(),
+            name: ghForm.elements.name.value.trim(),
+            version_tag: ghForm.elements.version_tag.value.trim() || 'v1',
+            github_url: ghForm.elements.github_url.value.trim(),
           });
         }
         // Inject a placeholder card immediately so the user sees progress.
@@ -918,34 +888,31 @@ class McpPage extends HTMLElement {
         err.hidden = false;
       } finally {
         submitBtn.disabled = false;
-        submitBtn.textContent = 'Upload and build';
+        submitBtn.label = 'Upload and build';
       }
     });
   }
 
-  /** Poll building connectors and re-render only the cards whose status changed. */
-  /** Swap one service card in place after a build-status poll.
-   *  Ported from main alongside #scheduleBuildPoll; navigation goes through the
-   *  SPA router rather than a full document load. */
+  /** Swap one service card in place after a build-status poll. */
   #replaceCard(c) {
-    const card = this.querySelector(`.tk-card[data-id="${CSS.escape(c.connector_id)}"]`);
+    const card = this.querySelector(`app-card[data-id="${CSS.escape(c.connector_id)}"]`);
     if (!card) return;
     const tmp = document.createElement('div');
     tmp.innerHTML = this.#serviceCardHtml({ ...c, kind: 'server' });
     const newCard = tmp.firstElementChild;
     card.replaceWith(newCard);
-    if (newCard.classList.contains('is-clickable')) {
-      newCard.addEventListener('click', (e) => {
-        if (!e.target.closest('button')) {
-          routerNavigate('/mcp-detail?id=' + encodeURIComponent(c.connector_id));
-        }
-      });
-    }
-    newCard.querySelector('.act-connect')
-      ?.addEventListener('click', () => this.#connectService(c.connector_id));
-    newCard.querySelector('.act-disconnect')
-      ?.addEventListener('click', () => this.#disconnectService(c.connector_id));
-    newCard.querySelector('.tk-logo img')
+    this.#wireCard(newCard);
+  }
+
+  /** Per-card listeners. The card itself navigates (see `href`). */
+  #wireCard(card) {
+    const id = card.dataset.id;
+    card.querySelector('.act-connect')
+      ?.addEventListener('click', () => this.#connectService(id));
+    card.querySelector('.act-disconnect')
+      ?.addEventListener('click', () => this.#disconnectService(id));
+    // Broken logo URLs fall back to the letter avatar underneath.
+    card.querySelector('.tk-logo img')
       ?.addEventListener('error', (e) => e.target.remove());
   }
 
@@ -1003,8 +970,10 @@ class McpPage extends HTMLElement {
     this.querySelector('#upload-github-form').hidden = true;
     this.querySelector('#upload-footer').hidden = true;
     this.querySelector('#upload-error').hidden = true;
-    this.querySelector('#upload-modal').setAttribute('heading', 'Upload MCP server');
-    this.querySelector('#upload-modal').open();
+    const modal = this.querySelector('#upload-modal');
+    modal.setAttribute('hide-footer', '');
+    modal.setAttribute('heading', 'Upload MCP server');
+    modal.open();
   }
 
   // ── Agent access (per-connector, inside the detail modal) ────────────────
@@ -1050,10 +1019,8 @@ class McpPage extends HTMLElement {
               <td class="cell-name"><span class="name-main">${escHtml(c.display_name || c.name)}</span></td>
               <td class="cell-muted">${escHtml(c.description || '—')}</td>
               <td>
-                <label class="switch">
-                  <input type="checkbox" class="access-toggle" ${c.enabled ? 'checked' : ''} />
-                  <span class="slider"></span>
-                </label>
+                <app-switch class="access-toggle" aria-label="Enable ${escAttr(c.display_name || c.name)}"
+                  ${c.enabled ? 'checked' : ''}></app-switch>
               </td>
               <td class="cell-actions">
                 <app-button variant="ghost" class="act-tools">${icons.chevronDown('', 14)} Tools</app-button>
@@ -1114,15 +1081,15 @@ class McpPage extends HTMLElement {
               <span class="tool-name">${escHtml(t.name)}</span>
               ${t.description ? `<span class="tool-desc">${escHtml(t.description)}</span>` : ''}
             </div>
-            <select class="tool-stance" data-index="${i}">
-              <option value="allow" ${t.stance !== 'block' ? 'selected' : ''}>Allow</option>
-              <option value="block" ${t.stance === 'block' ? 'selected' : ''}>Block</option>
-            </select>
+            <app-select class="tool-stance" size="sm" data-index="${i}"
+              aria-label="Tool rule for ${escAttr(t.name)}"
+              options='[{"value":"allow","label":"Allow"},{"value":"block","label":"Block"}]'
+              value="${t.stance === 'block' ? 'block' : 'allow'}"></app-select>
           </div>`).join('')}
       </div>
       <div class="tools-actions">
         <span class="tools-save-status" hidden></span>
-        <app-button variant="dark" class="tools-save">Save rules</app-button>
+        <app-button variant="primary" class="tools-save">Save rules</app-button>
       </div>`;
     editor.querySelector('.tools-save').addEventListener('click', async () => {
       const rules = [...editor.querySelectorAll('.tool-stance')].map((sel) => ({

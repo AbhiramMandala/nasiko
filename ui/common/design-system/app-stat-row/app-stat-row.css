@@ -1,0 +1,105 @@
+/* Duplicated deliberately: this sheet must stand on its own, and a keyframe of
+   the same name and body is idempotent. Same pattern as app-stat-card.css. */
+@keyframes skel-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes skel-pulse { from, to { opacity: 1; } }
+}
+
+@scope (app-stat-row) {
+  :scope {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    border-block: 1px solid var(--color-border);
+    padding: var(--s-16) 0;
+    width: 100%;
+  }
+  :scope[hidden] { display: none; }
+
+  .stat {
+    display: flex;
+    flex-direction: column;
+    padding: 0 var(--s-24);
+    border-left: 1px solid var(--color-border);
+    min-width: 0;
+
+    &:first-child { border-left: none; padding-left: 0; }
+  }
+
+  /* Mobile: 2-up grid — hairline only between the two columns. */
+  @media (max-width: 760px) {
+    :scope { grid-template-columns: 1fr 1fr; gap: var(--s-24) 0; }
+    .stat { border-left: none; padding-left: 0; }
+    .stat:nth-child(2n) {
+      border-left: 1px solid var(--color-border);
+      padding-left: var(--s-24);
+    }
+  }
+
+  .stat-label {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    margin-bottom: var(--s-12);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .stat-value {
+    font-family: var(--font-display);
+    font-size: var(--font-size-2xl);
+    font-weight: 500;
+    line-height: 1.25;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .stat-sub {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-top: var(--s-8);
+  }
+
+  /* Severity meter. Colour is never the only signal — the numeric value sits
+     directly above it. The tint ramp is far more saturated against a white
+     surface than the dark ramp is against a near-black one, so an empty
+     light-mode track reads as a full green bar: dilute in light only. */
+  .meter {
+    height: 6px;
+    margin-top: var(--s-8);
+    border-radius: var(--r-4);
+    overflow: hidden;
+    background: light-dark(
+      color-mix(in oklab, var(--track, var(--color-border)) 40%, var(--color-bg-surface)),
+      var(--track, var(--color-border)));
+
+    &.is-ok   { --track: var(--bg-success); --fill: var(--fg-success); }
+    &.is-warn { --track: var(--bg-warning); --fill: var(--fg-warning); }
+    &.is-crit { --track: var(--bg-error);   --fill: var(--fg-error); }
+  }
+
+  .meter-fill {
+    height: 100%;
+    border-radius: var(--r-4);
+    background: var(--fill, var(--fg-secondary));
+    transition: width 240ms ease;
+  }
+
+  .stat-skel {
+    height: 0.85em;
+    border-radius: var(--r-4);
+    background: var(--color-border);
+    animation: skel-pulse 1.5s ease-in-out infinite;
+  }
+  .stat-skel--label { width: 80px; }
+  .stat-skel--value { width: 110px; height: 1.5em; margin-top: var(--s-12); }
+  @media (prefers-reduced-motion: reduce) {
+    .stat-skel { animation: none; opacity: 0.6; }
+  }
+}

@@ -1,4 +1,7 @@
 import { icons } from '/common/utils/icons.js';
+import '/common/design-system/app-badge/app-badge.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-skeleton/app-skeleton.js';
 
 import styles from './flow-detail-page.css' with { type: 'css' };
 import { escHtml } from '/common/utils/escape.js';
@@ -27,14 +30,13 @@ class FlowDetailPage extends HTMLElement {
     const flowId = new URLSearchParams(location.search).get('id');
     if (!flowId) {
       this.innerHTML = `${this.#toolbar()}
-        <div class="empty-state">
-          <div class="empty-tile">${icons.activity('', 20)}</div>
-          <div class="empty-title">No flow selected</div>
-          <p class="empty-sub">Open a flow from the list to inspect its trace.</p>
-        </div>`;
+        <app-empty-state
+          title="No flow selected"
+          description="Open a flow from the list to inspect its trace."
+          icon='${icons.activity("", 40)}'></app-empty-state>`;
       return;
     }
-    this.innerHTML = `${this.#toolbar()}<div class="skel-block" style="height:200px"></div>`;
+    this.innerHTML = `${this.#toolbar()}<app-skeleton height="200px"></app-skeleton>`;
     this.#load(flowId);
   }
 
@@ -42,11 +44,10 @@ class FlowDetailPage extends HTMLElement {
     const data = await call('fetchFlowDetail', flowId);
     if (!data) {
       this.innerHTML = `${this.#toolbar()}
-        <div class="empty-state">
-          <div class="empty-tile">${icons.faceFrown('', 20)}</div>
-          <div class="empty-title">Flow not found</div>
-          <p class="empty-sub">This flow may have expired or been removed.</p>
-        </div>`;
+        <app-empty-state
+          title="Flow not found"
+          description="This flow may have expired or been removed."
+          icon='${icons.faceFrown("", 40)}'></app-empty-state>`;
       return;
     }
 
@@ -66,7 +67,7 @@ class FlowDetailPage extends HTMLElement {
       <div class="kpi-strip">
         <div class="kpi">
           <div class="kpi-label">Status</div>
-          <div class="kpi-value"><span class="badge badge--${variant}"><span class="badge__dot"></span>${flow.status}</span></div>
+          <div class="kpi-value"><app-badge variant="${variant}" dot>${escHtml(flow.status)}</app-badge></div>
         </div>
         <div class="kpi">
           <div class="kpi-label">Root agent</div>
@@ -100,11 +101,10 @@ class FlowDetailPage extends HTMLElement {
     const container = this.querySelector('#trace-container');
     if (!steps.length) {
       container.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-tile">${icons.activity('', 20)}</div>
-          <div class="empty-title">No steps recorded</div>
-          <p class="empty-sub">No agent calls were recorded for this flow.</p>
-        </div>`;
+        <app-empty-state
+          title="No steps recorded"
+          description="No agent calls were recorded for this flow."
+          icon='${icons.activity("", 40)}'></app-empty-state>`;
       return;
     }
 
@@ -126,7 +126,7 @@ class FlowDetailPage extends HTMLElement {
             <span class="step-num ${numClass}">${i + 1}</span>
             <span class="step-agent">${escHtml(step.agent_name)}</span>
             ${step.input_summary ? `<span class="step-snippet">${escHtml(step.input_summary.slice(0, 60))}${step.input_summary.length > 60 ? '…' : ''}</span>` : '<span class="step-snippet"></span>'}
-            <span class="badge badge--${STATUS_VARIANTS[status] || 'neutral'}"><span class="badge__dot"></span>${status}</span>
+            <app-badge variant="${STATUS_VARIANTS[status] || 'neutral'}" dot>${escHtml(status)}</app-badge>
             <span class="step-latency">${latency}</span>
             <span class="step-caret">${icons.chevronDown('', 14)}</span>
           </summary>

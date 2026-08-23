@@ -1,6 +1,7 @@
 import { icons } from "/common/utils/icons.js";
 import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import "/common/design-system/app-card/app-card.js";
+import "/common/design-system/app-search/app-search.js";
 import "/common/design-system/app-empty-state/app-empty-state.js";
 import "/common/design-system/app-skeleton/app-skeleton.js";
 import "/common/features/app-module-nav.js";
@@ -32,18 +33,9 @@ class AgentsPage extends HTMLElement {
     // Fallback for hosts that don't supply it (e.g. an element created in JS).
     if (!this.querySelector("#agents-grid")) this.insertAdjacentHTML("afterbegin", this.#shell());
 
-    this.querySelector("#search-input").addEventListener("input", () => {
-      this.#updateClearBtn();
-      this.#renderGrid();
-    });
-
-    this.querySelector("#search-clear").addEventListener("click", () => {
-      const input = this.querySelector("#search-input");
-      input.value = "";
-      this.#updateClearBtn();
-      this.#renderGrid();
-      input.focus();
-    });
+    // <app-search> owns the clear button and re-fires `input` after clearing,
+    // so one listener covers typing and clearing alike.
+    this.querySelector("#search-input").addEventListener("input", () => this.#renderGrid());
 
     // Category tab clicks are delegated — tabs re-render after data loads.
     attachSlidingIndicator(this.querySelector("#category-tabs"), ".type-tab", ".active");
@@ -113,12 +105,6 @@ class AgentsPage extends HTMLElement {
       cats.map(([c, n]) => tab(c, c.charAt(0).toUpperCase() + c.slice(1), n)).join("");
   }
 
-  #updateClearBtn() {
-    const input = this.querySelector("#search-input");
-    const btn = this.querySelector("#search-clear");
-    btn.style.display = input.value ? "" : "none";
-  }
-
   /** Fallback shell — mirrors the static markup in web/agents.html. */
   #shell() {
     return `
@@ -131,11 +117,9 @@ class AgentsPage extends HTMLElement {
         <p class="subtitle">Discover and chat with the agents deployed on this cluster.</p>
       </div>
       <div class="controls">
-        <div class="search-wrap">
-          <span class="search-icon">${icons.search("", 18)}</span>
-          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability" />
-          <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
-        </div>
+        <app-search id="search-input" class="search-wrap" size="md"
+          placeholder="Search agents by name, skill, or capability"
+          aria-label="Search agents"></app-search>
       </div>
       <div class="type-tabs" id="category-tabs" role="tablist">${this.#skeletonTabs()}</div>
       <div class="grid" id="agents-grid">${this.#skeletonCards()}</div>

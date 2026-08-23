@@ -18,7 +18,9 @@
  * @attr {boolean} required - Renders the red `*` before the label.
  * @attr {boolean} disabled
  * @attr {boolean} readonly - Same paint as `state="read-only"`.
- * @attr {string} type|name|placeholder|value|autocomplete|maxlength|inputmode|min|max|step|pattern
+ * @attr {string} type - `text` (default) | `password` | `email` | `number` |
+ *   `search` | `url` | `tel` | `date`. Forwarded verbatim to the inner `<input>`.
+ * @attr {string} name|placeholder|value|autocomplete|maxlength|inputmode|min|max|step|pattern|list|spellcheck|aria-label
  * @cssprop --input-bg - Resting fill. Default `--bg-base` (white). Set it on the
  *   *surface*, not the field: the fill depends on the plane the field sits on, and
  *   one declaration on a container covers every field inside it. read-only and
@@ -35,9 +37,13 @@ import styles from './app-input.css' with { type: 'css' };
 import { unsizeIcons } from '../../utils/icons.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-/** Attributes handed straight to the inner <input>, not styling. */
+/** Attributes handed straight to the inner <input>, not styling.
+ *  `aria-label` is in here because the inner input is the thing a screen reader
+ *  names, and a two-column form (label left, field right) can't reach it with
+ *  `<label for>` — the id belongs to the input this component generates. */
 const NATIVE = ['type', 'name', 'placeholder', 'value', 'autocomplete', 'maxlength',
-                'inputmode', 'min', 'max', 'step', 'pattern', 'list'];
+                'inputmode', 'min', 'max', 'step', 'pattern', 'list', 'spellcheck',
+                'aria-label'];
 
 let uid = 0;
 
@@ -55,6 +61,10 @@ export class AppInput extends HTMLElement {
   set value(v) { if (this.input) this.input.value = v; else this.setAttribute('value', v); }
   get input() { return this.querySelector('input'); }
 
+  /** The host is not focusable — a `focus()` on it would silently do nothing,
+   *  so hand it to the control inside. */
+  focus(options) { this.input?.focus(options); }
+
   connectedCallback() { this.render(); }
   attributeChangedCallback() { if (this.isConnected) this.render(); }
 
@@ -64,6 +74,10 @@ export class AppInput extends HTMLElement {
     const prev = this.input;
     const value = prev ? prev.value : (this.getAttribute('value') ?? '');
     const refocus = prev && document.activeElement === prev;
+    // Caret too — a re-render mid-edit (a `hint`/`state` flip from a field error
+    // clearing, say) would otherwise dump the cursor at the end of the value.
+    // `selectionStart` is null on types that don't support it (number, email).
+    const caret = refocus ? [prev.selectionStart, prev.selectionEnd] : null;
     if (this.#slots === null) {
       this.#slots = {
         leading: this.querySelector('[data-slot="leading"]')?.outerHTML ?? '',
@@ -108,7 +122,10 @@ export class AppInput extends HTMLElement {
     unsizeIcons(this);
 
     this.input.value = value;
-    if (refocus) this.input.focus();
+    if (refocus) {
+      this.input.focus();
+      if (caret?.[0] != null) this.input.setSelectionRange(caret[0], caret[1]);
+    }
   }
 }
 customElements.define('app-input', AppInput);

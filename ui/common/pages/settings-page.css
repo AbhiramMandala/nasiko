@@ -1,5 +1,5 @@
 /* Settings — NightOwl: left section nav + grouped setting rows on the white
-   plane; sand input wells, hairline row separators, dark save button. */
+   plane; design-system fields on sand wells, hairline row separators. */
 
 @scope (settings-page) {
   /* Host box — display, padding, the desktop card padding and (where the page
@@ -55,48 +55,18 @@
     max-width: 52ch;
   }
 
-  .setting-control input,
-  .setting-control select {
-    width: 100%;
-    height: var(--control-h-lg);
-    padding: 0 var(--s-12);
-    border: none;
-    border-radius: var(--r-8);
-    background-color: var(--bg-input);
-    color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    font-family: inherit;
-
-    &::placeholder { color: var(--color-text-muted); }
-    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-  }
-
-  .setting-control select { cursor: pointer; }
+  /* The controls are <app-input>/<app-select> now, so their box, focus ring and
+     placeholder come from the design system. The one thing that is this page's
+     call is the fill: sand wells on the white plane, set through the sanctioned
+     --input-bg seam rather than by restyling the field. */
+  .setting-control { --input-bg: var(--bg-input); }
 
   /* ── Save bar ────────────────────────────────────────────────────────── */
+  /* <app-button variant="primary"> is the dark save button; only the bar's
+     placement is the page's business. */
   .save-bar {
     display: flex;
     justify-content: flex-end;
     padding-top: var(--s-24);
-  }
-
-  .save-btn {
-    display: inline-flex;
-    align-items: center;
-    height: var(--control-h-lg);
-    padding: 0 var(--s-24);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
-    border: none;
-    border-radius: var(--r-10);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: background var(--transition-fast);
-
-    &:hover { background: var(--bg-action-hover); }
-    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-    &:disabled { opacity: 0.5; cursor: not-allowed; }
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
 }

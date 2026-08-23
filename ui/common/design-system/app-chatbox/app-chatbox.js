@@ -8,6 +8,9 @@
  * @attr {boolean} no-attachments - Hide the file attachment button
  * @attr {string} transcription-callback - Name of a data-source function returning transcribed text
  * @prop {string} value - Get/set the textarea value
+ * @method focus - Put the caret in the composer. Pages that prefill the box
+ *   (a suggested-prompt chip, a retry) set `value` then call this — before it
+ *   existed, chat-page reached in for the private `#textarea` to focus it.
  * @fires chatbox-submit - User submits; `detail: { value: string, files: [] }` — bubbles.
  *   The box goes into its loading state on submit; the owner calls
  *   `setLoading(false)` (or `setLoading(true)` then false) when the reply lands.
@@ -18,7 +21,7 @@ import { VoiceRecorder } from '../../utils/voice-utils.js';
 import { icons } from '../../utils/icons.js';
 import { showToast } from '../../utils/toast.js';
 import { resolveOptional } from '../../core/data-sources.js';
-import { escHtml } from '../../utils/escape.js';
+import { escAttr, escHtml } from '../../utils/escape.js';
 
 import styles from './app-chatbox.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -78,7 +81,7 @@ export class AppChatbox extends HTMLElement {
             class="textarea"
             id="textarea"
             rows="1"
-            placeholder="${placeholder}"
+            placeholder="${escAttr(placeholder)}"
           ></textarea>
 
           <div class="timer" id="timer">
@@ -303,6 +306,11 @@ export class AppChatbox extends HTMLElement {
 
   getStopIcon() {
     return icons.square("btn-icon", 12);
+  }
+
+  /** @override — the host is not focusable, so forward to the real control. */
+  focus(options) {
+    this.textarea?.focus(options);
   }
 
   get value() {

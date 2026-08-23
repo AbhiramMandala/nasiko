@@ -6,7 +6,13 @@ import { withLoading } from "/common/utils/async-button.js";
 import { confirmDialog } from "/common/design-system/app-modal/app-modal.js";
 import "/common/design-system/app-empty-state/app-empty-state.js";
 import "/common/design-system/app-skeleton/app-skeleton.js";
+import "/common/design-system/app-button/app-button.js";
+import "/common/design-system/app-badge/app-badge.js";
 import "/common/design-system/app-card/app-card.js";
+import "/common/design-system/app-input/app-input.js";
+import "/common/design-system/app-search/app-search.js";
+import "/common/design-system/app-select/app-select.js";
+import "/common/design-system/app-tag/app-tag.js";
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 
@@ -23,13 +29,6 @@ import yourAgentsStyles from './your-agents-page.css' with { type: 'css' };
 import '/common/features/app-module-nav.js';
 if (!document.adoptedStyleSheets.includes(yourAgentsStyles)) {
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, yourAgentsStyles];
-}
-
-function statusClass(status) {
-  if (status === "running") return "is-running";
-  if (status === "error" || status === "failed") return "is-error";
-  if (status === "deploying" || status === "starting") return "is-pending";
-  return "is-stopped";
 }
 
 function parseImageTag(image) {
@@ -57,18 +56,9 @@ class YourAgentsPage extends HTMLElement {
     // duplicating it into every host page would buy nothing.
     this.insertAdjacentHTML("beforeend", this.#deployModal());
 
-    this.querySelector("#search-input").addEventListener("input", () => {
-      this.#updateClearBtn();
-      this.#renderGrid();
-    });
-
-    this.querySelector("#search-clear").addEventListener("click", () => {
-      const input = this.querySelector("#search-input");
-      input.value = "";
-      this.#updateClearBtn();
-      this.#renderGrid();
-      input.focus();
-    });
+    // <app-search> owns the clear button and re-fires `input` after clearing,
+    // so one listener covers typing and clearing alike.
+    this.querySelector("#search-input").addEventListener("input", () => this.#renderGrid());
 
     this.querySelector("#sort-select").addEventListener("change", (e) => {
       this.#sortBy = e.target.value;
@@ -163,9 +153,8 @@ class YourAgentsPage extends HTMLElement {
     const version = a.version || imgVersion;
     const tags = a.tags || [];
 
-    // app-card only paints the setting-up body when it has content to show
-    // (its `_hasSettingUpBody` gate), so variant="setting-up" alone renders a
-    // bare card — the live build status has to be passed in as the status line.
+    // The card's deploying body is driven by `status`; only the headline is
+    // ours, because the live build message is the useful part of it.
     const setupStatus =
       a._uploadInfo?.status_message ||
       (a.status === "starting" ? "Starting container…" : "Agent is being deployed…");
@@ -179,13 +168,17 @@ class YourAgentsPage extends HTMLElement {
       ? ""
       : isRunning
         ? `
-        <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh("", 14)}</button>
-        <button type="button" slot="footer" class="card-action-btn card-action-btn--icon" data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square("", 12)}</button>
-        <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash("", 14)}</button>`
+        <app-button slot="footer" variant="tertiary" size="sm" icon-only data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh()}</app-button>
+        <app-button slot="footer" variant="tertiary" size="sm" icon-only data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square()}</app-button>
+        <button type="button" slot="footer" class="card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash("", 14)}</button>`
         : `
-        <button type="button" slot="footer" class="card-action-btn card-action-btn--primary" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play("", 13)} Deploy</button>
-        <button type="button" slot="footer" class="card-action-btn card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash("", 14)}</button>`;
+        <app-button slot="footer" variant="primary" size="sm" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play()} Deploy</app-button>
+        <button type="button" slot="footer" class="card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash("", 14)}</button>`;
 
+    // `status` alone drives the card's status dot and its error/deploying
+    // bodies — the page passes the state, the component paints it. The source
+    // label is a header action (app-card has no trailing slot; a node in one
+    // was dropped on the card's first render).
     return `
     <app-card
       data-agent-id="${escAttr(a.id)}"
@@ -194,12 +187,11 @@ class YourAgentsPage extends HTMLElement {
       ${a.status ? `status="${escAttr(a.status)}"` : ""}
       href="/agent-card?id=${escAttr(a.id)}"
       ${isError ? `error-title="Agent failed" error-body="Container exited with an error."` : ""}
-      ${isPending ? `setting-up-title="${escAttr(setupStatus)}" setting-up-body="This may take a few minutes. Status updates automatically."` : ""}
+      ${isPending ? `deploy-label="${escAttr(setupStatus)}"` : ""}
       ${!isError && !isPending && a.description ? `description="${escAttr(a.description)}"` : ""}
       ${tags.length ? `tags="${escAttr(JSON.stringify(tags))}"` : ""}
     >
-      <span slot="leading" class="status-dot ${statusClass(a.status)}" title="${escAttr(a.status || "")}"></span>
-      ${sourceLabel ? `<span slot="trailing" class="agent-card-source">${sourceLabel}</span>` : ""}
+      ${sourceLabel ? `<app-badge slot="actions" class="agent-card-source" variant="neutral">${escHtml(sourceLabel)}</app-badge>` : ""}
       ${isError ? `<a slot="footer" data-action="view-logs" href="/flows?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
       ${footerButtonsHtml}
     </app-card>
@@ -233,12 +225,6 @@ class YourAgentsPage extends HTMLElement {
       tab("failed", "Failed", failed);
   }
 
-  #updateClearBtn() {
-    const input = this.querySelector("#search-input");
-    const btn = this.querySelector("#search-clear");
-    btn.style.display = input.value ? "" : "none";
-  }
-
   /** Fallback shell — mirrors the static markup in web/agents.html's
    *  your-agents view. */
   #shell() {
@@ -253,19 +239,14 @@ class YourAgentsPage extends HTMLElement {
         </div>
       </div>
       <div class="toolbar">
-        <div class="search-wrap">
-          <span class="search-icon">${icons.search("", 18)}</span>
-          <input type="search" id="search-input" placeholder="Search agents by name, skill, or capability..." />
-          <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
-        </div>
-        <div class="sort-wrap">
-          <span class="sort-icon">${icons.sortBoth("", 16)}</span>
-          <select id="sort-select" class="sort-select" aria-label="Sort agents">
-            <option value="name">Sort: Name</option>
-            <option value="status">Sort: Status</option>
-            <option value="version">Sort: Version</option>
-          </select>
-        </div>
+        <app-search id="search-input" class="search-wrap" size="md"
+          placeholder="Search agents by name, skill, or capability..."
+          aria-label="Search agents"></app-search>
+        <app-select id="sort-select" class="sort-select" aria-label="Sort agents"
+          options='[{"value":"name","label":"Sort: Name"},{"value":"status","label":"Sort: Status"},{"value":"version","label":"Sort: Version"}]'
+          value="name">
+          <span data-slot="leading">${icons.sortBoth()}</span>
+        </app-select>
       </div>
       <div class="type-tabs" id="status-tabs" role="tablist">${Array.from({ length: 4 }, () => `<div class="skel-tab"></div>`).join("")}</div>
       <div class="agents-grid" id="agents-grid">${this.#skeletonCards()}</div>
@@ -280,41 +261,26 @@ class YourAgentsPage extends HTMLElement {
           <p>These will be injected into the container. Saved to agent secrets for future deploys.</p>
           <div id="env-rows"></div>
           <div style="display:flex;gap:var(--s-12);margin-top:var(--s-8);">
-            <button class="add-env-btn" id="btn-add-env">${icons.plus("", 14)} Add variable</button>
-            <button class="import-btn" id="btn-import-secrets">${icons.key("", 14)} Import from secrets</button>
+            <app-button variant="tertiary" size="sm" id="btn-add-env">${icons.plus()} Add variable</app-button>
+            <app-button variant="ghost" size="sm" id="btn-import-secrets">${icons.key()} Import from secrets</app-button>
           </div>
         </div>
         <div class="modal-section" id="secrets-import-section" style="display:none;">
           <h3>Select secrets to import</h3>
           <div class="secret-chips" id="secret-chips"></div>
         </div>
-        <div class="form-actions">
-          <button class="btn-cancel" id="deploy-cancel">Cancel</button>
-          <button class="btn-deploy" id="deploy-confirm">Deploy</button>
+        <div data-slot="footer">
+          <app-button variant="tertiary" id="deploy-cancel">Cancel</app-button>
+          <app-button variant="primary" id="deploy-confirm">Deploy</app-button>
         </div>
       </app-modal>
     `;
   }
 
   #skeletonCards() {
-    return Array.from(
-      { length: 4 },
-      () => `
-      <div class="card skeleton-card">
-        <div class="skel-line skel-line--name"></div>
-        <div class="skel-tags">
-          <div class="skel-tag"></div>
-          <div class="skel-tag"></div>
-        </div>
-        <div class="skel-line skel-line--desc"></div>
-        <div class="skel-line skel-line--desc2"></div>
-        <div class="skel-actions">
-          <div class="skel-btn"></div>
-          <div class="skel-btn"></div>
-        </div>
-      </div>
-    `,
-    ).join("");
+    // The skeleton is the same component in its loading state, so the card's
+    // geometry has one definition and the two states cannot drift apart.
+    return Array.from({ length: 4 }, () => `<app-card loading></app-card>`).join("");
   }
 
   #renderGrid() {
@@ -421,7 +387,7 @@ class YourAgentsPage extends HTMLElement {
     const addEnvRow = (key = "", value = "") => {
       const row = document.createElement("div");
       row.className = "env-row";
-      row.innerHTML = `<input type="text" placeholder="KEY" value="${escAttr(key)}" /><input type="text" placeholder="value" value="${escAttr(value)}" /><button class="env-remove" aria-label="Remove variable">${icons.xCircle("", 16)}</button>`;
+      row.innerHTML = `<app-input size="sm" placeholder="KEY" aria-label="Variable name" value="${escAttr(key)}"></app-input><app-input size="sm" placeholder="value" aria-label="Variable value" value="${escAttr(value)}"></app-input><app-button class="env-remove" variant="ghost" size="sm" icon-only aria-label="Remove variable">${icons.xCircle()}</app-button>`;
       row.querySelector(".env-remove").addEventListener("click", () => row.remove());
       envRows.appendChild(row);
     };
@@ -453,22 +419,17 @@ class YourAgentsPage extends HTMLElement {
         secretChips.innerHTML = userSecrets
           .map(
             (s) =>
-              `<span class="secret-chip" data-name="${escAttr(s.name)}">${escHtml(s.name)}</span>`,
+              `<app-tag class="secret-chip" size="sm" selectable data-name="${escAttr(s.name)}">${escHtml(s.name)}</app-tag>`,
           )
           .join("");
         secretsSection.style.display = "";
 
-        secretChips.querySelectorAll(".secret-chip").forEach((chip) => {
-          chip.addEventListener("click", () => {
-            const name = chip.dataset.name;
-            if (selectedSecrets.has(name)) {
-              selectedSecrets.delete(name);
-              chip.classList.remove("selected");
-            } else {
-              selectedSecrets.add(name);
-              chip.classList.add("selected");
-            }
-          });
+        // <app-tag selectable> owns its own selected state and keyboard
+        // handling; the set below is just which names the deploy will import.
+        secretChips.addEventListener("tag-change", (e) => {
+          const name = e.target.dataset.name;
+          if (e.detail.selected) selectedSecrets.add(name);
+          else selectedSecrets.delete(name);
         });
       },
     );
@@ -552,14 +513,14 @@ class YourAgentsPage extends HTMLElement {
         modal.open();
       } else if (action === "restart" || action === "stop") {
         const name = btn.dataset.name;
-        const original = btn.innerHTML;
         // These are fixed-size icon buttons: swapping in a label overflows the
-        // square and lands on the card body. Swap the icon for a same-size
-        // spinner and lock the card's other lifecycle buttons instead.
-        const siblings = [...btn.closest(".ac-footer").querySelectorAll("[data-action]")];
+        // square and lands on the card body. <app-button loading> shows its own
+        // spinner INSTEAD of the glyph, so lock the card's other lifecycle
+        // buttons and let the button draw the busy state.
+        const siblings = [...btn.closest(".card-foot").querySelectorAll("[data-action]")];
         for (const b of siblings) b.disabled = true;
         btn.setAttribute("aria-busy", "true");
-        btn.innerHTML = `<span class="setup-spinner"></span>`;
+        btn.toggleAttribute("loading", true);
         try {
           const res = await apiFetch(
             `/containers/${encodeURIComponent(name)}/${action}`,
@@ -576,7 +537,7 @@ class YourAgentsPage extends HTMLElement {
           // #load() usually replaces these nodes; restore anyway so a failed
           // reload can't leave the card stuck on a spinner.
           btn.removeAttribute("aria-busy");
-          btn.innerHTML = original;
+          btn.removeAttribute("loading");
           for (const b of siblings) b.disabled = false;
         }
       } else if (action === "delete") {

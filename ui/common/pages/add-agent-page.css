@@ -88,14 +88,20 @@
 
   /* ── Chooser cards ───────────────────────────────────────────────────── */
   /* Three methods, one row — a 2-col grid orphaned the OCI card onto its own
-     row (and pushed it below the fold on short viewports). */
+     row (and pushed it below the fold on short viewports). `auto-fit` was tried
+     to widen the tracks between 1024px and ~1150px, where the module-nav gutter
+     takes ~230px off the row; it reintroduced exactly that orphan, so the fixed
+     three columns stay. In that band the two longer titles ellipsis instead,
+     which is what <app-card>'s `.card-name` is built to do with a title wider
+     than its row — the same degradation a long agent name gets.
+
+     No max-width cap: the 1020px column left the three cards cramped, wrapping
+     every title onto two lines while the card had width to spare. The host's
+     padding (page-layout.css) is what bounds this now. */
   .method-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: var(--s-16);
-    /* No max-width cap: the 1020px column left the three cards cramped, wrapping
-       every title onto two lines while the card had width to spare. The host's
-       padding (page-layout.css) is what bounds this now. */
     width: 100%;
   }
 
@@ -103,25 +109,13 @@
     .method-grid { grid-template-columns: 1fr; }
   }
 
-  /* Surface + hover lift: common/styles/surface.css */
-  .method-card {
-    padding: var(--s-24);
+  /* Each tile is an <app-card>: box, hover lift, title row and leading glyph
+     all come from the component. Only the body slot's own rhythm is here. */
+  .method-body {
     display: flex;
     flex-direction: column;
     gap: var(--s-12);
-  }
-
-  .method-card-header {
-    display: flex;
-    align-items: center;
-    gap: var(--s-12);
-    color: var(--color-text-main);
-  }
-
-  .method-card-title {
-    font-size: var(--font-size-base);
-    font-weight: 600;
-    color: var(--color-text-main);
+    height: 100%;
   }
 
   .method-card-req {
@@ -130,7 +124,7 @@
     color: var(--color-text-muted);
   }
   .method-card-req.connected {
-    color: var(--color-success, #22c55e);
+    color: var(--color-success);
   }
 
   .method-card-desc {
@@ -140,38 +134,9 @@
     flex: 1;
   }
 
-  .method-btn {
-    margin-top: auto;
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: var(--control-h-lg);
-    border: none;
-    border-radius: var(--r-10);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    transition: background var(--transition-fast);
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
-  }
-
-  .method-btn:hover:not(:disabled) {
-    background: var(--bg-action-hover);
-  }
-
-  .method-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-
-  .method-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .method-card-req.connected {
-    color: var(--color-success);
-  }
+  /* The CTA is an <app-button variant="primary" block>; the body only pins it
+     to the bottom so three cards of different text lengths line up. */
+  .method-btn { margin-top: auto; }
 
   /* ── Upload modal form ─────────────────────────────────────────────────── */
   .upload-form {
@@ -184,33 +149,28 @@
     flex-direction: column;
     gap: var(--s-4);
   }
+  /* Matches <app-input>'s own label, so the file field and the text fields in
+     the same modal read as one form. */
   .field-label {
     font-size: var(--font-size-sm);
-    font-weight: 600;
     color: var(--color-text-main);
   }
-  .field input {
+  /* ponytail: the file picker stays a native <input type="file"> — the design
+     system has no file-field variant, and a native picker is the platform
+     control. Only this field is styled here; the text fields are app-inputs. */
+  .field input[type="file"] {
     width: 100%;
     padding: var(--s-12) var(--s-16);
-    border: 1px solid var(--color-border);
+    border: var(--bw-1) solid var(--border-primary);
     border-radius: var(--r-8);
-    background: var(--color-bg-surface);
+    background: var(--bg-base);
     color: var(--color-text-main);
     font-family: inherit;
     font-size: var(--font-size-sm);
   }
-  .field input:focus-visible {
-    outline: none;
-    border-color: var(--color-primary);
-    box-shadow: 0 0 0 3px var(--color-primary-ring);
-  }
   .field-hint {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-  }
-  .form-error {
-    color: var(--color-error);
-    font-size: var(--font-size-xs);
   }
   .field-hint code {
     font-family: var(--font-mono, monospace);
@@ -232,8 +192,8 @@
   .setup-spinner {
     width: 14px;
     height: 14px;
-    border: 2px solid var(--color-border);
-    border-top-color: var(--color-info, #3b82f6);
+    border: var(--bw-2) solid var(--color-border);
+    border-top-color: var(--color-info);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     flex-shrink: 0;
@@ -242,12 +202,11 @@
   .setup-label {
     font-size: var(--font-size-sm);
     font-weight: 500;
-    color: var(--color-info, #3b82f6);
+    color: var(--color-info);
   }
   .setup-hint {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     margin: 0;
   }
-  /* Footer actions: reuse the card button shape, sized to content. */
 }

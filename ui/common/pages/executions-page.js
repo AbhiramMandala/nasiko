@@ -12,10 +12,14 @@ import { icons } from '/common/utils/icons.js';
 import { timeAgo, formatDisplay } from '/common/utils/date-utils.js';
 import { fmtDuration, fmtTokens } from '/common/utils/units.js';
 import { attachSlidingIndicator } from '/common/utils/tab-indicator.js';
+import '/common/design-system/app-badge/app-badge.js';
+import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/features/wf-run-steps.js';
 
 import styles from './executions-page.css' with { type: 'css' };
-import { escHtml } from '/common/utils/escape.js';
+import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the
@@ -26,7 +30,8 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const POLL_MS = 1500;
 const ACTIVE = new Set(['pending', 'running']);
-const STATUS_BADGES = { success: 'badge--success', failed: 'badge--error', running: 'badge--warning', pending: 'badge--neutral' };
+/** Run status → <app-badge> variant. */
+const STATUS_VARIANTS = { success: 'success', failed: 'error', running: 'warning', pending: 'neutral' };
 
 class ExecutionsPage extends HTMLElement {
   #initialized = false;
@@ -137,19 +142,19 @@ class ExecutionsPage extends HTMLElement {
       const active = this.#executions.filter((e) => ACTIVE.has(e.status));
       if (!this.#executions.length) {
         area.innerHTML = this.#emptyState({
-          icon: icons.workflow('', 32),
+          icon: icons.workflow('', 40),
           title: 'No workflow runs yet',
           sub: 'Create your first workflow by chaining agents together.',
-          action: `<a class="cta-btn" href="/workflow-new">Create workflow ${icons.plus('', 13)}</a>`,
+          action: `<app-button variant="primary" href="/workflow-new">Create workflow ${icons.plus()}</app-button>`,
         });
         return;
       }
       if (!active.length) {
         area.innerHTML = this.#emptyState({
-          icon: icons.play('', 32),
+          icon: icons.play('', 40),
           title: 'Your active runs will appear here',
           sub: 'Monitor live workflow executions, track progress across each step, and inspect outputs as they are generated.',
-          action: `<a class="cta-btn" href="/workflows">Browse workflows</a>`,
+          action: `<app-button variant="tertiary" href="/workflows">Browse workflows</app-button>`,
         });
         return;
       }
@@ -162,10 +167,10 @@ class ExecutionsPage extends HTMLElement {
     const finished = this.#executions.filter((e) => !ACTIVE.has(e.status));
     if (!finished.length) {
       area.innerHTML = this.#emptyState({
-        icon: icons.workflow('', 32),
+        icon: icons.workflow('', 40),
         title: 'No finished runs yet',
         sub: 'Completed and failed workflow runs land here with their full step timelines.',
-        action: `<a class="cta-btn" href="/workflows">Browse workflows</a>`,
+        action: `<app-button variant="tertiary" href="/workflows">Browse workflows</app-button>`,
       });
       return;
     }
@@ -212,9 +217,9 @@ class ExecutionsPage extends HTMLElement {
       exec.duration_ms != null ? fmtDuration(exec.duration_ms) : '',
       fmtTokens(exec.tokens_used),
     ].filter(Boolean);
-    const statusCls = STATUS_BADGES[exec.status] || 'badge--neutral';
-    return meta.map((m) => `<span class="badge badge--muted">${escHtml(m)}</span>`).join('') +
-      `<span class="badge ${statusCls}"><span class="badge__dot"></span>${escHtml(exec.status)}</span>`;
+    const variant = STATUS_VARIANTS[exec.status] || 'neutral';
+    return meta.map((m) => `<app-badge variant="neutral">${escHtml(m)}</app-badge>`).join('') +
+      `<app-badge variant="${variant}" dot>${escHtml(exec.status)}</app-badge>`;
   }
 
   #runCard(exec, { open }) {
@@ -224,13 +229,13 @@ class ExecutionsPage extends HTMLElement {
       <div class="run-card" data-card="${escHtml(exec.id)}">
         <div class="run-card-head">
           <span class="run-title">${escHtml(title)}</span>
-          ${orphaned ? `<span class="badge badge--error">${icons.info('', 12)} Workflow not found</span>` : ''}
+          ${orphaned ? `<app-badge variant="error">${icons.info('', 12)} Workflow not found</app-badge>` : ''}
           <span class="head-spacer"></span>
           ${!orphaned && exec.maf_id ? `<a class="open-wf" href="/workflow?id=${encodeURIComponent(exec.maf_id)}&exec=${encodeURIComponent(exec.id)}">Open workflow</a>` : ''}
-          <button type="button" class="toggle-btn" data-toggle="${escHtml(exec.id)}"
+          <app-button variant="ghost" size="sm" icon-only data-toggle="${escAttr(exec.id)}"
             aria-expanded="${open}" aria-label="${open ? 'Collapse' : 'Expand'} run">
-            ${open ? icons.chevronUp('', 16) : icons.chevronDown('', 16)}
-          </button>
+            ${open ? icons.chevronUp() : icons.chevronDown()}
+          </app-button>
         </div>
         <div class="run-card-meta">${this.#metaHtml(exec)}</div>
         ${open ? `<wf-run-steps surface="sand" data-exec="${escHtml(exec.id)}"></wf-run-steps>` : ''}
@@ -240,21 +245,16 @@ class ExecutionsPage extends HTMLElement {
 
   #emptyState({ icon, title, sub, action }) {
     return `
-      <div class="runs-empty">
-        <span class="empty-tile">${icon}</span>
-        <h2 class="empty-title">${title}</h2>
-        <p class="empty-sub">${sub}</p>
+      <app-empty-state title="${title}" description="${sub}" icon='${icon}'>
         ${action}
-      </div>`;
+      </app-empty-state>`;
   }
 
+  /** The shimmer is <app-skeleton>; the well around it is the run card's own
+   *  box, so the loading list occupies the same space the loaded one will. */
   #skeleton() {
-    return `<div class="run-list">${Array.from({ length: 2 }, () => `
-      <div class="run-card is-skeleton">
-        <div class="skel-line skel-line--name"></div>
-        <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div><div class="skel-tag"></div></div>
-        <div class="skel-line skel-line--desc1"></div>
-      </div>`).join('')}</div>`;
+    const card = '<div class="run-card is-skeleton"><app-skeleton lines="3"></app-skeleton></div>';
+    return `<div class="run-list">${card.repeat(2)}</div>`;
   }
 
 }

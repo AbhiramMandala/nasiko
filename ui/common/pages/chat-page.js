@@ -1,6 +1,6 @@
 import { apiFetch } from '/common/services/api.js';
 import { isAbort, userMessage } from '/common/core/errors.js';
-import "../features/voice-input.js";
+import "../design-system/app-chatbox/app-chatbox.js";
 import "../features/agent-steps.js";
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
@@ -39,32 +39,7 @@ class ChatPage extends HTMLElement {
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
-    this.addEventListener("route-update", this.#onRouteUpdate);
-    this.#enter();
-  }
 
-  /**
-   * Same route pattern, different query. The router keeps this element mounted
-   * and tells it the URL moved (core/router.js) instead of remounting, and
-   * nothing listened — so opening a second session from the module nav moved
-   * the address bar and the highlighted row while the first transcript stayed
-   * on screen. Re-enter from the new params, abandoning whatever the session we
-   * are leaving still has in flight.
-   */
-  #onRouteUpdate = () => {
-    const params = new URLSearchParams(location.search);
-    if ((params.get("session_id") || null) === this.#sessionId
-        && params.get("agent_id") === this.#agentId) return;
-    this.#abort.abort();
-    this.#abort = new AbortController();
-    this.#sending = false;
-    this.#lastUserContent = null;
-    this.#enter();
-  };
-
-  /** Read the URL and build the page for it. Called on mount and on every
-   *  route-update that names a different session or agent. */
-  #enter() {
     const params = new URLSearchParams(location.search);
     this.#agentId = params.get("agent_id");
     this.#sessionId = params.get("session_id") || null;
@@ -105,7 +80,6 @@ class ChatPage extends HTMLElement {
   }
 
   disconnectedCallback() {
-    this.removeEventListener("route-update", this.#onRouteUpdate);
     this.#abort.abort();
   }
 
@@ -127,11 +101,11 @@ class ChatPage extends HTMLElement {
         ${this.#sessionId ? '' : this.#renderWelcome()}
       </div>
       <div class="input-area">
-        <voice-input
+        <app-chatbox
           id="chat-input"
           placeholder="Type a message..."
           transcription-callback="transcribeAudio"
-        ></voice-input>
+        ></app-chatbox>
       </div>
     `;
   }
@@ -179,11 +153,11 @@ class ChatPage extends HTMLElement {
     const chatInput = this.querySelector("#chat-input");
     for (const chip of this.querySelectorAll(".welcome-chip")) {
       chip.addEventListener("click", () => {
-        const textarea = chatInput.querySelector('#textarea');
-        if (textarea) {
-          textarea.value = chip.textContent;
-          textarea.focus();
-        }
+        // Through app-chatbox's own API, not its inner #textarea: the composer
+        // rebuilds its markup on render, so a page that reaches inside is one
+        // refactor away from silently doing nothing.
+        chatInput.value = chip.textContent;
+        chatInput.focus();
       });
     }
   }
@@ -228,7 +202,7 @@ class ChatPage extends HTMLElement {
       }
     });
 
-    chatInput.addEventListener("voice-input-submit", async (e) => {
+    chatInput.addEventListener("chatbox-submit", async (e) => {
       const content = e.detail.value;
       if (!content) {
         chatInput.setLoading(false);

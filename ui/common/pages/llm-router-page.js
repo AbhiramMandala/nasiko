@@ -16,9 +16,17 @@ import styles from './llm-router-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import { showToast } from '../utils/toast.js';
 import { confirmDialog } from '../design-system/app-modal/app-modal.js';
+import '/common/design-system/app-action-menu/app-action-menu.js';
 import '/common/design-system/app-button/app-button.js';
-import { escHtml } from '/common/utils/escape.js';
+import '/common/design-system/app-card/app-card.js';
+import '/common/design-system/app-checkbox/app-checkbox.js';
+import '/common/design-system/app-input/app-input.js';
+import '/common/design-system/app-radio/app-radio.js';
+import '/common/design-system/app-select/app-select.js';
+import '/common/design-system/app-stat-row/app-stat-row.js';
+import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
+import { setFieldError, clearFieldErrors } from '../utils/field-error.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -114,22 +122,14 @@ class LlmRouterPage extends HTMLElement {
   #kpiHtml() {
     const providersInUse = new Set(this.#configs.map((c) => c.provider).filter(Boolean)).size;
     const defaultCfg = this.#configs.find((c) => c.is_default);
-    return `
-      <div class="kpi-strip">
-        <div class="kpi">
-          <div class="kpi-label">Router configs</div>
-          <div class="kpi-value is-mono">${this.#configs.length}</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-label">Providers connected</div>
-          <div class="kpi-value is-mono">${providersInUse}</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-label">Default config</div>
-          <div class="kpi-value is-mono">${defaultCfg ? escHtml(defaultCfg.name) : '—'}</div>
-        </div>
-      </div>
-    `;
+    // Built as an attribute rather than via the `items` setter: this strip is
+    // part of one whole-page innerHTML write, so the element does not exist yet.
+    const items = [
+      { label: 'Router configs', value: this.#configs.length },
+      { label: 'Providers connected', value: providersInUse },
+      { label: 'Default config', value: defaultCfg?.name || 'None' },
+    ];
+    return `<app-stat-row items="${escAttr(JSON.stringify(items))}"></app-stat-row>`;
   }
 
   #emptyHtml() {
@@ -155,34 +155,32 @@ class LlmRouterPage extends HTMLElement {
             { id: `delete:${c.id}`, label: 'Delete' },
           ];
           return `
-          <div class="config-card" data-action="edit-config" data-id="${c.id}" role="button" tabindex="0">
-            <div class="config-head">
-              <div class="config-name">${escHtml(c.name)}</div>
-              <div class="config-tools">
-                <app-action-menu trigger-title="Config actions" items='${JSON.stringify(menuItems).replace(/'/g, '&#39;')}'>
-                  ${icons.moreVertical?.('', 16) ?? `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>`}
-                </app-action-menu>
+          <app-card card-title="${escAttr(c.name)}" role="button" tabindex="0"
+            data-action="edit-config" data-id="${escAttr(c.id)}">
+            <app-action-menu slot="actions" trigger-title="Config actions" items='${JSON.stringify(menuItems).replace(/'/g, '&#39;')}'>
+              ${icons.moreVertical?.('', 16) ?? `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>`}
+            </app-action-menu>
+            <div slot="body">
+              <div class="config-meta">
+                ${c.is_default
+                  ? '<span class="badge badge--brand"><span class="badge__dot"></span>Default</span>'
+                  : '<span class="badge badge--success"><span class="badge__dot"></span>Active</span>'}
+                <span class="badge badge--muted">${escHtml(this.#cap(c.provider))}</span>
               </div>
+              <div class="tier-rows">
+                ${TIERS.map((t) => `
+                  <div class="tier-row">
+                    <span class="tier-label">${t.label}</span>
+                    <span class="tier-model">${escHtml(c[t.key] || c.model || '—')}</span>
+                  </div>`).join('')}
+              </div>
+              ${c.api_key_secret_name ? `
+                <div class="secret-row">
+                  <span class="tier-label">Secret</span>
+                  <span class="secret-name">${escHtml(c.api_key_secret_name)}</span>
+                </div>` : ''}
             </div>
-            <div class="config-meta">
-              ${c.is_default
-                ? '<span class="badge badge--brand"><span class="badge__dot"></span>Default</span>'
-                : '<span class="badge badge--success"><span class="badge__dot"></span>Active</span>'}
-              <span class="badge badge--muted">${escHtml(this.#cap(c.provider))}</span>
-            </div>
-            <div class="tier-rows">
-              ${TIERS.map((t) => `
-                <div class="tier-row">
-                  <span class="tier-label">${t.label}</span>
-                  <span class="tier-model">${escHtml(c[t.key] || c.model || '—')}</span>
-                </div>`).join('')}
-            </div>
-            ${c.api_key_secret_name ? `
-              <div class="secret-row">
-                <span class="tier-label">Secret</span>
-                <span class="secret-name">${escHtml(c.api_key_secret_name)}</span>
-              </div>` : ''}
-          </div>`;
+          </app-card>`;
         }).join('')}
       </div>
     `;
@@ -191,18 +189,15 @@ class LlmRouterPage extends HTMLElement {
   #providerCardHtml(p) {
     const count = p.models?.length ?? 0;
     return `
-      <div class="provider-card" data-action="new-config" data-provider="${escHtml(p.provider)}"
-        role="button" tabindex="0">
-        <div class="provider-head">
-          <span class="provider-glyph">${escHtml((p.provider || '?')[0])}</span>
-          <span class="provider-name">${escHtml(p.provider)}</span>
-          <span class="provider-add">${icons.plus('', 15)}</span>
-        </div>
-        <div class="provider-chips">
+      <app-card card-title="${escAttr(this.#cap(p.provider))}" role="button" tabindex="0"
+        data-action="new-config" data-provider="${escAttr(p.provider)}">
+        <span slot="leading" class="provider-glyph">${escHtml((p.provider || '?')[0])}</span>
+        <span slot="actions" class="provider-add">${icons.plus('', 15)}</span>
+        <div slot="body" class="provider-chips">
           <span class="badge badge--muted">Requires API key</span>
           <span class="badge badge--muted is-mono">${count} models</span>
         </div>
-      </div>
+      </app-card>
     `;
   }
 
@@ -217,88 +212,73 @@ class LlmRouterPage extends HTMLElement {
     const formDefault = c ? c.is_default : !this.#configs.length;
     return `
       <div class="form-head">
-        <button class="back-btn" data-action="back" type="button" aria-label="Back">${icons.arrowLeft('', 16)}</button>
+        <app-button class="back-btn" variant="tertiary" icon-only
+          data-action="back" aria-label="Back">${icons.arrowLeft()}</app-button>
         <h1 class="title-page">${isEdit ? 'Edit config' : 'Configure router'}</h1>
       </div>
       <form class="config-form" id="config-form">
-        <div class="field">
-          <label for="cfg-name">Settings name</label>
-          <input type="text" id="cfg-name" name="name" placeholder="Enter name" value="${escHtml(formName)}" required />
-        </div>
-        <div class="field">
-          <label for="cfg-provider">Provider</label>
-          <select id="cfg-provider" name="provider" required>
-            <option value="" disabled ${formProvider ? '' : 'selected'}>Choose Provider</option>
-            ${this.#providers.map((p) => `
-              <option value="${escHtml(p.provider)}" ${p.provider === formProvider ? 'selected' : ''}>
-                ${escHtml(this.#cap(p.provider))}
-              </option>`).join('')}
-          </select>
-        </div>
+        <app-input id="cfg-name" name="name" label="Settings name"
+          placeholder="Enter name" value="${escAttr(formName)}" required></app-input>
+        <app-select id="cfg-provider" name="provider" label="Provider"
+          placeholder="Choose Provider" required
+          options="${escAttr(JSON.stringify(this.#providers.map((p) => ({
+            value: p.provider, label: this.#cap(p.provider) }))))}"
+          value="${escAttr(formProvider)}"></app-select>
         <div>
           <h3 class="group-title">Connect provider</h3>
           <p class="group-sub">${isEdit ? 'Update the provider secret or keep the current one.' : 'Connect provider by selecting an existing secret or adding a new one.'}</p>
-          <div class="radio-row">
-            <input type="radio" id="secret-saved" name="secret-mode" value="saved" checked />
-            <label for="secret-saved">Use saved secret</label>
+          <div class="radio-group">
+            <app-radio id="secret-saved" name="secret-mode" value="saved"
+              label="Use saved secret" checked></app-radio>
+            <app-radio id="secret-new" name="secret-mode" value="new"
+              label="Add new secret"></app-radio>
           </div>
-          <div class="radio-row">
-            <input type="radio" id="secret-new" name="secret-mode" value="new" />
-            <label for="secret-new">Add new secret</label>
+          <div id="saved-secret-field">
+            <app-select id="cfg-secret" name="api_key_secret_name"
+              label="Use saved secret" placeholder="Find secrets"
+              hint="Select a secret already stored in your workspace."
+              options="${escAttr(JSON.stringify(this.#secrets.map((sec) => {
+                const name = sec.name ?? sec.key ?? '';
+                return { value: name, label: name };
+              })))}"
+              value="${escAttr(formSecret)}"></app-select>
           </div>
-          <div class="field" id="saved-secret-field">
-            <label for="cfg-secret">Use saved secret</label>
-            <select id="cfg-secret" name="api_key_secret_name">
-              <option value="" disabled ${formSecret ? '' : 'selected'}>Find secrets</option>
-              ${this.#secrets.map((s) => {
-                const name = s.name ?? s.key ?? '';
-                return `<option value="${escHtml(name)}" ${name === formSecret ? 'selected' : ''}>${escHtml(name)}</option>`;
-              }).join('')}
-            </select>
-            <div class="hint">Select a secret already stored in your workspace.</div>
-          </div>
-          <div class="field" id="new-secret-field" hidden>
-            <label for="cfg-secret-name">Secret name</label>
-            <input type="text" id="cfg-secret-name" name="new_secret_name" placeholder="e.g. OPENAI_API_KEY" />
-            <label for="cfg-secret-value" style="margin-top: var(--s-12)">Secret value</label>
-            <input type="password" id="cfg-secret-value" name="secret_value" placeholder="Paste the API key" autocomplete="off" />
-            <div class="hint">Stored encrypted; only used to call the provider.</div>
+          <div class="stacked-field" id="new-secret-field" hidden>
+            <app-input id="cfg-secret-name" name="new_secret_name" label="Secret name"
+              placeholder="e.g. OPENAI_API_KEY"></app-input>
+            <app-input id="cfg-secret-value" name="secret_value" type="password"
+              label="Secret value" placeholder="Paste the API key" autocomplete="off"
+              hint="Stored encrypted; only used to call the provider."></app-input>
           </div>
         </div>
         <div id="tier-section" ${formProvider ? '' : 'hidden'}>
           <h3 class="group-title">Reasoning levels</h3>
           <p class="group-sub">Assign a model for each reasoning level. The router automatically selects the appropriate model based on the request.</p>
-          ${TIERS.map((t) => {
-            const tierVal = c?.[t.key] || '';
-            return `
-            <div class="field" style="margin-bottom: var(--s-16)">
-              <label for="cfg-${t.key}">${t.label}</label>
-              <select id="cfg-${t.key}" name="${t.key}" data-tier-select>
-                <option value="" ${tierVal ? '' : 'selected'}>Choose model</option>
-                ${this.#modelOptions(formProvider, tierVal)}
-              </select>
-              <div class="hint">${t.hint}</div>
-            </div>`;
-          }).join('')}
+          <div class="stacked-field">
+            ${TIERS.map((t) => `
+              <app-select id="cfg-${t.key}" name="${t.key}" data-tier-select
+                label="${t.label}" hint="${escAttr(t.hint)}"
+                options="${escAttr(JSON.stringify(this.#modelList(formProvider)))}"
+                value="${escAttr(c?.[t.key] || '')}"></app-select>`).join('')}
+          </div>
         </div>
-        <div class="checkbox-row">
-          <input type="checkbox" id="cfg-default" name="is_default" ${formDefault ? 'checked' : ''} />
-          <label for="cfg-default">Make this the default routing config</label>
-        </div>
+        <app-checkbox id="cfg-default" name="is_default"
+          label="Make this the default routing config" ${formDefault ? 'checked' : ''}></app-checkbox>
         <div class="form-error" id="form-error" hidden></div>
         <div class="form-actions">
           <app-button variant="primary" type="submit">${isEdit ? 'Save changes' : 'Save config'}</app-button>
-          <button class="link-btn" data-action="back" type="button">Cancel</button>
+          <app-button variant="ghost" data-action="back">Cancel</app-button>
         </div>
       </form>
     `;
   }
 
-  #modelOptions(provider, selected = '') {
+  /** Models a provider offers, as app-select's `options` JSON. The leading
+   *  blank is a real choice, not a placeholder: a tier may be left unset. */
+  #modelList(provider) {
     const entry = this.#providers.find((p) => p.provider === provider);
-    return (entry?.models ?? [])
-      .map((m) => `<option value="${escHtml(m.model)}" ${m.model === selected ? 'selected' : ''}>${escHtml(m.model)}</option>`)
-      .join('');
+    return [{ value: '', label: 'Choose model' },
+            ...(entry?.models ?? []).map((m) => ({ value: m.model, label: m.model }))];
   }
 
   /* ── Events ────────────────────────────────────────────────────────────── */
@@ -350,13 +330,17 @@ class LlmRouterPage extends HTMLElement {
       const useNew = e.target.value === 'new';
       this.querySelector('#saved-secret-field').hidden = useNew;
       this.querySelector('#new-secret-field').hidden = !useNew;
-    } else if (e.target.id === 'cfg-provider') {
+    } else if (e.target.name === 'provider') {
       const provider = e.target.value;
       const tierSection = this.querySelector('#tier-section');
       if (tierSection) tierSection.hidden = !provider;
-      const options = this.#modelOptions(provider);
+      // Retarget every tier through the `options` attribute — assigning
+      // innerHTML would wipe the field app-select rendered.
+      // setAttribute takes the raw JSON: escaping is for template
+      // interpolation, and doing it here hands app-select `&quot;` to JSON.parse.
+      const options = JSON.stringify(this.#modelList(provider));
       this.querySelectorAll('[data-tier-select]').forEach((sel) => {
-        sel.innerHTML = `<option value="" selected>Choose model</option>${options}`;
+        sel.setAttribute('options', options);
       });
     }
   }
@@ -381,16 +365,22 @@ class LlmRouterPage extends HTMLElement {
       body.is_default = form.querySelector('#cfg-default').checked;
     }
     const errEl = this.querySelector('#form-error');
+    const nameField = form.querySelector('#cfg-name');
+    const providerField = form.querySelector('#cfg-provider');
+    // A fresh attempt clears the previous verdict on both fields, so a fixed
+    // field stops showing red the moment the next one is flagged.
+    clearFieldErrors(nameField, providerField);
+    errEl.hidden = true;
     if (!body.name) {
-      errEl.textContent = 'Settings name is required.';
-      errEl.hidden = false;
+      setFieldError(nameField, 'Settings name is required.');
       return;
     }
     if (!body.provider) {
-      errEl.textContent = 'Choose a provider.';
-      errEl.hidden = false;
+      setFieldError(providerField, 'Choose a provider.');
       return;
     }
+    // No single control owns "pick at least one model" — it spans three tier
+    // selects, so it stays a form-level message.
     if (!body.tier1_model && !body.tier2_model && !body.tier3_model) {
       errEl.textContent = 'Choose a model for at least one reasoning level.';
       errEl.hidden = false;

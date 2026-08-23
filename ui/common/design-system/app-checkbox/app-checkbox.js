@@ -14,7 +14,8 @@
  * @attr {string} state - `error` | `hover` | `focus` (visual only)
  * @attr {string} label - Label text beside the box.
  * @attr {string} hint - Subtext under the label (Figma Subtext=True).
- * @attr {string} name|value - Forwarded to the inner `<input type="checkbox">`.
+ * @attr {string} name|value|aria-label - Forwarded to the inner `<input type="checkbox">`.
+ *   Pass `aria-label` when there is no visible `label`.
  * @prop {boolean} checked - Get/set checked state.
  * @prop {boolean} indeterminate - Get/set the dash state.
  * @prop {HTMLInputElement} input - The inner input.
@@ -28,7 +29,7 @@ let uid = 0;
 
 export class AppCheckbox extends HTMLElement {
   static get observedAttributes() {
-    return ['checked', 'indeterminate', 'disabled', 'state', 'label', 'hint', 'name', 'value'];
+    return ['checked', 'indeterminate', 'disabled', 'state', 'label', 'hint', 'name', 'value', 'aria-label'];
   }
 
   #id = `app-checkbox-${++uid}`;
@@ -60,11 +61,15 @@ export class AppCheckbox extends HTMLElement {
     const label     = this.getAttribute('label');
     const hint      = this.getAttribute('hint');
     const name      = this.getAttribute('name');
+    // A control with no visible `label` still needs an accessible name, and the
+    // inner input is what an AT reads — the host is not focusable.
+    const aria      = this.getAttribute('aria-label');
     const value     = this.getAttribute('value');
 
     this.innerHTML = `
       <label class="row is-${state} is-${type}" for="${this.#id}">
         <input id="${this.#id}" type="checkbox"${name ? ` name="${name}"` : ''}${
+        aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
           value === null ? '' : ` value="${value.replace(/"/g, '&quot;')}"`}${
           checked && !indet ? ' checked' : ''}${disabled ? ' disabled' : ''}>
         <span class="control" aria-hidden="true">

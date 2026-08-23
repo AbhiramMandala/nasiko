@@ -21,15 +21,10 @@
    real component (common/design-system/app-card). */
 app-card,
 .agent-card,
-.wf-card,
-.method-card,
 .run-card,
-.tk-card,
 .acp-skill-card,
 .acp-details-card,
 .acp-mcp-card,
-.provider-card,
-.config-card,
 .info-card,
 .stat-card,
 .summary-card,
@@ -68,11 +63,7 @@ app-card,
 .card,
 app-card,
 .agent-card,
-.wf-card,
-.method-card,
-.acp-skill-card,
-.provider-card,
-.tk-card.is-clickable {
+.acp-skill-card {
   transition: border-color 0.12s ease, box-shadow 0.12s ease,
     transform 0.12s ease;
 

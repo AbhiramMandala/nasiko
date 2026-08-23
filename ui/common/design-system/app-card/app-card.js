@@ -25,6 +25,7 @@
  * @attr {string} name - Display name (required). `card-title` is accepted as an
  *   alias, because `title` is a reserved global attribute and the replaced
  *   card used that spelling — kept so call sites did not all have to change.
+ * @attr {string} card-title - Alias for `name`, kept for the replaced card's call sites.
  * @attr {string} version - Rendered after the name; a leading "v" is added if absent
  * @attr {string} status - `running` | `error`/`failed` | `deploying`/`starting` | anything else → stopped
  * @attr {string} description - Body copy, clamped to exactly two lines
@@ -41,12 +42,23 @@
  * @attr {boolean} loading - Renders the shimmer placeholder instead of content. The
  *   skeleton lives here, not in the consuming page, so the card's geometry has exactly
  *   one definition and the loading and loaded states cannot drift apart.
+ * @slot leading - A media box (an avatar, a provider glyph) at the leading edge
+ *   of the title row, before the status dot.
+ * @slot actions - Header controls (an action menu, an icon button) pinned to the
+ *   trailing edge of the title row.
+ * @slot body - Replaces the description/error/deploying body with the consumer's
+ *   own content, for cards whose middle is not a paragraph (the LLM-router
+ *   config card's tier rows, say).
  * @slot footer - Replaces the default Details/Chat pair with the consumer's own
  *   actions (lifecycle buttons, a logs link). Captured once and cached: render()
  *   relocates these nodes and then rewrites innerHTML, so re-querying for them
  *   on a later render would find nothing and silently destroy them.
- * @fires — none. The whole card navigates to the details href on click or Enter;
- *          the two footer links keep their own hrefs and are not intercepted.
+ *   Slotted nodes are captured once and cached: render() relocates them and then
+ *   rewrites innerHTML, so re-querying on a later render would find nothing.
+ * @fires — none. A card with an href navigates to it on click or Enter; the two
+ *          footer links keep their own hrefs and are not intercepted. A card
+ *          without one only needs `role`/`tabindex` from the consumer, and Enter
+ *          is forwarded as a click so a delegated handler sees it.
  */
 import styles from './app-card.css' with { type: 'css' };
 import '../app-tag/app-tag.js';
@@ -72,8 +84,8 @@ export class AppCard extends HTMLElement {
   }
 
   #initialized = false;
-  /** Slotted footer children, captured on first render. See the `footer` slot note. */
-  #footerSlot = null;
+  /** Slotted children by slot name, captured on first render. See the slot notes. */
+  #slots = new Map();
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -101,6 +113,10 @@ export class AppCard extends HTMLElement {
     if (e.key !== 'Enter' || e.target.closest('a[href], button')) return;
     const href = this.#cardHref();
     if (href) routerNavigate(href);
+    // No href: the consumer owns activation (delegated click on a data-action).
+    // A role means the card is interactive, so Enter must reach that handler —
+    // a div with role="button" gets no synthetic click from the browser.
+    else if (this.hasAttribute('role')) this.click();
   };
 
   #id() { return this.getAttribute('agent-id') || ''; }
@@ -114,10 +130,13 @@ export class AppCard extends HTMLElement {
   /** Whole-card navigation target. `href` wins; otherwise the details href. */
   #cardHref() { return this.getAttribute('href') || this.#detailsHref(); }
 
-  /** Footer children, captured once — never re-queried. */
-  #footer() {
-    this.#footerSlot ??= [...this.querySelectorAll(':scope > [slot="footer"]')];
-    return this.#footerSlot;
+  /** One slot's children, captured once — never re-queried, because render()
+   *  rewrites innerHTML and a later query would find nothing. */
+  #slotted(name) {
+    if (!this.#slots.has(name)) {
+      this.#slots.set(name, [...this.querySelectorAll(`:scope > [slot="${name}"]`)]);
+    }
+    return this.#slots.get(name);
   }
 
   #chatHref() {
@@ -144,6 +163,12 @@ export class AppCard extends HTMLElement {
   }
 
   render() {
+    // Captured before any innerHTML write below can destroy them.
+    const leadingNodes = this.#slotted('leading');
+    const actionNodes = this.#slotted('actions');
+    const bodyNodes = this.#slotted('body');
+    const footerNodes = this.#slotted('footer');
+
     if (this.hasAttribute('loading')) {
       this.removeAttribute('role');
       this.removeAttribute('tabindex');
@@ -161,10 +186,15 @@ export class AppCard extends HTMLElement {
     }
     this.removeAttribute('aria-busy');
 
-    // A loaded card is a link target in its own right, matching what
-    // agents-page put on the div it used to build.
-    this.setAttribute('role', 'link');
-    if (!this.hasAttribute('tabindex')) this.setAttribute('tabindex', '0');
+    // A loaded card that navigates is a link target in its own right, matching
+    // what agents-page put on the div it used to build. A card with no href
+    // isn't one — it keeps whatever role the consumer set (or none).
+    if (this.#cardHref() && !this.hasAttribute('role')) {
+      this.setAttribute('role', 'link');
+    }
+    if (this.hasAttribute('role') && !this.hasAttribute('tabindex')) {
+      this.setAttribute('tabindex', '0');
+    }
 
     const name = this.#name();
     const status = this.getAttribute('status') || '';
@@ -193,10 +223,19 @@ export class AppCard extends HTMLElement {
     const errorTitle = this.getAttribute('error-title') || '';
     const errorBody = this.getAttribute('error-body') || '';
 
-    this.setAttribute('aria-label', `Open ${name} details`);
+    // Fallback only. A card whose href goes somewhere other than the agent's
+    // details page (the orchestrator's suggestion cards navigate to chat) says
+    // so itself, and clobbering that label announced the wrong destination.
+    if (this.#cardHref() && !this.hasAttribute('aria-label')) {
+      this.setAttribute('aria-label', `Open ${name} details`);
+    }
 
     let body;
-    if (isError && (errorTitle || errorBody)) {
+    // A slotted body wins over every attribute-driven state: the consumer has
+    // supplied the whole middle of the card.
+    if (bodyNodes.length) {
+      body = '<div class="card-body"></div>';
+    } else if (isError && (errorTitle || errorBody)) {
       body = `${errorTitle ? `<p class="card-state-title is-error">${escHtml(errorTitle)}</p>` : ''}
          <div class="card-desc">${escHtml(errorBody)}</div>`;
     } else if (isPending) {
@@ -220,27 +259,34 @@ export class AppCard extends HTMLElement {
     }
 
     // A consumer-supplied footer wins over the default Details/Chat pair.
-    const footerNodes = this.#footer();
     const defaultFoot = `
       ${detailsHref ? `<a class="card-link" href="${escAttr(detailsHref)}">Details</a>` : ''}
       ${chatHref ? `<a class="card-chat-btn" href="${escAttr(chatHref)}">Chat ${icons.arrowUpRight('', 13)}</a>` : ''}`;
 
     this.innerHTML = `
       <div class="card-top">
+        ${leadingNodes.length ? '<span class="card-leading"></span>' : ''}
         ${status ? `<span class="status-dot ${statusClass(status)}" title="${escAttr(status)}"></span>` : ''}
         <span class="card-name">${escHtml(name)}</span>
         ${version ? `<span class="card-version">${escHtml(version)}</span>` : ''}
+        ${actionNodes.length ? '<div class="card-actions"></div>' : ''}
       </div>
-      <div class="card-tags">${tags}</div>
+      ${tags ? `<div class="card-tags">${tags}</div>` : ''}
       ${body}
       ${footerNodes.length || defaultFoot.trim()
         ? `<div class="card-foot">${footerNodes.length ? '' : defaultFoot}</div>`
         : ''}`;
 
-    // An empty footer would still paint its hairline top border, so the row is
-    // omitted entirely when there is neither a slotted action nor a default link.
-    const foot = this.querySelector('.card-foot');
-    if (foot && footerNodes.length) footerNodes.forEach((n) => foot.appendChild(n));
+    // Slotted nodes move into the freshly written markup. An empty footer would
+    // still paint its hairline top border, so that row is omitted entirely when
+    // there is neither a slotted action nor a default link.
+    for (const [sel, nodes] of [['.card-leading', leadingNodes],
+                                ['.card-actions', actionNodes],
+                                ['.card-body', bodyNodes],
+                                ['.card-foot', footerNodes]]) {
+      const host = nodes.length ? this.querySelector(sel) : null;
+      if (host) nodes.forEach((n) => host.appendChild(n));
+    }
   }
 }
 

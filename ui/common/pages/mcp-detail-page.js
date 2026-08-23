@@ -1,12 +1,16 @@
 import { icons } from '../utils/icons.js';
-import { escHtml } from '../utils/escape.js';
+import { escAttr, escHtml } from '../utils/escape.js';
 import { fetchApi } from '../services/api.js';
 import { showToast } from '../utils/toast.js';
 import { confirmDialog } from '../design-system/app-modal/app-modal.js';
-import { attachSlidingIndicator } from '../utils/tab-indicator.js';
 import { navigate } from '../core/router.js';
 import styles from './mcp-detail-page.css' with { type: 'css' };
+import '../design-system/app-button/app-button.js';
+import '../design-system/app-input/app-input.js';
+import '../design-system/app-select/app-select.js';
 import '../design-system/app-skeleton/app-skeleton.js';
+import '../design-system/app-switch/app-switch.js';
+import '../design-system/app-tabs/app-tabs.js';
 import '../design-system/auto-complete/auto-complete.js';
 import { call } from '../core/data-sources.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -18,13 +22,6 @@ const AUTH_LABELS = {
   oauth2: 'OAuth 2.1',
   url_param: 'URL param',
 };
-
-const TABS = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'access', label: 'Access & security' },
-  { key: 'logs', label: 'Logs', buildOnly: true },
-  { key: 'settings', label: 'Settings', ownerOnly: true },
-];
 
 class McpDetailPage extends HTMLElement {
   #initialized = false;
@@ -107,7 +104,6 @@ class McpDetailPage extends HTMLElement {
     const st = this.#connectorStatus(c);
     const isOwner = !!c.is_owner;
     const isBuild = c.source_kind === 'uploaded_build';
-    const tabs = TABS.filter((t) => (!t.ownerOnly || isOwner) && (!t.buildOnly || isBuild));
 
     this.innerHTML = `
       <div class="mdp-page">
@@ -123,14 +119,12 @@ class McpDetailPage extends HTMLElement {
           ${c.description ? '<p class="mdp-description">' + escHtml(c.description) + '</p>' : ''}
         </div>
 
-        <nav class="mdp-tabs">
-          ${tabs.map((t, i) => '<button class="mdp-tab' + (i === 0 ? ' is-active' : '') + '" data-tab="' + t.key + '">' + t.label + '</button>').join('')}
-        </nav>
-
-        ${this.#overviewPanelHtml(c)}
-        ${this.#accessPanelHtml()}
-        ${isBuild ? this.#logsPanelHtml() : ''}
-        ${isOwner ? this.#settingsPanelHtml() : ''}
+        <app-tabs>
+          ${this.#overviewPanelHtml(c)}
+          ${this.#accessPanelHtml()}
+          ${isBuild ? this.#logsPanelHtml() : ''}
+          ${isOwner ? this.#settingsPanelHtml() : ''}
+        </app-tabs>
       </div>
     `;
 
@@ -143,15 +137,8 @@ class McpDetailPage extends HTMLElement {
 
   #wireTabs() {
     let logsLoaded = false;
-    attachSlidingIndicator(this.querySelector('.mdp-tabs'), '.mdp-tab', '.is-active');
-    this.querySelector('.mdp-tabs').addEventListener('click', (e) => {
-      const tab = e.target.closest('.mdp-tab');
-      if (!tab) return;
-      this.querySelectorAll('.mdp-tab').forEach((t) => t.classList.remove('is-active'));
-      this.querySelectorAll('.mdp-panel').forEach((p) => p.classList.remove('is-active'));
-      tab.classList.add('is-active');
-      this.querySelector('[data-panel="' + tab.dataset.tab + '"]')?.classList.add('is-active');
-      if (tab.dataset.tab === 'logs' && !logsLoaded) {
+    this.querySelector('app-tabs').addEventListener('tab-change', (e) => {
+      if (e.detail.key === 'logs' && !logsLoaded) {
         logsLoaded = true;
         this.#loadLogs();
       }
@@ -184,7 +171,7 @@ class McpDetailPage extends HTMLElement {
       ['Created', c.created_at ? new Date(c.created_at).toLocaleString() : '--'],
     ];
     return `
-      <div class="mdp-panel is-active" data-panel="overview">
+      <div class="mdp-panel" data-tab="overview" data-label="Overview">
         <div class="mdp-meta-grid">
           ${items.map(([label, value]) => '<div class="mdp-meta-item"><span class="mdp-meta-label">' + escHtml(label) + '</span><span class="mdp-meta-value">' + escHtml(value) + '</span></div>').join('')}
         </div>
@@ -210,7 +197,7 @@ class McpDetailPage extends HTMLElement {
 
   #logsPanelHtml() {
     return `
-      <div class="mdp-panel" data-panel="logs">
+      <div class="mdp-panel" data-tab="logs" data-label="Logs">
         <div class="mdp-section">
           <pre class="mdp-logs-pre" id="mdp-logs-pre">Loading logs...</pre>
         </div>
@@ -233,13 +220,15 @@ class McpDetailPage extends HTMLElement {
         <div class="mdp-cred-row">
           <span class="mdp-status-dot ${connected ? 'is-ok' : 'is-off'}"></span>
           <span>${connected ? 'Credential set' : 'No credential set'}</span>
-          ${connected ? '<button class="mdp-btn-ghost danger" id="mdp-cred-remove">Remove</button>' : ''}
+          ${connected ? '<app-button variant="danger-secondary" size="sm" id="mdp-cred-remove">Remove</app-button>' : ''}
         </div>
         <div class="mdp-cred-form">
-          <input type="password" id="mdp-cred-value" class="mdp-input" placeholder="${c.auth_type === 'basic' ? 'username:password' : 'API key / token'}" />
-          <button class="mdp-btn-dark" id="mdp-cred-save">${connected ? 'Replace' : 'Save'}</button>
+          <app-input type="password" id="mdp-cred-value" class="mdp-cred-input"
+            aria-label="Credential"
+            placeholder="${c.auth_type === 'basic' ? 'username:password' : 'API key / token'}"></app-input>
+          <app-button variant="primary" size="sm" id="mdp-cred-save">${connected ? 'Replace' : 'Save'}</app-button>
         </div>
-        <p class="mdp-form-error" id="mdp-cred-error" hidden></p>
+        <p class="form-error" id="mdp-cred-error" hidden></p>
       </div>`;
     section.querySelector('#mdp-cred-save').addEventListener('click', async () => {
       const value = section.querySelector('#mdp-cred-value').value.trim();
@@ -282,10 +271,10 @@ class McpDetailPage extends HTMLElement {
           <span class="mdp-status-dot ${status.authorized ? 'is-ok' : 'is-off'}"></span>
           <span>${status.authorized ? 'Authorized' + escHtml(expiry) : 'Not authorized'}</span>
           ${status.authorized
-            ? '<button class="mdp-btn-ghost danger" id="mdp-oauth-revoke">Revoke</button>'
-            : '<button class="mdp-btn-dark" id="mdp-oauth-authorize">' + icons.externalLink('', 14) + ' Authorize</button>'}
+            ? '<app-button variant="danger-secondary" size="sm" id="mdp-oauth-revoke">Revoke</app-button>'
+            : '<app-button variant="primary" size="sm" id="mdp-oauth-authorize">' + icons.externalLink() + ' Authorize</app-button>'}
         </div>
-        <p class="mdp-form-error" id="mdp-oauth-error" hidden></p>
+        <p class="form-error" id="mdp-oauth-error" hidden></p>
       </div>`;
     section.querySelector('#mdp-oauth-authorize')?.addEventListener('click', async () => {
       const err = section.querySelector('#mdp-oauth-error');
@@ -311,7 +300,7 @@ class McpDetailPage extends HTMLElement {
 
   #accessPanelHtml() {
     return `
-      <div class="mdp-panel" data-panel="access">
+      <div class="mdp-panel" data-tab="access" data-label="Access &amp; security">
         <div class="mdp-section">
           <h2 class="mdp-section-title">Agent access</h2>
           <p class="mdp-muted">Select an agent to manage its access to this connector and set per-tool allow/block rules</p>
@@ -373,13 +362,11 @@ class McpDetailPage extends HTMLElement {
     const enabled = match ? !!match.enabled : false;
     body.innerHTML = `
       <div class="mdp-access-row">
-        <label class="mdp-switch">
-          <input type="checkbox" class="mdp-access-toggle" ${enabled ? 'checked' : ''} />
-          <span class="mdp-slider"></span>
-        </label>
+        <app-switch class="mdp-access-toggle" aria-label="Connector access"
+          ${enabled ? 'checked' : ''}></app-switch>
         <span>${enabled ? 'Enabled' : 'Disabled'}</span>
       </div>
-      ${enabled ? '<button class="mdp-btn-ghost" id="mdp-tools-toggle">' + icons.chevronDown('', 14) + ' Tool rules</button><div id="mdp-tools-editor" hidden></div>' : ''}`;
+      ${enabled ? '<app-button variant="ghost" size="sm" id="mdp-tools-toggle">' + icons.chevronDown() + ' Tool rules</app-button><div id="mdp-tools-editor" hidden></div>' : ''}`;
 
     body.querySelector('.mdp-access-toggle')?.addEventListener('change', async (e) => {
       try {
@@ -408,7 +395,7 @@ class McpDetailPage extends HTMLElement {
         const resp = await call('fetchAgentMcpConnectorTools', this.#selectedAgentId, this.#connectorId);
         this.#agentTools.set(this.#connectorId, resp?.data?.tools || []);
       } catch (e) {
-        editor.innerHTML = '<p class="mdp-form-error">Failed to load tools: ' + escHtml(e.message) + '</p>';
+        editor.innerHTML = '<p class="form-error">Failed to load tools: ' + escHtml(e.message) + '</p>';
         return;
       }
     }
@@ -419,11 +406,11 @@ class McpDetailPage extends HTMLElement {
     }
     editor.innerHTML = `
       <div class="mdp-tools-list">
-        ${tools.map((t, i) => '<div class="mdp-tool-line"><div class="mdp-tool-info"><span class="mdp-tool-info-name">' + escHtml(t.name) + '</span>' + (t.description ? '<span class="mdp-tool-info-desc">' + escHtml(t.description) + '</span>' : '') + '</div><select class="mdp-tool-stance" data-index="' + i + '"><option value="allow"' + (t.stance !== 'block' ? ' selected' : '') + '>Allow</option><option value="block"' + (t.stance === 'block' ? ' selected' : '') + '>Block</option></select></div>').join('')}
+        ${tools.map((t, i) => '<div class="mdp-tool-line"><div class="mdp-tool-info"><span class="mdp-tool-info-name">' + escHtml(t.name) + '</span>' + (t.description ? '<span class="mdp-tool-info-desc">' + escHtml(t.description) + '</span>' : '') + '</div><app-select class="mdp-tool-stance" size="sm" data-index="' + i + '" aria-label="Tool rule for ' + escAttr(t.name) + '" options=\'[{"value":"allow","label":"Allow"},{"value":"block","label":"Block"}]\' value="' + (t.stance === 'block' ? 'block' : 'allow') + '"></app-select></div>').join('')}
       </div>
       <div class="mdp-tools-actions">
         <span class="mdp-save-status" id="mdp-save-status" hidden></span>
-        <button class="mdp-btn-dark" id="mdp-save-rules">Save rules</button>
+        <app-button variant="primary" size="sm" id="mdp-save-rules">Save rules</app-button>
       </div>`;
     editor.querySelector('#mdp-save-rules').addEventListener('click', async () => {
       const rules = [...editor.querySelectorAll('.mdp-tool-stance')].map((sel) => ({
@@ -448,11 +435,11 @@ class McpDetailPage extends HTMLElement {
 
   #settingsPanelHtml() {
     return `
-      <div class="mdp-panel" data-panel="settings">
+      <div class="mdp-panel" data-tab="settings" data-label="Settings">
         <div class="mdp-section mdp-danger">
           <h3 class="mdp-danger-title">Danger zone</h3>
           <p class="mdp-muted">Deleting this connector removes it and revokes all agent access</p>
-          <button class="mdp-btn-danger" id="mdp-delete-btn">${icons.trash('', 14)} Delete connector</button>
+          <app-button variant="danger-secondary" size="sm" id="mdp-delete-btn">${icons.trash()} Delete connector</app-button>
         </div>
       </div>`;
   }

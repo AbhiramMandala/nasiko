@@ -52,7 +52,12 @@ export class AppActionMenu extends HTMLElement {
     });
 
     this.querySelectorAll('.aam-item').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
+        // Same reason the trigger stops here: the menu usually sits inside a
+        // clickable card, and the raw click would reach that card's handler and
+        // open it alongside whatever action was picked. `action-select` is a
+        // separate event and still bubbles.
+        e.stopPropagation();
         this.#close();
         this.dispatchEvent(new CustomEvent('action-select', {
           bubbles: true,

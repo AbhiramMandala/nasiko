@@ -2,24 +2,9 @@
 
 @scope (add-agent-github-page) {
 
-  .back-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: var(--control-h-sm);
-    padding: 0 var(--s-8);
-    margin-bottom: var(--s-16);
-    border-radius: var(--r-6);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--color-text-muted);
-    text-decoration: none;
-    transition: background var(--transition-fast), color var(--transition-fast);
-  }
-  .back-link:hover {
-    background: var(--bg-input);
-    color: var(--color-text-main);
-  }
+  /* The control is an <app-button variant="tertiary">; only its gap to the
+     title below is the page's. */
+  .back-btn { margin-bottom: var(--s-16); }
 
   .page-head { margin-bottom: var(--s-16); }
 
@@ -98,13 +83,14 @@
     align-items: center;
     gap: 6px;
   }
-  .connect-status-header svg,
-  .connect-status-header .gh-icon {
+  .connect-status-header svg {
     width: 16px;
     height: 16px;
     flex-shrink: 0;
-    fill: currentColor;
   }
+  /* Only the GitHub mark is a filled path. The connected check comes from
+     icons.js, which draws stroked outlines — filling it painted a solid blob. */
+  .connect-status-header .gh-icon { fill: currentColor; }
   .connect-status-title {
     font-weight: 600;
     font-size: var(--font-size-sm);
@@ -125,35 +111,12 @@
     justify-content: flex-end;
   }
 
-  /* Search */
-  .search-wrap {
-    position: relative;
+  /* Search — the box is an <app-search>; only its slot is sized here. */
+  .repo-search {
+    display: block;
     max-width: 400px;
-
-    & svg {
-      position: absolute;
-      left: 12px;
-      top: 50%;
-      translate: 0 -50%;
-      width: 16px;
-      height: 16px;
-      color: var(--color-text-muted);
-      pointer-events: none;
-    }
+    --search-bg: var(--bg-input);
   }
-
-  .search-box {
-    width: 100%;
-    height: var(--control-h-md);
-    padding: 0 var(--s-12) 0 36px;
-    border: none;
-    border-radius: var(--r-8);
-    background: var(--bg-input);
-    font-size: var(--font-size-sm);
-    color: var(--color-text-main);
-  }
-  .search-box:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-  .search-box::placeholder { color: var(--color-text-muted); }
 
   /* Repo list */
   .repo-list {
@@ -194,29 +157,17 @@
     color: var(--color-text-muted);
     white-space: nowrap;
   }
-
-  /* Radio indicator */
-  .repo-radio {
-    flex-shrink: 0;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    border: 2px solid var(--color-text-muted);
-    transition: border-color var(--transition-fast), background var(--transition-fast);
-    position: relative;
+  /* "Connect GitHub…" / "No repositories found." — a row, not a repo. */
+  .repo-note {
+    justify-content: center;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
   }
-  .repo-radio[data-selected="true"] {
-    border-color: var(--color-primary);
-  }
-  .repo-radio[data-selected="true"]::after {
-    content: '';
-    position: absolute;
-    top: 3px;
-    left: 3px;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--color-primary);
+  .repo-load-error {
+    margin: 0;
+    padding: var(--s-12) var(--s-16);
+    color: var(--color-error);
+    font-size: var(--font-size-sm);
   }
 
   /* Config fields (step 2) */
@@ -232,28 +183,25 @@
     .config-fields { grid-template-columns: 1fr; }
   }
 
-  .field { display: flex; flex-direction: column; gap: 4px; }
-  .field-label {
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--color-text-main);
-  }
-  .field-input {
-    height: var(--control-h-md);
-    padding: 0 var(--s-12);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: var(--bg-input);
-    font-size: var(--font-size-sm);
-    color: var(--color-text-main);
-  }
-  .field-input:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-  .field-input::placeholder { color: var(--color-text-muted); }
-  .field-hint {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-  }
-
   /* Clone button (step 3) */
   .clone-btn { margin-top: var(--s-8); }
+
+  /* "That version already exists" — shown above the clone button, with the
+     bump-and-retry action, when the build worker rejects the upload. */
+  .version-conflict-warning {
+    margin: var(--s-8) 0;
+    padding: var(--s-8) var(--s-12);
+    border: 1px solid var(--color-warning-border);
+    border-radius: var(--r-8);
+    background: var(--color-warning-bg);
+    color: var(--color-warning);
+    font-size: var(--font-size-sm);
+
+    & p { margin: 0 0 var(--s-8); }
+  }
+  .version-conflict-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-8);
+  }
 }

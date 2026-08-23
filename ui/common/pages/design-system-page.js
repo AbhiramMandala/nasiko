@@ -35,6 +35,7 @@ import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/design-system/app-stack/app-stack.js';
 import '/common/design-system/app-stat-card/app-stat-card.js';
+import '/common/design-system/app-stat-row/app-stat-row.js';
 import '/common/design-system/app-switch/app-switch.js';
 import '/common/design-system/app-table/app-table.js';
 import '/common/design-system/app-tabs/app-tabs.js';
@@ -589,6 +590,32 @@ const SPECS = [
   <app-stat-card label="p95 latency" value="840ms" delta="0%" trend="neutral"></app-stat-card>
   <app-stat-card label="Loading" loading></app-stat-card>
 </app-grid>`,
+  },
+  {
+    group: 'Data display',
+    tag: 'app-stat-row',
+    blurb: 'The page-header metric strip: hairline-separated columns, one row of '
+      + 'headline numbers. Takes the whole row as JSON \u2014 optional `sub` caption '
+      + 'and `pct` for a severity meter. `loading="n"` reserves n skeleton cells. '
+      + 'No per-metric colour: every value in every strip looks the same.',
+    demo: `<app-stack gap="lg">
+  <app-stat-row items='[
+    {"label":"Total cost","value":"$0.000","sub":"Based on 0 operations"},
+    {"label":"Total tokens","value":"0","sub":"Across all agents"},
+    {"label":"Total operations","value":"0","sub":"0 in the last 24 hours"},
+    {"label":"Active agents","value":"0","sub":"16 configured \u00b7 4402.3 agent hrs"}]'></app-stat-row>
+  <app-stat-row items='[
+    {"label":"CPU in use","value":"2%","sub":"3.2% of 2 cores","pct":2},
+    {"label":"Memory in use","value":"43%","sub":"1.6 GB of 3.7 GB","pct":43},
+    {"label":"Disk in use","value":"78%","sub":"34 GB of 44 GB","pct":78},
+    {"label":"Swap","value":"95%","sub":"1.9 GB of 2.0 GB","pct":95}]'></app-stat-row>
+  <span class="demo-note">pct draws the meter \u2014 ok / warn (70) / crit (90).</span>
+  <app-stat-row items='[
+    {"label":"Router configs","value":"1"},
+    {"label":"Providers connected","value":"1"},
+    {"label":"Default config","value":"testing"}]'></app-stat-row>
+  <app-stat-row loading="4"></app-stat-row>
+</app-stack>`,
   },
   {
     group: 'Data display',

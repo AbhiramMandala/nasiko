@@ -1,4 +1,6 @@
-import '/common/features/smart-table.js';
+import '/common/design-system/app-table/app-table.js';
+import '/common/design-system/app-badge/app-badge.js';
+import { escAttr, escHtml } from '/common/utils/escape.js';
 
 import styles from './builds-page.css' with { type: 'css' };
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
@@ -9,8 +11,10 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const STATUS_VARIANTS = { success: 'success', building: 'info', failed: 'error', queued: 'neutral', cancelled: 'warning' };
 
+// The design system's badge, not the legacy `.badge` utility class it used to
+// hand-roll: same pill, but the dot comes from the component's own `dot` rule.
 const statusPill = (v) =>
-  v ? `<span class="badge badge--${STATUS_VARIANTS[v] || 'neutral'}"><span class="badge__dot"></span>${v}</span>` : '';
+  v ? `<app-badge variant="${STATUS_VARIANTS[v] || 'neutral'}" dot>${escHtml(v)}</app-badge>` : '';
 
 class BuildsPage extends HTMLElement {
   #initialized = false;
@@ -26,24 +30,24 @@ class BuildsPage extends HTMLElement {
           <p class="page-sub">Agent image build history and progress.</p>
         </div>
       </header>
-      <smart-table
+      <app-table
         id="builds-table"
         data-fn="fetchBuilds"
         search
         search-placeholder="Search builds by agent or image..."
         limit="15"
-      ></smart-table>
+      ></app-table>
     `;
 
     const table = this.querySelector('#builds-table');
     table.columns = [
-      { key: 'id', label: 'Build', width: '12%', render: (v) => v ? `<a class="cell-id" href="/build?id=${v}">#${v.slice(0, 8)}</a>` : '' },
-      { key: 'version_tag', label: 'Version', width: '12%', render: (v) => v ? `<span class="cell-num">${v}</span>` : '—' },
-      { key: 'image_reference', label: 'Image', width: '26%', render: (v) => v ? `<span class="cell-image">${v}</span>` : '—' },
+      { key: 'id', label: 'Build', width: '12%', render: (v) => v ? `<a class="cell-id" href="/build?id=${escAttr(v)}">#${escHtml(String(v).slice(0, 8))}</a>` : '' },
+      { key: 'version_tag', label: 'Version', width: '12%', render: (v) => v ? `<span class="cell-num">${escHtml(v)}</span>` : '—' },
+      { key: 'image_reference', label: 'Image', width: '26%', render: (v) => v ? `<span class="cell-image">${escHtml(v)}</span>` : '—' },
       { key: 'status', label: 'Status', width: '13%', render: statusPill },
-      { key: 'github_url', label: 'Source', width: '13%', render: (v) => v ? `<a class="cell-action" href="${v}" target="_blank" rel="noopener">repo ↗</a>` : '—' },
-      { key: 'created_at', label: 'Started', width: '16%', render: (v) => v ? `<span class="cell-num">${new Date(v).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>` : '—' },
-      { key: 'id', label: '', width: '8%', render: (v) => v ? `<a class="cell-action" href="/build?id=${v}">Logs →</a>` : '' },
+      { key: 'github_url', label: 'Source', width: '13%', render: (v) => v ? `<a class="cell-action" href="${escAttr(v)}" target="_blank" rel="noopener">repo ↗</a>` : '—' },
+      { key: 'created_at', label: 'Started', width: '16%', render: (v) => v ? `<span class="cell-num">${escHtml(new Date(v).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</span>` : '—' },
+      { key: 'id', label: '', width: '8%', render: (v) => v ? `<a class="cell-action" href="/build?id=${escAttr(v)}">Logs →</a>` : '' },
     ];
   }
 }

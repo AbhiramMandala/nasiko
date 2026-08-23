@@ -14,6 +14,8 @@ import styles from './resources-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-stat-row/app-stat-row.js';
+import '/common/design-system/app-badge/app-badge.js';
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
@@ -54,9 +56,7 @@ class ResourcesPage extends HTMLElement {
         <div class="head-meta" id="head-meta"></div>
       </div>
       <div id="banner"></div>
-      <div class="kpi-strip" id="kpi-strip" aria-busy="true">
-        ${this.#kpiSkeleton()}
-      </div>
+      <app-stat-row id="kpi-strip" loading="4"></app-stat-row>
       <div class="groups" id="groups">
         <section class="pane"><div class="pane-empty" aria-busy="true"><app-skeleton lines="4"></app-skeleton></div></section>
       </div>
@@ -69,17 +69,6 @@ class ResourcesPage extends HTMLElement {
   disconnectedCallback() {
     clearInterval(this.#pollTimer);
     this.#pollTimer = null;
-  }
-
-  #kpiSkeleton() {
-    return Array.from({ length: 4 })
-      .map(
-        () => `<div class="kpi">
-          <div class="skel-card__line" style="width:80px;"></div>
-          <div class="skel-card__line" style="height:20px;width:110px;"></div>
-        </div>`,
-      )
-      .join('');
   }
 
   async #load() {
@@ -106,9 +95,8 @@ class ResourcesPage extends HTMLElement {
       // KPI strip still draws its two hairlines (reads as a broken render), and a
       // stale "Updated <time>" chip claims a reading we no longer have.
       const strip = this.querySelector('#kpi-strip');
-      strip.innerHTML = '';
+      strip.items = [];
       strip.hidden = true;
-      strip.removeAttribute('aria-busy');
       this.querySelector('#banner').innerHTML = '';
       this.querySelector('#head-meta').innerHTML = '';
       this.querySelector('#groups').innerHTML = `
@@ -134,7 +122,7 @@ class ResourcesPage extends HTMLElement {
     const t = new Date(at);
     const label = Number.isNaN(t.getTime()) ? '' : t.toLocaleTimeString();
     this.querySelector('#head-meta').innerHTML = label
-      ? `<span class="chip">${icons.clock('', 12)} Updated ${escHtml(label)}</span>`
+      ? `<app-badge variant="neutral">${icons.clock('', 12)} Updated ${escHtml(label)}</app-badge>`
       : '';
   }
 
@@ -203,19 +191,7 @@ class ResourcesPage extends HTMLElement {
       },
     ];
 
-    const strip = this.querySelector('#kpi-strip');
-    strip.removeAttribute('aria-busy');
-    strip.innerHTML = kpis
-      .map(
-        (k) => `
-        <div class="kpi">
-          <span class="kpi-label">${escHtml(k.label)}</span>
-          <span class="kpi-value">${escHtml(k.value)}</span>
-          ${k.sub ? `<span class="kpi-sub">${escHtml(k.sub)}</span>` : ''}
-          ${k.pct === null ? '' : this.#meterHtml(k.pct)}
-        </div>`,
-      )
-      .join('');
+    this.querySelector('#kpi-strip').items = kpis;
   }
 
   #renderGroups() {
@@ -260,7 +236,7 @@ class ResourcesPage extends HTMLElement {
       <div class="row">
         <div class="cell-name">
           <span class="name-text" title="${escHtml(c.name)}">${escHtml(c.display_name || c.name)}</span>
-          <span class="chip ${running ? 'is-running' : 'is-stopped'}">${escHtml(c.state || 'unknown')}</span>
+          <app-badge variant="${running ? 'success' : 'error'}">${escHtml(c.state || 'unknown')}</app-badge>
         </div>
         <div class="metric">
           <span class="metric-value">${known ? this.#fmtCpu(cpuPct) : 'not reporting'}</span>

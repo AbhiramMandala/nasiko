@@ -12,9 +12,13 @@ import { showToast } from '/common/utils/toast.js';
 import { confirmDialog } from '/common/design-system/app-modal/app-modal.js';
 import { timeAgo, formatDisplay } from '/common/utils/date-utils.js';
 import '/common/design-system/app-action-menu/app-action-menu.js';
+import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-card/app-card.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-tag/app-tag.js';
 
 import styles from './workflows-page.css' with { type: 'css' };
-import { escHtml } from '/common/utils/escape.js';
+import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
@@ -47,19 +51,15 @@ class WorkflowsPage extends HTMLElement {
           <h1 class="title-page">Workflows</h1>
           <p class="page-sub">Reusable multi-agent sequences you can run on demand.</p>
         </div>
-        <a class="new-wf-btn" href="/workflow-new">Create workflow ${icons.plus('', 13)}</a>
+        <app-button variant="primary" size="sm" href="/workflow-new">Create workflow ${icons.plus()}</app-button>
       </header>
       <div class="grid" id="wf-grid">${this.#skeletonCards()}</div>
     `;
 
-    const grid = this.querySelector('#wf-grid');
-    grid.addEventListener('click', (e) => {
-      if (e.target.closest('app-action-menu') || e.target.closest('a')) return;
-      const card = e.target.closest('.wf-card[data-id]');
-      if (card) routerNavigate(`/workflow?id=${encodeURIComponent(card.dataset.id)}`);
-    });
-    grid.addEventListener('action-select', (e) => {
-      const card = e.target.closest('.wf-card[data-id]');
+    // No delegated click handler: <app-card href> navigates itself, on click and
+    // on Enter, and leaves the action menu's own button alone.
+    this.querySelector('#wf-grid').addEventListener('action-select', (e) => {
+      const card = e.target.closest('app-card[data-id]');
       if (card) this.#onAction(e.detail.id, card.dataset.id);
     });
 
@@ -126,33 +126,38 @@ class WorkflowsPage extends HTMLElement {
     return { cls: 'is-running', text: 'Running now' };
   }
 
+  /** A workflow is an entity, so it gets the one card component. The meta pills
+   *  are the card's `tags` (<app-tag> chips), the description its two-line clamp;
+   *  the footer keeps what the card has no notion of — which agents the sequence
+   *  runs and how the last run went. */
   #card(wf) {
     const steps = wf.maf_json?.steps || [];
     const agents = [...new Set(steps.map((s) => s.agent_name).filter(Boolean))];
     const description = wf.description || wf.maf_json?.description || '';
     const status = this.#statusLine(wf);
-    const runs = wf.execution_count === 1 ? '1 run' : `${wf.execution_count} runs`;
+    const tags = [
+      steps.length === 1 ? '1 step' : `${steps.length} steps`,
+      wf.execution_count === 1 ? '1 run' : `${wf.execution_count} runs`,
+    ];
+    if (wf.created_at) tags.push(`Created ${formatDisplay(new Date(wf.created_at))}`);
     return `
-      <div class="wf-card" data-id="${escHtml(wf.id)}" role="link" tabindex="0"
-        aria-label="Open ${escHtml(wf.name)}">
-        <div class="wf-card-top">
-          <span class="wf-name" title="${escHtml(wf.name)}">${escHtml(wf.name)}</span>
-          <app-action-menu trigger-title="Workflow actions" items='${MENU_ITEMS}'>
-            ${icons.moreVertical('', 16)}
-          </app-action-menu>
-        </div>
-        <div class="wf-badges">
-          <span class="badge badge--muted">${steps.length === 1 ? '1 step' : `${steps.length} steps`}</span>
-          <span class="badge badge--muted">${escHtml(runs)}</span>
-          ${wf.created_at ? `<span class="badge badge--muted">Created ${escHtml(formatDisplay(new Date(wf.created_at)))}</span>` : ''}
-        </div>
-        ${description ? `<p class="wf-desc">${escHtml(description)}</p>` : ''}
-        ${agents.length ? `<p class="wf-agents">${escHtml(agents.join(' · '))}</p>` : ''}
-        <div class="wf-status ${status.cls}">
+      <app-card
+        data-id="${escAttr(wf.id)}"
+        name="${escAttr(wf.name)}"
+        ${description ? `description="${escAttr(description)}"` : ''}
+        tags="${escAttr(JSON.stringify(tags))}"
+        max-visible-tags="3"
+        href="/workflow?id=${encodeURIComponent(wf.id)}"
+        aria-label="Open ${escAttr(wf.name)}">
+        <app-action-menu slot="actions" trigger-title="Workflow actions" items='${MENU_ITEMS}'>
+          ${icons.moreVertical('', 16)}
+        </app-action-menu>
+        ${agents.length ? `<span slot="footer" class="wf-agents">${escHtml(agents.join(' · '))}</span>` : ''}
+        <span slot="footer" class="wf-status ${status.cls}">
           <span class="wf-dot"></span>
           <span class="wf-status-text">${escHtml(status.text)}</span>
-        </div>
-      </div>`;
+        </span>
+      </app-card>`;
   }
 
   #renderGrid() {
@@ -160,34 +165,29 @@ class WorkflowsPage extends HTMLElement {
     if (!this.#workflows.length) {
       grid.className = 'empty-wrap';
       grid.innerHTML = `
-        <div class="wf-empty">
-          <span class="empty-tile">${icons.workflow('', 32)}</span>
-          <h2 class="empty-title">No workflows yet</h2>
-          <p class="empty-sub">Chain agents into a repeatable sequence. Describe what you want to
-            automate and Nasiko drafts the steps for you.</p>
+        <app-empty-state
+          title="No workflows yet"
+          description="Chain agents into a repeatable sequence. Describe what you want to automate and Nasiko drafts the steps for you."
+          icon='${icons.workflow('', 40)}'>
           <div class="empty-pills">
-            <span class="process-pill">${icons.editThin('', 12)} Describe</span>
+            <app-tag size="sm">${icons.editThin('', 12)} Describe</app-tag>
             ${icons.chevronRight('empty-arrow', 12)}
-            <span class="process-pill">${icons.checkCircle('', 12)} Review steps</span>
+            <app-tag size="sm">${icons.checkCircle('', 12)} Review steps</app-tag>
             ${icons.chevronRight('empty-arrow', 12)}
-            <span class="process-pill">${icons.play('', 12)} Run</span>
+            <app-tag size="sm">${icons.play('', 12)} Run</app-tag>
           </div>
-          <a class="new-wf-btn is-lg" href="/workflow-new">Create workflow ${icons.plus('', 13)}</a>
-        </div>`;
+          <app-button variant="primary" href="/workflow-new">Create workflow ${icons.plus()}</app-button>
+        </app-empty-state>`;
       return;
     }
     grid.className = 'grid';
     grid.innerHTML = this.#workflows.map((wf) => this.#card(wf)).join('');
   }
 
+  /** The card owns its own shimmer, so the loading grid is the same element as
+   *  the loaded one and the two cannot drift apart. */
   #skeletonCards() {
-    return Array.from({ length: 3 }, () => `
-      <div class="wf-card is-skeleton">
-        <div class="skel-line skel-line--name"></div>
-        <div class="skel-tags"><div class="skel-tag"></div><div class="skel-tag"></div></div>
-        <div class="skel-line skel-line--desc1"></div>
-        <div class="skel-line skel-line--desc2"></div>
-      </div>`).join('');
+    return '<app-card loading></app-card>'.repeat(3);
   }
 
 }

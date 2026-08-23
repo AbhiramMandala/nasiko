@@ -2,6 +2,11 @@ import { icons } from '/common/utils/icons.js';
 import { apiFetch, fetchApi } from '/common/services/api.js';
 import { timeAgo } from '/common/utils/date-utils.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
+import '/common/design-system/app-input/app-input.js';
+import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
+import { setFieldError, clearFieldErrors } from '/common/utils/field-error.js';
+import { toast } from '/common/utils/toast.js';
 
 import styles from './secrets-manager.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -103,6 +108,9 @@ function toEntries(list) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Env-var shape — secrets land in container env, so shell identifier rules. */
+const NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
+
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -153,22 +161,16 @@ class SecretsManager extends HTMLElement {
       ${heading ? `<h2 class="sm-title">${esc(heading)}</h2>` : ''}
       ${description ? `<p class="sm-sub">${esc(description)}</p>` : ''}
       <div class="sm-list" id="sm-list"><app-skeleton lines="3" height="88px"></app-skeleton></div>
-      <form class="sm-add" id="sm-add" hidden>
-        <label class="sm-field">
-          <span class="sm-field-label">Name</span>
-          <input type="text" id="sm-name" class="sm-name-input" placeholder="API_KEY"
-            pattern="[A-Z_][A-Z0-9_]*" maxlength="128" autocomplete="off" spellcheck="false"
-            title="Uppercase letters, digits and underscore; must start with a letter or underscore." required />
-        </label>
-        <label class="sm-field">
-          <span class="sm-field-label">Value</span>
-          <input type="password" id="sm-value" placeholder="sk-…" autocomplete="off" required />
-        </label>
-        <button type="submit" class="sm-btn sm-btn--primary" id="sm-submit">
+      <form class="sm-add" id="sm-add" novalidate hidden>
+        <app-input id="sm-name" label="Name" placeholder="API_KEY"
+          maxlength="128" autocomplete="off"
+          spellcheck="false" required></app-input>
+        <app-input id="sm-value" label="Value" type="password" placeholder="sk-…"
+          autocomplete="off" required></app-input>
+        <app-button type="submit" id="sm-submit">
           ${icons.plus('', 14)} Add secret
-        </button>
-      </form>
-      <p class="sm-msg" id="sm-msg" role="status" hidden></p>`;
+        </app-button>
+      </form>`;
 
     this.querySelector('#sm-add')?.addEventListener('submit', (e) => this.#onAdd(e));
     this.querySelector('#sm-list')?.addEventListener('click', (e) => this.#onListClick(e));
@@ -183,10 +185,8 @@ class SecretsManager extends HTMLElement {
     }
     if (!this.#secrets.length) {
       list.innerHTML = `
-        <div class="sm-empty">
-          ${icons.lock('sm-empty-icon', 16)}
-          <span>${EMPTY_COPY[this.scope]}</span>
-        </div>`;
+        <app-empty-state icon="${esc(icons.lock('', 32))}"
+          description="${esc(EMPTY_COPY[this.scope])}"></app-empty-state>`;
       return;
     }
     list.innerHTML = `<ul class="sm-rows">${this.#secrets.map((s) => this.#rowHtml(s)).join('')}</ul>`;
@@ -196,11 +196,11 @@ class SecretsManager extends HTMLElement {
     const name = esc(secret.name);
     if (this.#pendingDelete === secret.name) {
       return `
-        <li class="sm-row is-confirming">
+        <li class="sm-row">
           <span class="sm-name">${icons.lock('', 13)} ${name}</span>
           <span class="sm-confirm-text">Delete this secret?</span>
-          <button type="button" class="sm-btn sm-btn--quiet" data-cancel>Cancel</button>
-          <button type="button" class="sm-btn sm-btn--danger" data-confirm="${name}">Delete</button>
+          <app-button variant="ghost" size="sm" data-cancel>Cancel</app-button>
+          <app-button variant="danger" size="sm" data-confirm="${name}">Delete</app-button>
         </li>`;
     }
     return `
@@ -209,8 +209,9 @@ class SecretsManager extends HTMLElement {
         <span class="sm-value">••••••••</span>
         <span class="sm-meta">${secret.updatedAt ? `Updated ${esc(timeAgo(secret.updatedAt))}` : ''}</span>
         ${this.readOnly ? '' : `
-        <button type="button" class="sm-delete" data-delete="${name}"
-          aria-label="Delete secret ${name}">${icons.trash('', 14)}</button>`}
+        <app-button variant="ghost" size="sm" icon-only
+          data-delete="${name}"
+          aria-label="Delete secret ${name}">${icons.trash('', 14)}</app-button>`}
       </li>`;
   }
 
@@ -221,15 +222,6 @@ class SecretsManager extends HTMLElement {
     form.hidden = this.readOnly || this.#status === 'denied';
   }
 
-  #showMessage(text, tone) {
-    const msg = this.querySelector('#sm-msg');
-    if (!msg) return;
-    msg.textContent = text;
-    msg.classList.toggle('is-error', tone === 'error');
-    msg.classList.toggle('is-ok', tone === 'ok');
-    msg.hidden = !text;
-  }
-
   /* ── Mutations ────────────────────────────────────────────────────────── */
 
   async #onAdd(e) {
@@ -238,20 +230,34 @@ class SecretsManager extends HTMLElement {
     const nameInput = this.querySelector('#sm-name');
     const valueInput = this.querySelector('#sm-value');
     const name = nameInput.value.trim();
-    if (!name || !valueInput.value) return;
+    // The form is `novalidate`: the browser's own bubble says only "Please match
+    // the format requested", which never tells the user what the format is.
+    clearFieldErrors(nameInput, valueInput);
+    if (!name) {
+      setFieldError(nameInput, 'Enter a secret name.');
+      return;
+    }
+    if (!NAME_PATTERN.test(name)) {
+      setFieldError(nameInput, 'Use A–Z, 0–9 and _ only, starting with a letter or _ — e.g. API_KEY.');
+      return;
+    }
+    if (!valueInput.value) {
+      setFieldError(valueInput, 'Enter a value.');
+      return;
+    }
 
     this.#setBusy(true);
     try {
       await this.#scopeAdapter().add(name, valueInput.value);
     } catch (err) {
-      this.#showMessage(`Could not save ${name}: ${err.message}`, 'error');
+      toast.error(`Could not save ${name}: ${err.message}`);
       this.#setBusy(false);
       return;
     }
     nameInput.value = '';
     valueInput.value = '';
     this.#setBusy(false);
-    this.#showMessage(this.#savedCopy(name), 'ok');
+    toast.success(this.#savedCopy(name));
     this.#emitChanged('add', name);
     await this.refresh();
   }
@@ -278,12 +284,12 @@ class SecretsManager extends HTMLElement {
     try {
       await this.#scopeAdapter().remove(name);
     } catch (err) {
-      this.#showMessage(`Could not delete ${name}: ${err.message}`, 'error');
+      toast.error(`Could not delete ${name}: ${err.message}`);
       this.#setBusy(false);
       return;
     }
     this.#setBusy(false);
-    this.#showMessage(`${name} deleted.`, 'ok');
+    toast.success(`${name} deleted.`);
     this.#emitChanged('remove', name);
     await this.refresh();
   }
@@ -303,8 +309,9 @@ class SecretsManager extends HTMLElement {
 
   #setBusy(busy) {
     this.#busy = busy;
-    const submit = this.querySelector('#sm-submit');
-    if (submit) submit.disabled = busy;
+    // `loading` shows app-button's spinner AND disables it — a plain `disabled`
+    // greys the button with no indication that a request is in flight.
+    this.querySelector('#sm-submit')?.toggleAttribute('loading', busy);
   }
 
   #emitChanged(action, name) {

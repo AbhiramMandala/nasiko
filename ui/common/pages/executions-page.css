@@ -76,29 +76,17 @@
     line-height: 16px;
     flex-shrink: 0;
   }
-  .toggle-btn {
-    display: grid;
-    place-items: center;
-    width: var(--control-h-sm);
-    height: var(--control-h-sm);
-    border: none;
-    border-radius: var(--r-6);
-    background: transparent;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-  .toggle-btn:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
+  /* The disclosure control is <app-button variant="ghost" size="sm" icon-only> —
+     the square ghost box, its hover fill and its focus ring all come from the
+     component. */
+  .run-card-head app-button { flex-shrink: 0; }
 
+  /* Meta pills and the status pill are <app-badge>; the row is just their box. */
   .run-card-meta {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--s-8);
-  }
-  /* Neutral meta pills sit on sand — lift them to white for contrast */
-  .run-card-meta .badge--muted {
-    background: var(--color-bg-surface);
-    color: var(--color-text-muted);
   }
 
   .run-error {
@@ -121,93 +109,8 @@
   }
   .load-error { color: var(--color-error); }
 
-  /* ── Empty states (mockup: centered tile + Chivo title) ── */
-  .runs-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--s-24);
-    padding: var(--s-48) var(--s-16);
-    text-align: center;
-  }
-  .empty-tile {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 72px;
-    height: 72px;
-    border-radius: var(--r-12);
-    background: var(--color-bg-base);
-    color: var(--color-text-muted);
-  }
-  .empty-title {
-    margin: 0;
-    font-family: var(--font-display);
-    font-size: 20px;
-    line-height: 28px;
-    font-weight: 500;
-    letter-spacing: 0.16px;
-    color: var(--color-text-main);
-  }
-  .empty-sub {
-    margin: calc(-1 * var(--s-12)) 0 0;
-    max-width: 480px;
-    font-size: 13px;
-    line-height: 18px;
-    color: var(--color-text-muted);
-    text-wrap: pretty;
-  }
-  .cta-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-4);
-    min-height: var(--control-h-md);
-    padding: 0 var(--s-16);
-    border-radius: var(--r-8);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
-    font-size: 13px;
-    font-weight: 500;
-    text-decoration: none;
-    white-space: nowrap;
-    transition: background var(--transition-fast);
-  }
-  .cta-btn:hover {
-    background: var(--bg-action-hover);
-    color: var(--fg-on-action);
-  }
-  .cta-btn.is-secondary {
-    background: var(--bg-secondary-brand);
-    color: var(--color-text-main);
-  }
-  .cta-btn.is-secondary:hover {
-    background: var(--bg-secondary-brand-hover);
-    color: var(--color-text-main);
-  }
-
-  /* ── Skeleton internals ── */
-  .skel-line {
-    height: 0.85em;
-    border-radius: var(--r-4);
-    background: var(--color-border);
-    animation: exe-skel-pulse 1.5s ease-in-out infinite;
-  }
-  .skel-line--name { width: 40%; height: 1.05em; }
-  .skel-line--desc1 { width: 70%; }
-  .skel-tags { display: flex; gap: var(--s-8); }
-  .skel-tag {
-    width: 72px;
-    height: 20px;
-    border-radius: var(--r-40);
-    background: var(--color-border);
-    animation: exe-skel-pulse 1.5s ease-in-out infinite;
-  }
-}
-
-@keyframes exe-skel-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-@media (prefers-reduced-motion: reduce) {
-  @keyframes exe-skel-pulse { from, to { opacity: 1; } }
+  /* The empty states are <app-empty-state> (icon, heading, description) with an
+     <app-button> CTA in its action slot, and the loading rows are
+     <app-skeleton> inside the run card's own well — so neither the placeholder
+     copy box nor the shimmer has a second definition here. */
 }
