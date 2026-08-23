@@ -455,6 +455,44 @@ const rules = [
         .map((f) => ({ file: rel, line: 1, message: `does not import ${f} — the router path will not register it` }));
     },
   },
+
+  {
+    id: 'no-backtick-in-adopted-sheet',
+    enforce: 'zero',
+    why: 'Twenty-odd components carry their stylesheet as a template literal passed to replaceSync(). A backtick ' +
+         'inside that literal — almost always someone quoting a CSS property in a comment — closes the string early ' +
+         'and the whole module stops parsing, so the element never upgrades and every page importing it renders ' +
+         'nothing. Nothing else catches it: there is no bundler, tsc does not read the literal, and `node --check` ' +
+         'parses the truncated result as valid JS. The browser is the first thing to notice, at runtime, as a bare ' +
+         '"missing ) after argument list". Quote CSS in those comments with plain text or single quotes.',
+    check({ rel, source, isJs }) {
+      if (!isJs) return [];
+      const out = [];
+      // Only the literal handed straight to replaceSync — a sheet assembled some
+      // other way is not this pattern and its interpolations are intentional.
+      for (const m of source.matchAll(/replaceSync\(`/g)) {
+        const open = m.index + m[0].length;
+        // First unescaped backtick after the opening one closes the literal.
+        let end = open;
+        while (end < source.length) {
+          const i = source.indexOf('`', end);
+          if (i < 0) return out;
+          if (source[i - 1] !== '\\') { end = i; break; }
+          end = i + 1;
+        }
+        // `);` right after it is the well-formed case: the literal ended where
+        // the call did. Anything else means a stray backtick closed it early.
+        if (!/^\s*\)\s*;?/.test(source.slice(end + 1, end + 4))) {
+          out.push({
+            file: rel,
+            line: lineOf(source, end),
+            message: 'backtick inside the replaceSync() stylesheet closes the literal early — the module will not parse',
+          });
+        }
+      }
+      return out;
+    },
+  },
 ];
 
 // Declared per edition in edition.json. Empty where no edition declares one,

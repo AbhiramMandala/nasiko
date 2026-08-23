@@ -25,6 +25,7 @@ import { navigate as routerNavigate } from '../core/router.js';
 import { icons } from "../utils/icons.js";
 import { escHtml } from '/common/utils/escape.js';
 import { callOptional } from '../core/data-sources.js';
+import { scanTooltips } from '/common/design-system/app-tooltip/app-tooltip.js';
 import { initialView, syncView, VIEW_PARAM } from '../utils/module-view.js';
 
 const styles = new CSSStyleSheet();
@@ -157,52 +158,37 @@ app-module-nav:not(:defined) { display: block; }
   .row.is-active:hover { background: var(--bg-surface-hover); }
 
   /* A row with a delete button (orchestrator session rows). The button is a
-     sibling of the link, not a child: interactive content cannot nest inside
-     an anchor. Revealed on hover/focus, like the Execution history table's. */
-  .row-del-wrap { position: relative; }
-  .row-del-wrap .row { padding-right: 26px; }
-  .row-del {
-    position: absolute;
-    right: var(--s-4);
-    top: 50%;
-    translate: 0 -50%;
-    display: inline-grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    border: none;
-    border-radius: var(--r-8);
-    background: transparent;
-    color: var(--fg-secondary);
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity var(--transition-fast), color var(--transition-fast);
-  }
-  .row-del-wrap:hover .row-del,
-  .row-del:focus-visible { opacity: 1; }
-  .row-del:hover { color: var(--color-error); }
-  .row-del[disabled] { opacity: 0.4; cursor: default; }
+     sibling of the link, not a child: interactive content cannot nest inside an
+     anchor. It overlays the row's right edge and appears only while that row is
+     hovered or holds focus, so forty chat titles are not forty trash icons.
 
-  /* Session rows. A chat row's delete button overlays the row's right edge and
-     only appears while that row is hovered or holds focus, so forty chat titles
-     are not forty trash icons. It had no styling whatsoever before — a bare
-     button following the link inside a plain block wrapper — so every session in
-     the Orchestrator nav carried a stray icon on its own line underneath it. */
+     One block on purpose. This was two: a later one added inset-block: 0 and a
+     new width without clearing the earlier one's height: 20px, top: 50% and
+     translate: 0 -50%. Over-constrained top/bottom/height resolves in favour of
+     height, so the surviving translate lifted every session row's button half
+     its height above the row it belonged to — the trash icon sat clipped against
+     the row above. Keep the geometry in one place.
+
+     No backticks in this sheet, ever: it is a template literal, so one closes
+     the string and the module stops parsing. */
   .row-del-wrap {
     position: relative;
     display: flex;
     min-width: 0;
   }
-  .row-del-wrap .row { flex: 1; min-width: 0; }
+  /* Reserved always, not on hover. Padding that arrives with the button
+     re-truncates the title under the cursor, which reads as the text twitching. */
+  .row-del-wrap .row { flex: 1; min-width: 0; padding-right: 26px; }
   .row-del {
     position: absolute;
-    inset-block: 0;
+    top: 0;
+    bottom: 0;
     right: 2px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 24px;
+    padding: 0;
     border: none;
     border-radius: var(--r-6);
     background: transparent;
@@ -213,17 +199,13 @@ app-module-nav:not(:defined) { display: block; }
   }
   .row-del-wrap:hover .row-del,
   .row-del-wrap:focus-within .row-del { opacity: 1; }
-  .row-del:hover { background: var(--bg-input); color: var(--fg-primary); }
+  .row-del:hover { background: var(--bg-input); color: var(--color-error); }
   .row-del:focus-visible {
     opacity: 1;
     outline: 2px solid var(--fg-brand);
     outline-offset: -2px;
   }
   .row-del[disabled] { opacity: 0.4; cursor: progress; }
-  /* Reserve the button's width while it is showing, so a long chat title
-     ellipsises instead of running underneath it. */
-  .row-del-wrap:hover .row .row-label,
-  .row-del-wrap:focus-within .row .row-label { padding-right: 22px; }
 
   /* Skeleton while fetchModuleNav resolves */
   .skel-row {
@@ -294,6 +276,7 @@ const COLLAPSED = new Map();
 export class AppModuleNav extends HTMLElement {
   #nav = null;
   #mobileOpen = false;
+  #tooltipFrame = 0;
 
   get #collapsed() {
     const module = this.getAttribute("module") || "";
@@ -336,6 +319,7 @@ export class AppModuleNav extends HTMLElement {
   disconnectedCallback() {
     this.removeEventListener("click", this.#handleClick);
     this.removeEventListener("keydown", this.#handleKeyDown);
+    cancelAnimationFrame(this.#tooltipFrame);
   }
 
   /** Pages may set data directly instead of going through fetchModuleNav. */
@@ -490,6 +474,8 @@ export class AppModuleNav extends HTMLElement {
       this.#collapsed.has(label) ? this.#collapsed.delete(label) : this.#collapsed.add(label);
       head.closest(".group")?.classList.toggle("is-collapsed", this.#collapsed.has(label));
       head.setAttribute("aria-expanded", String(!this.#collapsed.has(label)));
+      // Rows that were inside a 0fr grid track have a width to measure now.
+      this.#scheduleOverflowTooltips();
       return;
     }
     const section = e.target.closest("[data-section]");
@@ -590,6 +576,40 @@ export class AppModuleNav extends HTMLElement {
     const want = new URLSearchParams(query);
     const have = new URLSearchParams(window.location.search);
     return [...want].every(([k, v]) => have.get(k) === v);
+  }
+
+  /** A 200px column ellipsises long labels — an orchestrator chat title nearly
+   *  always. The full text then exists nowhere the user can reach, so give the
+   *  rows that actually overflowed the design system's tooltip. Measured rather
+   *  than applied to every row: a tooltip repeating a label already legible in
+   *  full is noise, which is exactly how a blanket `title` reads. */
+  #applyOverflowTooltips() {
+    if (!this.isConnected) return;
+    for (const label of this.querySelectorAll(".row > .row-label")) {
+      const row = label.parentElement;
+      // +1 because scrollWidth and clientWidth are integers rounded from
+      // fractional layout: an exactly-fitting label can report 1px of overflow,
+      // and then every row in the tree gets a tooltip.
+      if (label.scrollWidth > label.clientWidth + 1) {
+        row.dataset.tooltip = label.textContent;
+        row.dataset.tooltipPlacement = "right";
+      } else {
+        delete row.dataset.tooltip;
+        delete row.dataset.tooltipPlacement;
+      }
+    }
+    // app-tooltip's MutationObserver only sees `data-tooltip` on a node as it is
+    // inserted; these rows are already in the document, so attach explicitly.
+    // scanTooltips tracks in a WeakSet, so re-running it is free and idempotent.
+    scanTooltips(this);
+  }
+
+  /** Measured after paint: the nav is absolutely positioned inside the content
+   *  card, so its width is not final at the moment innerHTML lands. Coalesced,
+   *  because a group toggle can land in the same frame as a re-render. */
+  #scheduleOverflowTooltips() {
+    cancelAnimationFrame(this.#tooltipFrame);
+    this.#tooltipFrame = requestAnimationFrame(() => this.#applyOverflowTooltips());
   }
 
   #renderSkeleton() {
@@ -693,6 +713,8 @@ export class AppModuleNav extends HTMLElement {
       <nav class="mod-groups" aria-label="${escHtml(nav.title)} navigation">
         ${nav.groups.map((g) => this.#groupHtml(g)).join("")}
       </nav>`;
+
+    this.#scheduleOverflowTooltips();
   }
 }
 

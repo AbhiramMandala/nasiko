@@ -15,7 +15,7 @@
  */
 import { authService } from "../services/auth-service.js";
 import { icons } from "../utils/icons.js";
-import { confirmDialog } from "../design-system/app-modal/app-modal.js";
+import { confirmDialog } from "../design-system/confirm-dialog/confirm-dialog.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
 import { escHtml } from '/common/utils/escape.js';
@@ -152,9 +152,6 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   /* Small screens: drop the history cluster, let search flex, keep menu */
   @media (max-width: 1023.98px) {
     .nav-cluster { display: none; }
-    /* Rail is hidden below 1024px, so its toggle would just duplicate the
-       mobile menu button. */
-    [data-rail-toggle] { display: none; }
     .search-field { width: auto; flex: 1; min-width: 0; }
     .search-field .kbd-hint { display: none; }
     .topbar-spacer { display: none; }
@@ -391,7 +388,25 @@ export class AppHeader extends HTMLElement {
     }
   };
 
-  #onRouteChange = () => {
+  /** Route pattern of the last route-change, so the handler can tell a real
+   *  page change from a query-only one (/chat?session_id=A → …=B, which the
+   *  router serves by updating the mounted page rather than remounting it). */
+  #lastPattern = null;
+
+  #onRouteChange = (e) => {
+    // `active-module` belongs to the page that set it, and the page that set it
+    // sets it once, from connectedCallback. Clearing it on every route-change
+    // would therefore strip the rail highlight when the user moves between two
+    // sessions of the same page; not clearing it at all leaves Orchestrator lit
+    // next to the rail item of whatever page came after the chat. Clear it when
+    // the pattern actually changes — the router dispatches this before it mounts
+    // the next page, so the new page's own write always lands after.
+    const pattern = e?.detail?.pattern ?? null;
+    if (this.#lastPattern !== null && pattern !== this.#lastPattern) {
+      if (this.hasAttribute("active-module")) this.removeAttribute("active-module");
+    }
+    this.#lastPattern = pattern;
+
     // Update rail active indicators and mobile nav highlights.
     // The module fallback has to be reapplied here, not just in #railItem:
     // under the client router the rail is rendered once and only this handler
@@ -610,9 +625,21 @@ export class AppHeader extends HTMLElement {
     return this.navItems || [];
   }
 
-  /** Nav `module` of the page being viewed, so its rail parent stays selected. */
+  /** Nav `module` of the page being viewed, so its rail parent stays selected.
+   *
+   *  A path match wins. Where there is none the page may name its own module
+   *  through the `active-module` attribute: a chat transcript is a session
+   *  rather than a place, so `/chat` is deliberately absent from
+   *  `fetchNavigation`, and chat-page.js:55 has always set that attribute for
+   *  exactly this. `observedAttributes` listed it from the start and nothing
+   *  ever read it, so the write only triggered a re-render that recomputed the
+   *  same empty answer — which is why opening a session left the rail with
+   *  nothing selected. `#onRouteChange` drops the attribute when the route
+   *  pattern changes, so it cannot outlive the page that claimed it. */
   #activeModule(navLinks) {
-    return navLinks.find(l => this.#isActive(l.url))?.module;
+    return navLinks.find(l => this.#isActive(l.url))?.module
+      || this.getAttribute("active-module")
+      || undefined;
   }
 
   /** `tooltip: false` for the mobile sheet — those rows show their own labels. */
