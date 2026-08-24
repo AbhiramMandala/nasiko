@@ -9,7 +9,9 @@
  * @element app-button
  * @attr {string} variant - Visual style: `primary` (default, dark fill) | `secondary` (brand tint) |
  *   `tertiary` (white + hairline border; `outline` is an alias) | `ghost` | `danger` |
- *   `danger-secondary` | `dark` (alias of `primary`, kept for existing call sites) | `icon`
+ *   `danger-secondary` | `ghost-danger` (red ink, no fill — the quiet destructive
+ *   icon in a rail of icons) | `dark` (alias of `primary`, kept for existing call
+ *   sites) | `icon`
  * @attr {string} size - Size modifier: `sm` (28px) | `md` (32px) | (default) 36px
  * @attr {boolean} icon-only - Squares the button to its size's control height with no
  *   padding, per Figma's Icon Button frame (4158:1100) — which is the same Type × Tone

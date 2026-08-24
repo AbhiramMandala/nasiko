@@ -5,35 +5,8 @@
 
   .page-title { margin-bottom: var(--s-24); }
 
-  /* Gold-underline tabs (existing type-tab idiom) */
-  .tabs {
-    display: flex;
-    gap: var(--s-16);
-    border-bottom: 1px solid var(--color-border);
-    margin-bottom: var(--s-24);
-  }
-  .tab {
-    padding: var(--s-8) var(--s-4);
-    min-height: 40px;
-    border: none;
-    background: transparent;
-    color: var(--color-text-muted);
-    font-family: inherit;
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    white-space: nowrap;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-  }
-  .tab:hover { color: var(--color-text-main); }
-  .tab.is-active {
-    color: var(--color-text-main);
-    border-bottom-color: var(--fg-brand-highlight);
-    font-weight: 600;
-  }
-  /* The sliding .tab-indicator (tab-indicator.js) supplies the gold bar */
-  .tabs.has-tab-indicator .tab.is-active { border-bottom-color: transparent; }
+  /* Tabs — <app-tabs strip>; the page owns only the spacing below. */
+  .tabs { margin-bottom: var(--s-24); }
 
   .list-area {
     display: flex;

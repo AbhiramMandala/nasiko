@@ -69,7 +69,7 @@ export default {
   scenarios: {
     history: async (page) => {
       await page.waitForSelector(".run-card");
-      await page.click('[data-tab="history"]');
+      await page.click('[data-key="history"]');
       await page.waitForSelector(".seg-ctrl");
       // Expand the failed run to show its timeline + error.
       await page.click('[data-toggle="ex-162"]');

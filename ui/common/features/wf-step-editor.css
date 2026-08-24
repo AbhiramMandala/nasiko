@@ -49,17 +49,13 @@
   }
 
   /* Control rail — reorder pair grouped tight, destructive delete split off
-     behind a hairline so it can't be hit by reflex. All three are
-     <app-button variant="ghost" size="sm" icon-only>, and the hairline is
-     <app-divider vertical>, which stretches to its flex row by default — pinned
-     to the 14px tick this rail wants.
-
-     Ghost, not `danger-secondary`, for the delete: the DS destructive variants
-     are both filled or outlined red at rest, which in a three-button rail makes
-     the destructive control the loudest thing on the card — and every non-ghost
-     variant paints --bg-disabled when disabled, so on a single-step workflow the
-     one thing drawing the eye was a greyed-out box. Ghost keeps the rail reading
-     as one group. Switch this one attribute if the design wants the red tone. */
+     behind a hairline so it can't be hit by reflex. The reorder pair is
+     <app-button variant="ghost" size="sm" icon-only> and the delete is
+     `ghost-danger` — red ink, no fill, so it reads destructive without becoming
+     the loudest box in the rail (and stays surfaceless when disabled on a
+     single-step workflow). The hairline is <app-divider vertical>, which
+     stretches to its flex row by default — pinned to the 14px tick this rail
+     wants. */
   .step-tools {
     grid-column: 3;
     grid-row: 1;

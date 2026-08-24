@@ -1,14 +1,32 @@
 /**
- * Tab bar that fires events on switch — the consumer is responsible for showing/hiding panels.
+ * Tab bar in two shapes:
+ *
+ * - **Panels** (default) — `[data-tab]` children are the panels; the strip is
+ *   generated from their `data-label` and the component owns which one shows.
+ * - **Strip** (`<app-tabs strip>`) — the page renders its own
+ *   `<button class="tab" data-key aria-selected>` children and owns the content
+ *   below. For data-driven tab sets (catalog/status filters with live counts)
+ *   that re-render the strip; the sliding indicator follows.
  *
  * @element app-tabs
- * @attr {string} active - Key of the initially active tab
+ * @attr {boolean} strip - Strip-only mode (see above)
+ * @attr {string} active - Key of the initially active tab (panels mode)
+ * @attr {string} query-param - URL param kept in sync with the active tab (panels mode)
  * @fires tab-change - Tab switched; `detail: { key: string }` — bubbles
- * @slot default - `<button data-key="…">Label</button>` elements define the tabs
- * @note Tab panels are not managed by this component — hide/show them yourself on `tab-change`.
  */
+import { attachSlidingIndicator } from '../../utils/tab-indicator.js';
 import styles from './app-tabs.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
+
+/** Arrow/Home/End roving focus across a tablist's tabs. */
+function roveFocus(e, strip) {
+  const tabs = [...strip.querySelectorAll('[role="tab"], .tab')];
+  const i = tabs.indexOf(document.activeElement);
+  const map = { ArrowRight: 1, ArrowLeft: -1, Home: -i, End: tabs.length - 1 - i };
+  if (map[e.key] === undefined) return;
+  e.preventDefault();
+  tabs[(i + map[e.key] + tabs.length) % tabs.length]?.focus();
+}
 
 export class AppTabs extends HTMLElement {
   #initialized = false;
@@ -20,6 +38,8 @@ export class AppTabs extends HTMLElement {
   #resizeObserver = null;
 
   connectedCallback() {
+    if (this.hasAttribute("strip")) return this.#initStrip();
+
     if (!this.#initialized) {
       this.#initialized = true;
       const panels = [...this.children].filter((el) => el.dataset.tab);
@@ -70,20 +90,7 @@ export class AppTabs extends HTMLElement {
         const btn = e.target.closest('[role="tab"]');
         if (btn) this.#activate(btn.dataset.key);
       });
-      strip.addEventListener("keydown", (e) => {
-        const tabs = [...strip.querySelectorAll('[role="tab"]')];
-        const i = tabs.indexOf(document.activeElement);
-        const map = {
-          ArrowRight: 1,
-          ArrowLeft: -1,
-          Home: -i,
-          End: tabs.length - 1 - i,
-        };
-        if (map[e.key] !== undefined) {
-          e.preventDefault();
-          tabs[(i + map[e.key] + tabs.length) % tabs.length]?.focus();
-        }
-      });
+      strip.addEventListener("keydown", (e) => roveFocus(e, strip));
 
       this.prepend(strip);
       this.#strip = strip;
@@ -110,6 +117,32 @@ export class AppTabs extends HTMLElement {
       this.#resizeObserver.disconnect();
       this.#resizeObserver = null;
     }
+  }
+
+  // Strip-only mode: the page owns the buttons and the content below, so all
+  // we add is the tablist semantics, the sliding indicator and the event. The
+  // indicator's own MutationObserver survives the page re-rendering the strip.
+  #initStrip() {
+    if (this.#initialized) return;
+    this.#initialized = true;
+    this.setAttribute("role", "tablist");
+    attachSlidingIndicator(this, ".tab", '[aria-selected="true"]');
+    this.addEventListener("click", (e) => {
+      const btn = e.target.closest(".tab");
+      if (!btn || btn.getAttribute("aria-selected") === "true") return;
+      // Flip selection now so the indicator slides on click, even if the page
+      // re-renders the strip from its own state a moment later.
+      this.querySelectorAll(".tab").forEach((b) =>
+        b.setAttribute("aria-selected", String(b === btn)),
+      );
+      this.dispatchEvent(
+        new CustomEvent("tab-change", {
+          detail: { key: btn.dataset.key },
+          bubbles: true,
+        }),
+      );
+    });
+    this.addEventListener("keydown", (e) => roveFocus(e, this));
   }
 
   #moveIndicator(key) {

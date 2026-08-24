@@ -29,24 +29,45 @@ module-shell:not(:defined) { display: block; }
 app-stack:not(:defined) {
   display: flex;
   flex-direction: column;
-  gap: var(--space-lg);
+  gap: var(--s-24);
 }
 
 app-row:not(:defined) {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-md);
+  gap: var(--s-16);
   width: 100%;
 }
 
 app-grid:not(:defined) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: var(--space-md);
+  gap: var(--s-16);
   width: 100%;
 }
 
 /* Content placeholders */
+/* Agent catalog card — the one card component. 192px matches a rendered card
+   (name + tags + two-line description + action row), so a grid of them does not
+   shift when the element upgrades. Keep in step with the `[loading]` min-height
+   in common/design-system/app-card/app-card.css. */
+app-card:not(:defined) {
+  display: block;
+  min-height: 192px;
+  background: var(--bg-group);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--r-12);
+}
+
+/* Metric strip. 92px is a rendered cell (label + 24px value + caption) plus the
+   strip's own 16px block padding, so a page's first paint reserves the same box
+   the element will fill. Keep in step with app-stat-row.css. */
+app-stat-row:not(:defined) {
+  display: block;
+  min-height: 92px;
+  border-block: 1px solid var(--color-border);
+}
+
 app-stat-card:not(:defined) {
   display: block;
   flex: 1;
@@ -54,14 +75,24 @@ app-stat-card:not(:defined) {
   min-height: 100px;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--r-12);
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+
+/* Charts. 200px matches the default `height` in app-chart.js — a dashboard of
+   panels must not reflow when the chart modules land. Keep the two in step. */
+app-chart:not(:defined) {
+  display: block;
+  min-height: 200px;
+  border-radius: var(--r-8);
+  background: var(--bg-track);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
 
 app-skeleton:not(:defined) {
   display: block;
   background: var(--color-border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-4);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
 
@@ -72,18 +103,45 @@ app-code-snippet:not(:defined) {
   border-radius: var(--r-8);
 }
 
-smart-table:not(:defined) {
+/* Form primitives. Each draws a control-height box, so reserve that height or
+   every form on the page jogs upward when the modules land. A label or hint
+   above/below the box is the call site's own markup in most layouts, so this
+   reserves the field, not the whole stack. */
+app-input:not(:defined),
+app-select:not(:defined) {
+  display: block;
+  min-height: var(--control-h-md);
+  background: var(--input-bg, var(--bg-base));
+  border: var(--bw-1) solid var(--border-primary);
+  border-radius: var(--r-8);
+}
+
+/* app-search is 36px at md, not 32 — matching app-search.css, so a toolbar that
+   paints before the module lands does not jump when it arrives. */
+app-search:not(:defined) {
+  display: block;
+  min-height: var(--control-h-lg);
+  background: var(--search-bg, var(--bg-base));
+  border: var(--bw-1) solid var(--border-primary);
+  border-radius: var(--r-8);
+}
+
+/* Checkbox, radio and switch are inline rows: a control plus its own label
+   text, so the reserved box is a line, not a field. */
+app-checkbox:not(:defined),
+app-radio:not(:defined),
+app-switch:not(:defined) {
+  display: block;
+  min-height: var(--control-h-sm);
+}
+
+app-table:not(:defined) {
   display: block;
   min-height: 200px;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--r-8);
   animation: skel-pulse 1.5s ease-in-out infinite;
-}
-
-data-view:not(:defined) {
-  display: block;
-  min-height: 200px;
 }
 
 /*
@@ -104,7 +162,7 @@ app-module-nav:not(:defined) {
   app-module-nav:not(:defined) {
     display: block;
     height: 38px;
-    margin-bottom: var(--space-md);
+    margin-bottom: var(--s-16);
     border: 1px solid var(--border-primary);
     border-radius: var(--r-8);
   }
@@ -120,18 +178,42 @@ app-module-nav:not(:defined) {
 */
 app-tabs:not(:defined) {
   display: block;
-  padding-top: calc(44px + var(--space-md));
+  padding-top: calc(var(--control-h-md) + 1px + var(--s-16));
 }
 app-tabs:not(:defined) > [data-tab] ~ [data-tab] {
   display: none;
 }
+/* Strip mode has no panels and no generated strip — the page's own buttons are
+   already there, so reserve nothing and lay them out as the upgraded strip does. */
+app-tabs[strip]:not(:defined) {
+  display: flex;
+  gap: var(--s-4);
+  padding-top: 0;
+  border-bottom: 1px solid var(--color-border);
+}
 
-voice-input:not(:defined) {
+/*
+  Matches the upgraded composer's paint, not a generic input's: <app-chatbox> is a
+  filled --bg-input well with no resting border. The old reservation here was a
+  white ringed box with a shadow, so every load of the chat and orchestrator pages
+  popped from outlined-white to flat-sand on upgrade.
+*/
+app-chatbox:not(:defined) {
   display: block;
   min-height: 170px;
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-surface);
-  box-shadow: inset 0 0 0 1px var(--color-border), var(--shadow-sm);
+  border-radius: var(--r-12);
+  background: var(--bg-input);
+}
+
+/*
+  The orchestrator's composer is shorter than the standalone 170px reservation
+  above. This override belongs HERE, not in orchestrator-page.css: a component
+  sheet is adopted by its module and therefore does not exist at first paint, so
+  declaring it there painted 170px and then collapsed to 88px on upgrade — ~82px
+  of layout shift on the page, caused by the very rule meant to prevent it.
+*/
+orchestrator-page .input-wrap app-chatbox:not(:defined) {
+  min-height: 88px;
 }
 
 /*
@@ -145,9 +227,11 @@ voice-input:not(:defined) {
 */
 
 @media (prefers-reduced-motion: reduce) {
+  app-card:not(:defined),
   app-stat-card:not(:defined),
+  app-chart:not(:defined),
   app-skeleton:not(:defined),
-  smart-table:not(:defined) {
+  app-table:not(:defined) {
     animation: none;
     opacity: 0.6;
   }
@@ -162,12 +246,12 @@ voice-input:not(:defined) {
 /* Shared skeleton primitives */
 .skel-card {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-md);
+  border-radius: var(--r-12);
+  padding: var(--s-16);
   background: var(--color-bg-surface);
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: var(--s-12);
   min-height: 180px;
 }
 .skel-card__header {
@@ -178,7 +262,7 @@ voice-input:not(:defined) {
 .skel-card__avatar {
   width: 36px;
   height: 36px;
-  border-radius: var(--radius-md);
+  border-radius: var(--r-8);
   background: var(--color-border);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
@@ -191,7 +275,7 @@ voice-input:not(:defined) {
 }
 .skel-card__line {
   height: 0.85em;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-4);
   background: var(--color-border);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
@@ -202,12 +286,12 @@ voice-input:not(:defined) {
 .skel-card__line--w120 { width: 120px; }
 .skel-card__meta {
   display: flex;
-  gap: var(--space-sm);
+  gap: var(--s-12);
   align-items: center;
 }
 .skel-card__tags {
   display: flex;
-  gap: var(--space-xs);
+  gap: var(--s-8);
 }
 .skel-card__tag {
   width: 52px;
@@ -218,15 +302,15 @@ voice-input:not(:defined) {
 }
 .skel-card__actions {
   display: flex;
-  gap: var(--space-xs);
+  gap: var(--s-8);
   margin-top: auto;
-  padding-top: var(--space-sm);
+  padding-top: var(--s-12);
   border-top: 1px solid var(--color-border);
 }
 .skel-card__btn {
   width: 70px;
   height: var(--control-h-sm);
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-4);
   background: var(--color-border);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
@@ -236,7 +320,7 @@ voice-input:not(:defined) {
 .skel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: var(--space-md);
+  gap: var(--s-16);
 }
 .skel-grid--narrow {
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -246,16 +330,16 @@ voice-input:not(:defined) {
 .skel-session {
   display: flex;
   align-items: center;
-  gap: var(--space-md);
-  padding: var(--space-md);
+  gap: var(--s-16);
+  padding: var(--s-16);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--r-8);
   background: var(--color-bg-surface);
 }
 .skel-session__avatar {
   width: 40px;
   height: 40px;
-  border-radius: var(--radius-full);
+  border-radius: var(--r-full);
   background: var(--color-border);
   flex-shrink: 0;
   animation: skel-pulse 1.5s ease-in-out infinite;
@@ -264,11 +348,11 @@ voice-input:not(:defined) {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--s-8);
 }
 .skel-session__line {
   height: 0.75em;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-4);
   background: var(--color-border);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
@@ -278,13 +362,13 @@ voice-input:not(:defined) {
 .skel-sessions {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: var(--s-12);
 }
 
 /* Orchestrator agent card skeletons */
 .skel-agent-pill {
   height: 56px;
-  border-radius: var(--radius-md);
+  border-radius: var(--r-8);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
   animation: skel-pulse 1.5s ease-in-out infinite;
@@ -293,7 +377,7 @@ voice-input:not(:defined) {
 /* Generic block skeleton (replaces app-skeleton for pre-definition) */
 .skel-block {
   background: var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--r-8);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
 
@@ -310,9 +394,9 @@ chat-page:not(:defined) .chat-skel {
 .chat-skel__header {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--s-12);
   box-sizing: border-box;
-  padding: var(--space-md) 0;
+  padding: var(--s-16) 0;
   border-bottom: 1px solid var(--color-border);
 }
 
@@ -339,12 +423,12 @@ chat-page:not(:defined) .chat-skel {
   width: 100%;
   max-width: 900px;
   margin-inline: auto;
-  padding: var(--space-sm) 0 var(--space-md);
+  padding: var(--s-12) 0 var(--s-16);
   box-sizing: border-box;
 }
 
 .chat-skel__input {
-  /* Measured against the upgraded <voice-input> in chat-page (112px). */
+  /* Measured against the upgraded <app-chatbox> in chat-page (112px). */
   height: 112px;
   border-radius: var(--r-12);
 }
@@ -374,17 +458,17 @@ chat-page:not(:defined) .chat-skel {
   .pre-modnav {
     display: block;
     height: 38px;
-    margin-bottom: var(--space-md);
+    margin-bottom: var(--s-16);
     border: 1px solid var(--border-primary);
     border-radius: var(--r-8);
   }
 }
 
 .pre-head {
-  margin-bottom: var(--pre-head-mb, var(--space-lg));
+  margin-bottom: var(--pre-head-mb, var(--s-24));
 }
 .pre-head .title-page {
-  margin-bottom: var(--pre-head-gap, var(--space-xs));
+  margin-bottom: var(--pre-head-gap, var(--s-8));
 }
 .pre-head p {
   margin: 0;
@@ -397,7 +481,7 @@ chat-page:not(:defined) .chat-skel {
   align-items: var(--pre-head-align, flex-start);
   justify-content: var(--pre-head-justify, space-between);
   flex-wrap: var(--pre-head-wrap, wrap);
-  gap: var(--pre-head-gutter, var(--space-md));
+  gap: var(--pre-head-gutter, var(--s-16));
 }
 /* Mirrors the loaded head's text block (`flex: 1 1 auto; min-width: 0`) —
    without it the title column takes its max-content width and pushes the
@@ -411,7 +495,7 @@ chat-page:not(:defined) .chat-skel {
 .pre-head__actions {
   display: flex;
   align-items: center;
-  gap: var(--pre-actions-gap, var(--space-sm));
+  gap: var(--pre-actions-gap, var(--s-12));
   flex-shrink: 0;
 }
 /* For heads with something between the title and the actions (count chips). */
@@ -425,7 +509,7 @@ chat-page:not(:defined) .chat-skel {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--pre-action-gap, var(--space-xs));
+  gap: var(--pre-action-gap, var(--s-8));
   min-height: var(--pre-action-h, var(--control-h-sm));
   padding: var(--pre-action-py, 0) var(--pre-action-px, var(--s-12));
   border: 1px solid var(--color-border);
@@ -438,20 +522,20 @@ chat-page:not(:defined) .chat-skel {
 }
 .pre-action--solid {
   border-color: transparent;
-  background: light-dark(var(--sand-800), var(--neutral-100));
-  color: light-dark(var(--white), var(--neutral-900));
+  background: var(--bg-action);
+  color: var(--fg-on-action);
 }
 .pre-action--secondary {
-  background: light-dark(var(--yellow-100), var(--yellow-900));
-  border-color: light-dark(var(--yellow-200), var(--yellow-800));
+  background: var(--bg-secondary-brand);
+  border-color: var(--bg-secondary-brand-hover);
 }
 
 .pre-controls {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-sm);
-  margin-bottom: var(--pre-controls-mb, var(--space-md));
+  gap: var(--s-12);
+  margin-bottom: var(--pre-controls-mb, var(--s-16));
 }
 .pre-search {
   position: relative;
@@ -473,7 +557,7 @@ chat-page:not(:defined) .chat-skel {
 .pre-search__input {
   width: 100%;
   min-height: var(--control-h-lg);
-  padding: 0 var(--space-xl) 0 var(--pre-search-pl, 38px);
+  padding: 0 var(--s-32) 0 var(--pre-search-pl, 38px);
   border: 1px solid transparent;
   border-radius: var(--r-8);
   background: var(--bg-input);
@@ -489,7 +573,7 @@ chat-page:not(:defined) .chat-skel {
   min-width: 140px;
   flex-shrink: 0;
   min-height: var(--control-h-lg);
-  padding: 0 var(--space-md);
+  padding: 0 var(--s-16);
   border: 1px solid transparent;
   border-radius: var(--r-8);
   /* Shorthand on purpose — drops the base-layer chevron gradients, matching
@@ -509,39 +593,36 @@ chat-page:not(:defined) .chat-skel {
   background-position: right 8px center;
 }
 
-/* Tab strip — labels carry API counts, so it shimmers. */
+/* Tab strip — labels carry API counts, so it shimmers. Geometry mirrors
+   <app-tabs> (design-system/app-tabs/app-tabs.css) so the upgrade is silent. */
 .pre-tabs {
   display: flex;
-  gap: var(--space-md);
+  gap: var(--s-4);
   border-bottom: 1px solid var(--color-border);
-  margin-bottom: var(--pre-tabs-mb, var(--space-lg));
+  margin-bottom: var(--pre-tabs-mb, var(--s-24));
 }
 /* …unless the labels are static (no counts) — then they paint for real.
-   Mirrors the loaded gold-underline tab; the sliding indicator takes over
-   the bar on upgrade. */
+   Mirrors the loaded tab; the sliding indicator takes over the bar on upgrade. */
 .pre-tab {
   display: inline-flex;
   align-items: center;
-  min-height: 40px;
-  margin-bottom: -1px;
-  padding: var(--space-xs) var(--space-2xs);
-  border-bottom: 2px solid transparent;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
+  height: var(--control-h-md);
+  padding: 0 var(--s-12);
+  color: var(--color-text-main);
+  font-size: var(--font-button-sm-size);
+  line-height: var(--font-button-sm-line);
   font-weight: 500;
 }
 .pre-tab--active {
-  border-bottom-color: var(--fg-brand-highlight);
-  color: var(--color-text-main);
+  color: var(--fg-brand-strong);
   font-weight: 600;
 }
 .pre-tabs__item {
   width: 72px;
   height: 16px;
-  /* 12 + 16 + 11 = the loaded strip's 39px content box (a real .type-tab is
-     40px with a -1px bottom margin). */
-  margin: 12px 0 11px;
-  border-radius: var(--radius-sm);
+  /* 8 + 16 + 8 = the loaded strip's 32px tab. */
+  margin: var(--s-8) 0;
+  border-radius: var(--r-4);
   background: var(--color-bg-base);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
@@ -551,34 +632,34 @@ chat-page:not(:defined) .chat-skel {
 .pre-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(var(--pre-col, 300px), 100%), 1fr));
-  gap: var(--pre-gap, var(--space-md));
+  gap: var(--pre-gap, var(--s-16));
 }
 /* Same cards stacked one per row (executions' run list). */
 .pre-rows {
   display: flex;
   flex-direction: column;
-  gap: var(--pre-gap, var(--space-md));
+  gap: var(--pre-gap, var(--s-16));
 }
 /* Wider landscape cards with a compressed inner rhythm (your-agents). */
 .pre-grid--wide {
   --pre-col: 320px;
   --pre-card-h: 240px;
-  --pre-card-pad: var(--s-12) var(--space-md);
-  --pre-card-gap: var(--space-xs);
+  --pre-card-pad: var(--s-12) var(--s-16);
+  --pre-card-gap: var(--s-8);
 }
 .pre-card {
   display: flex;
   flex-direction: column;
-  gap: var(--pre-card-gap, var(--space-sm));
+  gap: var(--pre-card-gap, var(--s-12));
   min-height: var(--pre-card-h, 192px);
-  padding: var(--pre-card-pad, var(--space-md));
+  padding: var(--pre-card-pad, var(--s-16));
   border: 1px solid transparent;
   border-radius: var(--r-8);
   background: var(--color-bg-base);
 }
 .pre-line {
   height: 0.85em;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-4);
   background: var(--color-border);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
@@ -590,20 +671,20 @@ chat-page:not(:defined) .chat-skel {
 .pre-line--w90 { width: 90%; }
 .pre-tags {
   display: flex;
-  gap: var(--space-xs);
+  gap: var(--s-8);
 }
 .pre-tag {
   width: 64px;
   height: 20px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-4);
   background: var(--color-border);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
 .pre-actions {
   display: flex;
-  gap: var(--space-xs);
+  gap: var(--s-8);
   margin-top: auto;
-  padding-top: var(--space-sm);
+  padding-top: var(--s-12);
   border-top: 1px solid var(--color-border);
 }
 .pre-btn {
@@ -634,8 +715,8 @@ chat-page:not(:defined) .chat-skel {
 /* Section heading between blocks on one page — mirrors the loaded
    `.section-header h2` (display face, no top margin of its own). */
 .pre-subhead {
-  margin: 0 0 var(--space-md);
-  padding-top: var(--space-sm);
+  margin: 0 0 var(--s-16);
+  padding-top: var(--s-12);
   font-family: var(--font-display);
   font-size: var(--font-size-lg);
   font-weight: 500;
@@ -645,30 +726,14 @@ chat-page:not(:defined) .chat-skel {
 
 /* Equal-width stat band (access control's "needs attention" strip) — every
    figure comes from the API, so the whole band shimmers. */
-.pre-band {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  min-height: 88px;
-  margin-bottom: var(--space-xl);
-  border-radius: var(--r-8);
-  background: var(--bg-surface);
-}
-.pre-band__item {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: var(--s-4);
-  padding: var(--space-md) var(--space-lg);
-}
 
-/* Table pages (<smart-table>). Column labels are declared in the component,
+/* Table pages (<app-table>). Column labels are declared in the component,
    not fetched, so the head row paints for real and only the body shimmers.
    --pre-cols carries the page's colgroup widths; the grid tracks and the
    per-cell padding then reproduce the loaded table exactly. */
 .pre-table {
   border: var(--pre-table-stroke, 1px solid var(--color-border));
-  border-radius: var(--pre-table-radius, var(--radius-md));
+  border-radius: var(--pre-table-radius, var(--r-8));
   background: var(--color-bg-surface);
   overflow: hidden;
 }
@@ -688,7 +753,7 @@ chat-page:not(:defined) .chat-skel {
   font-size: var(--font-size-xs);
 }
 .pre-th {
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--s-12) var(--s-16);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -697,21 +762,21 @@ chat-page:not(:defined) .chat-skel {
   overflow: hidden;
 }
 .pre-td {
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--s-12) var(--s-16);
 }
 .pre-cell {
   height: 0.75em;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-4);
   background: var(--color-border);
   animation: skel-pulse 1.5s ease-in-out infinite;
 }
-/* Org/access pages restyle smart-table into the sand table language
+/* Org/access pages restyle app-table into the sand table language
    (no outer stroke, sand header band, sand hairlines) — mirror it. */
 .pre-table--sand {
   --pre-table-stroke: none;
   --pre-table-radius: var(--r-8);
-  --pre-table-head-bg: light-dark(var(--sand-100), var(--neutral-800));
-  --pre-table-rule: light-dark(var(--sand-100), var(--neutral-800));
+  --pre-table-head-bg: var(--bg-subtle);
+  --pre-table-rule: var(--bg-subtle);
 }
 .pre-table--sand .pre-table__row--head {
   border-bottom: none;

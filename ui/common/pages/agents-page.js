@@ -1,9 +1,9 @@
 import { icons } from "/common/utils/icons.js";
-import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import "/common/design-system/app-card/app-card.js";
 import "/common/design-system/app-search/app-search.js";
 import "/common/design-system/app-empty-state/app-empty-state.js";
 import "/common/design-system/app-skeleton/app-skeleton.js";
+import "/common/design-system/app-tabs/app-tabs.js";
 import "/common/features/app-module-nav.js";
 import { escHtml, escAttr } from '/common/utils/escape.js';
 import { call, callOptional } from '../core/data-sources.js';
@@ -37,12 +37,10 @@ class AgentsPage extends HTMLElement {
     // so one listener covers typing and clearing alike.
     this.querySelector("#search-input").addEventListener("input", () => this.#renderGrid());
 
-    // Category tab clicks are delegated — tabs re-render after data loads.
-    attachSlidingIndicator(this.querySelector("#category-tabs"), ".type-tab", ".active");
-    this.querySelector("#category-tabs").addEventListener("click", (e) => {
-      const tab = e.target.closest(".type-tab");
-      if (!tab) return;
-      this.#activeCategory = tab.dataset.category;
+    // <app-tabs strip> owns the tablist semantics and the sliding indicator;
+    // the tab set itself is data-driven, so this page renders the buttons.
+    this.querySelector("#category-tabs").addEventListener("tab-change", (e) => {
+      this.#activeCategory = e.detail.key;
       this.#renderFilter();
       this.#renderGrid();
     });
@@ -97,8 +95,8 @@ class AgentsPage extends HTMLElement {
       cats.push([this.#activeCategory, counts.get(this.#activeCategory) || 0]);
     }
     const tab = (key, label, n) =>
-      `<button class="type-tab ${this.#activeCategory === key ? "active" : ""}" role="tab"
-        aria-selected="${this.#activeCategory === key}" data-category="${escHtml(key)}">
+      `<button class="tab" type="button" role="tab"
+        aria-selected="${this.#activeCategory === key}" data-key="${escAttr(key)}">
         ${escHtml(label)}<span class="n">${n}</span></button>`;
     this.querySelector("#category-tabs").innerHTML =
       tab("all", "All", this.#agents.length) +
@@ -121,7 +119,7 @@ class AgentsPage extends HTMLElement {
           placeholder="Search agents by name, skill, or capability"
           aria-label="Search agents"></app-search>
       </div>
-      <div class="type-tabs" id="category-tabs" role="tablist">${this.#skeletonTabs()}</div>
+      <app-tabs strip id="category-tabs">${this.#skeletonTabs()}</app-tabs>
       <div class="grid" id="agents-grid">${this.#skeletonCards()}</div>
     `;
   }

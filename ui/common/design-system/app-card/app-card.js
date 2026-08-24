@@ -49,19 +49,21 @@
  * @slot body - Replaces the description/error/deploying body with the consumer's
  *   own content, for cards whose middle is not a paragraph (the LLM-router
  *   config card's tier rows, say).
- * @slot footer - Replaces the default Details/Chat pair with the consumer's own
+ * @slot footer - Replaces the default Details/Chat pair (two `<app-button>`s) with the consumer's own
  *   actions (lifecycle buttons, a logs link). Captured once and cached: render()
  *   relocates these nodes and then rewrites innerHTML, so re-querying for them
  *   on a later render would find nothing and silently destroy them.
  *   Slotted nodes are captured once and cached: render() relocates them and then
  *   rewrites innerHTML, so re-querying on a later render would find nothing.
  * @fires — none. A card with an href navigates to it on click or Enter; the two
- *          footer links keep their own hrefs and are not intercepted. A card
+ *          footer buttons keep their own hrefs and are not intercepted (each
+ *          renders an inner `<a href>`, which the activation guard skips). A card
  *          without one only needs `role`/`tabindex` from the consumer, and Enter
  *          is forwarded as a click so a delegated handler sees it.
  */
 import styles from './app-card.css' with { type: 'css' };
 import '../app-tag/app-tag.js';
+import '../app-button/app-button.js';
 import { icons } from '../../utils/icons.js';
 import { escHtml, escAttr } from '/common/utils/escape.js';
 import { navigate as routerNavigate } from '../../core/router.js';
@@ -259,9 +261,11 @@ export class AppCard extends HTMLElement {
     }
 
     // A consumer-supplied footer wins over the default Details/Chat pair.
+    // Both are <app-button>: the pair used to be two hand-rolled anchor classes
+    // that re-implemented the tertiary and primary button, and drifted from it.
     const defaultFoot = `
-      ${detailsHref ? `<a class="card-link" href="${escAttr(detailsHref)}">Details</a>` : ''}
-      ${chatHref ? `<a class="card-chat-btn" href="${escAttr(chatHref)}">Chat ${icons.arrowUpRight('', 13)}</a>` : ''}`;
+      ${detailsHref ? `<app-button variant="tertiary" size="sm" href="${escAttr(detailsHref)}">Details</app-button>` : ''}
+      ${chatHref ? `<app-button variant="primary" size="sm" href="${escAttr(chatHref)}">Chat ${icons.arrowUpRight()}</app-button>` : ''}`;
 
     this.innerHTML = `
       <div class="card-top">

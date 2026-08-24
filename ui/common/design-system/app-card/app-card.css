@@ -203,57 +203,6 @@
     border-top: 1px solid var(--color-border);
   }
 
-  /* Quiet secondary — pairs with the dark primary Chat button (same height,
-     radius and type; a bare text link read as unstyled next to a filled one). */
-  .card-link {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-4);
-    min-height: var(--control-h-sm);
-    padding: 0 var(--s-12);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-    background: var(--color-bg-base);
-    color: var(--color-text-main);
-    font-size: 13px;
-    font-weight: 500;
-    text-decoration: none;
-    transition: background var(--transition-fast);
-  }
-
-  .card-link:hover {
-    color: var(--color-text-main);
-    background: var(--bg-surface-hover);
-  }
-
-  .card-link:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--color-primary-ring);
-  }
-
-  .card-chat-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-4);
-    min-height: var(--control-h-sm);
-    padding: 0 var(--s-12);
-    border-radius: var(--r-8);
-    background: var(--bg-action);
-    color: var(--fg-on-action);
-    font-size: 13px;
-    font-weight: 500;
-    text-decoration: none;
-    white-space: nowrap;
-    transition: background var(--transition-fast);
-  }
-
-  .card-chat-btn svg { flex-shrink: 0; }
-
-  .card-chat-btn:hover {
-    background: var(--bg-action-hover);
-    color: var(--fg-on-action);
-  }
-
   /* ── Loading ─────────────────────────────────────────────────────────────
      192px matches a rendered card (name + tags + two-line description + the
      action row) so the grid does not shift when data arrives. Keep this in step

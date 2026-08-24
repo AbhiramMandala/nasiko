@@ -402,43 +402,12 @@
   .tools-empty { padding: var(--s-8) 0; }
 
   /* ── Unified catalog — toolkits ∪ custom MCP servers (card grid + tabs) ── */
-  .tk-tabs {
-    display: flex;
-    gap: var(--s-16);
-    min-height: 40px; /* matches .tk-tab so the skeleton strip doesn't shift */
-    border-bottom: 1px solid var(--color-border);
+  /* The strip is <app-tabs strip>; only spacing and the skeleton are ours. */
+  app-tabs[strip] {
+    min-height: calc(var(--control-h-md) + 1px); /* no shift when the skeleton swaps out */
     margin-bottom: var(--s-16);
-    overflow-x: auto;
-    scrollbar-width: none;
   }
-  .tk-tabs::-webkit-scrollbar { display: none; }
-
-  .tk-tab {
-    padding: var(--s-8) var(--s-4);
-    min-height: 40px;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    background: transparent;
-    color: var(--color-text-muted);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    white-space: nowrap;
-    cursor: pointer;
-
-    &:hover { color: var(--color-text-main); }
-    &.active {
-      color: var(--color-text-main);
-      font-weight: 600;
-      border-bottom-color: var(--fg-brand-highlight);
-    }
-    & .n { opacity: 0.65; font-weight: 400; margin-left: 5px; }
-  }
-
-  /* The sliding .tab-indicator (tab-indicator.js) supplies the gold bar */
-  .tk-tabs.has-tab-indicator .tk-tab.active { border-bottom-color: transparent; }
-
-  .tk-tabs .tk-skel-tab { width: 110px; align-self: center; }
+  app-tabs .tk-skel-tab { width: 110px; align-self: center; }
 
   .tk-grid {
     display: grid;
@@ -458,15 +427,16 @@
   /* Cards are <app-card> — surface, padding, name, tag chips, two-line
      description, the deploying spinner and the error headline all live there
      (common/design-system/app-card). What is left here is what the card can't
-     know: the service logo in its leading slot, the build-state border, and
-     the fact that a toolkit card has nowhere to navigate to. */
+     know: the service logo in its leading slot and the fact that a toolkit card
+     has nowhere to navigate to. */
 
   /* A card with no href and no role is static — <app-card>'s own `cursor:
      pointer` would promise a click target that isn't there. */
   app-card:not([href]):not([role]) { cursor: default; }
 
-  .is-building { border-color: var(--color-info); }
-  .is-failed { border-color: var(--fg-error); }
+  /* ponytail: no build-state border — an uploaded MCP server in progress reads
+     exactly like a deploying agent card: <app-card>'s blue spinner + label and
+     nothing else. */
 
   .tk-logo {
     position: relative;
@@ -682,8 +652,6 @@
 
 
   /* Sliding indicator takes over the (neutral, not gold) active bar */
-  .upload-tabs.has-tab-indicator .upload-tab.is-active { border-bottom-color: transparent; }
-  .upload-tabs .tab-indicator { background: var(--bg-inverse); }
 
   .upload-queued {
     padding: var(--s-12) 0 0;

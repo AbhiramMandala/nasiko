@@ -71,6 +71,13 @@
   --fg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-300));
   --fg-brand-link:      var(--fg-brand);
   --fg-brand-highlight: light-dark(var(--yellow-500), var(--yellow-400));
+  /* Brand text that has to be readable, not just brand-coloured: --fg-brand is
+     yellow/600, which is 2.98:1 on a light surface — below AA for body text.
+     This drops to yellow/800 (7.6:1) in light and keeps yellow/400 in dark,
+     where the plain brand gold is already 12:1. Use it for brand-coloured
+     *labels* (selected tab, brand link text); --fg-brand stays for accents,
+     icons and rules where contrast is decorative. */
+  --fg-brand-strong:    light-dark(var(--yellow-800), var(--yellow-400));
   /* Figma fg/default/icon-* — icons get their own roles because a secondary
      icon is brand-coloured while secondary *text* is sand/700. */
   --fg-icon-primary:    light-dark(var(--sand-900), var(--neutral-100));

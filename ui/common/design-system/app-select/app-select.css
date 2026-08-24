@@ -41,8 +41,10 @@
     /* The trigger reads as a filled control, not a white one: sand-50 in light,
        neutral-900 in dark — which is exactly --bg-input, the shared field fill.
        Figma's Select frame paints it white; this is a deliberate deviation, so
-       figma-parity expects the fill token, not #ffffff. */
-    background: var(--bg-input);
+       figma-parity expects the fill token, not #ffffff. `--input-bg` is
+       app-input's sanctioned surface knob; reading it here is what lets a form
+       set one fill for its fields instead of one per control type. */
+    background: var(--input-bg, var(--bg-input));
     border: var(--bw-1) solid var(--border-primary);
     border-radius: var(--r-8);
     transition: border-color var(--transition-fast);
@@ -58,6 +60,9 @@
     padding: 0 36px 0 var(--s-12);
     border: 0;
     outline: none;
+    /* global.css rings every bare :focus'd select; the box draws the real one,
+       so zero it here or the trigger shows two. Same guard app-input carries. */
+    box-shadow: none;
     background: none;
     font-family: inherit;
     font-size: var(--font-size-sm);

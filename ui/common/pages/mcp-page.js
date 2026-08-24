@@ -20,9 +20,9 @@
  */
 import styles from './mcp-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
-import { attachSlidingIndicator } from '../utils/tab-indicator.js';
-import '../design-system/app-modal/app-modal.js';
+import { confirmDialog } from '../design-system/app-modal/app-modal.js';
 import '../design-system/app-skeleton/app-skeleton.js';
+import '../design-system/app-tabs/app-tabs.js';
 import '../features/app-module-nav.js';
 import '../design-system/auto-complete/auto-complete.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
@@ -98,11 +98,11 @@ class McpPage extends HTMLElement {
       </div>
 
       <div id="catalog-section">
-        <div class="tk-tabs" id="catalog-tabs" role="tablist" aria-hidden="true">
+        <app-tabs strip id="catalog-tabs" aria-hidden="true">
           <app-skeleton class="tk-skel-tab" height="0.9rem"></app-skeleton>
           <app-skeleton class="tk-skel-tab" height="0.9rem"></app-skeleton>
           <app-skeleton class="tk-skel-tab" height="0.9rem"></app-skeleton>
-        </div>
+        </app-tabs>
         <div class="tk-grid" id="catalog-grid" aria-busy="true">${this.#catalogSkeletonCards()}</div>
       </div>
 
@@ -134,12 +134,10 @@ class McpPage extends HTMLElement {
     this.#wireRegisterModal();
     this.#wireUploadModal();
     this.#wireConnectModal();
-    // Tab clicks are delegated — the tab strip re-renders after data loads.
-    attachSlidingIndicator(this.querySelector('#catalog-tabs'), '.tk-tab', '.active');
-    this.querySelector('#catalog-tabs').addEventListener('click', (e) => {
-      const tab = e.target.closest('.tk-tab');
-      if (!tab) return;
-      this.#catalogTab = tab.dataset.tab;
+    // <app-tabs strip>: the counts are data-driven, so this page renders the
+    // buttons and re-renders the strip whenever the catalog reloads.
+    this.querySelector('#catalog-tabs').addEventListener('tab-change', (e) => {
+      this.#catalogTab = e.detail.key;
       this.#renderCatalog();
     });
 
@@ -232,9 +230,9 @@ class McpPage extends HTMLElement {
     tabs.hidden = false;
     tabs.removeAttribute('aria-hidden');
     tabs.innerHTML = CATALOG_TABS.map(([key, label]) => `
-      <button class="tk-tab ${this.#catalogTab === key ? 'active' : ''}" type="button"
-              role="tab" aria-selected="${this.#catalogTab === key}" data-tab="${key}">
-        ${label}<span class="n">(${counts[key]})</span>
+      <button class="tab" type="button"
+              role="tab" aria-selected="${this.#catalogTab === key}" data-key="${key}">
+        ${label}<span class="n">${counts[key]}</span>
       </button>`).join('');
 
     const visible = {
@@ -288,8 +286,7 @@ class McpPage extends HTMLElement {
           + ' error-body="Open the server to see its build logs."'
         : ` description="${escAttr(s.description || 'No description provided.')}"`;
     return `
-      <app-card class="${isSettingUp ? 'is-building' : isFailed ? 'is-failed' : ''}"
-        data-id="${escAttr(s.connector_id)}" card-title="${escAttr(name)}"
+      <app-card data-id="${escAttr(s.connector_id)}" card-title="${escAttr(name)}"
         ${href ? `href="${escAttr(href)}"` : ''}
         tags="${escAttr(JSON.stringify(tags))}" max-visible-tags="3"${state}>
         <span slot="leading" class="tk-logo" aria-hidden="true">${escHtml(name.charAt(0))}${s.logo_url

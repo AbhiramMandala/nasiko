@@ -152,7 +152,7 @@ export default {
     },
     "filter-category": async (page) => {
       await page.waitForSelector(".card-name");
-      await page.click('.type-tab[data-category="devops"]');
+      await page.click('.tab[data-key="devops"]');
       await page.waitForTimeout(400);
     },
     "pinned-tabs": async (page) => {
@@ -161,7 +161,7 @@ export default {
         document.querySelector("agents-page").remove();
         document.body.appendChild(document.createElement("agents-page"));
       });
-      await page.waitForSelector('.type-tab[data-category="finance"]');
+      await page.waitForSelector('.tab[data-key="finance"]');
       await page.waitForTimeout(400);
     },
     "rail-expanded": async (page) => {

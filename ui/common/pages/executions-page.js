@@ -11,11 +11,11 @@
 import { icons } from '/common/utils/icons.js';
 import { timeAgo, formatDisplay } from '/common/utils/date-utils.js';
 import { fmtDuration, fmtTokens } from '/common/utils/units.js';
-import { attachSlidingIndicator } from '/common/utils/tab-indicator.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
+import '/common/design-system/app-tabs/app-tabs.js';
 import '/common/features/wf-run-steps.js';
 
 import styles from './executions-page.css' with { type: 'css' };
@@ -49,23 +49,17 @@ class ExecutionsPage extends HTMLElement {
     this.innerHTML = `
       <app-module-nav module="orchestrator"></app-module-nav>
       <h1 class="title-page page-title">All executions</h1>
-      <div class="tabs" role="tablist">
-        <button type="button" class="tab is-active" role="tab" data-tab="active" aria-selected="true">Active</button>
-        <button type="button" class="tab" role="tab" data-tab="history" aria-selected="false">History</button>
-      </div>
+      <app-tabs strip class="tabs">
+        <button type="button" class="tab" role="tab" data-key="active" aria-selected="true">Active</button>
+        <button type="button" class="tab" role="tab" data-key="history" aria-selected="false">History</button>
+      </app-tabs>
       <div class="list-area" id="list-area">${this.#skeleton()}</div>
     `;
 
-    attachSlidingIndicator(this.querySelector('.tabs'), '.tab', '.is-active');
-    this.querySelector('.tabs').addEventListener('click', (e) => {
-      const tab = e.target.closest('[data-tab]');
-      if (!tab || tab.dataset.tab === this.#tab) return;
-      this.#tab = tab.dataset.tab;
-      this.querySelectorAll('.tab').forEach((t) => {
-        const active = t.dataset.tab === this.#tab;
-        t.classList.toggle('is-active', active);
-        t.setAttribute('aria-selected', String(active));
-      });
+    // <app-tabs strip> flips aria-selected and slides the indicator; the page
+    // keeps owning the single list area both tabs render into.
+    this.querySelector('.tabs').addEventListener('tab-change', (e) => {
+      this.#tab = e.detail.key;
       this.#renderList();
     });
 

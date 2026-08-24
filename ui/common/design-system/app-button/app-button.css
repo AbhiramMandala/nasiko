@@ -195,6 +195,30 @@
       }
     }
 
+    /* ── Tone=destructive, Type=ghost ─────────────────────────────────────
+       The quiet destructive control: red ink, no fill and no border at rest,
+       taking a red wash only on hover. Figma's matrix has this cell (Type=ghost
+       × Tone=destructive) but the sheet never spelled it, so three EE pages had
+       each hand-rolled the same `.action-btn--danger`, and two more call sites
+       (your-agents' card delete, wf-step-editor's step delete) settled for a
+       plain ghost because both red variants are a filled or outlined box —
+       far too loud for one icon in a rail of icons. This is that tone, once. */
+    &.is-ghost-danger {
+      background: transparent;
+      border-color: transparent;
+      color: var(--fg-error);
+
+      &:hover:not(:disabled) {
+        background: var(--bg-error);
+        color: var(--fg-error);
+      }
+
+      &:active:not(:disabled) {
+        background: var(--bg-error);
+        color: var(--red-700);
+      }
+    }
+
     /* `dark` predates the Figma matrix and is styled identically to primary,
        which is now the dark button. Kept as an alias so existing call sites
        (agent-card, mcp, settings) keep working; prefer `primary`. */
@@ -293,7 +317,8 @@
     }
 
     /* Ghost has no surface of its own, so a disabled ghost must not gain one. */
-    &.is-ghost:disabled {
+    &.is-ghost:disabled,
+    &.is-ghost-danger:disabled {
       background: transparent;
       border-color: transparent;
     }

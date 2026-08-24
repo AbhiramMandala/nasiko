@@ -34,12 +34,12 @@ export default {
     },
     "filter-running": async (page) => {
       await page.waitForSelector("app-card .ac-title");
-      await page.click('.type-tab[data-status="running"]');
+      await page.click('.tab[data-key="running"]');
       await page.waitForTimeout(200);
     },
     "filter-failed": async (page) => {
       await page.waitForSelector("app-card .ac-title");
-      await page.click('.type-tab[data-status="failed"]');
+      await page.click('.tab[data-key="failed"]');
       await page.waitForTimeout(200);
     },
     // Freezes the tab indicator mid-flight: stretch the transition, click a
@@ -49,14 +49,14 @@ export default {
       await page.addStyleTag({
         content: ".tab-indicator { transition-duration: 4s !important; transition-timing-function: linear !important; }",
       });
-      await page.click('.type-tab[data-status="failed"]');
+      await page.click('.tab[data-key="failed"]');
       await page.waitForTimeout(1200);
     },
     // With reduced motion the indicator must land instantly on the new tab.
     "tab-reduced-motion": async (page) => {
       await page.emulateMedia({ reducedMotion: "reduce" });
       await page.waitForSelector("app-card .ac-title");
-      await page.click('.type-tab[data-status="running"]');
+      await page.click('.tab[data-key="running"]');
       await page.waitForTimeout(80);
     },
     "sort-status": async (page) => {

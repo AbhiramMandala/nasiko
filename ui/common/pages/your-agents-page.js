@@ -1,6 +1,5 @@
 import { apiFetch } from "/common/services/api.js";
 import { icons } from "/common/utils/icons.js";
-import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
 import { confirmDialog } from "/common/design-system/app-modal/app-modal.js";
@@ -13,6 +12,7 @@ import "/common/design-system/app-input/app-input.js";
 import "/common/design-system/app-search/app-search.js";
 import "/common/design-system/app-select/app-select.js";
 import "/common/design-system/app-tag/app-tag.js";
+import "/common/design-system/app-tabs/app-tabs.js";
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 
@@ -65,11 +65,10 @@ class YourAgentsPage extends HTMLElement {
       this.#renderGrid();
     });
 
-    attachSlidingIndicator(this.querySelector("#status-tabs"), ".type-tab", ".active");
-    this.querySelector("#status-tabs").addEventListener("click", (e) => {
-      const tab = e.target.closest(".type-tab");
-      if (!tab) return;
-      this.#statusFilter = tab.dataset.status;
+    // <app-tabs strip>: the counts are data-driven, so this page renders the
+    // buttons and the component owns the tablist semantics and the indicator.
+    this.querySelector("#status-tabs").addEventListener("tab-change", (e) => {
+      this.#statusFilter = e.detail.key;
       this.#renderTabs();
       this.#renderGrid();
     });
@@ -170,10 +169,10 @@ class YourAgentsPage extends HTMLElement {
         ? `
         <app-button slot="footer" variant="tertiary" size="sm" icon-only data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh()}</app-button>
         <app-button slot="footer" variant="tertiary" size="sm" icon-only data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square()}</app-button>
-        <button type="button" slot="footer" class="card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash("", 14)}</button>`
+        <app-button slot="footer" variant="ghost-danger" size="sm" icon-only class="card-delete" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash()}</app-button>`
         : `
         <app-button slot="footer" variant="primary" size="sm" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play()} Deploy</app-button>
-        <button type="button" slot="footer" class="card-action-btn--danger" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash("", 14)}</button>`;
+        <app-button slot="footer" variant="ghost-danger" size="sm" icon-only class="card-delete" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash()}</app-button>`;
 
     // `status` alone drives the card's status dot and its error/deploying
     // bodies — the page passes the state, the component paints it. The source
@@ -213,8 +212,8 @@ class YourAgentsPage extends HTMLElement {
     const stopped = this.#agents.length - running - settingUp - failed;
 
     const tab = (key, label, n) =>
-      `<button class="type-tab ${this.#statusFilter === key ? "active" : ""}" role="tab"
-        aria-selected="${this.#statusFilter === key}" data-status="${key}">
+      `<button class="tab" type="button" role="tab"
+        aria-selected="${this.#statusFilter === key}" data-key="${key}">
         ${label}<span class="n">${n}</span></button>`;
 
     this.querySelector("#status-tabs").innerHTML =
@@ -248,7 +247,7 @@ class YourAgentsPage extends HTMLElement {
           <span data-slot="leading">${icons.sortBoth()}</span>
         </app-select>
       </div>
-      <div class="type-tabs" id="status-tabs" role="tablist">${Array.from({ length: 4 }, () => `<div class="skel-tab"></div>`).join("")}</div>
+      <app-tabs strip id="status-tabs">${Array.from({ length: 4 }, () => `<div class="skel-tab"></div>`).join("")}</app-tabs>
       <div class="agents-grid" id="agents-grid">${this.#skeletonCards()}</div>
     `;
   }

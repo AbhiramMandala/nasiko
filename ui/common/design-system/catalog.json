@@ -120,10 +120,9 @@
             "ghost",
             "danger",
             "danger-secondary",
-            "dark",
-            "icon"
+            "ghost-danger"
           ],
-          "description": "Visual style: `primary` (default, dark fill) | `secondary` (brand tint) | `tertiary` (white + hairline border; `outline` is an alias) | `ghost` | `danger` | `danger-secondary` | `dark` (alias of `primary`, kept for existing call sites) | `icon`"
+          "description": "Visual style: `primary` (default, dark fill) | `secondary` (brand tint) | `tertiary` (white + hairline border; `outline` is an alias) | `ghost` | `danger` | `danger-secondary` | `ghost-danger` (red ink, no fill — the quiet destructive icon in a rail of icons) | `dark` (alias of `primary`, kept for existing call sites) | `icon`"
         },
         "size": {
           "type": "enum",
@@ -1177,17 +1176,23 @@
     },
     "app-tabs": {
       "element": "app-tabs",
-      "summary": "Tab bar that fires events on switch — the consumer is responsible for showing/hiding panels.",
+      "summary": "Tab bar in two shapes: - **Panels** (default) — `[data-tab]` children are the panels; the strip is generated from their `data-label` and the component owns which one shows.",
       "source": "common/design-system/app-tabs/app-tabs.js",
       "attributes": {
+        "strip": {
+          "type": "boolean",
+          "description": "Strip-only mode (see above)"
+        },
         "active": {
           "type": "string",
-          "description": "Key of the initially active tab"
+          "description": "Key of the initially active tab (panels mode)"
+        },
+        "query-param": {
+          "type": "string",
+          "description": "URL param kept in sync with the active tab (panels mode)"
         }
       },
-      "slots": [
-        "default"
-      ],
+      "slots": [],
       "events": [
         {
           "name": "tab-change",

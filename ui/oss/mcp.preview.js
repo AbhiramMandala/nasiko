@@ -470,12 +470,12 @@ export default {
     // Unified catalog tabs — counts come from the merged toolkit+server set.
     'available-tab': async (page) => {
       await page.waitForSelector('app-card[data-id]');
-      await page.click('.tk-tab[data-tab="available"]');
+      await page.click('.tab[data-key="available"]');
       await new Promise((r) => setTimeout(r, 300));
     },
     'connected-tab': async (page) => {
       await page.waitForSelector('app-card[data-id]');
-      await page.click('.tk-tab[data-tab="connected"]');
+      await page.click('.tab[data-key="connected"]');
       await new Promise((r) => setTimeout(r, 300));
     },
     // Nav scopes — ownership scopes show custom servers only; the toolkits

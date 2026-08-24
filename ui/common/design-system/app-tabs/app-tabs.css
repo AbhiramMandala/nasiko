@@ -8,7 +8,10 @@
   }
 
   @scope (app-tabs) {
-    .strip {
+    /* Strip-only mode (`<app-tabs strip>`): the host itself is the strip, since
+       the page renders the buttons as its direct children. */
+    .strip,
+    :scope[strip] {
       position: relative;
       display: flex;
       gap: var(--s-4);
@@ -48,13 +51,20 @@
       margin-bottom: 0;
       background: transparent;
 
-      &:hover { color: var(--color-primary); }
+      &:hover { color: var(--fg-brand-strong); }
       &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
       &[aria-selected="true"] {
-        color: var(--color-primary);
+        /* Not --color-primary: brand gold is 3:1 on a light surface, so the
+           selected label read fainter than the unselected ones next to it. */
+        color: var(--fg-brand-strong);
         font-weight: 600;
       }
     }
+    /* attachSlidingIndicator's bar is brand-highlight by default; app-tabs
+       draws its own indicator in --color-primary, so keep the two identical. */
+    :scope[strip] .tab-indicator { background: var(--color-primary); }
+    /* Count suffix on filter tabs ("All 24"). */
+    .tab .n { margin-left: var(--s-4); font-weight: 400; opacity: 0.65; }
     .panel { padding-top: var(--s-16); }
     .panel.is-entering { animation: tab-panel-enter 220ms ease-out; }
   }

@@ -42,45 +42,13 @@
     --search-bg: var(--bg-input);
   }
 
-  /* ── Category tabs — gold underline, count suffix ───────────────────────── */
-  .type-tabs {
-    display: flex;
-    gap: var(--s-16);
-    border-bottom: 1px solid var(--color-border);
-    margin-bottom: var(--s-24);
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .type-tabs::-webkit-scrollbar { display: none; }
-  .type-tab {
-    padding: var(--s-8) var(--s-4);
-    min-height: 40px;
-    border: none;
-    background: transparent;
-    color: var(--color-text-muted);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    cursor: pointer;
-    white-space: nowrap;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-  }
-  .type-tab:hover { color: var(--color-text-main); }
-  .type-tab.active {
-    color: var(--color-text-main);
-    border-bottom-color: var(--fg-brand-highlight);
-    font-weight: 600;
-  }
-  .type-tab.active:first-child { color: var(--fg-brand); }
-  /* The sliding .tab-indicator (tab-indicator.js) supplies the gold bar */
-  .type-tabs.has-tab-indicator .type-tab.active { border-bottom-color: transparent; }
-  .type-tab .n { opacity: 0.65; font-weight: 400; margin-left: 5px; }
-
-  .type-tabs .skel-tab {
+  /* ── Category tabs — <app-tabs strip>; the page only owns the spacing ──── */
+  app-tabs[strip] { margin-bottom: var(--s-24); }
+  app-tabs .skel-tab {
     width: 72px;
     height: 16px;
-    /* 12 + 16 + 11 matches a real .type-tab (40px, -1px bottom margin) */
-    margin: 12px 0 11px;
+    /* 8 + 16 + 8 matches a real .tab (--control-h-md) */
+    margin: var(--s-8) 0;
     border-radius: var(--r-4);
     background: var(--color-bg-base);
     animation: skel-pulse 1.5s ease-in-out infinite;

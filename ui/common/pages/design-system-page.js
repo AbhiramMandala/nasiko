@@ -193,6 +193,16 @@ const SPECS = [
   <div data-tab="config" data-label="Config">Config panel</div>
 </app-tabs>`,
   },
+  {
+    group: 'Layout',
+    tag: 'app-tabs',
+    blurb: 'Strip mode — the page renders the buttons (data-driven filters with counts) and owns the content; listen for tab-change.',
+    demo: `<app-tabs strip>
+  <button class="tab" type="button" role="tab" aria-selected="true" data-key="all">All<span class="n">24</span></button>
+  <button class="tab" type="button" role="tab" aria-selected="false" data-key="running">Running<span class="n">18</span></button>
+  <button class="tab" type="button" role="tab" aria-selected="false" data-key="failed">Failed<span class="n">6</span></button>
+</app-tabs>`,
+  },
 
   // ── Controls ────────────────────────────────────────────────────────────
   {
@@ -209,6 +219,7 @@ const SPECS = [
   <app-row gap="sm" wrap align="center">
     <app-button variant="danger">Destructive 1</app-button>
     <app-button variant="danger-secondary">Destructive 2</app-button>
+    <app-button variant="ghost-danger">Destructive ghost</app-button>
     <app-button variant="dark">Dark (alias of primary)</app-button>
   </app-row>
   <app-row gap="sm" wrap align="center">
@@ -262,6 +273,7 @@ const SPECS = [
     <app-stack gap="xs" align="start">
       <span class="demo-note">Destructive 2</span>
       <app-button icon-only variant="danger-secondary" title="Destructive 2">${icons.trash()}</app-button>
+      <app-button icon-only variant="ghost-danger" title="Destructive ghost">${icons.trash()}</app-button>
     </app-stack>
     <app-stack gap="xs" align="start">
       <span class="demo-note">Disabled</span>
@@ -574,8 +586,8 @@ const SPECS = [
   <app-card name="stale-agent" version="0.9.0" status="failed"
     error-title="Agent failed" error-body="Container exited with an error."
     tags='[{"label":"a2a"}]'>
-    <a slot="footer" class="card-link" href="/flows">View logs</a>
-    <a slot="footer" class="card-chat-btn" href="/agents">Redeploy</a>
+    <app-button slot="footer" variant="tertiary" size="sm" href="/flows">View logs</app-button>
+    <app-button slot="footer" variant="primary" size="sm" href="/agents">Redeploy</app-button>
   </app-card>
   <app-card loading></app-card>
 </app-grid>`,

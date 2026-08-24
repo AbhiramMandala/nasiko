@@ -135,7 +135,7 @@ class WfStepEditor extends HTMLElement {
               title="Move step down" aria-label="Move step ${n} down"
               ${last ? 'disabled' : ''}>${icons.arrowDown()}</app-button>
             <app-divider vertical aria-hidden="true"></app-divider>
-            <app-button variant="ghost" size="sm" icon-only data-act="remove" data-index="${i}"
+            <app-button variant="ghost-danger" size="sm" icon-only data-act="remove" data-index="${i}"
               title="Remove step" aria-label="Remove step ${n}"
               ${this.#steps.length <= 1 ? 'disabled' : ''}>${icons.trash()}</app-button>
           </div>
