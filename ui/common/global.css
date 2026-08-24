@@ -1,25 +1,5 @@
 @layer base;
 
-/* Design tokens — one file per token type, in tokens/.
- *
- * Imported here rather than through a tokens/index.css barrel: global.css is a
- * <link> in the document head, so every level of @import nesting is one more
- * serial round trip before first paint. Listed flat, the ten files are
- * discovered in a single parse and fetched in parallel.
- *
- * `node ui/scripts/gen-tokens.mjs` reads the directory, not this list, so it
- * cannot fall out of step with what is actually there. */
-@import '/common/tokens/palette.css' layer(base);
-@import '/common/tokens/colors.css' layer(base);
-@import '/common/tokens/typography.css' layer(base);
-@import '/common/tokens/spacing.css' layer(base);
-@import '/common/tokens/border-radius.css' layer(base);
-@import '/common/tokens/border-width.css' layer(base);
-@import '/common/tokens/sizing.css' layer(base);
-@import '/common/tokens/elevation.css' layer(base);
-@import '/common/tokens/motion.css' layer(base);
-@import '/common/tokens/z-index.css' layer(base);
-
 /* Nasiko UI Design System fonts — vendored locally (see nasiko_ui Flutter package) */
 @font-face {
   font-family: 'Chivo Mono';
@@ -51,21 +31,269 @@
 }
 
 @layer base {
-/* 1. Design Tokens
+
+/* 1. Design Tokens (The API)
  *
- * The tokens themselves live in tokens/ — one file per token type. They are
- * imported at the top of this file, into @layer base, so the cascade is
- * unchanged from when they were declared inline here.
- *
- * tokens/ is the single source of truth and the input to
- * `node ui/scripts/gen-tokens.mjs`, which emits tokens/tokens.json — the
- * machine-readable form a generator reads. Change a value here, regenerate.
+ * Source of truth: Nasiko UI Design System (yellow palette, ink neutrals,
+ * Chivo Mono display + Inter body). DS tokens (--bg-, --fg-, --border-,
+ * --s-, --r-) are canonical; the legacy --color- / --space- / --radius-
+ * names below are aliases kept so existing component CSS re-skins unchanged.
+ * Use DS names in new code.
  *
  * Theme: light-dark() follows the OS by default; an explicit
  * [data-theme="light"|"dark"] on <html> pins it.
  */
 :root {
   color-scheme: light dark;
+
+  /* ==== Raw palette ==== */
+  --white: #FFFFFF;
+  --black: #000000;
+
+  /* Ink neutral ramp — same hue family as --shell-bg (#242628) at ~5%
+     saturation, NOT Tailwind Slate (~33% saturation on a blue hue). Dark
+     surfaces come from light-dark(sand-*, neutral-*), so the old Slate values
+     gave the whole dark theme a blue cast that clashed with the always-ink
+     chrome. Two deliberate relationships: --neutral-800 (#2B2D30, the dark
+     content surface) is slightly LIGHTER than the ink shell so the content
+     plane floats above the chrome exactly as the white plane does in light
+     theme, while --neutral-900 (#1A1C1E) is darker than the ink and serves as
+     the recessed card/well surface sitting inside that plane. */
+  --neutral-50:  #F7F8F9;
+  --neutral-100: #EEF0F2;
+  --neutral-200: #DFE2E5;
+  --neutral-300: #C3C7CB;
+  /* Lightened from #90949A: muted text on the dark plane measured 4.53:1
+     (AA with no headroom); this restores 5.24:1 at the same hue. */
+  --neutral-400: #9BA0A6;
+  --neutral-500: #6B6E72;
+  --neutral-600: #4F5255;
+  --neutral-700: #3A3D40;
+  --neutral-800: #2B2D30;
+  --neutral-900: #1A1C1E;
+
+  --yellow-50:  #FDF7E6;
+  --yellow-100: #FBF0CE;
+  --yellow-200: #F7E19C;
+  --yellow-300: #F2D16B;
+  --yellow-400: #EEC239;
+  --yellow-500: #EAB308;
+  --yellow-600: #BB8F06;
+  --yellow-700: #8C6B05;
+  --yellow-800: #695104;
+  --yellow-900: #463602;
+
+  /* Warm sand ramp — NightOwl neutral scale (fig-tokens); the content plane,
+     cards, inputs, and table chrome all read from this ramp */
+  --sand-50:  #F5F2EC;
+  --sand-100: #EDE7DC;
+  --sand-200: #E2DAD0;
+  --sand-300: #D4CCC0;
+  --sand-400: #C2BAB0;
+  --sand-500: #A89E94;
+  --sand-600: #8C8278;
+  --sand-700: #645C52;
+  --sand-800: #3A3430;
+  --sand-900: #242628;
+
+  /* Legacy warm cream canvas ramp — superseded by --sand-*, kept as aliases */
+  --cream-50:  var(--sand-50);
+  --cream-100: var(--sand-100);
+  --cream-200: var(--sand-200);
+  --cream-300: var(--sand-300);
+  --cream-400: var(--sand-400);
+
+  --orange-100: #FFEDD5; --orange-300: #FDBA74; --orange-400: #FB923C; --orange-600: #EA580C; --orange-900: #7C2D12;
+  --red-100:    #FEE2E2; --red-300:    #FCA5A5; --red-400:    #F87171; --red-600:    #DC2626; --red-900:    #7F1D1D;
+  --purple-400: #C084FC; --purple-500: #A855F7;
+  --blue-100:   #DBEAFE; --blue-300:   #93C5FD; --blue-400:   #60A5FA; --blue-600:   #2563EB; --blue-900:   #1E3A8A;
+  --teal-400:   #2DD4BF; --teal-500:   #14B8A6;
+  --green-100:  #DCFCE7; --green-300:  #86EFAC; --green-400:  #4ADE80; --green-600:  #16A34A; --green-900:  #14532D;
+
+  /* ==== NightOwl shell chrome (ink plane — not theme-switched) ==== */
+  --shell-bg:             #242628; /* flat ink: topbar + rail + backdrop */
+  --shell-control:        #3A3430; /* dark-chrome control fill (rest) */
+  --shell-control-hover:  #4A423C;
+  --shell-control-active: #242628;
+  --shell-fg:             #FFFFFF;
+  /* sand-500, not white@62%: the ink plane is warm (#242628 family), and a cool
+     grey glyph read as a different palette beside the gold selected state. */
+  --shell-fg-muted:       var(--sand-500);
+  --shell-selected:       var(--yellow-200); /* pale-gold selected fill #F7E19C */
+  --shell-topbar-height:  52px;
+  /* The rail is the 32px button column only. It floats inside --shell-gutter on
+     both sides, so the card's left edge lands at 12 + 32 + 12 = 56. */
+  --shell-gutter:         var(--s-12);
+  --shell-rail-width:     32px;
+  --shell-rail-expanded:  200px;
+  --shell-logo-glow:      drop-shadow(0 4px 16px rgba(247, 225, 156, 0.16));
+
+  /* ==== Control metrics (fig-tokens control-*) ==== */
+  --control-h-sm: 28px;
+  --control-h-md: 32px;
+  --control-h-lg: 36px;
+
+  /* ==== DS semantic tokens (theme-aware) ==== */
+  --bg-base:            light-dark(var(--white), var(--black));
+  --bg-group:           light-dark(var(--sand-50), var(--neutral-900));
+  --bg-surface:         light-dark(var(--sand-50), var(--neutral-800));
+  --bg-surface-hover:   light-dark(var(--sand-100), var(--neutral-700));
+  --bg-surface-active:  light-dark(var(--sand-200), var(--neutral-600));
+  --bg-overlay:         light-dark(rgba(100, 116, 139, 0.5), rgba(15, 23, 42, 0.6));
+  --bg-disabled:        light-dark(var(--sand-200), var(--neutral-700));
+
+  --bg-brand:           var(--yellow-600);
+  --bg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-400));
+  --bg-brand-active:    var(--yellow-500);
+  --bg-brand-subtle:    light-dark(var(--yellow-200), var(--yellow-900));
+
+  --bg-secondary-brand:        light-dark(var(--yellow-100), var(--yellow-900));
+  --bg-secondary-brand-hover:  light-dark(var(--yellow-200), var(--yellow-800));
+  --bg-secondary-brand-active: light-dark(var(--yellow-100), var(--yellow-900));
+
+  --bg-success:         light-dark(var(--green-100), var(--green-900));
+  --bg-warning:         light-dark(var(--orange-100), var(--orange-900));
+  --bg-error:           light-dark(var(--red-100), var(--red-900));
+  --bg-information:     light-dark(var(--blue-100), var(--blue-900));
+
+  --fg-primary:         light-dark(var(--sand-900), var(--neutral-100));
+  --fg-secondary:       light-dark(var(--sand-700), var(--neutral-400));
+  --fg-disabled:        light-dark(var(--sand-500), var(--neutral-600));
+  --fg-on-action:       light-dark(var(--white), var(--neutral-900));
+
+  --fg-brand:           light-dark(var(--yellow-600), var(--yellow-400));
+  --fg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-300));
+  --fg-brand-link:      var(--fg-brand);
+  --fg-brand-highlight: light-dark(var(--yellow-500), var(--yellow-400));
+
+  --fg-success:         light-dark(var(--green-600), var(--green-400));
+  --fg-warning:         light-dark(var(--orange-600), var(--orange-400));
+  --fg-error:           light-dark(var(--red-600), var(--red-400));
+  --fg-information:     light-dark(var(--blue-600), var(--blue-400));
+
+  --border-primary:     light-dark(var(--sand-200), var(--neutral-700));
+  --border-secondary:   var(--fg-brand);
+  --border-hover:       var(--fg-brand);
+  --border-success:     light-dark(var(--green-300), var(--green-600));
+  --border-error:       light-dark(var(--red-300), var(--red-600));
+  --border-warning:     light-dark(var(--orange-300), var(--orange-600));
+  --border-information: light-dark(var(--blue-300), var(--blue-600));
+  --border-disabled:    light-dark(var(--sand-200), var(--neutral-700));
+
+  /* ==== DS spacing / radius / border widths / icon sizes ==== */
+  --s-0: 0px; --s-2: 2px; --s-4: 4px; --s-8: 8px;
+  --s-12: 12px; --s-16: 16px; --s-20: 20px; --s-24: 24px;
+  --s-28: 28px; --s-36: 36px; --s-48: 48px; --s-52: 52px; --s-64: 64px; --s-80: 80px;
+
+  /* Standard content padding inside the white card (52 top, 64 sides/bottom) */
+  --card-content-pad: var(--s-52) var(--s-64) var(--s-64);
+
+  --r-0: 0px; --r-4: 4px; --r-6: 6px; --r-8: 8px;
+  --r-10: 10px; --r-12: 12px; --r-16: 16px; --r-40: 40px;
+
+  --bw-1: 1px; --bw-2: 2px;
+
+  --icon-xs: 16px; --icon-s: 20px; --icon-m: 24px; --icon-l: 28px;
+
+  /* ==== DS elevation (flat by default — borders carry depth) ==== */
+  --shadow-card-hover: 0 2px 16px rgba(0, 0, 0, 0.10);
+  --shadow-menu:       0 4px 16px rgba(0, 0, 0, 0.08);
+
+  /* ==== Legacy aliases → DS ==== */
+  --color-primary: var(--fg-brand);
+  --color-primary-hover: var(--fg-brand-hover);
+  --color-primary-muted: light-dark(color-mix(in srgb, var(--color-primary) 60%, white), color-mix(in srgb, var(--color-primary) 60%, black));
+  --color-primary-subtle: var(--bg-secondary-brand);
+  --color-primary-ring: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  --color-on-primary: var(--fg-on-action);
+
+  --color-success: var(--fg-success);
+  --color-success-bg: var(--bg-success);
+  --color-success-border: var(--border-success);
+
+  --color-warning: var(--fg-warning);
+  --color-warning-bg: var(--bg-warning);
+  --color-warning-border: var(--border-warning);
+
+  --color-error: var(--fg-error);
+  --color-error-bg: var(--bg-error);
+  --color-error-border: var(--border-error);
+
+  --color-info: var(--fg-information);
+  --color-info-bg: var(--bg-information);
+  --color-info-border: var(--border-information);
+
+  --color-neutral: var(--fg-secondary);
+  --color-neutral-bg: light-dark(var(--sand-100), var(--neutral-800));
+  --color-neutral-border: var(--border-primary);
+
+  /* Page canvas / raised surfaces. NightOwl: flat ink shell backdrop (body
+     only — see --shell-bg) → white content card → sand wells on white.
+     --color-bg-base stays a LIGHT wash: table heads, code, hovers use it. */
+  --color-bg-base: light-dark(var(--sand-50), var(--neutral-900));
+  --color-bg-surface: light-dark(var(--white), var(--neutral-800));
+  /* Chrome sitting directly on the ink shell (rare — most chrome is the shell itself) */
+  --bg-canvas-card: light-dark(var(--shell-control), var(--neutral-800));
+  --border-canvas: light-dark(transparent, var(--neutral-700));
+  /* Inputs are flat sand wells on the white plane — no stroke */
+  --bg-input: light-dark(var(--sand-50), var(--neutral-900));
+  --color-text-main: var(--fg-primary);
+  --color-text-prose: light-dark(var(--neutral-600), var(--neutral-300));
+  --color-text-muted: var(--fg-secondary);
+  --color-border: var(--border-primary);
+
+  /* Spacing Scale - Fluid spacing (legacy; DS fixed scale is --s-*) */
+  --space-2xs: clamp(0.25rem, 0.5vw, 0.375rem);
+  --space-xs: clamp(0.375rem, 0.75vw, 0.5rem);
+  --space-sm: clamp(0.5rem, 1vw, 0.75rem);
+  --space-md: clamp(0.75rem, 1.5vw, 1rem);
+  --space-lg: clamp(1rem, 2vw, 1.5rem);
+  --space-xl: clamp(1.5rem, 2.5vw, 2rem);
+  --space-2xl: clamp(2rem, 4vw, 3rem);
+
+  /* Borders */
+  --radius-sm: var(--r-4);
+  --radius-md: var(--r-8);
+  --radius-lg: var(--r-12);
+
+  /* Shadows — DS is flat; keep the legacy ramp shallow.
+     light-dark() is a *color* function, so it wraps only the color — wrapping a
+     whole shadow value (as this ramp used to) is invalid and computes to `none`,
+     which silently dropped every shadow in the UI. Geometry is theme-independent. */
+  --shadow-sm: 0 1px 2px 0 light-dark(rgba(0, 0, 0, 0.04), rgba(0, 0, 0, 0.3));
+  --shadow-md: 0 4px 16px light-dark(rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.4));
+  --shadow-lg: 0 2px 16px light-dark(rgba(0, 0, 0, 0.10), rgba(0, 0, 0, 0.5));
+  --shadow-xl: 0 8px 24px light-dark(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.5));
+
+  /* Typography - Fluid sizing with clamp() (DS sizes carry the same clamps
+     in Flutter: body 14–18, titles 36–44) */
+  --font-size-xs: clamp(0.7rem, 0.9vw, 0.75rem);
+  --font-size-sm: clamp(0.8rem, 1vw, 0.875rem);
+  --font-size-base: clamp(0.9rem, 1.2vw, 1rem);
+  --font-size-lg: clamp(1rem, 1.3vw, 1.125rem);
+  --font-size-xl: clamp(1.1rem, 1.5vw, 1.25rem);
+  --font-size-2xl: clamp(1.25rem, 2vw, 1.5rem);
+  --font-size-3xl: clamp(1.5rem, 2.5vw, 1.875rem);
+  --font-size-4xl: clamp(1.75rem, 3vw, 2.25rem);
+
+  /* Font stacks */
+  --font-display: 'Chivo Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-body: var(--font-sans);
+  --font-mono: 'Chivo Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Transitions */
+  --transition-fast: 150ms ease-in-out;
+  --transition-base: 200ms ease-in-out;
+  --transition-slow: 300ms ease-in-out;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Layout */
+  --app-header-height: var(--shell-topbar-height);
+  --app-sidebar-width-expanded: var(--shell-rail-expanded);
+  --app-sidebar-width-collapsed: var(--shell-rail-width);
+  --app-sidebar-width: var(--app-sidebar-width-collapsed);
+  --page-max-width: 90rem;
 }
 
 /* Explicit theme pin — wins over the OS preference */
@@ -102,16 +330,16 @@ body {
    itself, so page components sit on the white surface directly. Desktop gets
    the floating white card in the @media block below. */
 @media (max-width: 1023.98px) {
-  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(div):not(dialog) {
+  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette) {
     background: var(--color-bg-surface);
     flex: 1;
   }
 }
 
 main {
-  width: min(100% - 2 * var(--s-24), var(--page-max-width));
+  width: min(100% - 2 * var(--space-lg), var(--page-max-width));
   margin: 0 auto;
-  padding: var(--s-16) 0;
+  padding: var(--space-md) 0;
 }
 
 /* Full-viewport app-shell layout — no centering, panes scroll independently */
@@ -155,9 +383,9 @@ main.app-shell {
   }
 
   main {
-    width: min(100% - 2 * var(--s-24), var(--page-max-width));
+    width: min(100% - 2 * var(--space-lg), var(--page-max-width));
     margin: 0 auto;
-    padding: var(--s-16) 0;
+    padding: var(--space-md) 0;
   }
 
   main.app-shell {
@@ -167,7 +395,7 @@ main.app-shell {
   /* Content card — the page component floats as the single white r8 card on
      the ink shell (floating chrome like toasts, dialogs, and the kb palette
      are plain divs / dedicated tags and are opted out). */
-  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(main):not(div):not(dialog),
+  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(main):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette),
   body:has(> app-header) > main {
     background: var(--color-bg-surface);
     border: none;
@@ -192,26 +420,6 @@ main.app-shell {
     margin-inline: auto;
   }
 
-  /*
-    SPA: the router mounts pages into <main id="outlet">, so the page is a
-    grandchild of body, not a child. The rule above centres a <main>'s children
-    in a --page-max-width column — correct for an MPA content page, wrong for a
-    router-mounted one: it shrinks the whole page to a narrow centred strip
-    inside the card and leaves the module-nav gutter empty beside it.
-
-    The outlet is a passthrough. The card geometry above still applies to it,
-    but the page inside owns its own padding (styles/page-layout.css) and fills
-    the card edge to edge.
-  */
-  body:has(> app-header) > main#outlet {
-    padding: 0;
-  }
-
-  body:has(> app-header) > main#outlet > * {
-    max-width: none;
-    margin-inline: 0;
-  }
-
   body:has(> app-header) > main.app-shell {
     height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     padding: 0;
@@ -220,26 +428,6 @@ main.app-shell {
   body:has(> app-header) > main.app-shell > * {
     max-width: none;
   }
-}
-
-/*
-  The router's outlet is a passthrough, but it is also the box the mounted page
-  takes its height from. That used to be `min-height: 100%` on the page — a
-  percentage against an auto-height parent, which computes to `auto`, so the page
-  box was only ever as tall as its content. Anything the page pinned to its own
-  edges shrank with it: the module nav, pinned top and bottom inside the page,
-  rendered 212px tall with 228px of rows and grew a scrollbar on a full-height
-  card, because a short page (an error state, an empty list) left nothing to
-  stretch it. A flex column has no such ambiguity — the page fills the outlet,
-  and still grows past it when its content is taller.
-*/
-main#outlet {
-  display: flex;
-  flex-direction: column;
-}
-
-main#outlet > * {
-  flex: 1 0 auto;
 }
 
 /* Prevent media from overflowing their containers */
@@ -309,7 +497,7 @@ h3,
 h4,
 h5,
 h6 {
-  margin-bottom: var(--s-16);
+  margin-bottom: var(--space-md);
   font-weight: 600;
   line-height: 1.2;
   color: var(--color-text-main);
@@ -366,11 +554,11 @@ h6 {
 /* Top-level page title inside <main> — use on the <h1> of content pages */
 .page-heading {
   font-size: var(--font-size-3xl);
-  margin: 0 0 var(--s-24);
+  margin: 0 0 var(--space-lg);
 }
 
 p {
-  margin: 0 0 var(--s-16) 0;
+  margin: 0 0 var(--space-md) 0;
 }
 
 /* DS micro-tell: captions are italic with tight tracking */
@@ -397,18 +585,8 @@ label {
   display: block;
   font-size: var(--font-size-sm);
   font-weight: 500;
-  margin-bottom: var(--s-8);
+  margin-bottom: var(--space-xs);
   color: var(--color-text-main);
-}
-
-/* Design-system components render their own <label> and space it themselves —
-   app-input/app-select via their .field gap, app-switch/app-radio/app-checkbox
-   via the .row that IS the label. The bare-form margin above is not theirs: it
-   doubled the label gap on every labelled field, and on the three control rows
-   it added 8px of empty box below the control, so anything centred beside one
-   (the Agent JSON toggle's <> glyph) sat 4px low. */
-:is(app-checkbox, app-input, app-radio, app-select, app-switch) label {
-  margin: 0;
 }
 
 :is(input[type="text"], input[type="email"], input[type="password"],
@@ -480,7 +658,7 @@ input[type="file"] {
   width: 100%;
   padding: 8px 12px;
   border: 1px solid var(--color-border);
-  border-radius: var(--r-8);
+  border-radius: var(--radius-md);
   font-size: var(--font-size-base);
   background: var(--color-bg-surface);
   color: var(--color-text-main);
@@ -493,11 +671,11 @@ input[type="file"] {
   }
 
   &::file-selector-button {
-    margin-right: var(--s-12);
+    margin-right: var(--space-sm);
     height: var(--control-h-sm);
-    padding: 0 var(--s-12);
+    padding: 0 var(--space-sm);
     border: 1px solid var(--color-border);
-    border-radius: var(--r-4);
+    border-radius: var(--radius-sm);
     background: var(--color-bg-base);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
@@ -509,7 +687,7 @@ input[type="file"] {
 input[type="checkbox"],
 input[type="radio"] {
   width: auto;
-  margin-right: var(--s-8);
+  margin-right: var(--space-xs);
   cursor: pointer;
 }
 
@@ -545,9 +723,9 @@ table {
   width: 100%;
   border-collapse: collapse;
   border-spacing: 0;
-  margin: var(--s-16) 0;
+  margin: var(--space-md) 0;
   background: var(--color-bg-surface);
-  border-radius: var(--r-8);
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
@@ -582,8 +760,8 @@ tbody tr:hover {
 /* 6. Lists */
 ul,
 ol {
-  margin: 0 0 var(--s-16) 0;
-  padding-left: var(--s-24);
+  margin: 0 0 var(--space-md) 0;
+  padding-left: var(--space-lg);
 }
 
 ul ul,
@@ -594,7 +772,7 @@ ol ul {
 }
 
 li {
-  margin-bottom: var(--s-8);
+  margin-bottom: var(--space-xs);
 }
 
 /* 7. Code */
@@ -605,17 +783,17 @@ samp {
   font-size: 0.9em;
   background: var(--color-bg-base);
   padding: 2px 6px;
-  border-radius: var(--r-4);
+  border-radius: var(--radius-sm);
   color: var(--color-text-main);
 }
 
 pre {
   font-family: var(--font-mono);
   background: var(--color-bg-base);
-  padding: var(--s-16);
-  border-radius: var(--r-8);
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
   overflow-x: auto;
-  margin: var(--s-16) 0;
+  margin: var(--space-md) 0;
   border: 1px solid var(--color-border);
 }
 
@@ -626,8 +804,8 @@ pre code {
 
 /* 8. Blockquote */
 blockquote {
-  margin: var(--s-16) 0;
-  padding-left: var(--s-24);
+  margin: var(--space-md) 0;
+  padding-left: var(--space-lg);
   border-left: 4px solid var(--color-primary);
   color: var(--color-text-muted);
   font-style: italic;
@@ -637,16 +815,16 @@ blockquote {
 hr {
   border: none;
   border-top: 1px solid var(--color-border);
-  margin: var(--s-24) 0;
+  margin: var(--space-lg) 0;
 }
 
 /* 10. Details/Summary */
 details {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--r-8);
-  padding: var(--s-16);
-  margin: var(--s-16) 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  margin: var(--space-md) 0;
 }
 
 summary {
@@ -668,7 +846,7 @@ summary::before {
   border-right: 1.5px solid currentColor;
   border-bottom: 1.5px solid currentColor;
   transform: rotate(-45deg);
-  margin-right: var(--s-8);
+  margin-right: var(--space-xs);
   vertical-align: 1px;
   flex-shrink: 0;
 }
@@ -679,13 +857,13 @@ details[open] summary::before {
 }
 
 details[open] {
-  padding-bottom: var(--s-16);
+  padding-bottom: var(--space-md);
 }
 
 /* 12. Dialog */
 dialog {
   border: none;
-  border-radius: var(--r-12);
+  border-radius: var(--radius-lg);
   padding: 0;
   box-shadow: var(--shadow-xl);
   background: var(--color-bg-surface);
@@ -740,22 +918,6 @@ app-header:not(:defined) {
   view-transition-name: app-header;
 }
 
-/* Same problem one level down. The module nav is the same nav on both sides of
-   a navigation *within* a module (Agents → Builds, Settings → Secrets), but it
-   lives inside each page component, so with no name of its own it rode the
-   `root` group and dimmed and slid with the page body on every click — the
-   "whole page flickers" report. Modules whose rows are in-page sections (MCP,
-   most of Settings) never navigate at all, which is why only the link rows did
-   it. Named, it gets its own group: the UA cross-fade blends the two halves
-   with `plus-lighter`, so identical content holds steady, and it still fades
-   properly when a navigation enters or leaves a module and the nav is only on
-   one side. No frozen `animation: none` here for that reason — unlike the
-   header, this element is not on every page. */
-app-module-nav,
-app-module-nav:not(:defined) {
-  view-transition-name: app-module-nav;
-}
-
 /* Frozen regardless of prefers-reduced-motion: the shell is the same shell on
    both sides of the navigation, so there is nothing to animate between. */
 ::view-transition-old(app-header),
@@ -775,7 +937,7 @@ app-module-nav:not(:defined) {
 app-header:not(:defined) {
   display: flex;
   align-items: center;
-  gap: var(--s-16);
+  gap: var(--space-md);
   padding: 0 var(--s-12);
   height: var(--shell-topbar-height);
   background: var(--shell-bg);

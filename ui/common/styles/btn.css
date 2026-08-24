@@ -1,12 +1,12 @@
 /* Icon button — 28×28 compact, transparent, hover bg.
    Element-qualified: the same class name is also put on bare <svg> icons inside
-   buttons (app-chatbox, app-user-menu), and an unqualified rule painted the
+   buttons (voice-input, app-user-menu), and an unqualified rule painted the
    hover background behind the glyph. */
 button.btn-icon,
 a.btn-icon {
   width: var(--control-h-sm);
   height: var(--control-h-sm);
-  border-radius: var(--r-4);
+  border-radius: var(--radius-sm);
   color: var(--color-text-muted);
   flex-shrink: 0;
 
@@ -25,7 +25,7 @@ a.btn-icon {
 .btn-icon-lg {
   width: 44px;
   height: 44px;
-  border-radius: var(--r-4);
+  border-radius: var(--radius-sm);
   color: var(--color-text-muted);
   flex-shrink: 0;
 
@@ -42,10 +42,10 @@ a.btn-icon {
 
 /* Outlined button with optional SVG icon */
 .btn-outline {
-  display: inline-flex; align-items: center; gap: var(--s-8);
+  display: inline-flex; align-items: center; gap: var(--space-xs);
   min-height: var(--control-h-md);
-  padding: 0 var(--s-12);
-  border: 1px solid var(--color-border); border-radius: var(--r-4);
+  padding: 0 var(--space-sm);
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm);
   background: var(--color-bg-surface); color: var(--color-text-muted);
   font-size: var(--font-size-sm); font-weight: 500; cursor: pointer;
   transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
@@ -57,8 +57,8 @@ a.btn-icon {
 
 .btn-ghost {
   min-height: var(--control-h-md);
-  padding: 0 var(--s-12);
-  border-radius: var(--r-4);
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-sm);
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
   font-weight: 500;

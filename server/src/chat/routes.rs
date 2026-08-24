@@ -15,7 +15,6 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
-use super::external_turn::{PersistExternalTurnError, persist_external_turn};
 use super::models::*;
 
 const MAX_FILES_PER_UPLOAD: usize = 10;
@@ -31,10 +30,6 @@ pub fn router() -> Router<AppState> {
         .route(
             "/chat/sessions/{session_id}/messages",
             get(list_messages).post(send_message),
-        )
-        .route(
-            "/chat/sessions/{session_id}/external-turns",
-            axum::routing::post(save_external_turn),
         )
         .route(
             "/chat/sessions/{session_id}/files",
@@ -924,111 +919,6 @@ async fn send_message(
     }
 
     (StatusCode::CREATED, Json(msg)).into_response()
-}
-
-#[derive(serde::Serialize)]
-struct ExternalTurnResponse {
-    inserted: bool,
-    user_message: ChatMessage,
-    assistant_message: ChatMessage,
-}
-
-async fn save_external_turn(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(session_id): Path<String>,
-    Json(body): Json<ExternalTurn>,
-) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
-
-    let turn_id = body.turn_id.trim();
-    if turn_id.is_empty()
-        || body.user_content.trim().is_empty()
-        || body.assistant_content.trim().is_empty()
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            "turn_id and content must be nonempty",
-        )
-            .into_response();
-    }
-
-    if let Some(usage) = &body.assistant_usage {
-        let invalid = usage.input_tokens.is_some_and(|v| v < 0)
-            || usage.output_tokens.is_some_and(|v| v < 0)
-            || usage.duration_ms.is_some_and(|v| v < 0)
-            || usage.cost_usd.is_some_and(|v| v.is_sign_negative());
-        if invalid {
-            return (StatusCode::BAD_REQUEST, "usage values must be nonnegative").into_response();
-        }
-    }
-
-    let mut tx = match state.db.begin().await {
-        Ok(tx) => tx,
-        Err(e) => {
-            tracing::error!(%e, session_id, "save_external_turn: begin transaction failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-
-    let owns = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
-    )
-    .bind(&session_id)
-    .bind(user_id)
-    .fetch_one(&mut *tx)
-    .await;
-    match owns {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
-        Err(e) => {
-            tracing::error!(%e, session_id, "save_external_turn: ownership lookup failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    }
-
-    let persisted = match persist_external_turn(&mut tx, &session_id, &body).await {
-        Ok(persisted) => persisted,
-        Err(PersistExternalTurnError::Incomplete) => {
-            let _ = tx.rollback().await;
-            return (StatusCode::CONFLICT, "external turn is incomplete").into_response();
-        }
-        Err(PersistExternalTurnError::Conflict) => {
-            let _ = tx.rollback().await;
-            return (
-                StatusCode::CONFLICT,
-                "turn_id already exists with a different payload",
-            )
-                .into_response();
-        }
-        Err(PersistExternalTurnError::Database(e)) => {
-            tracing::error!(%e, session_id, turn_id, "save_external_turn: persistence failed");
-            let _ = tx.rollback().await;
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-
-    if let Err(e) = tx.commit().await {
-        tracing::error!(%e, session_id, turn_id, "save_external_turn: commit failed");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-
-    (
-        if persisted.inserted {
-            StatusCode::CREATED
-        } else {
-            StatusCode::OK
-        },
-        Json(ExternalTurnResponse {
-            inserted: persisted.inserted,
-            user_message: persisted.user_message,
-            assistant_message: persisted.assistant_message,
-        }),
-    )
-        .into_response()
 }
 
 // ─── File upload ─────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -172,8 +172,6 @@ pub struct TempoLokiProvider {
 
 /// How many traces to fully fetch when aggregating tokens for stats/finops.
 const TOKEN_AGGREGATION_TRACE_CAP: usize = 100;
-const SESSION_TRACE_PAGE_SIZE: usize = 100;
-const SESSION_TRACE_SAFETY_CAP: usize = 2_000;
 
 impl TempoLokiProvider {
     pub fn new(tempo_url: String, loki_url: String, pricing: Arc<dyn PricingSource>) -> Self {
@@ -199,76 +197,9 @@ impl TempoLokiProvider {
         limit: usize,
     ) -> Result<Vec<TraceSearchResult>, ObservabilityError> {
         let start = clamp_tempo_range(start, end);
-        let results = self
-            .tempo
+        self.tempo
             .search(query, Some(start), Some(end), limit)
-            .await?;
-
-        // Traces may live in Tempo's WAL but not yet flushed to searchable
-        // blocks — a time-bounded search misses them. Retry without time
-        // params to include the WAL, then filter client-side.
-        if results.is_empty() {
-            let unbounded = self.tempo.search(query, None, None, limit).await?;
-            if !unbounded.is_empty() {
-                tracing::debug!(
-                    query,
-                    bounded = 0,
-                    unbounded = unbounded.len(),
-                    "search_traces: fell back to unbounded query (WAL-only traces)"
-                );
-                return Ok(unbounded);
-            }
-        }
-
-        Ok(results)
-    }
-
-    async fn search_session_traces(
-        &self,
-        query: &str,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-    ) -> Result<(Vec<TraceSearchResult>, bool), ObservabilityError> {
-        let start = clamp_tempo_range(start, end);
-        let mut page_end = end;
-        let mut traces = Vec::new();
-        let mut seen = HashSet::new();
-        let mut first_page = true;
-
-        loop {
-            let mut page = self
-                .tempo
-                .search(query, Some(start), Some(page_end), SESSION_TRACE_PAGE_SIZE)
-                .await?;
-            if first_page && page.is_empty() {
-                // Include traces still in Tempo's WAL, where a bounded search
-                // can briefly return nothing immediately after export.
-                page = self
-                    .tempo
-                    .search(query, None, None, SESSION_TRACE_PAGE_SIZE)
-                    .await?;
-            }
-            first_page = false;
-            let page_was_full = page.len() == SESSION_TRACE_PAGE_SIZE;
-            let next_end = older_search_boundary(&page);
-
-            append_unique_traces(&mut traces, &mut seen, page);
-
-            if traces.len() > SESSION_TRACE_SAFETY_CAP {
-                traces.truncate(SESSION_TRACE_SAFETY_CAP);
-                return Ok((traces, true));
-            }
-            if !page_was_full {
-                return Ok((traces, false));
-            }
-
-            let Some(next_end) = next_end.filter(|next| *next >= start && *next < page_end) else {
-                // A full page without a usable timestamp cannot be advanced
-                // safely. Preserve the data and report it as incomplete.
-                return Ok((traces, true));
-            };
-            page_end = next_end;
-        }
+            .await
     }
 
     /// Fetch tokens/model/latency-p50 over up to
@@ -308,60 +239,6 @@ struct TraceAggregates {
     model: Option<String>,
 }
 
-/// Tempo search has no cursor. Its time bounds are whole epoch seconds, so move
-/// to the final nanosecond of the second before the oldest result. This avoids
-/// re-reading the inclusive boundary while trace-ID dedupe handles any backend
-/// overlap between pages.
-fn older_search_boundary(page: &[TraceSearchResult]) -> Option<DateTime<Utc>> {
-    let oldest = page
-        .iter()
-        .filter_map(|(_, started_at, _)| *started_at)
-        .min()?;
-    DateTime::from_timestamp(oldest.timestamp().checked_sub(1)?, 999_999_999)
-}
-
-fn append_unique_traces(
-    traces: &mut Vec<TraceSearchResult>,
-    seen: &mut HashSet<String>,
-    page: Vec<TraceSearchResult>,
-) {
-    for trace in page {
-        if seen.insert(trace.0.clone()) {
-            traces.push(trace);
-        }
-    }
-}
-
-fn session_query(session_id: &str) -> String {
-    // TraceQL string literals use JSON-compatible escaping. Serializing the
-    // value keeps quotes, backslashes, and control characters inside the
-    // selector instead of allowing them to become TraceQL syntax.
-    let literal = serde_json::to_string(session_id).expect("serializing a string cannot fail");
-    format!("{{span.session.id={literal}}}")
-}
-
-fn trace_matches_session(trace: &TraceDetails, session_id: &str, resolver_sourced: bool) -> bool {
-    let mut seen_spans = HashSet::new();
-    let mut has_session_id = false;
-
-    for span in &trace.spans {
-        if !seen_spans.insert(&span.span_id) {
-            continue;
-        }
-        let Some(value) = span.attributes.get("session.id").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        has_session_id = true;
-        if value == session_id {
-            return true;
-        }
-    }
-
-    // Proxy-recorded resolver IDs are the authority for agents that do not
-    // emit session.id. A conflicting emitted value is never accepted.
-    resolver_sourced && !has_session_id
-}
-
 /// Per-session accumulator used while grouping traces by `session.id`.
 #[derive(Default)]
 struct SessionAccum {
@@ -396,11 +273,7 @@ impl ObservabilityProvider for TempoLokiProvider {
             let mut trace_span_durations: Vec<u64> = Vec::new();
 
             if let Ok(trace) = self.tempo.get_trace(&trace_id).await {
-                let mut seen_spans = HashSet::new();
                 for span in &trace.spans {
-                    if !seen_spans.insert(&span.span_id) {
-                        continue;
-                    }
                     if session_key.is_none() {
                         session_key = span
                             .attributes
@@ -496,16 +369,13 @@ impl ObservabilityProvider for TempoLokiProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<SessionDetails, ObservabilityError> {
-        let query = session_query(session_id);
-        let (mut trace_results, mut has_more_traces) =
-            self.search_session_traces(&query, start, end).await?;
-        let mut resolver_sourced = false;
+        let query = format!(r#"{{span.session.id="{session_id}"}}"#);
+        let mut trace_results = self.search_traces(&query, start, end, 100).await?;
 
         // Agents that never set session.id on spans (anything not running the
         // Python auto-instrumentation patch): fall back to the proxy-recorded
         // session ↔ trace index.
         if trace_results.is_empty() {
-            resolver_sourced = true;
             trace_results = self
                 .session_resolver
                 .traces_for_session(session_id)
@@ -513,11 +383,6 @@ impl ObservabilityProvider for TempoLokiProvider {
                 .into_iter()
                 .map(|id| (id, None, None))
                 .collect();
-        }
-
-        if trace_results.len() > SESSION_TRACE_SAFETY_CAP {
-            trace_results.truncate(SESSION_TRACE_SAFETY_CAP);
-            has_more_traces = true;
         }
 
         if trace_results.is_empty() {
@@ -531,36 +396,17 @@ impl ObservabilityProvider for TempoLokiProvider {
         let mut model_used: Option<String> = None;
         let mut latencies: Vec<u64> = Vec::new();
         let mut traces: Vec<TraceSummary> = Vec::new();
-        let trace_count = trace_results.len();
-        let mut trace_fetch_failed = false;
 
         for (trace_id, _, _) in &trace_results {
-            let trace = match self.tempo.get_trace(trace_id).await {
-                Ok(trace) => trace,
-                Err(error) => {
-                    trace_fetch_failed = true;
-                    tracing::warn!(trace_id, %error, "session trace fetch failed");
-                    continue;
-                }
-            };
-            if !trace_matches_session(&trace, session_id, resolver_sourced) {
-                trace_fetch_failed = true;
-                tracing::warn!(
-                    trace_id,
-                    session_id,
-                    resolver_sourced,
-                    "session trace did not match requested session"
-                );
+            let Ok(trace) = self.tempo.get_trace(trace_id).await else {
                 continue;
-            }
+            };
             // Resolver-sourced trace ids aren't bounded by the caller's time
             // window (the index has no TTL), so enforce it here.
             if trace.started_at.is_some_and(|s| s < start || s > end) {
-                trace_fetch_failed = true;
                 continue;
             }
             let Some(root_span) = find_root_span(&trace.spans) else {
-                trace_fetch_failed = true;
                 continue;
             };
             let root_span = root_span.clone();
@@ -623,8 +469,7 @@ impl ObservabilityProvider for TempoLokiProvider {
             });
         }
 
-        let (p50, p99) = latency_percentiles(latencies);
-        let metrics_complete = !has_more_traces && !trace_fetch_failed;
+        let (p50, _) = latency_percentiles(latencies);
         let cost = self
             .cost(model_used.as_deref(), total_input, total_output)
             .await;
@@ -632,14 +477,10 @@ impl ObservabilityProvider for TempoLokiProvider {
         Ok(SessionDetails {
             session_id: session_id.to_string(),
             traces,
-            trace_count,
             input_tokens: total_input,
             output_tokens: total_output,
             model_used,
-            latency_ms_p50: metrics_complete.then_some(p50).flatten(),
-            latency_ms_p99: metrics_complete.then_some(p99).flatten(),
-            has_more_traces,
-            metrics_complete,
+            latency_ms_p50: p50,
             cost,
         })
     }
@@ -801,130 +642,4 @@ pub fn find_root_span(spans: &[Span]) -> Option<&Span> {
             .map(|p| !ids.contains(p.as_str()))
             .unwrap_or(true)
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::{HashMap, HashSet};
-
-    use chrono::{Duration, TimeZone, Utc};
-
-    use super::{
-        Span, TraceDetails, append_unique_traces, older_search_boundary, session_query,
-        trace_matches_session,
-    };
-
-    fn trace_with_sessions(values: &[(&str, Option<&str>)]) -> TraceDetails {
-        let spans = values
-            .iter()
-            .map(|(span_id, session_id)| {
-                let mut attributes = HashMap::new();
-                if let Some(session_id) = session_id {
-                    attributes.insert("session.id".into(), serde_json::json!(session_id));
-                }
-                Span {
-                    span_id: (*span_id).into(),
-                    parent_span_id: None,
-                    name: "test".into(),
-                    started_at: Utc.with_ymd_and_hms(2026, 8, 19, 12, 0, 0).unwrap(),
-                    ended_at: None,
-                    duration_ms: None,
-                    service_name: "test".into(),
-                    kind: 1,
-                    status_code: 0,
-                    status_message: String::new(),
-                    attributes,
-                    events: vec![],
-                }
-            })
-            .collect();
-        TraceDetails {
-            trace_id: "trace-1".into(),
-            spans,
-            started_at: None,
-            ended_at: None,
-            duration_ms: None,
-        }
-    }
-
-    #[test]
-    fn session_query_escapes_traceql_string_literal() {
-        let session_id = "quote\" backslash\\ newline\n";
-        let query = session_query(session_id);
-        let literal = query
-            .strip_prefix("{span.session.id=")
-            .and_then(|query| query.strip_suffix('}'))
-            .unwrap();
-
-        assert_eq!(serde_json::from_str::<String>(literal).unwrap(), session_id);
-        assert_eq!(
-            query,
-            "{span.session.id=\"quote\\\" backslash\\\\ newline\\n\"}"
-        );
-    }
-
-    #[test]
-    fn injected_session_query_cannot_authorize_another_sessions_trace() {
-        let payload = "attacker\"} || {true} || {span.session.id=\"victim";
-        let query = session_query(payload);
-        let literal = query
-            .strip_prefix("{span.session.id=")
-            .and_then(|query| query.strip_suffix('}'))
-            .unwrap();
-        let victim_trace = trace_with_sessions(&[("span-1", Some("victim"))]);
-
-        assert_eq!(serde_json::from_str::<String>(literal).unwrap(), payload);
-        assert!(!trace_matches_session(&victim_trace, payload, false));
-        assert!(!trace_matches_session(&victim_trace, payload, true));
-    }
-
-    #[test]
-    fn direct_and_resolver_session_matching_use_deduplicated_spans() {
-        let direct = trace_with_sessions(&[("span-1", Some("requested"))]);
-        let replay_conflict =
-            trace_with_sessions(&[("span-1", Some("other")), ("span-1", Some("requested"))]);
-        let missing = trace_with_sessions(&[("span-1", None)]);
-
-        assert!(trace_matches_session(&direct, "requested", false));
-        assert!(!trace_matches_session(&replay_conflict, "requested", false));
-        assert!(!trace_matches_session(&missing, "requested", false));
-        assert!(trace_matches_session(&missing, "requested", true));
-    }
-
-    #[test]
-    fn session_search_boundary_moves_before_oldest_result_second() {
-        let newest =
-            Utc.with_ymd_and_hms(2026, 8, 19, 12, 0, 10).unwrap() + Duration::milliseconds(800);
-        let oldest =
-            Utc.with_ymd_and_hms(2026, 8, 19, 12, 0, 5).unwrap() + Duration::milliseconds(200);
-        let page = vec![
-            ("newest".into(), Some(newest), None),
-            ("oldest".into(), Some(oldest), None),
-        ];
-
-        let boundary = older_search_boundary(&page).unwrap();
-
-        assert_eq!(boundary.timestamp(), oldest.timestamp() - 1);
-        assert!(boundary < oldest);
-    }
-
-    #[test]
-    fn session_search_pages_dedupe_trace_ids_at_boundaries() {
-        let at = Utc.with_ymd_and_hms(2026, 8, 19, 12, 0, 0).unwrap();
-        let mut traces = Vec::new();
-        let mut seen = HashSet::new();
-        let first_page = (0..100)
-            .map(|id| (format!("trace-{id}"), Some(at), None))
-            .collect();
-        let second_page = (99..199)
-            .map(|id| (format!("trace-{id}"), Some(at), None))
-            .collect();
-
-        append_unique_traces(&mut traces, &mut seen, first_page);
-        append_unique_traces(&mut traces, &mut seen, second_page);
-
-        assert_eq!(traces.len(), 199);
-        assert_eq!(traces.first().unwrap().0, "trace-0");
-        assert_eq!(traces.last().unwrap().0, "trace-198");
-    }
 }

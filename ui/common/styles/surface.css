@@ -17,14 +17,16 @@
    `card` class would be a large markup diff for the same result. Add a name here
    when a page grows a new card; don't re-declare the surface in the page sheet. */
 .card,
-/* The extracted agent catalog card — an element, not a class, because it is a
-   real component (common/design-system/app-card). */
-app-card,
 .agent-card,
+.wf-card,
+.method-card,
 .run-card,
+.tk-card,
 .acp-skill-card,
 .acp-details-card,
 .acp-mcp-card,
+.provider-card,
+.config-card,
 .info-card,
 .stat-card,
 .summary-card,
@@ -61,9 +63,12 @@ app-card,
   :root { --card-lift: none; }
 }
 .card,
-app-card,
 .agent-card,
-.acp-skill-card {
+.wf-card,
+.method-card,
+.acp-skill-card,
+.provider-card,
+.tk-card.is-clickable {
   transition: border-color 0.12s ease, box-shadow 0.12s ease,
     transform 0.12s ease;
 
@@ -78,7 +83,7 @@ app-card,
 
 /* Row item — for list/table rows inside a surface */
 .row-item {
-  padding: var(--s-12) var(--s-16);
+  padding: var(--space-sm) var(--space-md);
   border-bottom: 1px solid var(--color-border);
 
   &:hover {

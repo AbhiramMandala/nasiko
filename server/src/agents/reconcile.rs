@@ -12,10 +12,22 @@
 //! probe, same redeploy path) rather than inventing a new mechanism.
 
 use tracing::{info, warn};
+use uuid::Uuid;
 
-use crate::catalog::models::Agent;
 use crate::state::AppState;
 use nasiko_runtime::{ContainerId, DeploymentStatus, RuntimeError, RuntimeState};
+
+/// The bounded slice of an `agents` row this pass actually needs — not the
+/// full `Agent` model (~30 columns), most of which are irrelevant here.
+#[derive(sqlx::FromRow)]
+struct ReconcilableAgent {
+    id: Uuid,
+    name: String,
+    image: Option<String>,
+    owner_id: Uuid,
+    writable: bool,
+    writable_path: Option<String>,
+}
 
 /// Runs once at startup (see `AppState::init`). Safe to call on every boot —
 /// it's a no-op wherever nothing is actually missing, at the cost of one
@@ -23,8 +35,8 @@ use nasiko_runtime::{ContainerId, DeploymentStatus, RuntimeError, RuntimeState};
 /// already pays the same per-agent cost for the (usually much smaller) seed
 /// list on every boot.
 pub async fn reconcile_agents_on_startup(state: &AppState) {
-    let agents = match sqlx::query_as::<_, Agent>(
-        "SELECT * FROM agents \
+    let agents = match sqlx::query_as::<_, ReconcilableAgent>(
+        "SELECT id, name, image, owner_id, writable, writable_path FROM agents \
          WHERE status = 'running' AND deleted_at IS NULL AND image IS NOT NULL",
     )
     .fetch_all(&state.db)
@@ -72,8 +84,11 @@ pub async fn reconcile_agents_on_startup(state: &AppState) {
             qualified_image.clone(),
             vec![],
             env,
-            None,
+            &state.config.agent_default_memory,
             state.config.agent_max_replicas,
+            agent.writable,
+            agent.writable_path.clone(),
+            agent.owner_id,
         );
         crate::agents::attach_pull_credential(
             &state.db,

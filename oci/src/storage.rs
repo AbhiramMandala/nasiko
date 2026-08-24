@@ -39,24 +39,16 @@ impl S3Storage {
         Ok(Self { client, bucket })
     }
 
-    /// Construct from S3_* environment variables (including
-    /// `S3_FORCE_PATH_STYLE`, see [`force_path_style_from_env`]).
+    /// Construct from S3_* environment variables.
     pub async fn from_env(bucket: String) -> Self {
         let endpoint = std::env::var("S3_ENDPOINT").ok();
         let region = std::env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".into());
         let access_key = std::env::var("S3_ACCESS_KEY").unwrap_or_else(|_| "nasiko".into());
         let secret_key = std::env::var("S3_SECRET_KEY").unwrap_or_default();
 
-        Self::new(
-            endpoint,
-            region,
-            access_key,
-            secret_key,
-            bucket,
-            force_path_style_from_env(),
-        )
-        .await
-        .expect("failed to create S3 client")
+        Self::new(endpoint, region, access_key, secret_key, bucket, true)
+            .await
+            .expect("failed to create S3 client")
     }
 
     pub fn blob_key(digest: &str) -> String {
@@ -195,33 +187,5 @@ impl S3Storage {
 impl nasiko_runtime::BucketProvisioner for S3Storage {
     async fn ensure_bucket(&self) -> std::result::Result<(), anyhow::Error> {
         self.ensure_bucket(false).await
-    }
-}
-
-/// `S3_FORCE_PATH_STYLE`: path-style requests (`endpoint.com/bucket/key`),
-/// defaulting **true** — RustFS/MinIO (every in-cluster install) require it,
-/// so only an explicit `false`/`0` switches to virtual-hosted style. The
-/// negative parse keeps a typo'd value from silently flipping the default
-/// out from under existing stores.
-pub fn force_path_style_from_env() -> bool {
-    parse_force_path_style(std::env::var("S3_FORCE_PATH_STYLE").ok().as_deref())
-}
-
-fn parse_force_path_style(value: Option<&str>) -> bool {
-    !matches!(value.map(str::trim), Some("false") | Some("0"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_force_path_style;
-
-    #[test]
-    fn force_path_style_defaults_true_and_only_explicit_false_disables() {
-        assert!(parse_force_path_style(None));
-        assert!(parse_force_path_style(Some("true")));
-        assert!(parse_force_path_style(Some("1")));
-        assert!(parse_force_path_style(Some("garbage")));
-        assert!(!parse_force_path_style(Some("false")));
-        assert!(!parse_force_path_style(Some("0")));
     }
 }

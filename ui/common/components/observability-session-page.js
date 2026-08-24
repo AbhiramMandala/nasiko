@@ -31,12 +31,10 @@ class ObservabilitySessionPage extends HTMLElement {
   #focusTraceId = '';        // ?trace_id= — preselect this trace's root span
   #pollTimer = null;
   #pollDeadline = 0;
-  #connected = false;
 
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
-    this.#connected = true;
     const params = new URLSearchParams(window.location.search);
     this.#sessionId = params.get('session_id') || '';
     this.#focusTraceId = params.get('trace_id') || '';
@@ -96,7 +94,6 @@ class ObservabilitySessionPage extends HTMLElement {
   }
 
   disconnectedCallback() {
-    this.#connected = false;
     clearTimeout(this.#pollTimer);
   }
 
@@ -109,18 +106,25 @@ class ObservabilitySessionPage extends HTMLElement {
    * Agents export spans through a batching OTel exporter, so a trace opened
    * straight after a chat holds only the control plane's own `a2a.dispatch`
    * span — the agent's `a2a.execute` and `ChatCompletion` spans land a few
-   * seconds later. Re-fetch for the full export window instead of treating a
-   * temporarily stable span count as proof that the trace is complete.
+   * seconds later. Re-fetch until the tree stops growing (or the window
+   * closes) instead of showing that half-built trace and never updating.
    */
   #startPolling() {
     const INTERVAL_MS = 2000;
     const WINDOW_MS = 30_000;
+    const STABLE_TICKS = 3;
+
     this.#pollDeadline = Date.now() + WINDOW_MS;
+    let lastCount = this.#spans.length;
+    let stable = 0;
 
     const tick = async () => {
       if (Date.now() > this.#pollDeadline) return;
-      await Promise.all([this.#loadSession(), this.#loadChat()]);
-      if (!this.#connected) return;
+      await this.#loadSession();
+      const count = this.#spans.length;
+      stable = count === lastCount ? stable + 1 : 0;
+      lastCount = count;
+      if (stable >= STABLE_TICKS) return;
       this.#pollTimer = setTimeout(tick, INTERVAL_MS);
     };
     this.#pollTimer = setTimeout(tick, INTERVAL_MS);
@@ -148,18 +152,17 @@ class ObservabilitySessionPage extends HTMLElement {
   #renderKpis() {
     const s = this.#session;
     if (!s) return;
-    const complete = s.metrics_complete !== false && !s.pagination?.has_next_page;
     const kpi = (label, value) => `
       <div class="kpi">
         <div class="kpi-label">${label}</div>
         <div class="kpi-value">${value}</div>
       </div>`;
     this.querySelector('#kpi-strip').innerHTML = [
-      kpi('Traces count', s.num_traces == null ? '—' : `${s.num_traces}${s.pagination?.has_next_page ? '+' : ''}`),
-      kpi('Total tokens', complete && s.token_usage?.total != null ? s.token_usage.total.toLocaleString() : '—'),
-      kpi('Total cost', complete && s.cost_summary?.total?.cost != null ? `$ ${s.cost_summary.total.cost.toFixed(3)}` : '—'),
-      kpi('Latency P50', complete && s.latency_p50 != null ? `${(s.latency_p50 / 1000).toFixed(1)} s` : '—'),
-      kpi('Latency P99', complete && s.latency_p99 != null ? `${(s.latency_p99 / 1000).toFixed(1)} s` : '—'),
+      kpi('Traces count', s.num_traces ?? 0),
+      kpi('Total tokens', (s.token_usage?.total ?? 0).toLocaleString()),
+      kpi('Total cost', `$ ${(s.cost_summary?.total?.cost ?? 0).toFixed(3)}`),
+      kpi('Latency P50', `${((s.latency_p50 ?? 0) / 1000).toFixed(1)} s`),
+      kpi('Latency P99', `${((s.latency_p99 ?? 0) / 1000).toFixed(1)} s`),
     ].join('');
     // The chat pane loads in parallel and often wins the race, rendering its
     // chips before #session exists; refresh them once the totals are in.
@@ -170,16 +173,15 @@ class ObservabilitySessionPage extends HTMLElement {
     const meta = this.querySelector('.chat-meta');
     if (!meta) return;
     const s = this.#session;
-    const complete = s?.metrics_complete !== false && !s?.pagination?.has_next_page;
     // `?? 0` used to render every absent metric as a confident 0 / $ 0.00 /
     // 0.0 s. When the trace backend is unconfigured or hasn't ingested the
     // session yet these are *unknown*, and asserting a zero cost is worse than
     // admitting we don't know — an em dash is the convention elsewhere.
     const num = (v, fmt) => (v == null ? '—' : fmt(v));
     meta.innerHTML = `
-      <span class="chip">${icons.layers('', 12)} ${num(complete ? s?.token_usage?.total : null, (v) => v.toLocaleString())}</span>
-      <span class="chip">${num(complete ? s?.cost_summary?.total?.cost : null, (v) => `$ ${v.toFixed(2)}`)}</span>
-      <span class="chip">${icons.clock('', 12)} ${num(complete ? s?.latency_p50 : null, (v) => `${(v / 1000).toFixed(1)} s`)}</span>
+      <span class="chip">${icons.layers('', 12)} ${num(s?.token_usage?.total, (v) => v.toLocaleString())}</span>
+      <span class="chip">${num(s?.cost_summary?.total?.cost, (v) => `$ ${v.toFixed(2)}`)}</span>
+      <span class="chip">${icons.clock('', 12)} ${num(s?.latency_p50, (v) => `${(v / 1000).toFixed(1)} s`)}</span>
     `;
   }
 
@@ -187,7 +189,6 @@ class ObservabilitySessionPage extends HTMLElement {
   async #loadTraces() {
     const traces = this.#session?.traces ?? [];
     const flat = [];
-    const seen = new Set();
     for (const entry of traces) {
       const traceId = entry.trace_id;
       let detail;
@@ -199,9 +200,6 @@ class ObservabilitySessionPage extends HTMLElement {
       }
       const roots = detail?.spans ?? [];
       const walk = (node, depth) => {
-        const key = `${traceId}:${node.span_id}`;
-        if (seen.has(key)) return;
-        seen.add(key);
         flat.push({ node, depth, traceId });
         (node.children || []).forEach((c) => walk(c, depth + 1));
       };
@@ -444,9 +442,6 @@ class ObservabilitySessionPage extends HTMLElement {
       messages = resp?.data ?? [];
     } catch {
       // Observability sessions don't always map to a chat session.
-      // Keep a transcript already shown if a later polling read is transiently
-      // unavailable; an empty state would falsely imply the messages vanished.
-      if (this.#chatState === 'ready') return;
     }
     if (!messages.length) {
       this.#chatState = 'empty';
