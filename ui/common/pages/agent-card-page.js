@@ -197,7 +197,7 @@ class AgentCardPage extends HTMLElement {
       const wrapper = href ? 'a' : 'div';
       const hrefAttr = href ? ` href="${escAttr(href)}"` : '';
       return `
-      <${wrapper} class="acp-skill-card"${hrefAttr}>
+      <${wrapper} class="acp-skill-card tile"${hrefAttr}>
         <div class="acp-skill-name">${escHtml(s.name)}</div>
         <div class="acp-skill-desc">${escHtml(s.description || '')}</div>
         ${s.sample_query ? `

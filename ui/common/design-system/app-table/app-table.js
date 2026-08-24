@@ -237,8 +237,22 @@ export class AppTable extends HTMLElement {
     }
   }
 
-  async refresh() {
-    if (!this.dataFn && this.#dataFnName) {
+  /**
+   * Re-fetch the current page.
+   *
+   * @param {{ resetPage?: boolean }} [opts] `resetPage` jumps back to page 1 —
+   *   what a filter change needs, since filtering to fewer pages while parked
+   *   on page 3 otherwise leaves an empty body under a hidden pager.
+   */
+  async refresh({ resetPage = false } = {}) {
+    if (resetPage) this.#currentPage = 1;
+    // Re-resolved on *every* refresh, not cached from connectedCallback: a
+    // page-scoped `override()` swaps the registry entry without touching this
+    // element, and a cached `dataFn` kept fetching the unfiltered original —
+    // which is exactly how the Users page's role/department/status selects came
+    // to do nothing. Tables that assign `.dataFn` directly carry no data-fn
+    // name and are untouched by this.
+    if (this.#dataFnName) {
       this.dataFn = resolveDataSource(this.#dataFnName) || null;
     }
     // Resolution is deliberately lazy and retried on every refresh — that is

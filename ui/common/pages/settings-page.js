@@ -90,7 +90,7 @@ class SettingsPage extends HTMLElement {
           <div class="setting-row">
             <div class="setting-info">
               <label>Agent catalog tabs</label>
-              <div class="hint">Comma-separated agent tags pinned as the catalog's filter tabs. Leave empty to derive tabs from the most common tags across agents.</div>
+              <div class="hint">Comma separated agent tags pinned as the catalog's filter tabs. Leave empty to derive tabs from the most common tags across agents.</div>
             </div>
             <div class="setting-control">
               <app-input type="text" id="s-catalog-tabs" data-field="catalog_tabs" data-allow-empty placeholder="e.g. devops, finance, support" aria-label="Agent catalog tabs"></app-input>
@@ -99,7 +99,7 @@ class SettingsPage extends HTMLElement {
           <div class="setting-row">
             <div class="setting-info">
               <label>Provider API keys</label>
-              <div class="hint">Keys aren't stored here — each routing config references one of your
+              <div class="hint">Keys aren't stored here. Each routing config references one of your
                 encrypted secrets. Manage them on the
                 <a href="/llm-router">LLM router</a> and <a href="/secrets">Secrets</a> pages.</div>
             </div>
@@ -111,7 +111,7 @@ class SettingsPage extends HTMLElement {
           <div class="setting-row">
             <div class="setting-info">
               <label>Max call depth</label>
-              <div class="hint">How many agent-to-agent hops one flow may chain before it's rejected.</div>
+              <div class="hint">How many agent to agent hops one flow may chain before it's rejected.</div>
             </div>
             <div class="setting-control">
               <app-input type="number" id="s-flow-depth" data-field="max_flow_depth" min="1" aria-label="Max call depth"></app-input>
@@ -119,11 +119,11 @@ class SettingsPage extends HTMLElement {
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label>Max fan-out</label>
+              <label>Max fan out</label>
               <div class="hint">Maximum agents a single flow may call in total.</div>
             </div>
             <div class="setting-control">
-              <app-input type="number" id="s-flow-fanout" data-field="max_flow_fan_out" min="1" aria-label="Max fan-out"></app-input>
+              <app-input type="number" id="s-flow-fanout" data-field="max_flow_fan_out" min="1" aria-label="Max fan out"></app-input>
             </div>
           </div>
           <div class="setting-row">
@@ -138,7 +138,7 @@ class SettingsPage extends HTMLElement {
           <div class="setting-row">
             <div class="setting-info">
               <label>Flow timeout (seconds)</label>
-              <div class="hint">Wall-clock limit for a whole flow.</div>
+              <div class="hint">Wall clock limit for a whole flow.</div>
             </div>
             <div class="setting-control">
               <app-input type="number" id="s-flow-timeout" data-field="flow_timeout_secs" min="1" aria-label="Flow timeout (seconds)"></app-input>
@@ -159,8 +159,8 @@ class SettingsPage extends HTMLElement {
           <div class="setting-row">
             <div class="setting-info">
               <label>Registry credentials</label>
-              <div class="hint">Per-agent pull credentials are issued by the platform, and the
-                cluster-wide build credential comes from <code>BUILD_PUSH_TOKEN</code> — neither is
+              <div class="hint">Per agent pull credentials are issued by the platform, and the
+                cluster-wide build credential comes from <code>BUILD_PUSH_TOKEN</code>, neither is
                 configured from this page.</div>
             </div>
             <div class="setting-control"></div>
@@ -209,7 +209,7 @@ class SettingsPage extends HTMLElement {
           <div class="setting-row">
             <div class="setting-info">
               <label>Scopes</label>
-              <div class="hint">Space-separated. Defaults to <code>openid profile email</code>.</div>
+              <div class="hint">Space separated. Defaults to <code>openid profile email</code>.</div>
             </div>
             <div class="setting-control">
               <app-input type="text" id="s-oidc-scopes" data-field="oidc_scopes" data-allow-empty placeholder="openid profile email" aria-label="Scopes"></app-input>
@@ -218,7 +218,7 @@ class SettingsPage extends HTMLElement {
           <div class="setting-row">
             <div class="setting-info">
               <label>Button label</label>
-              <div class="hint">Overrides the sign-in button text.</div>
+              <div class="hint">Overrides the sign in button text.</div>
             </div>
             <div class="setting-control">
               <app-input type="text" id="s-oidc-label" data-field="oidc_provider_label" data-allow-empty placeholder="Microsoft" aria-label="Button label"></app-input>
@@ -305,7 +305,7 @@ class SettingsPage extends HTMLElement {
     if (secretState) {
       secretState.textContent = s.oidc_client_secret_configured
         ? 'A secret is stored. Leave blank to keep it, or enter a new one to replace it.'
-        : 'No secret stored yet — SSO stays disabled until one is set.';
+        : 'No secret stored yet. SSO stays disabled until one is set.';
     }
   }
 

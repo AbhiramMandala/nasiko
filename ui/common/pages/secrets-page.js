@@ -25,7 +25,7 @@ class SecretsPage extends HTMLElement {
         <p class="page-sub">API credentials stored in this workspace. Router configs and agents reference secrets by name.</p>
       </header>
       <secrets-manager scope="user"></secrets-manager>
-      <div class="note-well">${icons.lock('note-icon', 16)}<span>Keys are write-only. Once saved, a secret can be rotated or deleted but never read back — configs reference it by name.</span></div>
+      <div class="note-well">${icons.lock('note-icon', 16)}<span>Keys are write only. Once saved, a secret can be rotated or deleted but never read back. The configs reference it by name.</span></div>
     `;
   }
 }

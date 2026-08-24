@@ -296,14 +296,13 @@ export class AppUserMenu extends HTMLElement {
             const isActive = user.username === currentUser;
             return `
             <li>
-              <a class="user-item ${isActive ? 'is-active' : ''}"
-                 href="/u/${user.username}${eff}">
+              <div class="user-item ${isActive ? 'is-active' : ''}">
                 <div class="user-item-info">
                   <div class="user-item-name">${user.username}</div>
                   ${user.email ? `<div class="user-item-email">${user.email}</div>` : ''}
                 </div>
                 ${isActive ? IC_CHECK : ''}
-              </a>
+              </div>
             </li>`;
           }).join('')}
         </ul>

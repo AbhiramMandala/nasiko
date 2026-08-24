@@ -149,23 +149,9 @@
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: var(--s-16);
   }
-  a.acp-skill-card {
-    text-decoration: none;
-    color: inherit;
-  }
-  .acp-skill-card {
-    border: 1px solid transparent;
-    border-radius: var(--r-8);
-    padding: var(--s-16);
-    background: var(--color-bg-base);
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-8);
-    cursor: pointer;
-  }
-  .acp-skill-card:hover {
-    border-color: var(--color-border);
-  }
+  /* The card itself is `.tile` (common/styles/surface.css). A skill card is
+     clickable, so the affordance — and only that — stays here. */
+  .acp-skill-card { cursor: pointer; }
   .acp-skill-name {
     font-size: var(--font-size-base);
     font-weight: 600;

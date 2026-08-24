@@ -22,7 +22,6 @@
 app-card,
 .agent-card,
 .run-card,
-.acp-skill-card,
 .acp-details-card,
 .acp-mcp-card,
 .info-card,
@@ -62,14 +61,45 @@ app-card,
 }
 .card,
 app-card,
-.agent-card,
-.acp-skill-card {
+.agent-card {
   transition: border-color 0.12s ease, box-shadow 0.12s ease,
     transform 0.12s ease;
 
   /* Skeleton placeholders keep the surface but not the affordance — there is
      nothing to click yet. Both class names are in use across the pages. */
   &:not(.skeleton-card, .is-skeleton):hover {
+    border-color: var(--color-border);
+    box-shadow: var(--shadow-md);
+    transform: var(--card-lift);
+  }
+}
+
+/* ── Tile — the flat card ────────────────────────────────────────────────────
+   A filled panel: no stroke, no lift, no wash. Used where a card is a labelled
+   block of copy rather than a navigable object — agent-card-page's skill cards
+   and mcp-detail-page's tool cards, which had each written this treatment
+   separately. A tile that IS clickable (the skill card) adds `cursor` and the
+   hover hairline in its own sheet, and stays in the lift group above. */
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-8);
+  padding: var(--s-16);
+  /* Transparent, not none: a hover hairline must not resize the tile. */
+  border: 1px solid transparent;
+  border-radius: var(--r-8);
+  background: var(--color-bg-base);
+}
+a.tile { color: inherit; text-decoration: none; }
+
+/* Same hover as the lifted card above: the hairline appears in the border the
+   tile already reserved, and the plane rises. Skill cards had it before `.tile`
+   existed, and tool cards read as dead next to them without it. */
+.tile {
+  transition: border-color 0.12s ease, box-shadow 0.12s ease,
+    transform 0.12s ease;
+
+  &:hover {
     border-color: var(--color-border);
     box-shadow: var(--shadow-md);
     transform: var(--card-lift);

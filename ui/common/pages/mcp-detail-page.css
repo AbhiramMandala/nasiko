@@ -6,19 +6,6 @@
     align-items: center;
     margin-bottom: var(--s-24);
   }
-  .mdp-back {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--control-h-md);
-    height: var(--control-h-md);
-    border-radius: var(--r-8);
-    background: var(--color-bg-base);
-    color: var(--color-text-main);
-    text-decoration: none;
-    & svg { width: 16px; height: 16px; }
-    &:hover { background: var(--bg-input); }
-  }
 
   /* ── Header ────────────────────────────────────────────────────────────── */
   .mdp-header { margin-bottom: var(--s-16); }
@@ -33,28 +20,6 @@
     font-weight: 700;
     margin: 0;
   }
-  .mdp-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    padding: 2px 10px;
-    border-radius: 999px;
-    background: var(--bg-input);
-    color: var(--color-text-muted);
-  }
-  .mdp-badge-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: var(--color-text-muted);
-  }
-  .mdp-badge--active { color: var(--fg-success); }
-  .mdp-badge--active .mdp-badge-dot { background: var(--fg-success); }
-  .mdp-badge--building { color: var(--color-info, #3b82f6); }
-  .mdp-badge--building .mdp-badge-dot { background: var(--color-info, #3b82f6); }
-  .mdp-badge--failed { color: var(--fg-error); }
-  .mdp-badge--failed .mdp-badge-dot { background: var(--fg-error); }
   .mdp-description {
     margin: var(--s-8) 0 0;
     font-size: var(--font-size-sm);
@@ -80,15 +45,9 @@
   }
 
   /* ── Metadata grid ─────────────────────────────────────────────────────── */
-  .mdp-meta-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: var(--s-16);
-    margin-bottom: var(--s-32);
-  }
-  @media (max-width: 640px) {
-    .mdp-meta-grid { grid-template-columns: 1fr; }
-  }
+  /* The grid is an <app-grid min-width>: it folds to one column on narrow
+     viewports on its own, so there is no media query here. */
+  .mdp-meta-grid { margin-bottom: var(--s-32); }
   .mdp-meta-item { display: flex; flex-direction: column; gap: 2px; }
   .mdp-meta-label {
     font-size: var(--font-size-xs);
@@ -103,29 +62,19 @@
     word-break: break-all;
   }
 
-  /* ── Tools grid ────────────────────────────────────────────────────────── */
-  .mdp-tools-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: var(--s-12);
-  }
-  .mdp-tool-card {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: var(--s-12) var(--s-16);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
-  }
+  /* ── Tools ─────────────────────────────────────────────────────────────── */
+  /* A tool card is the same flat `.tile` as an agent's skill card
+     (common/styles/surface.css) — a labelled block of copy, with nowhere to
+     navigate to. Only the two type rules inside it are ours. */
   .mdp-tool-name {
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-base);
     font-weight: 600;
-    font-family: var(--font-mono, monospace);
+    color: var(--color-text-main);
   }
   .mdp-tool-desc {
-    font-size: var(--font-size-xs);
+    font-size: var(--font-size-sm);
     color: var(--color-text-muted);
-    line-height: 1.4;
+    line-height: 1.5;
   }
 
   /* ── Credential / OAuth ────────────────────────────────────────────────── */
@@ -135,14 +84,6 @@
     gap: var(--s-8);
     font-size: var(--font-size-sm);
     margin-bottom: var(--s-12);
-  }
-  .mdp-status-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: var(--color-text-muted);
-    flex-shrink: 0;
-    &.is-ok { background: var(--fg-success); }
-    &.is-off { background: var(--color-text-muted); }
   }
   .mdp-cred-form {
     display: flex;
@@ -155,97 +96,112 @@
     flex: 1;
     --input-bg: var(--bg-input);
   }
-  /* ── Agent access ──────────────────────────────────────────────────────── */
-  .mdp-agent-picker { max-width: 360px; margin-bottom: var(--s-16); }
-  .mdp-empty {
+  /* ── Grants ────────────────────────────────────────────────────────────── */
+  .mdp-grants-head {
     display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--s-8);
-    padding: var(--s-32);
-    color: var(--color-text-muted);
-    text-align: center;
-    & svg { width: 28px; height: 28px; opacity: 0.4; }
-    & p { margin: 0; font-size: var(--font-size-sm); }
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--s-16);
+    margin-bottom: var(--s-16);
   }
-  .mdp-access-row {
-    display: flex;
-    align-items: center;
-    gap: var(--s-12);
-    padding: var(--s-12) 0;
-    font-size: var(--font-size-sm);
-  }
-
-  /* Tool rules editor */
-  .mdp-tools-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-8);
-    margin-top: var(--s-12);
-  }
-  .mdp-tool-line {
-    display: flex;
-    align-items: center;
-    gap: var(--s-12);
-    padding: var(--s-8) 0;
-  }
-  .mdp-tool-info { flex: 1; min-width: 0; }
-  .mdp-tool-info-name {
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    font-family: var(--font-mono, monospace);
-  }
-  .mdp-tool-info-desc {
+  .mdp-grants-head .mdp-section-title,
+  .mdp-grants-head .mdp-muted { margin-bottom: 0; }
+  .mdp-grants-search {
     display: block;
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-  }
-  .mdp-tool-stance {
-    height: var(--control-h-sm);
-    padding: 0 var(--s-8);
-    border: none;
-    border-radius: var(--r-6);
-    background: var(--bg-input);
-    font-size: var(--font-size-xs);
-    color: var(--color-text-main);
-    cursor: pointer;
-  }
-  .mdp-tools-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--s-12);
-    margin-top: var(--s-12);
-    justify-content: flex-end;
-  }
-  .mdp-save-status {
-    font-size: var(--font-size-xs);
-    &.is-ok { color: var(--fg-success); }
-    &.is-error { color: var(--fg-error); }
-  }
-
-  /* ── Build info / logs ─────────────────────────────────────────────────── */
-  .mdp-build-status {
-    display: flex;
-    align-items: center;
-    gap: var(--s-8);
-    font-size: var(--font-size-sm);
     margin-bottom: var(--s-12);
+    --search-bg: var(--bg-input);
   }
-  .mdp-logs-viewer { margin-top: var(--s-12); }
-  .mdp-logs-toggle {
+  .mdp-subtabs {
     display: flex;
-    align-items: center;
     gap: var(--s-8);
-    background: none;
+    margin-bottom: var(--s-12);
+    flex-wrap: wrap;
+  }
+  .mdp-subtab {
     border: none;
-    font-size: var(--font-size-sm);
+    background: none;
+    padding: var(--s-4) var(--s-12);
+    border-radius: 999px;
+    font-size: var(--font-size-xs);
     font-weight: 500;
     color: var(--color-text-muted);
     cursor: pointer;
-    padding: var(--s-8) 0;
-    & svg { width: 14px; height: 14px; }
-    &:hover { color: var(--color-text-main); }
   }
+  .mdp-subtab:hover { color: var(--color-text-main); background: var(--bg-surface-hover); }
+  .mdp-subtab.is-active {
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+    font-weight: 600;
+  }
+  /* Sliding pill indicator (tab-indicator.js) carries the active fill;
+     subtabs stack above it so labels stay readable */
+  .mdp-subtabs.has-tab-indicator .mdp-subtab { position: relative; z-index: 1; }
+  .mdp-subtabs.has-tab-indicator .mdp-subtab.is-active { background: transparent; }
+  .mdp-subtabs .tab-indicator {
+    background: var(--color-bg-base);
+    border-radius: 999px;
+  }
+
+  /* ── Grant modal ───────────────────────────────────────────────────────── */
+  .mdp-grant-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-16);
+  }
+  .mdp-field { display: flex; flex-direction: column; gap: var(--s-8); }
+  .mdp-field-label {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--color-text-muted);
+  }
+  .mdp-grant-types {
+    display: flex;
+    gap: var(--s-8);
+    flex-wrap: wrap;
+  }
+  .mdp-picker { position: relative; }
+  .mdp-picker-results {
+    display: flex;
+    flex-direction: column;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-top: var(--s-4);
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+  }
+  .mdp-picker-option {
+    display: flex;
+    align-items: baseline;
+    /* A <button> is centred by the UA sheet; as a flex container that would
+       centre the whole label+sub group instead of starting it at the left
+       edge, which is where a picker option has to begin. */
+    justify-content: flex-start;
+    gap: var(--s-12);
+    padding: var(--s-8) var(--s-12);
+    border: none;
+    background: none;
+    text-align: left;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+    cursor: pointer;
+  }
+  .mdp-picker-option:hover { background: var(--bg-surface-hover); }
+  .mdp-picker-option-label { font-weight: 500; }
+  .mdp-picker-option-sub {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mdp-picker-none {
+    padding: var(--s-12);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  /* ── Build logs ────────────────────────────────────────────────────────── */
   .mdp-logs-pre {
     margin: var(--s-8) 0 0;
     padding: var(--s-16);
