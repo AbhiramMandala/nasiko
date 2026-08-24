@@ -3,7 +3,8 @@ mod common;
 use chrono::{TimeZone, Utc};
 use nasiko_types::{
     CODING_AGENT_EVENT_VERSION, CapturePolicy, CodingAgentEventV1, CodingAgentLlmCall,
-    CodingAgentSession, CodingAgentSource, CodingAgentTurn, coding_agent_event_id,
+    CodingAgentSession, CodingAgentSource, CodingAgentTimestampQuality, CodingAgentToolAssociation,
+    CodingAgentToolCall, CodingAgentToolCallStatus, CodingAgentTurn, coding_agent_event_id,
     coding_agent_session_id,
 };
 use serde_json::{Value, json};
@@ -64,6 +65,7 @@ fn event(session: &str, turn: &str, policy: CapturePolicy) -> CodingAgentEventV1
                 started_at,
                 ended_at,
             }],
+            tool_calls: vec![],
         },
         capture_policy: policy,
     }
@@ -91,7 +93,23 @@ async fn post(server: &common::TestServer, user_id: Uuid, events: &[CodingAgentE
 async fn accepts_content_and_metadata_and_handles_replays_independently() {
     let server = common::TestServer::start().await;
     let (user_id, agent_id) = setup(&server).await;
-    let content = event("content-session", "turn-1", CapturePolicy::Content);
+    let mut content = event("content-session", "turn-1", CapturePolicy::Content);
+    content.turn.tool_calls.push(CodingAgentToolCall {
+        id: "native-tool".into(),
+        name: "read_file".into(),
+        kind: "tool".into(),
+        model_call_id: Some("call-turn-1".into()),
+        status: CodingAgentToolCallStatus::Succeeded,
+        arguments: Some(json!({"path": "redacted"})),
+        output: Some(json!("ok")),
+        raw: None,
+        error: None,
+        started_at: Some(content.turn.started_at),
+        ended_at: Some(content.turn.ended_at),
+        duration_ms: Some(2000),
+        association: CodingAgentToolAssociation::Exact,
+        timestamp_quality: CodingAgentTimestampQuality::Exact,
+    });
     let metadata = event("metadata-session", "turn-1", CapturePolicy::MetadataOnly);
 
     let first = post(&server, user_id, &[content.clone(), metadata.clone()]).await;
@@ -134,6 +152,21 @@ async fn accepts_content_and_metadata_and_handles_replays_independently() {
             .unwrap();
     assert_eq!(content_messages, 2);
     assert_eq!(metadata_messages, 0);
+    let assistant_metadata: Value = sqlx::query_scalar(
+        "SELECT metadata FROM chat_messages WHERE session_id = $1 AND role = 'assistant'",
+    )
+    .bind(&content_session_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        assistant_metadata["coding_agent"]["capture_policy"],
+        "content"
+    );
+    assert_eq!(
+        assistant_metadata["coding_agent"]["tool_calls"][0]["id"],
+        "native-tool"
+    );
 
     let replay = post(&server, user_id, std::slice::from_ref(&content)).await;
     assert_eq!(replay["data"]["results"][0]["status"], "duplicate");

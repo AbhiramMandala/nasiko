@@ -325,6 +325,7 @@ class ChatPage extends HTMLElement {
           this.#appendMsg(messagesEl, m.role, m.content, {
             usage: usageFromMessage(m),
             traceId: m.trace_id,
+            metadata: m.metadata,
           });
           if (m.role === 'user') this.#lastUserContent = m.content;
         }
@@ -333,7 +334,7 @@ class ChatPage extends HTMLElement {
     } catch { messagesEl.innerHTML = ''; }
   }
 
-  #appendMsg(messagesEl, role, content, { usage = null, traceId = null } = {}) {
+  #appendMsg(messagesEl, role, content, { usage = null, traceId = null, metadata = null } = {}) {
     // Sessions are written by multiple clients: the web UI stores replies as
     // "assistant" while the CLI/TUI store them as "agent". Anything that is
     // not the user renders as an agent reply (markdown + assistant styling).
@@ -352,6 +353,12 @@ class ChatPage extends HTMLElement {
       div.innerHTML = renderMarkdown(content);
     }
 
+    const toolCalls = metadata?.coding_agent?.tool_calls;
+    if (!isUser && Array.isArray(toolCalls)) {
+      const steps = document.createElement('agent-steps');
+      row.appendChild(steps);
+      steps.loadToolCalls(toolCalls);
+    }
     row.appendChild(div);
 
     // Message actions toolbar

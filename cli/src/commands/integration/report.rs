@@ -3,9 +3,9 @@
 use anyhow::{Result, bail};
 use chrono::Utc;
 use nasiko_types::{
-    CODING_AGENT_EVENT_VERSION, CapturePolicy, CodingAgentEventV1, CodingAgentLlmCall,
-    CodingAgentSession, CodingAgentSource, CodingAgentTurn, coding_agent_event_id,
-    coding_agent_session_id,
+    CODING_AGENT_CONTENT_MAX_BYTES, CODING_AGENT_EVENT_VERSION, CapturePolicy, CodingAgentEventV1,
+    CodingAgentLlmCall, CodingAgentSession, CodingAgentSource, CodingAgentToolCall,
+    CodingAgentTurn, coding_agent_event_id, coding_agent_session_id,
 };
 use std::collections::HashSet;
 use std::io::Read;
@@ -132,6 +132,34 @@ fn canonical_event(
                     ended_at: call.ended_at,
                 })
                 .collect(),
+            tool_calls: turn
+                .tool_calls
+                .iter()
+                .map(|tool| CodingAgentToolCall {
+                    id: tool.id.clone(),
+                    name: tool.name.clone(),
+                    kind: tool.kind.clone(),
+                    model_call_id: tool.model_call_id.clone(),
+                    status: tool.status,
+                    arguments: capture_content
+                        .then(|| tool.arguments.as_ref().map(bounded_value))
+                        .flatten(),
+                    output: capture_content
+                        .then(|| tool.output.as_ref().map(bounded_value))
+                        .flatten(),
+                    raw: capture_content
+                        .then(|| tool.raw.as_deref().map(bounded_text))
+                        .flatten(),
+                    error: capture_content
+                        .then(|| tool.error.as_deref().map(bounded_text))
+                        .flatten(),
+                    started_at: tool.started_at,
+                    ended_at: tool.ended_at,
+                    duration_ms: tool.duration_ms,
+                    association: tool.association,
+                    timestamp_quality: tool.timestamp_quality,
+                })
+                .collect(),
         },
         capture_policy: if capture_content {
             CapturePolicy::Content
@@ -139,6 +167,33 @@ fn canonical_event(
             CapturePolicy::MetadataOnly
         },
     }
+}
+
+fn bounded_value(value: &serde_json::Value) -> serde_json::Value {
+    let serialized = serde_json::to_string(value).unwrap_or_else(|_| "null".into());
+    if serialized.len() <= CODING_AGENT_CONTENT_MAX_BYTES {
+        return value.clone();
+    }
+    serde_json::Value::String(bounded_text_to(
+        &serialized,
+        CODING_AGENT_CONTENT_MAX_BYTES / 2,
+    ))
+}
+
+fn bounded_text(value: &str) -> String {
+    bounded_text_to(value, CODING_AGENT_CONTENT_MAX_BYTES)
+}
+
+fn bounded_text_to(value: &str, max: usize) -> String {
+    if value.len() <= max {
+        return value.to_string();
+    }
+    let suffix = "...";
+    let mut end = max.saturating_sub(suffix.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{suffix}", &value[..end])
 }
 
 fn queue_then_mark(record: &QueueRecord, lock: &SessionLock) -> Result<()> {
@@ -194,7 +249,7 @@ fn log(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::model::LlmCall;
+    use super::super::model::{LlmCall, ToolCall};
     use super::*;
     use chrono::{DateTime, Utc};
     use std::cell::Cell;
@@ -221,6 +276,7 @@ mod tests {
                 })
                 .into_iter()
                 .collect(),
+            tool_calls: vec![],
         }
     }
 
@@ -261,7 +317,23 @@ mod tests {
 
     #[test]
     fn canonical_identity_is_stable_and_content_policy_is_enforced() {
-        let turn = turn("same-turn", true);
+        let mut turn = turn("same-turn", true);
+        turn.tool_calls.push(ToolCall {
+            id: "tool-1".into(),
+            name: "Read".into(),
+            kind: "tool".into(),
+            model_call_id: Some("call-same-turn".into()),
+            status: nasiko_types::CodingAgentToolCallStatus::Succeeded,
+            arguments: Some(serde_json::json!({"path": "secret"})),
+            output: Some(serde_json::json!("secret output")),
+            raw: Some("raw".into()),
+            error: Some("hidden".into()),
+            started_at: Some(turn.started_at),
+            ended_at: Some(turn.ended_at),
+            duration_ms: Some(0),
+            association: nasiko_types::CodingAgentToolAssociation::Exact,
+            timestamp_quality: nasiko_types::CodingAgentTimestampQuality::Exact,
+        });
         let first = canonical_event("claude", "claude-code", "same", &turn, false);
         let second = canonical_event("claude", "claude-code", "same", &turn, false);
         assert_eq!(first.event_id, second.event_id);
@@ -269,10 +341,33 @@ mod tests {
         assert_eq!(first.session.id, "claude:same");
         assert!(first.turn.prompt.is_none());
         assert!(first.turn.response.is_none());
+        assert_eq!(first.turn.tool_calls[0].name, "Read");
+        assert!(first.turn.tool_calls[0].arguments.is_none());
+        assert!(first.turn.tool_calls[0].output.is_none());
+        assert!(first.turn.tool_calls[0].error.is_none());
         assert!(first.validate().is_ok());
         assert_ne!(
             first.event_id,
             canonical_event("opencode", "opencode", "same", &turn, false).event_id
         );
+        let content = canonical_event("claude", "claude-code", "same", &turn, true);
+        assert_eq!(
+            content.turn.tool_calls[0].arguments,
+            Some(serde_json::json!({"path": "secret"}))
+        );
+        assert!(content.validate().is_ok());
+    }
+
+    #[test]
+    fn tool_content_projection_bounds_large_json_and_unicode_text() {
+        let value = serde_json::json!({"value": "x".repeat(CODING_AGENT_CONTENT_MAX_BYTES)});
+        assert!(
+            serde_json::to_vec(&bounded_value(&value)).unwrap().len()
+                <= CODING_AGENT_CONTENT_MAX_BYTES
+        );
+        let text = "é".repeat(CODING_AGENT_CONTENT_MAX_BYTES);
+        let bounded = bounded_text(&text);
+        assert!(bounded.len() <= CODING_AGENT_CONTENT_MAX_BYTES);
+        assert!(bounded.ends_with("..."));
     }
 }

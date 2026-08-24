@@ -161,7 +161,9 @@ fn records_at(root: &Path) -> Result<Vec<(PathBuf, QueueRecord)>> {
             {
                 match load(&path) {
                     Ok(record)
-                        if record.next_attempt_at.is_none_or(|next_attempt| next_attempt <= now) =>
+                        if record
+                            .next_attempt_at
+                            .is_none_or(|next_attempt| next_attempt <= now) =>
                     {
                         records.push((path, record));
                         if records.len() >= MAX_SCAN_RECORDS {
@@ -219,11 +221,10 @@ fn quarantine_invalid_at(root: &Path, path: &Path) -> Result<()> {
         .parent()
         .and_then(Path::file_name)
         .context("invalid queue record has no cluster directory")?;
-    let destination = root
-        .join("rejected")
-        .join("malformed")
-        .join(cluster)
-        .join(path.file_name().context("invalid queue record has no filename")?);
+    let destination = root.join("rejected").join("malformed").join(cluster).join(
+        path.file_name()
+            .context("invalid queue record has no filename")?,
+    );
     create_owner_dirs(destination.parent().expect("invalid quarantine has parent"))?;
     std::fs::rename(path, &destination)
         .with_context(|| format!("failed to quarantine malformed record {}", path.display()))?;
@@ -349,6 +350,7 @@ mod tests {
                     started_at: at,
                     ended_at: at,
                     llm_calls: vec![],
+                    tool_calls: vec![],
                 },
                 capture_policy: CapturePolicy::MetadataOnly,
             },

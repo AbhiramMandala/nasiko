@@ -273,6 +273,7 @@ mod tests {
                     started_at: at,
                     ended_at: at,
                     llm_calls: vec![],
+                    tool_calls: vec![],
                 },
                 capture_policy: CapturePolicy::MetadataOnly,
             },

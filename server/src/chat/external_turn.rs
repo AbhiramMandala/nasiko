@@ -26,6 +26,10 @@ pub(crate) async fn persist_external_turn(
 ) -> Result<PersistedExternalTurn, PersistExternalTurnError> {
     let turn_id = body.turn_id.trim();
     let timestamp = Utc::now();
+    let assistant_metadata = body
+        .assistant_metadata
+        .as_ref()
+        .map(|object| serde_json::Value::Object(object.clone()));
     let user_inserted = sqlx::query_as::<_, ChatMessage>(
         r#"INSERT INTO chat_messages
                (session_id, external_turn_id, role, content, timestamp)
@@ -65,7 +69,8 @@ pub(crate) async fn persist_external_turn(
             && assistant_message.duration_ms == usage.and_then(|u| u.duration_ms)
             && assistant_message.cost_usd == usage.and_then(|u| u.cost_usd)
             && assistant_message.usage_estimated == usage.and_then(|u| u.estimated)
-            && assistant_message.trace_id.as_deref() == usage.and_then(|u| u.trace_id.as_deref());
+            && assistant_message.trace_id.as_deref() == usage.and_then(|u| u.trace_id.as_deref())
+            && assistant_message.metadata.as_deref() == assistant_metadata.as_ref();
         if !exact_replay {
             return Err(PersistExternalTurnError::Conflict);
         }
@@ -81,8 +86,8 @@ pub(crate) async fn persist_external_turn(
         r#"INSERT INTO chat_messages
                (session_id, external_turn_id, role, content, timestamp,
                 input_tokens, output_tokens, model, duration_ms, cost_usd,
-                usage_estimated, trace_id)
-           VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                 usage_estimated, trace_id, metadata)
+            VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
            ON CONFLICT (session_id, external_turn_id, role) DO NOTHING
            RETURNING *"#,
     )
@@ -97,6 +102,7 @@ pub(crate) async fn persist_external_turn(
     .bind(usage.and_then(|u| u.cost_usd))
     .bind(usage.and_then(|u| u.estimated))
     .bind(usage.and_then(|u| u.trace_id.as_deref()))
+    .bind(assistant_metadata.as_ref())
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(PersistExternalTurnError::Incomplete)?;

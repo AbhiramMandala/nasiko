@@ -653,6 +653,129 @@ async fn external_turn_rejects_changed_usage_or_trace_replay() {
 
 #[tokio::test]
 #[serial]
+async fn external_turn_persists_metadata_and_compares_it_on_replay() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "metadata-replay").await;
+    let sid = session["session_id"].as_str().unwrap();
+    let mut body = external_turn_body("metadata-replay-turn");
+    body["assistant_metadata"] = json!({
+        "coding_agent": {"capture_policy": "content", "tool_calls": [{"id": "tool-1"}]}
+    });
+
+    let first = post_external_turn_body(&server, uid, "admin", sid, &body).await;
+    assert_eq!(first.status(), 201);
+    let first: Value = first.json().await.unwrap();
+    assert_eq!(
+        first["assistant_message"]["metadata"],
+        body["assistant_metadata"]
+    );
+    assert_eq!(
+        post_external_turn_body(&server, uid, "admin", sid, &body)
+            .await
+            .status(),
+        200
+    );
+
+    body["assistant_metadata"]["coding_agent"]["tool_calls"][0]["id"] = json!("changed");
+    assert_eq!(
+        post_external_turn_body(&server, uid, "admin", sid, &body)
+            .await
+            .status(),
+        409
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn external_turn_rejects_non_object_metadata_as_bad_request() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "invalid-metadata").await;
+    let sid = session["session_id"].as_str().unwrap();
+
+    for metadata in [json!([]), json!("metadata"), json!(42), json!(true)] {
+        let mut body = external_turn_body(&format!("invalid-metadata-{metadata}"));
+        body["assistant_metadata"] = metadata;
+        let response = post_external_turn_body(&server, uid, "admin", sid, &body).await;
+        assert_eq!(response.status(), 400);
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("assistant_metadata must be null or a JSON object")
+        );
+    }
+
+    let stored: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE session_id = $1")
+            .bind(sid)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(stored, 0);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn external_turn_accepts_explicit_null_metadata() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "null-metadata").await;
+    let sid = session["session_id"].as_str().unwrap();
+    let mut body = external_turn_body("null-metadata-turn");
+    body["assistant_metadata"] = Value::Null;
+
+    assert_eq!(
+        post_external_turn_body(&server, uid, "admin", sid, &body)
+            .await
+            .status(),
+        201
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn external_turn_without_metadata_remains_replay_compatible() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "metadata-backward-compat").await;
+    let sid = session["session_id"].as_str().unwrap();
+    let body = external_turn_body("pre-metadata-turn");
+
+    assert_eq!(
+        post_external_turn_body(&server, uid, "admin", sid, &body)
+            .await
+            .status(),
+        201
+    );
+    let metadata: Option<Value> = sqlx::query_scalar(
+        "SELECT metadata FROM chat_messages WHERE session_id = $1 AND role = 'assistant'",
+    )
+    .bind(sid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(metadata.is_none());
+    assert_eq!(
+        post_external_turn_body(&server, uid, "admin", sid, &body)
+            .await
+            .status(),
+        200
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn concurrent_different_external_turn_payloads_do_not_create_a_hybrid() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;

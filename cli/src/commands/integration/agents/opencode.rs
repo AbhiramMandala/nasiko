@@ -2,13 +2,17 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use nasiko_types::{
+    CodingAgentTimestampQuality, CodingAgentToolAssociation, CodingAgentToolCallStatus,
+};
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::super::catalog::{AgentSpec, Support};
 use super::super::launcher;
-use super::super::model::{LlmCall, SessionSnapshot, Turn};
+use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn};
 
 pub const INSTALL_VERSION: u32 = 4;
 pub const SPEC: AgentSpec = AgentSpec {
@@ -89,6 +93,13 @@ struct Part {
     ignored: bool,
     #[serde(default)]
     synthetic: bool,
+    #[serde(rename = "callID", alias = "callId", alias = "call_id")]
+    call_id: Option<String>,
+    tool: Option<String>,
+    name: Option<String>,
+    #[serde(rename = "messageID", alias = "messageId", alias = "message_id")]
+    message_id: Option<String>,
+    state: Option<Value>,
 }
 
 pub fn config_path() -> PathBuf {
@@ -211,6 +222,7 @@ fn turns_from_messages(messages: &[Message]) -> Vec<Turn> {
                     started_at: at,
                     ended_at: at,
                     calls: Vec::new(),
+                    tool_calls: Vec::new(),
                 });
             }
             "assistant"
@@ -244,6 +256,13 @@ fn turns_from_messages(messages: &[Message]) -> Vec<Turn> {
                     started_at,
                     ended_at,
                 });
+                turn.tool_calls.extend(
+                    message
+                        .parts
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, part)| part.tool_call(info, index)),
+                );
                 if info.error.is_none() && info.finish.as_deref() != Some("tool-calls") {
                     let response = text_parts(&message.parts, false);
                     if !response.is_empty() {
@@ -256,6 +275,81 @@ fn turns_from_messages(messages: &[Message]) -> Vec<Turn> {
     }
     turns.retain(|turn| !turn.is_empty() && turn.response.is_some());
     turns
+}
+
+impl Part {
+    fn tool_call(&self, info: &MessageInfo, index: usize) -> Option<ToolCall> {
+        if self.kind != "tool" {
+            return None;
+        }
+        let state = self.state.as_ref().unwrap_or(&Value::Null);
+        let status = state
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let status = match status {
+            "pending" => CodingAgentToolCallStatus::Pending,
+            "running" => CodingAgentToolCallStatus::Running,
+            "completed" | "success" => CodingAgentToolCallStatus::Succeeded,
+            "error" | "failed" => CodingAgentToolCallStatus::Failed,
+            _ => CodingAgentToolCallStatus::Unknown,
+        };
+        let times = state.get("time").unwrap_or(&Value::Null);
+        let started_at = json_millis(times.get("start").or_else(|| times.get("created")));
+        let ended_at = json_millis(times.get("end").or_else(|| times.get("completed")));
+        let model_call_id = self.message_id.clone();
+        Some(ToolCall {
+            id: self
+                .call_id
+                .clone()
+                .unwrap_or_else(|| format!("{}:tool:{index}", info.id)),
+            name: self
+                .tool
+                .clone()
+                .or_else(|| self.name.clone())
+                .unwrap_or_else(|| "unknown".into()),
+            kind: "tool".into(),
+            model_call_id: model_call_id.clone(),
+            status,
+            arguments: state.get("input").cloned(),
+            output: state.get("output").cloned(),
+            raw: None,
+            error: state
+                .get("error")
+                .filter(|value| !value.is_null())
+                .map(value_text),
+            started_at,
+            ended_at,
+            duration_ms: started_at
+                .zip(ended_at)
+                .map(|(start, end)| (end - start).num_milliseconds().max(0) as u64),
+            association: if model_call_id.is_some() {
+                CodingAgentToolAssociation::Exact
+            } else {
+                CodingAgentToolAssociation::Turn
+            },
+            timestamp_quality: if started_at.is_some() || ended_at.is_some() {
+                CodingAgentTimestampQuality::Exact
+            } else {
+                CodingAgentTimestampQuality::Unknown
+            },
+        })
+    }
+}
+
+fn json_millis(value: Option<&Value>) -> Option<DateTime<Utc>> {
+    let value = value?;
+    value
+        .as_i64()
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .or_else(|| value.as_str()?.parse().ok())
+}
+
+fn value_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn text_parts(parts: &[Part], exclude_synthetic: bool) -> String {
@@ -352,5 +446,22 @@ mod tests {
         let snapshot = snapshot(payload).unwrap();
         assert_eq!(snapshot.turns.len(), 1);
         assert_eq!(snapshot.turns[0].uuid, "u2");
+    }
+
+    #[test]
+    fn parses_structured_tool_state_and_exact_message_correlation() {
+        let payload = r#"{"session_id":"s","messages":[
+          {"info":{"id":"u","role":"user","time":{"created":1000}},"parts":[{"type":"text","text":"Do it"}]},
+          {"info":{"id":"a","role":"assistant","parentID":"u","finish":"stop","time":{"created":1100,"completed":1500},"tokens":{"output":1}},"parts":[
+            {"type":"tool","callID":"call-1","tool":"bash","messageID":"a","state":{"status":"completed","input":{"command":"redacted"},"output":"ok","time":{"start":1200,"end":1400}}},
+            {"type":"text","text":"Done"}
+          ]}
+        ]}"#;
+        let snapshot = snapshot(payload).unwrap();
+        let tool = &snapshot.turns[0].tool_calls[0];
+        assert_eq!(tool.id, "call-1");
+        assert_eq!(tool.model_call_id.as_deref(), Some("a"));
+        assert_eq!(tool.status, CodingAgentToolCallStatus::Succeeded);
+        assert_eq!(tool.duration_ms, Some(200));
     }
 }

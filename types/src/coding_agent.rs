@@ -10,6 +10,7 @@ pub const CODING_AGENT_ID_MAX_BYTES: usize = 512;
 pub const CODING_AGENT_NAME_MAX_BYTES: usize = 256;
 pub const CODING_AGENT_CONTENT_MAX_BYTES: usize = 1_048_576;
 pub const CODING_AGENT_LLM_CALLS_MAX: usize = 1_000;
+pub const CODING_AGENT_TOOL_CALLS_MAX: usize = 2_000;
 const EVENT_NAMESPACE: Uuid = Uuid::from_u128(0xe8c6fef8_5fe4_4dc2_9b48_47466355ced7);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +87,62 @@ pub struct CodingAgentLlmCall {
     pub ended_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodingAgentToolCallStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Denied,
+    TimedOut,
+    Cancelled,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodingAgentToolAssociation {
+    Exact,
+    Turn,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodingAgentTimestampQuality {
+    Exact,
+    Inferred,
+    Receipt,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodingAgentToolCall {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_call_id: Option<String>,
+    pub status: CodingAgentToolCallStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    pub association: CodingAgentToolAssociation,
+    pub timestamp_quality: CodingAgentTimestampQuality,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodingAgentTurn {
     pub id: String,
@@ -96,6 +153,8 @@ pub struct CodingAgentTurn {
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
     pub llm_calls: Vec<CodingAgentLlmCall>,
+    #[serde(default)]
+    pub tool_calls: Vec<CodingAgentToolCall>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +213,11 @@ impl CodingAgentEventV1 {
                 "turn.llm_calls must contain at most {CODING_AGENT_LLM_CALLS_MAX} items"
             ));
         }
+        if self.turn.tool_calls.len() > CODING_AGENT_TOOL_CALLS_MAX {
+            return Err(format!(
+                "turn.tool_calls must contain at most {CODING_AGENT_TOOL_CALLS_MAX} items"
+            ));
+        }
         let expected = coding_agent_event_id(
             &self.source.agent_id,
             &self.session.source_id,
@@ -189,6 +253,7 @@ impl CodingAgentEventV1 {
         if self.turn.ended_at < self.turn.started_at {
             return Err("turn ended_at precedes started_at".into());
         }
+        let mut llm_ids = std::collections::HashSet::new();
         for call in &self.turn.llm_calls {
             for (name, value) in [
                 ("turn.llm_calls[].id", call.id.as_str()),
@@ -209,6 +274,97 @@ impl CodingAgentEventV1 {
             }
             if call.ended_at < call.started_at {
                 return Err("LLM call ended_at precedes started_at".into());
+            }
+            if !llm_ids.insert(call.id.as_str()) {
+                return Err("turn.llm_calls IDs must be unique".into());
+            }
+        }
+        let mut tool_ids = std::collections::HashSet::new();
+        for tool in &self.turn.tool_calls {
+            for (name, value, max) in [
+                (
+                    "turn.tool_calls[].id",
+                    tool.id.as_str(),
+                    CODING_AGENT_ID_MAX_BYTES,
+                ),
+                (
+                    "turn.tool_calls[].name",
+                    tool.name.as_str(),
+                    CODING_AGENT_NAME_MAX_BYTES,
+                ),
+                (
+                    "turn.tool_calls[].kind",
+                    tool.kind.as_str(),
+                    CODING_AGENT_NAME_MAX_BYTES,
+                ),
+            ] {
+                if value.trim().is_empty() {
+                    return Err(format!("{name} must not be empty"));
+                }
+                if value.len() > max {
+                    return Err(format!("{name} must be at most {max} bytes"));
+                }
+            }
+            if !tool_ids.insert(&tool.id) {
+                return Err("turn.tool_calls IDs must be unique".into());
+            }
+            if tool
+                .model_call_id
+                .as_ref()
+                .is_some_and(|id| id.trim().is_empty() || id.len() > CODING_AGENT_ID_MAX_BYTES)
+            {
+                return Err("turn.tool_calls[].model_call_id is invalid".into());
+            }
+            match tool.association {
+                CodingAgentToolAssociation::Exact => {
+                    let Some(model_call_id) = tool.model_call_id.as_deref() else {
+                        return Err("exact tool association requires model_call_id".into());
+                    };
+                    if !llm_ids.contains(model_call_id) {
+                        return Err("exact tool association references an unknown LLM call".into());
+                    }
+                }
+                CodingAgentToolAssociation::Turn | CodingAgentToolAssociation::Unknown => {
+                    if tool.model_call_id.is_some() {
+                        return Err(
+                            "non-exact tool association must not contain model_call_id".into()
+                        );
+                    }
+                }
+            }
+            if matches!((tool.started_at, tool.ended_at), (Some(start), Some(end)) if end < start) {
+                return Err("tool call ended_at precedes started_at".into());
+            }
+            for (name, value) in [
+                ("turn.tool_calls[].arguments", tool.arguments.as_ref()),
+                ("turn.tool_calls[].output", tool.output.as_ref()),
+            ] {
+                if value.is_some_and(|value| {
+                    serde_json::to_vec(value)
+                        .is_ok_and(|v| v.len() > CODING_AGENT_CONTENT_MAX_BYTES)
+                }) {
+                    return Err(format!(
+                        "{name} must be at most {CODING_AGENT_CONTENT_MAX_BYTES} bytes"
+                    ));
+                }
+            }
+            for (name, value) in [
+                ("turn.tool_calls[].raw", tool.raw.as_deref()),
+                ("turn.tool_calls[].error", tool.error.as_deref()),
+            ] {
+                if value.is_some_and(|value| value.len() > CODING_AGENT_CONTENT_MAX_BYTES) {
+                    return Err(format!(
+                        "{name} must be at most {CODING_AGENT_CONTENT_MAX_BYTES} bytes"
+                    ));
+                }
+            }
+            if self.capture_policy == CapturePolicy::MetadataOnly
+                && (tool.arguments.is_some()
+                    || tool.output.is_some()
+                    || tool.raw.is_some()
+                    || tool.error.is_some())
+            {
+                return Err("metadata-only events must not contain tool content".into());
             }
         }
         Ok(())
@@ -255,6 +411,7 @@ mod tests {
                 started_at: at,
                 ended_at: at,
                 llm_calls: vec![],
+                tool_calls: vec![],
             },
             capture_policy: CapturePolicy::MetadataOnly,
         }
@@ -322,5 +479,60 @@ mod tests {
             })
             .collect();
         assert!(too_many_calls.validate().unwrap_err().contains("llm_calls"));
+    }
+
+    #[test]
+    fn old_v1_turns_without_tools_deserialize_with_an_empty_list() {
+        let mut value = serde_json::to_value(event()).unwrap();
+        value["turn"].as_object_mut().unwrap().remove("tool_calls");
+        let decoded: CodingAgentEventV1 = serde_json::from_value(value).unwrap();
+        assert!(decoded.turn.tool_calls.is_empty());
+        assert!(decoded.validate().is_ok());
+    }
+
+    #[test]
+    fn tool_association_rejects_missing_dangling_and_non_exact_call_ids() {
+        let mut value = event();
+        let at = value.turn.started_at;
+        value.turn.llm_calls.push(CodingAgentLlmCall {
+            id: "call-1".into(),
+            provider: "p".into(),
+            model: "m".into(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            started_at: at,
+            ended_at: at,
+        });
+        let tool = CodingAgentToolCall {
+            id: "tool-1".into(),
+            name: "Read".into(),
+            kind: "tool".into(),
+            model_call_id: None,
+            status: CodingAgentToolCallStatus::Unknown,
+            arguments: None,
+            output: None,
+            raw: None,
+            error: None,
+            started_at: None,
+            ended_at: None,
+            duration_ms: None,
+            association: CodingAgentToolAssociation::Exact,
+            timestamp_quality: CodingAgentTimestampQuality::Unknown,
+        };
+        value.turn.tool_calls.push(tool);
+        assert!(
+            value
+                .validate()
+                .unwrap_err()
+                .contains("requires model_call_id")
+        );
+        value.turn.tool_calls[0].model_call_id = Some("missing".into());
+        assert!(value.validate().unwrap_err().contains("unknown LLM call"));
+        value.turn.tool_calls[0].association = CodingAgentToolAssociation::Turn;
+        assert!(value.validate().unwrap_err().contains("non-exact"));
+        value.turn.tool_calls[0].model_call_id = None;
+        assert!(value.validate().is_ok());
     }
 }

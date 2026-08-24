@@ -2,6 +2,9 @@
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
+use nasiko_types::{
+    CodingAgentTimestampQuality, CodingAgentToolAssociation, CodingAgentToolCallStatus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -15,10 +18,10 @@ use super::super::launcher::{
     SCRIPT_NAME, install as install_launcher, installed_version as launcher_version, script_path,
     shell_quote, uninstall as uninstall_launcher,
 };
-use super::super::model::{LlmCall, SessionSnapshot, Turn};
+use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn};
 use super::super::state;
 
-pub const INSTALL_VERSION: u32 = 1;
+pub const INSTALL_VERSION: u32 = 2;
 pub const SPEC: AgentSpec = AgentSpec {
     id: "cursor",
     display_name: "Cursor CLI",
@@ -28,10 +31,13 @@ pub const SPEC: AgentSpec = AgentSpec {
 };
 
 const HOOK_TIMEOUT_SECS: u32 = 10;
-const EVENTS: [(&str, &str); 3] = [
+const EVENTS: [(&str, &str); 6] = [
     ("beforeSubmitPrompt", "UserPromptSubmit"),
     ("afterAgentResponse", "AgentResponse"),
     ("stop", "Stop"),
+    ("preToolUse", "*"),
+    ("postToolUse", "*"),
+    ("postToolUseFailure", "*"),
 ];
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +54,19 @@ struct HookPayload {
     output_tokens: Option<u64>,
     cache_read_tokens: Option<u64>,
     cache_write_tokens: Option<u64>,
+    tool_use_id: Option<String>,
+    #[serde(alias = "tool_name")]
+    name: Option<String>,
+    #[serde(alias = "tool_input")]
+    input: Option<Value>,
+    #[serde(alias = "tool_output")]
+    output: Option<Value>,
+    error: Option<Value>,
+    error_message: Option<Value>,
+    duration: Option<u64>,
+    duration_ms: Option<u64>,
+    failure_type: Option<String>,
+    is_interrupt: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -62,6 +81,21 @@ struct PendingTurn {
     started_at: Option<DateTime<Utc>>,
     ended_at: Option<DateTime<Utc>>,
     status: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<ToolCallRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct ToolCallRecord {
+    id: String,
+    name: String,
+    arguments: Option<Value>,
+    output: Option<Value>,
+    error: Option<String>,
+    started_at: Option<DateTime<Utc>>,
+    ended_at: Option<DateTime<Utc>>,
+    duration_ms: Option<u64>,
+    status: CodingAgentToolCallStatus,
 }
 
 pub fn config_path() -> PathBuf {
@@ -290,7 +324,20 @@ fn apply_event(pending: &mut PendingTurn, payload: &HookPayload, now: DateTime<U
         }
         "Stop" | "stop" => {
             pending.status = payload.status.as_deref().and_then(nonempty);
+            if pending.status.as_deref() == Some("completed") {
+                for tool in &mut pending.tool_calls {
+                    if matches!(
+                        tool.status,
+                        CodingAgentToolCallStatus::Pending | CodingAgentToolCallStatus::Running
+                    ) {
+                        tool.status = CodingAgentToolCallStatus::Unknown;
+                    }
+                }
+            }
         }
+        "PreToolUse" | "preToolUse" => upsert_tool_start(pending, payload, now),
+        "PostToolUse" | "postToolUse" => upsert_tool_end(pending, payload, now, false),
+        "PostToolUseFailure" | "postToolUseFailure" => upsert_tool_end(pending, payload, now, true),
         _ => return Vec::new(),
     }
 
@@ -301,6 +348,14 @@ fn apply_event(pending: &mut PendingTurn, payload: &HookPayload, now: DateTime<U
 
 fn complete_turn(pending: &mut PendingTurn, payload: &HookPayload) -> Option<Turn> {
     if pending.status.as_deref() != Some("completed") {
+        return None;
+    }
+    if pending.tool_calls.iter().any(|tool| {
+        matches!(
+            tool.status,
+            CodingAgentToolCallStatus::Pending | CodingAgentToolCallStatus::Running
+        )
+    }) {
         return None;
     }
     let prompt = pending.prompt.clone()?;
@@ -325,7 +380,123 @@ fn complete_turn(pending: &mut PendingTurn, payload: &HookPayload) -> Option<Tur
             started_at,
             ended_at,
         }],
+        tool_calls: pending
+            .tool_calls
+            .iter()
+            .map(|tool| ToolCall {
+                id: tool.id.clone(),
+                name: tool.name.clone(),
+                kind: "tool".into(),
+                model_call_id: None,
+                status: tool.status,
+                arguments: tool.arguments.clone(),
+                output: tool.output.clone(),
+                raw: None,
+                error: tool.error.clone(),
+                started_at: tool.started_at,
+                ended_at: tool.ended_at,
+                duration_ms: tool.duration_ms.or_else(|| {
+                    tool.started_at
+                        .zip(tool.ended_at)
+                        .map(|(start, end)| (end - start).num_milliseconds().max(0) as u64)
+                }),
+                association: CodingAgentToolAssociation::Turn,
+                timestamp_quality: CodingAgentTimestampQuality::Receipt,
+            })
+            .collect(),
     })
+}
+
+fn upsert_tool_start(pending: &mut PendingTurn, payload: &HookPayload, now: DateTime<Utc>) {
+    let Some(id) = payload.tool_use_id.as_deref().and_then(nonempty) else {
+        return;
+    };
+    if let Some(tool) = pending.tool_calls.iter_mut().find(|tool| tool.id == id) {
+        tool.name = payload.name.clone().unwrap_or_else(|| tool.name.clone());
+        tool.arguments = payload.input.clone().or_else(|| tool.arguments.clone());
+        tool.started_at.get_or_insert(now);
+        if matches!(
+            tool.status,
+            CodingAgentToolCallStatus::Pending
+                | CodingAgentToolCallStatus::Running
+                | CodingAgentToolCallStatus::Unknown
+        ) {
+            tool.status = CodingAgentToolCallStatus::Running;
+        }
+    } else {
+        pending.tool_calls.push(ToolCallRecord {
+            id,
+            name: payload.name.clone().unwrap_or_else(|| "unknown".into()),
+            arguments: payload.input.clone(),
+            output: None,
+            error: None,
+            started_at: Some(now),
+            ended_at: None,
+            duration_ms: None,
+            status: CodingAgentToolCallStatus::Running,
+        });
+    }
+}
+
+fn upsert_tool_end(
+    pending: &mut PendingTurn,
+    payload: &HookPayload,
+    now: DateTime<Utc>,
+    failed: bool,
+) {
+    let Some(id) = payload.tool_use_id.as_deref().and_then(nonempty) else {
+        return;
+    };
+    if !pending.tool_calls.iter().any(|tool| tool.id == id) {
+        pending.tool_calls.push(ToolCallRecord {
+            id: id.clone(),
+            name: payload.name.clone().unwrap_or_else(|| "unknown".into()),
+            arguments: payload.input.clone(),
+            output: None,
+            error: None,
+            started_at: None,
+            ended_at: None,
+            duration_ms: None,
+            status: CodingAgentToolCallStatus::Unknown,
+        });
+    }
+    let tool = pending
+        .tool_calls
+        .iter_mut()
+        .find(|tool| tool.id == id)
+        .expect("tool exists");
+    tool.output = payload.output.clone();
+    tool.error = payload
+        .error_message
+        .as_ref()
+        .map(value_text)
+        .or_else(|| payload.error.as_ref().map(value_text))
+        .or_else(|| payload.failure_type.clone());
+    tool.ended_at = Some(now);
+    tool.duration_ms = payload.duration_ms.or(payload.duration);
+    let failure_type = payload
+        .failure_type
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    tool.status = if payload.is_interrupt == Some(true) {
+        CodingAgentToolCallStatus::Cancelled
+    } else if failure_type.contains("denied") || failure_type.contains("permission") {
+        CodingAgentToolCallStatus::Denied
+    } else if failure_type.contains("timeout") {
+        CodingAgentToolCallStatus::TimedOut
+    } else if failed || tool.error.is_some() {
+        CodingAgentToolCallStatus::Failed
+    } else {
+        CodingAgentToolCallStatus::Succeeded
+    };
+}
+
+fn value_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn provider_for_model(model: &str) -> &'static str {
@@ -413,6 +584,16 @@ mod tests {
             output_tokens: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            tool_use_id: None,
+            name: None,
+            input: None,
+            output: None,
+            error: None,
+            error_message: None,
+            duration: None,
+            duration_ms: None,
+            failure_type: None,
+            is_interrupt: None,
         }
     }
 
@@ -494,6 +675,26 @@ mod tests {
         let command = hook_command(launcher);
         for (event, matcher) in EVENTS {
             assert!(has_exact_handler(&config, event, matcher, &command));
+        }
+        for event in ["preToolUse", "postToolUse", "postToolUseFailure"] {
+            assert_eq!(
+                config["hooks"][event].as_array().unwrap().last().unwrap()["matcher"],
+                "*"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_hook_wildcard_matches_shell_and_read_native_names() {
+        let command = "bash '/tmp/nasiko-session-report.sh'";
+        for event in ["preToolUse", "postToolUse", "postToolUseFailure"] {
+            let handler = expected_handler("*", command);
+            for native_name in ["Shell", "Read"] {
+                assert!(
+                    handler["matcher"] == "*" || handler["matcher"] == native_name,
+                    "{event} must match native tool {native_name}"
+                );
+            }
         }
     }
 
@@ -601,6 +802,74 @@ mod tests {
             assert!(apply_event(&mut pending, &response(), at).is_empty());
             assert!(apply_event(&mut pending, &stop(status), at).is_empty());
         }
+    }
+
+    #[test]
+    fn tool_failure_is_spooled_and_included_after_lifecycle_completion() {
+        let mut pending = PendingTurn::default();
+        let at = DateTime::from_timestamp(10, 0).unwrap();
+        let pre = HookPayload {
+            tool_use_id: Some("native-1".into()),
+            name: Some("read_file".into()),
+            input: Some(json!({"path": "redacted"})),
+            ..payload("preToolUse")
+        };
+        let failure = HookPayload {
+            tool_use_id: Some("native-1".into()),
+            name: Some("read_file".into()),
+            error: Some(json!("denied")),
+            duration_ms: Some(12),
+            ..payload("postToolUseFailure")
+        };
+        assert!(apply_event(&mut pending, &pre, at).is_empty());
+        assert!(apply_event(&mut pending, &failure, at).is_empty());
+        assert!(apply_event(&mut pending, &before(), at).is_empty());
+        assert!(apply_event(&mut pending, &response(), at).is_empty());
+        let turns = apply_event(&mut pending, &stop("completed"), at);
+        assert_eq!(
+            turns[0].tool_calls[0].status,
+            CodingAgentToolCallStatus::Failed
+        );
+        assert_eq!(turns[0].tool_calls[0].duration_ms, Some(12));
+    }
+
+    #[test]
+    fn native_error_message_takes_precedence_over_documented_failure_type() {
+        // Cursor's failure payload documents error_message alongside failure_type.
+        let mut pending = PendingTurn::default();
+        let at = DateTime::from_timestamp(10, 0).unwrap();
+        let failure = HookPayload {
+            tool_use_id: Some("native-1".into()),
+            name: Some("Shell".into()),
+            error_message: Some(json!("command exited with status 2")),
+            failure_type: Some("tool_error".into()),
+            ..payload("postToolUseFailure")
+        };
+        apply_event(&mut pending, &failure, at);
+        assert_eq!(
+            pending.tool_calls[0].error.as_deref(),
+            Some("command exited with status 2")
+        );
+    }
+
+    #[test]
+    fn completed_stop_finalizes_a_running_tool_as_unknown() {
+        let mut pending = PendingTurn::default();
+        let at = DateTime::from_timestamp(10, 0).unwrap();
+        let pre = HookPayload {
+            tool_use_id: Some("native-1".into()),
+            name: Some("read_file".into()),
+            ..payload("preToolUse")
+        };
+        assert!(apply_event(&mut pending, &before(), at).is_empty());
+        assert!(apply_event(&mut pending, &pre, at).is_empty());
+        assert!(apply_event(&mut pending, &response(), at).is_empty());
+        let turns = apply_event(&mut pending, &stop("completed"), at);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].tool_calls[0].status,
+            CodingAgentToolCallStatus::Unknown
+        );
     }
 
     #[test]

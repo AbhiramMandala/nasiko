@@ -48,6 +48,7 @@ pub struct ChatSessionView {
 pub struct ChatMessage {
     pub id: Uuid,
     pub session_id: String,
+    pub external_turn_id: Option<String>,
     pub role: String,
     pub content: String,
     pub file_parts: Option<sqlx::types::Json<serde_json::Value>>,
@@ -63,6 +64,7 @@ pub struct ChatMessage {
     pub cost_usd: Option<rust_decimal::Decimal>,
     pub usage_estimated: Option<bool>,
     pub trace_id: Option<String>,
+    pub metadata: Option<sqlx::types::Json<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,4 +121,31 @@ pub struct MessageUsage {
     pub cost_usd: Option<rust_decimal::Decimal>,
     pub estimated: Option<bool>,
     pub trace_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExternalTurn {
+    pub turn_id: String,
+    pub user_content: String,
+    pub assistant_content: String,
+    pub assistant_usage: Option<MessageUsage>,
+    #[serde(default, deserialize_with = "deserialize_optional_object")]
+    pub assistant_metadata: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+fn deserialize_optional_object<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(serde_json::Value::Object(object)) => Ok(Some(object)),
+        Some(_) => Err(D::Error::custom(
+            "assistant_metadata must be null or a JSON object",
+        )),
+    }
 }

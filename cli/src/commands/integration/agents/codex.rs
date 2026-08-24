@@ -2,6 +2,9 @@
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
+use nasiko_types::{
+    CodingAgentTimestampQuality, CodingAgentToolAssociation, CodingAgentToolCallStatus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -12,10 +15,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::super::catalog::{self, AgentSpec, Support};
 use super::super::launcher;
-use super::super::model::{LlmCall, SessionSnapshot, Turn};
+use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn};
 use super::super::state;
 
-pub const INSTALL_VERSION: u32 = 1;
+pub const INSTALL_VERSION: u32 = 2;
 pub const SPEC: AgentSpec = AgentSpec {
     id: "codex",
     display_name: "Codex",
@@ -24,7 +27,7 @@ pub const SPEC: AgentSpec = AgentSpec {
     support: Support::Instrumented,
 };
 
-const HOOK_EVENTS: [&str; 2] = ["UserPromptSubmit", "Stop"];
+const HOOK_EVENTS: [&str; 4] = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
 const HOOK_TIMEOUT_SECS: u32 = 10;
 
 #[derive(Debug, Deserialize)]
@@ -32,10 +35,18 @@ struct HookPayload {
     session_id: String,
     turn_id: String,
     hook_event_name: String,
-    model: String,
+    model: Option<String>,
     prompt: Option<String>,
     last_assistant_message: Option<String>,
     transcript_path: Option<PathBuf>,
+    tool_use_id: Option<String>,
+    #[serde(alias = "name")]
+    tool_name: Option<String>,
+    #[serde(alias = "input")]
+    tool_input: Option<Value>,
+    #[serde(alias = "response")]
+    tool_response: Option<Value>,
+    error: Option<Value>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -47,6 +58,20 @@ struct PendingTurn {
     ended_at: Option<DateTime<Utc>>,
     usage_at_start: Option<TokenUsage>,
     usage_at_end: Option<TokenUsage>,
+    #[serde(default)]
+    tool_calls: Vec<ToolCallRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ToolCallRecord {
+    id: String,
+    name: String,
+    arguments: Option<Value>,
+    output: Option<Value>,
+    error: Option<String>,
+    started_at: Option<DateTime<Utc>>,
+    ended_at: Option<DateTime<Utc>>,
+    status: CodingAgentToolCallStatus,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,8 +307,89 @@ fn apply_event(
         "Stop" => {
             pending.response = nonempty(payload.last_assistant_message.as_deref());
             pending.ended_at = Some(received_at);
-            pending.model = nonempty(Some(&payload.model));
+            pending.model = payload
+                .model
+                .as_deref()
+                .and_then(|model| nonempty(Some(model)));
             pending.usage_at_end = usage;
+            for tool in &mut pending.tool_calls {
+                if matches!(
+                    tool.status,
+                    CodingAgentToolCallStatus::Pending | CodingAgentToolCallStatus::Running
+                ) {
+                    tool.status = CodingAgentToolCallStatus::Unknown;
+                }
+            }
+        }
+        "PreToolUse" => {
+            let id = payload.tool_use_id.as_deref()?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            if let Some(tool) = pending.tool_calls.iter_mut().find(|tool| tool.id == id) {
+                tool.name = payload
+                    .tool_name
+                    .clone()
+                    .unwrap_or_else(|| tool.name.clone());
+                tool.arguments = payload
+                    .tool_input
+                    .clone()
+                    .or_else(|| tool.arguments.clone());
+                tool.started_at.get_or_insert(received_at);
+                if matches!(
+                    tool.status,
+                    CodingAgentToolCallStatus::Pending
+                        | CodingAgentToolCallStatus::Running
+                        | CodingAgentToolCallStatus::Unknown
+                ) {
+                    tool.status = CodingAgentToolCallStatus::Running;
+                }
+            } else {
+                pending.tool_calls.push(ToolCallRecord {
+                    id: id.to_string(),
+                    name: payload
+                        .tool_name
+                        .clone()
+                        .unwrap_or_else(|| "unknown".into()),
+                    arguments: payload.tool_input.clone(),
+                    output: None,
+                    error: None,
+                    started_at: Some(received_at),
+                    ended_at: None,
+                    status: CodingAgentToolCallStatus::Running,
+                });
+            }
+        }
+        "PostToolUse" => {
+            let id = payload.tool_use_id.as_deref()?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let (status, error) =
+                tool_response_status(payload.tool_response.as_ref(), payload.error.as_ref());
+            let tool = if let Some(tool) = pending.tool_calls.iter_mut().find(|tool| tool.id == id)
+            {
+                tool
+            } else {
+                pending.tool_calls.push(ToolCallRecord {
+                    id: id.to_string(),
+                    name: payload
+                        .tool_name
+                        .clone()
+                        .unwrap_or_else(|| "unknown".into()),
+                    arguments: payload.tool_input.clone(),
+                    output: None,
+                    error: None,
+                    started_at: None,
+                    ended_at: None,
+                    status: CodingAgentToolCallStatus::Unknown,
+                });
+                pending.tool_calls.last_mut().expect("tool inserted")
+            };
+            tool.output = payload.tool_response.clone();
+            tool.error = error;
+            tool.ended_at = Some(received_at);
+            tool.status = status;
         }
         _ => return None,
     }
@@ -295,8 +401,39 @@ fn apply_event(
         pending.started_at?,
         pending.ended_at?,
     );
+    if pending.tool_calls.iter().any(|tool| {
+        matches!(
+            tool.status,
+            CodingAgentToolCallStatus::Pending | CodingAgentToolCallStatus::Running
+        )
+    }) {
+        return None;
+    }
     let usage = usage_delta(pending.usage_at_start, pending.usage_at_end);
     let call_id = format!("{}:{}:llm", payload.session_id, payload.turn_id);
+    let tool_calls = pending
+        .tool_calls
+        .iter()
+        .map(|tool| ToolCall {
+            id: tool.id.clone(),
+            name: tool.name.clone(),
+            kind: "tool".into(),
+            model_call_id: None,
+            status: tool.status,
+            arguments: tool.arguments.clone(),
+            output: tool.output.clone(),
+            raw: None,
+            error: tool.error.clone(),
+            started_at: tool.started_at,
+            ended_at: tool.ended_at,
+            duration_ms: tool
+                .started_at
+                .zip(tool.ended_at)
+                .map(|(start, end)| (end - start).num_milliseconds().max(0) as u64),
+            association: CodingAgentToolAssociation::Turn,
+            timestamp_quality: CodingAgentTimestampQuality::Receipt,
+        })
+        .collect();
     Some(SessionSnapshot {
         session_id: payload.session_id.clone(),
         turns: vec![Turn {
@@ -316,8 +453,75 @@ fn apply_event(
                 started_at,
                 ended_at,
             }],
+            tool_calls,
         }],
     })
+}
+
+fn value_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn tool_response_status(
+    response: Option<&Value>,
+    hook_error: Option<&Value>,
+) -> (CodingAgentToolCallStatus, Option<String>) {
+    if let Some(error) = hook_error {
+        return (CodingAgentToolCallStatus::Failed, Some(value_text(error)));
+    }
+    let Some(object) = response.and_then(Value::as_object) else {
+        return (CodingAgentToolCallStatus::Unknown, None);
+    };
+    let status = object
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let error = object
+        .get("error_message")
+        .or_else(|| object.get("error"))
+        .filter(|value| !value.is_null())
+        .map(value_text);
+    if object.get("denied").and_then(Value::as_bool) == Some(true)
+        || status.contains("denied")
+        || status.contains("permission")
+    {
+        return (CodingAgentToolCallStatus::Denied, error);
+    }
+    if object.get("timed_out").and_then(Value::as_bool) == Some(true) || status.contains("timeout")
+    {
+        return (CodingAgentToolCallStatus::TimedOut, error);
+    }
+    if object.get("cancelled").and_then(Value::as_bool) == Some(true) || status.contains("cancel") {
+        return (CodingAgentToolCallStatus::Cancelled, error);
+    }
+    if let Some(code) = object
+        .get("exit_code")
+        .or_else(|| object.get("exitCode"))
+        .and_then(Value::as_i64)
+    {
+        return if code == 0 {
+            (CodingAgentToolCallStatus::Succeeded, error)
+        } else {
+            (
+                CodingAgentToolCallStatus::Failed,
+                error.or_else(|| Some(format!("tool exited with code {code}"))),
+            )
+        };
+    }
+    if error.is_some() || matches!(status.as_str(), "failed" | "error") {
+        return (CodingAgentToolCallStatus::Failed, error);
+    }
+    if object.get("success").and_then(Value::as_bool) == Some(true)
+        || object.get("ok").and_then(Value::as_bool) == Some(true)
+        || matches!(status.as_str(), "success" | "succeeded" | "completed")
+    {
+        return (CodingAgentToolCallStatus::Succeeded, None);
+    }
+    (CodingAgentToolCallStatus::Unknown, None)
 }
 
 fn nonempty(value: Option<&str>) -> Option<String> {
@@ -430,10 +634,15 @@ mod tests {
             session_id: "session".into(),
             turn_id: "turn".into(),
             hook_event_name: event.into(),
-            model: "gpt-5-codex".into(),
+            model: Some("gpt-5-codex".into()),
             prompt: (event == "UserPromptSubmit").then(|| "Build it".into()),
             last_assistant_message: (event == "Stop").then(|| "Built".into()),
             transcript_path: None,
+            tool_use_id: None,
+            tool_name: None,
+            tool_input: None,
+            tool_response: None,
+            error: None,
         }
     }
 
@@ -567,6 +776,88 @@ mod tests {
         assert!(apply_event(&mut pending, &payload("UserPromptSubmit"), at, None).is_none());
         assert!(apply_event(&mut pending, &payload("Stop"), at, None).is_some());
         assert!(apply_event(&mut pending, &payload("Stop"), at, None).is_some());
+    }
+
+    #[test]
+    fn tool_hooks_pair_out_of_order_without_regressing_on_replay() {
+        let mut pending = PendingTurn::default();
+        let at = DateTime::from_timestamp(10, 0).unwrap();
+        let post = HookPayload {
+            tool_use_id: Some("native-1".into()),
+            tool_name: Some("shell".into()),
+            tool_response: Some(json!({"success": true})),
+            ..payload("PostToolUse")
+        };
+        let pre = HookPayload {
+            tool_use_id: Some("native-1".into()),
+            tool_name: Some("shell".into()),
+            tool_input: Some(json!({"command": "redacted"})),
+            ..payload("PreToolUse")
+        };
+        assert!(apply_event(&mut pending, &post, at, None).is_none());
+        assert!(apply_event(&mut pending, &pre, at, None).is_none());
+        assert_eq!(
+            pending.tool_calls[0].status,
+            CodingAgentToolCallStatus::Succeeded
+        );
+        assert!(apply_event(&mut pending, &payload("UserPromptSubmit"), at, None).is_none());
+        let snapshot = apply_event(&mut pending, &payload("Stop"), at, None).unwrap();
+        assert_eq!(snapshot.turns[0].tool_calls[0].id, "native-1");
+        assert_eq!(
+            snapshot.turns[0].tool_calls[0].association,
+            CodingAgentToolAssociation::Turn
+        );
+    }
+
+    #[test]
+    fn stop_finalizes_a_running_tool_and_emits_the_complete_turn() {
+        let mut pending = PendingTurn::default();
+        let at = DateTime::from_timestamp(10, 0).unwrap();
+        let pre = HookPayload {
+            tool_use_id: Some("native-1".into()),
+            tool_name: Some("shell".into()),
+            ..payload("PreToolUse")
+        };
+        assert!(apply_event(&mut pending, &payload("UserPromptSubmit"), at, None).is_none());
+        assert!(apply_event(&mut pending, &pre, at, None).is_none());
+        let snapshot = apply_event(&mut pending, &payload("Stop"), at, None).unwrap();
+        assert_eq!(
+            snapshot.turns[0].tool_calls[0].status,
+            CodingAgentToolCallStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn post_tool_use_maps_nonzero_bash_exit_and_explicit_success() {
+        let mut pending = PendingTurn::default();
+        let failed = HookPayload {
+            tool_use_id: Some("bash-1".into()),
+            tool_name: Some("Bash".into()),
+            tool_response: Some(json!({"exit_code": 2, "stdout": "", "stderr": "bad"})),
+            ..payload("PostToolUse")
+        };
+        apply_event(
+            &mut pending,
+            &failed,
+            DateTime::from_timestamp(10, 0).unwrap(),
+            None,
+        );
+        assert_eq!(
+            pending.tool_calls[0].status,
+            CodingAgentToolCallStatus::Failed
+        );
+        assert_eq!(
+            pending.tool_calls[0].error.as_deref(),
+            Some("tool exited with code 2")
+        );
+        assert_eq!(
+            tool_response_status(Some(&json!({"exit_code": 0, "stdout": "ok"})), None).0,
+            CodingAgentToolCallStatus::Succeeded
+        );
+        assert_eq!(
+            tool_response_status(Some(&json!({"stdout": "ambiguous"})), None).0,
+            CodingAgentToolCallStatus::Unknown
+        );
     }
 
     #[test]

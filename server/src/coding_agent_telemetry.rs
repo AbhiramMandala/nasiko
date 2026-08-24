@@ -248,5 +248,12 @@ fn external_turn(event: &CodingAgentEventV1, session_id: &str) -> ExternalTurn {
             estimated: None,
             trace_id: Some(crate::coding_agent_otlp::trace_id_for_event(&scoped_event)),
         }),
+        assistant_metadata: Some(serde_json::Map::from_iter([(
+            "coding_agent".to_string(),
+            json!({
+                "capture_policy": "content",
+                "tool_calls": event.turn.tool_calls,
+            }),
+        )])),
     }
 }

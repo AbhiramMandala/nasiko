@@ -175,7 +175,7 @@ export default {
     [{ method: "GET", path: /^\/api\/chat\/sessions\/ses_.*\/messages/ }, {
       data: [
         { id: "m1", session_id: SESSION_ID, role: "user", content: "Hello, what can you do?", has_file_parts: false, timestamp: new Date(Date.now() - 40 * 60 * 1000).toISOString() },
-        { id: "m2", session_id: SESSION_ID, role: "assistant", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents. Here's what I can do:", has_file_parts: false, timestamp: new Date(Date.now() - 39 * 60 * 1000).toISOString() },
+        { id: "m2", session_id: SESSION_ID, role: "assistant", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents. Here's what I can do:", metadata: { coding_agent: { capture_policy: "content", tool_calls: [{ id: "tool-1", name: "list_agents", kind: "tool", status: "succeeded", duration_ms: 24 }] } }, has_file_parts: false, timestamp: new Date(Date.now() - 39 * 60 * 1000).toISOString() },
       ],
       has_more: false,
       next_cursor: null,
