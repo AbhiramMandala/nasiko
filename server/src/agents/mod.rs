@@ -4,6 +4,7 @@ pub mod deployments;
 pub mod grants;
 pub mod hours_meter;
 pub mod llm_config;
+pub(crate) mod reconcile;
 pub mod update;
 pub mod upload;
 pub(crate) mod utils;
@@ -153,18 +154,14 @@ pub(crate) fn qualify_deploy_image(registry: &str, image: &str) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_agent_spec(
     agent_id: Uuid,
     name: &str,
     image: impl Into<String>,
     ports: Vec<u16>,
     env: HashMap<String, String>,
-    default_memory: &str,
+    resources: Option<ResourceLimits>,
     max_replicas: u32,
-    writable: bool,
-    writable_path: Option<String>,
-    owner_id: Uuid,
 ) -> DeploymentSpec {
     DeploymentSpec {
         container_id: ContainerId::from_uuid(agent_id),
@@ -178,23 +175,12 @@ pub(crate) fn build_agent_spec(
         env_vars: env,
         min_replicas: 1,
         max_replicas,
-        // No per-agent override exists yet — every caller wants the
-        // platform's configured default (AGENT_DEFAULT_MEMORY, see
-        // Config::agent_default_memory's doc comment). cpu_milli is
-        // unaffected by this change: the OOM issue this fixes is specific to
-        // memory, and 500m has never been observed to be insufficient.
-        resources: Some(ResourceLimits {
-            memory: default_memory.to_owned(),
-            cpu_milli: 500,
-        }),
+        resources,
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
-        writable,
-        writable_path,
-        owner_id,
     }
 }
 
@@ -202,6 +188,7 @@ pub fn router() -> Router<AppState> {
     upload::router()
         .merge(deployments::router())
         .merge(update::router())
+        .merge(llm_config::router())
     // `grants::router()` is deliberately NOT merged here: EE's `build_ee_app`
     // builds on top of this router and mounts its own richer grants router
     // (team/department grants + the live, CLI-consumed request shapes in
@@ -221,7 +208,7 @@ pub fn degradable_router() -> Router<AppState> {
 }
 
 pub fn user_routes() -> Router<AppState> {
-    upload::user_routes().merge(llm_config::router())
+    upload::user_routes()
 }
 
 #[cfg(test)]
@@ -233,29 +220,15 @@ mod spec_tests {
         let id = Uuid::new_v4();
         // Same agent_id → same ContainerId regardless of the display name, so every
         // deploy path converges on one workload.
-        let a = build_agent_spec(
-            id,
-            "My.Agent",
-            "img:1",
-            vec![],
-            HashMap::new(),
-            "512Mi",
-            1,
-            false,
-            None,
-            Uuid::nil(),
-        );
+        let a = build_agent_spec(id, "My.Agent", "img:1", vec![], HashMap::new(), None, 1);
         let b = build_agent_spec(
             id,
             "totally-different-name",
             "img:2",
             vec![],
             HashMap::new(),
-            "512Mi",
-            1,
-            false,
             None,
-            Uuid::nil(),
+            1,
         );
         assert_eq!(a.container_id, ContainerId::from_uuid(id));
         assert_eq!(a.container_id, b.container_id);
@@ -266,64 +239,19 @@ mod spec_tests {
     #[test]
     fn preserves_explicit_ports() {
         let id = Uuid::new_v4();
-        let s = build_agent_spec(
-            id,
-            "a",
-            "img:1",
-            vec![9091],
-            HashMap::new(),
-            "512Mi",
-            1,
-            false,
-            None,
-            Uuid::nil(),
-        );
+        let s = build_agent_spec(id, "a", "img:1", vec![9091], HashMap::new(), None, 1);
         assert_eq!(s.ports, vec![9091]);
     }
 
     #[test]
     fn spec_max_replicas_comes_from_parameter() {
         let id = Uuid::new_v4();
-        let s = build_agent_spec(
-            id,
-            "a",
-            "img:1",
-            vec![],
-            HashMap::new(),
-            "512Mi",
-            5,
-            false,
-            None,
-            Uuid::nil(),
-        );
+        let s = build_agent_spec(id, "a", "img:1", vec![], HashMap::new(), None, 5);
         assert_eq!(
             s.max_replicas, 5,
             "max_replicas must match the parameter, not be hardcoded"
         );
         assert_eq!(s.min_replicas, 1);
-    }
-
-    #[test]
-    fn spec_memory_comes_from_default_memory_parameter() {
-        let id = Uuid::new_v4();
-        let s = build_agent_spec(
-            id,
-            "a",
-            "img:1",
-            vec![],
-            HashMap::new(),
-            "2Gi",
-            1,
-            false,
-            None,
-            Uuid::nil(),
-        );
-        assert_eq!(
-            s.resources.expect("resources must always be set").memory,
-            "2Gi",
-            "memory must match the default_memory parameter (AGENT_DEFAULT_MEMORY), not a \
-             hardcoded value"
-        );
     }
 
     #[test]
