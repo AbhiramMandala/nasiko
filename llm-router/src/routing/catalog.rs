@@ -20,6 +20,7 @@
 //! routing (the request's own model passes through), never to a wrong model.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::PgPool;
@@ -29,9 +30,28 @@ use crate::config::GatewayConfig;
 /// Upper bound on a `/models` fetch so a slow provider can't stall the sync loop.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Every provider label the router can actually route to, as `(label, API base URL)`,
+/// gated on a configured platform key. Superset of [`listable_providers`]: the pricing
+/// sync only needs the label and base URL (it queries Portkey, never the provider), so
+/// it covers Gemini too — whereas the catalog sync can't, because Gemini's `ListModels`
+/// answers `{"models": [{"name": …}]}` with a `?key=` credential rather than the
+/// `{"data": [{"id": …}]}` + bearer shape [`fetch_models`] speaks.
+pub(crate) fn priceable_providers(cfg: &GatewayConfig) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = listable_providers(cfg)
+        .into_iter()
+        .map(|(label, base, _key)| (label, base))
+        .collect();
+    if !cfg.platform_gemini_api_key.is_empty() {
+        out.push(("gemini".to_string(), cfg.gemini_api_base.clone()));
+    }
+    out
+}
+
 /// The providers we know how to list models for: `(provider label, API base URL, key)`
 /// resolved from the gateway config. Providers without a platform key are skipped —
 /// no key means the router can't call that provider anyway.
+///
+/// Gemini is deliberately absent — see [`priceable_providers`] for why.
 pub(crate) fn listable_providers(cfg: &GatewayConfig) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     if !cfg.platform_openai_api_key.is_empty() {
@@ -168,8 +188,12 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
 /// Spawn the background catalog-sync loop: an immediate sync at startup, then every
 /// `MODEL_CATALOG_SYNC_INTERVAL_SECS` (default 10 min). The task logs and continues on
 /// failure; it never panics and never blocks serving.
-pub fn spawn_sync(db: PgPool, http: reqwest::Client) {
-    let cfg = GatewayConfig::from_env();
+///
+/// Takes the already-resolved [`GatewayConfig`] rather than re-reading the environment,
+/// so the router's effective config is decided once at the composition root. Whether to
+/// spawn at all is the caller's decision (`MODEL_CATALOG_SYNC_ENABLED`) — this loop
+/// reaches the network on its first tick.
+pub fn spawn_sync(db: PgPool, http: reqwest::Client, cfg: Arc<GatewayConfig>) {
     let interval = Duration::from_secs(cfg.model_catalog_sync_interval_secs);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
@@ -224,5 +248,40 @@ mod tests {
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].0, "openai");
         assert_eq!(providers[0].1, "https://api.deepseek.com/v1");
+    }
+
+    #[test]
+    fn priceable_providers_add_gemini_but_listable_does_not() {
+        let cfg = GatewayConfig {
+            platform_gemini_api_key: "gk-test".into(),
+            ..GatewayConfig::default()
+        };
+        // Gemini is priceable (Portkey knows it) but not listable (its /models
+        // shape and credential differ from what `fetch_models` speaks).
+        assert!(listable_providers(&cfg).is_empty());
+        let priceable = priceable_providers(&cfg);
+        assert_eq!(priceable.len(), 1);
+        assert_eq!(priceable[0].0, "gemini");
+        assert_eq!(priceable[0].1, cfg.gemini_api_base);
+    }
+
+    #[test]
+    fn priceable_providers_is_empty_without_keys() {
+        assert!(priceable_providers(&GatewayConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn priceable_providers_covers_every_configured_label() {
+        let cfg = GatewayConfig {
+            platform_openai_api_key: "sk-test".into(),
+            platform_anthropic_api_key: "ak-test".into(),
+            platform_gemini_api_key: "gk-test".into(),
+            ..GatewayConfig::default()
+        };
+        let labels: Vec<String> = priceable_providers(&cfg)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, vec!["openai", "anthropic", "gemini"]);
     }
 }

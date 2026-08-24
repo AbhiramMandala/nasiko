@@ -22,6 +22,7 @@
 //! per 1M tokens — multiply by 10,000.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::PgPool;
@@ -232,13 +233,22 @@ async fn sync_label(
         // Close this label's active row for the model (history), then open the new
         // one. Other labels' rows are left alone — model-only lookups order by
         // effective_from DESC, so this newer row wins.
+        //
+        // Both statements in one transaction, so a concurrent cost lookup never sees
+        // the model with no active row. `now()` is the transaction timestamp, so the
+        // closed row's `effective_until` equals the new row's `effective_from`
+        // exactly — the point-in-time lookup in `calculate_token_cost` has no gap to
+        // fall into. Per model rather than per label: a failure part-way through a
+        // price book keeps the changes already applied instead of discarding them,
+        // and no single transaction holds locks across ~2000 models.
+        let mut tx = db.begin().await?;
         sqlx::query(
             "UPDATE model_pricing SET effective_until = now() \
              WHERE provider = $1 AND model = $2 AND effective_until IS NULL",
         )
         .bind(label)
         .bind(model)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
         sqlx::query(
             "INSERT INTO model_pricing \
@@ -252,8 +262,9 @@ async fn sync_label(
         .bind(new.output_per_1m)
         .bind(new.cache_creation_per_1m)
         .bind(new.cache_read_per_1m)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         inserted += 1;
     }
     Ok(inserted)
@@ -266,7 +277,7 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_PRICING_BASE.to_string());
     let mut inserted = 0;
-    for (label, api_base, _key) in super::catalog::listable_providers(cfg) {
+    for (label, api_base) in super::catalog::priceable_providers(cfg) {
         let slug = portkey_slug(&label, &api_base);
         let Some(book) = fetch_price_book(http, &pricing_base, &slug).await else {
             continue;
@@ -293,8 +304,12 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
 /// Spawn the background pricing-sync loop: immediate sync at startup, then every
 /// `PRICING_SYNC_INTERVAL_SECS` (default 24h — prices move slowly). Fail-open; never
 /// panics, never blocks serving.
-pub fn spawn_sync(db: PgPool, http: reqwest::Client) {
-    let cfg = GatewayConfig::from_env();
+///
+/// Takes the already-resolved [`GatewayConfig`] rather than re-reading the environment,
+/// so the router's effective config is decided once at the composition root. Whether to
+/// spawn at all is the caller's decision (`MODEL_PRICING_SYNC_ENABLED`) — this loop
+/// reaches the network on its first tick.
+pub fn spawn_sync(db: PgPool, http: reqwest::Client, cfg: Arc<GatewayConfig>) {
     let interval = Duration::from_secs(cfg.pricing_sync_interval_secs);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);

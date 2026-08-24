@@ -203,10 +203,27 @@ pub const SEED_PRICING: &[SeedPrice] = &[
     seed!("anthropic", "claude-haiku-4", 0.80, 4.00, 1.00, 0.08),
     seed!("anthropic", "claude-3-5-sonnet", 3.00, 15.00),
     seed!("anthropic", "claude-3-5-haiku", 0.80, 4.00),
-    seed!("anthropic", "claude-3-5-sonnet-20241022", 3.00, 15.00, 3.75, 0.30),
-    seed!("anthropic", "claude-3-5-haiku-20241022", 0.80, 4.00, 1.00, 0.08),
-    seed!("google", "gemini-2.5-pro", 1.25, 10.00),
-    seed!("google", "gemini-2.5-flash", 0.15, 0.60),
+    seed!(
+        "anthropic",
+        "claude-3-5-sonnet-20241022",
+        3.00,
+        15.00,
+        3.75,
+        0.30
+    ),
+    seed!(
+        "anthropic",
+        "claude-3-5-haiku-20241022",
+        0.80,
+        4.00,
+        1.00,
+        0.08
+    ),
+    // `gemini`, not `google` — the router's provider label is what lands in
+    // `token_usage.provider`, and `calculate_token_cost` matches (provider, model)
+    // exactly, so a `google`-labelled row can never price a Gemini call.
+    seed!("gemini", "gemini-2.5-pro", 1.25, 10.00),
+    seed!("gemini", "gemini-2.5-flash", 0.15, 0.60),
     seed!("gemini", "gemini-1.5-pro", 1.25, 5.00),
     seed!("gemini", "gemini-1.5-flash", 0.075, 0.30),
     seed!("gemini", "gemini-2.0-flash", 0.10, 0.40),

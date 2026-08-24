@@ -329,19 +329,30 @@ where
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let llm_routes = nasiko_llm_router::router(nasiko_llm_router::LlmRouterCtx::from_shared(
-        state.db.clone(),
-        state.http_client.clone(),
-    ));
+    let llm_ctx =
+        nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone(), state.http_client.clone());
+    // Both sync loops below read the router's effective config, resolved once here
+    // rather than re-read from env per loop.
+    let llm_cfg = llm_ctx.cfg.clone();
+    let llm_routes = nasiko_llm_router::router(llm_ctx);
     // Keep the provider model catalog (tier-routing candidates) fresh from each
     // provider's GET /models. Runs immediately, then every 10 min; fail-open.
-    nasiko_llm_router::routing::catalog::spawn_sync(state.db.clone(), state.http_client.clone());
+    if state.config.model_catalog_sync_enabled {
+        nasiko_llm_router::routing::catalog::spawn_sync(
+            state.db.clone(),
+            state.http_client.clone(),
+            llm_cfg.clone(),
+        );
+    }
     // Keep model_pricing fresh from the Portkey price book (free, no-auth, MIT);
     // curated seed rows remain the offline baseline. Daily; fail-open.
-    nasiko_llm_router::routing::pricing_sync::spawn_sync(
-        state.db.clone(),
-        state.http_client.clone(),
-    );
+    if state.config.model_pricing_sync_enabled {
+        nasiko_llm_router::routing::pricing_sync::spawn_sync(
+            state.db.clone(),
+            state.http_client.clone(),
+            llm_cfg,
+        );
+    }
 
     // UI pages: the static fallback is gated server-side — unauthenticated
     // page navigations get a redirect to /login.html instead of the document
