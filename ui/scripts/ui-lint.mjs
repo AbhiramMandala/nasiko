@@ -493,6 +493,34 @@ const rules = [
       return out;
     },
   },
+  {
+    id: 'weave-renderer-is-createelement-only',
+    enforce: 'zero',
+    why: 'The Weave surface renderer turns a streamed, model-authored spec into DOM, so every value it handles is ' +
+         'untrusted input that arrived over the wire. Its whole security posture is one sentence — createElement and ' +
+         'setAttribute, nothing else — and that sentence stays true only for as long as nobody reaches for the faster ' +
+         'thing under deadline. innerHTML, insertAdjacentHTML, eval, new Function and any on* handler assignment turn ' +
+         'a bad spec from a degraded panel into script execution. A code review will eventually miss one of these; ' +
+         'this will not. Build the node, set its attributes, append it.',
+    check({ rel, source, isJs }) {
+      if (!isJs || !rel.includes('common/features/weave-surface/')) return [];
+      const out = [];
+      const banned = [
+        [/\.innerHTML\s*=/g, 'assigns innerHTML'],
+        [/\.outerHTML\s*=/g, 'assigns outerHTML'],
+        [/insertAdjacentHTML\s*\(/g, 'calls insertAdjacentHTML'],
+        [/\beval\s*\(/g, 'calls eval'],
+        [/new\s+Function\s*\(/g, 'calls new Function'],
+        [/document\.write\s*\(/g, 'calls document.write'],
+        [/setAttribute\s*\(\s*['"`]on/gi, 'sets an on* attribute'],
+        [/\.on[a-z]+\s*=\s*(?!null)/g, 'assigns an on* handler property'],
+      ];
+      for (const [re, message] of banned) {
+        for (const m of source.matchAll(re)) out.push({ file: rel, line: lineOf(source, m.index), message });
+      }
+      return out;
+    },
+  },
 ];
 
 // Declared per edition in edition.json. Empty where no edition declares one,
