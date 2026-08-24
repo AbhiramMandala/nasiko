@@ -76,6 +76,7 @@ impl AppState {
     }
 
     pub async fn run_migrations(db: &PgPool) {
+        ensure_pg_extensions(db).await;
         sqlx::migrate!("../migrations")
             .set_ignore_missing(true)
             .run(db)
@@ -264,8 +265,7 @@ impl AppState {
     }
 
     /// Run one-time initialization: bootstrap admin user, spawn seed agents in background,
-    /// reconcile any `running` agent with no live runtime resource, and start periodic
-    /// materialized view refresh.
+    /// and start periodic materialized view refresh.
     pub async fn init(&self) {
         if let (Ok(admin_user), Ok(admin_pass)) = (
             std::env::var("ADMIN_USERNAME"),
@@ -279,14 +279,6 @@ impl AppState {
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
             crate::seed::seed_toolkits_if_configured(&state).await;
-        });
-
-        // Covers e.g. a tenant cluster restore, which recreates the database
-        // but not the individual agent Deployments/Services — see
-        // `agents::reconcile`'s module doc.
-        let state = self.clone();
-        tokio::spawn(async move {
-            crate::agents::reconcile::reconcile_agents_on_startup(&state).await;
         });
 
         // Periodic refresh of materialized views (token_usage_daily, agent_selection_stats).
@@ -456,5 +448,49 @@ impl AppState {
         }
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
         env
+    }
+}
+
+/// Postgres extensions the migrations require (`0001_schema.sql` runs
+/// `CREATE EXTENSION IF NOT EXISTS` for each). Invisible on the in-cluster
+/// `pgvector/pgvector` image, which ships all three preinstalled.
+const REQUIRED_PG_EXTENSIONS: [&str; 3] = ["pgcrypto", "pg_trgm", "vector"];
+
+/// Creates the required extensions before the migration runner touches them,
+/// so a managed Postgres that hasn't installed or allowlisted one (Azure
+/// Flexible Server, RDS, Cloud SQL all gate `CREATE EXTENSION`) fails fast
+/// with an actionable message instead of a raw mid-migration SQL error.
+async fn ensure_pg_extensions(db: &PgPool) {
+    for ext in REQUIRED_PG_EXTENSIONS {
+        if let Err(err) = sqlx::query(&format!("CREATE EXTENSION IF NOT EXISTS \"{ext}\""))
+            .execute(db)
+            .await
+        {
+            panic!("{}", pg_extension_error_message(ext, &err.to_string()));
+        }
+    }
+}
+
+fn pg_extension_error_message(ext: &str, err: &str) -> String {
+    format!(
+        "required Postgres extension \"{ext}\" is unavailable: {err}\n\
+         The migrations need pgcrypto, pg_trgm, and vector. On a managed \
+         Postgres, install/allowlist them on the server first — e.g. Azure \
+         Flexible Server: `az postgres flexible-server parameter set \
+         --name azure.extensions --value VECTOR,PG_TRGM,PGCRYPTO` — then \
+         restart the control plane."
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extension_error_names_the_extension_and_the_remedy() {
+        let msg = pg_extension_error_message("vector", "permission denied");
+        assert!(msg.contains("\"vector\""));
+        assert!(msg.contains("permission denied"));
+        assert!(msg.contains("azure.extensions"));
     }
 }
