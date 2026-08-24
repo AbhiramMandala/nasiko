@@ -38,6 +38,7 @@
  */
 import styles from './app-select.css' with { type: 'css' };
 import { icons, unsizeIcons } from '../../utils/icons.js';
+import { escAttr, escHtml } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 let uid = 0;
@@ -106,19 +107,19 @@ export class AppSelect extends HTMLElement {
     this.innerHTML = `
       <div class="field is-${size} is-${state}">
         ${label === null ? '' : `<label class="label-row" for="${this.#id}">${
-          this.hasAttribute('required') ? '<span class="req">*</span>' : ''}${label}</label>`}
+          this.hasAttribute('required') ? '<span class="req">*</span>' : ''}${escHtml(label)}</label>`}
         <div class="select-box">
           ${this.#leading}
-          <select id="${this.#id}"${name ? ` name="${name}"` : ''}${
+          <select id="${this.#id}"${name ? ` name="${escAttr(name)}"` : ''}${
             aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
             disabled ? ' disabled' : ''}${this.hasAttribute('required') ? ' required' : ''}>
             ${placeholder === null ? ''
-              : `<option value="" disabled selected>${placeholder}</option>`}
+              : `<option value="" disabled selected>${escHtml(placeholder)}</option>`}
             ${this.#optionsHtml()}
           </select>
           <span class="chevron" aria-hidden="true">${icons.chevronDown()}</span>
         </div>
-        ${hint === null ? '' : `<div class="hint-row"><span class="hint">${hint}</span></div>`}
+        ${hint === null ? '' : `<div class="hint-row"><span class="hint">${escHtml(hint)}</span></div>`}
       </div>`;
 
     // The chevron comes from icons.js with its size inline, which beats the

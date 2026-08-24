@@ -35,6 +35,7 @@
  */
 import styles from './app-input.css' with { type: 'css' };
 import { unsizeIcons } from '../../utils/icons.js';
+import { escHtml } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Attributes handed straight to the inner <input>, not styling.
@@ -102,7 +103,7 @@ export class AppInput extends HTMLElement {
     this.innerHTML = `
       <div class="field is-${size} is-${state}">
         ${label === null ? '' : `<label class="label-row" for="${this.#id}">${
-          this.hasAttribute('required') ? '<span class="req">*</span>' : ''}${label}</label>`}
+          this.hasAttribute('required') ? '<span class="req">*</span>' : ''}${escHtml(label)}</label>`}
         <div class="input-box">
           ${this.#slots.leading}
           <input id="${this.#id}" ${native}${disabled ? ' disabled' : ''}${
@@ -111,7 +112,7 @@ export class AppInput extends HTMLElement {
         </div>
         ${hint === null && count === null ? '' : `<div class="hint-row">
           <span class="hint">${hint ?? ''}</span>
-          ${count === null ? '' : `<span class="count">${count}</span>`}
+          ${count === null ? '' : `<span class="count">${escHtml(count)}</span>`}
         </div>`}
       </div>`;
 

@@ -23,6 +23,7 @@
  * @fires change - Bubbles from the inner input.
  */
 import styles from './app-switch.css' with { type: 'css' };
+import { escAttr, escHtml } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 let uid = 0;
@@ -60,15 +61,15 @@ export class AppSwitch extends HTMLElement {
     const value    = this.getAttribute('value');
 
     const control = `
-      <input id="${this.#id}" type="checkbox" role="switch"${name ? ` name="${name}"` : ''}${
+      <input id="${this.#id}" type="checkbox" role="switch"${name ? ` name="${escAttr(name)}"` : ''}${
         aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
         value === null ? '' : ` value="${value.replace(/"/g, '&quot;')}"`}${
         checked ? ' checked' : ''}${disabled ? ' disabled' : ''}>
       <span class="track" aria-hidden="true"><span class="thumb"></span></span>`;
 
     const text = label === null && hint === null ? '' : `<span class="text">
-        ${label === null ? '' : `<span class="label">${label}</span>`}
-        ${hint === null ? '' : `<span class="hint">${hint}</span>`}
+        ${label === null ? '' : `<span class="label">${escHtml(label)}</span>`}
+        ${hint === null ? '' : `<span class="hint">${escHtml(hint)}</span>`}
       </span>`;
 
     this.innerHTML = `

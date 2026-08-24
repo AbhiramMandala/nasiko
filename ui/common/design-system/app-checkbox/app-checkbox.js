@@ -23,6 +23,7 @@
  */
 import styles from './app-checkbox.css' with { type: 'css' };
 import { icons } from '../../utils/icons.js';
+import { escAttr, escHtml } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 let uid = 0;
@@ -68,7 +69,7 @@ export class AppCheckbox extends HTMLElement {
 
     this.innerHTML = `
       <label class="row is-${state} is-${type}" for="${this.#id}">
-        <input id="${this.#id}" type="checkbox"${name ? ` name="${name}"` : ''}${
+        <input id="${this.#id}" type="checkbox"${name ? ` name="${escAttr(name)}"` : ''}${
         aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
           value === null ? '' : ` value="${value.replace(/"/g, '&quot;')}"`}${
           checked && !indet ? ' checked' : ''}${disabled ? ' disabled' : ''}>
@@ -76,8 +77,8 @@ export class AppCheckbox extends HTMLElement {
           ${indet ? '<span class="dash"></span>' : icons.check()}
         </span>
         ${label === null && hint === null ? '' : `<span class="text">
-          ${label === null ? '' : `<span class="label">${label}</span>`}
-          ${hint === null ? '' : `<span class="hint">${hint}</span>`}
+          ${label === null ? '' : `<span class="label">${escHtml(label)}</span>`}
+          ${hint === null ? '' : `<span class="hint">${escHtml(hint)}</span>`}
         </span>`}
       </label>`;
 

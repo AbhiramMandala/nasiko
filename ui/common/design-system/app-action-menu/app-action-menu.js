@@ -17,6 +17,7 @@
  * @fires action-select - Item clicked; `detail: { id: string }` — bubbles
  */
 import styles from './app-action-menu.css' with { type: 'css' };
+import { escAttr } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppActionMenu extends HTMLElement {
@@ -30,7 +31,7 @@ export class AppActionMenu extends HTMLElement {
     const title = this.getAttribute('trigger-title') || '';
 
     this.innerHTML = `
-      <button class="aam-trigger btn-icon" title="${title}" aria-haspopup="true" aria-expanded="false">
+      <button class="aam-trigger btn-icon" title="${escAttr(title)}" aria-haspopup="true" aria-expanded="false">
         ${iconHtml}
       </button>
       <div class="aam-menu" hidden role="menu">
