@@ -484,7 +484,7 @@
         },
         "icon": {
           "type": "string",
-          "description": "SVG markup string for the icon (alternative to slot). Deliberately NOT escaped: it is markup by contract. That makes it a sink, so a generated surface may not set it — see weave-surface/validate.js."
+          "description": "SVG markup string for the icon (alternative to slot)"
         }
       },
       "slots": [

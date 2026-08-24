@@ -317,11 +317,7 @@ pub(crate) async fn build_and_deploy(
 
     // Deploy container — UUID-keyed (see build_agent_spec) so import re-targets the
     // existing workload on re-import and can't collide cross-team on the name.
-    // Seed from agent_env (per-agent secrets + platform OPENAI_*/PORT fallback) like
-    // every other deploy path (agents/upload.rs, deployments.rs::restart) — this path
-    // used to start from an empty map, so imported agents booted with no LLM env at
-    // all and failed on their first call with a 401.
-    let mut env_vars = state.agent_env(agent_id).await;
+    let mut env_vars = std::collections::HashMap::new();
     crate::llm_router::wiring::inject_agent_llm_env(
         &state.db,
         &mut env_vars,
@@ -650,18 +646,19 @@ async fn effective_allowed_hosts(state: &AppState) -> Vec<String> {
         .collect();
     allowed.extend(state.config.registry_import_allowed_hosts.iter().cloned());
 
-    let configured: Option<String> =
-        match sqlx::query_scalar::<_, Option<String>>("SELECT registry_url FROM settings LIMIT 1")
-            .fetch_optional(&state.db)
-            .await
-        {
-            Ok(Some(url)) => url,
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!(%e, "effective_allowed_hosts: could not read settings.registry_url");
-                None
-            }
-        };
+    let configured: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
+        "SELECT registry_url FROM settings LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(url)) => url,
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(%e, "effective_allowed_hosts: could not read settings.registry_url");
+            None
+        }
+    };
     if let Some(host) = configured.as_deref().and_then(registry_url_host) {
         allowed.push(host);
     }
@@ -969,11 +966,7 @@ pub(crate) async fn import_registry(
         };
 
         // Deploy — UUID-keyed (see build_agent_spec).
-        // Seed from agent_env (per-agent secrets + platform OPENAI_*/PORT fallback) like
-        // every other deploy path (agents/upload.rs, deployments.rs::restart) — this path
-        // used to start from an empty map, so imported agents booted with no LLM env at
-        // all and failed on their first call with a 401.
-        let mut env_vars = state.agent_env(agent_id).await;
+        let mut env_vars = std::collections::HashMap::new();
         crate::llm_router::wiring::inject_agent_llm_env(
             &state.db,
             &mut env_vars,

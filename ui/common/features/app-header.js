@@ -15,7 +15,7 @@
  */
 import { authService } from "../services/auth-service.js";
 import { icons } from "../utils/icons.js";
-import { confirmDialog } from "../design-system/confirm-dialog/confirm-dialog.js";
+import { confirmDialog } from "../design-system/app-modal/app-modal.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
 import { escHtml } from '/common/utils/escape.js';
@@ -152,6 +152,9 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   /* Small screens: drop the history cluster, let search flex, keep menu */
   @media (max-width: 1023.98px) {
     .nav-cluster { display: none; }
+    /* Rail is hidden below 1024px, so its toggle would just duplicate the
+       mobile menu button. */
+    [data-rail-toggle] { display: none; }
     .search-field { width: auto; flex: 1; min-width: 0; }
     .search-field .kbd-hint { display: none; }
     .topbar-spacer { display: none; }

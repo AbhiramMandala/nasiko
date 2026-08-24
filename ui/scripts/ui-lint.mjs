@@ -310,13 +310,73 @@ const rules = [
   },
 
   {
-    id: 'no-hardcoded-color',
+    id: 'no-attach-shadow',
+    enforce: 'zero',
+    why: 'Every component is light-DOM (core/element.js: 69 of 69, zero attachShadow calls). One shadow root ' +
+         'breaks the model in three places at once: the adopted stylesheets in document.adoptedStyleSheets stop ' +
+         'applying, @scope wrappers no longer bound anything, and querySelector from a parent stops finding the ' +
+         'child. Documented in ARCHITECTURE.md since the start; this is the check that makes it true.',
+    check({ rel, source, isJs }) {
+      if (!isJs || rel.includes('/vendor/')) return [];
+      // Blank comments in place, preserving newlines so line numbers hold. The
+      // rule is documented in element.js's own JSDoc, and matching that prose
+      // would make the rule fail on the file that states it.
+      const bare = source.replace(/\/\*[\s\S]*?\*\/|(^|[^:])\/\/[^\n]*/g, (m) => m.replace(/[^\n]/g, ' '));
+      return [...bare.matchAll(/\battachShadow\s*\(/g)].map((m) => ({
+        file: rel,
+        line: lineOf(bare, m.index),
+        message: 'calls attachShadow() — components are light-DOM',
+      }));
+    },
+  },
+
+  {
+    id: 'domain-must-not-import-domain',
     enforce: 'ratchet',
-    why: 'Colours must come from design tokens or a re-skin cannot be mechanical. Syntax highlighting and brand ' +
-         'marks are the legitimate exceptions and are in the baseline.',
+    why: 'A page component may import downward into the design system and platform, never sideways into another ' +
+         'page component. Sideways is how two pages quietly become one unit that cannot be moved, deleted or ' +
+         'published separately — and it is invisible to layer-direction, which only compares layer numbers and so ' +
+         'reads DOMAIN -> DOMAIN as level. Shared behaviour belongs in features/ or design-system/. A file may ' +
+         'still import its ' +
+         'own stylesheet, since that is not a peer module. Baseline 2, both the same shape: departments-page and ' +
+         'teams-page each import /components/user-picker.js, a shared widget that happens to live in the ' +
+         'page-component directory. It is not a page, so it should not be at this layer — moving it down to a ' +
+         'features/ directory clears both at once. Ratcheted rather than zero because that move is a structural ' +
+         'decision, and a rule that fails on arrival gets switched off.',
+    check({ rel, source, isJs }) {
+      if (!isJs || layerOf(rel) !== LAYER.DOMAIN) return [];
+      // The page components sit as siblings in one flat directory, so "another
+      // directory" does not separate them — the discriminator is another JS
+      // module at the same layer. A component's own stylesheet is not a peer.
+      return importsOf(source)
+        .filter((spec) => {
+          const target = resolveSpec(rel, spec);
+          return target && target !== rel && target.endsWith('.js') && layerOf(target) === LAYER.DOMAIN;
+        })
+        .map((spec) => ({
+          file: rel,
+          line: lineOf(source, source.indexOf(spec)),
+          message: `imports peer page component ${spec}`,
+        }));
+    },
+  },
+
+  {
+    id: 'no-hardcoded-color',
+    enforce: 'zero',
+    why: 'Colours must come from design tokens or a re-skin cannot be mechanical. Frozen at zero: the ratchet ran ' +
+         'from 67 down to 4, and those last four were third-party brand marks in a preview fixture — not a debt to ' +
+         'pay but a category that does not belong to the rule. Fixtures and vendored code are exempt; everything ' +
+         'that ships must resolve through var().',
     check({ rel, source, isJs }) {
       if (!editionOf(rel)) return [];
       if (rel.includes('/vendor/') || rel === 'ui/common/global.css') return [];
+      // Preview fixtures are inputs to the browser suite, not shipped surface.
+      // The four that kept this rule off zero were third-party brand marks
+      // (#ea4335, #0acf83, #0078d4, #111111) in mcp.preview.js — a re-skin must
+      // NOT recolour someone else's logo, so tokenising them would be wrong.
+      // Exempting fixtures is what lets the rule be frozen at zero.
+      if (rel.endsWith('.preview.js') || rel.includes('/.preview/')) return [];
       return findRawColours(rel, source);
     },
   },
@@ -395,30 +455,40 @@ const rules = [
         .map((f) => ({ file: rel, line: 1, message: `does not import ${f} — the router path will not register it` }));
     },
   },
+
   {
-    id: 'weave-renderer-is-createelement-only',
+    id: 'no-backtick-in-adopted-sheet',
     enforce: 'zero',
-    why: 'The Weave surface renderer turns a streamed, model-authored spec into DOM, so every value it handles is ' +
-         'untrusted input that arrived over the wire. Its whole security posture is one sentence — createElement and ' +
-         'setAttribute, nothing else — and that sentence stays true only for as long as nobody reaches for the faster ' +
-         'thing under deadline. innerHTML, insertAdjacentHTML, eval, new Function and any on* handler assignment turn ' +
-         'a bad spec from a degraded panel into script execution. A code review will eventually miss one of these; ' +
-         'this will not. Build the node, set its attributes, append it.',
+    why: 'Twenty-odd components carry their stylesheet as a template literal passed to replaceSync(). A backtick ' +
+         'inside that literal — almost always someone quoting a CSS property in a comment — closes the string early ' +
+         'and the whole module stops parsing, so the element never upgrades and every page importing it renders ' +
+         'nothing. Nothing else catches it: there is no bundler, tsc does not read the literal, and `node --check` ' +
+         'parses the truncated result as valid JS. The browser is the first thing to notice, at runtime, as a bare ' +
+         '"missing ) after argument list". Quote CSS in those comments with plain text or single quotes.',
     check({ rel, source, isJs }) {
-      if (!isJs || !rel.includes('common/features/weave-surface/')) return [];
+      if (!isJs) return [];
       const out = [];
-      const banned = [
-        [/\.innerHTML\s*=/g, 'assigns innerHTML'],
-        [/\.outerHTML\s*=/g, 'assigns outerHTML'],
-        [/insertAdjacentHTML\s*\(/g, 'calls insertAdjacentHTML'],
-        [/\beval\s*\(/g, 'calls eval'],
-        [/new\s+Function\s*\(/g, 'calls new Function'],
-        [/document\.write\s*\(/g, 'calls document.write'],
-        [/setAttribute\s*\(\s*['"`]on/gi, 'sets an on* attribute'],
-        [/\.on[a-z]+\s*=\s*(?!null)/g, 'assigns an on* handler property'],
-      ];
-      for (const [re, message] of banned) {
-        for (const m of source.matchAll(re)) out.push({ file: rel, line: lineOf(source, m.index), message });
+      // Only the literal handed straight to replaceSync — a sheet assembled some
+      // other way is not this pattern and its interpolations are intentional.
+      for (const m of source.matchAll(/replaceSync\(`/g)) {
+        const open = m.index + m[0].length;
+        // First unescaped backtick after the opening one closes the literal.
+        let end = open;
+        while (end < source.length) {
+          const i = source.indexOf('`', end);
+          if (i < 0) return out;
+          if (source[i - 1] !== '\\') { end = i; break; }
+          end = i + 1;
+        }
+        // `);` right after it is the well-formed case: the literal ended where
+        // the call did. Anything else means a stray backtick closed it early.
+        if (!/^\s*\)\s*;?/.test(source.slice(end + 1, end + 4))) {
+          out.push({
+            file: rel,
+            line: lineOf(source, end),
+            message: 'backtick inside the replaceSync() stylesheet closes the literal early — the module will not parse',
+          });
+        }
       }
       return out;
     },

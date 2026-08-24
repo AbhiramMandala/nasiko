@@ -39,7 +39,32 @@ class ChatPage extends HTMLElement {
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
+    this.addEventListener("route-update", this.#onRouteUpdate);
+    this.#enter();
+  }
 
+  /**
+   * Same route pattern, different query. The router keeps this element mounted
+   * and tells it the URL moved (core/router.js) instead of remounting, and
+   * nothing listened — so opening a second session from the module nav moved
+   * the address bar and the highlighted row while the first transcript stayed
+   * on screen. Re-enter from the new params, abandoning whatever the session we
+   * are leaving still has in flight.
+   */
+  #onRouteUpdate = () => {
+    const params = new URLSearchParams(location.search);
+    if ((params.get("session_id") || null) === this.#sessionId
+        && params.get("agent_id") === this.#agentId) return;
+    this.#abort.abort();
+    this.#abort = new AbortController();
+    this.#sending = false;
+    this.#lastUserContent = null;
+    this.#enter();
+  };
+
+  /** Read the URL and build the page for it. Called on mount and on every
+   *  route-update that names a different session or agent. */
+  #enter() {
     const params = new URLSearchParams(location.search);
     this.#agentId = params.get("agent_id");
     this.#sessionId = params.get("session_id") || null;
@@ -80,6 +105,7 @@ class ChatPage extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this.removeEventListener("route-update", this.#onRouteUpdate);
     this.#abort.abort();
   }
 
