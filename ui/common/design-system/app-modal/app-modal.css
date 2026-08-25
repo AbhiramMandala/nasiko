@@ -41,7 +41,16 @@
         pointer-events: none;
       }
     }
-    .body { padding: var(--s-16); overflow-y: auto; flex: 1; max-height: 65vh; min-height: 6rem; }
+    /* No `flex: 1` here. That is `flex: 1 1 0%` — a flex base size of 0 — and
+       `overflow-y: auto` makes this a scroll container, which zeroes its
+       *automatic* minimum size too. Between them nothing reported the content
+       height to the flex algorithm, so an auto-height dialog sized itself to
+       header + `min-height` and every modal taller than 6rem had its content
+       clipped with no scrollbar. Blink papers over it by using the content size
+       for intrinsic sizing; Safari follows the spec and the modal came out 40px
+       short. The default `flex: 0 1 auto` bases the body on its content in
+       every engine — max-height + overflow still cap and scroll a long one. */
+    .body { padding: var(--s-16); overflow-y: auto; max-height: 65vh; min-height: 6rem; }
     footer {
       flex-shrink: 0;
       display: flex;

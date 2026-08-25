@@ -2,7 +2,8 @@ import { icons } from '/common/utils/icons.js';
 import '/common/features/secrets-manager.js';
 import '/common/features/app-module-nav.js';
 
-import styles from './secrets-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./secrets-page.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 // Workspace-level secrets. All CRUD lives in <secrets-manager scope="user">

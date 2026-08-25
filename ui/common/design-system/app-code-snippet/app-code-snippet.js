@@ -10,7 +10,8 @@
 import { icons } from '../../utils/icons.js';
 import { showToast } from '../../utils/toast.js';
 
-import styles from './app-code-snippet.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-code-snippet.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class AppCodeSnippet extends HTMLElement {

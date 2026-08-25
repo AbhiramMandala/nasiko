@@ -2,7 +2,8 @@ import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
 import { initialView, syncView } from '/common/utils/module-view.js';
 
-import styles from './settings-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./settings-page.css', import.meta.url));
 import { call } from '../core/data-sources.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the

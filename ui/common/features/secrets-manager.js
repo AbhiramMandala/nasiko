@@ -8,7 +8,8 @@ import '/common/design-system/app-empty-state/app-empty-state.js';
 import { setFieldError, clearFieldErrors } from '/common/utils/field-error.js';
 import { toast } from '/common/utils/toast.js';
 
-import styles from './secrets-manager.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./secrets-manager.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /**

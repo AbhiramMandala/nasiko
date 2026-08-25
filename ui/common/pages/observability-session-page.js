@@ -9,7 +9,8 @@
  *       `call('fetchSpanDetail', traceId, spanId)`     → GET /api/observability/span/{trace_id}/{span_id}
  *       `call('fetchChatSession', sessionId)`          → GET /api/chat/sessions/{id} (chat transcript)
  */
-import styles from './observability-session-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./observability-session-page.css', import.meta.url));
 import { icons } from '../utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 // Both were previously "imported" from inside the docblock above, i.e. never:

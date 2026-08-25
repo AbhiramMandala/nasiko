@@ -2,7 +2,8 @@ import '/common/design-system/app-table/app-table.js';
 import '/common/design-system/app-badge/app-badge.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
 
-import styles from './builds-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./builds-page.css', import.meta.url));
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the
 // gutter was reserved and the nav never upgraded.

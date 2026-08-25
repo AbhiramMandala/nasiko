@@ -13,7 +13,8 @@ import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 
-import styles from './build-detail-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./build-detail-page.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

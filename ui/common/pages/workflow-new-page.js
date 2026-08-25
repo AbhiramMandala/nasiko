@@ -17,7 +17,8 @@ import '/common/design-system/app-divider/app-divider.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/features/wf-step-editor.js';
 
-import styles from './workflow-new-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./workflow-new-page.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';

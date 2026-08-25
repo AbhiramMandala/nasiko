@@ -29,7 +29,8 @@
  * @fires tag-change - `{ selected }` after a `selectable` tag toggles.
  * @fires tag-remove - Cancelable; the tag removes itself unless prevented.
  */
-import styles from './app-tag.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-tag.css', import.meta.url));
 import { icons, unsizeIcons } from '../../utils/icons.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

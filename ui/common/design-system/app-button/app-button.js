@@ -34,9 +34,9 @@
  *       20px at the default size, 16 at `md`, 12 at `sm` — so pass a bare
  *       `icons.plus()` and let the size attribute pick the glyph size.
  */
-import styles from './app-button.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-button.css', import.meta.url));
 import { unsizeIcons } from '../../utils/icons.js';
-import { escAttr } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 
@@ -64,16 +64,9 @@ export class AppButton extends HTMLElement {
   }
 
   render() {
-    // The inner control is replaced wholesale; if it held focus (a click just
-    // flipped `loading`, say), carry focus across like app-input does.
-    const refocus = this.querySelector('.btn') === document.activeElement
-      && document.activeElement !== null;
     const variant  = this.getAttribute('variant') || 'primary';
     const size     = this.getAttribute('size') || '';
-    // Closed set — `type` reaches attribute position, so an unknown value falls
-    // back rather than being interpolated as written.
-    const typeAttr = this.getAttribute('type');
-    const type     = ['submit', 'reset'].includes(typeAttr) ? typeAttr : 'button';
+    const type     = this.getAttribute('type') || 'button';
     const loading  = this.hasAttribute('loading');
     const disabled = this.hasAttribute('disabled') || loading;
     const content  = this.querySelector('.content')?.innerHTML ?? this.innerHTML;
@@ -87,13 +80,12 @@ export class AppButton extends HTMLElement {
     const linked = this.hasAttribute('href') && !disabled;
     const forwarded = ['aria-label', 'title', 'aria-expanded', ...(linked ? ['href'] : [])]
       .filter((a) => this.hasAttribute(a))
-      .map((a) => ` ${a}="${escAttr(this.getAttribute(a))}"`)
+      .map((a) => ` ${a}="${this.getAttribute(a).replace(/"/g, '&quot;')}"`)
       .join('');
     const tag = linked ? 'a' : 'button';
 
     this.innerHTML = `
-      <${tag} class="${classes}"${linked ? '' : ` type="${type}"`}${forwarded}${!linked && disabled ? ' disabled' : ''}${
-        loading ? ' aria-busy="true"' : ''}>
+      <${tag} class="${classes}"${linked ? '' : ` type="${type}"`}${forwarded}${!linked && disabled ? ' disabled' : ''}>
         ${loading ? '<span class="spinner" aria-hidden="true"></span>' : ''}
         <span class="content">${content}</span>
       </${tag}>`;
@@ -105,11 +97,6 @@ export class AppButton extends HTMLElement {
     // sheet, so a call site passes a bare `icons.plus()` and the size attribute
     // decides the glyph.
     unsizeIcons(this);
-
-    // A control that became disabled cannot take focus back — focus() is then a
-    // silent no-op and focus falls to <body>, same as not trying. So this only
-    // restores focus where restoring is possible.
-    if (refocus) this.querySelector('.btn')?.focus();
   }
 }
 customElements.define('app-button', AppButton);

@@ -33,7 +33,8 @@
  *   `icons.x()`. Swap either by passing a `<span data-slot="leading">` /
  *   `"trailing"` child; trailing is the clear button's glyph, and it still clears.
  */
-import styles from './app-search.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-search.css', import.meta.url));
 import { icons, unsizeIcons } from '../../utils/icons.js';
 import { escAttr } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];

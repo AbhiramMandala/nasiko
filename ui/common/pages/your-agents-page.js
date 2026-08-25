@@ -22,7 +22,8 @@ import { call } from '../core/data-sources.js';
 
 // In MPA mode, your-agents-page.css was <link>ed in the HTML. In SPA mode the
 // router lazy-loads this module, so we adopt the sheet here too.
-import yourAgentsStyles from './your-agents-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const yourAgentsStyles = await loadCss(new URL('./your-agents-page.css', import.meta.url));
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the
 // gutter was reserved and the nav never upgraded.

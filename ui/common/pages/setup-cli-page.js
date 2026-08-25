@@ -11,7 +11,8 @@
  */
 import { icons } from '../utils/icons.js';
 import '../design-system/app-code-snippet/app-code-snippet.js';
-import styles from './setup-cli-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./setup-cli-page.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 import { resolveOptional } from '../core/data-sources.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];

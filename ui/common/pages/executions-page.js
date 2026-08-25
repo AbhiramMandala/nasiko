@@ -18,7 +18,8 @@ import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/design-system/app-tabs/app-tabs.js';
 import '/common/features/wf-run-steps.js';
 
-import styles from './executions-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./executions-page.css', import.meta.url));
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop

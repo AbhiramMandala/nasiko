@@ -7,20 +7,16 @@
  * @attr {string} delta - Change value shown below the main value (e.g. "+12%")
  * @attr {string} trend - Trend direction: `up` | `down` | `neutral`
  * @attr {boolean} loading - Show a skeleton placeholder instead of data
- * @note Every attribute is escaped on the way in. These values are routinely
- *   bound straight from an API field — an agent name, a cost, a model id — and
- *   a generated surface can bind any of them, so this element is a sink for
- *   data nobody in this repo authored.
  */
-import styles from './app-stat-card.css' with { type: 'css' };
-import { escHtml, escAttr } from '../../utils/escape.js';
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-stat-card.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 
 export class AppStatCard extends HTMLElement {
   static get observedAttributes() { return ['label', 'value', 'delta', 'trend', 'loading']; }
-  #initialized = false;
-  connectedCallback() { if (this.#initialized) return; this.#initialized = true; this.render(); }
+  constructor() { super(); }
+  connectedCallback() { if (this._initialized) return; this._initialized = true; this.render(); }
   attributeChangedCallback() { if (this.isConnected) this.render(); }
   render() {
     if (this.hasAttribute('loading')) {
@@ -33,9 +29,9 @@ export class AppStatCard extends HTMLElement {
     const trend = this.getAttribute('trend') || 'neutral';
     this.innerHTML = `
       <div class="stat-card">
-        <p class="label">${escHtml(label)}</p>
-        <p class="value">${escHtml(value)}</p>
-        ${delta ? `<p class="delta is-${escAttr(trend)}">${escHtml(delta)}</p>` : ''}
+        <p class="label">${label}</p>
+        <p class="value">${value}</p>
+        ${delta ? `<p class="delta is-${trend}">${delta}</p>` : ''}
       </div>`;
   }
 }

@@ -17,7 +17,8 @@ import '/common/design-system/app-card/app-card.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-tag/app-tag.js';
 
-import styles from './workflows-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./workflows-page.css', import.meta.url));
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';

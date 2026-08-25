@@ -1,7 +1,8 @@
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 
-import styles from './agent-steps.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./agent-steps.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Long payloads clamp behind "Show more" rather than being cut with an ellipsis. */

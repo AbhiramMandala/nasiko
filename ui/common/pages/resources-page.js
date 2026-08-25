@@ -10,7 +10,8 @@
  * @note Data source (see /api/docs):
  *       `call('fetchResourceStats')` → GET /api/observability/resources
  */
-import styles from './resources-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./resources-page.css', import.meta.url));
 import { icons } from '../utils/icons.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';

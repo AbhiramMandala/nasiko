@@ -7,7 +7,8 @@ import '/common/design-system/app-radio/app-radio.js';
 import '/common/design-system/app-search/app-search.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
-import styles from './add-agent-github-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./add-agent-github-page.css', import.meta.url));
 import { navigate as routerNavigate } from '../core/router.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];

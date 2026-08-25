@@ -10,7 +10,8 @@
  * @note Attribute-level docs live in each component's own JSDoc header; this
  *       page shows behaviour, not the full API surface.
  */
-import styles from './design-system-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./design-system-page.css', import.meta.url));
 import { icons } from '../utils/icons.js';
 import { escAttr } from '/common/utils/escape.js';
 

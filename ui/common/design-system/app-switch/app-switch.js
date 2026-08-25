@@ -22,8 +22,8 @@
  * @prop {HTMLInputElement} input - The inner input.
  * @fires change - Bubbles from the inner input.
  */
-import styles from './app-switch.css' with { type: 'css' };
-import { escAttr, escHtml } from '../../utils/escape.js';
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-switch.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 let uid = 0;
@@ -34,7 +34,6 @@ export class AppSwitch extends HTMLElement {
   }
 
   #id = `app-switch-${++uid}`;
-  #wired = false;
 
   get checked() { return this.input ? this.input.checked : this.hasAttribute('checked'); }
   set checked(v) { v ? this.setAttribute('checked', '') : this.removeAttribute('checked'); }
@@ -42,20 +41,12 @@ export class AppSwitch extends HTMLElement {
 
   connectedCallback() {
     this.render();
-    // Wired once: the listener sits on the host, so it survives both re-renders
-    // and disconnects — re-adding it per connect stacked duplicate handlers.
-    if (this.#wired) return;
-    this.#wired = true;
     this.addEventListener('change', () => { this.checked = this.input.checked; });
   }
 
   attributeChangedCallback() { if (this.isConnected) this.render(); }
 
   render() {
-    // A re-render replaces the <input>; if the user is on it (they just toggled
-    // it with Space, which re-renders via the checked attribute), losing focus
-    // would dump a keyboard user back to the top of the page.
-    const refocus = this.input && document.activeElement === this.input;
     const disabled = this.hasAttribute('disabled');
     const checked  = this.hasAttribute('checked');
     const size     = this.getAttribute('size') === 'sm' ? 'sm' : 'lg';
@@ -70,15 +61,15 @@ export class AppSwitch extends HTMLElement {
     const value    = this.getAttribute('value');
 
     const control = `
-      <input id="${this.#id}" type="checkbox" role="switch"${name ? ` name="${escAttr(name)}"` : ''}${
-        aria ? ` aria-label="${escAttr(aria)}"` : ''}${
-        value === null ? '' : ` value="${escAttr(value)}"`}${
+      <input id="${this.#id}" type="checkbox" role="switch"${name ? ` name="${name}"` : ''}${
+        aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
+        value === null ? '' : ` value="${value.replace(/"/g, '&quot;')}"`}${
         checked ? ' checked' : ''}${disabled ? ' disabled' : ''}>
       <span class="track" aria-hidden="true"><span class="thumb"></span></span>`;
 
     const text = label === null && hint === null ? '' : `<span class="text">
-        ${label === null ? '' : `<span class="label">${escHtml(label)}</span>`}
-        ${hint === null ? '' : `<span class="hint">${escHtml(hint)}</span>`}
+        ${label === null ? '' : `<span class="label">${label}</span>`}
+        ${hint === null ? '' : `<span class="hint">${hint}</span>`}
       </span>`;
 
     this.innerHTML = `
@@ -86,8 +77,6 @@ export class AppSwitch extends HTMLElement {
         for="${this.#id}">
         ${layout === 'settings' ? text + control : control + text}
       </label>`;
-
-    if (refocus) this.input?.focus();
   }
 }
 customElements.define('app-switch', AppSwitch);

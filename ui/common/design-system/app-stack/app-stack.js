@@ -7,7 +7,8 @@
  * @attr {string} padding - Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`
  * @note Vertical flex stack. For horizontal use `<app-row>`.
  */
-import styles from './app-stack.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-stack.css', import.meta.url));
 import { BaseLayout } from '../../core/base-layout.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

@@ -6,7 +6,8 @@
  * @note Listens to `loading-start` / `loading-end` custom events on `document` automatically.
  * @note Place once in the page (typically inside `<app-header>`).
  */
-import styles from './app-loading-bar.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-loading-bar.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 

@@ -9,7 +9,8 @@
  * @attr {boolean} wrap - Allow items to wrap to next line
  * @note Horizontal flex row. For vertical use `<app-stack>`.
  */
-import styles from './app-row.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-row.css', import.meta.url));
 import { BaseLayout } from '../../core/base-layout.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

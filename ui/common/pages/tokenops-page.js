@@ -6,7 +6,8 @@
  *       GET /api/observability/finops/dashboard (see /api/docs), which returns
  *       `{ data: { summary, agents, token_usage }, status_code, message }`.
  */
-import styles from './tokenops-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./tokenops-page.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-select/app-select.js';

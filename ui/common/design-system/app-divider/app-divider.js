@@ -22,7 +22,8 @@
  * @attr {string} tone - `subtle` for the lighter border token.
  * @attr {string} label - Leading label text. Horizontal only.
  */
-import styles from './app-divider.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-divider.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppDivider extends HTMLElement {

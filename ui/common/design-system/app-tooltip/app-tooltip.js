@@ -69,7 +69,8 @@ function _getEl() {
 
 // ── Light-theme override ───────────────────────────────────────────────
 
-import _sheet from './app-tooltip.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const _sheet = await loadCss(new URL('./app-tooltip.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, _sheet];
 
 // ── Positioning ────────────────────────────────────────────────────────
@@ -236,12 +237,6 @@ function _hideImmediate() {
   _visible = false;
   _currentTrigger = null;
 }
-
-// WCAG 1.4.13: content that appears on hover must be dismissable without
-// moving the pointer. One module-level listener serves the singleton.
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && _visible) _hideImmediate();
-});
 
 // ── Public API ─────────────────────────────────────────────────────────
 

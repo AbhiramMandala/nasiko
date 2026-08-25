@@ -1,6 +1,7 @@
 import '/common/design-system/app-table/app-table.js';
 
-import styles from './flows-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./flows-page.css', import.meta.url));
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the
 // gutter was reserved and the nav never upgraded.

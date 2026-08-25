@@ -20,8 +20,9 @@
  *   (default: 4). The skeleton lives here so it cannot drift from the real
  *   geometry. Present-but-empty means the default.
  */
-import styles from './app-stat-row.css' with { type: 'css' };
-import { escHtml, escAttr } from '../../utils/escape.js';
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-stat-row.css', import.meta.url));
+import { escHtml, escAttr } from '/common/utils/escape.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

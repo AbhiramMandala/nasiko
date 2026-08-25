@@ -14,7 +14,8 @@ import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { fmtDuration, fmtTokens } from '/common/utils/units.js';
 
-import styles from './wf-run-steps.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./wf-run-steps.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

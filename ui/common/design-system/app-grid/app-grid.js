@@ -7,7 +7,8 @@
  * @attr {string} gap - Gap between cells: `xs` | `sm` | `md` (default) | `lg` | `xl`
  * @attr {string} padding - Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`
  */
-import styles from './app-grid.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-grid.css', import.meta.url));
 import { BaseLayout } from '../../core/base-layout.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

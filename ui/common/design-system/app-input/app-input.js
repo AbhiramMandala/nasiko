@@ -33,9 +33,9 @@
  *       children; the component sizes them — 16px at size md, 12px at sm — so
  *       pass a bare `icons.search()` and don't set a size at the call site.
  */
-import styles from './app-input.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-input.css', import.meta.url));
 import { unsizeIcons } from '../../utils/icons.js';
-import { escAttr, escHtml } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Attributes handed straight to the inner <input>, not styling.
@@ -97,13 +97,13 @@ export class AppInput extends HTMLElement {
 
     const native = NATIVE
       .filter((a) => a !== 'value' && this.hasAttribute(a))
-      .map((a) => `${a}="${escAttr(this.getAttribute(a))}"`)
+      .map((a) => `${a}="${this.getAttribute(a).replace(/"/g, '&quot;')}"`)
       .join(' ');
 
     this.innerHTML = `
       <div class="field is-${size} is-${state}">
         ${label === null ? '' : `<label class="label-row" for="${this.#id}">${
-          this.hasAttribute('required') ? '<span class="req">*</span>' : ''}${escHtml(label)}</label>`}
+          this.hasAttribute('required') ? '<span class="req">*</span>' : ''}${label}</label>`}
         <div class="input-box">
           ${this.#slots.leading}
           <input id="${this.#id}" ${native}${disabled ? ' disabled' : ''}${
@@ -111,8 +111,8 @@ export class AppInput extends HTMLElement {
           ${this.#slots.trailing}
         </div>
         ${hint === null && count === null ? '' : `<div class="hint-row">
-          <span class="hint">${escHtml(hint)}</span>
-          ${count === null ? '' : `<span class="count">${escHtml(count)}</span>`}
+          <span class="hint">${hint ?? ''}</span>
+          ${count === null ? '' : `<span class="count">${count}</span>`}
         </div>`}
       </div>`;
 

@@ -16,7 +16,8 @@ import '/common/design-system/app-divider/app-divider.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-select/app-select.js';
 
-import styles from './wf-step-editor.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./wf-step-editor.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

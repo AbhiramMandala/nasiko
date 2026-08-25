@@ -20,7 +20,8 @@ import '/common/features/app-module-nav.js';
 const transcribeAudio = transcribeBlob;
 registerAll({ transcribeAudio }, { replace: true });
 
-import styles from './orchestrator-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./orchestrator-page.css', import.meta.url));
 import { escAttr, escHtml } from '/common/utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

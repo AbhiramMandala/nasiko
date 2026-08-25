@@ -12,7 +12,8 @@ import '/common/design-system/app-skeleton/app-skeleton.js';
  *       `call('fetchLlmProviders')`    → GET  /api/llm-router/providers
  *       `call('fetchSecretsList')`         → GET  /api/secrets
  */
-import styles from './llm-router-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./llm-router-page.css', import.meta.url));
 import { icons } from '../utils/icons.js';
 import { showToast } from '../utils/toast.js';
 import { confirmDialog } from '../design-system/app-modal/app-modal.js';

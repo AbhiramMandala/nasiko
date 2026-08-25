@@ -61,11 +61,12 @@
  *          without one only needs `role`/`tabindex` from the consumer, and Enter
  *          is forwarded as a click so a delegated handler sees it.
  */
-import styles from './app-card.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-card.css', import.meta.url));
 import '../app-tag/app-tag.js';
 import '../app-button/app-button.js';
 import { icons } from '../../utils/icons.js';
-import { escHtml, escAttr } from '../../utils/escape.js';
+import { escHtml, escAttr } from '/common/utils/escape.js';
 import { navigate as routerNavigate } from '../../core/router.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];

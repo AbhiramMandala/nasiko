@@ -18,7 +18,8 @@
  *       upload (zip/GitHub) + build status/logs, and the per-agent
  *       connector/tool-rule endpoints — see ui/oss/navigation.js.
  */
-import styles from './mcp-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./mcp-page.css', import.meta.url));
 import { icons } from '../utils/icons.js';
 import { confirmDialog } from '../design-system/app-modal/app-modal.js';
 import '../design-system/app-skeleton/app-skeleton.js';

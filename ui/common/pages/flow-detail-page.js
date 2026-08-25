@@ -3,7 +3,8 @@ import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 
-import styles from './flow-detail-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./flow-detail-page.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 

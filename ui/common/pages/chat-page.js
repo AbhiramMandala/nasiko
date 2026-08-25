@@ -12,7 +12,8 @@ import { registerAll } from '/common/core/data-sources.js';
 const transcribeAudio = transcribeBlob;
 registerAll({ transcribeAudio }, { replace: true });
 
-import styles from './chat-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./chat-page.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the

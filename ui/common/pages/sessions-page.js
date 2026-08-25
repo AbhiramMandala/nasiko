@@ -10,7 +10,8 @@
  *
  * @element sessions-page
  */
-import styles from './sessions-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./sessions-page.css', import.meta.url));
 import { icons } from '../utils/icons.js';
 import { showToast } from '../utils/toast.js';
 import { userMessage } from '../core/errors.js';

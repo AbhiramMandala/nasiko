@@ -26,7 +26,8 @@
  * @attr {string} alt - Accessible name. Defaults to `label`/`description`; the
  *   mark is decorative (aria-hidden) whenever text is already showing.
  */
-import styles from './app-avatar.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-avatar.css', import.meta.url));
 import { icons, unsizeIcons } from '../../utils/icons.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

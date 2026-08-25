@@ -72,9 +72,10 @@
  * @fires — none.
  */
 import { Chart } from '../../vendor/chart.esm.js';
-import { escHtml, escAttr } from '../../utils/escape.js';
+import { escHtml, escAttr } from '/common/utils/escape.js';
 import { onThemeChange } from '../../utils/theme.js';
-import styles from './app-chart.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./app-chart.css', import.meta.url));
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

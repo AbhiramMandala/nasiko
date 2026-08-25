@@ -13,7 +13,8 @@ import { call, callOptional } from '../core/data-sources.js';
 // styling. In SPA mode, the router lazy-loads this module, so we adopt the sheet
 // here too. The CSS import assertion returns the same CSSStyleSheet instance on
 // repeat calls (module caching), so double-adoption is harmless.
-import agentsStyles from './agents-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const agentsStyles = await loadCss(new URL('./agents-page.css', import.meta.url));
 if (!document.adoptedStyleSheets.includes(agentsStyles)) {
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, agentsStyles];
 }

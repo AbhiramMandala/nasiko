@@ -1,7 +1,8 @@
 import { icons } from '/common/utils/icons.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 
-import styles from './session-trace-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./session-trace-page.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 

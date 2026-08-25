@@ -23,7 +23,8 @@ import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/features/wf-step-editor.js';
 import '/common/features/wf-run-steps.js';
 
-import styles from './workflow-detail-page.css' with { type: 'css' };
+import { loadCss } from '/common/utils/css.js';
+const styles = await loadCss(new URL('./workflow-detail-page.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 
