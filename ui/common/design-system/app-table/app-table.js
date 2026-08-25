@@ -353,7 +353,11 @@ export class AppTable extends HTMLElement {
       const message = this.#searchQuery
         ? `No results for “${escHtml(this.#searchQuery)}”`
         : (this.getAttribute('empty-message') || 'Nothing here yet');
-      tbody.innerHTML = `<tr><td class="empty" colspan="100%">${message}</td></tr>`;
+      // colspan takes an integer — "100%" is invalid HTML that browsers happen
+      // to clamp. Span the real column count (1 when none is known yet).
+      const span = this.columns?.length
+        || this.querySelector('.thead tr')?.children.length || 1;
+      tbody.innerHTML = `<tr><td class="empty" colspan="${span}">${message}</td></tr>`;
       return;
     }
 

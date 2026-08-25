@@ -17,6 +17,7 @@
 import { attachSlidingIndicator } from '../../utils/tab-indicator.js';
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-tabs.css', import.meta.url));
+import { setSearchParams } from '../../utils/url-policy.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Arrow/Home/End roving focus across a tablist's tabs. */
@@ -180,9 +181,10 @@ export class AppTabs extends HTMLElement {
       new CustomEvent("tab-change", { detail: { key }, bubbles: true }),
     );
     if (this.#qp) {
-      const url = new URL(location.href);
-      url.searchParams.set(this.#qp, key);
-      history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      // Through the policy layer, not history.replaceState directly: every URL
+      // write goes past the utils/url-policy.js allowlist, and a `query-param`
+      // that isn't an approved key fails loudly in dev instead of shipping.
+      setSearchParams({ [this.#qp]: key });
     }
   }
 }

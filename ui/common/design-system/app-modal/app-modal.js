@@ -26,10 +26,13 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const CLOSE = icons.x("", 14);
 
+let uid = 0;
+
 export class AppModal extends HTMLElement {
   #dialog;
   #footer = null;
   #initialized = false;
+  #titleId = `app-modal-title-${++uid}`;
 
   static get observedAttributes() {
     return ["heading", "hide-footer"];
@@ -56,9 +59,12 @@ export class AppModal extends HTMLElement {
 
     const dialog = document.createElement("dialog");
     dialog.className = "app-modal";
+    // The heading is the dialog's accessible name — without the wiring, a
+    // screen reader announces an unnamed dialog and the user has to guess.
+    dialog.setAttribute("aria-labelledby", this.#titleId);
     dialog.innerHTML = `
       <header>
-        <h4 class="title"></h4>
+        <h4 class="title" id="${this.#titleId}"></h4>
         <button type="button" aria-label="Close">${CLOSE}</button>
       </header>
       <div class="body"></div>

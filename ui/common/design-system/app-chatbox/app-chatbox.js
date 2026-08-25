@@ -29,6 +29,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppChatbox extends HTMLElement {
   #loading = false;
+  #initialized = false;
   constructor() {
     super();
     this.voiceRecorder = new VoiceRecorder();
@@ -54,16 +55,24 @@ export class AppChatbox extends HTMLElement {
   };
 
   connectedCallback() {
-    this.render();
-    this.cacheElements();
-    this.setupListeners();
-    this.setState("idle");
+    if (!this.#initialized) {
+      this.#initialized = true;
+      this.render();
+      this.cacheElements();
+      this.setupListeners();
+      this.setState("idle");
 
-    const callbackName = this.getAttribute("transcription-callback");
-    if (callbackName) {
-      const fn = resolveOptional(callbackName);
-      if (fn) this.voiceRecorder.setTranscriptionCallback(fn);
+      const callbackName = this.getAttribute("transcription-callback");
+      if (callbackName) {
+        const fn = resolveOptional(callbackName);
+        if (fn) this.voiceRecorder.setTranscriptionCallback(fn);
+      }
     }
+    // Re-added on every connect because disconnect removes it — a moved composer
+    // must keep its `/`-to-focus and recording shortcuts. Guarded above instead
+    // would lose them permanently on the first re-parenting. (Rebuilding the DOM
+    // on reconnect was also wiping whatever draft the user had typed.)
+    document.addEventListener("keydown", this.#handleDocumentKeyDown);
   }
 
   disconnectedCallback() {
@@ -76,7 +85,7 @@ export class AppChatbox extends HTMLElement {
     const placeholder = this.getAttribute("placeholder") || "Type your message...";
 
     this.innerHTML = `
-      <form class="chatbox" onsubmit="return false;">
+      <form class="chatbox">
         <div class="input-area" id="inputWrapper">
           <textarea
             class="textarea"
@@ -86,21 +95,22 @@ export class AppChatbox extends HTMLElement {
           ></textarea>
 
           <div class="timer" id="timer">
-            <span style="color:var(--color-error); animation: pulse-scale 1s infinite;">●</span>
+            <span class="rec-dot" aria-hidden="true">●</span>
             <span id="timerText">0.0s</span>
           </div>
 
           ${noAttach ? "" : `
           <button type="button" class="attach-btn" id="dropZone" title="Attach files" aria-label="Attach files">
             ${icons.paperclip("btn-icon", 16)}
-            <input type="file" id="fileInput" multiple style="display:none">
-          </button>`}
+          </button>
+          <input type="file" id="fileInput" multiple hidden>`}
 
-          <button type="button" class="record-btn" id="recordBtn">
+          <button type="button" class="record-btn" id="recordBtn"
+            aria-label="Start recording">
             ${this.getMicIcon()}
           </button>
 
-          <button type="submit" class="submit-icon" id="submitBtn" title="Send (Enter)">
+          <button type="submit" class="submit-icon" id="submitBtn" title="Send (Enter)" aria-label="Send message">
             ${icons.arrowUp("btn-icon", 14)}
           </button>
         </div>
@@ -123,6 +133,9 @@ export class AppChatbox extends HTMLElement {
   }
 
   setupListeners() {
+    // Was an inline onsubmit="return false" — same behaviour, minus the inline
+    // handler (the one kind of script a strict CSP cannot allow).
+    this.querySelector("form")?.addEventListener("submit", (e) => e.preventDefault());
     this.recordBtn.addEventListener("click", () => this.toggleRecording());
     this.submitBtn.addEventListener("click", () => this.handleSubmit());
 
@@ -133,9 +146,6 @@ export class AppChatbox extends HTMLElement {
         this.handleSubmit();
       }
     });
-
-    document.removeEventListener("keydown", this.#handleDocumentKeyDown);
-    document.addEventListener("keydown", this.#handleDocumentKeyDown);
 
     this.dropZone?.addEventListener("click", () => this.fileInput.click());
     this.fileInput?.addEventListener("change", (e) => this.handleFiles(e.target.files));
@@ -165,12 +175,14 @@ export class AppChatbox extends HTMLElement {
         this.recordBtn.disabled = false;
         this.recordBtn.innerHTML = this.getMicIcon();
         this.recordBtn.title = "Start Recording (F8 or Alt+R)";
+        this.recordBtn.setAttribute("aria-label", "Start recording");
         this.timerEl.classList.remove("visible");
         this.submitBtn.disabled = false;
         break;
       case "recording":
         this.recordBtn.innerHTML = this.getStopIcon();
         this.recordBtn.title = "Stop Recording (F8)";
+        this.recordBtn.setAttribute("aria-label", "Stop recording");
         this.timerEl.classList.add("visible");
         this.startTimer();
         break;

@@ -39,6 +39,7 @@
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-select.css', import.meta.url));
 import { icons, unsizeIcons } from '../../utils/icons.js';
+import { escAttr, escHtml } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 let uid = 0;
@@ -77,8 +78,10 @@ export class AppSelect extends HTMLElement {
     return list.map((o) => {
       const { value, label, disabled } = typeof o === 'object' && o !== null
         ? o : { value: o, label: o };
-      return `<option value="${String(value).replace(/"/g, '&quot;')}"${
-        disabled ? ' disabled' : ''}>${label ?? value}</option>`;
+      // Both halves escaped: `options` is routinely bound from API data, so the
+      // label is a sink for text nobody in this repo authored.
+      return `<option value="${escAttr(value)}"${
+        disabled ? ' disabled' : ''}>${escHtml(label ?? value)}</option>`;
     }).join('');
   }
 
@@ -107,19 +110,19 @@ export class AppSelect extends HTMLElement {
     this.innerHTML = `
       <div class="field is-${size} is-${state}">
         ${label === null ? '' : `<label class="label-row" for="${this.#id}">${
-          this.hasAttribute('required') ? '<span class="req">*</span>' : ''}${label}</label>`}
+          this.hasAttribute('required') ? '<span class="req">*</span>' : ''}${escHtml(label)}</label>`}
         <div class="select-box">
           ${this.#leading}
-          <select id="${this.#id}"${name ? ` name="${name}"` : ''}${
-            aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
+          <select id="${this.#id}"${name ? ` name="${escAttr(name)}"` : ''}${
+            aria ? ` aria-label="${escAttr(aria)}"` : ''}${
             disabled ? ' disabled' : ''}${this.hasAttribute('required') ? ' required' : ''}>
             ${placeholder === null ? ''
-              : `<option value="" disabled selected>${placeholder}</option>`}
+              : `<option value="" disabled selected>${escHtml(placeholder)}</option>`}
             ${this.#optionsHtml()}
           </select>
           <span class="chevron" aria-hidden="true">${icons.chevronDown()}</span>
         </div>
-        ${hint === null ? '' : `<div class="hint-row"><span class="hint">${hint}</span></div>`}
+        ${hint === null ? '' : `<div class="hint-row"><span class="hint">${escHtml(hint)}</span></div>`}
       </div>`;
 
     // The chevron comes from icons.js with its size inline, which beats the

@@ -4,20 +4,23 @@
  * @element app-empty-state
  * @attr {string} title - Bold heading text
  * @attr {string} description - Supporting description text
- * @attr {string} icon - SVG markup string for the icon (alternative to slot)
+ * @attr {string} icon - SVG markup string for the icon (alternative to slot).
+ *   Deliberately NOT escaped: it is markup by contract. That makes it a sink,
+ *   so a generated surface may not set it — see weave-surface/validate.js.
  * @slot [slot="icon"] - Element to use as the icon
  * @slot default - Action elements (e.g. a button)
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-empty-state.css', import.meta.url));
+import { escHtml } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 
 export class AppEmptyState extends HTMLElement {
-  constructor() { super(); }
+  #initialized = false;
   connectedCallback() {
-    if (this._initialized) return;
-    this._initialized = true;
+    if (this.#initialized) return;
+    this.#initialized = true;
     const children = [...this.children];
     const iconChild = children.find(n => n.getAttribute?.('slot') === 'icon');
     const actions = children.filter(n => n.getAttribute?.('slot') !== 'icon');
@@ -32,8 +35,8 @@ export class AppEmptyState extends HTMLElement {
     this.removeAttribute('title');
     this.innerHTML = `
       ${hasIcon ? `<div class="icon">${iconAttr}</div>` : ''}
-      ${title ? `<p class="title">${title}</p>` : ''}
-      ${desc  ? `<p class="desc">${desc}</p>`   : ''}
+      ${title ? `<p class="title">${escHtml(title)}</p>` : ''}
+      ${desc  ? `<p class="desc">${escHtml(desc)}</p>`   : ''}
       <div class="action"></div>`;
     if (iconChild) {
       const iconSlot = this.querySelector('.icon');

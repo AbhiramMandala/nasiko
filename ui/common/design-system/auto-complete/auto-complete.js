@@ -11,30 +11,52 @@ import { icons } from '../../utils/icons.js';
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./auto-complete.css', import.meta.url));
 import { DropdownController } from '../../core/dropdown-controller.js';
-import { escHtml } from '/common/utils/escape.js';
+import { escAttr, escHtml } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
+
+let uid = 0;
 
 export default class AutoComplete extends HTMLElement {
   #initialized = false;
+  #listboxId = `auto-complete-listbox-${++uid}`;
   #inputEl = null;
   #dropdownEl = null;
   #dd = null;              // DropdownController
   #filteredOptions = [];
   #filterFn = null;
   #onDocumentClick = (e) => {
-    if (!this.contains(e.target)) this.#dd?.close();
+    if (!this.contains(e.target)) this.#close();
   };
+
+  /** Close plus the combobox bookkeeping the controller doesn't know about. */
+  #close() {
+    this.#dd?.close();
+    this.#inputEl?.removeAttribute('aria-activedescendant');
+  }
+
+  /** Point aria-activedescendant at the highlighted option, so a screen reader
+   *  tracks arrow-key movement through a listbox the DOM focus never enters. */
+  #syncActiveDescendant() {
+    const idx = this.#dd?.selIdx ?? -1;
+    if (idx >= 0) this.#inputEl.setAttribute('aria-activedescendant', `${this.#listboxId}-opt-${idx}`);
+    else this.#inputEl.removeAttribute('aria-activedescendant');
+  }
 
   static get observedAttributes() {
     return ['placeholder', 'aria-label', 'filter-function'];
   }
 
   connectedCallback() {
-    if (this.#initialized) return;
-    this.#initialized = true;
-    this.#render();
-    this.#setupEvents();
-    this.#resolveFilterFn();
+    if (!this.#initialized) {
+      this.#initialized = true;
+      this.#render();
+      this.#setupEvents();
+      this.#resolveFilterFn();
+    }
+    // Re-registered on every connect because disconnect removes it — inside the
+    // one-time block above, the first re-parenting would lose outside-click
+    // close permanently (the firstConnected/connected asymmetry AGENTS.md names).
+    document.addEventListener('click', this.#onDocumentClick);
   }
 
   disconnectedCallback() {
@@ -54,16 +76,18 @@ export default class AutoComplete extends HTMLElement {
         <div class="ac-input-wrapper">
           <input type="text"
                  class="ac-input"
-                 placeholder="${this.getAttribute('placeholder') || 'Search...'}"
-                 aria-label="${this.getAttribute('aria-label') || 'Search'}"
+                 placeholder="${escAttr(this.getAttribute('placeholder') || 'Search...')}"
+                 aria-label="${escAttr(this.getAttribute('aria-label') || 'Search')}"
                  aria-expanded="false"
                  aria-haspopup="listbox"
+                 aria-autocomplete="list"
+                 aria-controls="${this.#listboxId}"
                  role="combobox" />
           <div class="ac-icon">
             ${icons.search('', 16)}
           </div>
         </div>
-        <ul class="ac-dropdown hidden" role="listbox" aria-hidden="true"></ul>
+        <ul class="ac-dropdown hidden" id="${this.#listboxId}" role="listbox" aria-hidden="true"></ul>
       </div>
     `;
 
@@ -119,7 +143,7 @@ export default class AutoComplete extends HTMLElement {
         case 'ArrowUp':   e.preventDefault(); this.#navigate(-1); break;
         case 'Enter':     e.preventDefault(); this.#selectOption(); break;
         case 'Escape':
-          if (this.#dd.isOpen) { e.preventDefault(); this.#dd.close(); }
+          if (this.#dd.isOpen) { e.preventDefault(); this.#close(); }
           break;
       }
     });
@@ -127,11 +151,11 @@ export default class AutoComplete extends HTMLElement {
 
   async #filterOptions() {
     if (!this.#filterFn) this.#resolveFilterFn();
-    if (!this.#filterFn) { this.#filteredOptions = []; this.#dd.close(); return; }
+    if (!this.#filterFn) { this.#filteredOptions = []; this.#close(); return; }
     try {
       this.#filteredOptions = await Promise.resolve(this.#filterFn(this.#inputEl.value.trim())) || [];
       this.#renderDropdown();
-      if (this.#filteredOptions.length > 0) this.#dd.open(); else this.#dd.close();
+      if (this.#filteredOptions.length > 0) this.#dd.open(); else this.#close();
     } catch (err) {
       console.error('AutoComplete: error filtering:', err);
     }
@@ -151,7 +175,7 @@ export default class AutoComplete extends HTMLElement {
           const label    = typeof option === 'string' ? option : option.label || option;
           const subtitle = typeof option === 'object' ? option.subtitle : null;
           return `
-            <li class="ac-option" data-index="${index}" role="option" aria-selected="false">
+            <li class="ac-option" id="${this.#listboxId}-opt-${index}" data-index="${index}" role="option" aria-selected="false">
               <div class="ac-option-body">
                 <div class="ac-option-text">${escHtml(label)}</div>
                 ${subtitle ? `<div class="ac-option-subtitle">${escHtml(subtitle)}</div>` : ''}
@@ -178,6 +202,7 @@ export default class AutoComplete extends HTMLElement {
       }
     }
     this.#dd.navigate(dir);
+    this.#syncActiveDescendant();
   }
 
   #selectOption() {
@@ -191,7 +216,7 @@ export default class AutoComplete extends HTMLElement {
 
     this.#inputEl.value = display;
     this.dispatchEvent(new CustomEvent('option-selected', { bubbles: true, detail: { value, option } }));
-    this.#dd.close();
+    this.#close();
   }
 
   set value(v) { this.#inputEl.value = v; }

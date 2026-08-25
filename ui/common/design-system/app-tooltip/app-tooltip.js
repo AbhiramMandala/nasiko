@@ -238,6 +238,12 @@ function _hideImmediate() {
   _currentTrigger = null;
 }
 
+// WCAG 1.4.13: content that appears on hover must be dismissable without
+// moving the pointer. One module-level listener serves the singleton.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && _visible) _hideImmediate();
+});
+
 // ── Public API ─────────────────────────────────────────────────────────
 
 /**
