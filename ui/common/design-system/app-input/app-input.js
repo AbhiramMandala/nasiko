@@ -35,7 +35,7 @@
  */
 import styles from './app-input.css' with { type: 'css' };
 import { unsizeIcons } from '../../utils/icons.js';
-import { escHtml } from '../../utils/escape.js';
+import { escAttr, escHtml } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Attributes handed straight to the inner <input>, not styling.
@@ -97,7 +97,7 @@ export class AppInput extends HTMLElement {
 
     const native = NATIVE
       .filter((a) => a !== 'value' && this.hasAttribute(a))
-      .map((a) => `${a}="${this.getAttribute(a).replace(/"/g, '&quot;')}"`)
+      .map((a) => `${a}="${escAttr(this.getAttribute(a))}"`)
       .join(' ');
 
     this.innerHTML = `
@@ -111,7 +111,7 @@ export class AppInput extends HTMLElement {
           ${this.#slots.trailing}
         </div>
         ${hint === null && count === null ? '' : `<div class="hint-row">
-          <span class="hint">${hint ?? ''}</span>
+          <span class="hint">${escHtml(hint)}</span>
           ${count === null ? '' : `<span class="count">${escHtml(count)}</span>`}
         </div>`}
       </div>`;

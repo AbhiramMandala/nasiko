@@ -484,7 +484,7 @@
         },
         "icon": {
           "type": "string",
-          "description": "SVG markup string for the icon (alternative to slot)"
+          "description": "SVG markup string for the icon (alternative to slot). Deliberately NOT escaped: it is markup by contract. That makes it a sink, so a generated surface may not set it — see weave-surface/validate.js."
         }
       },
       "slots": [
@@ -943,8 +943,7 @@
       "attributes": {
         "lines": {
           "type": "number",
-          "default": 3,
-          "description": "Number of skeleton lines to render (default: 3)"
+          "description": "Number of skeleton text lines to render. Omit (or 0) for a single block sized by `height` — the form every current consumer of a block placeholder uses."
         },
         "radius": {
           "type": "enum",
@@ -954,7 +953,8 @@
             "lg",
             "full"
           ],
-          "description": "Corner size: `sm` | `md` | `lg` | `full` (default: `sm`)"
+          "default": "sm",
+          "description": "Corner size: `sm` (default) | `md` | `lg` | `full`"
         }
       },
       "excludedFromCatalog": [

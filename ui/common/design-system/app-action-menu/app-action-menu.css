@@ -18,7 +18,7 @@
     border: 1px solid var(--color-border);
     border-radius: var(--r-8);
     box-shadow: var(--shadow-md);
-    z-index: 200;
+    z-index: var(--z-dropdown);
     padding: var(--s-8);
   }
 
@@ -32,9 +32,17 @@
     color: var(--color-text-main);
     white-space: nowrap;
 
-    &:hover {
+    /* Keyboard focus paints the hover affordance plus the house focus ring —
+       the menu is arrow-key driven, so invisible focus would strand the user. */
+    &:hover,
+    &:focus-visible {
       background: color-mix(in srgb, var(--color-primary) 8%, transparent);
       color: var(--color-primary);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--color-primary);
+      outline-offset: -2px;
     }
   }
 }

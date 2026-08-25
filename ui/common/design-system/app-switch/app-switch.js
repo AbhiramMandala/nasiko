@@ -34,6 +34,7 @@ export class AppSwitch extends HTMLElement {
   }
 
   #id = `app-switch-${++uid}`;
+  #wired = false;
 
   get checked() { return this.input ? this.input.checked : this.hasAttribute('checked'); }
   set checked(v) { v ? this.setAttribute('checked', '') : this.removeAttribute('checked'); }
@@ -41,12 +42,20 @@ export class AppSwitch extends HTMLElement {
 
   connectedCallback() {
     this.render();
+    // Wired once: the listener sits on the host, so it survives both re-renders
+    // and disconnects — re-adding it per connect stacked duplicate handlers.
+    if (this.#wired) return;
+    this.#wired = true;
     this.addEventListener('change', () => { this.checked = this.input.checked; });
   }
 
   attributeChangedCallback() { if (this.isConnected) this.render(); }
 
   render() {
+    // A re-render replaces the <input>; if the user is on it (they just toggled
+    // it with Space, which re-renders via the checked attribute), losing focus
+    // would dump a keyboard user back to the top of the page.
+    const refocus = this.input && document.activeElement === this.input;
     const disabled = this.hasAttribute('disabled');
     const checked  = this.hasAttribute('checked');
     const size     = this.getAttribute('size') === 'sm' ? 'sm' : 'lg';
@@ -62,8 +71,8 @@ export class AppSwitch extends HTMLElement {
 
     const control = `
       <input id="${this.#id}" type="checkbox" role="switch"${name ? ` name="${escAttr(name)}"` : ''}${
-        aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
-        value === null ? '' : ` value="${value.replace(/"/g, '&quot;')}"`}${
+        aria ? ` aria-label="${escAttr(aria)}"` : ''}${
+        value === null ? '' : ` value="${escAttr(value)}"`}${
         checked ? ' checked' : ''}${disabled ? ' disabled' : ''}>
       <span class="track" aria-hidden="true"><span class="thumb"></span></span>`;
 
@@ -77,6 +86,8 @@ export class AppSwitch extends HTMLElement {
         for="${this.#id}">
         ${layout === 'settings' ? text + control : control + text}
       </label>`;
+
+    if (refocus) this.input?.focus();
   }
 }
 customElements.define('app-switch', AppSwitch);

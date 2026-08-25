@@ -16,10 +16,10 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 
 export class AppEmptyState extends HTMLElement {
-  constructor() { super(); }
+  #initialized = false;
   connectedCallback() {
-    if (this._initialized) return;
-    this._initialized = true;
+    if (this.#initialized) return;
+    this.#initialized = true;
     const children = [...this.children];
     const iconChild = children.find(n => n.getAttribute?.('slot') === 'icon');
     const actions = children.filter(n => n.getAttribute?.('slot') !== 'icon');

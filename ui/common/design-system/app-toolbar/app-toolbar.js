@@ -11,11 +11,11 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 
 export class AppToolbar extends HTMLElement {
-  constructor() { super(); }
+  #initialized = false;
 
   connectedCallback() {
-    if (this._initialized) return;
-    this._initialized = true;
+    if (this.#initialized) return;
+    this.#initialized = true;
 
     const start = [...this.children].find(el => el.dataset.slot === 'start');
     const end   = [...this.children].find(el => el.dataset.slot === 'end');
@@ -31,6 +31,25 @@ export class AppToolbar extends HTMLElement {
     if (end)   endDiv.appendChild(end);
     wrap.append(startDiv, endDiv);
     this.appendChild(wrap);
+
+    // role="toolbar" promises arrow-key movement between its controls
+    // (WAI-ARIA toolbar pattern) — without it the role is a claim the
+    // keyboard cannot cash.
+    wrap.addEventListener('keydown', (e) => {
+      const keys = { ArrowRight: 1, ArrowLeft: -1, Home: 0, End: 0 };
+      if (!(e.key in keys)) return;
+      const controls = [...wrap.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      )].filter((el) => !el.disabled);
+      if (!controls.length) return;
+      const i = controls.indexOf(document.activeElement);
+      if (i < 0) return;
+      e.preventDefault();
+      const next = e.key === 'Home' ? 0
+        : e.key === 'End' ? controls.length - 1
+        : (i + keys[e.key] + controls.length) % controls.length;
+      controls[next].focus();
+    });
   }
 }
 customElements.define('app-toolbar', AppToolbar);

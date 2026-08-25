@@ -65,7 +65,7 @@ import styles from './app-card.css' with { type: 'css' };
 import '../app-tag/app-tag.js';
 import '../app-button/app-button.js';
 import { icons } from '../../utils/icons.js';
-import { escHtml, escAttr } from '/common/utils/escape.js';
+import { escHtml, escAttr } from '../../utils/escape.js';
 import { navigate as routerNavigate } from '../../core/router.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];

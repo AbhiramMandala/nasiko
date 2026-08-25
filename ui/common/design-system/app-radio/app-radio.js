@@ -35,6 +35,7 @@ export class AppRadio extends HTMLElement {
   }
 
   #id = `app-radio-${++uid}`;
+  #wired = false;
 
   get checked() { return this.input ? this.input.checked : this.hasAttribute('checked'); }
   set checked(v) { v ? this.setAttribute('checked', '') : this.removeAttribute('checked'); }
@@ -42,12 +43,18 @@ export class AppRadio extends HTMLElement {
 
   connectedCallback() {
     this.render();
+    // Wired once: the listener sits on the host, so it survives both re-renders
+    // and disconnects — re-adding it per connect stacked duplicate handlers.
+    if (this.#wired) return;
+    this.#wired = true;
     // Selecting this one deselects its siblings in the DOM but not their
     // `checked` attributes, so clear them across the group by name.
     this.addEventListener('change', () => {
       const name = this.getAttribute('name');
       if (name) {
-        for (const peer of document.querySelectorAll(`app-radio[name="${name}"]`)) {
+        // CSS.escape: `name` is a free string, and a quote in it would throw
+        // out of querySelectorAll mid-handler.
+        for (const peer of document.querySelectorAll(`app-radio[name="${CSS.escape(name)}"]`)) {
           if (peer !== this) peer.removeAttribute('checked');
         }
       }
@@ -58,6 +65,9 @@ export class AppRadio extends HTMLElement {
   attributeChangedCallback() { if (this.isConnected) this.render(); }
 
   render() {
+    // A re-render replaces the <input>; carry focus across so arrow-key group
+    // navigation (which checks, which re-renders) doesn't strand the keyboard.
+    const refocus = this.input && document.activeElement === this.input;
     const disabled = this.hasAttribute('disabled');
     const checked  = this.hasAttribute('checked');
     const state    = disabled ? 'disabled' : (this.getAttribute('state') || 'default');
@@ -72,8 +82,8 @@ export class AppRadio extends HTMLElement {
     this.innerHTML = `
       <label class="row is-${state} is-${checked ? 'selected' : 'unselected'}" for="${this.#id}">
         <input id="${this.#id}" type="radio"${name ? ` name="${escAttr(name)}"` : ''}${
-        aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
-          value === null ? '' : ` value="${value.replace(/"/g, '&quot;')}"`}${
+        aria ? ` aria-label="${escAttr(aria)}"` : ''}${
+          value === null ? '' : ` value="${escAttr(value)}"`}${
           checked ? ' checked' : ''}${disabled ? ' disabled' : ''}>
         <span class="control" aria-hidden="true"><span class="dot"></span></span>
         ${label === null && hint === null ? '' : `<span class="text">
@@ -81,6 +91,8 @@ export class AppRadio extends HTMLElement {
           ${hint === null ? '' : `<span class="hint">${escHtml(hint)}</span>`}
         </span>`}
       </label>`;
+
+    if (refocus) this.input?.focus();
   }
 }
 customElements.define('app-radio', AppRadio);

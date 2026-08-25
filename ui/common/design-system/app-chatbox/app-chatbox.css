@@ -186,6 +186,16 @@
       z-index: 9;
 
       &.visible { display: flex; }
+
+      /* The recording pip — was an inline style on the span, which is both a
+         lint blind spot and unoverridable. */
+      .rec-dot {
+        color: var(--color-error);
+        animation: pulse-scale 1s infinite;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .rec-dot { animation: none; }
+      }
     }
     .footer {
       display: flex;

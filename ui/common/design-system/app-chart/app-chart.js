@@ -72,7 +72,7 @@
  * @fires — none.
  */
 import { Chart } from '../../vendor/chart.esm.js';
-import { escHtml, escAttr } from '/common/utils/escape.js';
+import { escHtml, escAttr } from '../../utils/escape.js';
 import { onThemeChange } from '../../utils/theme.js';
 import styles from './app-chart.css' with { type: 'css' };
 

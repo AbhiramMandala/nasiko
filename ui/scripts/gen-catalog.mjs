@@ -84,7 +84,7 @@ function docBlock(src) {
 
 /** Strip the leading ` * ` from a JSDoc body and join wrapped continuation lines. */
 function docLines(block) {
-  const raw = block.split('\n').map((l) => l.replace(/^\s*\*ractice?\s?/, '').replace(/^\s*\*\s?/, ''));
+  const raw = block.split('\n').map((l) => l.replace(/^\s*\*\s?/, ''));
   /** @type {string[]} */
   const out = [];
   for (const line of raw) {

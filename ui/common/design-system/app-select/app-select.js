@@ -77,8 +77,10 @@ export class AppSelect extends HTMLElement {
     return list.map((o) => {
       const { value, label, disabled } = typeof o === 'object' && o !== null
         ? o : { value: o, label: o };
-      return `<option value="${String(value).replace(/"/g, '&quot;')}"${
-        disabled ? ' disabled' : ''}>${label ?? value}</option>`;
+      // Both halves escaped: `options` is routinely bound from API data, so the
+      // label is a sink for text nobody in this repo authored.
+      return `<option value="${escAttr(value)}"${
+        disabled ? ' disabled' : ''}>${escHtml(label ?? value)}</option>`;
     }).join('');
   }
 
@@ -111,7 +113,7 @@ export class AppSelect extends HTMLElement {
         <div class="select-box">
           ${this.#leading}
           <select id="${this.#id}"${name ? ` name="${escAttr(name)}"` : ''}${
-            aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
+            aria ? ` aria-label="${escAttr(aria)}"` : ''}${
             disabled ? ' disabled' : ''}${this.hasAttribute('required') ? ' required' : ''}>
             ${placeholder === null ? ''
               : `<option value="" disabled selected>${escHtml(placeholder)}</option>`}

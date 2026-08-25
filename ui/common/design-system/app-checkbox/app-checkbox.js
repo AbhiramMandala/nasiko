@@ -41,8 +41,14 @@ export class AppCheckbox extends HTMLElement {
   set indeterminate(v) { v ? this.setAttribute('indeterminate', '') : this.removeAttribute('indeterminate'); }
   get input() { return this.querySelector('input'); }
 
+  #wired = false;
+
   connectedCallback() {
     this.render();
+    // Wired once: the listener sits on the host, so it survives both re-renders
+    // and disconnects — re-adding it per connect stacked duplicate handlers.
+    if (this.#wired) return;
+    this.#wired = true;
     // The user's own clicks must not be reverted by the next attribute-driven
     // re-render, so mirror the DOM state back onto the attribute.
     this.addEventListener('change', () => {
@@ -54,6 +60,9 @@ export class AppCheckbox extends HTMLElement {
   attributeChangedCallback() { if (this.isConnected) this.render(); }
 
   render() {
+    // A re-render replaces the <input>; if the user just toggled it with Space
+    // (which re-renders via the checked attribute), carry their focus across.
+    const refocus = this.input && document.activeElement === this.input;
     const disabled  = this.hasAttribute('disabled');
     const indet     = this.hasAttribute('indeterminate');
     const checked   = this.hasAttribute('checked');
@@ -70,8 +79,8 @@ export class AppCheckbox extends HTMLElement {
     this.innerHTML = `
       <label class="row is-${state} is-${type}" for="${this.#id}">
         <input id="${this.#id}" type="checkbox"${name ? ` name="${escAttr(name)}"` : ''}${
-        aria ? ` aria-label="${aria.replace(/"/g, '&quot;')}"` : ''}${
-          value === null ? '' : ` value="${value.replace(/"/g, '&quot;')}"`}${
+        aria ? ` aria-label="${escAttr(aria)}"` : ''}${
+          value === null ? '' : ` value="${escAttr(value)}"`}${
           checked && !indet ? ' checked' : ''}${disabled ? ' disabled' : ''}>
         <span class="control" aria-hidden="true">
           ${indet ? '<span class="dash"></span>' : icons.check()}
@@ -85,6 +94,8 @@ export class AppCheckbox extends HTMLElement {
     // Native indeterminate is a property, not an attribute — set it so the
     // control also reports the right state to assistive tech.
     this.input.indeterminate = indet;
+
+    if (refocus) this.input?.focus();
   }
 }
 customElements.define('app-checkbox', AppCheckbox);

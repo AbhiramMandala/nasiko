@@ -19,8 +19,8 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppStatCard extends HTMLElement {
   static get observedAttributes() { return ['label', 'value', 'delta', 'trend', 'loading']; }
-  constructor() { super(); }
-  connectedCallback() { if (this._initialized) return; this._initialized = true; this.render(); }
+  #initialized = false;
+  connectedCallback() { if (this.#initialized) return; this.#initialized = true; this.render(); }
   attributeChangedCallback() { if (this.isConnected) this.render(); }
   render() {
     if (this.hasAttribute('loading')) {

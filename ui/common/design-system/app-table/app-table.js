@@ -237,22 +237,8 @@ export class AppTable extends HTMLElement {
     }
   }
 
-  /**
-   * Re-fetch the current page.
-   *
-   * @param {{ resetPage?: boolean }} [opts] `resetPage` jumps back to page 1 —
-   *   what a filter change needs, since filtering to fewer pages while parked
-   *   on page 3 otherwise leaves an empty body under a hidden pager.
-   */
-  async refresh({ resetPage = false } = {}) {
-    if (resetPage) this.#currentPage = 1;
-    // Re-resolved on *every* refresh, not cached from connectedCallback: a
-    // page-scoped `override()` swaps the registry entry without touching this
-    // element, and a cached `dataFn` kept fetching the unfiltered original —
-    // which is exactly how the Users page's role/department/status selects came
-    // to do nothing. Tables that assign `.dataFn` directly carry no data-fn
-    // name and are untouched by this.
-    if (this.#dataFnName) {
+  async refresh() {
+    if (!this.dataFn && this.#dataFnName) {
       this.dataFn = resolveDataSource(this.#dataFnName) || null;
     }
     // Resolution is deliberately lazy and retried on every refresh — that is
@@ -352,7 +338,11 @@ export class AppTable extends HTMLElement {
       const message = this.#searchQuery
         ? `No results for “${escHtml(this.#searchQuery)}”`
         : (this.getAttribute('empty-message') || 'Nothing here yet');
-      tbody.innerHTML = `<tr><td class="empty" colspan="100%">${message}</td></tr>`;
+      // colspan takes an integer — "100%" is invalid HTML that browsers happen
+      // to clamp. Span the real column count (1 when none is known yet).
+      const span = this.columns?.length
+        || this.querySelector('.thead tr')?.children.length || 1;
+      tbody.innerHTML = `<tr><td class="empty" colspan="${span}">${message}</td></tr>`;
       return;
     }
 

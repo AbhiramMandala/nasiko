@@ -21,7 +21,7 @@
  *   geometry. Present-but-empty means the default.
  */
 import styles from './app-stat-row.css' with { type: 'css' };
-import { escHtml, escAttr } from '/common/utils/escape.js';
+import { escHtml, escAttr } from '../../utils/escape.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
