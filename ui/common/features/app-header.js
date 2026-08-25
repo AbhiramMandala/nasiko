@@ -344,6 +344,30 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   }
   .mobile-nav .rail-item .rail-label { display: inline; }
 
+  /* The account row, same as the rail's bottom cluster — the rail is
+     display:none below 1024px, so this was the one thing on it with no other
+     way in: no user menu meant no sign out on a small screen at all. Styled
+     like the expanded rail (full-width row, name visible) and left with the
+     default dropdown position: the sheet sits at the top of the page, so the
+     rail's viewport-bottom flyout would open nowhere near its button. */
+  .mobile-nav .rail-identity {
+    margin-top: var(--s-8);
+    padding-top: var(--s-8);
+    border-top: 1px solid var(--shell-border-subtle, rgba(255,255,255,0.08));
+  }
+  .mobile-nav .rail-identity app-user-menu {
+    --user-name-display: flex;
+    --user-btn-w: 100%;
+    --user-btn-h: auto;
+    --user-btn-justify: flex-start;
+    --user-btn-padding: var(--s-4) var(--s-8);
+    --user-dropdown-position: absolute;
+    --user-dropdown-top: calc(100% + var(--s-4));
+    --user-dropdown-bottom: auto;
+    --user-dropdown-left: 0;
+    --user-dropdown-right: 0;
+  }
+
   .mobile-menu-btn { display: inline-flex; }
 
   @media (min-width: 1024px) {
@@ -695,8 +719,6 @@ export class AppHeader extends HTMLElement {
     // flag (attribute-driven navs, EE overrides) every link is a rail item.
     const hasRailFlags = mainLinks.some(l => l.rail);
     const railLinks = mainLinks.filter(l => l !== addAgent && (!hasRailFlags || l.rail));
-    // Rail + bottom cluster only: the mobile sheet lists every page, so there
-    // the exact match is the right one.
     const activeModule = this.#activeModule(navLinks);
 
     this.innerHTML = `
@@ -735,8 +757,17 @@ export class AppHeader extends HTMLElement {
           </div>` : ""}
         </div>
       </nav>
+      <!-- Same set as the rail, not every link: the sheet used to list all of
+           them, so two rows of one module (Secrets and Settings both carry
+           module "settings") lit up together — a selection the rail can never
+           show. Non-rail pages are reached the way they are on desktop, through
+           the module navs and the search field. -->
       <div class="mobile-nav">
-        ${mainLinks.concat(settingsLinks).map(l => this.#railItem(l, activeModule, { tooltip: false })).join("")}
+        ${railLinks.concat(settingsLinks).map(l => this.#railItem(l, activeModule, { tooltip: false })).join("")}
+        ${isAuthenticated ? `
+        <div class="rail-identity">
+          <app-user-menu current-user="${escHtml(currentUser)}"></app-user-menu>
+        </div>` : ""}
       </div>
       ${navLinks.length ? `<app-nav-search></app-nav-search>` : ""}
     `;
@@ -750,8 +781,10 @@ export class AppHeader extends HTMLElement {
       main.tabIndex = -1;
     }
 
-    const userMenu = this.querySelector("app-user-menu");
-    if (userMenu) {
+    // Two instances now — the rail's and the mobile sheet's, each visible at
+    // its own width. querySelector wired only the first, so whichever one the
+    // viewport was actually showing could be the inert one.
+    for (const userMenu of this.querySelectorAll("app-user-menu")) {
       userMenu.users = authService.getUsers();
       userMenu.addEventListener("user-remove", (e) =>
         this.#removeUser(e.detail.username),
@@ -783,8 +816,8 @@ export class AppHeader extends HTMLElement {
     });
     if (confirmed) {
       authService.removeUserSession(username);
-      const userMenu = this.querySelector("app-user-menu");
-      if (userMenu) userMenu.users = authService.getUsers();
+      const users = authService.getUsers();
+      for (const userMenu of this.querySelectorAll("app-user-menu")) userMenu.users = users;
     }
   }
 
