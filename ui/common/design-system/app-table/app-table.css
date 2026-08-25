@@ -102,12 +102,21 @@
     & tr.is-clickable { cursor: pointer; }
   }
 
+  /* The action column carries buttons, not text, so it must never truncate.
+     `.td`'s `text-overflow: ellipsis` is a text rule in Blink, but Gecko and
+     WebKit apply it to any overflowing inline content — an icon button
+     included. The delete button therefore rendered as a literal "..." in
+     Safari and Firefox, still clickable in Firefox (the box was inside the
+     clip) and completely inert in Safari (it was not), while Chrome showed
+     the trash icon and looked fine. */
   .th.is-plain,
   .td.is-plain {
     position: sticky;
     right: 0;
     z-index: 1;
     text-align: right;
+    overflow: visible;
+    text-overflow: clip;
   }
   .th.is-plain { background: var(--bg-subtle); }
   .td.is-plain { background: var(--bg-base); }

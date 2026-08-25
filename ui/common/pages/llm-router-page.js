@@ -7,6 +7,7 @@ import '/common/design-system/app-skeleton/app-skeleton.js';
  * @note Data sources (see /api/docs):
  *       `call('fetchLlmConfigs')`      → GET  /api/llm-configs
  *       `call('createLlmConfig', body)`  → POST /api/llm-configs
+ *       `call('updateLlmConfig', id, body)` → PATCH /api/llm-configs/{id}
  *       `call('deleteLlmConfig', id)`    → DELETE /api/llm-configs/{id}
  *       `call('setDefaultLlmConfig', id)`→ POST /api/llm-configs/{id}/default
  *       `call('fetchLlmProviders')`    → GET  /api/llm-router/providers
@@ -362,8 +363,9 @@ class LlmRouterPage extends HTMLElement {
         : form.querySelector('#cfg-secret').value || null,
       secret_value: useNew ? form.querySelector('#cfg-secret-value').value || null : null,
     };
+    const wantDefault = form.querySelector('#cfg-default').checked;
     if (!isEdit) {
-      body.is_default = form.querySelector('#cfg-default').checked;
+      body.is_default = wantDefault;
     }
     const errEl = this.querySelector('#form-error');
     const nameField = form.querySelector('#cfg-name');
@@ -388,7 +390,17 @@ class LlmRouterPage extends HTMLElement {
       return;
     }
     try {
-      await call('createLlmConfig', body);
+      if (isEdit) {
+        await call('updateLlmConfig', this.#editingConfig.id, body);
+        // PATCH ignores is_default by design — the flag moves through its own
+        // endpoint, so only a *changed* checkbox costs a second request.
+        if (wantDefault !== !!this.#editingConfig.is_default) {
+          await call(wantDefault ? 'setDefaultLlmConfig' : 'clearDefaultLlmConfig',
+                     this.#editingConfig.id);
+        }
+      } else {
+        await call('createLlmConfig', body);
+      }
     } catch (err) {
       errEl.textContent = err?.message || 'Failed to save config';
       errEl.hidden = false;

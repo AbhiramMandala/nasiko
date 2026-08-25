@@ -63,7 +63,19 @@ export class AppRadio extends HTMLElement {
     });
   }
 
-  attributeChangedCallback() { if (this.isConnected) this.render(); }
+  attributeChangedCallback(attr) {
+    if (!this.isConnected) return;
+    // Selection changes sync in place: re-rendering would destroy the inner
+    // input, dropping listeners bound to it and the keyboard focus on it.
+    if (attr === 'checked' && this.input) {
+      const checked = this.hasAttribute('checked');
+      this.input.checked = checked;
+      this.firstElementChild.classList.toggle('is-selected', checked);
+      this.firstElementChild.classList.toggle('is-unselected', !checked);
+      return;
+    }
+    this.render();
+  }
 
   render() {
     // A re-render replaces the <input>; carry focus across so arrow-key group
