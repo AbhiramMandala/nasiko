@@ -30,6 +30,11 @@ use crate::config::GatewayConfig;
 /// Upper bound on a `/models` fetch so a slow provider can't stall the sync loop.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// `tokio::time::interval` panics on a zero period, and
+/// `MODEL_CATALOG_SYNC_INTERVAL_SECS` is operator-supplied, so floor it rather than
+/// trusting the input.
+const MIN_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Every provider label the router can actually route to, as `(label, API base URL)`,
 /// gated on a configured platform key. Superset of [`listable_providers`]: the pricing
 /// sync only needs the label and base URL (it queries Portkey, never the provider), so
@@ -186,17 +191,19 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
 }
 
 /// Spawn the background catalog-sync loop: an immediate sync at startup, then every
-/// `MODEL_CATALOG_SYNC_INTERVAL_SECS` (default 10 min). The task logs and continues on
-/// failure; it never panics and never blocks serving.
+/// `MODEL_CATALOG_SYNC_INTERVAL_SECS` (default 10 min, floored at [`MIN_INTERVAL`]). The
+/// task logs and continues on failure; it never panics and never blocks serving.
 ///
 /// Takes the already-resolved [`GatewayConfig`] rather than re-reading the environment,
 /// so the router's effective config is decided once at the composition root. Whether to
 /// spawn at all is the caller's decision (`MODEL_CATALOG_SYNC_ENABLED`) — this loop
 /// reaches the network on its first tick.
 pub fn spawn_sync(db: PgPool, http: reqwest::Client, cfg: Arc<GatewayConfig>) {
-    let interval = Duration::from_secs(cfg.model_catalog_sync_interval_secs);
+    let interval = Duration::from_secs(cfg.model_catalog_sync_interval_secs).max(MIN_INTERVAL);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(interval);
+        // A pass that overruns the period must not then fire back-to-back.
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             // interval's first tick completes immediately → sync at startup.
             tick.tick().await;

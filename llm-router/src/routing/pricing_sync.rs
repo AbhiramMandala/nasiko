@@ -32,6 +32,13 @@ use crate::config::GatewayConfig;
 /// Upper bound on a pricing fetch.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Delay before the first sync so it never competes with boot-critical work.
+const INITIAL_DELAY: Duration = Duration::from_secs(10);
+
+/// `tokio::time::interval` panics on a zero period, and `PRICING_SYNC_INTERVAL_SECS`
+/// is operator-supplied, so floor it rather than trusting the input.
+const MIN_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Default Portkey pricing API base (no auth required).
 const DEFAULT_PRICING_BASE: &str = "https://configs.portkey.ai";
 
@@ -159,6 +166,9 @@ async fn fetch_price_book(
     let map = body.as_object()?;
     let prices: HashMap<String, ModelPrices> = map
         .iter()
+        // `default` is Portkey's per-provider fallback stanza, not a model anyone can
+        // call; ingesting it writes a bogus `model = 'default'` price row.
+        .filter(|(model, _)| model.as_str() != "default")
         .filter_map(|(model, entry)| {
             let payg = &entry["pricing_config"]["pay_as_you_go"];
             ModelPrices::from_pay_as_you_go(payg).map(|p| (model.clone(), p))
@@ -301,20 +311,23 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
     inserted
 }
 
-/// Spawn the background pricing-sync loop: immediate sync at startup, then every
-/// `PRICING_SYNC_INTERVAL_SECS` (default 24h — prices move slowly). Fail-open; never
-/// panics, never blocks serving.
+/// Spawn the background pricing-sync loop: a first sync shortly after boot, then every
+/// `PRICING_SYNC_INTERVAL_SECS` (default 24h — prices move slowly, floored at
+/// [`MIN_INTERVAL`]). Fail-open; never panics, never blocks serving.
 ///
 /// Takes the already-resolved [`GatewayConfig`] rather than re-reading the environment,
 /// so the router's effective config is decided once at the composition root. Whether to
 /// spawn at all is the caller's decision (`MODEL_PRICING_SYNC_ENABLED`) — this loop
 /// reaches the network on its first tick.
 pub fn spawn_sync(db: PgPool, http: reqwest::Client, cfg: Arc<GatewayConfig>) {
-    let interval = Duration::from_secs(cfg.pricing_sync_interval_secs);
+    let interval = Duration::from_secs(cfg.pricing_sync_interval_secs).max(MIN_INTERVAL);
     tokio::spawn(async move {
+        tokio::time::sleep(INITIAL_DELAY).await;
         let mut tick = tokio::time::interval(interval);
+        // A pass that overruns the period must not then fire back-to-back.
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            // interval's first tick completes immediately → sync at startup.
+            // interval's first tick completes immediately → sync once boot has settled.
             tick.tick().await;
             let inserted = sync_once(&db, &http, &cfg).await;
             tracing::info!(
