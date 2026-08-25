@@ -242,7 +242,9 @@ class ToastManager {
     let timer = null;
     const close = () => { clearTimeout(timer); el.remove(); };
     el.querySelector('.toast-close').addEventListener('click', close);
-    for (const btn of el.querySelectorAll('.toast-action')) {
+    // querySelectorAll types as Element, which has no dataset — the JSDoc build
+    // reads this file, so the cast is what keeps `just check-types` green.
+    for (const btn of /** @type {NodeListOf<HTMLElement>} */ (el.querySelectorAll('.toast-action'))) {
       btn.addEventListener('click', () => {
         shown[Number(btn.dataset.action)]?.onClick?.();
         close();

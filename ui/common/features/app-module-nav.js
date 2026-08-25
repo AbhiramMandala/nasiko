@@ -195,10 +195,17 @@ app-module-nav:not(:defined) { display: block; }
     color: var(--fg-secondary);
     cursor: pointer;
     opacity: 0;
+    /* A control nobody can see must not be clickable. The button sits over the
+       row's last 26px whether or not it is showing, so without this the right
+       edge of every session row swallowed the click that was meant to open the
+       chat and ran delete instead — the row looked inert when the delete call
+       did not succeed. Focus still reaches it by keyboard: pointer-events does
+       not affect Tab, and :focus-within re-enables it anyway. */
+    pointer-events: none;
     transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
   }
   .row-del-wrap:hover .row-del,
-  .row-del-wrap:focus-within .row-del { opacity: 1; }
+  .row-del-wrap:focus-within .row-del { opacity: 1; pointer-events: auto; }
   .row-del:hover { background: var(--bg-input); color: var(--color-error); }
   .row-del:focus-visible {
     opacity: 1;
