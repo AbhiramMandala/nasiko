@@ -181,6 +181,25 @@ class Router {
     // Same page — no-op
     if (fullPath === location.pathname + location.search + location.hash) return;
 
+    // No route for this path, so there is nothing here that can render it.
+    // Usually that means this document never registered a route table at all:
+    // every page also ships as a standalone `.html`, which loads its own page
+    // component but not `app.js`, and `addAll()` lives in `app.js`. It can also
+    // mean the target genuinely belongs to the server.
+    //
+    // Either way, hand it to the browser. Pushing state first and then finding
+    // nothing to render left the address bar on the new URL with the old page
+    // still on screen — on chat.html that looked like a session row that
+    // refused to open, and the URL even lost its `.html`, so a refresh then
+    // loaded the SPA and showed the right session. `#onClick` has always fallen
+    // through to the browser on an unmatched path; this makes the programmatic
+    // path agree with it.
+    if (!this.#findMatch(normalizePath(parsed.pathname))) {
+      if (options.replace) location.replace(fullPath);
+      else location.assign(fullPath);
+      return;
+    }
+
     if (options.replace) {
       history.replaceState(null, '', fullPath);
     } else {

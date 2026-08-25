@@ -206,6 +206,13 @@ app-module-nav:not(:defined) { display: block; }
   }
   .row-del-wrap:hover .row-del,
   .row-del-wrap:focus-within .row-del { opacity: 1; pointer-events: auto; }
+  /* Coarse pointers never hover, so a reveal-on-hover control is either
+     permanently invisible or — before the rule above — an invisible tap target
+     that deleted the chat the user was trying to open. Show it outright there
+     and let the row's reserved padding hold it. */
+  @media (hover: none) {
+    .row-del { opacity: 1; pointer-events: auto; }
+  }
   .row-del:hover { background: var(--bg-input); color: var(--color-error); }
   .row-del:focus-visible {
     opacity: 1;
