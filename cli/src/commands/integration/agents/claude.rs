@@ -414,6 +414,8 @@ fn attach_assistant(
     tools: &mut HashMap<String, (usize, usize)>,
     fallback_turns: &mut HashSet<usize>,
 ) {
+    // Async hook records can be appended before an older assistant record.
+    let started_at = started_at.min(ended_at);
     for tool in entry.tool_uses(ended_at) {
         if let Some(&(old_owner, index)) = tools.get(&tool.id) {
             let existing = &mut turns[old_owner].tool_calls[index];
@@ -934,5 +936,17 @@ mod tests {
         assert_eq!(tool.output, Some(json!("ok")));
         assert!(tool.ended_at.is_some());
         assert_eq!(tool.duration_ms, Some(1000));
+    }
+
+    #[test]
+    fn clamps_llm_start_when_async_records_are_appended_out_of_order() {
+        let input = r#"
+{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"content":"hi"}}
+{"type":"attachment","uuid":"hook","parentUuid":"u1","timestamp":"2026-01-01T00:00:02Z"}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-01-01T00:00:01Z","message":{"model":"m","stop_reason":"end_turn","content":"done","usage":{"input_tokens":1,"output_tokens":2}}}
+"#;
+        let turn = &turns_from_lines(input)[0];
+
+        assert_eq!(turn.calls[0].started_at, turn.calls[0].ended_at);
     }
 }
