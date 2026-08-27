@@ -1,450 +1,386 @@
 /**
- * Turns parsed DSL statements into a materialized element tree.
+ * Statements in, a materialized element tree out.
  *
- * Full re-walk per chunk, not incremental patching — matches OpenUI Lang's
- * own real behavior (confirmed by direct source inspection) and is cheap
- * enough at our scale. Known limitation: a component that keeps its own
- * internal UI state (e.g. app-table's pagination/search) resets on every
- * re-render, since the element is recreated, not patched.
+ * Full re-walk per chunk: every new bit of streamed text re-derives the whole
+ * tree from the whole statement list. No incremental patching, no dirty
+ * tracking. At the size of one dashboard that is cheap, and it removes the
+ * entire class of bug where a partial update leaves the tree describing
+ * something the statements no longer say.
  *
- * `Query`, `Mutation`, `Action`, and `Slot` are special-cased by name here,
- * before the generic component-lookup path — none of them are real design-
- * system components. This is the one pattern to extend for anything new.
+ * Four names are intercepted before the generic component lookup, because they
+ * are not components: `Query`, `Mutation`, `Action` and `Slot`. That
+ * interception is the extension point — anything else that is call-shaped but
+ * not an element goes here too, rather than growing a second mechanism.
+ *
+ * Evaluation is forgiving throughout (see coerce.js). Nothing in this file
+ * throws on bad input: a surface is model-authored and a thrown error costs the
+ * whole dashboard, so every failure degrades to null plus a diagnostic.
+ *
+ * @module common/surface/materialize
  */
 
-import { createStore } from './store.js';
-import { BUILTINS, toNumber } from './builtins.js';
+import { toNumber, toText, toArray } from './coerce.js';
+import { EACH, isEagerBuiltin, callBuiltin } from './builtins.js';
+
+/** Call-shaped names that are not components. */
+const INTERCEPTED = new Set(['Query', 'Mutation', 'Action', 'Slot']);
+
+/** Action step names, per agent.yaml rule 5. */
+const ACTION_STEPS = new Set(['Run', 'Set', 'Reset', 'ToAssistant', 'OpenUrl']);
 
 /**
- * Builds a { PascalName -> {tag, def} } lookup from a catalog (already
- * merged with dsl-overrides.json via `mergeDslOverrides`, if applicable).
- * @param {object} catalog
- * @returns {Map<string, {tag: string, def: object}>}
+ * `{ PascalName -> {tag, def} }` from a DSL catalog.
+ * @param {{components: Record<string, any>}} catalog
  */
 export function buildComponentIndex(catalog) {
   const index = new Map();
-  for (const [tag, def] of Object.entries(catalog.components)) {
+  for (const [tag, def] of Object.entries(catalog.components || {})) {
     const pascal = tag.split('-').map((p) => p[0].toUpperCase() + p.slice(1)).join('');
     index.set(pascal, { tag, def });
   }
   return index;
 }
 
-/**
- * Merges `dsl-overrides.json`-shaped metadata (childrenParam/dataParam/
- * actionParam/slots/status/...) onto a real catalog's component defs,
- * without ever mutating the real, generated catalog object itself.
- * @param {object} catalog
- * @param {object} overrides { [tag]: {childrenParam?, dataParam?, actionParam?, slots?, status, ...} }
- */
-export function mergeDslOverrides(catalog, overrides) {
-  const merged = { ...catalog, components: {} };
-  for (const [tag, def] of Object.entries(catalog.components)) {
-    merged.components[tag] = { ...def, ...(overrides[tag] || {}) };
-  }
-  return merged;
+/** A lexical scope for `@Each`'s loop variable. Not `$state` — see agent.yaml. */
+function childScope(parent, name, value) {
+  return { name, value, parent };
+}
+function lookupScope(scope, name) {
+  for (let s = scope; s; s = s.parent) if (s.name === name) return { found: true, value: s.value };
+  return { found: false, value: undefined };
 }
 
 /**
- * Walks an AST calling `visit(kind, name)` for every `Ref` (`kind:'ref'`)
- * and `StateRef` (`kind:'state'`) found anywhere inside it. Shared by this
- * file's `$state` auto-declare pass and gc.js's reachability walk.
- */
-export function walkAstRefs(node, visit) {
-  if (!node || typeof node !== 'object') return;
-  switch (node.k) {
-    case 'Ref': visit('ref', node.n); return;
-    case 'StateRef': visit('state', node.n); return;
-    case 'BinOp': walkAstRefs(node.left, visit); walkAstRefs(node.right, visit); return;
-    case 'UnaryOp': walkAstRefs(node.operand, visit); return;
-    case 'Ternary':
-      walkAstRefs(node.cond, visit); walkAstRefs(node.then, visit); walkAstRefs(node.else, visit);
-      return;
-    case 'Member': walkAstRefs(node.obj, visit); return;
-    case 'Index': walkAstRefs(node.obj, visit); walkAstRefs(node.index, visit); return;
-    case 'Arr': for (const e of node.els) walkAstRefs(e, visit); return;
-    case 'Obj': for (const [, v] of node.entries) walkAstRefs(v, visit); return;
-    case 'Comp':
-    case 'BuiltinCall':
-      for (const a of node.args) walkAstRefs(a, visit);
-      return;
-    default: return;
-  }
-}
-
-function paramOrder(def) {
-  const excluded = new Set((def.excludedFromCatalog || []).map((e) => e.attribute));
-  const attrs = Object.keys(def.attributes || {}).filter((k) => !excluded.has(k));
-  // textParam: the component's real visible content is plain light-DOM text
-  // (e.g. app-button/app-badge/app-tag — confirmed directly against their
-  // source: "content goes in the default slot" / "the label is whatever
-  // you put in the element"), not any attribute. Distinct from
-  // childrenParam (a list of real child ELEMENTS, e.g. app-stack/app-modal).
-  const leading = def.childrenParam ? ['children'] : def.dataParam ? ['data'] : def.textParam ? ['text'] : [];
-  const trailing = def.actionParam ? ['action'] : [];
-  return [...leading, ...attrs, ...trailing];
-}
-
-function coerceAndValidate(def, paramName, value, ctx, componentName) {
-  const attr = (def.attributes || {})[paramName];
-  if (!attr) return value;
-  if (attr.type === 'enum' && value != null && !attr.values.includes(value)) {
-    ctx.errors.push({
-      source: 'materializer', code: 'invalid-enum', component: componentName,
-      message: `${componentName}.${paramName} = ${JSON.stringify(value)} is not one of: ${attr.values.join('|')}`,
-    });
-    return attr.default !== undefined ? attr.default : null;
-  }
-  if (attr.required && (value === null || value === undefined)) {
-    ctx.errors.push({
-      source: 'materializer', code: 'missing-required', component: componentName,
-      message: `${componentName}.${paramName} is required but missing`,
-    });
-    return attr.default !== undefined ? attr.default : value;
-  }
-  return value;
-}
-
-// ─── Core evaluator ─────────────────────────────────────────────────────
-
-/**
- * Builds the same evaluation context `materialize()` uses internally, for
- * callers that need to evaluate a raw AST OUTSIDE of a materialize() call —
- * specifically, `query-manager.js`'s `triggerAction`, which must evaluate
- * `@Set`/`@ToAssistant`/`@OpenUrl`/a Mutation's args AST at the moment an
- * Action actually fires (against the CURRENT `$state`/statement list), not
- * against whatever was true when the surface was last rendered.
- * @param {Array<{id: string, ast: object}>} statements
- * @param {Map} componentIndex
- * @param {Map} queryResults
- * @param {Map} mutationResults
- * @param {ReturnType<typeof createStore>} store
- */
-export function buildEvalContext(statements, componentIndex, queryResults, mutationResults, store) {
-  const symbols = new Map();
-  for (const { id, ast } of statements) {
-    if (id.startsWith('$')) continue;
-    if (ast.k === 'Null') { symbols.delete(id); continue; }
-    symbols.set(id, ast);
-  }
-  return {
-    symbols, store, queryResults, mutationResults,
-    mutationDefs: new Map(), componentIndex,
-    unresolved: [], queries: [], seenQueryIds: new Set(), errors: [], visited: new Set(),
-    resolveOverride: null,
-  };
-}
-
-/**
- * Evaluates a single AST node against an existing context — exported for
- * `query-manager.js`'s fire-time Action evaluation (see `buildEvalContext`).
- */
-export function evaluateExpr(node, ctx) {
-  if (!node) return null;
-  switch (node.k) {
-    case 'Str': return node.v;
-    case 'Num': return node.v;
-    case 'Bool': return node.v;
-    case 'Null': return null;
-    case 'StateRef': return ctx.store.get(node.n);
-    case 'Ref': return resolveRef(node.n, ctx);
-    case 'BinOp': return evalBinOp(node, ctx);
-    case 'UnaryOp': return evalUnaryOp(node, ctx);
-    case 'Ternary':
-      return evaluateExpr(node.cond, ctx) ? evaluateExpr(node.then, ctx) : evaluateExpr(node.else, ctx);
-    case 'Member': return evalMember(node, ctx);
-    case 'Index': return evalIndex(node, ctx);
-    case 'Arr': {
-      const out = [];
-      for (const el of node.els) {
-        const v = evaluateExpr(el, ctx);
-        if (v === null && (el.k === 'Ref' || el.k === 'Comp')) continue; // dropped, not literal null
-        out.push(v);
-      }
-      return out;
-    }
-    case 'Obj': {
-      const out = {};
-      for (const [k, v] of node.entries) out[k] = evaluateExpr(v, ctx);
-      return out;
-    }
-    case 'BuiltinCall': return evalBuiltinCall(node, ctx);
-    case 'Comp': return evalComp(node, ctx);
-    default: return null;
-  }
-}
-
-function resolveRef(name, ctx) {
-  if (ctx.resolveOverride) {
-    const v = ctx.resolveOverride(name);
-    if (v !== undefined) return v; // @Each loop-variable shadow
-  }
-  if (ctx.visited.has(name)) return null; // cycle
-  if (!ctx.symbols.has(name)) { ctx.unresolved.push(name); return null; } // forward ref, not yet defined
-  const targetAst = ctx.symbols.get(name);
-  if (targetAst.k === 'Comp' && targetAst.name === 'Query') return materializeQuery(name, targetAst, ctx);
-  if (targetAst.k === 'Comp' && targetAst.name === 'Mutation') return materializeMutation(name, targetAst, ctx);
-  ctx.visited.add(name);
-  try {
-    const value = evaluateExpr(targetAst, ctx);
-    if (value && typeof value === 'object' && value.type === 'element') value.statementId = name;
-    return value;
-  } finally { ctx.visited.delete(name); }
-}
-
-function evalBinOp(node, ctx) {
-  if (node.op === '&&') {
-    const left = evaluateExpr(node.left, ctx);
-    return left ? evaluateExpr(node.right, ctx) : left;
-  }
-  if (node.op === '||') {
-    const left = evaluateExpr(node.left, ctx);
-    return left ? left : evaluateExpr(node.right, ctx);
-  }
-  const left = evaluateExpr(node.left, ctx);
-  const right = evaluateExpr(node.right, ctx);
-  switch (node.op) {
-    case '+':
-      if (typeof left === 'string' || typeof right === 'string') {
-        return String(left ?? '') + String(right ?? '');
-      }
-      return toNumber(left) + toNumber(right);
-    case '-': return toNumber(left) - toNumber(right);
-    case '*': return toNumber(left) * toNumber(right);
-    case '/': return toNumber(right) === 0 ? 0 : toNumber(left) / toNumber(right);
-    case '%': return toNumber(right) === 0 ? 0 : toNumber(left) % toNumber(right);
-    case '==': return left == right; // eslint-disable-line eqeqeq
-    case '!=': return left != right; // eslint-disable-line eqeqeq
-    case '>': return toNumber(left) > toNumber(right);
-    case '<': return toNumber(left) < toNumber(right);
-    case '>=': return toNumber(left) >= toNumber(right);
-    case '<=': return toNumber(left) <= toNumber(right);
-    default: return null;
-  }
-}
-
-function evalUnaryOp(node, ctx) {
-  const operand = evaluateExpr(node.operand, ctx);
-  if (node.op === '!') return !operand;
-  if (node.op === '-') return -toNumber(operand);
-  return null;
-}
-
-function evalMember(node, ctx) {
-  const obj = evaluateExpr(node.obj, ctx);
-  if (obj == null) return null;
-  if (Array.isArray(obj)) {
-    if (node.field === 'length') return obj.length;
-    return obj.map((item) => (item == null ? null : (item[node.field] ?? null)));
-  }
-  return obj[node.field];
-}
-
-function evalIndex(node, ctx) {
-  const obj = evaluateExpr(node.obj, ctx);
-  const idx = evaluateExpr(node.index, ctx);
-  if (obj == null || idx == null) return null;
-  if (Array.isArray(obj)) return obj[toNumber(idx)];
-  return obj[String(idx)];
-}
-
-function evalBuiltinCall(node, ctx) {
-  if (node.name === 'Each') return evalEach(node.args, ctx);
-  const builtin = BUILTINS[node.name];
-  if (!builtin) return null;
-  const args = node.args.map((a) => evaluateExpr(a, ctx));
-  return builtin.fn(...args);
-}
-
-function evalEach(argsAst, ctx) {
-  if (argsAst.length < 3) return [];
-  const arr = evaluateExpr(argsAst[0], ctx);
-  if (!Array.isArray(arr)) return [];
-  const varNode = argsAst[1];
-  const varName = varNode.k === 'Ref' ? varNode.n : varNode.k === 'Str' ? varNode.v : null;
-  if (!varName) return [];
-  const template = argsAst[2];
-  const parentOverride = ctx.resolveOverride;
-  return arr.map((item) => {
-    const childCtx = {
-      ...ctx,
-      resolveOverride: (name) => (name === varName ? item : (parentOverride ? parentOverride(name) : undefined)),
-    };
-    return evaluateExpr(template, childCtx);
-  });
-}
-
-function evalComp(node, ctx) {
-  if (node.name === 'Action') return materializeAction(node, ctx);
-  if (node.name === 'Slot') return materializeSlot(node, ctx);
-  return evalRealComp(node, ctx);
-}
-
-function materializeQuery(statementId, ast, ctx) {
-  const [toolNode, argsNode, defaultsNode, pathNode] = ast.args;
-  const toolName = toolNode && toolNode.k === 'Str' ? toolNode.v : null;
-  const args = argsNode ? evaluateExpr(argsNode, ctx) : [];
-  const defaults = defaultsNode !== undefined ? evaluateExpr(defaultsNode, ctx) : null;
-  const path = pathNode && pathNode.k === 'Str' ? pathNode.v : null;
-  if (toolName && !ctx.seenQueryIds.has(statementId)) {
-    ctx.seenQueryIds.add(statementId);
-    ctx.queries.push({ statementId, toolName, args: Array.isArray(args) ? args : [], path });
-  }
-  return ctx.queryResults.has(statementId) ? ctx.queryResults.get(statementId) : defaults;
-}
-
-function materializeMutation(statementId, ast, ctx) {
-  const [sourceNode, argsNode] = ast.args;
-  const sourceName = sourceNode && sourceNode.k === 'Str' ? sourceNode.v : null;
-  if (sourceName) {
-    ctx.mutationDefs.set(statementId, { sourceName, argsAst: argsNode || { k: 'Arr', els: [] } });
-  }
-  return ctx.mutationResults.get(statementId) || { status: 'idle', data: null, error: null };
-}
-
-/** `Action([@Run(x), @Set($y, expr), @Reset($z), @ToAssistant(msg), @OpenUrl(url)])` */
-function materializeAction(node, ctx) {
-  const stepsNode = node.args[0];
-  const stepAsts = stepsNode && stepsNode.k === 'Arr' ? stepsNode.els : [];
-  const steps = [];
-  for (const s of stepAsts) {
-    if (!s || s.k !== 'BuiltinCall') continue;
-    const a = s.args;
-    if (s.name === 'Run') {
-      const refNode = a[0];
-      if (refNode && refNode.k === 'Ref') {
-        const targetAst = ctx.symbols.get(refNode.n);
-        const isMutation = targetAst && targetAst.k === 'Comp' && targetAst.name === 'Mutation';
-        // materializeAction only *peeks* at symbols to classify the ref —
-        // it doesn't go through resolveRef, so nothing else would ever
-        // populate `mutationDefs` for a Mutation only ever reached this
-        // way. Explicitly materialize it here so query-manager.js's
-        // triggerAction can look up its sourceName/argsAst later.
-        if (isMutation) materializeMutation(refNode.n, targetAst, ctx);
-        steps.push({ kind: 'run', statementId: refNode.n, refType: isMutation ? 'mutation' : 'query' });
-      }
-    } else if (s.name === 'Set') {
-      const targetNode = a[0];
-      const target = targetNode && targetNode.k === 'StateRef' ? targetNode.n : null;
-      if (target) steps.push({ kind: 'set', target, valueAst: a[1] || { k: 'Null' } });
-    } else if (s.name === 'Reset') {
-      const targets = a.filter((x) => x.k === 'StateRef').map((x) => x.n);
-      if (targets.length) steps.push({ kind: 'reset', targets });
-    } else if (s.name === 'ToAssistant') {
-      steps.push({ kind: 'toAssistant', messageAst: a[0] || { k: 'Str', v: '' } });
-    } else if (s.name === 'OpenUrl') {
-      steps.push({ kind: 'openUrl', urlAst: a[0] || { k: 'Str', v: '' } });
-    }
-  }
-  return { type: 'action', steps };
-}
-
-/** `Slot("footer", child)` — tags the materialized child with `.slot` so
- * render.js can mark it (e.g. `data-slot="footer"`) before appending. */
-function materializeSlot(node, ctx) {
-  const slotNameNode = node.args[0];
-  const childNode = node.args[1];
-  const slotName = slotNameNode && slotNameNode.k === 'Str' ? slotNameNode.v : null;
-  const value = childNode ? evaluateExpr(childNode, ctx) : null;
-  if (value && typeof value === 'object' && value.type === 'element' && slotName) {
-    value.slot = slotName;
-  }
-  return value;
-}
-
-function evalRealComp(node, ctx) {
-  const entry = ctx.componentIndex.get(node.name);
-  if (!entry) return null; // unknown component — dropped, matches OpenUI's rule
-  const params = paramOrder(entry.def);
-  const props = {};
-  let children = null;
-  let data = null;
-  let text = null;
-  for (let i = 0; i < params.length && i < node.args.length; i++) {
-    const paramName = params[i];
-    let value = evaluateExpr(node.args[i], ctx);
-    if (paramName === 'text') text = value == null ? null : String(value);
-    else if (paramName === 'children') children = Array.isArray(value) ? value : [];
-    else if (paramName === 'data') {
-      // A propAssignments component (e.g. app-chart) may legitimately take
-      // an object form (`{labels, datasets}`), not just an array of rows —
-      // only force-coerce to an array for the plain dataParam convention
-      // (app-table-style: always a row array, resolved via a synthetic
-      // registered data source in render.js).
-      data = (entry.def.propAssignments || []).includes('data')
-        ? value
-        : (Array.isArray(value) ? value : []);
-    }
-    else {
-      value = coerceAndValidate(entry.def, paramName, value, ctx, node.name);
-      props[paramName] = value;
-    }
-  }
-  if (node.args.length > params.length) {
-    ctx.errors.push({
-      source: 'materializer', code: 'excess-args', component: node.name,
-      message: `${node.name} given ${node.args.length} args, only ${params.length} params exist`,
-    });
-  }
-  return { type: 'element', tag: entry.tag, typeName: node.name, props, children, data, text };
-}
-
-// ─── Entry point ────────────────────────────────────────────────────────
-
-/**
- * @param {Array<{id: string, ast: object}>} statements latest-wins per id; a
- *   `name = null` statement deletes any earlier statement with that name.
+ * @param {Array<{id: string, ast: object}>} statements latest wins per id
  * @param {Map<string, {tag: string, def: object}>} componentIndex
- * @param {Map<string, any>} [queryResults] statementId -> resolved Query value
- * @param {Map<string, {status, data, error}>} [mutationResults] statementId -> Mutation result
- * @param {ReturnType<typeof createStore>} [store] reactive `$variable` store —
- *   pass the SAME store across every call within one surface session so
- *   values survive re-renders; defaults to a fresh throwaway store.
- * @returns {{root: object|null, unresolved: string[], queries: Array, mutationDefs: Map, errors: Array}}
+ * @param {{store?: {get(name: string): unknown}, queryResults?: Map<string, unknown>, mutationResults?: Map<string, any>}} [ctx]
  */
-export function materialize(
-  statements, componentIndex, queryResults = new Map(), mutationResults = new Map(), store = createStore(),
-) {
+export function materialize(statements, componentIndex, ctx = {}) {
+  const store = ctx.store ?? { get: () => null };
+  const queryResults = ctx.queryResults ?? new Map();
+  const mutationResults = ctx.mutationResults ?? new Map();
+
+  // Symbol table. A later statement with the same name replaces the earlier
+  // one — that alone is the whole revision model. `name = null` deletes,
+  // per agent.yaml rule 9, so it must not survive as a literal null value.
   const symbols = new Map();
-  const stateDecls = [];
   for (const { id, ast } of statements) {
-    if (id.startsWith('$')) { stateDecls.push({ id, ast }); continue; }
-    if (ast.k === 'Null') { symbols.delete(id); continue; } // explicit delete
-    symbols.set(id, ast);
+    if (ast && ast.k === 'Null') symbols.delete(id);
+    else symbols.set(id, ast);
   }
 
-  const ctx = {
-    symbols, store, queryResults, mutationResults,
-    mutationDefs: new Map(),
-    componentIndex,
-    unresolved: [],
-    queries: [],
-    seenQueryIds: new Set(),
-    errors: [],
-    visited: new Set(),
-    resolveOverride: null,
+  const unresolved = [];
+  const diagnostics = [];
+  /** @type {Array<{statementId: string, source: string, args: unknown[], select: string|null}>} */
+  const queries = [];
+  /** @type {Array<{statementId: string, source: string, argsAst: object[]}>} */
+  const mutations = [];
+  const stateNames = new Set();
+  const visiting = new Set();
+
+  const note = (code, message, pointer) => diagnostics.push({ source: 'materializer', code, message, pointer });
+
+  /** Every `$name` mentioned anywhere, so undeclared ones can be seeded null. */
+  const collectStates = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (node.k === 'StateRef') stateNames.add(node.n);
+    for (const v of Object.values(node)) {
+      if (Array.isArray(v)) v.forEach(collectStates);
+      else if (v && typeof v === 'object') collectStates(v);
+    }
   };
+  for (const ast of symbols.values()) collectStates(ast);
+  for (const id of symbols.keys()) if (id.startsWith('$')) stateNames.add(id);
 
-  // Explicit $state declarations: only fills a value the store doesn't
-  // already have (store.initialize semantics — never clobber a value
-  // already changed via @Set).
-  const declaredNames = new Set(stateDecls.map((s) => s.id));
-  for (const { id, ast } of stateDecls) {
-    store.initialize({ [id]: evaluateExpr(ast, ctx) });
+  /**
+   * @param {object|null} node
+   * @param {string} statementId the statement this expression belongs to
+   * @param {object|null} scope `@Each` loop-variable chain
+   */
+  function evaluate(node, statementId, scope) {
+    if (!node) return null;
+
+    switch (node.k) {
+      case 'Str': return node.v;
+      case 'Num': return node.v;
+      case 'Bool': return node.v;
+      case 'Null': return null;
+
+      case 'StateRef': return store.get(node.n) ?? null;
+
+      case 'Ref': {
+        // A loop variable shadows a statement of the same name, which is what
+        // makes `@Each(rows, "r", r.cost)` mean the row and not a statement.
+        const local = lookupScope(scope, node.n);
+        if (local.found) return local.value;
+        if (visiting.has(node.n)) { note('cycle', `"${node.n}" refers to itself`, statementId); return null; }
+        if (!symbols.has(node.n)) { unresolved.push(node.n); return null; }
+        visiting.add(node.n);
+        try {
+          const value = evaluate(symbols.get(node.n), node.n, null);
+          if (value && typeof value === 'object' && value.type === 'element') value.statementId = node.n;
+          return value;
+        } finally { visiting.delete(node.n); }
+      }
+
+      case 'UnaryOp': {
+        const v = evaluate(node.operand, statementId, scope);
+        return node.op === '!' ? !v : -toNumber(v);
+      }
+
+      case 'BinOp': return binop(node, statementId, scope);
+
+      case 'Ternary':
+        return evaluate(node.cond, statementId, scope)
+          ? evaluate(node.then, statementId, scope)
+          : evaluate(node.else, statementId, scope);
+
+      case 'Member': {
+        const target = evaluate(node.obj, statementId, scope);
+        if (target === null || target === undefined) return null;
+        // On an array, `.field` plucks that field from every element. This is
+        // what lets `rows.cost` be the array a chart's `data` needs, and it is
+        // taught to the model as "array pluck" in agent.yaml.
+        if (Array.isArray(target)) {
+          if (node.field === 'length') return target.length;
+          return target.map((item) => (item === null || item === undefined ? null : item[node.field] ?? null));
+        }
+        if (typeof target !== 'object') return null;
+        return target[node.field] ?? null;
+      }
+
+      case 'Index': {
+        const target = evaluate(node.obj, statementId, scope);
+        const index = evaluate(node.index, statementId, scope);
+        if (target === null || target === undefined || index === null || index === undefined) return null;
+        if (Array.isArray(target)) return target[toNumber(index)] ?? null;
+        if (typeof target !== 'object') return null;
+        return target[String(index)] ?? null;
+      }
+
+      case 'Arr': {
+        const out = [];
+        for (const el of node.els) {
+          const v = evaluate(el, statementId, scope);
+          // A reference that has not arrived yet is absent, not a literal null
+          // in the middle of a children array.
+          if (v === null && (el.k === 'Ref' || el.k === 'Comp')) continue;
+          out.push(v);
+        }
+        return out;
+      }
+
+      case 'Obj': {
+        const out = {};
+        for (const [k, v] of node.entries) out[k] = evaluate(v, statementId, scope);
+        return out;
+      }
+
+      case 'BuiltinCall': return builtin(node, statementId, scope);
+
+      case 'Comp': return comp(node, statementId, scope);
+
+      default: return null;
+    }
   }
-  // Auto-declare: any $var referenced anywhere but never explicitly
-  // declared gets an implicit `null` default.
-  const referencedState = new Set();
-  for (const { ast } of statements) {
-    walkAstRefs(ast, (kind, name) => { if (kind === 'state') referencedState.add(name); });
+
+  function binop(node, statementId, scope) {
+    const { op } = node;
+
+    // Short-circuit, and value-returning rather than boolean-returning, so
+    // `$label || "Untitled"` yields the string rather than `true`.
+    if (op === '&&') {
+      const left = evaluate(node.left, statementId, scope);
+      return left ? evaluate(node.right, statementId, scope) : left;
+    }
+    if (op === '||') {
+      const left = evaluate(node.left, statementId, scope);
+      return left ? left : evaluate(node.right, statementId, scope);
+    }
+
+    const l = evaluate(node.left, statementId, scope);
+    const r = evaluate(node.right, statementId, scope);
+
+    switch (op) {
+      // `+` is concatenation the moment either side is a string. That is the
+      // rule the model is taught, and it is what makes `"Cost: " + total` work
+      // without a format call.
+      case '+': return (typeof l === 'string' || typeof r === 'string')
+        ? toText(l) + toText(r)
+        : toNumber(l) + toNumber(r);
+      case '-': return toNumber(l) - toNumber(r);
+      case '*': return toNumber(l) * toNumber(r);
+      // Division by zero is 0, never Infinity or NaN — a dashboard prints this.
+      case '/': { const d = toNumber(r); return d === 0 ? 0 : toNumber(l) / d; }
+      case '%': { const d = toNumber(r); return d === 0 ? 0 : toNumber(l) % d; }
+      case '==': return l == r; // eslint-disable-line eqeqeq -- loose by specification
+      case '!=': return l != r; // eslint-disable-line eqeqeq
+      case '>': return toNumber(l) > toNumber(r);
+      case '<': return toNumber(l) < toNumber(r);
+      case '>=': return toNumber(l) >= toNumber(r);
+      case '<=': return toNumber(l) <= toNumber(r);
+      default: return null;
+    }
   }
-  for (const name of referencedState) {
-    if (!declaredNames.has(name)) store.initialize({ [name]: null });
+
+  function builtin(node, statementId, scope) {
+    // `@Each` receives its template unevaluated — that is the whole point of
+    // it, and why it cannot come from the eager table.
+    if (node.name === EACH) {
+      const list = toArray(evaluate(node.args[0], statementId, scope));
+      const varNode = node.args[1];
+      const varName = varNode?.k === 'Str' ? varNode.v : varNode?.k === 'Ref' ? varNode.n : null;
+      const template = node.args[2];
+      if (!varName || !template) { note('bad_each', '@Each needs (array, varName, template)', statementId); return []; }
+      return list.map((item) => evaluate(template, statementId, childScope(scope, varName, item)));
+    }
+    if (!isEagerBuiltin(node.name)) {
+      // An Action step reaching expression position means the model wrote
+      // @Set/@Run outside an Action; say so rather than rendering nothing.
+      const why = ACTION_STEPS.has(node.name) ? 'is an Action step, not a value' : 'is not a builtin';
+      note('unknown_builtin', `@${node.name} ${why}`, statementId);
+      return null;
+    }
+    return callBuiltin(node.name, node.args.map((a) => evaluate(a, statementId, scope)));
+  }
+
+  function comp(node, statementId, scope) {
+    if (INTERCEPTED.has(node.name)) return intercepted(node, statementId, scope);
+
+    const entry = componentIndex.get(node.name);
+    if (!entry) {
+      note('unknown_component_type', `"${node.name}" is not in the catalog`, statementId);
+      return null;
+    }
+
+    const params = entry.def.paramOrder ?? Object.keys(entry.def.attributes ?? {});
+    if (node.args.length > params.length) {
+      note('excess_arguments',
+        `${node.name} takes ${params.length} arguments, ${node.args.length} given`, statementId);
+    }
+
+    const props = {};
+    let children = null;
+    let data = null;
+    let text = null;
+    let action = null;
+
+    for (let i = 0; i < params.length && i < node.args.length; i++) {
+      const param = params[i];
+      const value = evaluate(node.args[i], statementId, scope);
+      if (param === 'children') children = toArray(value);
+      else if (param === 'data') data = value;
+      else if (param === 'text') text = value;
+      else if (param === 'action') action = value;
+      else props[param] = value;
+    }
+
+    return {
+      type: 'element',
+      tag: entry.tag,
+      typeName: node.name,
+      props,
+      children,
+      data,
+      text,
+      action,
+      slot: null,
+    };
+  }
+
+  function intercepted(node, statementId, scope) {
+    switch (node.name) {
+      case 'Query': {
+        // Query("source", [args], default, "dot.path")
+        const source = evaluate(node.args[0], statementId, scope);
+        const args = toArray(evaluate(node.args[1], statementId, scope));
+        const fallback = node.args.length > 2 ? evaluate(node.args[2], statementId, scope) : null;
+        const selectNode = node.args[3];
+        const select = selectNode ? toText(evaluate(selectNode, statementId, scope)) || null : null;
+        if (typeof source !== 'string' || !source) {
+          note('bad_query', 'Query needs a data-source name as its first argument', statementId);
+          return fallback;
+        }
+        queries.push({ statementId, source, args, select });
+        // Resolved value if the manager has one, otherwise the declared
+        // default — which is why a dashboard shows zeroes rather than blanks
+        // while its first fetch is in flight.
+        return queryResults.has(statementId) ? queryResults.get(statementId) : fallback;
+      }
+
+      case 'Mutation': {
+        const source = evaluate(node.args[0], statementId, scope);
+        if (typeof source !== 'string' || !source) {
+          note('bad_mutation', 'Mutation needs a source name as its first argument', statementId);
+          return null;
+        }
+        mutations.push({ statementId, source, argsAst: node.args[1]?.els ?? [] });
+        return mutationResults.get(statementId) ?? { status: 'idle', data: null, error: null };
+      }
+
+      case 'Action': {
+        const stepNodes = node.args[0]?.k === 'Arr' ? node.args[0].els : [];
+        const steps = [];
+        for (const step of stepNodes) {
+          if (step?.k !== 'BuiltinCall' || !ACTION_STEPS.has(step.name)) {
+            note('bad_action_step', 'an Action step must be @Run/@Set/@Reset/@ToAssistant/@OpenUrl', statementId);
+            continue;
+          }
+          steps.push(actionStep(step, statementId, scope));
+        }
+        return { type: 'action', statementId, steps };
+      }
+
+      case 'Slot': {
+        const name = toText(evaluate(node.args[0], statementId, scope));
+        const child = evaluate(node.args[1], statementId, scope);
+        if (!child || child.type !== 'element') {
+          note('bad_slot', 'Slot needs a component as its second argument', statementId);
+          return child ?? null;
+        }
+        return { ...child, slot: name || null };
+      }
+
+      default: return null;
+    }
+  }
+
+  /**
+   * An Action step. Value expressions stay unevaluated: `@Set($v, r.cost)`
+   * inside an `@Each` has to read the row that was clicked, which is only known
+   * when it fires.
+   */
+  function actionStep(step, statementId, scope) {
+    const [a, b] = step.args;
+    switch (step.name) {
+      case 'Run':
+        return { kind: 'run', ref: a?.k === 'Ref' ? a.n : null };
+      case 'Set':
+        return { kind: 'set', target: a?.k === 'StateRef' ? a.n : null, valueAst: b ?? null, scope };
+      case 'Reset':
+        return { kind: 'reset', targets: step.args.filter((x) => x?.k === 'StateRef').map((x) => x.n) };
+      case 'ToAssistant':
+        return { kind: 'toAssistant', messageAst: a ?? null, scope };
+      case 'OpenUrl':
+        return { kind: 'openUrl', urlAst: a ?? null, scope };
+      default:
+        return { kind: 'unknown' };
+    }
   }
 
   const rootAst = symbols.get('root');
-  const root = rootAst ? evaluateExpr(rootAst, ctx) : null;
-  if (root && typeof root === 'object') root.statementId = 'root';
+  const root = rootAst ? evaluate(rootAst, 'root', null) : null;
+  if (root && root.type === 'element') root.statementId = 'root';
+  else if (rootAst) note('root_not_a_component', 'root did not resolve to a component', 'root');
 
-  return { root, unresolved: ctx.unresolved, queries: ctx.queries, mutationDefs: ctx.mutationDefs, errors: ctx.errors };
+  return {
+    root: root && root.type === 'element' ? root : null,
+    unresolved: [...new Set(unresolved)],
+    queries,
+    mutations,
+    states: [...stateNames],
+    diagnostics,
+    /** Statement ids reachable from root — what a later prune step keeps. */
+    symbols,
+  };
 }
