@@ -39,17 +39,38 @@ pub fn deploy_with_version_flags(
     let writable = writable || writable_path.is_some();
 
     if Path::new(image).join("AgentCard.json").exists() {
-        deploy_from_directory(image, name, port, &env, flags, writable, writable_path, &client)
+        deploy_from_directory(
+            image,
+            name,
+            port,
+            &env,
+            flags,
+            writable,
+            writable_path,
+            &client,
+        )
     } else {
-        deploy_from_image(image, name, port, &env, flags, writable, writable_path, &client)
+        deploy_from_image(
+            image,
+            name,
+            port,
+            &env,
+            flags,
+            writable,
+            writable_path,
+            &client,
+        )
     }
 }
 
 /// Gets the currently-deployed version and full version history from an
-/// already-looked-up agent. Empty for a brand-new agent.
+/// already-looked-up agent. Both come back empty for a brand-new agent.
+/// Shared by `deploy_from_directory` and `deploy_from_image`.
 ///
-/// A history-fetch failure is propagated, not treated as "no history" —
-/// otherwise a reused version could slip past `resolve_deploy_version`.
+/// Propagates a history-fetch failure instead of treating it as "no
+/// history" — failing open there would let a duplicate/already-used version
+/// through the check in `resolve_deploy_version` and push/deploy over that
+/// version's content before the server gets a chance to reject the update.
 fn used_version_context<'a>(
     client: &Client,
     existing: Option<&'a (String, serde_json::Value)>,
@@ -78,7 +99,12 @@ fn already_pushed(
     let Some((id, _)) = existing else {
         return Ok(false);
     };
-    Ok(client.version_status(id, version)?.as_deref() == Some("pushed"))
+    let status = client
+        .version_history(id)?
+        .into_iter()
+        .find(|v| v.version == version)
+        .map(|v| v.status);
+    Ok(status.as_deref() == Some("pushed"))
 }
 
 /// Finds the existing agent for a directory deploy: first checks the local
@@ -293,19 +319,6 @@ fn deploy_from_image(
     writable_path: Option<&str>,
     client: &Client,
 ) -> Result<()> {
-    // A bare image name means Docker's implicit `:latest`, not a real
-    // choice — require an explicit tag so the deployed version always
-    // matches what `nasiko build` actually produced.
-    if !crate::util::image_has_explicit_tag(image) {
-        anyhow::bail!(
-            "deploy requires an explicit image:tag (e.g. {image}:1.0.1) — run `nasiko build` \
-             first, then deploy exactly the tag it printed."
-        );
-    }
-    if !oci::local_image_exists(image)? {
-        anyhow::bail!("no local image found for {image} — build it first with `nasiko build`.");
-    }
-
     let (image_name, image_tag_version) = parse_image_name_and_tag(image);
     let agent_name = name_override.map(String::from).unwrap_or(image_name);
     let repo = format!("nasiko/{agent_name}");
@@ -340,13 +353,9 @@ fn deploy_from_image(
         );
     } else {
         // Tag locally so Docker can find it by the canonical ref without a registry pull.
-        let tag_status = std::process::Command::new(crate::util::container_bin())
+        let _ = std::process::Command::new("docker")
             .args(["tag", image, &image_ref])
-            .status()
-            .context("failed to run container tag command — is the container runtime running?")?;
-        if !tag_status.success() {
-            anyhow::bail!("failed to tag {image} as {image_ref}");
-        }
+            .status();
 
         println!("Pushing {image} → {image_ref}...");
         oci::push_image(image, &repo, &version)?;
