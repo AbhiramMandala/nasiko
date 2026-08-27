@@ -1,50 +1,143 @@
 {
-  "$comment2": "textParam marks a component whose visible text is its own child text content rather than an attribute — app-button reads this.innerHTML (app-button.js:80), app-badge and app-tag are styled wrappers around their text. Without it the model can emit them and they render empty.",
-  "$comment": "Hand-maintained decisions the generated design-system catalog cannot express: which components a generated surface may name, which take children or data as their first positional argument, and which attributes to withhold. gen-dsl-catalog.mjs merges this with design-system/catalog.json to produce dsl-catalog.json. Every component in catalog.json must have an entry here — `--check` fails otherwise, so a new component forces an explicit decision instead of silently becoming available or silently missing.",
-
+  "$comment2": "textParam marks a component whose visible text is its own child text content rather than an attribute \u2014 app-button reads this.innerHTML (app-button.js:80), app-badge and app-tag are styled wrappers around their text. Without it the model can emit them and they render empty.",
+  "$comment": "Hand-maintained decisions the generated design-system catalog cannot express: which components a generated surface may name, which take children or data as their first positional argument, and which attributes to withhold. gen-dsl-catalog.mjs merges this with design-system/catalog.json to produce dsl-catalog.json. Every component in catalog.json must have an entry here \u2014 `--check` fails otherwise, so a new component forces an explicit decision instead of silently becoming available or silently missing.",
   "components": {
-    "app-stack":        { "status": "ready", "childrenParam": true },
-    "app-row":          { "status": "ready", "childrenParam": true },
-    "app-grid":         { "status": "ready", "childrenParam": true },
-    "app-table":        { "status": "ready", "dataParam": true, "excludeAttrs": ["data-fn"],
-                          "reason": "The renderer registers the resolved rows as a synthetic source and sets data-fn itself. Leaving it settable would let a surface point the table at any registered source and bypass that." },
-    "app-modal":        { "status": "ready", "childrenParam": true },
-    "app-toolbar":      { "status": "ready", "childrenParam": true,
-                          "note": "Only useful with Slot() — its content is entirely start/end slotted." },
-
-    "app-stat-card":    { "status": "ready" },
-    "app-stat-row":     { "status": "ready" },
-    "app-badge":        { "status": "ready", "textParam": true },
-    "app-tag":          { "status": "ready", "textParam": true },
-    "app-divider":      { "status": "ready" },
-    "app-skeleton":     { "status": "ready" },
-    "app-code-snippet": { "status": "ready" },
-    "app-action-menu":  { "status": "ready" },
-    "app-empty-state":  { "status": "ready", "excludeAttrs": ["icon"],
-                          "reason": "icon is SVG markup written unescaped by contract — the one markup sink in the design system. Use the icon slot instead." },
-
-    "app-avatar":       { "status": "ready",
-                          "note": "size/filled/interactive/disabled/state are CSS-only (app-avatar.css:86-113) rather than non-functional. They are absent from observedAttributes because nothing in JS re-runs on change; the renderer recreates elements per pass, so that costs nothing here." },
-
-    "app-button":       { "status": "ready", "textParam": true, "excludeAttrs": ["href"],
-                          "reason": "href is route-typed and there is no route allowlist to validate against yet. The button is still useful as an Action trigger; re-include href once core/routes.json exists." },
-    "app-card":         { "status": "ready", "excludeAttrs": ["href", "details-href", "chat-href"],
-                          "reason": "Same as app-button — route-typed attributes stay out until the allowlist exists." },
-
-    "app-chart":        { "status": "blocked",
-                          "reason": "Declares no dataSource or data attribute, so there is no confirmed way to feed it rows from a DSL expression. Needs a read of app-chart.js to find the real mechanism; if it is a JS property, propAssignments covers it." },
-    "app-tabs":         { "status": "blocked",
-                          "reason": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) — an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism." },
-    "app-loading-bar":  { "status": "blocked",
-                          "reason": "Zero attributes; driven by global document events, not composition." },
-
-    "app-input":        { "status": "blocked", "reason": "A form control with no value plumbing until $state and Action land." },
-    "app-select":       { "status": "blocked", "reason": "A form control with no value plumbing until $state and Action land." },
-    "app-search":       { "status": "blocked", "reason": "A form control with no value plumbing until $state and Action land." },
-    "app-checkbox":     { "status": "blocked", "reason": "A form control with no value plumbing until $state and Action land." },
-    "app-radio":        { "status": "blocked", "reason": "A form control with no value plumbing until $state and Action land." },
-    "app-switch":       { "status": "blocked", "reason": "A form control with no value plumbing until $state and Action land." },
-    "app-chatbox":      { "status": "blocked", "reason": "Needs Action wiring to do anything; revisit once Action ships." },
-    "auto-complete":    { "status": "blocked", "reason": "Needs a live filter callback through data-sources.js — not designed yet." }
-  }
+    "app-stack": {
+      "status": "ready",
+      "childrenParam": true
+    },
+    "app-row": {
+      "status": "ready",
+      "childrenParam": true
+    },
+    "app-grid": {
+      "status": "ready",
+      "childrenParam": true
+    },
+    "app-table": {
+      "status": "ready",
+      "dataParam": true,
+      "reason": "The renderer registers the resolved rows as a synthetic source and sets data-fn itself. Leaving it settable would let a surface point the table at any registered source and bypass that.",
+      "dslExcludeAttributes": [
+        "data-fn"
+      ]
+    },
+    "app-modal": {
+      "status": "ready",
+      "childrenParam": true
+    },
+    "app-toolbar": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "Only useful with Slot() \u2014 its content is entirely start/end slotted."
+    },
+    "app-stat-card": {
+      "status": "ready"
+    },
+    "app-stat-row": {
+      "status": "ready"
+    },
+    "app-badge": {
+      "status": "ready",
+      "textParam": true
+    },
+    "app-tag": {
+      "status": "ready",
+      "textParam": true
+    },
+    "app-divider": {
+      "status": "ready"
+    },
+    "app-skeleton": {
+      "status": "ready"
+    },
+    "app-code-snippet": {
+      "status": "ready"
+    },
+    "app-action-menu": {
+      "status": "ready"
+    },
+    "app-empty-state": {
+      "status": "ready",
+      "reason": "icon is SVG markup written unescaped by contract \u2014 the one markup sink in the design system. Use the icon slot instead.",
+      "dslExcludeAttributes": [
+        "icon"
+      ]
+    },
+    "app-avatar": {
+      "status": "ready",
+      "note": "size/filled/interactive/disabled/state are CSS-only (app-avatar.css:86-113) rather than non-functional. They are absent from observedAttributes because nothing in JS re-runs on change; the renderer recreates elements per pass, so that costs nothing here."
+    },
+    "app-button": {
+      "status": "ready",
+      "textParam": true,
+      "reason": "href is route-typed and there is no route allowlist to validate against yet. The button is still useful as an Action trigger; re-include href once core/routes.json exists.",
+      "actionParam": true,
+      "dslExcludeAttributes": [
+        "href"
+      ]
+    },
+    "app-card": {
+      "status": "ready",
+      "reason": "Same as app-button \u2014 route-typed attributes stay out until the allowlist exists.",
+      "dslExcludeAttributes": [
+        "href",
+        "details-href",
+        "chat-href"
+      ]
+    },
+    "app-chart": {
+      "status": "ready",
+      "dataParam": true,
+      "note": "First positional argument is the chart data. Two shapes by `type`: canvas forms (line/bar/donut) need Chart.js {labels, datasets}; row forms (hbar/progress) take a bare array of {label, value}. The renderer must not coerce between them."
+    },
+    "app-tabs": {
+      "status": "blocked",
+      "reason": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) \u2014 an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism."
+    },
+    "app-loading-bar": {
+      "status": "blocked",
+      "reason": "Zero attributes; driven by global document events, not composition."
+    },
+    "app-input": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-select": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-search": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-checkbox": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-radio": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-switch": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-chatbox": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "auto-complete": {
+      "status": "blocked",
+      "reason": "Needs a live filter callback through data-sources.js \u2014 not designed yet."
+    }
+  },
+  "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation."
 }

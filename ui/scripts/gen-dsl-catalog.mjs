@@ -73,10 +73,10 @@ for (const [tag, def] of Object.entries(catalog.components)) {
   // Excluded twice over: what the catalog itself withholds (raw CSS lengths and
   // the like) plus what the override withholds for this pipeline.
   const catalogExcluded = new Set((def.excludedFromCatalog || []).map((e) => e.attribute));
-  const ovExcluded = new Set(ov.excludeAttrs || []);
+  const ovExcluded = new Set(ov.dslExcludeAttributes || []);
   for (const name of ovExcluded) {
     if (!def.attributes?.[name]) {
-      problems.push(`${tag}: excludeAttrs names "${name}", which is not an attribute of ${tag}.`);
+      problems.push(`${tag}: dslExcludeAttributes names "${name}", which is not an attribute of ${tag}.`);
     }
   }
 
@@ -94,7 +94,11 @@ for (const [tag, def] of Object.entries(catalog.components)) {
   // The positional contract, written down. A leading children/data slot when
   // the override declares one, then the surviving attributes in catalog order.
   const leading = ov.childrenParam ? ['children'] : ov.dataParam ? ['data'] : ov.textParam ? ['text'] : [];
-  const paramOrder = [...leading, ...Object.keys(attributes)];
+  // A trailing synthetic slot for an Action(...) — the component has no such
+  // attribute; the renderer binds it as a listener on the element's trigger
+  // event instead. Last so it stays optional without displacing anything.
+  const trailing = ov.actionParam ? ['action'] : [];
+  const paramOrder = [...leading, ...Object.keys(attributes), ...trailing];
 
   components[tag] = {
     element: def.element ?? tag,
@@ -102,6 +106,7 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     ...(ov.childrenParam && { childrenParam: true }),
     ...(ov.dataParam && { dataParam: true }),
     ...(ov.textParam && { textParam: true }),
+    ...(ov.actionParam && { actionParam: true }),
     paramOrder,
     attributes,
     slots: def.slots ?? [],

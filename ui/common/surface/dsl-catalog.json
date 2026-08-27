@@ -1,9 +1,9 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "e3278fcf7228",
+  "catalogVersion": "68bf0211a233",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 18,
+  "componentCount": 26,
   "components": {
     "app-action-menu": {
       "element": "app-action-menu",
@@ -127,6 +127,7 @@
       "element": "app-button",
       "summary": "Styled button with variants, sizes, loading spinner, and disabled state.",
       "textParam": true,
+      "actionParam": true,
       "paramOrder": [
         "text",
         "variant",
@@ -137,7 +138,8 @@
         "type",
         "aria-label",
         "title",
-        "aria-expanded"
+        "aria-expanded",
+        "action"
       ],
       "attributes": {
         "variant": {
@@ -289,6 +291,190 @@
       ],
       "events": []
     },
+    "app-chart": {
+      "element": "app-chart",
+      "summary": "`<app-chart>` — the one chart component.",
+      "dataParam": true,
+      "paramOrder": [
+        "data",
+        "type",
+        "stacked",
+        "format",
+        "currency",
+        "center-value",
+        "center-label",
+        "legend",
+        "empty-text",
+        "loading",
+        "label"
+      ],
+      "attributes": {
+        "type": {
+          "type": "enum",
+          "values": [
+            "line",
+            "bar",
+            "donut",
+            "hbar",
+            "progress"
+          ],
+          "description": "`line` | `bar` | `donut` | `hbar` | `progress` (default `line`)"
+        },
+        "stacked": {
+          "type": "boolean",
+          "description": "`bar` only: stack datasets instead of grouping them"
+        },
+        "format": {
+          "type": "enum",
+          "values": [
+            "number",
+            "currency",
+            "percent",
+            "compact"
+          ],
+          "default": "number",
+          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact`"
+        },
+        "currency": {
+          "type": "string",
+          "default": "USD",
+          "description": "ISO code for `format=\"currency\"` (default `USD`)"
+        },
+        "center-value": {
+          "type": "string",
+          "description": "`donut` only: the figure drawn in the hole"
+        },
+        "center-label": {
+          "type": "string",
+          "description": "`donut` only: the caption under it"
+        },
+        "legend": {
+          "type": "enum",
+          "values": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "description": "`auto` (default: on for donut and for 2+ series) | `on` | `off`"
+        },
+        "empty-text": {
+          "type": "string",
+          "description": "Shown when `data` is empty (default \"No data\")"
+        },
+        "loading": {
+          "type": "boolean",
+          "description": "Shimmer placeholder instead of the plot"
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name for the plot. Falls back to the type."
+        }
+      },
+      "slots": [],
+      "events": [],
+      "note": "First positional argument is the chart data. Two shapes by `type`: canvas forms (line/bar/donut) need Chart.js {labels, datasets}; row forms (hbar/progress) take a bare array of {label, value}. The renderer must not coerce between them."
+    },
+    "app-chatbox": {
+      "element": "app-chatbox",
+      "summary": "The chat composer: an auto-growing textarea with voice recording, file attachment, and submit-on-Enter.",
+      "actionParam": true,
+      "paramOrder": [
+        "placeholder",
+        "no-attachments",
+        "transcription-callback",
+        "action"
+      ],
+      "attributes": {
+        "placeholder": {
+          "type": "string",
+          "description": "Textarea placeholder text"
+        },
+        "no-attachments": {
+          "type": "boolean",
+          "description": "Hide the file attachment button"
+        },
+        "transcription-callback": {
+          "type": "string",
+          "description": "Name of a data-source function returning transcribed text"
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "chatbox-submit",
+          "description": "User submits; `detail: { value: string, files: [] }` — bubbles. The box goes into its loading state on submit; the owner calls `setLoading(false)` (or `setLoading(true)` then false) when the reply lands."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-checkbox": {
+      "element": "app-checkbox",
+      "summary": "Checkbox with an optional label and subtext, plus an indeterminate state.",
+      "actionParam": true,
+      "paramOrder": [
+        "checked",
+        "indeterminate",
+        "disabled",
+        "state",
+        "label",
+        "hint",
+        "name",
+        "value",
+        "aria-label",
+        "action"
+      ],
+      "attributes": {
+        "checked": {
+          "type": "boolean",
+          "description": ""
+        },
+        "indeterminate": {
+          "type": "boolean",
+          "description": "Renders the dash. Wins over `checked`."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "error",
+            "hover",
+            "focus"
+          ],
+          "description": "`error` | `hover` | `focus` (visual only)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Label text beside the box."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Subtext under the label (Figma Subtext=True)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "value": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "Bubbles from the inner input."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
     "app-code-snippet": {
       "element": "app-code-snippet",
       "summary": "Labeled command/code block with a copy-to-clipboard button.",
@@ -415,6 +601,156 @@
       "slots": [],
       "events": []
     },
+    "app-input": {
+      "element": "app-input",
+      "summary": "Text input with label, hint, character count and leading/trailing icon slots.",
+      "actionParam": true,
+      "paramOrder": [
+        "size",
+        "state",
+        "label",
+        "hint",
+        "count",
+        "required",
+        "disabled",
+        "readonly",
+        "type",
+        "name",
+        "placeholder",
+        "value",
+        "autocomplete",
+        "maxlength",
+        "inputmode",
+        "min",
+        "max",
+        "step",
+        "pattern",
+        "list",
+        "spellcheck",
+        "aria-label",
+        "action"
+      ],
+      "attributes": {
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "description": "`md` (default, 32px) | `sm` (28px)"
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "error",
+            "success",
+            "read-only",
+            "hover",
+            "focus"
+          ],
+          "description": "`error` | `success` | `read-only` | `hover` | `focus`. Omit for the default state. `disabled`/`readonly` below are the real attributes; `state` is for the two visual-only statuses plus the overrides."
+        },
+        "label": {
+          "type": "string",
+          "description": "Label above the box. Omit for no label."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Helper line below the box. Turns red in `state=\"error\"`."
+        },
+        "count": {
+          "type": "string",
+          "description": "Right-aligned counter in the hint row, e.g. `12/100`."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Renders the red `*` before the label."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "readonly": {
+          "type": "boolean",
+          "description": "Same paint as `state=\"read-only\"`."
+        },
+        "type": {
+          "type": "enum",
+          "values": [
+            "text",
+            "password",
+            "email",
+            "number",
+            "search",
+            "url",
+            "tel",
+            "date"
+          ],
+          "default": "text",
+          "description": "`text` (default) | `password` | `email` | `number` | `search` | `url` | `tel` | `date`. Forwarded verbatim to the inner `<input>`."
+        },
+        "name": {
+          "type": "string",
+          "description": ""
+        },
+        "placeholder": {
+          "type": "string",
+          "description": ""
+        },
+        "value": {
+          "type": "string",
+          "description": ""
+        },
+        "autocomplete": {
+          "type": "string",
+          "description": ""
+        },
+        "maxlength": {
+          "type": "string",
+          "description": ""
+        },
+        "inputmode": {
+          "type": "string",
+          "description": ""
+        },
+        "min": {
+          "type": "string",
+          "description": ""
+        },
+        "max": {
+          "type": "string",
+          "description": ""
+        },
+        "step": {
+          "type": "string",
+          "description": ""
+        },
+        "pattern": {
+          "type": "string",
+          "description": ""
+        },
+        "list": {
+          "type": "string",
+          "description": ""
+        },
+        "spellcheck": {
+          "type": "string",
+          "description": ""
+        },
+        "aria-label": {
+          "type": "string",
+          "description": ""
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "input",
+          "description": "|change - Native events bubble from the inner input."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
     "app-modal": {
       "element": "app-modal",
       "summary": "Accessible dialog modal with heading, body, footer slot, backdrop dismiss, and ESC/X close.",
@@ -439,6 +775,69 @@
         "footer"
       ],
       "events": []
+    },
+    "app-radio": {
+      "element": "app-radio",
+      "summary": "Radio button with an optional label and subtext.",
+      "actionParam": true,
+      "paramOrder": [
+        "checked",
+        "disabled",
+        "state",
+        "label",
+        "hint",
+        "name",
+        "value",
+        "aria-label",
+        "action"
+      ],
+      "attributes": {
+        "checked": {
+          "type": "boolean",
+          "description": ""
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "error",
+            "hover",
+            "focus"
+          ],
+          "description": "`error` | `hover` | `focus` (visual only)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Label text beside the control."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Subtext under the label (Figma Subtext=Yes)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"radio\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "value": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"radio\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"radio\">`. Pass `aria-label` when there is no visible `label`."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "Bubbles from the inner input."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-row": {
       "element": "app-row",
@@ -505,6 +904,176 @@
       },
       "slots": [],
       "events": []
+    },
+    "app-search": {
+      "element": "app-search",
+      "summary": "Search field — the box only, not a results surface.",
+      "actionParam": true,
+      "paramOrder": [
+        "size",
+        "state",
+        "loading",
+        "disabled",
+        "placeholder",
+        "value",
+        "name",
+        "autocomplete",
+        "maxlength",
+        "inputmode",
+        "aria-label",
+        "action"
+      ],
+      "attributes": {
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "description": "`md` (default, 36px) | `sm` (28px)"
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "hover",
+            "focus"
+          ],
+          "description": "`hover` | `focus`, so the design-system page and the parity test can render those pseudo-classes statically. `disabled` and `loading` below are real attributes, not `state` values."
+        },
+        "loading": {
+          "type": "boolean",
+          "description": "Swaps the trailing slot for a spinner."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "placeholder": {
+          "type": "string",
+          "description": "Defaults to \"Search\"."
+        },
+        "value": {
+          "type": "string",
+          "description": "Initial value."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+        },
+        "autocomplete": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+        },
+        "maxlength": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+        },
+        "inputmode": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "input",
+          "description": "|change - Native events bubble from the inner input, including after the clear button empties it."
+        },
+        {
+          "name": "search-clear",
+          "description": "After the clear button runs, for call sites that want the clear itself rather than \"value became empty\"."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-select": {
+      "element": "app-select",
+      "summary": "Single-select dropdown: a styled native `<select>` with the input's label, hint and state treatment.",
+      "actionParam": true,
+      "paramOrder": [
+        "size",
+        "state",
+        "label",
+        "hint",
+        "placeholder",
+        "options",
+        "required",
+        "disabled",
+        "name",
+        "aria-label",
+        "value",
+        "action"
+      ],
+      "attributes": {
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "description": "`md` (default, 32px) | `sm` (28px)"
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "error",
+            "success",
+            "hover",
+            "focus"
+          ],
+          "description": "`error` | `success` | `hover` | `focus` (visual only)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Label above the trigger."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Helper line below. Turns red in `state=\"error\"`."
+        },
+        "placeholder": {
+          "type": "string",
+          "description": "Renders a selected-but-disabled first option."
+        },
+        "options": {
+          "type": "json",
+          "description": "JSON array of `\"value\"` or `{value, label, disabled}`."
+        },
+        "required": {
+          "type": "boolean",
+          "description": ""
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<select>`."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<select>`."
+        },
+        "value": {
+          "type": "string",
+          "description": "Initially selected value; matched against `options`."
+        }
+      },
+      "slots": [
+        "leading"
+      ],
+      "events": [
+        {
+          "name": "change",
+          "description": "Bubbles from the inner select."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-skeleton": {
       "element": "app-skeleton",
@@ -642,6 +1211,86 @@
       },
       "slots": [],
       "events": []
+    },
+    "app-switch": {
+      "element": "app-switch",
+      "summary": "On/off toggle with an optional label and subtext.",
+      "actionParam": true,
+      "paramOrder": [
+        "checked",
+        "disabled",
+        "size",
+        "state",
+        "label",
+        "hint",
+        "layout",
+        "name",
+        "value",
+        "aria-label",
+        "action"
+      ],
+      "attributes": {
+        "checked": {
+          "type": "boolean",
+          "description": ""
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "lg",
+            "sm"
+          ],
+          "description": "`lg` (default, 40×24) | `sm` (36×20)"
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "hover",
+            "focus"
+          ],
+          "description": "`hover` | `focus` (visual only)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Label text beside the track."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Subtext under the label (Figma Subtext=True)."
+        },
+        "layout": {
+          "type": "enum",
+          "values": [
+            "inline",
+            "settings"
+          ],
+          "description": "`inline` (default, control then label) | `settings` (label left, control pushed to the far right — Figma Layout=Settings, for settings rows)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "value": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "Bubbles from the inner input."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-table": {
       "element": "app-table",
@@ -783,16 +1432,8 @@
     }
   },
   "blocked": {
-    "app-chart": "Declares no dataSource or data attribute, so there is no confirmed way to feed it rows from a DSL expression. Needs a read of app-chart.js to find the real mechanism; if it is a JS property, propAssignments covers it.",
     "app-tabs": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) — an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism.",
     "app-loading-bar": "Zero attributes; driven by global document events, not composition.",
-    "app-input": "A form control with no value plumbing until $state and Action land.",
-    "app-select": "A form control with no value plumbing until $state and Action land.",
-    "app-search": "A form control with no value plumbing until $state and Action land.",
-    "app-checkbox": "A form control with no value plumbing until $state and Action land.",
-    "app-radio": "A form control with no value plumbing until $state and Action land.",
-    "app-switch": "A form control with no value plumbing until $state and Action land.",
-    "app-chatbox": "Needs Action wiring to do anything; revisit once Action ships.",
     "auto-complete": "Needs a live filter callback through data-sources.js — not designed yet."
   }
 }
