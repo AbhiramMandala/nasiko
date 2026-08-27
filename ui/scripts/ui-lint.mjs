@@ -81,6 +81,10 @@ function layerOf(rel) {
       rel.startsWith('ui/common/styles/') || rel === 'ui/common/global.css') {
     return LAYER.DESIGN_SYSTEM;
   }
+  // The DSL surface runtime: a product component that composes design-system
+  // elements from a model-authored spec. Explicit rather than relying on the
+  // default-to-COMPONENT fallback, because what it may import is the point.
+  if (rel.startsWith('ui/common/surface/')) return LAYER.COMPONENT;
   if (rel.startsWith('ui/common/features/')) return LAYER.COMPONENT;
   if (rel.startsWith('ui/common/pages/')) return LAYER.PAGE;
   // Per-edition layers come from ui/<edition>/edition.json rather than a list of
@@ -521,7 +525,7 @@ const rules = [
          'a bad spec from a degraded panel into script execution. A code review will eventually miss one of these; ' +
          'this will not. Build the node, set its attributes, append it.',
     check({ rel, source, isJs }) {
-      if (!isJs || !rel.includes('common/features/weave-surface/')) return [];
+      if (!isJs || !(rel.includes('common/surface/') || rel.includes('common/features/weave-surface/'))) return [];
       const out = [];
       const banned = [
         [/\.innerHTML\s*=/g, 'assigns innerHTML'],
