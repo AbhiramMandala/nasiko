@@ -37,18 +37,11 @@ pub struct Session {
 pub struct SessionDetails {
     pub session_id: String,
     pub traces: Vec<TraceSummary>,
-    /// Unique trace IDs found by the session search. When `has_more_traces` is
-    /// true this is a lower bound capped by the provider safety limit.
-    pub trace_count: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub model_used: Option<String>,
     pub latency_ms_p50: Option<f64>,
     pub latency_ms_p99: Option<f64>,
-    /// More matching traces existed than the provider's bounded detail read.
-    pub has_more_traces: bool,
-    /// False when search was truncated or any matching trace failed to load.
-    pub metrics_complete: bool,
     pub cost: CostBreakdown,
 }
 
@@ -188,14 +181,10 @@ impl TraceDetails {
     /// Cost is intentionally not computed here — resolve it through a
     /// [`crate::pricing::PricingSource`] (see [`crate::pricing::compute_cost`]).
     pub fn token_totals(&self) -> (u64, u64, Option<String>) {
-        let mut seen = std::collections::HashSet::new();
         let mut input = 0u64;
         let mut output = 0u64;
         let mut model: Option<String> = None;
         for span in &self.spans {
-            if !seen.insert(&span.span_id) {
-                continue;
-            }
             let (inp, out, m) = extract_token_attrs(&span.attributes);
             if inp == 0 && out == 0 {
                 continue;
@@ -212,13 +201,9 @@ impl TraceDetails {
     /// Aggregate cache token counts across all spans:
     /// `(cache_read_tokens, cache_creation_tokens)`.
     pub fn cache_token_totals(&self) -> (u64, u64) {
-        let mut seen = std::collections::HashSet::new();
         let mut read = 0u64;
         let mut creation = 0u64;
         for span in &self.spans {
-            if !seen.insert(&span.span_id) {
-                continue;
-            }
             let (r, c) = extract_cache_token_attrs(&span.attributes);
             read += r;
             creation += c;
@@ -228,12 +213,8 @@ impl TraceDetails {
 
     /// Per-model token totals, for pricing mixed-model traces correctly.
     pub fn token_totals_by_model(&self) -> Vec<(Option<String>, u64, u64)> {
-        let mut seen = std::collections::HashSet::new();
         let mut by_model: Vec<(Option<String>, u64, u64)> = Vec::new();
         for span in &self.spans {
-            if !seen.insert(&span.span_id) {
-                continue;
-            }
             let (inp, out, model) = extract_token_attrs(&span.attributes);
             if inp == 0 && out == 0 {
                 continue;

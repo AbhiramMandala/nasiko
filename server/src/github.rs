@@ -28,6 +28,7 @@ pub fn public_router() -> Router<AppState> {
         // Unauthenticated SSO login: returns {"auth_url": "..."} so the client
         // can open GitHub consent in a new tab without holding a session token.
         .route("/api/auth/github/login-user", get(github_login_user))
+        .route("/api/auth/github/status", get(github_login_configured))
 }
 
 /// Protected routes — served under /api/v1 with require_auth middleware.
@@ -141,6 +142,17 @@ async fn github_login(State(state): State<AppState>, claims: Claims) -> impl Int
                 .into_response()
         }
     }
+}
+
+/// `GET /api/auth/github/status`  (public — no auth required)
+///
+/// Reports whether GitHub OAuth is configured at all, so the login page can
+/// hide a sign-in button whose route would only answer `503`. Without this the
+/// button renders on every deployment, including the ones that never set
+/// `GITHUB_CLIENT_ID` — it looks like an enabled login method to anyone
+/// auditing the page, and fails on click. Mirrors `/api/auth/oidc/status`.
+async fn github_login_configured(State(state): State<AppState>) -> impl IntoResponse {
+    Json(serde_json::json!({ "configured": state.github_svc.is_some() }))
 }
 
 /// `GET /api/v1/auth/github/login-user`  (public — no auth required)
