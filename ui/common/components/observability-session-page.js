@@ -149,6 +149,7 @@ class ObservabilitySessionPage extends HTMLElement {
   #renderKpis() {
     const s = this.#session;
     if (!s) return;
+    this.querySelector('.page-title').textContent = s.agent_name || this.#sessionId;
     const complete = s.metrics_complete !== false && !s.pagination?.has_next_page;
     const kpi = (label, value) => `
       <div class="kpi">
@@ -165,6 +166,7 @@ class ObservabilitySessionPage extends HTMLElement {
     // The chat pane loads in parallel and often wins the race, rendering its
     // chips before #session exists; refresh them once the totals are in.
     this.#renderChatMeta();
+    this.#renderChatTurnMeta();
   }
 
   #renderChatMeta() {
@@ -182,6 +184,25 @@ class ObservabilitySessionPage extends HTMLElement {
       <span class="chip">${num(complete ? s?.cost_summary?.total?.cost : null, (v) => `$ ${v.toFixed(2)}`)}</span>
       <span class="chip">${icons.clock('', 12)} ${num(complete ? s?.latency_p50 : null, (v) => `${(v / 1000).toFixed(1)} s`)}</span>
     `;
+  }
+
+  #renderChatTurnMeta() {
+    const traces = new Map((this.#session?.traces ?? []).map((trace) => [trace.trace_id, trace]));
+    this.querySelectorAll('.chat-turn-meta[data-trace-id]').forEach((meta) => {
+      const root = traces.get(meta.dataset.traceId)?.root_span;
+      if (!root) {
+        meta.hidden = true;
+        return;
+      }
+      const tokens = root.cumulative_token_count_total;
+      const cost = root.trace?.cost_summary?.total?.cost;
+      meta.hidden = false;
+      meta.innerHTML = `
+        <span class="chip">${icons.layers('', 12)} ${tokens == null ? '—' : `${Number(tokens).toLocaleString()} tokens`}</span>
+        <span class="chip" title="Estimated cost">${this.#fmtTurnCost(cost)}</span>
+        <span class="chip">${icons.clock('', 12)} ${this.#fmtLatency(root.latency_ms)}</span>
+      `;
+    });
   }
 
   /** Expand each trace of the session into a flattened, indented span list. */
@@ -462,10 +483,13 @@ class ObservabilitySessionPage extends HTMLElement {
     pane.innerHTML = `
       ${this.#chatPaneTitle()}
       <div class="chat-card">
-        ${messages.map((m) => m.role === 'user'
+        ${messages.map((m, index) => m.role === 'user'
           // User turns are literal input — escaped, never parsed as markdown.
           ? `<div class="msg-user"><div class="msg-clamp">${this.#esc(m.content)}</div></div>`
-          : `<div class="msg-assistant" data-message-index="${messages.indexOf(m)}"><div class="msg-clamp md-body">${renderMarkdown(m.content ?? '')}</div></div>`).join('')}
+          : `<div class="msg-assistant" data-message-index="${index}">
+              <div class="msg-clamp md-body">${renderMarkdown(m.content ?? '')}</div>
+              ${m.trace_id ? `<div class="chat-turn-meta" data-trace-id="${this.#esc(m.trace_id)}" hidden></div>` : ''}
+            </div>`).join('')}
         <div class="chat-meta"></div>
       </div>
     `;
@@ -476,6 +500,7 @@ class ObservabilitySessionPage extends HTMLElement {
       element.prepend(steps);
       steps.loadToolCalls(toolCalls);
     }
+    this.#renderChatTurnMeta();
     this.#renderChatMeta();
     this.#applyClamps(pane);
     this.#syncPanes();
@@ -515,6 +540,16 @@ class ObservabilitySessionPage extends HTMLElement {
   #fmtLatency(ms) {
     if (ms == null) return '—';
     return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`;
+  }
+
+  #fmtTurnCost(value) {
+    if (value == null) return '—';
+    const cost = Number(value);
+    if (cost === 0) return '$0';
+    if (cost > 0 && cost < 0.001) return '&lt; $0.001';
+    if (cost < 0.01) return `$${cost.toFixed(4).replace(/0+$/, '')}`;
+    if (cost < 1) return `$${cost.toFixed(3)}`;
+    return `$${cost.toFixed(2)}`;
   }
 
   #fmtDate(iso) {

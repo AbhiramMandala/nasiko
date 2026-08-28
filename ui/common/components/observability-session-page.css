@@ -209,6 +209,15 @@
     flex-direction: column;
   }
 
+  .chat-turn-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    margin-top: var(--space-xs);
+
+    &[hidden] { display: none; }
+  }
+
   /* ── Clamped long content ─────────────────────────────────────────────── */
   /* Transcripts and span payloads (system prompts especially) run to
      thousands of characters; show a readable slice and let the reader open

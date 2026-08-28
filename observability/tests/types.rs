@@ -16,6 +16,8 @@ fn token_usage_default_is_zero() {
     let usage = TokenUsage::default();
     assert_eq!(usage.input_tokens, 0);
     assert_eq!(usage.output_tokens, 0);
+    assert_eq!(usage.cache_read_tokens, 0);
+    assert_eq!(usage.cache_creation_tokens, 0);
     assert_eq!(usage.total_tokens, 0);
 }
 
@@ -24,12 +26,16 @@ fn token_usage_serialization_roundtrip() {
     let usage = TokenUsage {
         input_tokens: 1024,
         output_tokens: 512,
-        total_tokens: 1536,
+        cache_read_tokens: 128,
+        cache_creation_tokens: 64,
+        total_tokens: 1728,
     };
     let json = serde_json::to_string(&usage).unwrap();
     let back: TokenUsage = serde_json::from_str(&json).unwrap();
     assert_eq!(back.input_tokens, usage.input_tokens);
     assert_eq!(back.output_tokens, usage.output_tokens);
+    assert_eq!(back.cache_read_tokens, usage.cache_read_tokens);
+    assert_eq!(back.cache_creation_tokens, usage.cache_creation_tokens);
     assert_eq!(back.total_tokens, usage.total_tokens);
 }
 
@@ -162,8 +168,17 @@ fn trace_token_totals_ignore_replayed_span_ids() {
 
 #[test]
 fn trace_token_totals_by_model_splits_mixed_traces() {
+    let mut cached = gen_ai_span("s1", "gpt-4o", 200, 100);
+    cached.attributes.insert(
+        "gen_ai.usage.cache_read_input_tokens".into(),
+        serde_json::json!(25),
+    );
+    cached.attributes.insert(
+        "gen_ai.usage.cache_creation_input_tokens".into(),
+        serde_json::json!(10),
+    );
     let trace = make_trace(vec![
-        gen_ai_span("s1", "gpt-4o", 200, 100),
+        cached,
         gen_ai_span("s2", "claude-3-5-haiku", 50, 20),
         gen_ai_span("s3", "gpt-4o", 100, 50),
     ]);
@@ -171,9 +186,12 @@ fn trace_token_totals_by_model_splits_mixed_traces() {
     assert_eq!(by_model.len(), 2);
     let gpt = by_model
         .iter()
-        .find(|(m, _, _)| m.as_deref() == Some("gpt-4o"))
+        .find(|(m, _, _, _, _)| m.as_deref() == Some("gpt-4o"))
         .unwrap();
     assert_eq!((gpt.1, gpt.2), (300, 150));
+    assert_eq!((gpt.3, gpt.4), (25, 10));
+    let (usage, _) = trace.usage_totals();
+    assert_eq!(usage.total_tokens, 555);
 }
 
 // ─── find_root_span ───────────────────────────────────────────────────────────
@@ -213,6 +231,12 @@ fn latency_percentiles_empty() {
 fn latency_percentiles_sorted() {
     let (p50, p99) = latency_percentiles(vec![300, 100, 200, 400, 500]);
     assert_eq!(p50, Some(300.0));
+    assert_eq!(p99, Some(500.0));
+}
+
+#[test]
+fn latency_p99_is_max_for_four_values() {
+    let (_, p99) = latency_percentiles(vec![400, 100, 300, 200]);
     assert_eq!(p99, Some(400.0));
 }
 
@@ -229,6 +253,8 @@ fn session_groups_multiple_traces() {
         duration_ms: Some(300_000),
         input_tokens: 800,
         output_tokens: 400,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         model_used: Some("gpt-4o".to_owned()),
         latency_ms_p50: Some(1200.0),
         latency_ms_p99: Some(4000.0),
@@ -250,6 +276,8 @@ fn session_serialization_roundtrip() {
         duration_ms: None,
         input_tokens: 200,
         output_tokens: 100,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
         model_used: None,
         latency_ms_p50: None,
         latency_ms_p99: None,
