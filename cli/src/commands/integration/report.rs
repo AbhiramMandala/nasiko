@@ -27,7 +27,7 @@ pub fn run(agent: Agent) -> Result<()> {
     let settings = IntegrationState::load()?;
     let Some(agent_state) = settings.get(spec.id) else {
         bail!(
-            "{} is not installed — run: nasiko integration install {}",
+            "{} is not installed — run: nasiko agents install {}",
             spec.display_name,
             spec.id
         );

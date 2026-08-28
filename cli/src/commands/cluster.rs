@@ -21,8 +21,8 @@ pub fn connect(url: &str, name: Option<&str>) -> Result<()> {
     });
 
     config::connect(&cluster_name, url)?;
-    crate::commands::integration::auto_install_if_authenticated();
     println!("Connected: {cluster_name} ({url})");
+    crate::commands::integration::auto_install_if_authenticated();
     Ok(())
 }
 
@@ -71,7 +71,7 @@ struct ClusterTableRow {
 /// Switch active cluster.
 pub fn use_cluster(name: &str) -> Result<()> {
     config::use_cluster(name)?;
-    crate::commands::integration::auto_install_if_authenticated();
     println!("Switched to: {name}");
+    crate::commands::integration::auto_install_if_authenticated();
     Ok(())
 }

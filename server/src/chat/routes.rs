@@ -90,7 +90,13 @@ fn default_session_limit() -> i64 {
 /// `idx_messages_session(session_id, timestamp)`.
 const SESSION_LIST_SELECT: &str = r#"
     SELECT cs.*,
-           a.name AS agent_name,
+           CASE
+             WHEN a.metadata->>'source' = 'nasiko-cli-integration'
+                  AND u.username IS NOT NULL
+                  AND a.name NOT LIKE u.username || '-%'
+               THEN u.username || '-' || a.name
+             ELSE a.name
+           END AS agent_name,
            lm.content AS last_message,
            agg.message_count,
            agg.trace_count,
@@ -98,6 +104,7 @@ const SESSION_LIST_SELECT: &str = r#"
            agg.latency_p50_ms
     FROM chat_sessions cs
     LEFT JOIN agents a ON a.id = cs.agent_id
+    LEFT JOIN users u ON u.id = cs.user_id
     LEFT JOIN LATERAL (
         SELECT content FROM chat_messages
         WHERE session_id = cs.session_id

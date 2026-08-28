@@ -112,17 +112,18 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub fn disconnect() -> Result<()> {
-    disconnect_internal(true)
+pub fn disconnect(force: bool) -> Result<()> {
+    disconnect_internal(true, force)
 }
 
-fn disconnect_internal(print: bool) -> Result<()> {
+fn disconnect_internal(print: bool, force: bool) -> Result<()> {
     let Some(state) = load_state()? else {
         if print {
             println!("Claude Code is not connected to Nasiko.");
         }
         return Ok(());
     };
+    coding_agent_router::disconnect_preflight("Claude Code", &["claude"], force)?;
     let mut settings = read_json_object(&state.settings_path)?;
     restore_top_level(
         &mut settings,
@@ -141,6 +142,7 @@ fn disconnect_internal(print: bool) -> Result<()> {
     fs::remove_file(state_path()).context("failed to remove Claude connection state")?;
     if print {
         println!("Disconnected Claude Code from Nasiko.");
+        println!("Restart Claude Code so the restored API settings take effect.");
     }
     Ok(())
 }

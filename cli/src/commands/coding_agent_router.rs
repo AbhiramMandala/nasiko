@@ -3,6 +3,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
@@ -52,6 +53,68 @@ pub struct RoutingCredential {
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
+pub fn disconnect_preflight(display_name: &str, process_names: &[&str], force: bool) -> Result<()> {
+    let running = running_processes(process_names);
+    enforce_disconnect_preflight(display_name, &running, force)
+}
+
+fn enforce_disconnect_preflight(display_name: &str, running: &[String], force: bool) -> Result<()> {
+    if running.is_empty() {
+        return Ok(());
+    }
+    let names = running.join(", ");
+    if force {
+        eprintln!(
+            "warning: disconnecting while {display_name} is running ({names}); open sessions may fail API requests until restarted"
+        );
+        return Ok(());
+    }
+    bail!(
+        "{display_name} is still running ({names}). Close all {display_name} sessions, then rerun this command. To disconnect immediately anyway, use `--force`; open sessions may fail API requests."
+    )
+}
+
+#[cfg(unix)]
+fn running_processes(process_names: &[&str]) -> Vec<String> {
+    process_names
+        .iter()
+        .filter(|name| {
+            Command::new("pgrep")
+                .args(["-x", name])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+#[cfg(windows)]
+fn running_processes(process_names: &[&str]) -> Vec<String> {
+    process_names
+        .iter()
+        .filter(|name| {
+            let image = format!("{name}.exe");
+            Command::new("tasklist")
+                .args(["/FI", &format!("IMAGENAME eq {image}"), "/NH"])
+                .output()
+                .is_ok_and(|output| {
+                    output.status.success()
+                        && String::from_utf8_lossy(&output.stdout)
+                            .to_ascii_lowercase()
+                            .contains(&image.to_ascii_lowercase())
+                })
+        })
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn running_processes(_process_names: &[&str]) -> Vec<String> {
+    Vec::new()
+}
+
 #[derive(Deserialize)]
 struct Envelope<T> {
     data: T,
@@ -67,7 +130,10 @@ pub fn prepare(
     let client = Client::from_cluster_entry(&entry);
     let (agent_id, agent_name) = match agent_reference {
         Some(reference) => resolve_owned_agent(&client, reference, &principal_id)?,
-        None => ensure_local_agent(&client, &spec, &principal_id)?,
+        None => {
+            let canonical_name = account_scoped_agent_name(&client, &entry, spec.default_name)?;
+            ensure_local_agent(&client, &spec, &principal_id, &canonical_name)?
+        }
     };
     let (resolved_config, previous_llm_config_id) =
         configure_agent_for_install(&client, &agent_id, llm_config)?;
@@ -94,6 +160,47 @@ pub fn require_current_login() -> Result<(String, ClusterEntry, String)> {
     let principal = config::token_subject(token)
         .ok_or_else(|| anyhow::anyhow!("invalid Nasiko login; run: nasiko auth login"))?;
     Ok((cluster, entry, principal))
+}
+
+pub fn account_scoped_agent_name(
+    client: &Client,
+    entry: &ClusterEntry,
+    base_name: &str,
+) -> Result<String> {
+    let username = match entry.username.as_deref().map(str::trim) {
+        Some(username) if !username.is_empty() => username.to_string(),
+        _ => {
+            let profile: Value = client.get_json("/users/me")?;
+            profile
+                .get("username")
+                .or_else(|| profile.get("data").and_then(|data| data.get("username")))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|username| !username.is_empty())
+                .map(str::to_string)
+                .context("Nasiko account profile is missing a username")?
+        }
+    };
+    let username = normalize_agent_name_part(&username);
+    if username.is_empty() {
+        bail!("Nasiko account username cannot be used in an agent name");
+    }
+    Ok(format!("{username}-{base_name}"))
+}
+
+fn normalize_agent_name_part(value: &str) -> String {
+    let mut normalized = String::new();
+    let mut separator = false;
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character);
+            separator = false;
+        } else if !separator && !normalized.is_empty() {
+            normalized.push('-');
+            separator = true;
+        }
+    }
+    normalized.trim_end_matches('-').to_string()
 }
 
 fn usable_login_token(entry: &ClusterEntry) -> Result<&str> {
@@ -142,6 +249,7 @@ pub fn ensure_local_agent(
     client: &Client,
     spec: &AgentSpec<'_>,
     principal_id: &str,
+    canonical_name: &str,
 ) -> Result<(String, String)> {
     let mut offset = 0;
     loop {
@@ -149,13 +257,14 @@ pub fn ensure_local_agent(
         let agents: Vec<Value> = client.get_json(&path)?;
         if let Some(agent) = agents.iter().find(|agent| {
             agent.get("owner_id").and_then(Value::as_str) == Some(principal_id)
+                && agent.get("name").and_then(Value::as_str) == Some(canonical_name)
                 && agent
                     .get("metadata")
                     .and_then(|metadata| metadata.get("integration_id"))
                     .and_then(Value::as_str)
                     == Some(spec.id)
         }) {
-            return owned_agent_fields(agent, principal_id, spec.default_name);
+            return owned_agent_fields(agent, principal_id, canonical_name);
         }
         if agents.len() < 100 {
             break;
@@ -163,12 +272,7 @@ pub fn ensure_local_agent(
         offset += 100;
     }
 
-    let suffix: String = principal_id
-        .chars()
-        .filter(|character| *character != '-')
-        .take(8)
-        .collect();
-    let name = format!("{}-{suffix}", spec.default_name);
+    let name = canonical_name.to_string();
     if let Some(agent) = client.get_agent(&name)?
         && agent.get("owner_id").and_then(Value::as_str) == Some(principal_id)
     {
@@ -385,6 +489,32 @@ fn normalize_url(url: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnect_preflight_preserves_state_when_agent_is_running() {
+        let error = enforce_disconnect_preflight("Claude Code", &["claude".to_string()], false)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Close all Claude Code sessions"));
+        assert!(error.to_string().contains("--force"));
+    }
+
+    #[test]
+    fn forced_disconnect_allows_active_agent_with_warning_path() {
+        assert!(enforce_disconnect_preflight("OpenCode", &["opencode".to_string()], true).is_ok());
+    }
+
+    #[test]
+    fn disconnect_preflight_allows_stopped_agent() {
+        assert!(enforce_disconnect_preflight("Codex", &[], false).is_ok());
+    }
+
+    #[test]
+    fn account_names_are_safe_and_stable_for_agent_registration() {
+        assert_eq!(normalize_agent_name_part("ankitkumarnath"), "ankitkumarnath");
+        assert_eq!(normalize_agent_name_part("Ankit Kumar_Nath"), "ankit-kumar-nath");
+        assert_eq!(normalize_agent_name_part("--Alice--"), "alice");
+    }
     use base64::Engine as _;
     use std::collections::HashMap;
 

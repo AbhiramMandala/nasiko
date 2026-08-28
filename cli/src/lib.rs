@@ -73,6 +73,18 @@ pub enum AgentDevCommands {
 #[derive(Subcommand)]
 #[command(next_help_heading = "Operate")]
 pub enum AgentOpsCommands {
+    /// Run Claude Code through the Nasiko LLM router
+    Claude {
+        /// Registered agent name or UUID used for routing identity
+        #[arg(long)]
+        agent: String,
+        /// LLM config name or UUID to attach before launching
+        #[arg(long)]
+        config: Option<String>,
+        /// Arguments passed through to Claude Code
+        #[arg(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Build + push + deploy to active cluster
     #[command(
         after_help = "Reads: AgentCard.json, Dockerfile\nWrites: .nasiko/agent.json (agent ID binding)"
@@ -108,6 +120,10 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Explicit consent to replace an already-used version's content in place
+        /// (only takes effect together with --version; interactive runs are asked instead)
+        #[arg(long)]
+        overwrite: bool,
     },
     /// Push image to cluster OCI registry (without deploying)
     Push {
@@ -122,6 +138,10 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Explicit consent to replace an already-used version's content in place
+        /// (only takes effect together with --version; interactive runs are asked instead)
+        #[arg(long)]
+        overwrite: bool,
     },
     /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
     #[command(
@@ -611,6 +631,29 @@ pub enum MafExecutionCommands {
 
 #[derive(Subcommand)]
 pub enum AgentsCommands {
+    /// Discover coding agents installed on this machine
+    Discover,
+    /// Install session reporting for a local coding agent
+    Install {
+        /// Agent to install (e.g. claude or opencode)
+        agent: String,
+        /// Report tokens, latency and cost, but omit conversation content
+        #[arg(long)]
+        no_content: bool,
+    },
+    /// Remove session reporting for a local coding agent
+    Uninstall {
+        /// Agent to uninstall (e.g. claude or opencode)
+        agent: String,
+    },
+    /// Validate and deliver queued coding-agent events
+    Sync,
+    /// Export one session's new turns. Invoked by installed hooks.
+    #[command(hide = true)]
+    Report {
+        #[arg(long)]
+        agent: String,
+    },
     /// List all deployed agents
     #[command(alias = "list")]
     Ls,
@@ -897,6 +940,7 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
             platform.as_deref(),
             version_prompt::VersionFlags {
                 version: version.as_deref(),
+                overwrite: false,
                 yes,
             },
         ),
@@ -919,6 +963,11 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
 
 pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
     match cmd {
+        AgentOpsCommands::Claude {
+            agent,
+            config,
+            args,
+        } => commands::claude::run(&agent, config.as_deref(), &args),
         AgentOpsCommands::Deploy {
             image,
             name,
@@ -929,6 +978,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable_path,
             version,
             yes,
+            overwrite,
         } => commands::deploy::deploy_with_version_flags(
             &image,
             name.as_deref(),
@@ -937,6 +987,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             &env,
             version_prompt::VersionFlags {
                 version: version.as_deref(),
+                overwrite,
                 yes,
             },
             writable,
@@ -947,11 +998,13 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             name,
             version,
             yes,
+            overwrite,
         } => commands::push::push_with_version_flags(
             &image,
             name.as_deref(),
             version_prompt::VersionFlags {
                 version: version.as_deref(),
+                overwrite,
                 yes,
             },
         ),
@@ -1113,6 +1166,16 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             }
         },
         AgentOpsCommands::Agents { command } => match command {
+            AgentsCommands::Discover => commands::integration::status(),
+            AgentsCommands::Install { agent, no_content } => {
+                commands::integration::install(commands::integration::InstallOptions {
+                    agent_id: &agent,
+                    no_content,
+                })
+            }
+            AgentsCommands::Uninstall { agent } => commands::integration::uninstall(&agent),
+            AgentsCommands::Sync => commands::integration::sync(),
+            AgentsCommands::Report { agent } => commands::integration::report(&agent),
             AgentsCommands::Ls => commands::agents::cmd_ls(),
             AgentsCommands::Get {
                 agent_id,
@@ -1353,6 +1416,50 @@ pub fn dispatch_registry(cmd: RegistrySubCommands) -> Result<()> {
             artifact_type,
             json,
         } => commands::registry::list(artifact_type.as_deref(), json),
+    }
+}
+
+// ─── Coding-agent integrations ──────────────────────────────────────────────
+
+#[derive(Subcommand)]
+pub enum IntegrationSubCommands {
+    /// Show which coding agents are on this machine and their reporting status
+    Status,
+    /// Register a coding agent and start reporting its sessions to Nasiko
+    Install {
+        /// Agent to install (e.g. claude or opencode)
+        agent: String,
+        /// Report tokens, latency and cost, but omit conversation text from spans
+        #[arg(long)]
+        no_content: bool,
+    },
+    /// Stop reporting a coding agent's sessions and remove its hook
+    Uninstall {
+        /// Agent to uninstall (e.g. claude or opencode)
+        agent: String,
+    },
+    /// Export one session's new turns. Invoked by the installed hook, not by hand.
+    #[command(hide = true)]
+    Report {
+        #[arg(long)]
+        agent: String,
+    },
+    /// Validate and deliver queued coding-agent events
+    Sync,
+}
+
+pub fn dispatch_integration(cmd: IntegrationSubCommands) -> Result<()> {
+    match cmd {
+        IntegrationSubCommands::Status => commands::integration::status(),
+        IntegrationSubCommands::Install { agent, no_content } => {
+            commands::integration::install(commands::integration::InstallOptions {
+                agent_id: &agent,
+                no_content,
+            })
+        }
+        IntegrationSubCommands::Uninstall { agent } => commands::integration::uninstall(&agent),
+        IntegrationSubCommands::Report { agent } => commands::integration::report(&agent),
+        IntegrationSubCommands::Sync => commands::integration::sync(),
     }
 }
 

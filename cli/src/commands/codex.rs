@@ -76,7 +76,7 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
     );
     println!("Config:                    {}", config_path.display());
     println!("Provider:                  nasiko ({model})");
-    println!("Session reporting is separate: nasiko integration install codex");
+    println!("Session reporting is separate: nasiko agents install codex");
     Ok(())
 }
 
@@ -139,11 +139,12 @@ fn responses_model(config: &serde_json::Value) -> Result<&str> {
         .context("resolved Nasiko LLM config is missing a model")
 }
 
-pub fn disconnect() -> Result<()> {
+pub fn disconnect(force: bool) -> Result<()> {
     let Some(state) = load_state()? else {
         println!("Codex routing: not connected");
         return Ok(());
     };
+    coding_agent_router::disconnect_preflight("Codex", &["codex"], force)?;
     let mut document = read_config(&state.config_path)?;
     restore_if_unchanged(
         &mut document,
@@ -171,6 +172,7 @@ pub fn disconnect() -> Result<()> {
     fs::remove_file(state_path()).context("failed to remove Codex routing state")?;
     println!("Disconnected Codex routing from Nasiko.");
     println!("Session reporting, hooks, auth, history, and the registered agent were kept.");
+    println!("Restart Codex so the restored provider settings take effect.");
     Ok(())
 }
 

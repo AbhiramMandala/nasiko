@@ -50,6 +50,7 @@ pub fn login() -> Result<()> {
 
     config::save_login(&username, token)?;
     println!("Logged in to {} as {}", name, username);
+    crate::commands::integration::auto_install_if_authenticated();
     Ok(())
 }
 

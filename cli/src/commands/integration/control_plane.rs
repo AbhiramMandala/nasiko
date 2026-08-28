@@ -5,18 +5,33 @@ use serde_json::json;
 
 use super::agents::Agent;
 
-pub fn register_agent(agent: Agent) -> Result<bool> {
+pub struct Registration {
+    pub created: bool,
+    pub agent_name: String,
+}
+
+pub fn register_agent(agent: Agent) -> Result<Registration> {
     let spec = agent.spec();
-    let client = crate::api::Client::from_active_cluster()?;
-    client.post_json_allow_conflict(
+    let (_, entry) = crate::config::active_cluster()?;
+    let client = crate::api::Client::from_cluster_entry(&entry);
+    let agent_name = crate::commands::coding_agent_router::account_scoped_agent_name(
+        &client,
+        &entry,
+        spec.agent_name,
+    )?;
+    let created = client.post_json_allow_conflict(
         "/agents",
         &json!({
-            "name": spec.agent_name,
-            "display_name": spec.display_name,
+            "name": agent_name,
+            "display_name": format!("{} ({})", spec.display_name, entry.username.as_deref().unwrap_or("user")),
             "description": format!("Local {} sessions, reported by the Nasiko CLI", spec.display_name),
             "version": "1.0.0",
             "tags": ["local", "coding-agent"],
             "metadata": {"source": "nasiko-cli-integration", "integration_id": spec.id},
         }),
-    )
+    )?;
+    Ok(Registration {
+        created,
+        agent_name,
+    })
 }

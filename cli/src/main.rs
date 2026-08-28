@@ -61,12 +61,10 @@ const HELP_TEXT: &str = "\
   maf        Multi-agent flow workflows (create/run/inspect)
 
 \x1b[33mAgents:\x1b[0m
-  agents     Manage and browse agents (ls/get/deploy/search/info/frameworks/list-uploaded/chat)
+  agents     Manage deployed and local coding agents
 
 \x1b[33mIntegrations:\x1b[0m
   github     GitHub integration (status/repos/connect/disconnect/clone)
-  integrations  Detect local coding agents (Claude Code, Codex, ...)
-  integration   Report a coding agent's sessions to Nasiko (status/install/uninstall)
 
 \x1b[33mRegistry:\x1b[0m
   registry   Connect to and browse the artifact registry
@@ -102,11 +100,13 @@ enum Commands {
 #[command(next_help_heading = "Integrations")]
 enum IntegrationCommands {
     /// Detect local coding agents and manage session reporting
+    #[command(hide = true)]
     Integration {
         #[command(subcommand)]
         command: IntegrationSubCommands,
     },
     /// Show which coding agents are on this machine (alias for `integration status`)
+    #[command(hide = true)]
     Integrations,
 }
 
@@ -133,7 +133,12 @@ enum CpCommands {
         config: Option<String>,
     },
     /// Disconnect a local integration
-    Disconnect { target: String },
+    Disconnect {
+        target: String,
+        /// Disconnect even when the coding agent is still running
+        #[arg(long)]
+        force: bool,
+    },
     /// Switch active control plane
     Use { name: String },
     /// List configured control planes
@@ -222,10 +227,10 @@ fn main() -> Result<()> {
                     commands::cluster::connect(&target, name.as_deref())
                 }
             }
-            CpCommands::Disconnect { target } => match target.as_str() {
-                "claude" => commands::claude::disconnect(),
-                "codex" => commands::codex::disconnect(),
-                "opencode" => commands::opencode::disconnect(),
+            CpCommands::Disconnect { target, force } => match target.as_str() {
+                "claude" => commands::claude::disconnect(force),
+                "codex" => commands::codex::disconnect(force),
+                "opencode" => commands::opencode::disconnect(force),
                 _ => anyhow::bail!(
                     "unknown integration '{target}' (expected: claude, codex, or opencode)"
                 ),
@@ -323,7 +328,12 @@ mod tests {
         let disconnect = Cli::try_parse_from(["nasiko", "disconnect", "codex"]).unwrap();
         assert!(matches!(
             disconnect.command,
-            Commands::Cp(CpCommands::Disconnect { target }) if target == "codex"
+            Commands::Cp(CpCommands::Disconnect { target, force }) if target == "codex" && !force
+        ));
+        let forced = Cli::try_parse_from(["nasiko", "disconnect", "codex", "--force"]).unwrap();
+        assert!(matches!(
+            forced.command,
+            Commands::Cp(CpCommands::Disconnect { target, force }) if target == "codex" && force
         ));
         let helper = Cli::try_parse_from(["nasiko", "__coding-agent-token", "codex"]).unwrap();
         assert!(matches!(
@@ -356,7 +366,36 @@ mod tests {
         let disconnect = Cli::try_parse_from(["nasiko", "disconnect", "opencode"]).unwrap();
         assert!(matches!(
             disconnect.command,
-            Commands::Cp(CpCommands::Disconnect { target }) if target == "opencode"
+            Commands::Cp(CpCommands::Disconnect { target, force }) if target == "opencode" && !force
+        ));
+    }
+
+    #[test]
+    fn parses_coding_agent_management_under_agents() {
+        let discover = Cli::try_parse_from(["nasiko", "agents", "discover"]).unwrap();
+        assert!(matches!(
+            discover.command,
+            Commands::Ops(AgentOpsCommands::Agents {
+                command: nasiko::AgentsCommands::Discover
+            })
+        ));
+
+        let install =
+            Cli::try_parse_from(["nasiko", "agents", "install", "claude", "--no-content"]).unwrap();
+        assert!(matches!(
+            install.command,
+            Commands::Ops(AgentOpsCommands::Agents {
+                command: nasiko::AgentsCommands::Install { agent, no_content }
+            }) if agent == "claude" && no_content
+        ));
+
+        let report =
+            Cli::try_parse_from(["nasiko", "agents", "report", "--agent", "opencode"]).unwrap();
+        assert!(matches!(
+            report.command,
+            Commands::Ops(AgentOpsCommands::Agents {
+                command: nasiko::AgentsCommands::Report { agent }
+            }) if agent == "opencode"
         ));
     }
 }

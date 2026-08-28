@@ -64,7 +64,7 @@ fn script_body(agent_id: &str, version: u32) -> Result<String> {
 # Managed by nasiko - do not edit. nasiko-hook-version: {version}
 # Captures this session's completed turns for Nasiko.
 mkdir -p {log_dir}
-{exe} integration report --agent {agent_id} >>{log} 2>&1 || true
+{exe} agents report --agent {agent_id} >>{log} 2>&1 || true
 exit 0
 "#,
         exe = shell_quote(&exe.to_string_lossy()),
@@ -87,6 +87,7 @@ mod tests {
     fn launcher_is_failure_isolated_and_has_a_version() {
         let body = script_body("claude", 3).unwrap();
         assert!(body.contains("nasiko-hook-version: 3"));
+        assert!(body.contains("agents report --agent 'claude'"));
         assert!(body.contains("|| true"));
         assert!(body.trim_end().ends_with("exit 0"));
     }

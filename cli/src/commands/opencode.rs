@@ -81,15 +81,16 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
     println!("Routing:          nasiko/router");
     println!("Installed plugin: {}", plugin_path.display());
     println!("Restart OpenCode so it loads the new router plugin.");
-    println!("Session reporting is separate: nasiko integration install opencode");
+    println!("Session reporting is separate: nasiko agents install opencode");
     Ok(())
 }
 
-pub fn disconnect() -> Result<()> {
+pub fn disconnect(force: bool) -> Result<()> {
     let Some(state) = load_state()? else {
         println!("OpenCode routing is not connected to Nasiko.");
         return Ok(());
     };
+    coding_agent_router::disconnect_preflight("OpenCode", &["opencode"], force)?;
     remove_managed_plugin_or_preserve(&state.plugin_path)?;
     let path = state_path();
     if path.exists() {
