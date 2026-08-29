@@ -6,7 +6,8 @@
  * @attr {string} description - Supporting description text
  * @attr {string} icon - SVG markup string for the icon (alternative to slot).
  *   Deliberately NOT escaped: it is markup by contract. That makes it a sink,
- *   so a generated surface may not set it — see weave-surface/validate.js.
+ *   so a generated surface may not set it — it is withheld from the DSL
+ *   vocabulary in common/surface/dsl-overrides.json. Use the `icon` slot.
  * @slot [slot="icon"] - Element to use as the icon
  * @slot default - Action elements (e.g. a button)
  */

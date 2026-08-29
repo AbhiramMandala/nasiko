@@ -57,7 +57,8 @@ mcp-page,
 observability-session-page,
 resources-page,
 settings-page,
-tokenops-page {
+tokenops-page,
+weave-page {
   display: block;
   padding: var(--s-24) var(--s-32);
 }
