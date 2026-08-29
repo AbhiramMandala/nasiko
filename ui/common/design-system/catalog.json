@@ -254,10 +254,22 @@
         }
       },
       "slots": [
-        "leading",
-        "actions",
-        "body",
-        "footer"
+        {
+          "name": "leading",
+          "attribute": "slot"
+        },
+        {
+          "name": "actions",
+          "attribute": "slot"
+        },
+        {
+          "name": "body",
+          "attribute": "slot"
+        },
+        {
+          "name": "footer",
+          "attribute": "slot"
+        }
       ],
       "events": []
     },
@@ -488,8 +500,14 @@
         }
       },
       "slots": [
-        "icon",
-        "default"
+        {
+          "name": "icon",
+          "attribute": "slot"
+        },
+        {
+          "name": "default",
+          "attribute": null
+        }
       ],
       "events": []
     },
@@ -651,7 +669,16 @@
           "description": ""
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "trailing",
+          "attribute": "data-slot"
+        }
+      ],
       "events": [
         {
           "name": "input",
@@ -682,8 +709,14 @@
         }
       },
       "slots": [
-        "default",
-        "footer"
+        {
+          "name": "default",
+          "attribute": null
+        },
+        {
+          "name": "footer",
+          "attribute": "data-slot"
+        }
       ],
       "events": []
     },
@@ -854,7 +887,16 @@
           "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "trailing",
+          "attribute": "data-slot"
+        }
+      ],
       "events": [
         {
           "name": "input",
@@ -927,7 +969,10 @@
         }
       },
       "slots": [
-        "leading"
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        }
       ],
       "events": [
         {
@@ -1266,8 +1311,14 @@
         }
       },
       "slots": [
-        "start",
-        "end"
+        {
+          "name": "start",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "end",
+          "attribute": "data-slot"
+        }
       ],
       "events": []
     },

@@ -111,7 +111,9 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     attributes,
     slots: def.slots ?? [],
     events: def.events ?? [],
-    ...(ov.propAssignments && { propAssignments: ov.propAssignments }),
+    ...(ov.dataProp && { dataProp: ov.dataProp }),
+    ...(ov.dataAsFetcher && { dataAsFetcher: true }),
+    ...(ov.actionEvent && { actionEvent: ov.actionEvent }),
     ...(ov.note && { note: ov.note }),
   };
 }

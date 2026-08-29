@@ -144,10 +144,29 @@ function typeOf(name, declared, desc) {
   return out;
 }
 
-/** Normalise the several `@slot` spellings to a slot name. */
-function slotName(raw) {
+/**
+ * Read a `@slot` line into a name and the attribute that carries it.
+ *
+ * The design system is not uniform about this: `app-card` and
+ * `app-empty-state` read `slot="…"`, while `app-modal`, `app-toolbar`,
+ * `app-select`, `app-input` and `app-search` read `data-slot="…"`. A consumer
+ * that has only the name has to guess, and half its guesses put the child in
+ * the wrong place silently. `@slot default` means the unnamed child position,
+ * which no attribute marks.
+ */
+function slotEntry(raw) {
   const m = raw.match(/\[data-slot="([\w-]+)"\]|\[slot="([\w-]+)"\]|^([\w-]+)/);
-  return m ? m[1] || m[2] || m[3] : null;
+  if (!m) return null;
+  if (m[1]) return { name: m[1], attribute: 'data-slot' };
+  if (m[2]) return { name: m[2], attribute: 'slot' };
+  return m[3] === 'default' ? { name: 'default', attribute: null } : { name: m[3], attribute: 'slot' };
+}
+
+/** First entry wins per slot name. */
+function dedupeSlots(entries) {
+  const byName = new Map();
+  for (const e of entries) if (e && !byName.has(e.name)) byName.set(e.name, e);
+  return [...byName.values()];
 }
 
 /** Parse one component file. Returns null when it defines no custom element. */
@@ -239,7 +258,7 @@ function parseComponent(file) {
 
   const slots = lines
     .filter((l) => l.startsWith('@slot'))
-    .map((l) => slotName(l.slice('@slot'.length).trim()))
+    .map((l) => slotEntry(l.slice('@slot'.length).trim()))
     .filter(Boolean);
 
   const events = lines
@@ -260,7 +279,7 @@ function parseComponent(file) {
     source: relative(UI, file),
     attributes,
     ...(excluded.length ? { excludedFromCatalog: excluded } : {}),
-    slots: [...new Set(slots)],
+    slots: dedupeSlots(slots),
     events,
   };
 }

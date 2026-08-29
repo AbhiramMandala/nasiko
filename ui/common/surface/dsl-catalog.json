@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "68bf0211a233",
+  "catalogVersion": "bb2bb4b4901a",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 26,
@@ -284,10 +284,22 @@
         }
       },
       "slots": [
-        "leading",
-        "actions",
-        "body",
-        "footer"
+        {
+          "name": "leading",
+          "attribute": "slot"
+        },
+        {
+          "name": "actions",
+          "attribute": "slot"
+        },
+        {
+          "name": "body",
+          "attribute": "slot"
+        },
+        {
+          "name": "footer",
+          "attribute": "slot"
+        }
       ],
       "events": []
     },
@@ -372,7 +384,8 @@
       },
       "slots": [],
       "events": [],
-      "note": "First positional argument is the chart data. Two shapes by `type`: canvas forms (line/bar/donut) need Chart.js {labels, datasets}; row forms (hbar/progress) take a bare array of {label, value}. The renderer must not coerce between them."
+      "dataProp": "data",
+      "note": "Chart data is a JS property, not an attribute (app-chart.js:189). Two shapes by `type`: canvas forms (line/bar/donut) need Chart.js {labels, datasets}; row forms (hbar/progress) take a bare array of {label, value}. The renderer passes it through unchanged."
     },
     "app-chatbox": {
       "element": "app-chatbox",
@@ -554,8 +567,14 @@
         }
       },
       "slots": [
-        "icon",
-        "default"
+        {
+          "name": "icon",
+          "attribute": "slot"
+        },
+        {
+          "name": "default",
+          "attribute": null
+        }
       ],
       "events": []
     },
@@ -742,7 +761,16 @@
           "description": ""
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "trailing",
+          "attribute": "data-slot"
+        }
+      ],
       "events": [
         {
           "name": "input",
@@ -771,8 +799,14 @@
         }
       },
       "slots": [
-        "default",
-        "footer"
+        {
+          "name": "default",
+          "attribute": null
+        },
+        {
+          "name": "footer",
+          "attribute": "data-slot"
+        }
       ],
       "events": []
     },
@@ -977,7 +1011,16 @@
           "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "trailing",
+          "attribute": "data-slot"
+        }
+      ],
       "events": [
         {
           "name": "input",
@@ -1065,7 +1108,10 @@
         }
       },
       "slots": [
-        "leading"
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        }
       ],
       "events": [
         {
@@ -1342,7 +1388,10 @@
           "name": "loading-end",
           "description": "After each fetch — bubbles."
         }
-      ]
+      ],
+      "dataProp": "dataFn",
+      "dataAsFetcher": true,
+      "note": "Rows reach app-table as a fetcher on its `dataFn` property (app-table.js:24,113). Assigning the property avoids registering a synthetic source in the app-wide data-sources registry on every render pass — which never got unregistered and could collide with a real name."
     },
     "app-tag": {
       "element": "app-tag",
@@ -1424,8 +1473,14 @@
         }
       },
       "slots": [
-        "start",
-        "end"
+        {
+          "name": "start",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "end",
+          "attribute": "data-slot"
+        }
       ],
       "events": [],
       "note": "Only useful with Slot() — its content is entirely start/end slotted."

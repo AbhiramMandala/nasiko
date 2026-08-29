@@ -20,7 +20,10 @@
       "reason": "The renderer registers the resolved rows as a synthetic source and sets data-fn itself. Leaving it settable would let a surface point the table at any registered source and bypass that.",
       "dslExcludeAttributes": [
         "data-fn"
-      ]
+      ],
+      "dataProp": "dataFn",
+      "dataAsFetcher": true,
+      "note": "Rows reach app-table as a fetcher on its `dataFn` property (app-table.js:24,113). Assigning the property avoids registering a synthetic source in the app-wide data-sources registry on every render pass \u2014 which never got unregistered and could collide with a real name."
     },
     "app-modal": {
       "status": "ready",
@@ -89,7 +92,8 @@
     "app-chart": {
       "status": "ready",
       "dataParam": true,
-      "note": "First positional argument is the chart data. Two shapes by `type`: canvas forms (line/bar/donut) need Chart.js {labels, datasets}; row forms (hbar/progress) take a bare array of {label, value}. The renderer must not coerce between them."
+      "note": "Chart data is a JS property, not an attribute (app-chart.js:189). Two shapes by `type`: canvas forms (line/bar/donut) need Chart.js {labels, datasets}; row forms (hbar/progress) take a bare array of {label, value}. The renderer passes it through unchanged.",
+      "dataProp": "data"
     },
     "app-tabs": {
       "status": "blocked",
@@ -139,5 +143,6 @@
       "reason": "Needs a live filter callback through data-sources.js \u2014 not designed yet."
     }
   },
-  "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation."
+  "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation.",
+  "$comment4": "dataProp names the JS property a dataParam is assigned to; dataAsFetcher wraps the rows in an async () => ({data, total}) first. actionEvent overrides the event an Action is bound to \u2014 the default is the component's own 'change'/'input' event when it declares one, else 'click'."
 }

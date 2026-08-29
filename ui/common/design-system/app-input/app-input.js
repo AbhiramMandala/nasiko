@@ -29,6 +29,8 @@
  * @prop {string} value - Get/set the current value.
  * @prop {HTMLInputElement} input - The inner input, for focus() and validation.
  * @fires input|change - Native events bubble from the inner input.
+ * @slot [data-slot="leading"] - Glyph or control before the input.
+ * @slot [data-slot="trailing"] - Glyph or control after the input.
  * @note Icons go in `<span data-slot="leading">` / `data-slot="trailing"`
  *       children; the component sizes them — 16px at size md, 12px at sm — so
  *       pass a bare `icons.search()` and don't set a size at the call site.

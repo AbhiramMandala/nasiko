@@ -29,6 +29,8 @@
  *   after the clear button empties it.
  * @fires search-clear - After the clear button runs, for call sites that want the
  *   clear itself rather than "value became empty".
+ * @slot [data-slot="leading"] - Replaces the default search glyph.
+ * @slot [data-slot="trailing"] - Replaces the default clear control.
  * @note Glyphs are 16px at md, 12px at sm, sized by the component — pass a bare
  *   `icons.x()`. Swap either by passing a `<span data-slot="leading">` /
  *   `"trailing"` child; trailing is the clear button's glyph, and it still clears.
