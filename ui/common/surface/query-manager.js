@@ -17,32 +17,61 @@ export function getPath(obj, path) {
   return path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
 }
 
+/** Bounded retry budget for a permanently-failing query — without this, a
+ * query whose source always errors (bad args, backend down) refires on
+ * every single re-render forever, since a failure was never cached as
+ * "settled" before this fix (confirmed live: 6,591 real requests in under a
+ * minute for one broken query). Backoff delays are indexed by attempt
+ * number; the last entry repeats for any attempt beyond its length. */
+const MAX_QUERY_ATTEMPTS = 4;
+const RETRY_BACKOFF_MS = [0, 500, 1500, 4000];
+
 /**
  * For each query not already cached or in flight: marks it in flight, calls
  * `toolProvider(toolName, args)`, applies `getPath` if a `path` was given,
  * caches the resolved value, and calls `onSettled()` once settled (success
  * or failure) so the caller can re-render with the real value in place.
+ *
+ * A failing query is retried with backoff up to `MAX_QUERY_ATTEMPTS` times,
+ * tracked per `statementId` in `failures`, then left permanently unresolved
+ * (the caller's declared default keeps showing, no further requests fire).
+ * `@Run`ning the same statement again resets its budget — see
+ * `invalidateQueries` in poc.html, which must clear `failures` alongside
+ * `cache` or a re-triggered fetch could be silently skipped as "given up".
+ *
  * @param {Array<{statementId, toolName, args, path}>} queries
  * @param {Map<string, any>} cache statementId -> resolved value
  * @param {Set<string>} inFlight
  * @param {(toolName: string, args: any[]) => Promise<any>} toolProvider
  * @param {() => void} onSettled
+ * @param {Map<string, number>} [failures] statementId -> attempt count
  */
-export function resolvePendingQueries(queries, cache, inFlight, toolProvider, onSettled) {
+export function resolvePendingQueries(queries, cache, inFlight, toolProvider, onSettled, failures = new Map()) {
   for (const q of queries) {
     if (cache.has(q.statementId) || inFlight.has(q.statementId)) continue;
+    const attempt = failures.get(q.statementId) || 0;
+    if (attempt >= MAX_QUERY_ATTEMPTS) continue;
     inFlight.add(q.statementId);
-    toolProvider(q.toolName, q.args)
-      .then((result) => {
-        cache.set(q.statementId, getPath(result, q.path));
-      })
-      .catch((err) => {
-        console.warn(`query-manager: query "${q.toolName}" failed for ${q.statementId}:`, err);
-      })
-      .finally(() => {
-        inFlight.delete(q.statementId);
-        onSettled();
-      });
+    const run = () => {
+      toolProvider(q.toolName, q.args)
+        .then((result) => {
+          cache.set(q.statementId, getPath(result, q.path));
+          failures.delete(q.statementId);
+        })
+        .catch((err) => {
+          const next = attempt + 1;
+          failures.set(q.statementId, next);
+          const label = next >= MAX_QUERY_ATTEMPTS ? 'giving up' : `will retry (${next}/${MAX_QUERY_ATTEMPTS})`;
+          console.warn(`query-manager: query "${q.toolName}" failed for ${q.statementId} — ${label}:`, err);
+        })
+        .finally(() => {
+          inFlight.delete(q.statementId);
+          onSettled();
+        });
+    };
+    const delay = RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)];
+    if (delay > 0) setTimeout(run, delay);
+    else run();
   }
 }
 

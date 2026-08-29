@@ -35,6 +35,53 @@ function serializeLiveValue(value) {
   return null;
 }
 
+/** Shared reachability walk from `root`, plus every `$state` id (always
+ * kept regardless of reachability). Used by both `pruneUnreachable` (drops
+ * unreachable statements silently, by design — that's how GC works) and
+ * `unreachableStatements` (reports them, for a caller that wants to warn
+ * instead of silently accept — e.g. a button the model defined but forgot
+ * to wire into any children array, which otherwise fails with zero visible
+ * error: it's simply absent from the render, indistinguishable from "the
+ * model chose not to build it"). */
+function computeReachable(statements, byId) {
+  const reachable = new Set();
+  const queue = ['root'];
+  while (queue.length) {
+    const id = queue.pop();
+    if (reachable.has(id) || !byId.has(id)) continue;
+    reachable.add(id);
+    walkAstRefs(byId.get(id).ast, (kind, name) => { if (kind === 'ref') queue.push(name); });
+  }
+  for (const s of statements) {
+    if (s.id.startsWith('$')) reachable.add(s.id); // $state always kept
+  }
+  return reachable;
+}
+
+/**
+ * Names of statements NOT reachable from `root` (excluding `$state` ids,
+ * which are never considered orphaned). Diagnostic only — does not affect
+ * rendering or what gets sent back to the model; call this after a turn
+ * finishes and log a warning so an orphaned component is diagnosable
+ * instead of silently invisible.
+ * @param {string} fullText
+ * @returns {string[]} unreachable statement ids, in declaration order
+ */
+export function unreachableStatements(fullText) {
+  const { statements } = parseBuffer(fullText);
+  const byId = new Map();
+  for (const s of statements) byId.set(s.id, s);
+  const reachable = computeReachable(statements, byId);
+  const seen = new Set();
+  const out = [];
+  for (const s of statements) {
+    if (seen.has(s.id) || reachable.has(s.id)) continue;
+    seen.add(s.id);
+    out.push(s.id);
+  }
+  return out;
+}
+
 /**
  * @param {string} fullText
  * @param {{get: (name: string) => any, has: (name: string) => boolean}} [store]
@@ -48,17 +95,7 @@ export function pruneUnreachable(fullText, store) {
   const byId = new Map();
   for (const s of statements) byId.set(s.id, s); // latest-wins, matches materialize.js's own symbol rule
 
-  const reachable = new Set();
-  const queue = ['root'];
-  while (queue.length) {
-    const id = queue.pop();
-    if (reachable.has(id) || !byId.has(id)) continue;
-    reachable.add(id);
-    walkAstRefs(byId.get(id).ast, (kind, name) => { if (kind === 'ref') queue.push(name); });
-  }
-  for (const s of statements) {
-    if (s.id.startsWith('$')) reachable.add(s.id); // $state always kept
-  }
+  const reachable = computeReachable(statements, byId);
 
   const seen = new Set();
   const out = [];

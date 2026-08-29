@@ -475,6 +475,13 @@ async fn orchestrator_stream(
         }
 
         let mut content_started = false;
+        // A `Usage` event carries no agent reference (it's the orchestrator's
+        // own reasoning-LLM call, evidence: react_loop.rs emits `Usage`
+        // immediately before the `ToolCall` it produces, same turn) — held
+        // here so the *next* event can attach the selected agent's real id
+        // before the DB insert, giving `usage/by-agent` real attribution
+        // instead of every orchestrator-tracked row being agent_id NULL.
+        let mut pending_usage: Option<(u64, u64, String, bool)> = None;
 
         loop {
             tokio::select! {
@@ -488,6 +495,39 @@ async fn orchestrator_stream(
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
                         OrchestratorEvent::ToolCall { agent, message, turn } => {
+                            // This ToolCall is the direct result of the reasoning
+                            // turn `pending_usage` was reported for — attach the
+                            // agent it resolved to before inserting.
+                            if let Some((it, ot, m, est)) = pending_usage.take() {
+                                let tracker = usage_tracker.clone();
+                                let uid = user_id;
+                                let fid = flow_id_cleanup.clone();
+                                let db2 = db.clone();
+                                let agent_name = agent.clone();
+                                tokio::spawn(async move {
+                                    let agent_uuid: Option<Uuid> = sqlx::query_scalar(
+                                        "SELECT id FROM agents WHERE name = $1 AND status = 'running'",
+                                    )
+                                    .bind(&agent_name)
+                                    .fetch_optional(&db2)
+                                    .await
+                                    .ok()
+                                    .flatten();
+
+                                    let mut builder = TokenUsageBuilder::new(uid, "orchestrator", "openai", &m)
+                                        .tokens(it as i32, ot as i32)
+                                        .session_id(&fid)
+                                        .streaming(false)
+                                        .metadata(json!({"key_source": "platform", "estimated": est}));
+                                    if let Some(aid) = agent_uuid {
+                                        builder = builder.agent_id(aid);
+                                    }
+                                    if let Err(e) = tracker.track_tokens(builder.build()).await {
+                                        tracing::warn!(error = %e, "failed to track orchestrator token usage (tool-call turn)");
+                                    }
+                                });
+                            }
+
                             let _ = sqlx::query(
                                 r#"INSERT INTO flow_steps (flow_id, step_order, depth, agent_name, caller_agent_name, input_summary, status, created_at)
                                    VALUES ($1, $2, 1, $3, 'orchestrator', $4, 'running', now())"#,
@@ -563,30 +603,29 @@ async fn orchestrator_stream(
                         OrchestratorEvent::Usage { input_tokens, output_tokens, model, estimated } => {
                             turn_usage.add(input_tokens, output_tokens, &model, estimated);
 
-                            // Fire-and-forget: track token usage in DB
-                            let tracker = usage_tracker.clone();
-                            let uid = user_id;
-                            let fid = flow_id_cleanup.clone();
-                            let m = model.clone();
-                            tokio::spawn(async move {
-                                let usage = TokenUsageBuilder::new(
-                                    uid,
-                                    "orchestrator",
-                                    "openai",
-                                    &m,
-                                )
-                                .tokens(input_tokens as i32, output_tokens as i32)
-                                .session_id(&fid)
-                                .streaming(false)
-                                .metadata(json!({
-                                    "key_source": "platform",
-                                    "estimated": estimated,
-                                }))
-                                .build();
-                                if let Err(e) = tracker.track_tokens(usage).await {
-                                    tracing::warn!(error = %e, "failed to track orchestrator token usage");
-                                }
-                            });
+                            // Flush a previous turn's usage that never got a
+                            // following ToolCall (e.g. a final synthesis-only
+                            // turn that just answers directly) — unattributed,
+                            // same as before this change.
+                            if let Some((it, ot, m, est)) = pending_usage.take() {
+                                let tracker = usage_tracker.clone();
+                                let uid = user_id;
+                                let fid = flow_id_cleanup.clone();
+                                tokio::spawn(async move {
+                                    let usage = TokenUsageBuilder::new(uid, "orchestrator", "openai", &m)
+                                        .tokens(it as i32, ot as i32)
+                                        .session_id(&fid)
+                                        .streaming(false)
+                                        .metadata(json!({"key_source": "platform", "estimated": est}))
+                                        .build();
+                                    if let Err(e) = tracker.track_tokens(usage).await {
+                                        tracing::warn!(error = %e, "failed to track orchestrator token usage");
+                                    }
+                                });
+                            }
+                            // Hold this turn's usage — the ToolCall arm above
+                            // attaches the real agent_id if one follows.
+                            pending_usage = Some((input_tokens, output_tokens, model.clone(), estimated));
 
                             // Also record in OTel GenAI metrics
                             genai_metrics.record_tokens(
@@ -674,6 +713,21 @@ async fn orchestrator_stream(
                     let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(serde_json::to_value(&fe).unwrap_or_default()));
                     yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                 }
+            }
+        }
+
+        // Stream ended (Done/Error/channel-closed) with a still-unflushed
+        // final turn's usage (no ToolCall ever followed it) — flush it here,
+        // unattributed, so it's never silently dropped.
+        if let Some((it, ot, m, est)) = pending_usage.take() {
+            let usage = TokenUsageBuilder::new(user_id, "orchestrator", "openai", &m)
+                .tokens(it as i32, ot as i32)
+                .session_id(&flow_id_cleanup)
+                .streaming(false)
+                .metadata(json!({"key_source": "platform", "estimated": est}))
+                .build();
+            if let Err(e) = usage_tracker.track_tokens(usage).await {
+                tracing::warn!(error = %e, "failed to track orchestrator token usage (final flush)");
             }
         }
 

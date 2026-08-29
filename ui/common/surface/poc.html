@@ -235,7 +235,7 @@
       import { render } from './render.js';
       import { resolvePendingQueries, fireMutation, triggerAction } from './query-manager.js';
       import { createStore } from './store.js';
-      import { pruneUnreachable } from './gc.js';
+      import { pruneUnreachable, unreachableStatements } from './gc.js';
       import { call } from '../core/data-sources.js';
 
       const catalog = await (await fetch('./dsl-catalog.json')).json();
@@ -275,9 +275,10 @@
         const statusEl = document.getElementById('login-status');
         statusEl.textContent = 'logging in…';
         try {
-          const resp = await fetch('/api/auth/login', {
+          const resp = await fetch(`${window.nasikoConfig?.apiBase || ''}/api/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({ username, password }),
           });
           if (resp.ok) {
@@ -303,6 +304,7 @@
       store.subscribe(() => renderPreview());
       const queryCache = new Map();
       const queryInFlight = new Set();
+      const queryFailures = new Map(); // statementId -> attempt count, see query-manager.js
       const mutationResults = new Map();
       let currentSurfaceText = '';
       let buffer = '';
@@ -333,13 +335,50 @@
         return lines.filter((l) => l.trim() && !DSL_STATEMENT_START.test(l)).join('\n');
       }
 
+      // render() does a full clear-and-rebuild on every pass (no reconciler —
+      // a deliberate, documented simplification). That was invisible for
+      // text input as long as typing never triggered a real re-render (the
+      // $event fix changes that: a keystroke now genuinely changes state).
+      // Confirmed live: typing a single character into a real search box
+      // lost focus entirely (`document.activeElement` fell back to `<body>`)
+      // because the rebuild replaces the `<input>` node outright. This
+      // captures which element had focus (by child-index path, since the
+      // rebuilt tree has the same shape when only data changed) and its
+      // cursor position, and restores both on the new element after render.
+      function capturePathTo(root, el) {
+        const path = [];
+        let node = el;
+        while (node && node !== root) {
+          const parent = node.parentElement;
+          if (!parent) return null;
+          path.unshift(Array.prototype.indexOf.call(parent.children, node));
+          node = parent;
+        }
+        return node === root ? path : null;
+      }
+      function resolvePath(root, path) {
+        let node = root;
+        for (const idx of path) {
+          node = node?.children?.[idx];
+          if (!node) return null;
+        }
+        return node;
+      }
+
       function renderPreview() {
         previewBody.style.opacity = isAnyLoading() ? '0.65' : '1';
         const { statements } = parseBuffer(buffer);
         const { root, unresolved, queries, mutationDefs, errors } = materialize(
           statements, componentIndex, queryCache, mutationResults, store,
         );
-        render(root, ensurePreviewRoot(), catalog, {
+        const container = ensurePreviewRoot();
+        const active = document.activeElement;
+        const focused = active && container.contains(active) ? active : null;
+        const focusPath = focused ? capturePathTo(container, focused) : null;
+        const selStart = focused && 'selectionStart' in focused ? focused.selectionStart : null;
+        const selEnd = focused && 'selectionEnd' in focused ? focused.selectionEnd : null;
+
+        render(root, container, catalog, {
           triggerAction: (action, evalCtx, deps) => triggerAction(action, evalCtx, deps),
           evalCtx: () => buildEvalContext(statements, componentIndex, queryCache, mutationResults, store),
           deps: () => ({
@@ -347,7 +386,10 @@
             mutationDefs,
             mutationResults,
             toolProvider,
-            invalidateQueries: (ids) => { for (const id of ids) queryCache.delete(id); renderPreview(); },
+            invalidateQueries: (ids) => {
+              for (const id of ids) { queryCache.delete(id); queryFailures.delete(id); }
+              renderPreview();
+            },
             store,
             onSettled: renderPreview,
             sendToAssistant: (message) => sendPrompt(message, { synthetic: true }),
@@ -356,9 +398,18 @@
           }),
           onError: (errs) => { if (errs.length) console.warn('surface errors:', errs); },
         });
+        if (focusPath) {
+          const newFocused = resolvePath(container, focusPath);
+          if (newFocused && typeof newFocused.focus === 'function') {
+            newFocused.focus();
+            if (selStart !== null && typeof newFocused.setSelectionRange === 'function') {
+              try { newFocused.setSelectionRange(selStart, selEnd); } catch { /* not a text-selectable input */ }
+            }
+          }
+        }
         if (errors.length) console.warn('materializer errors:', errors);
         previewHint.textContent = unresolved.length ? `waiting on: ${unresolved.join(', ')}` : 'up to date';
-        resolvePendingQueries(queries, queryCache, queryInFlight, toolProvider, renderPreview);
+        resolvePendingQueries(queries, queryCache, queryInFlight, toolProvider, renderPreview, queryFailures);
       }
 
       // ─── Chat transcript UI ─────────────────────────────────────────────
@@ -475,6 +526,7 @@
           return;
         }
 
+        const preTurnText = currentSurfaceText;
         buffer = currentSurfaceText;
         let sawFail = false;
         for await (const { event, data } of readSse(response)) {
@@ -486,6 +538,34 @@
             continue;
           }
           if (event === 'end') {
+            // Detect >1 `root =` line within THIS turn's own streamed text
+            // only (never across turns — a revision turn legitimately
+            // re-emits root every time, that's how revision works at all).
+            // Confirmed live: the model can emit an early "starter" root and
+            // a later "final" root in the same response; same-name-overwrite
+            // then silently drops anything only reachable via the first one
+            // (e.g. a modal), with zero visible error.
+            const thisTurnText = buffer.slice(preTurnText.length);
+            const rootCount = (thisTurnText.match(/^\s*root\s*=/gm) || []).length;
+            if (rootCount > 1) {
+              console.warn(
+                `surface: this turn emitted ${rootCount} "root =" statements — only the LAST one ` +
+                  'takes effect; anything only reachable from an earlier root is now permanently ' +
+                  'unreachable and will not render.',
+              );
+            }
+            // A component the model defined but never wired into any
+            // children array fails with zero visible error — it's simply
+            // absent from the render, indistinguishable from "chose not to
+            // build it". Confirmed live: a modal-opening button omitted
+            // from root's tree while everything else rendered normally.
+            const orphaned = unreachableStatements(buffer).filter((id) => !id.startsWith('$'));
+            if (orphaned.length) {
+              console.warn(
+                `surface: ${orphaned.length} statement(s) defined but not reachable from root — ` +
+                  `they will never render: ${orphaned.join(', ')}`,
+              );
+            }
             currentSurfaceText = pruneUnreachable(buffer, store);
             const { statements } = parseBuffer(currentSurfaceText);
             // One final pass over the FULL buffer (not the last completed

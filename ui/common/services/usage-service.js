@@ -25,13 +25,26 @@ const fetchUsageHistory = async (days = 7) => {
   return fetchApi(`/usage/history?days=${days}`);
 };
 
+// `page`/`limit` are optional — a caller that omits them (e.g. a dashboard's
+// first render, before any pagination control exists) used to serialize the
+// literal strings "undefined"/"NaN" into the query string, which the real
+// backend's `i64` deserializer always 400s on. Default to a full first page.
+const DEFAULT_PAGE_LIMIT = 20;
+
+// `??` (not a default param) so an explicit `null` — e.g. `Query(..., [null,
+// null])` to skip both positionally — is defaulted too, not just an omitted
+// (`undefined`) argument.
 const fetchUsageByAgent = async (query, page, limit) => {
-  const params = new URLSearchParams({ q: query || '', limit, offset: ((page || 1) - 1) * limit });
+  const p = page ?? 1;
+  const l = limit ?? DEFAULT_PAGE_LIMIT;
+  const params = new URLSearchParams({ q: query || '', limit: l, offset: (p - 1) * l });
   return fetchApi(`/usage/by-agent?${params}`);
 };
 
 const fetchUsageByModel = async (query, page, limit) => {
-  const params = new URLSearchParams({ q: query || '', limit, offset: ((page || 1) - 1) * limit });
+  const p = page ?? 1;
+  const l = limit ?? DEFAULT_PAGE_LIMIT;
+  const params = new URLSearchParams({ q: query || '', limit: l, offset: (p - 1) * l });
   return fetchApi(`/usage/by-model?${params}`);
 };
 
