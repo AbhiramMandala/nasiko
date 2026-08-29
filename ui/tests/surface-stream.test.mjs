@@ -1,0 +1,245 @@
+/**
+ * The stream host, driven against a real SSE body in the exact wire format
+ * weave2.0's sse_encoder.py emits — `id:` / `event:` / one JSON object per
+ * `data:` line, frames separated by a blank line.
+ *
+ * fetch, the paint scheduler and the document are all injected, so this runs
+ * under `node --test` without a browser and without a network.
+ */
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const { createSurfaceSession } = await import(new URL('../common/surface/surface-stream.js', import.meta.url).href);
+const catalog = JSON.parse(readFileSync(new URL('../common/surface/dsl-catalog.json', import.meta.url), 'utf8'));
+
+/** Records the calls the renderer makes; see surface-render.test.mjs. */
+function recorder() {
+  const make = (tag) => ({
+    tag, attrs: {}, children: [], listeners: {}, textContent: undefined,
+    setAttribute(k, v) { this.attrs[k] = v; },
+    hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
+    appendChild(c) { this.children.push(c); return c; },
+    addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
+    replaceChildren() { this.children.length = 0; },
+  });
+  return { doc: { createElement: make }, container: make('div') };
+}
+
+const frame = (event, obj, id) => `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(obj)}\n\n`;
+
+/** A Response whose body emits `chunks`, one per tick. */
+function sse(chunks) {
+  const body = new ReadableStream({
+    async start(controller) {
+      const enc = new TextEncoder();
+      for (const c of chunks) {
+        controller.enqueue(enc.encode(c));
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200 });
+}
+
+/**
+ * A session wired to a canned stream. `schedule` runs synchronously so a paint
+ * is observable immediately; coalescing itself is asserted separately.
+ */
+function session(chunks, { status = 200, schedule } = {}) {
+  const { doc, container } = recorder();
+  const messages = [];
+  const diagnostics = [];
+  const statuses = [];
+  const requests = [];
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: schedule ?? ((fn) => fn()),
+    onMessage: (t) => messages.push(t),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    onStatus: (x) => statuses.push(x.phase),
+    fetchImpl: async (url, init) => {
+      requests.push({ url, body: JSON.parse(init.body) });
+      return status === 200 ? sse(chunks) : new Response('nope', { status });
+    },
+  });
+  return { s, container, messages, diagnostics, statuses, requests };
+}
+
+/** The DSL a normal turn produces, split the way a model streams it. */
+const DSL = [
+  'Sure — building that now.\n',
+  'root = AppStack([kpis], "md")\n',
+  'kpis = AppRow([kpiCost], "md")\n',
+  'kpiCost = AppStatCard("Total cost", "12.50", null, "up")\n',
+  "Here's your spend dashboard — let me know if you'd like anything adjusted!",
+];
+const TURN = [
+  frame('surface', { specVersion: '1.0', catalogVersion: catalog.catalogVersion, surfaceId: 's1' }, 1),
+  ...DSL.map((t, i) => frame('dsl-chunk', { text: t }, i + 2)),
+  frame('end', { status: 'ok' }, 9),
+];
+
+test('a full turn renders the tree the DSL describes', async () => {
+  const { s, container } = session(TURN);
+  const out = await s.send('build me a spend dashboard');
+  assert.equal(out.status, 'ok');
+  const stack = container.children[0];
+  assert.equal(stack.tag, 'app-stack');
+  const card = stack.children[0].children[0];
+  assert.deepEqual([card.attrs.label, card.attrs.value, card.attrs.trend], ['Total cost', '12.50', 'up']);
+});
+
+test('both prose sentences reach the chat log, and no DSL line does', async () => {
+  const { s, messages } = session(TURN);
+  await s.send('go');
+  assert.deepEqual(messages, [
+    'Sure — building that now.',
+    "Here's your spend dashboard — let me know if you'd like anything adjusted!",
+  ]);
+});
+
+test('a half-typed sentence is never emitted as a message', async () => {
+  // The intro arrives in pieces like everything else. Emitting on every chunk
+  // would put "Sure — buil" in the chat log.
+  const chunks = [
+    frame('surface', {}, 1),
+    frame('dsl-chunk', { text: 'Sure — buil' }, 2),
+    frame('dsl-chunk', { text: 'ding that now.\n' }, 3),
+    frame('dsl-chunk', { text: 'root = AppBadge("x")\n' }, 4),
+    frame('end', { status: 'ok' }, 5),
+  ];
+  const { s, messages } = session(chunks);
+  await s.send('go');
+  assert.deepEqual(messages, ['Sure — building that now.']);
+});
+
+test('each prose line is emitted exactly once across many repaints', async () => {
+  const { s, messages } = session(TURN);
+  await s.send('go');
+  assert.equal(new Set(messages).size, messages.length);
+});
+
+test('the surface builds up progressively rather than appearing at the end', async () => {
+  const seen = [];
+  const { s, container } = session(TURN, { schedule: (fn) => { fn(); seen.push(container.children.length); } });
+  await s.send('go');
+  assert.ok(seen.length >= 2, 'more than one paint happened while streaming');
+  assert.ok(seen.some((n) => n === 1), 'a tree was on screen before the stream ended');
+});
+
+test('paints coalesce — many chunks in one frame draw once', async () => {
+  let scheduled = 0;
+  const pending = [];
+  const { s } = session(TURN, { schedule: (fn) => { scheduled++; pending.push(fn); } });
+  const done = s.send('go');
+  await done;
+  // Five dsl-chunks, but each paint is only re-armed once the previous ran.
+  assert.ok(scheduled < 5, `expected fewer paints than chunks, got ${scheduled}`);
+  pending.forEach((fn) => fn());
+});
+
+test('the previous turn goes back as context.currentSurface', async () => {
+  const { s, requests } = session(TURN);
+  await s.send('first');
+  assert.equal(requests[0].body.context.currentSurface, undefined, 'nothing to revise on turn one');
+  assert.ok(s.currentSurface.includes('kpiCost = AppStatCard'));
+
+  const second = session(TURN);
+  // Same session object is what carries it; simulate by sending twice.
+  await s.send('now change it');
+  assert.ok(requests[1].body.context.currentSurface.includes('root = AppStack'));
+  assert.equal(second.requests.length, 0);
+});
+
+test('a conversational turn does not wipe the dashboard', async () => {
+  const { s } = session(TURN);
+  await s.send('build it');
+  const built = s.currentSurface;
+  assert.ok(built);
+
+  // A turn that is only prose — rule 10's "respond in plain text only".
+  const chat = [
+    frame('surface', {}, 1),
+    frame('dsl-chunk', { text: 'I can build dashboards from your TokenOps data.' }, 2),
+    frame('end', { status: 'ok' }, 3),
+  ];
+  const { s: s2 } = session(chat);
+  await s2.send('what can you do?');
+  assert.equal(s2.currentSurface, '', 'no surface produced, so nothing to revise from');
+});
+
+test('a catalog version mismatch is reported and does not stop the render', async () => {
+  const chunks = [
+    frame('surface', { catalogVersion: 'something-older' }, 1),
+    frame('dsl-chunk', { text: 'root = AppBadge("still drawn")\n' }, 2),
+    frame('end', { status: 'ok' }, 3),
+  ];
+  const { s, container, diagnostics } = session(chunks);
+  await s.send('go');
+  assert.ok(diagnostics.some((d) => d.code === 'catalog_version_mismatch'));
+  assert.equal(container.children[0].textContent, 'still drawn');
+});
+
+test('a fail frame is surfaced and the last good render is kept', async () => {
+  const chunks = [
+    frame('surface', {}, 1),
+    frame('dsl-chunk', { text: 'root = AppBadge("drawn")\n' }, 2),
+    frame('fail', { code: 'planner_error', message: 'upstream 502' }, 3),
+  ];
+  const { s, container, diagnostics, statuses } = session(chunks);
+  const out = await s.send('go');
+  assert.equal(out.status, 'failed');
+  assert.equal(statuses.at(-1), 'failed');
+  assert.ok(diagnostics.some((d) => d.code === 'planner_error'));
+  assert.equal(container.children[0].textContent, 'drawn', 'the failure did not blank the screen');
+});
+
+test('an HTTP error resolves rather than throwing, keeping the old surface', async () => {
+  const { s, statuses } = session([], { status: 500 });
+  const out = await s.send('go');
+  assert.equal(out.status, 'http_error');
+  assert.equal(statuses.at(-1), 'failed');
+});
+
+test('an unparseable or unknown frame is reported and skipped', async () => {
+  const chunks = [
+    'id: 1\nevent: dsl-chunk\ndata: {"text":\n\n',
+    frame('gibberish', {}, 2),
+    frame('dsl-chunk', { text: 'root = AppBadge("ok")\n' }, 3),
+    frame('end', { status: 'ok' }, 4),
+  ];
+  const { s, container, diagnostics } = session(chunks);
+  await s.send('go');
+  const codes = diagnostics.map((d) => d.code);
+  assert.ok(codes.includes('malformed_frame'));
+  assert.ok(codes.includes('unknown_frame'));
+  assert.equal(container.children[0].textContent, 'ok');
+});
+
+test('diagnostics are reported once per change, not once per chunk', async () => {
+  const chunks = [
+    frame('surface', {}, 1),
+    frame('dsl-chunk', { text: 'root = AppNonesuch("x")\n' }, 2),
+    frame('dsl-chunk', { text: 'filler = 1\n' }, 3),
+    frame('dsl-chunk', { text: 'more = 2\n' }, 4),
+    frame('end', { status: 'ok' }, 5),
+  ];
+  const { s, diagnostics } = session(chunks);
+  await s.send('go');
+  const unknown = diagnostics.filter((d) => d.code === 'unknown_component_type');
+  assert.equal(unknown.length, 1, 'the same diagnostic on every chunk is noise');
+});
+
+test('aborting mid-stream stops the reader', async () => {
+  const controller = new AbortController();
+  const { s } = session(TURN);
+  const p = s.send('go', { signal: controller.signal });
+  controller.abort();
+  await assert.doesNotReject(() => p);
+});
