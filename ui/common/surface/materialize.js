@@ -75,6 +75,12 @@ export function materialize(statements, componentIndex, ctx = {}) {
   const queries = [];
   /** @type {Array<{statementId: string, source: string, argsAst: object[]}>} */
   const mutations = [];
+  /**
+   * A statement referenced from two places is evaluated twice — there is no
+   * memoization, deliberately, because a `@Each` body has to be re-evaluated
+   * per row. Declaring it twice would make one dashboard look like two fetches.
+   */
+  const registered = new Set();
   const stateNames = new Set();
   const visiting = new Set();
 
@@ -97,6 +103,29 @@ export function materialize(statements, componentIndex, ctx = {}) {
    * @param {string} statementId the statement this expression belongs to
    * @param {object|null} scope `@Each` loop-variable chain
    */
+  /** Does this subtree read any `$state`? See the Query intercept for why. */
+  function mentionsState(node) {
+    if (!node || typeof node !== 'object') return false;
+    if (node.k === 'StateRef') return true;
+    for (const v of Object.values(node)) {
+      if (Array.isArray(v)) { if (v.some(mentionsState)) return true; }
+      else if (v && typeof v === 'object' && mentionsState(v)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The value a `$name` statement declares. Also the `@Reset` target — which is
+   * why it is computed for every state name at the end, not only on demand.
+   */
+  function declaredValue(name, statementId) {
+    if (!symbols.has(name)) return null;
+    if (visiting.has(name)) { note('cycle', `"${name}" refers to itself`, statementId); return null; }
+    visiting.add(name);
+    try { return evaluate(symbols.get(name), name, null); }
+    finally { visiting.delete(name); }
+  }
+
   function evaluate(node, statementId, scope) {
     if (!node) return null;
 
@@ -106,7 +135,16 @@ export function materialize(statements, componentIndex, ctx = {}) {
       case 'Bool': return node.v;
       case 'Null': return null;
 
-      case 'StateRef': return store.get(node.n) ?? null;
+      case 'StateRef': {
+        // The store first, then the statement that declared it. That fallback
+        // is what makes the *first* paint of a turn correct: `$days = 7` and
+        // `historyQ = Query("fetchUsageHistory", [$days], [])` arrive in the
+        // same chunk, and the query has to fetch 7 rather than fetch null and
+        // then fetch again once something hydrated the store.
+        const held = store.get(node.n);
+        if (held !== undefined) return held;
+        return declaredValue(node.n, statementId);
+      }
 
       case 'Ref': {
         // A loop variable shadows a statement of the same name, which is what
@@ -301,7 +339,17 @@ export function materialize(statements, componentIndex, ctx = {}) {
           note('bad_query', 'Query needs a data-source name as its first argument', statementId);
           return fallback;
         }
-        queries.push({ statementId, source, args, select });
+        // Whether these args read `$state` decides what happens when they
+        // change. agent.yaml rule 5 is explicit that a `$variable` moving must
+        // NOT re-fetch on its own — only `@Run` does that. But a *revision
+        // turn* rewriting `Query("fetchUsageHistory", [30], [])` by hand is a
+        // different thing and should fetch, and both look identical once the
+        // args are evaluated. This flag is what tells them apart.
+        const stateful = mentionsState(node.args[1]);
+        if (!registered.has(statementId)) {
+          registered.add(statementId);
+          queries.push({ statementId, source, args, select, stateful });
+        }
         // Resolved value if the manager has one, otherwise the declared
         // default — which is why a dashboard shows zeroes rather than blanks
         // while its first fetch is in flight.
@@ -314,7 +362,10 @@ export function materialize(statements, componentIndex, ctx = {}) {
           note('bad_mutation', 'Mutation needs a source name as its first argument', statementId);
           return null;
         }
-        mutations.push({ statementId, source, argsAst: node.args[1]?.els ?? [] });
+        if (!registered.has(statementId)) {
+          registered.add(statementId);
+          mutations.push({ statementId, source, argsAst: node.args[1]?.els ?? [] });
+        }
         return mutationResults.get(statementId) ?? { status: 'idle', data: null, error: null };
       }
 
@@ -353,8 +404,19 @@ export function materialize(statements, componentIndex, ctx = {}) {
   function actionStep(step, statementId, scope) {
     const [a, b] = step.args;
     switch (step.name) {
-      case 'Run':
-        return { kind: 'run', ref: a?.k === 'Ref' ? a.n : null };
+      case 'Run': {
+        const ref = a?.k === 'Ref' ? a.n : null;
+        // Evaluating the referenced statement is what *declares* it. A
+        // `Mutation` is normally reachable from root only through the `@Run`
+        // that fires it — nothing renders it — so without this the delete
+        // button would point at a mutation the manager has never heard of.
+        // Cheap: a Query here just re-reads its cached value.
+        if (ref && symbols.has(ref)) evaluate(a, statementId, scope);
+        // The scope travels with the step because a Mutation inside an
+        // `@Each` sends the row that was clicked, and its argument
+        // expressions are evaluated at fire time against that row.
+        return { kind: 'run', ref, scope };
+      }
       case 'Set':
         return { kind: 'set', target: a?.k === 'StateRef' ? a.n : null, valueAst: b ?? null, scope };
       case 'Reset':
@@ -373,12 +435,28 @@ export function materialize(statements, componentIndex, ctx = {}) {
   if (root && root.type === 'element') root.statementId = 'root';
   else if (rootAst) note('root_not_a_component', 'root did not resolve to a component', 'root');
 
+  /**
+   * Every `$name`'s declared value, for `@Reset` and for store hydration.
+   * A name mentioned but never declared maps to null, deliberately: resetting
+   * it should clear it, not leave whatever it happened to hold.
+   */
+  const stateDefaults = new Map();
+  for (const name of stateNames) stateDefaults.set(name, declaredValue(name, name));
+
   return {
     root: root && root.type === 'element' ? root : null,
     unresolved: [...new Set(unresolved)],
     queries,
     mutations,
     states: [...stateNames],
+    stateDefaults,
+    /**
+     * Evaluate an AST fragment against *this* pass's symbols, store and scope.
+     * The action runner needs it: `@Set($v, r.cost)` keeps its value
+     * unevaluated so it can read the row that was actually clicked, and that
+     * row only exists inside the scope chain of the pass that rendered it.
+     */
+    evaluateAst: (node, scope = null) => evaluate(node, 'action', scope),
     diagnostics,
     /** Statement ids reachable from root — what a later prune step keeps. */
     symbols,

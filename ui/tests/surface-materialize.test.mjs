@@ -167,6 +167,7 @@ root = AppStatCard("Total cost", costQ)`;
   assert.equal(pending.root.props.value, 0, 'the default is what stops a blank card mid-fetch');
   assert.deepEqual(pending.queries[0], {
     statementId: 'costQ', source: 'fetchUsageSummary', args: [], select: 'total_cost_usd',
+    stateful: false,
   });
 
   const resolved = run(dsl, { queryResults: new Map([['costQ', 12.5]]) });

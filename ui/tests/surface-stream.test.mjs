@@ -48,12 +48,14 @@ function sse(chunks) {
  * A session wired to a canned stream. `schedule` runs synchronously so a paint
  * is observable immediately; coalescing itself is asserted separately.
  */
-function session(chunks, { status = 200, schedule } = {}) {
+function session(chunks, { status = 200, schedule, answers = {} } = {}) {
   const { doc, container } = recorder();
   const messages = [];
   const diagnostics = [];
   const statuses = [];
   const requests = [];
+  const dataCalls = [];
+  const assistant = [];
   const s = createSurfaceSession({
     endpoint: '/weave/surface',
     catalog,
@@ -63,12 +65,18 @@ function session(chunks, { status = 200, schedule } = {}) {
     onMessage: (t) => messages.push(t),
     onDiagnostics: (d) => diagnostics.push(...d),
     onStatus: (x) => statuses.push(x.phase),
+    onAssistant: (t) => assistant.push(t),
+    call: async (name, ...args) => {
+      dataCalls.push([name, ...args]);
+      const a = answers[name];
+      return typeof a === 'function' ? a(...args) : a;
+    },
     fetchImpl: async (url, init) => {
       requests.push({ url, body: JSON.parse(init.body) });
       return status === 200 ? sse(chunks) : new Response('nope', { status });
     },
   });
-  return { s, container, messages, diagnostics, statuses, requests };
+  return { s, container, messages, diagnostics, statuses, requests, dataCalls, assistant };
 }
 
 /** The DSL a normal turn produces, split the way a model streams it. */
@@ -242,4 +250,74 @@ test('aborting mid-stream stops the reader', async () => {
   const p = s.send('go', { signal: controller.signal });
   controller.abort();
   await assert.doesNotReject(() => p);
+});
+
+// ── Reactivity, end to end through the host ─────────────────────────────────
+
+/** Worked Example 3b: a filter that genuinely reloads. */
+const FILTER = [
+  'Sure — building that now.\n',
+  '$days = 7\n',
+  'historyQ = Query("fetchUsageHistory", [$days], [])\n',
+  'showThirty = Action([@Set($days, 30), @Run(historyQ)])\n',
+  'btn = AppButton("30 days", "primary", "md", false, false, false, "button", null, null, null, showThirty)\n',
+  'chart = AppChart(historyQ, "line")\n',
+  'root = AppStack([btn, chart], "md")\n',
+  'Here you go — let me know if you want a different window.',
+];
+const FILTER_TURN = [
+  frame('surface', { specVersion: '1.0', catalogVersion: catalog.catalogVersion, surfaceId: 's2' }, 1),
+  ...FILTER.map((t, i) => frame('dsl-chunk', { text: t }, i + 2)),
+  frame('end', { status: 'ok' }, 20),
+];
+
+test('a Query fetches once as the dashboard streams in, not once per chunk', async () => {
+  const { s, dataCalls } = session(FILTER_TURN, { answers: { fetchUsageHistory: (d) => [{ d }] } });
+  await s.send('spend over time');
+  await s.queries.settled();
+  assert.deepEqual(dataCalls, [['fetchUsageHistory', 7]], 'the declared default, fetched exactly once');
+});
+
+test('clicking a filter button runs @Set then @Run and re-fetches', async () => {
+  const { s, container, dataCalls } = session(FILTER_TURN, {
+    answers: { fetchUsageHistory: (d) => [{ d }] },
+  });
+  await s.send('spend over time');
+  await s.queries.settled();
+
+  const button = container.children[0].children[0];
+  assert.equal(button.tag, 'app-button');
+  button.listeners.click[0]();
+  await s.queries.settled();
+  // The action itself is async; let its steps drain.
+  await new Promise((r) => setTimeout(r, 5));
+
+  assert.deepEqual(dataCalls, [['fetchUsageHistory', 7], ['fetchUsageHistory', 30]]);
+  assert.equal(s.store.get('$days'), 30);
+  assert.deepEqual(s.queries.results.get('historyQ'), [{ d: 30 }]);
+});
+
+test('a query that fails leaves the declared default on screen and reports why', async () => {
+  const { s, container, diagnostics } = session(FILTER_TURN, {
+    answers: { fetchUsageHistory: () => { throw new Error('502 upstream'); } },
+  });
+  await s.send('spend over time');
+  await s.queries.settled();
+  await new Promise((r) => setTimeout(r, 5));
+
+  const d = diagnostics.find((x) => x.code === 'query_failed');
+  assert.ok(d, 'a permanent skeleton with nothing in the console is the failure mode this replaces');
+  assert.match(d.message, /502 upstream/);
+  assert.equal(container.children[0].tag, 'app-stack', 'and the surface still rendered');
+});
+
+test('reset drops the data as well as the text', async () => {
+  const { s } = session(FILTER_TURN, { answers: { fetchUsageHistory: () => [1] } });
+  await s.send('spend over time');
+  await s.queries.settled();
+  assert.equal(s.queries.results.size, 1);
+  s.reset();
+  assert.equal(s.queries.results.size, 0);
+  assert.equal(s.store.get('$days'), undefined);
+  assert.equal(s.currentSurface, '');
 });

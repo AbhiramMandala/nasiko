@@ -29,9 +29,13 @@
  */
 
 import { readSseFrames } from '../services/sse.js';
+import { call as callDataSource } from '../core/data-sources.js';
 import { parseBuffer } from './parser.js';
 import { materialize, buildComponentIndex } from './materialize.js';
 import { render } from './render.js';
+import { createStore } from './store.js';
+import { createQueryManager } from './queries.js';
+import { createActionRunner } from './actions.js';
 
 /** Frames the generator sends. Anything else is reported and ignored. */
 const FRAMES = new Set(['surface', 'dsl-chunk', 'end', 'fail', 'message', 'note']);
@@ -45,6 +49,8 @@ const FRAMES = new Set(['surface', 'dsl-chunk', 'end', 'fail', 'message', 'note'
  *   onDiagnostics?: (d: object[]) => void,
  *   onStatus?: (s: {phase: string, detail?: string}) => void,
  *   onAction?: (action: object, el: Element) => void,
+ *   onAssistant?: (text: string) => void,
+ *   callDataSource?: (name: string, ...args: unknown[]) => unknown,
  *   fetchImpl?: typeof fetch,
  *   schedule?: (fn: () => void) => void,
  *   doc?: Document,
@@ -53,7 +59,8 @@ const FRAMES = new Set(['surface', 'dsl-chunk', 'end', 'fail', 'message', 'note'
 export function createSurfaceSession(options) {
   const {
     endpoint, catalog, container,
-    onMessage, onDiagnostics, onStatus, onAction,
+    onMessage, onDiagnostics, onStatus, onAction, onAssistant,
+    call = callDataSource,
     fetchImpl = globalThis.fetch?.bind(globalThis),
     schedule = (fn) => (globalThis.requestAnimationFrame ?? ((f) => setTimeout(f, 0)))(fn),
     doc,
@@ -65,10 +72,33 @@ export function createSurfaceSession(options) {
   let currentSurface = '';  // the last turn that actually produced a surface
   let proseEmitted = 0;     // how many prose lines onMessage has seen
   let lastDiagnosticsKey = '';
-  let queryResults = new Map();
-  let store = { get: () => null };
   let painting = false;
   let ended = false;
+
+  const store = createStore();
+  /** Diagnostics raised outside a draw pass — a fetch that failed later, say. */
+  const liveDiagnostics = [];
+  const queries = createQueryManager({
+    call,
+    onChange: () => paint(),
+    onDiagnostic: (d) => { liveDiagnostics.push(d); onDiagnostics?.([d]); },
+  });
+  /** The evaluator belonging to the most recent pass. Actions read through it. */
+  let lastOut = null;
+
+  const actions = createActionRunner({
+    store,
+    queries,
+    // Synchronous re-walk. `@Set` then `@Run` in one Action only works because
+    // this runs between them — see actions.js.
+    refresh: () => walk(),
+    onAssistant: (text) => onAssistant?.(text),
+    onDiagnostic: (d) => onDiagnostics?.([d]),
+  });
+
+  // A `$state` write repaints. It never re-fetches: that is `@Run`'s job alone
+  // (agent.yaml rule 5), and queries.sync() is what keeps that promise.
+  store.subscribe(() => paint());
 
   /** Coalesced repaint: many chunks inside one frame paint once. */
   function paint() {
@@ -77,8 +107,30 @@ export function createSurfaceSession(options) {
     schedule(() => { painting = false; draw(); });
   }
 
+  /**
+   * Parse and materialize, without touching the DOM.
+   *
+   * Split out from `draw()` because an Action needs a fresh symbol table
+   * mid-flight — after `@Set` and before `@Run` — and doing that through a
+   * repaint would make the fetch depend on a frame having been scheduled.
+   */
+  function walk() {
+    const { statements } = parseBuffer(buffer);
+    const out = materialize(statements, index, {
+      store,
+      queryResults: queries.results,
+      mutationResults: queries.mutationResults,
+    });
+    // Declared defaults first: `@Reset` resets to what the DSL says, and a
+    // revision turn can move that.
+    store.initialize(out.stateDefaults);
+    queries.sync(out.queries, out.mutations);
+    lastOut = out;
+    return out;
+  }
+
   function draw() {
-    const { statements, prose } = parseBuffer(buffer);
+    const { prose } = parseBuffer(buffer);
 
     // A prose line still being typed is the tail of the buffer. Holding that
     // one back is what stops half a sentence appearing as a chat message.
@@ -87,12 +139,18 @@ export function createSurfaceSession(options) {
     for (let i = proseEmitted; i < settled; i++) onMessage?.(prose[i]);
     proseEmitted = Math.max(proseEmitted, settled);
 
-    const out = materialize(statements, index, { store, queryResults });
+    const out = walk();
     const diagnostics = [...out.diagnostics];
 
     render(out.root, container, catalog, {
       doc,
-      onAction: (action, el) => onAction?.(action, el),
+      onAction: (action, el) => {
+        // The evaluator handed over is the one from the pass that built this
+        // element — an `@Each` row lives in its scope chain and nowhere else.
+        const ev = out.evaluateAst;
+        onAction?.(action, el);
+        void actions.run(action, ev);
+      },
       onDiagnostic: (d) => diagnostics.push(d),
     });
 
@@ -223,18 +281,25 @@ export function createSurfaceSession(options) {
     get currentSurface() { return currentSurface; },
     /** Accumulated text of the turn in flight. */
     get buffer() { return buffer; },
-    /** Swap in live query results / state once those managers exist (Phase 3). */
-    setDataContext({ store: nextStore, queryResults: nextResults } = {}) {
-      if (nextStore) store = nextStore;
-      if (nextResults) queryResults = nextResults;
-      paint();
-    },
+    /** `$state`, for a host that wants to read or seed it. */
+    store,
+    /** Query manager, for tests and for a host that needs to await settlement. */
+    queries,
+    /** Fire an Action by hand — the acceptance flow and tests use this. */
+    runAction: (action) => actions.run(action, lastOut?.evaluateAst ?? null),
+    /** The most recent materialization. */
+    get lastResult() { return lastOut; },
     reset() {
       buffer = '';
       currentSurface = '';
       proseEmitted = 0;
       lastDiagnosticsKey = '';
+      lastOut = null;
+      liveDiagnostics.length = 0;
+      queries.reset();
+      store.clear();
       container.replaceChildren();
     },
+    dispose() { queries.dispose(); },
   };
 }
