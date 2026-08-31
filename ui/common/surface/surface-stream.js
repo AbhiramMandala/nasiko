@@ -183,10 +183,21 @@ export function createSurfaceSession(options) {
     onStatus?.({ phase: 'requesting' });
 
     // Same multi-tenant seam as apiFetch: base from window.nasikoConfig.
-    const base = globalThis.window?.nasikoConfig?.apiBase || '';
+    // TEMPORARY LOCAL TEST PATCH: no Rust proxy for /api/weave/surface exists yet
+    // on `development`, so point straight at a locally-running weave2.0 instead of
+    // going through nasikoConfig.apiBase (which every other call still uses).
+    // Remove once the real control-plane proxy route lands.
+    const base = 'http://localhost:8801';
     const res = await fetchImpl(`${base}/api${endpoint}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+      // TEMPORARY LOCAL TEST PATCH: weave2.0 requires this header from the caller.
+      // In the real architecture the Rust proxy adds it server-side (the browser
+      // never holds it) — sent here only because we're bypassing that proxy locally.
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        'x-weave-internal-token': 'local-dev-secret',
+      },
       body: JSON.stringify({
         prompt,
         context: { ...(opts.context || {}), currentSurface: currentSurface || undefined },

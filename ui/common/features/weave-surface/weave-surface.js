@@ -36,6 +36,47 @@ const styles = await loadCss(new URL('./weave-surface.css', import.meta.url));
 
 import { createSurfaceSession } from '/common/surface/surface-stream.js';
 
+/**
+ * Every "ready" element in `dsl-catalog.json`, imported for its side effect
+ * (`customElements.define`) only.
+ *
+ * `render.js` builds a generated surface with plain `document.createElement`
+ * — it has no loader, and the catalog carries no module path (that's
+ * `design-system/catalog.json`'s `source` field, deliberately stripped by
+ * `gen-dsl-catalog.mjs`, since the DSL vocabulary is supposed to be
+ * import-agnostic). So somewhere, once, every component the model is allowed
+ * to name has to actually be imported, or `document.createElement` returns
+ * an undefined element the browser can't render: no shadow DOM, no styling,
+ * attributes that go nowhere. This is that place — the one seam between the
+ * runtime and the rest of the app already promises to own "a vocabulary."
+ */
+import '/common/design-system/app-action-menu/app-action-menu.js';
+import '/common/design-system/app-avatar/app-avatar.js';
+import '/common/design-system/app-badge/app-badge.js';
+import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-card/app-card.js';
+import '/common/design-system/app-chart/app-chart.js';
+import '/common/design-system/app-chatbox/app-chatbox.js';
+import '/common/design-system/app-checkbox/app-checkbox.js';
+import '/common/design-system/app-code-snippet/app-code-snippet.js';
+import '/common/design-system/app-divider/app-divider.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-grid/app-grid.js';
+import '/common/design-system/app-input/app-input.js';
+import '/common/design-system/app-modal/app-modal.js';
+import '/common/design-system/app-radio/app-radio.js';
+import '/common/design-system/app-row/app-row.js';
+import '/common/design-system/app-search/app-search.js';
+import '/common/design-system/app-select/app-select.js';
+import '/common/design-system/app-skeleton/app-skeleton.js';
+import '/common/design-system/app-stack/app-stack.js';
+import '/common/design-system/app-stat-card/app-stat-card.js';
+import '/common/design-system/app-stat-row/app-stat-row.js';
+import '/common/design-system/app-switch/app-switch.js';
+import '/common/design-system/app-table/app-table.js';
+import '/common/design-system/app-tag/app-tag.js';
+import '/common/design-system/app-toolbar/app-toolbar.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** The generated vocabulary. Fetched once for the whole app. */
