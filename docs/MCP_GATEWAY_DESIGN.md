@@ -97,7 +97,7 @@ Every table or API response that uses "connector" always carries an explicit `pr
 - **Grant** — a record that an owner has shared their connector with a specific user (by username) or with everyone on the platform.
 - **Connection** — one person's own credential/session state for a connector. Never shared, even when the connector itself is.
 - **Permission** — for a given (caller, agent, connector) triple: whether the connector is enabled for that agent at all, and whether any individual tool within it is allowed, blocked, or requires approval.
-- **Agent gateway token** — the per-agent credential minted at deploy time and injected into the container env (`MCP_GATEWAY_TOKEN`); the agent presents it as a `Bearer` header on every gateway call to prove *which agent* is calling. It never names a user.
+- **Agent gateway token** — the per-agent credential minted at deploy time and injected into the container env (`MCP_GATEWAY_TOKEN`); the agent presents it as a `Bearer` header on every gateway call to prove *which agent* is calling. It never names a user. MCP clients that can only be handed a URL (no header hook) can instead use the pre-composed `MCP_GATEWAY_CONNECT_URL`, which carries the same credential in the path at `POST /api/mcp/s/{token}` and is subject to identical checks — the header form is preferred where the client supports it.
 - **Flow-bound user identity** — the *for whom*: resolved server-side from the request's `traceparent`, whose trace id names the `flows` row (carrying `user_id`) that the platform wrote when it dispatched the flow to this agent. The gateway authorizes a `tools/call` only when the authenticated agent is a recorded `flow_participants` member of that flow.
 
 ---

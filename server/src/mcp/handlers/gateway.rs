@@ -11,7 +11,7 @@
 
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -64,6 +64,58 @@ pub async fn mcp_gateway(
         )
             .into_response();
     };
+    dispatch(&state, token, &headers, body).await
+}
+
+/// URL-credential form of [`mcp_gateway`] — `POST /api/mcp/s/{token}`.
+///
+/// Identical in every respect except where the agent credential is read from:
+/// the path instead of the `Authorization` header. It exists because MCP, unlike
+/// the OpenAI SDKs behind the LLM router, has no env-var convention for
+/// credentials — frameworks that register MCP servers declaratively often expose
+/// a `url` and no header hook, leaving the URL as the only place a credential
+/// can travel.
+///
+/// The trade-off is deliberate and documented (docs/MCP_GATEWAY_AGENT_AUTH.md):
+/// a credential in a URL is easier to leak than one in a header, so the server
+/// redacts this path before it reaches a span or log line
+/// (`crate::mcp::redact_credential_uri`). What keeps the exposure bounded is
+/// that this credential proves only *which agent* is calling — `tools/call`
+/// still requires a `traceparent` naming a live flow the agent participates in,
+/// so a leaked URL on its own cannot invoke a tool.
+#[utoipa::path(
+    post,
+    path = "/api/mcp/s/{token}",
+    tag = "mcp",
+    params(
+        ("token" = String, Path, description = "The per-agent `MCP_GATEWAY_TOKEN`, carried in the path for MCP clients that cannot set headers. Pre-composed as `MCP_GATEWAY_CONNECT_URL` in the container env."),
+        ("traceparent" = Option<String>, Header, description = "W3C trace context naming the flow this call belongs to — required for `tools/call`; the user identity is resolved from the flow record"),
+    ),
+    request_body(content = Object, description = "JSON-RPC 2.0 request: `tools/list` or `tools/call`"),
+    responses(
+        (status = 200, description = "JSON-RPC 2.0 response (result or error object)", body = Object),
+        (status = 202, description = "Notification accepted (no `id` in request); empty object body", body = Object),
+        (status = 401, description = "Unknown/revoked gateway token"),
+        (status = 403, description = "`tools/call` outside a live flow the agent participates in, or identity store unavailable"),
+    ),
+)]
+pub async fn mcp_gateway_via_url(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if token.trim().is_empty() {
+        return (StatusCode::UNAUTHORIZED, "empty gateway token").into_response();
+    }
+    dispatch(&state, token.trim(), &headers, body).await
+}
+
+/// Shared body of both entry points: everything after the credential has been
+/// located. Keeping this single means the two forms cannot drift into different
+/// authorization behaviour — the URL form is a transport detail, not a weaker
+/// door.
+async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Value) -> Response {
     let agent_id = match nasiko_mcp_gateway::agent_tokens::authenticate(&state.db, token).await {
         Ok(Some(id)) => id,
         Ok(None) => {
@@ -99,13 +151,13 @@ pub async fn mcp_gateway(
     // (initialize/ping/tools/list, rule 2) work agent-only: the flow user when
     // one resolves, else the agent's owner (startup-time tool discovery
     // happens outside any flow).
-    let user_id = match flow_user(&state, traceparent, agent_id).await {
+    let user_id = match flow_user(state, traceparent, agent_id).await {
         Ok(user_id) => user_id,
         Err(denial) => {
             if method == "tools/call" {
                 return denial;
             }
-            match agent_owner(&state, agent_id).await {
+            match agent_owner(state, agent_id).await {
                 Some(owner) => owner,
                 None => {
                     return (
@@ -129,7 +181,7 @@ pub async fn mcp_gateway(
         let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
         let success = result.get("error").is_none();
         record_tool_usage(
-            &state, user_id, agent_id, &tool_name, latency_ms, success, None,
+            state, user_id, agent_id, &tool_name, latency_ms, success, None,
         );
 
         if result

@@ -380,7 +380,19 @@ where
         .merge(mcp_agent_gateway)
         .fallback_service(ui_pages)
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        // Default span-making records the full request URI, which would publish
+        // the agent credential carried by `/api/mcp/s/{token}` into every span
+        // and log line. Redact that one route; everything else is unchanged.
+        .layer(TraceLayer::new_for_http().make_span_with(
+            |req: &axum::http::Request<axum::body::Body>| {
+                tracing::info_span!(
+                    "request",
+                    method = %req.method(),
+                    uri = %mcp::redact_credential_uri(req.uri()),
+                    version = ?req.version(),
+                )
+            },
+        ))
 }
 
 /// State for [`authenticate_oci_request`] — bundles the two things it needs

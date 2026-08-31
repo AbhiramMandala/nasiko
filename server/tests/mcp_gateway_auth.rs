@@ -280,3 +280,127 @@ async fn tools_call_inside_a_live_flow_passes_the_auth_gate() {
     );
     server.cleanup().await;
 }
+
+// ─── URL-credential form: POST /api/mcp/s/{token} ────────────────────────────
+//
+// Same credential, same ladder — only the transport differs. These exist to
+// prove the URL form is not a weaker door: whatever the header form rejects,
+// this must reject identically. The reason it exists at all is that MCP has no
+// `OPENAI_API_KEY`-style env convention, so framework clients that expose only
+// a `url` have nowhere to put a bearer header.
+
+async fn post_mcp_url(
+    server: &TestServer,
+    token: &str,
+    traceparent: Option<&str>,
+    body: &serde_json::Value,
+) -> reqwest::Response {
+    let mut req = server
+        .client
+        .post(server.url(&format!("/api/mcp/s/{token}")))
+        .json(body);
+    if let Some(tp) = traceparent {
+        req = req.header("traceparent", tp);
+    }
+    req.send().await.unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn url_credential_is_accepted_for_initialize() {
+    let server = TestServer::start().await;
+    let owner = seed_user(&server, "gwu-owner-1").await;
+    let agent = seed_agent(&server, owner, "gwu-agent-1").await;
+    let token = common::mint_gateway_token(&server.db, agent).await;
+
+    let res = post_mcp_url(&server, &token, None, &rpc("initialize")).await;
+    assert_eq!(res.status(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["result"]["serverInfo"]["name"], "MCP Gateway");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn url_credential_unknown_token_is_401() {
+    let server = TestServer::start().await;
+    let res = post_mcp_url(&server, "ngt_not_a_real_token", None, &rpc("initialize")).await;
+    assert_eq!(res.status(), 401);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn url_credential_honours_revocation() {
+    // Revocation must reach both forms — they read one row.
+    let server = TestServer::start().await;
+    let owner = seed_user(&server, "gwu-owner-rev").await;
+    let agent = seed_agent(&server, owner, "gwu-agent-rev").await;
+    let token = common::mint_gateway_token(&server.db, agent).await;
+
+    sqlx::query("UPDATE agent_gateway_tokens SET revoked_at = now() WHERE agent_id = $1")
+        .bind(agent)
+        .execute(&server.db)
+        .await
+        .expect("revoke");
+
+    let res = post_mcp_url(&server, &token, None, &rpc("initialize")).await;
+    assert_eq!(res.status(), 401);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_leaked_url_alone_cannot_call_a_tool() {
+    // The property that makes carrying the credential in a URL an acceptable
+    // trade: the credential proves only *which agent*. Without a traceparent
+    // naming a live flow the agent participates in, `tools/call` is still 403 —
+    // so a URL scraped from a log or a trace cannot invoke anything.
+    let server = TestServer::start().await;
+    let owner = seed_user(&server, "gwu-owner-leak").await;
+    let agent = seed_agent(&server, owner, "gwu-agent-leak").await;
+    let token = common::mint_gateway_token(&server.db, agent).await;
+
+    let res = post_mcp_url(&server, &token, None, &rpc("tools/call")).await;
+    assert_eq!(res.status(), 403);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn url_credential_enforces_flow_participation() {
+    // Replay of another agent's traceparent is rejected here exactly as it is
+    // on the header form.
+    let server = TestServer::start().await;
+    let user = seed_user(&server, "gwu-user-np").await;
+    let owner = seed_user(&server, "gwu-owner-np").await;
+    let agent_a = seed_agent(&server, owner, "gwu-agent-np-a").await;
+    let agent_b = seed_agent(&server, owner, "gwu-agent-np-b").await;
+    let (_, traceparent) = common::open_flow(&server.db, user, agent_a).await;
+    let token_b = common::mint_gateway_token(&server.db, agent_b).await;
+
+    let res = post_mcp_url(&server, &token_b, Some(&traceparent), &rpc("tools/call")).await;
+    assert_eq!(res.status(), 403);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn url_credential_allows_tools_call_inside_its_own_flow() {
+    let server = TestServer::start().await;
+    let user = seed_user(&server, "gwu-user-ok").await;
+    let owner = seed_user(&server, "gwu-owner-ok").await;
+    let agent = seed_agent(&server, owner, "gwu-agent-ok").await;
+    let (_, traceparent) = common::open_flow(&server.db, user, agent).await;
+    let token = common::mint_gateway_token(&server.db, agent).await;
+
+    let res = post_mcp_url(&server, &token, Some(&traceparent), &rpc("tools/call")).await;
+    assert_eq!(res.status(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert!(
+        body.get("result").is_some() || body.get("error").is_some(),
+        "must be a JSON-RPC response, got: {body}"
+    );
+    server.cleanup().await;
+}
