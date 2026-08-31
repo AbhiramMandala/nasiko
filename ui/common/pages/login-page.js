@@ -42,29 +42,32 @@ class LoginPage extends HTMLElement {
   async connectedCallback() {
     const brandTitle = this.getAttribute('brand-title') || 'Nasiko';
     const subtitle = this.getAttribute('subtitle') || 'Sign in to your workspace';
-    // Social sign-in is auto-detected per deployment — each provider's
-    // backend route is probed; missing routes (404) mean the provider isn't
-    // configured, just like the Microsoft/OIDC probe below.
-    // The `no-github` attribute is still respected as an explicit opt-out.
+    // Social sign-in is opt-in per deployment — a bare <login-page> renders
+    // no button whose backend route may not exist. GitHub SSO (`github`
+    // attribute) exists on EE control planes; Google only where the host
+    // page supplies its route via google-href (e.g. the tenant portal BFF).
+    const githubRequested = this.hasAttribute('github') && !this.hasAttribute('no-github');
+    let showGoogle = this.hasAttribute('google-href') && !this.hasAttribute('no-google');
+    const showCredentials = !this.hasAttribute('no-credentials');
 
-    // GitHub: the login-user route returns {auth_url} when configured,
-    // 404 when the route isn't registered (OSS or unconfigured EE).
+    // The `github` attribute says this deployment *wants* GitHub sign-in; it
+    // can't know whether the operator actually configured an OAuth app. With
+    // no `GITHUB_CLIENT_ID` the login route answers `503`, so a button drawn
+    // on the attribute alone is a dead control that still reads as an enabled
+    // login method to anyone auditing the page. Confirm with the backend the
+    // same way Microsoft does. Fails closed (hidden) on a network error.
     const githubConfigured = async () => {
-      if (this.hasAttribute('no-github')) return false;
+      if (!githubRequested) return false;
       try {
-        const res = await fetch('/api/auth/github/login-user', { credentials: 'same-origin' });
-        if (!res.ok) return false;
+        const res = await fetch('/api/auth/github/status', { credentials: 'same-origin' });
         const data = await res.json();
-        return Boolean(data?.auth_url);
+        return Boolean(data?.configured);
       } catch {
         return false;
       }
     };
-    let showGoogle = this.hasAttribute('google-href') && !this.hasAttribute('no-google');
-    const showCredentials = !this.hasAttribute('no-credentials');
 
-    // Microsoft/OIDC is opt-in per deployment (unlike GitHub/Google, which
-    // are always offered) — only show the button once the backend confirms
+    // Microsoft/OIDC is opt-in per deployment — only show the button once the backend confirms
     // OIDC_ISSUER_URL/CLIENT_ID/CLIENT_SECRET/REDIRECT_URI (or the
     // DB-configured equivalent, see `resolve_oidc_client`) are actually set,
     // so a deployment that hasn't configured SSO never shows a button that
@@ -80,9 +83,13 @@ class LoginPage extends HTMLElement {
       }
     };
 
-    // Both probes in flight together — the session check costs no extra wall
-    // clock on top of the OIDC one we already wait for.
-    const [sessionActive, showMicrosoft, showGithub] = await Promise.all([hasSession(), oidcConfigured(), githubConfigured()]);
+    // All three probes in flight together — the session check and the GitHub
+    // one cost no extra wall clock on top of the OIDC one we already wait for.
+    const [sessionActive, showMicrosoft, showGithub] = await Promise.all([
+      hasSession(),
+      oidcConfigured(),
+      githubConfigured(),
+    ]);
     if (sessionActive) {
       window.location.replace('/');
       return;
