@@ -1,5 +1,7 @@
 //! Thin wrapper around the official `a2a` crate (a2a-lf) with nasiko-specific helpers.
 
+use serde::Serialize;
+
 pub use a2a::{
     Artifact, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, Message, Part, PartContent,
     Role, SendMessageConfiguration, SendMessageRequest, StreamResponse, Task,
@@ -132,6 +134,40 @@ pub fn auth_required(task_id: &str, context_id: &str, message: &str) -> TaskStat
         status: TaskStatus {
             state: TaskState::AuthRequired,
             message: Some(agent_message(context_id, task_id, text_part(message))),
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    }
+}
+
+/// Terminal-for-this-turn status: a sub-agent paused and needs a human before the
+/// conversation can continue. Mirrors `failed` (also terminal, also carries a message),
+/// but maps to `TaskState::InputRequired`/`AuthRequired` instead of `Failed` — the client
+/// must be able to tell "the agent needs input" apart from "the agent errored."
+///
+/// Distinct from `input_required`/`auth_required` above (from `feat/hitl-direct-chat`): those
+/// build their own `Message` from a plain `&str`, for `agent_proxy`'s direct-chat path. This one
+/// takes an already-built `Message` and a `kind`, for the orchestrator's `AwaitingHuman` event
+/// (`a2a_dispatch.rs`'s `orchestrator_stream`), which already has a `Message` assembled with a
+/// `data` part, not just plain text. Kept side by side rather than unified — each caller's
+/// `Message` shape differs enough that forcing one signature would lose information at one
+/// call site or the other.
+pub fn awaiting_human(
+    task_id: &str,
+    context_id: &str,
+    kind: AwaitingHumanKind,
+    msg: Message,
+) -> TaskStatusUpdateEvent {
+    let state = match kind {
+        AwaitingHumanKind::InputRequired => TaskState::InputRequired,
+        AwaitingHumanKind::AuthRequired => TaskState::AuthRequired,
+    };
+    TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state,
+            message: Some(msg),
             timestamp: Some(chrono::Utc::now()),
         },
         metadata: None,
@@ -298,6 +334,17 @@ pub fn extract_text(result: &serde_json::Value) -> Option<String> {
 
 // ─── SSE stream event classification ────────────────────────────────────────
 
+/// Which human-in-the-loop pause this is — mirrors `nasiko_hitl::HitlKind`'s two task-state
+/// variants (`input_required`, `auth_required`). Duplicated here rather than depended on: this
+/// crate has zero internal workspace dependencies, and `tool_approval` (hitl's third kind) never
+/// applies at this layer — it isn't an A2A task state at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AwaitingHumanKind {
+    InputRequired,
+    AuthRequired,
+}
+
 /// One semantic event decoded from an A2A SSE `data:` payload.
 ///
 /// A single payload can carry several (e.g. a working-status message with
@@ -318,6 +365,15 @@ pub enum SseEvent {
     Completed { snapshot_text: Option<String> },
     /// Terminal: the task failed or was canceled.
     Failed { reason: String },
+    /// Not terminal, but nothing can proceed without a human —
+    /// `TASK_STATE_INPUT_REQUIRED` / `TASK_STATE_AUTH_REQUIRED`. Deliberately its own variant,
+    /// never folded into `StatusText`: a caller that treated the agent's question as ordinary
+    /// progress narration would feed it back to an LLM as if it were the answer.
+    AwaitingHuman {
+        kind: AwaitingHumanKind,
+        message: String,
+        metadata: serde_json::Value,
+    },
 }
 
 /// Classify one A2A SSE `data:` JSON payload into semantic events.
@@ -361,6 +417,13 @@ pub fn classify_sse_event(event: &serde_json::Value) -> Vec<SseEvent> {
                     reason: failure_reason(task),
                 });
             }
+            SseTaskState::AwaitingHuman(kind) => {
+                out.push(SseEvent::AwaitingHuman {
+                    kind,
+                    message: awaiting_human_message(task),
+                    metadata: awaiting_human_metadata(task),
+                });
+            }
             SseTaskState::Working | SseTaskState::Other => {}
         }
         return out;
@@ -384,6 +447,13 @@ fn classify_status(update: &serde_json::Value, out: &mut Vec<SseEvent>) {
         SseTaskState::Completed => {
             out.push(SseEvent::Completed {
                 snapshot_text: None,
+            });
+        }
+        SseTaskState::AwaitingHuman(kind) => {
+            out.push(SseEvent::AwaitingHuman {
+                kind,
+                message: awaiting_human_message(update),
+                metadata: awaiting_human_metadata(update),
             });
         }
         SseTaskState::Working | SseTaskState::Other => {
@@ -430,6 +500,9 @@ enum SseTaskState {
     Completed,
     /// Failed or canceled — both end the task without a usable answer.
     Failed,
+    /// `TASK_STATE_INPUT_REQUIRED` / `TASK_STATE_AUTH_REQUIRED` — not terminal, but nothing can
+    /// proceed without a human.
+    AwaitingHuman(AwaitingHumanKind),
     /// Submitted, unknown, or absent.
     Other,
 }
@@ -443,6 +516,12 @@ fn task_state(v: &serde_json::Value) -> SseTaskState {
         "TASK_STATE_WORKING" | "working" => SseTaskState::Working,
         "TASK_STATE_COMPLETED" | "completed" => SseTaskState::Completed,
         "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "failed" | "canceled" => SseTaskState::Failed,
+        "TASK_STATE_INPUT_REQUIRED" | "input-required" => {
+            SseTaskState::AwaitingHuman(AwaitingHumanKind::InputRequired)
+        }
+        "TASK_STATE_AUTH_REQUIRED" | "auth-required" => {
+            SseTaskState::AwaitingHuman(AwaitingHumanKind::AuthRequired)
+        }
         _ => SseTaskState::Other,
     }
 }
@@ -452,6 +531,24 @@ fn failure_reason(v: &serde_json::Value) -> String {
         .and_then(|t| t.as_str())
         .unwrap_or("task failed")
         .to_string()
+}
+
+/// Mirrors `failure_reason` — the agent's own question/prompt text, first text part only (matches
+/// the reference agent's convention of one text part per pause message).
+fn awaiting_human_message(v: &serde_json::Value) -> String {
+    v.pointer("/status/message/parts/0/text")
+        .and_then(|t| t.as_str())
+        .unwrap_or("a human response is required")
+        .to_string()
+}
+
+/// The agent-supplied `metadata` object on the pause message (e.g. `expected_input`, `provider`,
+/// `auth_url` — see the External Agent Contract). `Value::Null` when absent; `Value::get` on
+/// `Null` returns `None` for any key, so callers can treat both cases identically.
+fn awaiting_human_metadata(v: &serde_json::Value) -> serde_json::Value {
+    v.pointer("/status/message/metadata")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
 }
 
 pub fn extract_text_from_response(response: &JsonRpcResponse) -> Option<String> {
@@ -535,228 +632,6 @@ pub fn classify_stream_disposition(data: &str) -> StreamDisposition {
     }
 
     StreamDisposition::Continue
-}
-
-// ─── Pause parsing (HITL) ───────────────────────────────────────────────────
-//
-// Shared by every consumer that needs to turn a `Paused`-classified A2A payload into a
-// `hitl_requests` question: `oss/server/src/router/a2a_dispatch.rs` (direct chat, streaming and
-// non-streaming) and `oss/orchestrator/src/maf/executor.rs` (MAF, a plain-JSON `SendMessage`
-// reply, no SSE at all) — both parse the identical wire shapes `classify_stream_disposition`
-// above already navigates. Lives here rather than in `oss/server` so `oss/orchestrator`, which
-// cannot depend on `oss/server`, can reuse it too.
-
-/// Why a `Paused`-classified payload asked for a human — the only two kinds
-/// `classify_stream_disposition` ever maps to `Paused`. Deliberately not `nasiko_hitl::HitlKind`:
-/// this crate must not gain a dependency on `oss/hitl`; callers that need a `HitlKind` map this
-/// two-variant enum to their own type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PauseReason {
-    InputRequired,
-    AuthRequired,
-}
-
-/// Derive a pause's reason from a `Paused`-classified payload — `AuthRequired` if the wire state
-/// names it, `InputRequired` otherwise.
-pub fn pause_reason(data: &str) -> PauseReason {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
-        return PauseReason::InputRequired;
-    };
-    let result = parsed.get("result").unwrap_or(&parsed);
-    // See `classify_stream_disposition`'s doc comment for why `.task` is needed here too.
-    let status_update = result
-        .get("statusUpdate")
-        .or_else(|| parsed.get("statusUpdate"))
-        .or_else(|| result.get("task"))
-        .unwrap_or(result);
-    let state = status_update
-        .pointer("/status/state")
-        .and_then(|s| s.as_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if state.contains("auth_required") || state.contains("auth-required") {
-        PauseReason::AuthRequired
-    } else {
-        PauseReason::InputRequired
-    }
-}
-
-/// Extract the *agent's own* `taskId` from a `Paused` payload — never the caller's locally minted
-/// `task_id`/`context_id` param used for its own outbound envelope. Real a2a-sdk agents pass their
-/// real task/context ids through verbatim. Resume must target *this* id — the one the agent's own
-/// task store actually holds — not Nasiko's synthetic per-request id, or the agent will never
-/// recognize the follow-up as a continuation. Falls back to the caller's `task_id` only if the
-/// payload carries none (e.g. a bare `message` reply with no task wrapper at all).
-pub fn paused_task_id(data: &str, fallback: &str) -> String {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
-        return fallback.to_string();
-    };
-    let result = parsed.get("result").unwrap_or(&parsed);
-    let status_update = result
-        .get("statusUpdate")
-        .or_else(|| parsed.get("statusUpdate"))
-        .or_else(|| result.get("task"))
-        .unwrap_or(result);
-
-    status_update
-        .get("taskId")
-        // Task-wrapped dialect: the task object's own id field is `id`, not `taskId` — already
-        // covered by this existing fallback, unchanged.
-        .or_else(|| result.pointer("/task/id"))
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .unwrap_or_else(|| fallback.to_string())
-}
-
-/// Well-known `metadata` keys the External Agent Contract documents (`auth_url`/`provider` for
-/// `auth_required`, `expected_input` for `input_required`) — hoisted onto `question` itself so a
-/// client can read `question.auth_url` directly instead of reaching into an opaque `metadata`
-/// blob, matching `hitl_requests.question`'s documented shape.
-const WELL_KNOWN_QUESTION_KEYS: &[&str] = &["auth_url", "provider", "expected_input"];
-
-/// Build the `hitl_requests.question` JSONB from a `Paused` payload: the message text, plus
-/// whatever `metadata` the agent attached (the External Agent Contract's optional
-/// `auth_url`/`provider`/`expected_input`). Well-known keys are hoisted to the top level; the full
-/// `metadata` blob is also kept verbatim underneath for anything else the agent attached, since
-/// Nasiko does not know a given agent's metadata shape in advance beyond those three keys.
-pub fn build_pause_question(data: &str) -> serde_json::Value {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
-        return serde_json::json!({ "message": "" });
-    };
-    let result = parsed.get("result").unwrap_or(&parsed);
-    // See `classify_stream_disposition`'s doc comment for why `.task` is needed here too.
-    let status_update = result
-        .get("statusUpdate")
-        .or_else(|| parsed.get("statusUpdate"))
-        .or_else(|| result.get("task"))
-        .unwrap_or(result);
-
-    let message = status_update
-        .pointer("/status/message/parts")
-        .and_then(|p| p.as_array())
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|p| p.get("text")?.as_str())
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
-
-    let metadata = status_update
-        .pointer("/status/message/metadata")
-        .or_else(|| status_update.get("metadata"))
-        .cloned();
-
-    let mut question = serde_json::json!({ "message": message });
-    if let Some(metadata) = metadata
-        && let Some(obj) = question.as_object_mut()
-    {
-        if let Some(metadata_obj) = metadata.as_object() {
-            for key in WELL_KNOWN_QUESTION_KEYS {
-                if let Some(value) = metadata_obj.get(*key) {
-                    obj.insert((*key).to_string(), value.clone());
-                }
-            }
-        }
-        obj.insert("metadata".to_string(), metadata);
-    }
-    question
-}
-
-#[cfg(test)]
-mod pause_parsing_tests {
-    use super::*;
-
-    // Real payload shape (python a2a-sdk, JSONRPC-wrapped, no "kind" tag) — confirmed live
-    // against the github-hitl-agent reference agent.
-    const REAL_PAUSE_PAYLOAD: &str = r#"{"result": {"statusUpdate": {"taskId": "51914422-4548-47af-90b8-773a5ee4bed7", "contextId": "9e110c60-185f-4c3d-b14e-a473db66ed4c", "status": {"state": "TASK_STATE_INPUT_REQUIRED", "message": {"messageId": "6d3e7f9d-dea0-499b-af76-a3d12eff55bf", "contextId": "9e110c60-185f-4c3d-b14e-a473db66ed4c", "taskId": "51914422-4548-47af-90b8-773a5ee4bed7", "role": "ROLE_AGENT", "parts": [{"text": "Which repository should I create the issue in? (reply with owner/repo, on the same task)"}]}, "timestamp": "2026-08-29T13:09:49.292552Z"}}}, "id": "100260a7-0f6a-4606-a411-3a72c0cfa21e", "jsonrpc": "2.0"}"#;
-
-    #[test]
-    fn paused_task_id_extracts_the_agents_real_task_not_the_callers_synthetic_one() {
-        let extracted = paused_task_id(REAL_PAUSE_PAYLOAD, "nasiko-synthetic-task-id");
-        assert_eq!(extracted, "51914422-4548-47af-90b8-773a5ee4bed7");
-    }
-
-    #[test]
-    fn paused_task_id_falls_back_when_the_payload_carries_no_task_id() {
-        let extracted =
-            paused_task_id(r#"{"message": {"parts": [{"text": "hi"}]}}"#, "fallback-id");
-        assert_eq!(extracted, "fallback-id");
-    }
-
-    #[test]
-    fn paused_task_id_falls_back_on_unparseable_payload() {
-        let extracted = paused_task_id("not json", "fallback-id");
-        assert_eq!(extracted, "fallback-id");
-    }
-
-    #[test]
-    fn pause_reason_reads_input_required_from_the_real_payload() {
-        assert_eq!(pause_reason(REAL_PAUSE_PAYLOAD), PauseReason::InputRequired);
-    }
-
-    #[test]
-    fn build_pause_question_extracts_the_message_text_from_the_real_payload() {
-        let question = build_pause_question(REAL_PAUSE_PAYLOAD);
-        assert_eq!(
-            question["message"],
-            "Which repository should I create the issue in? (reply with owner/repo, on the same task)"
-        );
-    }
-
-    const AUTH_REQUIRED_PAYLOAD: &str = r#"{"result": {"statusUpdate": {"taskId": "t1", "contextId": "c1", "status": {"state": "TASK_STATE_AUTH_REQUIRED", "message": {"parts": [{"text": "Please authorize with GitHub"}], "metadata": {"provider": "github", "auth_url": "https://github.com/login/oauth/authorize?client_id=abc"}}}}}, "id": "1", "jsonrpc": "2.0"}"#;
-
-    #[test]
-    fn build_pause_question_hoists_auth_url_and_provider_to_the_top_level() {
-        let question = build_pause_question(AUTH_REQUIRED_PAYLOAD);
-        assert_eq!(question["message"], "Please authorize with GitHub");
-        assert_eq!(question["provider"], "github");
-        assert_eq!(
-            question["auth_url"],
-            "https://github.com/login/oauth/authorize?client_id=abc"
-        );
-        // The full metadata blob is still kept underneath, unmodified.
-        assert_eq!(question["metadata"]["provider"], "github");
-    }
-
-    #[test]
-    fn pause_reason_reads_auth_required_from_the_real_payload() {
-        assert_eq!(
-            pause_reason(AUTH_REQUIRED_PAYLOAD),
-            PauseReason::AuthRequired
-        );
-    }
-
-    // Captured live from `agent_proxy.rs`'s non-streaming branch (`SendMessage`, not
-    // `SendStreamingMessage`) against `github-hitl-agent` — a full `Task` snapshot with no
-    // `statusUpdate` wrapper at all, `status.state` sitting under `result.task` instead.
-    const REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD: &str = r#"{"result":{"task":{"id":"3f43589f-fbaf-4936-8cac-e074b5843302","contextId":"nonstream-proxy-test","status":{"state":"TASK_STATE_INPUT_REQUIRED","message":{"messageId":"6c334d6d-e72b-4e3d-8e25-ac1a223085b9","contextId":"nonstream-proxy-test","taskId":"3f43589f-fbaf-4936-8cac-e074b5843302","role":"ROLE_AGENT","parts":[{"text":"Which repository should I create the issue in? (reply with owner/repo, on the same task)"}]},"timestamp":"2026-09-01T03:42:34.957766Z"},"history":[{"messageId":"293C90CE-26DB-4364-895D-A4A059DDC75E","contextId":"nonstream-proxy-test","taskId":"3f43589f-fbaf-4936-8cac-e074b5843302","role":"ROLE_USER","parts":[{"text":"hitl input test"}]}]}},"id":"1","jsonrpc":"2.0"}"#;
-
-    #[test]
-    fn pause_reason_reads_input_required_from_a_task_wrapped_non_streaming_payload() {
-        assert_eq!(
-            pause_reason(REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD),
-            PauseReason::InputRequired
-        );
-    }
-
-    #[test]
-    fn paused_task_id_extracts_the_real_id_from_a_task_wrapped_non_streaming_payload() {
-        assert_eq!(
-            paused_task_id(REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD, "fallback"),
-            "3f43589f-fbaf-4936-8cac-e074b5843302"
-        );
-    }
-
-    #[test]
-    fn build_pause_question_reads_the_message_from_a_task_wrapped_non_streaming_payload() {
-        let question = build_pause_question(REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD);
-        assert_eq!(
-            question["message"],
-            "Which repository should I create the issue in? (reply with owner/repo, on the same task)"
-        );
-    }
 }
 
 // ─── Private ────────────────────────────────────────────────────────────────
@@ -917,6 +792,89 @@ mod sse_event_tests {
             classify_sse_event(&ev),
             vec![SseEvent::Failed {
                 reason: "boom".into()
+            }]
+        );
+    }
+
+    // InputRequired/AuthRequired must classify to AwaitingHuman, never StatusText — the whole
+    // reason this variant exists is so a caller can't mistake the agent's question for ordinary
+    // progress narration.
+
+    #[test]
+    fn input_required_status_classifies_as_awaiting_human() {
+        let ev = json!({"result": {"statusUpdate": {"status": {
+            "state": "TASK_STATE_INPUT_REQUIRED",
+            "message": {
+                "parts": [{"text": "Which repository?"}],
+                "metadata": {"expected_input": "free_text"}
+            }
+        }}}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::InputRequired,
+                message: "Which repository?".into(),
+                metadata: json!({"expected_input": "free_text"}),
+            }]
+        );
+    }
+
+    #[test]
+    fn auth_required_status_classifies_as_awaiting_human_not_status_text() {
+        let ev = json!({"result": {"statusUpdate": {"status": {
+            "state": "TASK_STATE_AUTH_REQUIRED",
+            "message": {
+                "parts": [{"text": "Authorize GitHub access"}],
+                "metadata": {"provider": "github", "auth_url": "https://github.com/login/oauth"}
+            }
+        }}}});
+        let events = classify_sse_event(&ev);
+        assert_eq!(
+            events,
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::AuthRequired,
+                message: "Authorize GitHub access".into(),
+                metadata: json!({"provider": "github", "auth_url": "https://github.com/login/oauth"}),
+            }]
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, SseEvent::StatusText(_))),
+            "an auth-required pause must never also/instead classify as StatusText"
+        );
+    }
+
+    #[test]
+    fn input_required_task_snapshot_classifies_as_awaiting_human() {
+        // The "full task snapshot" wire shape (a2a-go-style single-object reply), not just the
+        // streamed statusUpdate shape — both must recognize the pause.
+        let ev = json!({"result": {"task": {
+            "status": {
+                "state": "TASK_STATE_INPUT_REQUIRED",
+                "message": {"parts": [{"text": "Which repository?"}]}
+            }
+        }}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::InputRequired,
+                message: "Which repository?".into(),
+                metadata: serde_json::Value::Null,
+            }]
+        );
+    }
+
+    #[test]
+    fn legacy_lowercase_input_required_state_classifies_as_awaiting_human() {
+        let ev = json!({"statusUpdate": {"status": {
+            "state": "input-required",
+            "message": {"parts": [{"text": "Which repository?"}]}
+        }}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::InputRequired,
+                message: "Which repository?".into(),
+                metadata: serde_json::Value::Null,
             }]
         );
     }

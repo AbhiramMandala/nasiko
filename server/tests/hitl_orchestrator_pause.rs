@@ -1,0 +1,321 @@
+mod common;
+
+use serde_json::{Value, json};
+use serial_test::serial;
+use sqlx::Row;
+use uuid::Uuid;
+
+//  the orchestrator's
+// `OrchestratorEvent::AwaitingHuman` arm in `a2a_dispatch.rs`, exercised through the real
+// `/api/orchestrator/a2a` HTTP surface: a real LLM turn-0 streaming tool-call response, a real
+// sub-agent that pauses, and a real `hitl_requests` insert against the actual `0007_hitl.sql`
+// schema — not a unit test of the classifier in isolation.
+
+const SUB_AGENT_TASK_ID: &str = "sub-task-999";
+const SUB_AGENT_CONTEXT_ID: &str = "sub-ctx-999";
+const OUTER_CONTEXT_ID: &str = "outer-ctx-fixed-for-hitl-test";
+
+/// Insert a minimal user row — needed as the FK target for `hitl_requests.owner_user_id`
+/// (and `agents.owner_id`). Mirrors `maf_flow.rs`'s `seed_user`.
+async fn seed_user(server: &common::TestServer, user_id: Uuid) {
+    sqlx::query(
+        "INSERT INTO users (id, username, email) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(format!("user_{}", &user_id.to_string()[..8]))
+    .bind(format!("user_{}@test.example", &user_id.to_string()[..8]))
+    .execute(&server.db)
+    .await
+    .expect("seed_user");
+}
+
+/// Insert a `running` agent row pointing at a mock A2A endpoint (a mockito server standing in
+/// for `oss/agents/github-hitl-agent`) so the orchestrator can both discover it
+/// (`AgentSelector::fetch_active_agents`, which filters on `status = 'running'`) and reach it
+/// over real HTTP (`resolve_endpoint`'s fallback to `agents.url`, since `FakeRuntime` reports no
+/// live container for it).
+async fn seed_running_agent(
+    server: &common::TestServer,
+    owner_id: Uuid,
+    name: &str,
+    url: &str,
+) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO agents (name, owner_id, url, status) VALUES ($1, $2, $3, 'running') RETURNING id",
+    )
+    .bind(name)
+    .bind(owner_id)
+    .bind(url)
+    .fetch_one(&server.db)
+    .await
+    .expect("seed_running_agent")
+}
+
+/// One OpenAI-compatible streaming SSE chunk carrying a single, complete tool call — the shape
+/// `rig-core-0.11.1`'s `send_compatible_streaming_request` recognizes as "entire tool call in one
+/// delta" (name and arguments both present in the same delta, per
+/// `providers/openai/streaming.rs`), so no follow-up chunk is needed. This is what turn 0 of
+/// `run_stream_inner` always goes through (`use_non_streaming = turn_idx > 0`) — the path the
+/// tracker's own Step 5 notes left without a black-box test (T5).
+fn streaming_tool_call_chunk(tool_name: &str, message: &str) -> String {
+    let arguments = json!({ "message": message }).to_string();
+    let chunk = json!({
+        "choices": [{
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "function": { "name": tool_name, "arguments": arguments }
+                }]
+            }
+        }]
+    });
+    format!("data: {chunk}\n\n")
+}
+
+/// A non-streaming A2A `SendMessage` reply in the `input_required` state — the sub-agent's own
+/// task/context ids are deliberately distinct from the outer turn's, exactly what T6 requires be
+/// verified rather than assumed. Mockito's default content-type is not `text/event-stream`, so
+/// `send_message_streaming_dialect` takes the non-streaming fallback branch (`a2a.rs:446-482`),
+/// the same branch `oss/agents/github-hitl-agent` and any agent without a live SSE stream hits.
+fn sub_agent_pause_body() -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {"task": {
+            "id": SUB_AGENT_TASK_ID,
+            "contextId": SUB_AGENT_CONTEXT_ID,
+            "status": {
+                "state": "TASK_STATE_INPUT_REQUIRED",
+                "message": {"parts": [{"text": "Which repository?"}]}
+            }
+        }}
+    })
+    .to_string()
+}
+
+fn orchestrator_request_body(text: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "message/stream",
+        "id": Uuid::new_v4().to_string(),
+        "params": {
+            "message": {
+                "messageId": Uuid::new_v4().to_string(),
+                "contextId": OUTER_CONTEXT_ID,
+                "role": "ROLE_USER",
+                "parts": [{ "text": text }]
+            },
+            "metadata": { "agent_id": "orchestrator" }
+        }
+    })
+}
+
+/// SAFETY: tests in this crate run serially (`#[serial]`), matching the same pattern
+/// `common::test_config` already uses for `JWT_SECRET`/`S3_*`/etc — no concurrent env mutation.
+unsafe fn set_openai_env(base_url: &str) {
+    unsafe {
+        std::env::set_var("OPENAI_BASE_URL", base_url);
+        std::env::set_var("OPENAI_API_KEY", "test-key-for-hitl-orchestrator-test");
+    }
+}
+
+/// T6: full path through the real `/api/orchestrator/a2a` HTTP surface — a real (mocked) LLM
+/// turn-0 streaming tool call, a real (mocked) sub-agent that pauses — asserts exactly one
+/// `hitl_requests` row is created with the sub-agent's own task/context ids, verifiably distinct
+/// from the outer turn's `context_id`, not just "a row exists".
+#[tokio::test]
+#[serial]
+async fn hitl_pause_persists_request_and_emits_awaiting_human_event() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+
+    let mut agent_mock_server = mockito::Server::new_async().await;
+    let agent_mock = agent_mock_server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(sub_agent_pause_body())
+        .expect(1)
+        .create_async()
+        .await;
+    let agent_id = seed_running_agent(
+        &server,
+        user_id,
+        "hitl-test-agent",
+        &agent_mock_server.url(),
+    )
+    .await;
+
+    let tool_name = format!(
+        "call_agent_{}",
+        "hitl-test-agent".replace(['-', ' ', '.', '/'], "_")
+    );
+    let mut llm_mock_server = mockito::Server::new_async().await;
+    let llm_mock = llm_mock_server
+        .mock("POST", "/chat/completions")
+        .with_status(200)
+        .with_body(streaming_tool_call_chunk(&tool_name, "please open a PR"))
+        .expect(1)
+        .create_async()
+        .await;
+    unsafe { set_openai_env(&llm_mock_server.url()) };
+
+    let resp = common::as_superuser(
+        server
+            .client
+            .post(server.url("/api/orchestrator/a2a"))
+            .json(&orchestrator_request_body("please help with the repo")),
+        &user_id.to_string(),
+        "hitl-tester",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("TASK_STATE_INPUT_REQUIRED"),
+        "expected an input-required status event in the SSE body, got: {body}"
+    );
+    assert!(
+        body.contains("awaiting_human"),
+        "expected the awaiting_human data part in the SSE body, got: {body}"
+    );
+
+    llm_mock.assert_async().await;
+    agent_mock.assert_async().await;
+
+    let rows = sqlx::query(
+        "SELECT kind, origin, task_id, context_id, chat_session_id, owner_user_id, agent_id
+         FROM hitl_requests WHERE agent_id = $1",
+    )
+    .bind(agent_id)
+    .fetch_all(&server.db)
+    .await
+    .unwrap();
+
+    assert_eq!(rows.len(), 1, "expected exactly one hitl_requests row");
+    let row = &rows[0];
+    assert_eq!(row.get::<String, _>("kind"), "input_required");
+    assert_eq!(row.get::<String, _>("origin"), "orchestrator");
+    assert_eq!(
+        row.get::<Option<String>, _>("task_id").as_deref(),
+        Some(SUB_AGENT_TASK_ID)
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("context_id").as_deref(),
+        Some(SUB_AGENT_CONTEXT_ID)
+    );
+    // The sub-agent's own context_id must be distinct from the outer turn's — the whole point of
+    // capturing it at the A2A client layer (Step 2) instead of reusing the caller's context_id.
+    assert_ne!(
+        row.get::<Option<String>, _>("context_id").as_deref(),
+        Some(OUTER_CONTEXT_ID)
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("chat_session_id").as_deref(),
+        Some(OUTER_CONTEXT_ID)
+    );
+    assert_eq!(row.get::<Uuid, _>("owner_user_id"), user_id);
+
+    server.cleanup().await;
+}
+
+/// T13: a forced persistence failure — here, a real violation of `uq_hitl_pending_per_task`
+/// (`0007_hitl.sql`'s "at most one open pause per A2A task" guard), triggered by pre-seeding a
+/// `pending` row for the exact `task_id` the sub-agent's mocked pause response will report — must
+/// yield a hard SSE error, never a fake `completed`/success. Exercises the exact requirement
+/// Step 6's design states explicitly: "On a persistence failure, emit a hard SSE error — never a
+/// fake success." (An FK violation via an unauthenticated/nonexistent user was tried first and
+/// rejected: `require_auth` itself checks the calling user still exists in `users` — "session user
+/// no longer exists" — so that path never reaches the handler at all, let alone the insert.)
+#[tokio::test]
+#[serial]
+async fn hitl_pause_persistence_failure_yields_sse_error_not_fake_success() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+
+    let mut agent_mock_server = mockito::Server::new_async().await;
+    let agent_mock = agent_mock_server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(sub_agent_pause_body())
+        .expect(1)
+        .create_async()
+        .await;
+    let agent_id = seed_running_agent(
+        &server,
+        user_id,
+        "hitl-test-agent-2",
+        &agent_mock_server.url(),
+    )
+    .await;
+
+    // Pre-seed a conflicting `pending` row for the same task_id the sub-agent mock will report —
+    // `uq_hitl_pending_per_task` allows only one, so the orchestrator's own insert must fail.
+    sqlx::query(
+        r#"INSERT INTO hitl_requests (kind, origin, agent_id, owner_user_id, task_id, status, question)
+           VALUES ('input_required', 'orchestrator', $1, $2, $3, 'pending', '{}'::jsonb)"#,
+    )
+    .bind(agent_id)
+    .bind(user_id)
+    .bind(SUB_AGENT_TASK_ID)
+    .execute(&server.db)
+    .await
+    .expect("seed conflicting hitl_requests row");
+
+    let tool_name = format!(
+        "call_agent_{}",
+        "hitl-test-agent-2".replace(['-', ' ', '.', '/'], "_")
+    );
+    let mut llm_mock_server = mockito::Server::new_async().await;
+    let llm_mock = llm_mock_server
+        .mock("POST", "/chat/completions")
+        .with_status(200)
+        .with_body(streaming_tool_call_chunk(&tool_name, "please open a PR"))
+        .expect(1)
+        .create_async()
+        .await;
+    unsafe { set_openai_env(&llm_mock_server.url()) };
+
+    let resp = common::as_superuser(
+        server
+            .client
+            .post(server.url("/api/orchestrator/a2a"))
+            .json(&orchestrator_request_body("please help with the repo")),
+        &user_id.to_string(),
+        "hitl-tester-2",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap();
+    assert_eq!(status, 200, "body: {body}");
+    assert!(
+        body.contains("TASK_STATE_FAILED"),
+        "a persistence failure must surface as a hard SSE error, not a fake success: {body}"
+    );
+    assert!(
+        !body.contains("TASK_STATE_COMPLETED"),
+        "must never report completed after a failed persistence write: {body}"
+    );
+
+    llm_mock.assert_async().await;
+    agent_mock.assert_async().await;
+
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM hitl_requests WHERE task_id = $1")
+        .bind(SUB_AGENT_TASK_ID)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "only the pre-seeded row should exist — the conflicting insert must not have landed a second row"
+    );
+
+    server.cleanup().await;
+}

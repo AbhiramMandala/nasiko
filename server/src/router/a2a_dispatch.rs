@@ -614,6 +614,84 @@ async fn orchestrator_stream(
                             ))));
                             content_started = true;
                         }
+                        OrchestratorEvent::AwaitingHuman { agent, agent_id, pause } => {
+                            // Close out the flow_steps row this pause interrupted instead of
+                            // leaving it at 'running' forever — only ToolResult (never sent on a
+                            // pause) closed it before. Keyed on (flow_id, agent_name, running)
+                            // rather than step_order/turn: this event carries no turn number.
+                            let _ = sqlx::query(
+                                "UPDATE flow_steps SET status = 'awaiting_human', completed_at = now()
+                                 WHERE flow_id = $1 AND agent_name = $2 AND status = 'running'",
+                            )
+                            .bind(&flow_id_cleanup)
+                            .bind(&agent)
+                            .execute(&db)
+                            .await;
+
+                            let hitl_kind = match pause.kind {
+                                a2a::AwaitingHumanKind::InputRequired => "input_required",
+                                a2a::AwaitingHumanKind::AuthRequired => "auth_required",
+                            };
+
+                            // hitl_requests.agent_id is a real FK to agents(id) — agent_id here is
+                            // always the sub-agent's own UUID string (AgentInfo::id, set from the
+                            // agents-table row this orchestrator discovered, never a display name).
+                            let persisted = match Uuid::parse_str(&agent_id) {
+                                Ok(sub_agent_id) => {
+                                    let question = json!({
+                                        "message": pause.message,
+                                        "metadata": pause.metadata,
+                                    });
+                                    // resume_state.phase starts here so the (not-yet-built) resume
+                                    // dispatcher's claim query has something to check against —
+                                    // see docs/HITL_ORCHESTRATOR_INTEGRATION.md §6.1.
+                                    let resume_state = json!({ "phase": "sub_agent_pending" });
+                                    sqlx::query(
+                                        r#"INSERT INTO hitl_requests
+                                             (kind, origin, agent_id, owner_user_id, task_id,
+                                              context_id, chat_session_id, question, resume_state)
+                                           VALUES ($1, 'orchestrator', $2, $3, $4, $5, $6, $7, $8)"#,
+                                    )
+                                    .bind(hitl_kind)
+                                    .bind(sub_agent_id)
+                                    .bind(user_id)
+                                    .bind(&pause.task_id)
+                                    .bind(&pause.context_id)
+                                    .bind(&context_id)
+                                    .bind(&question)
+                                    .bind(&resume_state)
+                                    .execute(&db)
+                                    .await
+                                    .map_err(|e| e.to_string())
+                                }
+                                Err(e) => Err(e.to_string()),
+                            };
+
+                            // Never report a fake success: if the pending question couldn't be
+                            // recorded, the human will never see it, so the turn must fail loudly
+                            // rather than silently close the stream as if it were fine.
+                            if let Err(e) = persisted {
+                                tracing::error!(error = %e, %agent, "failed to persist HITL pending question");
+                                yield Ok(to_sse(a2a::status_event(a2a::failed(
+                                    &task_id, &context_id,
+                                    &format!("could not record pending question for {agent}: {e}"),
+                                ))));
+                                break;
+                            }
+
+                            // NOTE: no chat_messages checkpoint is written here yet — how a
+                            // resumed-turn checkpoint should be tagged in chat_messages is still
+                            // an open decision (tracker's "Open decision 3" / review finding S5);
+                            // writing one now would mean guessing a shape the resume dispatcher
+                            // (Step 7, not yet built) might not actually read.
+                            let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
+                                "type": "awaiting_human",
+                                "agent": agent,
+                                "message": pause.message,
+                            })));
+                            yield Ok(to_sse(a2a::status_event(a2a::awaiting_human(&task_id, &context_id, pause.kind, msg))));
+                            break;
+                        }
                         OrchestratorEvent::Done { .. } => {
                             if content_started {
                                 yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
