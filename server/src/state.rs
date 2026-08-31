@@ -71,11 +71,12 @@ impl AppState {
     ) -> Self {
         let db = PgPool::connect(&config.database_url)
             .await
-            .expect("failed to connect to postgres");
+            .unwrap_or_else(|e| panic!("{}", pg_connect_error_message(&config.database_url, &e)));
         Self::from_config_with_db(config, auth, runtime, db).await
     }
 
     pub async fn run_migrations(db: &PgPool) {
+        ensure_pg_extensions(db).await;
         sqlx::migrate!("../migrations")
             .set_ignore_missing(true)
             .run(db)
@@ -236,23 +237,6 @@ impl AppState {
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
         let worker_state = state.clone();
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
-
-        // Resume dispatcher (M6, shared across every HITL origin, lives in
-        // oss/hitl): pushes a resolved hitl_requests row's decision back into
-        // the paused agent conversation. This is only the composition-root
-        // wiring — the claim/lease loop and the outbound-push transport are
-        // both owned by nasiko_hitl, not this crate.
-        let resume_notifier: Arc<dyn nasiko_hitl::ResumeNotifier> =
-            Arc::new(nasiko_hitl::RuntimeResumeNotifier::new(
-                state.db.clone(),
-                state.runtime.clone(),
-                state.http_client.clone(),
-            ));
-        tokio::spawn(nasiko_hitl::dispatcher::run(
-            state.db.clone(),
-            resume_notifier,
-            nasiko_hitl::DispatcherConfig::default(),
-        ));
 
         // Container-hours meter: records per-instance run sessions for billing
         // (see agents/hours_meter.rs). 0 disables — used by tests that drive
@@ -464,5 +448,92 @@ impl AppState {
         }
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
         env
+    }
+}
+
+/// Postgres extensions the migrations require (`0001_schema.sql` runs
+/// `CREATE EXTENSION IF NOT EXISTS` for each). Invisible on the in-cluster
+/// `pgvector/pgvector` image, which ships all three preinstalled.
+const REQUIRED_PG_EXTENSIONS: [&str; 3] = ["pgcrypto", "pg_trgm", "vector"];
+
+/// Creates the required extensions before the migration runner touches them,
+/// so a managed Postgres that hasn't installed or allowlisted one (Azure
+/// Flexible Server, RDS, Cloud SQL all gate `CREATE EXTENSION`) fails fast
+/// with an actionable message instead of a raw mid-migration SQL error.
+async fn ensure_pg_extensions(db: &PgPool) {
+    for ext in REQUIRED_PG_EXTENSIONS {
+        if let Err(err) = sqlx::query(&format!("CREATE EXTENSION IF NOT EXISTS \"{ext}\""))
+            .execute(db)
+            .await
+        {
+            panic!("{}", pg_extension_error_message(ext, &err.to_string()));
+        }
+    }
+}
+
+/// Explains a startup connect failure by naming the address it failed against.
+///
+/// sqlx reports a filtered or blackholed host as a bare `PoolTimedOut` after the
+/// acquire timeout elapses, with nothing logged in the meantime — so the most
+/// likely managed-Postgres misconfiguration (a firewall rule or egress
+/// NetworkPolicy that never admits the control plane) reads as "the platform
+/// hung" rather than "nothing answered at this address". The credentials the DSN
+/// also carries are never included: the options are parsed rather than the
+/// string printed, so there is no path by which the password reaches a log.
+pub fn pg_connect_error_message(database_url: &str, err: &sqlx::Error) -> String {
+    use std::str::FromStr;
+    let target = sqlx::postgres::PgConnectOptions::from_str(database_url)
+        .map(|o| {
+            format!(
+                "{}:{}/{}",
+                o.get_host(),
+                o.get_port(),
+                o.get_database().unwrap_or("<no database>")
+            )
+        })
+        .unwrap_or_else(|e| format!("<unparseable DATABASE_URL: {e}>"));
+    format!(
+        "failed to connect to Postgres at {target}: {err}\n\
+         A timeout here means nothing answered, not that the credentials are \
+         wrong — check that the host and port are reachable from the control \
+         plane (managed Postgres: firewall rule, private endpoint, or the \
+         egress NetworkPolicy derived from `postgres.external.egress_cidr`), \
+         and that `sslmode` matches what the server requires."
+    )
+}
+
+fn pg_extension_error_message(ext: &str, err: &str) -> String {
+    format!(
+        "required Postgres extension \"{ext}\" is unavailable: {err}\n\
+         The migrations need pgcrypto, pg_trgm, and vector. On a managed \
+         Postgres, install/allowlist them on the server first — e.g. Azure \
+         Flexible Server: `az postgres flexible-server parameter set \
+         --name azure.extensions --value VECTOR,PG_TRGM,PGCRYPTO` — then \
+         restart the control plane."
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_error_names_the_address_but_never_the_password() {
+        let err = sqlx::Error::PoolTimedOut;
+        let msg = pg_connect_error_message(
+            "postgres://nasiko_admin:sup3rs3cret@pg.internal:5432/nasiko_prod?sslmode=require",
+            &err,
+        );
+        assert!(msg.contains("pg.internal:5432/nasiko_prod"));
+        assert!(msg.contains("egress_cidr"));
+        assert!(!msg.contains("sup3rs3cret"));
+    }
+
+    #[test]
+    fn extension_error_names_the_extension_and_the_remedy() {
+        let msg = pg_extension_error_message("vector", "permission denied");
+        assert!(msg.contains("\"vector\""));
+        assert!(msg.contains("permission denied"));
+        assert!(msg.contains("azure.extensions"));
     }
 }
