@@ -124,7 +124,7 @@ node ui/scripts/gen-dsl-catalog.mjs --check
 # architecture rules
 node ui/scripts/ui-lint.mjs
 
-# platform-layer tests
+# hermetic tests — platform layer, streaming, and the surface runtime
 node --test ui/tests/*.test.mjs
 ```
 
