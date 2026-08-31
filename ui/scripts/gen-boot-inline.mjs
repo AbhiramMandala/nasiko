@@ -18,12 +18,9 @@
  *   node ui/scripts/gen-boot-inline.mjs --check    # fail if any page is stale
  */
 import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve, dirname, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve, relative } from 'node:path';
 import { glob } from 'node:fs/promises';
-
-const UI = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const REPO = resolve(UI, '..');
+import { REPO, pageGlobs } from './editions.mjs';
 
 /* Keys mirror the shell: the rail flag app-header.js persists, and the theme key
    theme.js owns. Minified by hand rather than by a tool, because it ships as
@@ -54,11 +51,14 @@ const stale = [];
 let written = 0;
 let scanned = 0;
 
-for (const pattern of ['ui/oss/**/*.html', 'ui/ee/**/*.html']) {
+// Which pages exist is each edition's own declaration (ui/<edition>/edition.json,
+// `sources.pages`), not a list here: this script is published to the public repo,
+// where naming a private edition's directory would both leak the private layout
+// and glob a tree that is not there. See ui/scripts/editions.mjs.
+for (const pattern of pageGlobs()) {
   for await (const entry of glob(pattern, { cwd: REPO })) {
     const rel = entry.replace(/\\/g, '/');
-    // ui/ee/app/ is a vendored, generated Flutter build — not ours to rewrite.
-    if (rel.includes('/node_modules/') || rel.includes('/dist/') || rel.startsWith('ui/ee/app/')) continue;
+    if (rel.includes('/node_modules/') || rel.includes('/dist/')) continue;
     const path = resolve(REPO, rel);
     const source = readFileSync(path, 'utf8');
     const match = BLOCK_RE.exec(source);

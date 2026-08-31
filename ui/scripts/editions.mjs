@@ -25,7 +25,8 @@
  *     ],
  *     "sources": {
  *       "lint": ["*.{js,css,html}"],        // globs, relative to the edition dir
- *       "imports": ["*.js"]
+ *       "imports": ["*.js"],
+ *       "pages": ["*.html"]                 // page shells the generators rewrite
  *     },
  *     "mounts": { "/components/": "components" },  // server mount -> subdir
  *     "privateElements": ["users-page"]     // custom elements this edition owns
@@ -64,6 +65,7 @@ function load(name) {
     })),
     lintGlobs: (raw.sources?.lint ?? []).map((g) => `${dir}/${g}`),
     importGlobs: (raw.sources?.imports ?? []).map((g) => `${dir}/${g}`),
+    pageGlobs: (raw.sources?.pages ?? []).map((g) => `${dir}/${g}`),
     mounts: Object.entries(raw.mounts ?? {}).map(([spec, sub]) => ({
       spec,
       prefix: `${dir}/${sub}/`,
@@ -96,6 +98,15 @@ export const lintGlobs = () => EDITIONS.flatMap((e) => e.lintGlobs);
 
 /** Import-resolution globs across every edition, repo-relative. */
 export const importGlobs = () => EDITIONS.flatMap((e) => e.importGlobs);
+
+/**
+ * Page-shell globs across every edition, repo-relative — the HTML the head
+ * generators rewrite. Separate from `lint` because an edition can legitimately
+ * hold HTML that is not a page shell of its own (a vendored build, a fixture),
+ * and because a checkout without a private edition must simply find fewer pages
+ * rather than carry that edition's name in a published script.
+ */
+export const pageGlobs = () => EDITIONS.flatMap((e) => e.pageGlobs);
 
 /** The edition a repo-relative path belongs to, or null. */
 export const editionOf = (rel) => EDITIONS.find((e) => rel.startsWith(`${e.dir}/`)) ?? null;

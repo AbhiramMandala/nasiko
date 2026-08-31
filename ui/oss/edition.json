@@ -4,6 +4,7 @@
   "layer": "application",
   "sources": {
     "lint": ["*.{js,css,html}"],
-    "imports": ["*.js"]
+    "imports": ["*.js"],
+    "pages": ["*.html"]
   }
 }
