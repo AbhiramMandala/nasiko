@@ -237,6 +237,23 @@ impl AppState {
         let worker_state = state.clone();
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
 
+        // Resume dispatcher (M6, shared across every HITL origin, lives in
+        // oss/hitl): pushes a resolved hitl_requests row's decision back into
+        // the paused agent conversation. This is only the composition-root
+        // wiring — the claim/lease loop and the outbound-push transport are
+        // both owned by nasiko_hitl, not this crate.
+        let resume_notifier: Arc<dyn nasiko_hitl::ResumeNotifier> =
+            Arc::new(nasiko_hitl::RuntimeResumeNotifier::new(
+                state.db.clone(),
+                state.runtime.clone(),
+                state.http_client.clone(),
+            ));
+        tokio::spawn(nasiko_hitl::dispatcher::run(
+            state.db.clone(),
+            resume_notifier,
+            nasiko_hitl::DispatcherConfig::default(),
+        ));
+
         // Container-hours meter: records per-instance run sessions for billing
         // (see agents/hours_meter.rs). 0 disables — used by tests that drive
         // reconcile_once directly.

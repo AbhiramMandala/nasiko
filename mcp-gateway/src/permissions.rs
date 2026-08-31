@@ -597,7 +597,11 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
         }
     } else {
         let built = crate::credentials::build_generic_servers(state, user_id).await?;
-        match built.iter().find(|s| s.connector_id == connector_id) {
+        match built
+            .configs
+            .iter()
+            .find(|s| s.connector_id == connector_id)
+        {
             Some(cfg) => state
                 .providers
                 .mcp

@@ -15,7 +15,7 @@ use crate::provider::generic::DEFAULT_CALL_TIMEOUT;
 use crate::router;
 use crate::session::{self, ResolvedSession};
 use crate::state::McpState;
-use crate::types::{MCPServerConfig, PROTOCOL_VERSION, ServerType, codes};
+use crate::types::{ConnectorUnusable, MCPServerConfig, PROTOCOL_VERSION, ServerType, codes};
 
 fn ok(req_id: &Value, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": req_id, "result": result })
@@ -158,7 +158,24 @@ pub async fn handle_tools_call(
 
     let (server, original) = match router::route_tool(tool_name, &resolved.servers) {
         Ok(pair) => pair,
-        Err(e) => return err(req_id, codes::INVALID_PARAMS, e.to_string()),
+        Err(e) => {
+            if let Some((connector_id, info)) =
+                router::unusable_reason_for_prefix(tool_name, &resolved.unusable_connectors)
+                && info.reason == ConnectorUnusable::AuthRequired
+            {
+                return handle_auth_required(
+                    state,
+                    user_id,
+                    req_id,
+                    perms.agent_id,
+                    connector_id,
+                    &info.name,
+                    traceparent,
+                )
+                .await;
+            }
+            return err(req_id, codes::INVALID_PARAMS, e.to_string());
+        }
     };
 
     // ── Generic MCP tool: Layer 1 (reachability) then Layer 2 (decide) ─────
@@ -189,14 +206,39 @@ pub async fn handle_tools_call(
                 );
             }
             ToolAccess::Ask => {
-                return err_data(
-                    req_id,
-                    codes::TOOL_ASK,
-                    format!(
-                        "Tool '{tool_name}' requires user approval. Grant access in the agent settings."
-                    ),
-                    json!({ "server": server.name }),
-                );
+                match resolve_tool_approval_retry(
+                    state,
+                    perms.agent_id,
+                    server.connector_id,
+                    &original,
+                    traceparent,
+                )
+                .await
+                {
+                    RetryOutcome::Proceed => {}
+                    RetryOutcome::Denied => {
+                        return err(
+                            req_id,
+                            codes::TOOL_BLOCKED,
+                            format!(
+                                "Tool '{tool_name}' was denied by the user. Do not retry this call."
+                            ),
+                        );
+                    }
+                    RetryOutcome::AskAgain => {
+                        return ask_with_hitl_request(
+                            state,
+                            user_id,
+                            perms.agent_id,
+                            server.connector_id,
+                            &original,
+                            &server.name,
+                            req_id,
+                            traceparent,
+                        )
+                        .await;
+                    }
+                }
             }
             ToolAccess::Allowed => {}
         }
@@ -224,14 +266,39 @@ pub async fn handle_tools_call(
                 );
             }
             ToolAccess::Ask => {
-                return err_data(
-                    req_id,
-                    codes::TOOL_ASK,
-                    format!(
-                        "Tool '{tool_name}' requires user approval. Grant access in the agent settings."
-                    ),
-                    json!({ "server": "composio" }),
-                );
+                match resolve_tool_approval_retry(
+                    state,
+                    perms.agent_id,
+                    cid,
+                    tool_name,
+                    traceparent,
+                )
+                .await
+                {
+                    RetryOutcome::Proceed => {}
+                    RetryOutcome::Denied => {
+                        return err(
+                            req_id,
+                            codes::TOOL_BLOCKED,
+                            format!(
+                                "Tool '{tool_name}' was denied by the user. Do not retry this call."
+                            ),
+                        );
+                    }
+                    RetryOutcome::AskAgain => {
+                        return ask_with_hitl_request(
+                            state,
+                            user_id,
+                            perms.agent_id,
+                            cid,
+                            tool_name,
+                            "composio",
+                            req_id,
+                            traceparent,
+                        )
+                        .await;
+                    }
+                }
             }
             ToolAccess::Allowed => {}
         }
@@ -273,7 +340,16 @@ pub async fn handle_tools_call(
     {
         let mut allowed: Vec<Value> = Vec::new();
         let mut blocked_slugs: Vec<String> = Vec::new();
-        let mut ask_slugs: Vec<String> = Vec::new();
+        // A previously resolved `tool_approval` decision found on retry
+        // (M8) — rejected, so this slug fails outright rather than being
+        // re-asked; tracked separately from `blocked_slugs` since the
+        // message ("denied by the user") is distinguishable from a
+        // `Stance::Block`/disabled-connector denial.
+        let mut denied_slugs: Vec<String> = Vec::new();
+        // (connector_id, slug) — the connector id is kept alongside each
+        // asked slug so a pending `tool_approval` row can be persisted per
+        // tool below; the message text still renders as a bare slug list.
+        let mut ask_tools: Vec<(Uuid, String)> = Vec::new();
 
         for t in &tools_arg {
             let slug = t.get("tool_slug").and_then(|v| v.as_str()).unwrap_or("");
@@ -285,30 +361,80 @@ pub async fn handle_tools_call(
             match resolved.toolkit_to_connector.get(&toolkit) {
                 Some(&cid) => match perms.decide(cid, slug) {
                     ToolAccess::Denied => blocked_slugs.push(slug.to_string()),
-                    ToolAccess::Ask => ask_slugs.push(slug.to_string()),
+                    ToolAccess::Ask => {
+                        match resolve_tool_approval_retry(
+                            state,
+                            perms.agent_id,
+                            cid,
+                            slug,
+                            traceparent,
+                        )
+                        .await
+                        {
+                            RetryOutcome::Proceed => allowed.push(t.clone()),
+                            RetryOutcome::Denied => denied_slugs.push(slug.to_string()),
+                            RetryOutcome::AskAgain => ask_tools.push((cid, slug.to_string())),
+                        }
+                    }
                     ToolAccess::Allowed => allowed.push(t.clone()),
                 },
                 None => allowed.push(t.clone()),
             }
         }
 
-        if allowed.is_empty() && (!blocked_slugs.is_empty() || !ask_slugs.is_empty()) {
-            if !ask_slugs.is_empty() {
+        if allowed.is_empty()
+            && (!blocked_slugs.is_empty() || !denied_slugs.is_empty() || !ask_tools.is_empty())
+        {
+            if !ask_tools.is_empty() {
+                let mut hitl_request_ids = Vec::with_capacity(ask_tools.len());
+                for (cid, slug) in &ask_tools {
+                    if let Some(id) = create_tool_approval_id(
+                        state,
+                        user_id,
+                        perms.agent_id,
+                        *cid,
+                        slug,
+                        traceparent,
+                    )
+                    .await
+                    {
+                        hitl_request_ids.push(id);
+                    }
+                }
+                let ask_slugs: Vec<&String> = ask_tools.iter().map(|(_, s)| s).collect();
                 return err_data(
                     req_id,
                     codes::TOOL_ASK,
                     format!("Tool(s) require user approval for this agent: {ask_slugs:?}."),
-                    json!({ "server": "composio" }),
+                    json!({ "server": "composio", "hitl_request_ids": hitl_request_ids }),
+                );
+            }
+            if blocked_slugs.is_empty() {
+                return err(
+                    req_id,
+                    codes::TOOL_BLOCKED,
+                    format!("Tool(s) were denied by the user. Do not retry: {denied_slugs:?}."),
+                );
+            }
+            if denied_slugs.is_empty() {
+                return err(
+                    req_id,
+                    codes::TOOL_BLOCKED,
+                    format!("All requested tools are blocked for this agent: {blocked_slugs:?}."),
                 );
             }
             return err(
                 req_id,
                 codes::TOOL_BLOCKED,
-                format!("All requested tools are blocked for this agent: {blocked_slugs:?}."),
+                format!(
+                    "All requested tools are blocked or were denied for this agent: \
+                     blocked={blocked_slugs:?}, denied={denied_slugs:?}."
+                ),
             );
         }
-        if !blocked_slugs.is_empty() || !ask_slugs.is_empty() {
-            tracing::info!(user = %user_id, agent = %perms.agent_id, ?blocked_slugs, ?ask_slugs, forwarding = allowed.len(), "partial composio multi-execute filter");
+        if !blocked_slugs.is_empty() || !denied_slugs.is_empty() || !ask_tools.is_empty() {
+            let ask_slugs: Vec<&String> = ask_tools.iter().map(|(_, s)| s).collect();
+            tracing::info!(user = %user_id, agent = %perms.agent_id, ?blocked_slugs, ?denied_slugs, ?ask_slugs, forwarding = allowed.len(), "partial composio multi-execute filter");
             arguments["tools"] = json!(allowed);
         }
     }
@@ -377,6 +503,273 @@ pub async fn handle_tools_call(
             )
         }
     }
+}
+
+/// A tool call's connector needs the user to (re-)authenticate
+/// (`ConnectorUnusable::AuthRequired`, from M1's credential-failure
+/// plumbing) — persist a pending `hitl_requests` row (M2's store) and return
+/// `codes::AUTH_REQUIRED` instead of the generic "connector not available"
+/// error, so the agent (and, through it, the human) gets a distinguishable,
+/// actionable signal instead of an indistinguishable dead end.
+///
+/// Deliberately does not build a fresh OAuth `auth_url` here (that's
+/// `oauth::begin_authorization`, a side-effecting discovery/DCR call plus a
+/// connector-row mutation — out of scope for detection) and does not push or
+/// auto-retry anything (the resume dispatcher doesn't exist yet). The human
+/// re-authenticates via the existing `POST /api/mcp/connect` flow; a future
+/// milestone can enrich `question`/wire in the dispatcher without touching
+/// this detection path.
+async fn handle_auth_required(
+    state: &McpState,
+    user_id: Uuid,
+    req_id: &Value,
+    agent_id: Uuid,
+    connector_id: Uuid,
+    connector_name: &str,
+    traceparent: Option<&str>,
+) -> Value {
+    let generic_error = || {
+        err(
+            req_id,
+            codes::INVALID_PARAMS,
+            format!(
+                "Connector '{connector_name}' is not available for this agent. \
+                 It may be disabled in the agent's permission settings."
+            ),
+        )
+    };
+
+    // No traceparent at all means nothing to correlate a resumable
+    // conversation against — fall back to today's generic error rather than
+    // persist a HITL row no future dispatcher could ever address.
+    let Some(context_id) = session::resolve_context_id(state, traceparent).await else {
+        tracing::warn!(
+            connector = %connector_name, %connector_id,
+            "auth_required detected but no traceparent to resolve a context_id from — falling back to generic error"
+        );
+        return generic_error();
+    };
+
+    let question = json!({
+        "connector_id": connector_id,
+        "connector": connector_name,
+        "message": format!(
+            "Authentication for connector '{connector_name}' is missing or no longer works. \
+             A human must re-authenticate before this tool can be used again."
+        ),
+    });
+
+    match nasiko_hitl::repo::create_pending_auth_required(
+        &state.db,
+        nasiko_hitl::NewAuthRequired {
+            agent_id,
+            owner_user_id: user_id,
+            connector_id,
+            context_id,
+            question,
+        },
+    )
+    .await
+    {
+        Ok(request) => err_data(
+            req_id,
+            codes::AUTH_REQUIRED,
+            format!(
+                "Authentication required for connector '{connector_name}'. A request has been \
+                 recorded (id {}); ask the user to re-authenticate, then retry this tool.",
+                request.id
+            ),
+            json!({ "connector": connector_name, "connector_id": connector_id, "hitl_request_id": request.id }),
+        ),
+        Err(e) => {
+            tracing::error!(connector = %connector_name, %connector_id, error = %e, "failed to persist auth_required hitl request");
+            generic_error()
+        }
+    }
+}
+
+/// Best-effort: persist a pending `tool_approval` row for one `(connector,
+/// tool)` `Stance::Ask` decision (M2's store), returning its id. `None` when
+/// there's no `traceparent` to resolve a `context_id` from (required by
+/// `chk_hitl_tool_approval_identity`), or on a DB failure (logged) — either
+/// way the caller still returns `TOOL_ASK`; persistence never changes the
+/// ask/deny decision itself, only whether a row exists to resolve against
+/// later. Shared by the single-tool ask path (`ask_with_hitl_request`) and
+/// the `COMPOSIO_MULTI_EXECUTE_TOOL` batch-ask path, which persists one row
+/// per asked tool.
+async fn create_tool_approval_id(
+    state: &McpState,
+    user_id: Uuid,
+    agent_id: Uuid,
+    connector_id: Uuid,
+    tool_name: &str,
+    traceparent: Option<&str>,
+) -> Option<Uuid> {
+    let context_id = match session::resolve_context_id(state, traceparent).await {
+        Some(id) => id,
+        None => {
+            tracing::warn!(
+                tool = %tool_name, %connector_id,
+                "tool_approval ask with no traceparent to resolve a context_id from — skipping hitl persistence"
+            );
+            return None;
+        }
+    };
+
+    let question = json!({
+        "connector_id": connector_id,
+        "tool_name": tool_name,
+        "message": format!("Tool '{tool_name}' requires user approval before it can run."),
+    });
+
+    match nasiko_hitl::repo::create_pending_tool_approval(
+        &state.db,
+        nasiko_hitl::NewToolApproval {
+            agent_id,
+            owner_user_id: user_id,
+            connector_id,
+            tool_name: tool_name.to_string(),
+            context_id,
+            question,
+        },
+    )
+    .await
+    {
+        Ok(request) => Some(request.id),
+        Err(e) => {
+            tracing::error!(tool = %tool_name, %connector_id, error = %e, "failed to persist tool_approval hitl request");
+            None
+        }
+    }
+}
+
+/// Outcome of checking whether an `Ask`-decision tool call has already been
+/// resolved by a human, for M7's retry-matching lookup
+/// ([`resolve_tool_approval_retry`]).
+enum RetryOutcome {
+    /// A session grant is active, or a previously approved `once`-scope
+    /// request was atomically claimed — proceed with the tool call as if
+    /// `Stance::Allow` had matched.
+    Proceed,
+    /// A previously rejected request was atomically claimed — fail the call
+    /// outright instead of asking again.
+    Denied,
+    /// Nothing to resume against (no session grant, no unconsumed resolved
+    /// row, or no `context_id` to look either up by) — ask, same as before M7.
+    AskAgain,
+}
+
+/// M7's retry-matching lookup: called immediately after `perms.decide()`
+/// returns `Ask`, before falling back to the normal ask-and-persist path.
+/// Checks, in order: (1) an unexpired `mcp_session_tool_grants` row for this
+/// exact `(agent_id, connector_id, tool_name, context_id)` tuple — reusable
+/// for the rest of the conversation, never consumed; (2) failing that, an
+/// atomic claim ([`nasiko_hitl::repo::claim_resolved_tool_approval`]) of the
+/// most recent resolved, unconsumed row for the same tuple — single-use,
+/// covers both an approved `once` retry and a rejected retry. A DB error at
+/// either step degrades to `AskAgain` (logged) rather than failing the call
+/// outright — the pre-M7 behavior (ask again) is always a safe fallback.
+/// Takes a single `(connector_id, tool_name)` pair, so M8 reuses it unchanged
+/// per-slug inside the `COMPOSIO_MULTI_EXECUTE_TOOL` batch loop, alongside its
+/// two pre-existing single-tool call sites.
+async fn resolve_tool_approval_retry(
+    state: &McpState,
+    agent_id: Uuid,
+    connector_id: Uuid,
+    tool_name: &str,
+    traceparent: Option<&str>,
+) -> RetryOutcome {
+    let Some(context_id) = session::resolve_context_id(state, traceparent).await else {
+        return RetryOutcome::AskAgain;
+    };
+
+    match nasiko_hitl::repo::has_active_session_grant(
+        &state.db,
+        agent_id,
+        connector_id,
+        tool_name,
+        &context_id,
+    )
+    .await
+    {
+        Ok(true) => return RetryOutcome::Proceed,
+        Ok(false) => {}
+        Err(e) => {
+            tracing::error!(
+                %agent_id, %connector_id, tool = %tool_name, error = %e,
+                "session grant lookup failed — falling back to ask"
+            );
+            return RetryOutcome::AskAgain;
+        }
+    }
+
+    match nasiko_hitl::repo::claim_resolved_tool_approval(
+        &state.db,
+        agent_id,
+        connector_id,
+        tool_name,
+        &context_id,
+    )
+    .await
+    {
+        Ok(Some(row)) => {
+            let approved = row
+                .human_response
+                .as_ref()
+                .and_then(|r| r.get("decision"))
+                .and_then(Value::as_str)
+                == Some("approve");
+            if approved {
+                RetryOutcome::Proceed
+            } else {
+                RetryOutcome::Denied
+            }
+        }
+        Ok(None) => RetryOutcome::AskAgain,
+        Err(e) => {
+            tracing::error!(
+                %agent_id, %connector_id, tool = %tool_name, error = %e,
+                "tool_approval retry-claim failed — falling back to ask"
+            );
+            RetryOutcome::AskAgain
+        }
+    }
+}
+
+/// The single-tool `TOOL_ASK` response, enriched with a `hitl_request_id`
+/// when persistence (`create_tool_approval_id`) succeeds. The response shape
+/// and code are unchanged from before M4 when persistence doesn't happen —
+/// `hitl_request_id` is purely additive in `data`.
+#[allow(clippy::too_many_arguments)]
+async fn ask_with_hitl_request(
+    state: &McpState,
+    user_id: Uuid,
+    agent_id: Uuid,
+    connector_id: Uuid,
+    tool_name: &str,
+    connector_label: &str,
+    req_id: &Value,
+    traceparent: Option<&str>,
+) -> Value {
+    let mut data = json!({ "server": connector_label });
+    if let Some(id) = create_tool_approval_id(
+        state,
+        user_id,
+        agent_id,
+        connector_id,
+        tool_name,
+        traceparent,
+    )
+    .await
+    {
+        data["hitl_request_id"] = json!(id);
+    }
+    err_data(
+        req_id,
+        codes::TOOL_ASK,
+        format!("Tool '{tool_name}' requires user approval. Grant access in the agent settings."),
+        data,
+    )
 }
 
 /// A connection-level failure (refused/timeout/DNS) — as opposed to an
@@ -458,6 +851,7 @@ mod tests {
             }],
             connected_toolkits: vec!["gmail".into()],
             toolkit_to_connector: HashMap::from([("gmail".to_string(), cid)]),
+            unusable_connectors: HashMap::new(),
         }
     }
 
@@ -557,6 +951,7 @@ mod tests {
             }],
             connected_toolkits: vec![],
             toolkit_to_connector: HashMap::new(),
+            unusable_connectors: HashMap::new(),
         }
     }
 
@@ -705,6 +1100,11 @@ mod tests {
         )
         .await;
         assert_eq!(res["error"]["code"], json!(codes::TOOL_ASK), "{res}");
+        assert!(
+            res["error"]["data"].get("hitl_request_id").is_none(),
+            "no traceparent means no context_id to persist against — the response must not \
+             claim a hitl_request_id that doesn't exist: {res}"
+        );
     }
 
     #[tokio::test]
@@ -770,5 +1170,165 @@ mod tests {
             "a cross-toolkit meta-tool must not be blocked by the per-toolkit check: {res}"
         );
         hit.assert_async().await;
+    }
+
+    // ─── M3: AuthRequired routing ───────────────────────────────────────────
+
+    /// A resolved session with an empty `servers` list and one connector
+    /// recorded as unusable — mirrors what `session::resolve_session`
+    /// produces when a connector's credential is missing/expired/disabled.
+    fn unusable_mcp_session(cid: Uuid, reason: ConnectorUnusable, name: &str) -> ResolvedSession {
+        ResolvedSession {
+            servers: vec![],
+            connected_toolkits: vec![],
+            toolkit_to_connector: HashMap::new(),
+            unusable_connectors: HashMap::from([(
+                cid,
+                crate::types::UnusableConnector {
+                    reason,
+                    name: name.to_string(),
+                },
+            )]),
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_required_without_traceparent_falls_back_to_generic_error() {
+        // No traceparent means nothing to correlate a resumable conversation
+        // against; `resolve_context_id` short-circuits before touching the
+        // DB, so this stays hermetic even though `test_state()`'s pool can't
+        // reach a real Postgres. Confirms the pre-M3 message/code survive
+        // unchanged for this fallback.
+        let cid = Uuid::new_v4();
+        let resolved = unusable_mcp_session(cid, ConnectorUnusable::AuthRequired, "github");
+        let p = perms(&[], vec![]);
+        let tool = format!("{}__list_repos", crate::types::connector_prefix(cid));
+
+        let res = handle_tools_call(
+            &test_state(),
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": tool, "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+        )
+        .await;
+
+        assert_eq!(res["error"]["code"], json!(codes::INVALID_PARAMS), "{res}");
+        assert!(
+            res["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not available"),
+            "must fall back to the original generic message: {res}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_auth_required_reason_never_takes_the_auth_required_branch() {
+        // NotConfigured/MissingCredential must still produce today's generic
+        // "not available" error — only AuthRequired gets the new handling.
+        // A (well-formed but unresolvable) traceparent is deliberately
+        // supplied here: if the reason gate in `handle_tools_call` were ever
+        // loosened to match on `Some(_)` instead of `AuthRequired`
+        // specifically, this would start touching `state.db` — and, since
+        // `test_state()`'s pool can't reach a real Postgres, still degrade to
+        // the same generic error (not crash), but the whole point of the
+        // gate is to skip that DB work entirely for non-AuthRequired reasons.
+        let cid = Uuid::new_v4();
+        let resolved = unusable_mcp_session(cid, ConnectorUnusable::NotConfigured, "github");
+        let p = perms(&[], vec![]);
+        let tool = format!("{}__list_repos", crate::types::connector_prefix(cid));
+
+        let res = handle_tools_call(
+            &test_state(),
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": tool, "arguments": {} }),
+            &resolved,
+            &p,
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+        )
+        .await;
+
+        assert_eq!(res["error"]["code"], json!(codes::INVALID_PARAMS), "{res}");
+    }
+
+    // ─── M4: ToolApproval persistence ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn generic_mcp_ask_without_traceparent_returns_tool_ask_without_hitl_id() {
+        // Same "no context_id, no DB touch" guarantee as AuthRequired's own
+        // fallback (this test would hang/error against test_state()'s
+        // unreachable pool if the ask path unconditionally tried to
+        // persist) — Layer 2's Ask decision must still return TOOL_ASK even
+        // when there's nothing to persist against.
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let p = perms(&[cid], vec![rule(cid, "*", Stance::Ask)]);
+        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
+
+        let res = handle_tools_call(
+            &state,
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": tool, "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+        )
+        .await;
+
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_ASK), "{res}");
+        assert!(
+            res["error"]["data"].get("hitl_request_id").is_none(),
+            "no traceparent means nothing was persisted: {res}"
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_mcp_block_and_allow_are_unaffected_by_m4() {
+        // Preserve-existing-behavior guard: Denied and Allowed decisions
+        // never touch the new persistence path at all (only `Ask` does).
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
+
+        let blocked = handle_tools_call(
+            &state,
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": tool, "arguments": {} }),
+            &resolved,
+            &perms(&[cid], vec![rule(cid, "*", Stance::Block)]),
+            None,
+        )
+        .await;
+        assert_eq!(
+            blocked["error"]["code"],
+            json!(codes::TOOL_BLOCKED),
+            "{blocked}"
+        );
+
+        let disabled = handle_tools_call(
+            &state,
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": tool, "arguments": {} }),
+            &resolved,
+            &perms(&[], vec![]), // connector never enabled
+            None,
+        )
+        .await;
+        assert_eq!(
+            disabled["error"]["code"],
+            json!(codes::TOOL_BLOCKED),
+            "{disabled}"
+        );
     }
 }
