@@ -97,6 +97,9 @@ const SESSION_LIST_SELECT: &str = r#"
                THEN u.username || '-' || a.name
              ELSE a.name
            END AS agent_name,
+           COALESCE(a.metadata->>'source' IN (
+             'nasiko-cli-integration', 'nasiko-cli-coding-agent-router'
+           ), FALSE) AS is_coding_agent,
            lm.content AS last_message,
            agg.message_count,
            agg.trace_count,

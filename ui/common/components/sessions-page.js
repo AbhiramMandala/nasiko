@@ -214,7 +214,8 @@ class SessionsPage extends HTMLElement {
     const time = s.updated_at || s.created_at;
     const timeStr = time ? this.#formatDate(new Date(time)) : '—';
     const sessionId = s.session_id;
-    const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
+    const readOnly = s.is_coding_agent ? '&read_only=1' : '';
+    const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}${readOnly}`;
     const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
     // `total_tokens` is null when no usage was recorded at all (a BYO-key agent,
     // or messages predating usage tracking) and reads as "—"; a recorded 0 is a

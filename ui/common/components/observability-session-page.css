@@ -209,6 +209,16 @@
     flex-direction: column;
   }
 
+  .msg-assistant[data-trace-id] {
+    cursor: pointer;
+    border-radius: var(--radius-md);
+    transition: background-color 120ms ease, box-shadow 120ms ease;
+
+    &:hover { background: var(--bg-subtle); }
+    &:focus-visible { box-shadow: 0 0 0 2px var(--fg-brand); outline: none; }
+    &.is-trace-selected { background: var(--bg-subtle); box-shadow: inset 3px 0 0 var(--fg-brand); }
+  }
+
   .chat-turn-meta {
     display: flex;
     flex-wrap: wrap;

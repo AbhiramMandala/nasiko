@@ -13,6 +13,7 @@ mod common;
 
 use serde_json::{Value, json};
 use serial_test::serial;
+use uuid::Uuid;
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -203,6 +204,43 @@ async fn list_sessions_scoped_to_owner() {
     let data = page["data"].as_array().unwrap();
     assert_eq!(data.len(), 1, "admin should only see their own session");
     assert_eq!(data[0]["title"].as_str().unwrap(), "New chat");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn coding_agent_sessions_are_marked_for_read_only_observability_navigation() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let user_id = Uuid::parse_str(admin["user_id"].as_str().unwrap()).unwrap();
+    let agent_id: Uuid = sqlx::query_scalar(
+        r#"INSERT INTO agents (name, owner_id, metadata)
+           VALUES ('claude-code', $1, '{"source":"nasiko-cli-integration","integration_id":"claude"}')
+           RETURNING id"#,
+    )
+    .bind(user_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, title) VALUES ('coding-nav', $1, $2, 'Coding session')",
+    )
+    .bind(user_id)
+    .bind(agent_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let page = list_sessions(&server, &user_id.to_string(), "").await;
+    let row = page["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["session_id"] == "coding-nav")
+        .unwrap();
+    assert_eq!(row["agent_name"], "admin-claude-code");
+    assert_eq!(row["is_coding_agent"], true);
 
     server.cleanup().await;
 }

@@ -32,6 +32,7 @@ pub struct ChatSessionView {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub agent_name: Option<String>,
+    pub is_coding_agent: bool,
     pub last_message: Option<String>,
     // Per-session rollups computed in the list query itself, so the sessions
     // page renders its stats columns without a trace-store round-trip.

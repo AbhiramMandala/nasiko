@@ -79,7 +79,18 @@ class ObservabilitySessionPage extends HTMLElement {
           copyBtn.innerHTML = icons.check('', 14);
           setTimeout(() => { copyBtn.innerHTML = icons.copy('', 14); }, 1500);
         }
+        return;
       }
+      if (e.target.closest('button, a')) return;
+      const message = e.target.closest('.msg-assistant[data-trace-id]');
+      if (message) this.#focusChatTrace(message);
+    });
+    this.querySelector('#chat-pane').addEventListener('keydown', (e) => {
+      if (!['Enter', ' '].includes(e.key)) return;
+      const message = e.target.closest('.msg-assistant[data-trace-id]');
+      if (!message) return;
+      e.preventDefault();
+      this.#focusChatTrace(message);
     });
     this.querySelector('#traces-pane').addEventListener('click', (e) => {
       const row = e.target.closest('.span-row');
@@ -302,6 +313,17 @@ class ObservabilitySessionPage extends HTMLElement {
       row.classList.toggle('is-selected',
         row.dataset.spanId === this.#selected?.spanId && row.dataset.traceId === this.#selected?.traceId);
     });
+    this.querySelectorAll('.msg-assistant[data-trace-id]').forEach((message) => {
+      message.classList.toggle('is-trace-selected', message.dataset.traceId === this.#selected?.traceId);
+    });
+  }
+
+  #focusChatTrace(message) {
+    const traceId = message.dataset.traceId;
+    if (!traceId) return;
+    this.#focusTraceId = traceId;
+    const root = this.#spans.find((entry) => entry.traceId === traceId && entry.depth === 0);
+    if (root) this.#selectSpan(root.traceId, root.node.span_id);
   }
 
   async #selectSpan(traceId, spanId) {
@@ -380,6 +402,7 @@ class ObservabilitySessionPage extends HTMLElement {
     // matching how this repo handles A2A payload drift. `||` not `??`: the
     // server serializes "no content" as an empty string, which must fall through.
     const attrs = s.attributes ?? {};
+    const isTool = attrs.gen_ai?.operation?.name === 'execute_tool' || attrs.tool?.name;
     const inputMsgs = this.#extractMessages(
       attrs.llm?.input_messages,
       s.input?.value || attrs.gen_ai?.input?.messages || s.input_content,
@@ -400,9 +423,20 @@ class ObservabilitySessionPage extends HTMLElement {
             </div>`).join('')
         : `<div class="pane-empty">${emptyText}</div>`}
     `;
+    const toolSummary = isTool ? `
+      <div class="detail-section-title">Tool execution</div>
+      <div class="msg-block">
+        <div class="msg-content">${this.#esc([
+          `Tool: ${attrs.tool?.name || 'unknown'}`,
+          `Status: ${attrs.tool?.status || s.status_code || 'unknown'}`,
+          `Duration: ${s.latency_ms == null ? 'unknown' : this.#fmtLatency(s.latency_ms)}`,
+          attrs.tool?.call?.id ? `Call ID: ${attrs.tool.call.id}` : '',
+        ].filter(Boolean).join('\n'))}</div>
+      </div>` : '';
     return `
-      ${section('Input messages', inputMsgs, 'No input message available')}
-      ${section('Output messages', outputMsgs, 'No output message available')}
+      ${toolSummary}
+      ${section(isTool ? 'Arguments' : 'Input messages', inputMsgs, isTool ? 'No arguments captured' : 'No input message available')}
+      ${section(isTool ? (attrs.tool?.status === 'failed' ? 'Error' : 'Result') : 'Output messages', outputMsgs, isTool ? 'No result captured' : 'No output message available')}
     `;
   }
 
@@ -486,7 +520,8 @@ class ObservabilitySessionPage extends HTMLElement {
         ${messages.map((m, index) => m.role === 'user'
           // User turns are literal input — escaped, never parsed as markdown.
           ? `<div class="msg-user"><div class="msg-clamp">${this.#esc(m.content)}</div></div>`
-          : `<div class="msg-assistant" data-message-index="${index}">
+          : `<div class="msg-assistant" data-message-index="${index}"
+              ${m.trace_id ? `data-trace-id="${this.#esc(m.trace_id)}" role="button" tabindex="0" title="View this turn's trace"` : ''}>
               <div class="msg-clamp md-body">${renderMarkdown(m.content ?? '')}</div>
               ${m.trace_id ? `<div class="chat-turn-meta" data-trace-id="${this.#esc(m.trace_id)}" hidden></div>` : ''}
             </div>`).join('')}
