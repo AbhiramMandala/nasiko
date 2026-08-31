@@ -6,25 +6,21 @@ use axum::response::{IntoResponse, Response};
 use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
 use rust_embed::Embed;
 
+// `NASIKO_UI` is resolved by build.rs — see the comment there for why these
+// paths cannot be literals (this crate sits at a different depth in the
+// public repo, where the `oss/` prefix is stripped).
 #[derive(Embed)]
-#[folder = "../ui/web/"]
+#[folder = "$NASIKO_UI/oss/"]
 struct OssAssets;
 
 #[derive(Embed)]
-#[folder = "../ui/common/"]
+#[folder = "$NASIKO_UI/common/"]
 #[prefix = "common/"]
 struct CommonAssets;
 
 #[tokio::main]
 async fn main() {
     let _ = dotenvy::dotenv();
-    // Explicitly select ring as the Rustls crypto provider (the workspace
-    // convention). Required because sqlx/reqwest (ring) and the AWS SDK's HTTP
-    // client (aws-lc-rs) both pull in rustls, and rustls panics at first use if
-    // no provider is installed when multiple are compiled in — the redis client
-    // builds its rediss:// config through the process-default provider.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
     let telemetry_config = TelemetryConfig::from_env();
     init_telemetry(&telemetry_config);
 
@@ -42,12 +38,7 @@ async fn main() {
         .max_connections(50)
         .connect(&config.database_url)
         .await
-        .unwrap_or_else(|e| {
-            panic!(
-                "{}",
-                nasiko_server::state::pg_connect_error_message(&config.database_url, &e)
-            )
-        });
+        .expect("failed to connect to postgres");
 
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let auth: Arc<dyn nasiko_auth::AuthService> =
@@ -128,13 +119,37 @@ async fn static_handler(req: Request<Body>) -> Response {
             .into_response();
     }
 
+    // SPA fallback: serve index.html for any path that isn't a real static
+    // file. The client-side router resolves the URL to the correct page
+    // component. Paths with file extensions (CSS, JS, images, fonts) are
+    // genuine 404s — they were requested as assets and should not get HTML.
+    if !path.contains('.') {
+        if let Some(file) = OssAssets::get("index.html") {
+            let etag = format!("\"{}\"", hex::encode(file.metadata.sha256_hash()));
+            return (
+                [
+                    (header::CONTENT_TYPE, "text/html".to_string()),
+                    // SPA shell must revalidate on every navigation so deploys
+                    // take effect within one page load.
+                    (header::CACHE_CONTROL, "no-cache".to_string()),
+                    (header::ETAG, etag),
+                ],
+                file.data,
+            )
+                .into_response();
+        }
+    }
+
     if let Some(file) = OssAssets::get("404.html") {
         return (
             StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "text/html")],
+            [
+                (header::CONTENT_TYPE, "text/html".to_owned()),
+                (header::CACHE_CONTROL, "no-store".to_owned()),
+            ],
             file.data,
         )
             .into_response();
     }
-    StatusCode::NOT_FOUND.into_response()
+    (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-store")]).into_response()
 }

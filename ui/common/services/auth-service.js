@@ -75,7 +75,7 @@ class AuthService {
         clearShellCache();
         await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
         if (!window.location.pathname.startsWith('/login')) {
-          window.location.href = '/login.html';
+          window.location.href = '/login';
         }
         return null;
       }
@@ -131,7 +131,7 @@ class AuthService {
       );
     }
     await Promise.all(calls);
-    window.location.href = '/login.html';
+    window.location.href = '/login';
   }
 
   // Back-compat shim: the reused multi-account UI calls this with a username, but
