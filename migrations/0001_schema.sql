@@ -139,8 +139,13 @@ CREATE TABLE agents (
     -- Lifecycle state written by the deploy/update/lifecycle paths. TEXT +
     -- CHECK (the 0003 philosophy) so a new state is a CHECK change, not an
     -- ALTER TYPE.
+    -- 'crashed' is written by the EE crash-loop guardian
+    -- (ee/server/src/crash_guardian.rs) when a K8s deployment enters
+    -- CrashLoopBackOff. Omitting it made that UPDATE fail with SQLSTATE 23514,
+    -- leaving the row 'running' forever so the crash never surfaced in the API
+    -- or UI. Matches the 'crashed' member of the deployment_status enum above.
     status TEXT NOT NULL DEFAULT 'registered'
-        CHECK (status IN ('registered', 'deploying', 'running', 'stopped', 'failed')),
+        CHECK (status IN ('registered', 'deploying', 'running', 'stopped', 'failed', 'crashed')),
     image TEXT,
     is_public BOOLEAN NOT NULL DEFAULT false,
     supports_authenticated_extended_card BOOLEAN NOT NULL DEFAULT false,
