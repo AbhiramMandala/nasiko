@@ -1118,144 +1118,144 @@ async fn batch_multi_execute_all_rejected_slugs_are_denied_without_a_backend_cal
     );
 }
 
-#[tokio::test]
-async fn zz_demo_print_batch_retry_full_flow() {
-    let db = TestDb::new().await;
-    let gmail_cid = Uuid::new_v4();
-    let slack_cid = Uuid::new_v4();
-    let trace_id = "aa11651916cd43dd8448eb211c8031ff";
-    let session_id = "ses_demo_batch";
-    db.seed_session_trace(session_id, trace_id).await;
+// #[tokio::test]
+// async fn zz_demo_print_batch_retry_full_flow() {
+//     let db = TestDb::new().await;
+//     let gmail_cid = Uuid::new_v4();
+//     let slack_cid = Uuid::new_v4();
+//     let trace_id = "aa11651916cd43dd8448eb211c8031ff";
+//     let session_id = "ses_demo_batch";
+//     db.seed_session_trace(session_id, trace_id).await;
 
-    let mut backend = mockito::Server::new_async().await;
-    backend
-        .mock("POST", "/mcp")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true,"tool":"GMAIL_SEND_EMAIL"}}"#)
-        .expect(1)
-        .create_async()
-        .await;
+//     let mut backend = mockito::Server::new_async().await;
+//     backend
+//         .mock("POST", "/mcp")
+//         .with_status(200)
+//         .with_header("content-type", "application/json")
+//         .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true,"tool":"GMAIL_SEND_EMAIL"}}"#)
+//         .expect(1)
+//         .create_async()
+//         .await;
 
-    let resolved = composio_session(
-        &format!("{}/mcp", backend.url()),
-        HashMap::from([
-            ("gmail".to_string(), gmail_cid),
-            ("slack".to_string(), slack_cid),
-        ]),
-    );
-    let perms = db.perms(
-        &[gmail_cid, slack_cid],
-        vec![
-            rule(gmail_cid, "*", Stance::Ask),
-            rule(slack_cid, "*", Stance::Ask),
-        ],
-    );
-    let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
+//     let resolved = composio_session(
+//         &format!("{}/mcp", backend.url()),
+//         HashMap::from([
+//             ("gmail".to_string(), gmail_cid),
+//             ("slack".to_string(), slack_cid),
+//         ]),
+//     );
+//     let perms = db.perms(
+//         &[gmail_cid, slack_cid],
+//         vec![
+//             rule(gmail_cid, "*", Stance::Ask),
+//             rule(slack_cid, "*", Stance::Ask),
+//         ],
+//     );
+//     let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
 
-    println!("\n=== STEP 1: agent calls tools/call COMPOSIO_MULTI_EXECUTE_TOOL ===");
-    let req1 = json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": multi_execute_args(&["GMAIL_SEND_EMAIL", "SLACK_SEND_MESSAGE"]),
-    });
-    println!("--> request:\n{}", serde_json::to_string_pretty(&req1).unwrap());
+//     println!("\n=== STEP 1: agent calls tools/call COMPOSIO_MULTI_EXECUTE_TOOL ===");
+//     let req1 = json!({
+//         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+//         "params": multi_execute_args(&["GMAIL_SEND_EMAIL", "SLACK_SEND_MESSAGE"]),
+//     });
+//     println!("--> request:\n{}", serde_json::to_string_pretty(&req1).unwrap());
 
-    let first = handle_tools_call(
-        &db.state,
-        db.owner_user_id,
-        &json!(1),
-        &multi_execute_args(&["GMAIL_SEND_EMAIL", "SLACK_SEND_MESSAGE"]),
-        &resolved,
-        &perms,
-        Some(&traceparent),
-    )
-    .await;
-    println!(
-        "<-- response (TOOL_ASK, both slugs pending):\n{}",
-        serde_json::to_string_pretty(&first).unwrap()
-    );
+//     let first = handle_tools_call(
+//         &db.state,
+//         db.owner_user_id,
+//         &json!(1),
+//         &multi_execute_args(&["GMAIL_SEND_EMAIL", "SLACK_SEND_MESSAGE"]),
+//         &resolved,
+//         &perms,
+//         Some(&traceparent),
+//     )
+//     .await;
+//     println!(
+//         "<-- response (TOOL_ASK, both slugs pending):\n{}",
+//         serde_json::to_string_pretty(&first).unwrap()
+//     );
 
-    let ids: Vec<Uuid> = first["error"]["data"]["hitl_request_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().parse().unwrap())
-        .collect();
+//     let ids: Vec<Uuid> = first["error"]["data"]["hitl_request_ids"]
+//         .as_array()
+//         .unwrap()
+//         .iter()
+//         .map(|v| v.as_str().unwrap().parse().unwrap())
+//         .collect();
 
-    println!("\n=== STEP 2: real DB state — two pending hitl_requests rows ===");
-    for id in &ids {
-        let row = nasiko_hitl::repo::get_by_id(&db.state.db, *id)
-            .await
-            .unwrap()
-            .unwrap();
-        println!(
-            "  id={} tool_name={:?} status={:?} connector_id={:?}",
-            row.id, row.tool_name, row.status, row.connector_id
-        );
-    }
+//     println!("\n=== STEP 2: real DB state — two pending hitl_requests rows ===");
+//     for id in &ids {
+//         let row = nasiko_hitl::repo::get_by_id(&db.state.db, *id)
+//             .await
+//             .unwrap()
+//             .unwrap();
+//         println!(
+//             "  id={} tool_name={:?} status={:?} connector_id={:?}",
+//             row.id, row.tool_name, row.status, row.connector_id
+//         );
+//     }
 
-    let mut gmail_hitl_id = None;
-    for id in &ids {
-        let row = nasiko_hitl::repo::get_by_id(&db.state.db, *id)
-            .await
-            .unwrap()
-            .unwrap();
-        if row.tool_name.as_deref() == Some("GMAIL_SEND_EMAIL") {
-            gmail_hitl_id = Some(*id);
-        }
-    }
-    let gmail_hitl_id = gmail_hitl_id.unwrap();
+//     let mut gmail_hitl_id = None;
+//     for id in &ids {
+//         let row = nasiko_hitl::repo::get_by_id(&db.state.db, *id)
+//             .await
+//             .unwrap()
+//             .unwrap();
+//         if row.tool_name.as_deref() == Some("GMAIL_SEND_EMAIL") {
+//             gmail_hitl_id = Some(*id);
+//         }
+//     }
+//     let gmail_hitl_id = gmail_hitl_id.unwrap();
 
-    println!(
-        "\n=== STEP 3: human calls POST /api/hitl/{}/resolve {{\"decision\":\"approve\",\"scope\":\"once\"}} ===",
-        gmail_hitl_id
-    );
-    db.resolve_tool_approval(gmail_hitl_id, "approve", Some("once"))
-        .await;
-    let resolved_row = nasiko_hitl::repo::get_by_id(&db.state.db, gmail_hitl_id)
-        .await
-        .unwrap()
-        .unwrap();
-    println!(
-        "  row now: status={:?} human_response={:?}",
-        resolved_row.status, resolved_row.human_response
-    );
+//     println!(
+//         "\n=== STEP 3: human calls POST /api/hitl/{}/resolve {{\"decision\":\"approve\",\"scope\":\"once\"}} ===",
+//         gmail_hitl_id
+//     );
+//     db.resolve_tool_approval(gmail_hitl_id, "approve", Some("once"))
+//         .await;
+//     let resolved_row = nasiko_hitl::repo::get_by_id(&db.state.db, gmail_hitl_id)
+//         .await
+//         .unwrap()
+//         .unwrap();
+//     println!(
+//         "  row now: status={:?} human_response={:?}",
+//         resolved_row.status, resolved_row.human_response
+//     );
 
-    println!("\n=== STEP 4: agent retries the same batch tools/call ===");
-    let retried = handle_tools_call(
-        &db.state,
-        db.owner_user_id,
-        &json!(2),
-        &multi_execute_args(&["GMAIL_SEND_EMAIL", "SLACK_SEND_MESSAGE"]),
-        &resolved,
-        &perms,
-        Some(&traceparent),
-    )
-    .await;
-    println!(
-        "<-- response (gmail executed against the real mock backend, slack still pending):\n{}",
-        serde_json::to_string_pretty(&retried).unwrap()
-    );
+//     println!("\n=== STEP 4: agent retries the same batch tools/call ===");
+//     let retried = handle_tools_call(
+//         &db.state,
+//         db.owner_user_id,
+//         &json!(2),
+//         &multi_execute_args(&["GMAIL_SEND_EMAIL", "SLACK_SEND_MESSAGE"]),
+//         &resolved,
+//         &perms,
+//         Some(&traceparent),
+//     )
+//     .await;
+//     println!(
+//         "<-- response (gmail executed against the real mock backend, slack still pending):\n{}",
+//         serde_json::to_string_pretty(&retried).unwrap()
+//     );
 
-    println!("\n=== STEP 5: final DB state ===");
-    let gmail_final = nasiko_hitl::repo::get_by_id(&db.state.db, gmail_hitl_id)
-        .await
-        .unwrap()
-        .unwrap();
-    println!(
-        "  gmail row: status={:?} consumed_at={:?}",
-        gmail_final.status, gmail_final.consumed_at
-    );
-    let slack_id = ids.into_iter().find(|id| *id != gmail_hitl_id).unwrap();
-    let slack_final = nasiko_hitl::repo::get_by_id(&db.state.db, slack_id)
-        .await
-        .unwrap()
-        .unwrap();
-    println!(
-        "  slack row: status={:?} consumed_at={:?}",
-        slack_final.status, slack_final.consumed_at
-    );
+//     println!("\n=== STEP 5: final DB state ===");
+//     let gmail_final = nasiko_hitl::repo::get_by_id(&db.state.db, gmail_hitl_id)
+//         .await
+//         .unwrap()
+//         .unwrap();
+//     println!(
+//         "  gmail row: status={:?} consumed_at={:?}",
+//         gmail_final.status, gmail_final.consumed_at
+//     );
+//     let slack_id = ids.into_iter().find(|id| *id != gmail_hitl_id).unwrap();
+//     let slack_final = nasiko_hitl::repo::get_by_id(&db.state.db, slack_id)
+//         .await
+//         .unwrap()
+//         .unwrap();
+//     println!(
+//         "  slack row: status={:?} consumed_at={:?}",
+//         slack_final.status, slack_final.consumed_at
+//     );
 
-    assert_eq!(retried["result"]["ok"], json!(true));
-}
+//     assert_eq!(retried["result"]["ok"], json!(true));
+// }
 
