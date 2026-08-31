@@ -157,6 +157,7 @@ async fn clone_pre_build_rejection_restores_existing_agent_instead_of_deleting()
         "upload-1".to_string(),
         "existing-cli-agent".to_string(),
         tar_path,
+        String::new(),
         vec![8000],
         HashMap::new(),
         None,
@@ -165,10 +166,6 @@ async fn clone_pre_build_rejection_restores_existing_agent_instead_of_deleting()
         String::new(),
         1,
         "512Mi".to_string(),
-        None,
-        Some("1.0.0".to_string()),
-        Some("nasiko/existing:1.0.0".to_string()),
-        Some("running".to_string()),
     )
     .await;
 
@@ -241,6 +238,7 @@ async fn clone_genuine_deploy_failure_on_existing_agent_restores_instead_of_dele
         "upload-3".to_string(),
         "existing-cli-agent-deploy-fail".to_string(),
         tar_path,
+        String::new(),
         vec![8000],
         HashMap::new(),
         None,
@@ -249,10 +247,6 @@ async fn clone_genuine_deploy_failure_on_existing_agent_restores_instead_of_dele
         String::new(),
         1,
         "512Mi".to_string(),
-        None,
-        Some("1.0.0".to_string()),
-        Some("nasiko/existing:1.0.0".to_string()),
-        Some("running".to_string()),
     )
     .await;
 
@@ -309,6 +303,7 @@ async fn clone_pre_build_rejection_on_brand_new_agent_still_cleans_up() {
         "upload-2".to_string(),
         "brand-new-agent".to_string(),
         tar_path,
+        String::new(),
         vec![8000],
         HashMap::new(),
         None,
@@ -317,10 +312,6 @@ async fn clone_pre_build_rejection_on_brand_new_agent_still_cleans_up() {
         String::new(),
         1,
         "512Mi".to_string(),
-        None,
-        None, // no prior state — this is a first-ever deploy
-        None,
-        None,
     )
     .await;
 
