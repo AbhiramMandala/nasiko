@@ -178,11 +178,16 @@ impl ProviderClient for GeminiProvider {
                     finish = Some(if fr == "MAX_TOKENS" { "length" } else { "stop" }.to_string());
                 }
                 if let Some(um) = response.get("usageMetadata") {
+                    let cached = um["cachedContentTokenCount"].as_i64();
                     usage = Some(Usage {
-                        prompt_tokens: um["promptTokenCount"].as_i64(),
+                        // promptTokenCount INCLUDES cachedContentTokenCount; the
+                        // cost trigger charges input and cache-read separately,
+                        // so report only the uncached remainder (see
+                        // `Usage::normalize_openai_details`).
+                        prompt_tokens: uncached_prompt(um["promptTokenCount"].as_i64(), cached),
                         completion_tokens: um["candidatesTokenCount"].as_i64(),
                         total_tokens: um["totalTokenCount"].as_i64(),
-                        cache_read_input_tokens: um["cachedContentTokenCount"].as_i64(),
+                        cache_read_input_tokens: cached,
                         cache_creation_input_tokens: None,
                         prompt_tokens_details: None,
                     });
@@ -279,6 +284,22 @@ impl ProviderClient for GeminiProvider {
 }
 
 // ── OpenAI → Gemini (request) ────────────────────────────────────────────────
+
+/// Gemini's `promptTokenCount` is **cache-inclusive**: it counts the tokens
+/// served from `cachedContentTokenCount` as well as the fresh ones. The billing
+/// trigger (`calculate_token_cost`) charges `input_tokens` at the full input
+/// rate and adds `cache_read_input_tokens` at the cache rate, so passing the
+/// gross count through bills the cached portion twice. Report the remainder.
+///
+/// Clamped at zero: the subtraction should never go negative, but a provider
+/// reporting a larger cached count than prompt count must not produce a
+/// negative token count that the cost trigger would read as a credit.
+fn uncached_prompt(prompt: Option<i64>, cached: Option<i64>) -> Option<i64> {
+    match (prompt, cached) {
+        (Some(prompt), Some(cached)) => Some((prompt - cached).max(0)),
+        (prompt, _) => prompt,
+    }
+}
 
 fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     let mut system_parts: Vec<String> = Vec::new();
@@ -457,13 +478,17 @@ fn from_gemini_response(body: &Value, model: &str) -> ChatResponse {
         }
     };
 
-    let usage = body.get("usageMetadata").map(|u| Usage {
-        prompt_tokens: u["promptTokenCount"].as_i64(),
-        completion_tokens: u["candidatesTokenCount"].as_i64(),
-        total_tokens: u["totalTokenCount"].as_i64(),
-        cache_read_input_tokens: u["cachedContentTokenCount"].as_i64(),
-        cache_creation_input_tokens: None,
-        prompt_tokens_details: None,
+    let usage = body.get("usageMetadata").map(|u| {
+        let cached = u["cachedContentTokenCount"].as_i64();
+        Usage {
+            // See `uncached_prompt` — promptTokenCount is cache-inclusive.
+            prompt_tokens: uncached_prompt(u["promptTokenCount"].as_i64(), cached),
+            completion_tokens: u["candidatesTokenCount"].as_i64(),
+            total_tokens: u["totalTokenCount"].as_i64(),
+            cache_read_input_tokens: cached,
+            cache_creation_input_tokens: None,
+            prompt_tokens_details: None,
+        }
     });
 
     let id = body["responseId"]
@@ -800,5 +825,23 @@ mod tests {
         assert_eq!(resp.model, "gemini-1.5-pro");
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
         assert_eq!(resp.usage.unwrap().total_tokens, Some(4));
+    }
+
+    #[test]
+    fn gemini_prompt_count_excludes_cached_content() {
+        // promptTokenCount is cache-inclusive; billing charges input and
+        // cache-read separately, so the gross count double-bills the cache.
+        assert_eq!(uncached_prompt(Some(10000), Some(8000)), Some(2000));
+    }
+
+    #[test]
+    fn gemini_prompt_count_passes_through_without_cache() {
+        assert_eq!(uncached_prompt(Some(10000), None), Some(10000));
+        assert_eq!(uncached_prompt(None, Some(8000)), None);
+    }
+
+    #[test]
+    fn gemini_prompt_count_clamps_instead_of_going_negative() {
+        assert_eq!(uncached_prompt(Some(100), Some(640)), Some(0));
     }
 }
