@@ -352,22 +352,14 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         loki_url: "http://localhost:3100".into(),
         observability_enabled: false,
         tenant_id: None,
-        // Off in tests: both loops hit the network on their first tick.
-        model_catalog_sync_enabled: false,
         model_pricing_sync_enabled: false,
+        model_pricing_sync_interval_secs: 86_400,
         flow_max_depth: 5,
         flow_max_fan_out: 20,
         flow_max_tokens: 100_000,
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
-        oidc_issuer_url: None,
-        oidc_client_id: None,
-        oidc_client_secret: None,
-        oidc_redirect_uri: None,
-        oidc_allowed_redirect_origins: vec![],
-        oidc_scopes: "openid profile email".into(),
-        oidc_provider_label: "microsoft_entra".into(),
         router_shortlist_threshold: 15,
         router_shortlist_size: 10,
         max_router_history_messages: 20,
@@ -375,7 +367,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         router_agent_timeout_secs: 60,
         github_callback_url: None,
         github_central_callback_url: None,
-        oidc_central_callback_url: None,
         docker_agent_network: None,
         oci_registry_host: None,
         container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly
@@ -489,48 +480,6 @@ pub fn as_member(
     username: &str,
 ) -> reqwest::RequestBuilder {
     rb.bearer_auth(sign_token(user_id, username, false, "member"))
-}
-
-// ─── MCP gateway auth test helpers (docs/MCP_GATEWAY_AGENT_AUTH.md) ──────────
-
-/// Mint the agent's MCP gateway credential — the plaintext that deploy-time
-/// wiring injects into the container env as `MCP_GATEWAY_TOKEN`.
-#[allow(dead_code)]
-pub async fn mint_gateway_token(db: &sqlx::PgPool, agent_id: uuid::Uuid) -> String {
-    nasiko_mcp_gateway::agent_tokens::mint(db, agent_id)
-        .await
-        .expect("mint gateway token")
-}
-
-/// Open a live flow for `(user, agent)` exactly the way a dispatch path does —
-/// `flows` row + `flow_participants` record — and return `(flow_id,
-/// traceparent)`, where the traceparent is what the platform forwards to the
-/// agent (its trace id IS the flow id).
-#[allow(dead_code)]
-pub async fn open_flow(
-    db: &sqlx::PgPool,
-    user_id: uuid::Uuid,
-    agent_id: uuid::Uuid,
-) -> (String, String) {
-    let flow_id = uuid::Uuid::new_v4().simple().to_string();
-    sqlx::query(
-        "INSERT INTO flows (flow_id, user_id, root_agent_id, status, metadata)
-         VALUES ($1, $2, $3, 'running', '{}'::jsonb)",
-    )
-    .bind(&flow_id)
-    .bind(user_id)
-    .bind(agent_id)
-    .execute(db)
-    .await
-    .expect("insert flows row");
-    sqlx::query("INSERT INTO flow_participants (flow_id, agent_id) VALUES ($1, $2)")
-        .bind(&flow_id)
-        .bind(agent_id)
-        .execute(db)
-        .await
-        .expect("insert flow participant");
-    let traceparent = format!("00-{flow_id}-00f067aa0ba902b7-01");
-    (flow_id, traceparent)
 }
 
 /// Attach HTTP Basic auth — the credential type the OCI registry's pull-only
