@@ -1,10 +1,8 @@
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use dashmap::DashMap;
 use reqwest::Client;
 use serde::Deserialize;
-use uuid::Uuid;
+use sqlx::PgPool;
 
 use crate::error::RouterError;
 use crate::types::AgentCard;
@@ -14,39 +12,56 @@ pub struct EmbeddedAgent {
     pub embedding: Vec<f32>,
 }
 
-/// One cached embedding, keyed by agent id in `EmbeddingCache`. Fields are
-/// private — this type is only nameable because it appears inside the public
-/// `EmbeddingCache` alias, not meant to be constructed or inspected directly.
-pub struct CachedEmbedding {
-    /// Hash of the text that was embedded (name + description + tags). If the
-    /// agent's catalog entry changes, the hash no longer matches and the entry
-    /// is treated as stale even before the TTL expires.
-    content_hash: u64,
-    embedding: Vec<f32>,
-    cached_at: Instant,
+/// Text embedded for an agent: `name + description + tags`. Kept in one place
+/// so the hash computed here always matches what gets stored and re-checked.
+fn agent_prompt(agent: &AgentCard) -> String {
+    format!(
+        "{} {} {}",
+        agent.name,
+        agent.description,
+        agent.tags.join(" ")
+    )
 }
 
-/// Shared cache of agent embeddings, keyed by agent id. This is held on
-/// `OssRoutingEngine` (not on `VectorStore`, which is rebuilt per request) so
-/// embeddings survive across requests instead of re-embedding the whole
-/// catalog against Ollama/OpenAI on every single `route()` call.
-///
-/// Invalidation strategy: there's no cheap signal available here for "the
-/// catalog changed", so entries are considered stale after
-/// `EMBEDDING_CACHE_TTL` elapses, in addition to being invalidated immediately
-/// if the embedded fields change (via `content_hash`). A TTL is simpler to
-/// reason about than wiring up exact change-tracking (e.g. a DB trigger or a
-/// version column) and is good enough since catalog edits are infrequent
-/// relative to the window.
-pub type EmbeddingCache = Arc<DashMap<Uuid, CachedEmbedding>>;
-
-const EMBEDDING_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
-
-fn hash_prompt(prompt: &str) -> u64 {
+pub fn hash_prompt(prompt: &str) -> i64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     prompt.hash(&mut hasher);
-    hasher.finish()
+    hasher.finish() as i64
+}
+
+/// Embeds `agent`'s current name/description/tags and persists the result
+/// (embedding + content hash) to `agents.embedding` /
+/// `agents.embedding_content_hash`. Called both proactively — right after an
+/// agent's card is fetched/updated — and lazily from `VectorStore::build` when
+/// a stored embedding is missing or stale. Returns the embedding on success.
+pub async fn embed_and_store_agent(
+    pool: &PgPool,
+    agent: &AgentCard,
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+) -> Result<Vec<f32>, RouterError> {
+    let client = Client::new();
+    let prompt = agent_prompt(agent);
+    let content_hash = hash_prompt(&prompt);
+    let embedding = embed_text(&client, api_key, base_url, model, &prompt).await?;
+
+    let embedding_f64: Vec<f64> = embedding.iter().map(|f| *f as f64).collect();
+    if let Err(e) = sqlx::query(
+        r#"UPDATE agents SET embedding = $1, embedding_content_hash = $2, embedded_at = now()
+           WHERE id = $3"#,
+    )
+    .bind(&embedding_f64)
+    .bind(content_hash)
+    .bind(agent.id)
+    .execute(pool)
+    .await
+    {
+        tracing::warn!(agent_id = %agent.id, error = %e, "failed to persist agent embedding (non-fatal)");
+    }
+
+    Ok(embedding)
 }
 
 pub struct VectorStore {
@@ -72,63 +87,50 @@ impl VectorStore {
     /// If the API key is empty or the call fails, falls back to disabled mode —
     /// shortlist() returns all agents unchanged.
     ///
-    /// `cache` is consulted per-agent before making a network call: a cache hit
-    /// (matching content hash, not yet past `EMBEDDING_CACHE_TTL`) skips the
-    /// embeddings API entirely for that agent. See `EmbeddingCache` docs.
+    /// Each agent's `embedding`/`embedding_content_hash` (loaded from the
+    /// `agents` table by `agent_registry::get_agents_for_user`) is checked
+    /// against a freshly computed hash of its current name/description/tags:
+    /// a match skips the embeddings API entirely for that agent. A miss (never
+    /// embedded, or the agent's card changed) re-embeds and persists the
+    /// result via `embed_and_store_agent` so it's not recomputed next time.
     pub async fn build(
         agents: Vec<AgentCard>,
         api_key: String,
         base_url: String,
         model: String,
-        cache: &EmbeddingCache,
+        pool: &PgPool,
     ) -> Self {
         if api_key.is_empty() {
             tracing::debug!("No OpenAI API key configured — Stage 1 (vector store) disabled");
             return Self::disabled_from(agents);
         }
 
-        let client = Client::new();
         let mut embedded = Vec::with_capacity(agents.len());
-        let mut cache_hits = 0usize;
-        let mut cache_misses = 0usize;
+        let mut stored_hits = 0usize;
+        let mut stored_misses = 0usize;
 
         for agent in &agents {
-            let prompt = format!(
-                "{} {} {}",
-                agent.name,
-                agent.description,
-                agent.tags.join(" ")
-            );
-            let content_hash = hash_prompt(&prompt);
+            let content_hash = hash_prompt(&agent_prompt(agent));
 
-            if let Some(cached) = cache.get(&agent.id)
-                && cached.content_hash == content_hash
-                && cached.cached_at.elapsed() < EMBEDDING_CACHE_TTL
+            if let (Some(emb), Some(stored_hash)) = (&agent.embedding, agent.embedding_content_hash)
+                && stored_hash == content_hash
             {
-                cache_hits += 1;
+                stored_hits += 1;
                 embedded.push(EmbeddedAgent {
                     agent: agent.clone(),
-                    embedding: cached.embedding.clone(),
+                    embedding: emb.clone(),
                 });
                 continue;
             }
 
-            cache_misses += 1;
+            stored_misses += 1;
             let embed_start = Instant::now();
-            match embed_text(&client, &api_key, &base_url, &model, &prompt).await {
+            match embed_and_store_agent(pool, agent, &api_key, &base_url, &model).await {
                 Ok(emb) => {
                     tracing::info!(
                         agent_name = %agent.name,
                         elapsed_ms = embed_start.elapsed().as_millis() as u64,
-                        "vector_store: embedded agent (cache miss)"
-                    );
-                    cache.insert(
-                        agent.id,
-                        CachedEmbedding {
-                            content_hash,
-                            embedding: emb.clone(),
-                            cached_at: Instant::now(),
-                        },
+                        "vector_store: embedded agent (stored embedding missing/stale)"
                     );
                     embedded.push(EmbeddedAgent {
                         agent: agent.clone(),
@@ -142,7 +144,7 @@ impl VectorStore {
             }
         }
 
-        tracing::info!(cache_hits, cache_misses, "vector_store: build() done");
+        tracing::info!(stored_hits, stored_misses, "vector_store: build() done");
 
         Self {
             agents: embedded,

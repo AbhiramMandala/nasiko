@@ -7,7 +7,6 @@
 pub mod acl;
 pub mod admin;
 pub mod admission;
-pub mod agent_lifecycle;
 pub mod agent_proxy;
 pub mod agents;
 pub mod auth;
@@ -15,12 +14,8 @@ pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
-pub mod coding_agent_otlp;
-pub mod coding_agent_telemetry;
-pub mod context_selection;
 pub mod flows;
 pub mod github;
-pub mod hitl;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
@@ -28,9 +23,7 @@ pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
 pub mod openapi;
-pub mod orchestrator_policy;
 pub mod pool;
-pub mod prompt_context;
 pub mod rate_limit;
 pub mod registry_a2a;
 pub mod router;
@@ -38,13 +31,12 @@ pub mod runtime;
 pub mod secrets;
 pub mod seed;
 pub mod settings;
-pub mod spa;
 pub mod state;
 pub mod telemetry;
-pub mod titling;
 pub mod transcribe;
 pub mod usage;
 pub mod users;
+pub mod weave;
 
 use axum::handler::Handler;
 use axum::http::Method;
@@ -164,24 +156,11 @@ where
             base_url: state.config.openai_base_url.clone(),
             model: state.config.openai_model.clone(),
         };
-        // The MAF worker's client makes nothing but agent A2A calls, so it
-        // carries the agent-call budget at the client level rather than
-        // repeating a per-request override at each of the executor's call
-        // sites. Its own pool, deliberately: a background worker's traffic
-        // profile has no business sharing the request path's.
-        let maf_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(
-                state.config.agent_call_timeout_secs,
-            ))
-            .build()
-            .expect("failed to build MAF agent client");
         nasiko_orchestrator::maf::start_worker(
             state.db.clone(),
             state.redis.clone(),
-            maf_client,
-            state.observability.clone(),
+            state.http_client.clone(),
             llm_config,
-            state.hitl_store.clone(),
         );
     } else {
         tracing::warn!(
@@ -207,11 +186,8 @@ where
     // `protected`'s outer layer), no per-route role check needed.
     let pool_routes = Router::new().nest("/pool", pool::degradable_router());
 
-    // User management: admin role or superuser.
-    let user_routes = user_router.layer(middleware::from_fn_with_state(
-        state.clone(),
-        auth::rbac::require_user_manager,
-    ));
+    // User management: superuser only
+    let user_routes = user_router.layer(middleware::from_fn(auth::rbac::require_superuser));
 
     // Agent deploy MUTATIONS (upload, restart-deployment, update/rollback):
     // deployer+ only. Reads are in `degradable_routes` below.
@@ -261,6 +237,12 @@ where
     // costs two bcrypt cost-12 hashes. 10/min is generous for a human changing
     // their own password and still bounds the CPU burn from a scripted loop.
     let change_password_limiter = RateLimiter::new(10, Duration::from_secs(60));
+    // The FinOps dashboard/timeseries/calendar/attributions endpoints fan out
+    // several concurrent Tempo searches per request (bounded concurrency, but
+    // real load nonetheless) — a tighter, dedicated budget than the rest of
+    // the observability router (session/trace/span reads are cheap single
+    // lookups and shouldn't share it).
+    let finops_limiter = RateLimiter::new(20, Duration::from_secs(60));
 
     // Public A2A registry (agent discovery) — see registry_a2a.rs for why it
     // is unauthenticated; the global fixed window bounds enumeration abuse.
@@ -283,22 +265,18 @@ where
         .merge(build_routes)
         .merge(degradable_routes)
         .merge(chat::router())
-        .merge(context_selection::router())
-        .merge(coding_agent_telemetry::router())
         .merge(maf::router())
         .merge(secrets::router())
         .merge(llm_configs::router())
         .merge(settings::router())
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
-        .merge(llm_router::custom_providers::router())
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
-        .merge(router::hitl::router())
         .nest(
             "/observability",
-            observability::protected_router(state.clone()),
+            observability::protected_router(state.clone(), finops_limiter),
         )
         .merge(agents::upload::status_router())
         .merge(github::router())
@@ -306,6 +284,7 @@ where
         .merge(transcribe::router())
         .merge(mcp::router())
         .merge(mcp_upload_routes)
+        .merge(weave::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -374,7 +353,7 @@ where
     let llm_cfg = llm_ctx.cfg.clone();
     let llm_routes = nasiko_llm_router::router(llm_ctx);
     // Keep the provider model catalog (tier-routing candidates) fresh from each
-    // provider's GET /models. Runs immediately, then every 24 h; fail-open.
+    // provider's GET /models. Runs immediately, then every 10 min; fail-open.
     if state.config.model_catalog_sync_enabled {
         nasiko_llm_router::routing::catalog::spawn_sync(
             state.db.clone(),
@@ -400,22 +379,7 @@ where
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_page_auth,
-        ))
-        // An /api path that reached the UI fallback matched no API route, and
-        // must not be answered with the SPA. Serving index.html here — status
-        // 200, Content-Type text/html — is what made a missing route surface in
-        // the browser as "Server returned a malformed JSON body": a real
-        // failure wearing a label that sends you at your own JSON parsing
-        // instead of at a route that is not there.
-        //
-        // Registered here rather than on the outer router because `nest("/api",
-        // …)` already owns a catch-all at that position and a second wildcard
-        // beside it panics at startup. Nothing else routes inside `ui_pages`,
-        // so there is no conflict. After `.layer()` on purpose: the page-auth
-        // redirect is for document navigations, and bouncing an API call to
-        // login.html would put HTML back in the response we are removing it
-        // from.
-        .route("/api/{*rest}", any(api_not_found));
+        ));
 
     Router::new()
         .route("/health", get(health))
@@ -438,50 +402,14 @@ where
         // and log line. Redact that one route; everything else is unchanged.
         .layer(TraceLayer::new_for_http().make_span_with(
             |req: &axum::http::Request<axum::body::Body>| {
-                let span = tracing::info_span!(
+                tracing::info_span!(
                     "request",
                     method = %req.method(),
                     uri = %mcp::redact_credential_uri(req.uri()),
                     version = ?req.version(),
-                );
-                // Adopt the caller's W3C trace context when it sends one, so this
-                // server span joins the flow that triggered it rather than rooting
-                // a trace of its own. Callers without a `traceparent` (a browser
-                // hitting the UI or the API) are unaffected and still start a root.
-                //
-                // Agent→server hops depend on this. The LLM router's `gen_ai.chat`
-                // span records the *resolved* provider and model, which is the only
-                // place the truth appears when an agent's config re-routes it — the
-                // agent labels its own span with the model it asked for. Rooted in a
-                // separate trace, that span is unreachable from the session view and
-                // from the span→`trace_usage` materializer, so traces and FinOps both
-                // fall back to the requested model and price the wrong one.
-                if let Some(cx) = req
-                    .headers()
-                    .get("traceparent")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(telemetry::remote_context_from_traceparent)
-                {
-                    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-                    span.set_parent(cx);
-                }
-                span
+                )
             },
         ))
-}
-
-/// The 404 for an unmatched `/api` path, in the envelope every other API error
-/// uses (`{data, status_code, message}`) so the frontend's error handling reads
-/// it the same way as any other failure rather than choking on HTML.
-async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {
-    (
-        axum::http::StatusCode::NOT_FOUND,
-        Json(serde_json::json!({
-            "data": null,
-            "status_code": 404,
-            "message": format!("no API route matches {}", uri.path()),
-        })),
-    )
 }
 
 /// State for [`authenticate_oci_request`] — bundles the two things it needs

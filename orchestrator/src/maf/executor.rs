@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use nasiko_observability::ObservabilityProvider;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -10,7 +9,7 @@ use super::types::{ExecutionResult, MafDefinition, MafStep, StepResult};
 /// Times an awaited step and emits it as an `info` event — visible under the
 /// default `RUST_LOG=info` with no special filter — giving a per-call timing
 /// breakdown of a MAF run (planning, per-step LLM calls, the agent HTTP round
-/// trip, and the token-wait poll) without touching the Tempo/observability path.
+/// trip) without touching the Tempo/observability path.
 async fn timed<T>(
     label: &str,
     execution_id: Uuid,
@@ -30,13 +29,12 @@ async fn timed<T>(
     result
 }
 
-// 8 params is one over clippy's default threshold; grouping them into a context
+// 7 params is at clippy's default threshold; grouping them into a context
 // struct isn't worth it for this one call site (worker.rs).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_maf(
     client: &reqwest::Client,
     db: &PgPool,
-    observability: &dyn ObservabilityProvider,
     execution_id: Uuid,
     user_id: Uuid,
     maf_def: &MafDefinition,
@@ -47,7 +45,10 @@ pub async fn run_maf(
     // step list is visible in the DB before the (possibly slow) planning LLM
     // call even starts.
     let mut step_results: Vec<StepResult> = maf_def.steps.iter().map(pending_result).collect();
-    let mut total_cost = 0f64;
+    // Agent-call spend is no longer priced on the execution path (see the
+    // per-step comment below); this column is kept written so its shape is
+    // unchanged, and the usage API serves the real figure.
+    let total_cost = 0f64;
     persist_progress(db, execution_id, &step_results, 0, total_cost).await;
 
     // Run-time data for this execution only, folded into step 0's task
@@ -229,43 +230,36 @@ pub async fn run_maf(
 
         let llm_tokens = prompt_tokens + extract_tokens;
 
-        // Wait for the agent's own token usage to land in Tempo (it batches
-        // span export, so it's usually not there the instant the call
-        // returns) so the persisted step total already reflects LLM + agent
-        // cost together, not just MAF's own reasoning cost.
-        let agent_usage = timed(
-            "wait_for_agent_usage",
-            execution_id,
-            Some(step.step_index),
-            wait_for_agent_usage(observability, &trace_id),
-        )
-        .await;
-        let agent_tokens = agent_usage.input as i64 + agent_usage.output as i64;
-        let step_tokens = llm_tokens + agent_tokens;
+        // Agent-side token usage is deliberately NOT collected here. It exists
+        // only as OTel span attributes, and agents batch-export spans every
+        // ~5s, so reading it inline stalled every single step for up to 10s
+        // waiting on a number that nothing downstream consumes (not the next
+        // step's context, not the final synthesis) — pure added latency on the
+        // user-visible path.
+        //
+        // The same spans are materialized into `trace_usage` by the
+        // trace-usage worker, keyed by trace id. Because `build_traceparent`
+        // derives each step's trace id deterministically from
+        // (execution_id, step_index), that table can be joined straight back
+        // to these steps after the fact: see
+        // `GET /api/maf/execution/{id}/usage`, which the UI polls separately
+        // and renders when it becomes available.
+        //
+        // Reading it out-of-band rather than back-filling it in also removes
+        // the lost-update race the previous detached backfill had against this
+        // loop's own `persist_progress` full-row overwrites.
+        let step_tokens = llm_tokens;
         total_tokens += step_tokens;
         tracing::info!(
             execution_id = %execution_id,
             step_index = step.step_index,
             agent_name = %step.agent_name,
+            trace_id = %trace_id,
             llm_tokens,
-            agent_tokens,
             step_tokens,
             running_total_tokens = total_tokens,
-            "maf run: token usage"
+            "maf run: token usage (MAF reasoning only; agent usage served by the usage API)"
         );
-
-        // Cost is agent-call spend only (not MAF's own planning/reasoning LLM
-        // calls) — keeps Agent-view and Workflow-view FinOps rows apples-to-
-        // apples, since agent-view cost is also agent-spend-only.
-        let step_cost = observability
-            .cost(
-                agent_usage.model.as_deref(),
-                agent_usage.input,
-                agent_usage.output,
-            )
-            .await
-            .total_usd;
-        total_cost += step_cost;
 
         let new_context = if context.is_empty() {
             format!(
@@ -283,12 +277,12 @@ pub async fn run_maf(
         step_results[i].prompt = actual_prompt;
         step_results[i].extracted_info = Some(extracted);
         step_results[i].tokens_used = step_tokens;
-        step_results[i].input_tokens = agent_usage.input as i64;
-        step_results[i].output_tokens = agent_usage.output as i64;
-        step_results[i].cache_read_tokens = agent_usage.cache_read as i64;
-        step_results[i].cache_creation_tokens = agent_usage.cache_creation as i64;
-        step_results[i].model_used = agent_usage.model;
-        step_results[i].cost_usd = step_cost;
+        // The agent-usage fields (input/output/cache/model/cost) stay at their
+        // zero defaults in the stored row — they are served by the usage API,
+        // which reads them from `trace_usage` at request time. Recording the
+        // trace id is what makes that join possible without the caller having
+        // to re-derive it.
+        step_results[i].trace_id = Some(trace_id);
         step_results[i].latency_ms = latency_ms;
         step_results[i].context = Some(new_context);
         persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
@@ -331,6 +325,7 @@ fn pending_result(step: &MafStep) -> StepResult {
         prompt: String::new(),
         extracted_info: None,
         tokens_used: 0,
+        trace_id: None,
         input_tokens: 0,
         output_tokens: 0,
         cache_read_tokens: 0,
@@ -813,51 +808,6 @@ fn build_traceparent(execution_id: Uuid, step_index: i32) -> (String, String) {
     (traceparent, trace_id)
 }
 
-/// Polls Tempo for this step's trace (keyed by the `trace_id` that
-/// `build_traceparent` forwarded) and returns its total `gen_ai.usage` tokens,
-/// or 0 if nothing shows up within the timeout — Tempo/the agent being
-/// unreachable never fails the step, it just means this step's persisted total
-/// is LLM-only.
-struct AgentUsage {
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_creation: u64,
-    model: Option<String>,
-}
-
-async fn wait_for_agent_usage(
-    observability: &dyn ObservabilityProvider,
-    trace_id: &str,
-) -> AgentUsage {
-    // Agents commonly batch-export spans every ~5s, so the trace usually
-    // isn't queryable the instant the agent call returns — poll rather than
-    // check once.
-    for _ in 0..10 {
-        if let Ok(trace) = observability.get_trace(trace_id).await {
-            let (input, output, model) = trace.token_totals();
-            if input + output > 0 {
-                let (cache_read, cache_creation) = trace.cache_token_totals();
-                return AgentUsage {
-                    input,
-                    output,
-                    cache_read,
-                    cache_creation,
-                    model,
-                };
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-    AgentUsage {
-        input: 0,
-        output: 0,
-        cache_read: 0,
-        cache_creation: 0,
-        model: None,
-    }
-}
-
 async fn call_agent(
     client: &reqwest::Client,
     endpoint: &str,
@@ -1017,264 +967,4 @@ fn build_context(step_results: &[StepResult]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use async_trait::async_trait;
-    use chrono::{DateTime, Utc};
-    use nasiko_observability::{
-        AgentFinOps, AgentStats, CostBreakdown, ObservabilityError, Session, SessionDetails, Span,
-        SpanDetails, TraceDetails,
-    };
-    use std::collections::HashMap as StdHashMap;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// A hand-rolled `ObservabilityProvider` test double. Only `get_trace` is
-    /// exercised by `wait_for_agent_usage` — every other method is a
-    /// never-called stub, required only because the trait has no default for
-    /// them.
-    struct MockProvider {
-        /// `get_trace` returns `NotFound` for the first `fail_calls`
-        /// invocations, then `trace` forever after.
-        fail_calls: usize,
-        calls: Arc<AtomicUsize>,
-        trace: TraceDetails,
-    }
-
-    #[async_trait]
-    impl ObservabilityProvider for MockProvider {
-        async fn sessions_for_agent(
-            &self,
-            _: &str,
-            _: DateTime<Utc>,
-            _: DateTime<Utc>,
-        ) -> Result<Vec<Session>, ObservabilityError> {
-            Ok(vec![])
-        }
-
-        async fn get_session(
-            &self,
-            _: &str,
-            _: DateTime<Utc>,
-            _: DateTime<Utc>,
-        ) -> Result<SessionDetails, ObservabilityError> {
-            Err(ObservabilityError::NotFound("unused in these tests".into()))
-        }
-
-        async fn get_trace(&self, _trace_id: &str) -> Result<TraceDetails, ObservabilityError> {
-            let n = self.calls.fetch_add(1, Ordering::SeqCst);
-            if n < self.fail_calls {
-                Err(ObservabilityError::NotFound("not exported yet".into()))
-            } else {
-                Ok(self.trace.clone())
-            }
-        }
-
-        async fn get_span(&self, _: &str, _: &str) -> Result<SpanDetails, ObservabilityError> {
-            Err(ObservabilityError::NotFound("unused in these tests".into()))
-        }
-
-        async fn agent_stats(
-            &self,
-            agent_id: &str,
-            start: DateTime<Utc>,
-            _: DateTime<Utc>,
-        ) -> Result<AgentStats, ObservabilityError> {
-            Ok(AgentStats {
-                agent_id: agent_id.to_string(),
-                trace_count: 0,
-                is_capped: false,
-                input_tokens: 0,
-                output_tokens: 0,
-                model_used: None,
-                latency_ms_p50: None,
-                latency_ms_p99: None,
-                cost: CostBreakdown::default(),
-                period_start: start,
-            })
-        }
-
-        async fn agent_finops(
-            &self,
-            agent_id: &str,
-            _: DateTime<Utc>,
-            _: DateTime<Utc>,
-        ) -> Result<AgentFinOps, ObservabilityError> {
-            Ok(AgentFinOps {
-                agent_id: agent_id.to_string(),
-                operations: 0,
-                is_capped: false,
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
-                model_used: None,
-                latency_ms_p50: None,
-                cost: CostBreakdown::default(),
-            })
-        }
-
-        async fn count_user_traces(
-            &self,
-            _: &str,
-            _: DateTime<Utc>,
-            _: DateTime<Utc>,
-        ) -> Result<usize, ObservabilityError> {
-            Ok(0)
-        }
-
-        async fn query_logs(
-            &self,
-            _: &str,
-            _: Option<DateTime<Utc>>,
-            _: Option<DateTime<Utc>>,
-            _: usize,
-        ) -> Result<Vec<(DateTime<Utc>, String)>, ObservabilityError> {
-            Ok(vec![])
-        }
-
-        async fn cost(&self, _: Option<&str>, _: u64, _: u64) -> CostBreakdown {
-            CostBreakdown::default()
-        }
-    }
-
-    fn trace_with_tokens(input: u64, output: u64, model: Option<&str>) -> TraceDetails {
-        let mut attrs: StdHashMap<String, serde_json::Value> = StdHashMap::new();
-        attrs.insert(
-            "gen_ai.usage.input_tokens".to_string(),
-            serde_json::json!(input),
-        );
-        attrs.insert(
-            "gen_ai.usage.output_tokens".to_string(),
-            serde_json::json!(output),
-        );
-        if let Some(m) = model {
-            attrs.insert("gen_ai.request.model".to_string(), serde_json::json!(m));
-        }
-        let span = Span {
-            span_id: "span-1".into(),
-            parent_span_id: None,
-            name: "chat".into(),
-            started_at: Utc::now(),
-            ended_at: None,
-            duration_ms: Some(100),
-            service_name: "test-agent".into(),
-            kind: 2,
-            status_code: 1,
-            status_message: String::new(),
-            attributes: attrs,
-            events: vec![],
-        };
-        TraceDetails {
-            trace_id: "trace-1".into(),
-            spans: vec![span],
-            started_at: Some(Utc::now()),
-            ended_at: None,
-            duration_ms: Some(100),
-        }
-    }
-
-    fn trace_with_no_tokens() -> TraceDetails {
-        let span = Span {
-            span_id: "span-1".into(),
-            parent_span_id: None,
-            name: "infra".into(),
-            started_at: Utc::now(),
-            ended_at: None,
-            duration_ms: Some(5),
-            service_name: "test-agent".into(),
-            kind: 1,
-            status_code: 1,
-            status_message: String::new(),
-            attributes: StdHashMap::new(),
-            events: vec![],
-        };
-        TraceDetails {
-            trace_id: "trace-1".into(),
-            spans: vec![span],
-            started_at: Some(Utc::now()),
-            ended_at: None,
-            duration_ms: Some(5),
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn wait_for_agent_usage_returns_immediately_when_the_trace_is_found_on_the_first_poll() {
-        let provider = MockProvider {
-            fail_calls: 0,
-            calls: Arc::new(AtomicUsize::new(0)),
-            trace: trace_with_tokens(120, 80, Some("gpt-4o-mini")),
-        };
-        let usage = wait_for_agent_usage(&provider, "trace-1").await;
-        assert_eq!(usage.input, 120);
-        assert_eq!(usage.output, 80);
-        assert_eq!(usage.model.as_deref(), Some("gpt-4o-mini"));
-        assert_eq!(
-            provider.calls.load(Ordering::SeqCst),
-            1,
-            "must not poll again once found"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn wait_for_agent_usage_polls_through_transient_not_found_then_succeeds() {
-        let provider = MockProvider {
-            fail_calls: 4,
-            calls: Arc::new(AtomicUsize::new(0)),
-            trace: trace_with_tokens(50, 25, Some("claude-3-5-sonnet")),
-        };
-        let usage = wait_for_agent_usage(&provider, "trace-1").await;
-        assert_eq!(usage.input, 50);
-        assert_eq!(usage.output, 25);
-        assert_eq!(
-            provider.calls.load(Ordering::SeqCst),
-            5,
-            "4 failed attempts + the 1 that finally succeeded"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn wait_for_agent_usage_gives_up_after_ten_attempts_and_returns_zeroed_usage() {
-        let provider = MockProvider {
-            fail_calls: 999, // never succeeds
-            calls: Arc::new(AtomicUsize::new(0)),
-            trace: trace_with_tokens(1, 1, None),
-        };
-        let usage = wait_for_agent_usage(&provider, "trace-1").await;
-        assert_eq!(usage.input, 0);
-        assert_eq!(usage.output, 0);
-        assert!(usage.model.is_none());
-        assert_eq!(
-            provider.calls.load(Ordering::SeqCst),
-            10,
-            "must stop after exactly 10 poll attempts, not loop forever"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn wait_for_agent_usage_keeps_polling_a_trace_that_exists_but_has_no_token_attributes() {
-        // A real trace that exists (e.g. a non-LLM agent step) but never
-        // reports tokens must NOT be mistaken for "found" — the loop's exit
-        // condition is `input + output > 0`, not merely "the trace exists".
-        let provider = MockProvider {
-            fail_calls: 0,
-            calls: Arc::new(AtomicUsize::new(0)),
-            trace: trace_with_no_tokens(),
-        };
-        let usage = wait_for_agent_usage(&provider, "trace-1").await;
-        assert_eq!(usage.input, 0);
-        assert_eq!(usage.output, 0);
-        assert_eq!(
-            provider.calls.load(Ordering::SeqCst),
-            10,
-            "a token-less trace must exhaust all 10 attempts, same as never-found"
-        );
-    }
 }

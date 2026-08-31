@@ -6,9 +6,6 @@ pub mod planner;
 pub mod types;
 mod worker;
 
-use std::sync::Arc;
-
-use nasiko_observability::ObservabilityProvider;
 use sqlx::PgPool;
 
 use llm::LlmClient;
@@ -27,7 +24,6 @@ pub fn start_worker(
     db: PgPool,
     redis: redis::Client,
     http_client: reqwest::Client,
-    observability: Arc<dyn ObservabilityProvider>,
     llm_config: LlmConfig,
 ) {
     let llm = LlmClient::new(
@@ -36,5 +32,5 @@ pub fn start_worker(
         llm_config.base_url,
         llm_config.model,
     );
-    tokio::spawn(worker::run(db, redis, http_client, observability, llm));
+    tokio::spawn(worker::run(db, redis, http_client, llm));
 }

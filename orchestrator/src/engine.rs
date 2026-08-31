@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use dashmap::DashMap;
 use reqwest::Client;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -15,7 +14,7 @@ use crate::selector::AgentSelector;
 use crate::selector::ConversationMessage;
 use crate::session_history::SessionHistory;
 use crate::types::{AgentCard, RouteRequest, RouteResult, RouterLogEntry};
-use crate::vector_store::{EmbeddingCache, VectorStore};
+use crate::vector_store::VectorStore;
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -53,11 +52,6 @@ pub struct OssRoutingEngine {
     api_key: String,
     base_url: String,
     embedding_model: String,
-    /// Cache of agent embeddings shared across `route()` calls. Without this,
-    /// Stage 1 would re-embed the entire agent catalog against Ollama/OpenAI on
-    /// every incoming request. See `EmbeddingCache` docs for the invalidation
-    /// strategy (TTL + content-hash).
-    embedding_cache: EmbeddingCache,
 }
 
 impl OssRoutingEngine {
@@ -77,7 +71,6 @@ impl OssRoutingEngine {
             api_key,
             base_url,
             embedding_model,
-            embedding_cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -140,7 +133,7 @@ impl RoutingEngine for OssRoutingEngine {
                 self.api_key.clone(),
                 self.base_url.clone(),
                 self.embedding_model.clone(),
-                &self.embedding_cache,
+                pool,
             )
             .await
         });
