@@ -23,10 +23,6 @@ pub struct Session {
     pub duration_ms: Option<u64>,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    #[serde(default)]
-    pub cache_read_tokens: u64,
-    #[serde(default)]
-    pub cache_creation_tokens: u64,
     /// First model observed in the session's spans.
     pub model_used: Option<String>,
     /// Percentiles over chat-span durations within the session.
@@ -41,20 +37,11 @@ pub struct Session {
 pub struct SessionDetails {
     pub session_id: String,
     pub traces: Vec<TraceSummary>,
-    /// Unique trace IDs found by the session search. When `has_more_traces` is
-    /// true this is a lower bound capped by the provider safety limit.
-    pub trace_count: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
     pub model_used: Option<String>,
     pub latency_ms_p50: Option<f64>,
     pub latency_ms_p99: Option<f64>,
-    /// More matching traces existed than the provider's bounded detail read.
-    pub has_more_traces: bool,
-    /// False when search was truncated or any matching trace failed to load.
-    pub metrics_complete: bool,
     pub cost: CostBreakdown,
 }
 
@@ -66,8 +53,6 @@ pub struct TraceSummary {
     pub root_span: Span,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
     pub model_used: Option<String>,
     pub duration_ms: Option<u64>,
     pub cost: CostBreakdown,
@@ -196,14 +181,10 @@ impl TraceDetails {
     /// Cost is intentionally not computed here — resolve it through a
     /// [`crate::pricing::PricingSource`] (see [`crate::pricing::compute_cost`]).
     pub fn token_totals(&self) -> (u64, u64, Option<String>) {
-        let mut seen = std::collections::HashSet::new();
         let mut input = 0u64;
         let mut output = 0u64;
         let mut model: Option<String> = None;
         for span in &self.spans {
-            if !seen.insert(&span.span_id) {
-                continue;
-            }
             let (inp, out, m) = extract_token_attrs(&span.attributes);
             if inp == 0 && out == 0 {
                 continue;
@@ -220,13 +201,9 @@ impl TraceDetails {
     /// Aggregate cache token counts across all spans:
     /// `(cache_read_tokens, cache_creation_tokens)`.
     pub fn cache_token_totals(&self) -> (u64, u64) {
-        let mut seen = std::collections::HashSet::new();
         let mut read = 0u64;
         let mut creation = 0u64;
         for span in &self.spans {
-            if !seen.insert(&span.span_id) {
-                continue;
-            }
             let (r, c) = extract_cache_token_attrs(&span.attributes);
             read += r;
             creation += c;
@@ -234,46 +211,20 @@ impl TraceDetails {
         (read, creation)
     }
 
-    /// All four token-class totals plus the first model observed.
-    pub fn usage_totals(&self) -> (TokenUsage, Option<String>) {
-        let (input_tokens, output_tokens, model) = self.token_totals();
-        let (cache_read_tokens, cache_creation_tokens) = self.cache_token_totals();
-        (
-            TokenUsage {
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-                total_tokens: input_tokens
-                    + output_tokens
-                    + cache_read_tokens
-                    + cache_creation_tokens,
-            },
-            model,
-        )
-    }
-
-    /// Per-model four-class token totals, for mixed-model trace reporting.
-    pub fn token_totals_by_model(&self) -> Vec<(Option<String>, u64, u64, u64, u64)> {
-        let mut seen = std::collections::HashSet::new();
-        let mut by_model: Vec<(Option<String>, u64, u64, u64, u64)> = Vec::new();
+    /// Per-model token totals, for pricing mixed-model traces correctly.
+    pub fn token_totals_by_model(&self) -> Vec<(Option<String>, u64, u64)> {
+        let mut by_model: Vec<(Option<String>, u64, u64)> = Vec::new();
         for span in &self.spans {
-            if !seen.insert(&span.span_id) {
-                continue;
-            }
             let (inp, out, model) = extract_token_attrs(&span.attributes);
-            let (cache_read, cache_creation) = extract_cache_token_attrs(&span.attributes);
-            if inp == 0 && out == 0 && cache_read == 0 && cache_creation == 0 {
+            if inp == 0 && out == 0 {
                 continue;
             }
-            match by_model.iter_mut().find(|(m, _, _, _, _)| *m == model) {
-                Some((_, i, o, r, c)) => {
+            match by_model.iter_mut().find(|(m, _, _)| *m == model) {
+                Some((_, i, o)) => {
                     *i += inp;
                     *o += out;
-                    *r += cache_read;
-                    *c += cache_creation;
                 }
-                None => by_model.push((model, inp, out, cache_read, cache_creation)),
+                None => by_model.push((model, inp, out)),
             }
         }
         by_model
@@ -288,7 +239,6 @@ pub struct SpanDetails {
     pub input_content: Option<String>,
     /// Completion content, when captured.
     pub output_content: Option<String>,
-    pub token_usage: TokenUsage,
     pub cost: CostBreakdown,
 }
 
@@ -297,10 +247,6 @@ pub struct SpanDetails {
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
-    #[serde(default)]
-    pub cache_read_tokens: u64,
-    #[serde(default)]
-    pub cache_creation_tokens: u64,
     pub total_tokens: u64,
 }
 
@@ -312,8 +258,6 @@ pub struct AgentStats {
     pub trace_count: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
     pub model_used: Option<String>,
     pub latency_ms_p50: Option<f64>,
     pub latency_ms_p99: Option<f64>,
@@ -342,13 +286,9 @@ pub struct AgentFinOps {
 pub fn latency_percentiles(mut durations: Vec<u64>) -> (Option<f64>, Option<f64>) {
     durations.sort_unstable();
     let len = durations.len();
-    let nearest_rank = |percent: usize| {
-        len.checked_mul(percent)
-            .map(|rank| rank.div_ceil(100).saturating_sub(1))
-            .and_then(|index| durations.get(index))
-            .map(|&v| v as f64)
-    };
-    let p50 = nearest_rank(50);
-    let p99 = nearest_rank(99);
+    let p50 = durations.get(len / 2).map(|&v| v as f64);
+    let p99 = durations
+        .get((len * 99 / 100).saturating_sub(1))
+        .map(|&v| v as f64);
     (p50, p99)
 }

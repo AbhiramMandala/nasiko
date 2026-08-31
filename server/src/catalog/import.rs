@@ -329,8 +329,6 @@ pub(crate) async fn build_and_deploy(
         Some(owner_id),
     )
     .await;
-    // Per-agent MCP gateway credential (rotates on re-import).
-    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env_vars, agent_id).await;
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
         &meta.name,
@@ -652,19 +650,18 @@ async fn effective_allowed_hosts(state: &AppState) -> Vec<String> {
         .collect();
     allowed.extend(state.config.registry_import_allowed_hosts.iter().cloned());
 
-    let configured: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
-        "SELECT registry_url FROM settings LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(Some(url)) => url,
-        Ok(None) => None,
-        Err(e) => {
-            tracing::warn!(%e, "effective_allowed_hosts: could not read settings.registry_url");
-            None
-        }
-    };
+    let configured: Option<String> =
+        match sqlx::query_scalar::<_, Option<String>>("SELECT registry_url FROM settings LIMIT 1")
+            .fetch_optional(&state.db)
+            .await
+        {
+            Ok(Some(url)) => url,
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(%e, "effective_allowed_hosts: could not read settings.registry_url");
+                None
+            }
+        };
     if let Some(host) = configured.as_deref().and_then(registry_url_host) {
         allowed.push(host);
     }
@@ -984,8 +981,6 @@ pub(crate) async fn import_registry(
             Some(owner_id),
         )
         .await;
-        // Per-agent MCP gateway credential (rotates on redeploy).
-        crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env_vars, agent_id).await;
         let mut spec = crate::agents::build_agent_spec(
             agent_id,
             &agent_name,
