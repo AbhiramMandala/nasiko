@@ -1,243 +1,174 @@
 /**
- * Walks a materialized element tree and builds real DOM out of the actual
- * design-system custom elements — no reconciler, clear-and-rebuild per pass
- * (matches the full-re-walk decision in materialize.js).
+ * A materialized tree in, real design-system elements out.
  *
- * app-table/app-select/etc. special case: any attribute typed `"dataSource"`
- * (only `app-table.data-fn` today) is resolved internally from the
- * `dataParam` value via a synthetic registered source — never a literal
- * the model controls directly (see `dsl-overrides.json`'s
- * `dslExcludeAttributes`, which already strips these from the catalog the
- * model is shown). `type: "json"` attributes are JSON.stringify'd, not
- * naively `String()`'d. `propAssignments`-listed params are set as real JS
- * properties (`el.data = value`), not attributes — needed for `app-chart`,
- * whose real dataset is a property setter, not an HTML attribute (confirmed
- * directly against its source). A materialized prop shaped `{type:'action',
- * steps}` is wired as an event listener via `triggerAction`, never
- * `setAttribute`d. A node with `.slot` set gets the parent's mapped slot
- * attribute (e.g. `data-slot="footer"`) before being appended.
+ * Clear and rebuild per pass, matching the full re-walk in materialize.js.
+ * There is no reconciler: at one dashboard's size the cost is nothing, and the
+ * alternative is a diffing layer whose bugs all look like "the screen is
+ * subtly wrong" rather than "the screen is missing".
  *
- * `app-modal` special case: its real `open()`/`close()` are imperative JS
- * methods, not an attribute (confirmed directly against its source — it
- * starts closed; simply being in the tree does nothing visible). Since we
- * always want a materialized `AppModal(...)` to actually be visible once
- * rendered (no DSL-level "closed" concept exists yet), `render()` calls
- * `.open()` on every app-modal element once the whole tree is attached to
- * the document (`showModal()`-style APIs require connection first) — a
- * real, deliberate simplification: a "click to open" modal isn't supported
- * yet, only "show this modal now" is.
+ * Every value here arrived over the wire from a model, so the whole surface of
+ * this file is `createElement`, `setAttribute`, `textContent` and property
+ * assignment — never `innerHTML`, never a handler named in the spec. `ui-lint`
+ * enforces that rather than trusting it, because the shortcut is always
+ * available and always tempting.
+ *
+ * How a component takes its data is a per-component fact read from the
+ * catalog, not a guess:
+ *
+ *   - `app-table` wants a fetcher on its `dataFn` property. Rows are wrapped in
+ *     one. The alternative — registering a synthetic source in the app-wide
+ *     `core/data-sources.js` registry and pointing `data-fn` at it — is what
+ *     the prototype did, and it leaked: a new registration every render pass,
+ *     never unregistered, in a namespace shared with real sources.
+ *   - `app-chart` wants its data on a `data` property, and its two shapes
+ *     (Chart.js `{labels, datasets}` for canvas forms, a bare row array for
+ *     `hbar`/`progress`) are passed through unchanged. Coercing between them is
+ *     how a chart silently renders blank.
+ *
+ * @module common/surface/render
  */
 
-import { register } from '../core/data-sources.js';
+import { toText } from './coerce.js';
+
+/** Attributes a surface may never set, whatever a catalog says. */
+const DENIED = new Set(['style', 'class', 'id', 'part', 'is', 'slot']);
 
 /**
- * @param {object|null} root materialized element tree from materialize.js
- * @param {HTMLElement} container mount point
- * @param {object} catalog the merged dsl-catalog.json (or an equivalent
- *   object shaped `{components: {...}}`)
- * @param {object} [actionCtx] passed straight to `renderNode` for wiring
- *   `Action` listeners; omit to render without interactivity (e.g. tests)
+ * The event an Action binds to. A component that declares its own `change` or
+ * `input` event means that, not a click — derived from the catalog rather than
+ * hand-listed, so a new form control does not need remembering.
  */
-export function render(root, container, catalog, actionCtx = null) {
-  try {
-    container.innerHTML = '';
-    if (!root) return;
-    const postAppend = [];
-    container.appendChild(renderNode(root, catalog, actionCtx, postAppend));
-    for (const el of postAppend) el.open?.();
-  } catch (err) {
-    // Render-level fallback: never blank the container on a thrown error —
-    // leave whatever was last successfully rendered in place (the plain-DOM
-    // equivalent of an error boundary that keeps last-good children).
-    console.error('render.js: render() threw, keeping last good tree:', err);
-    actionCtx?.onError?.([{ source: 'render', code: 'render-threw', message: String(err) }]);
-  }
+function triggerEvent(def) {
+  if (def.actionEvent) return def.actionEvent;
+  const names = (def.events || []).map((e) => (typeof e === 'string' ? e : e.name));
+  for (const preferred of ['change', 'input']) if (names.includes(preferred)) return preferred;
+  return 'click';
 }
 
-function renderNode(node, catalog, actionCtx, postAppend) {
-  const el = document.createElement(node.tag);
-  const def = catalog.components[node.tag] || { attributes: {} };
-  const propAssignments = new Set(def.propAssignments || []);
-  if (node.tag === 'app-modal') postAppend.push(el);
+/**
+ * @typedef {object} RenderDeps
+ * @property {Document} [doc] Injected for tests; defaults to the real document.
+ * @property {(action: object, el: Element) => void} [onAction] Called when an
+ *   action-bearing element fires. The renderer never interprets an Action
+ *   itself — it only wires the trigger.
+ * @property {(d: {source: string, code: string, message: string, pointer?: string}) => void} [onDiagnostic]
+ */
 
-  for (const [key, value] of Object.entries(node.props)) {
+/**
+ * Render a tree into a container, replacing whatever was there.
+ *
+ * @param {object|null} root
+ * @param {Element} container
+ * @param {{components: Record<string, any>}} catalog
+ * @param {RenderDeps} [deps]
+ */
+export function render(root, container, catalog, deps = {}) {
+  container.replaceChildren();
+  if (!root) return;
+  const el = renderNode(root, catalog, deps);
+  if (el) container.appendChild(el);
+}
+
+/**
+ * @param {object} node
+ * @param {{components: Record<string, any>}} catalog
+ * @param {RenderDeps} deps
+ * @returns {Element|null}
+ */
+export function renderNode(node, catalog, deps = {}) {
+  const doc = deps.doc ?? globalThis.document;
+  const def = catalog.components?.[node.tag];
+  const report = (code, message) => deps.onDiagnostic?.({ source: 'render', code, message, pointer: node.statementId });
+
+  if (!def) {
+    report('unknown_component_type', `"${node.tag}" is not in the catalog`);
+    return null;
+  }
+
+  const el = doc.createElement(node.tag);
+  const attrs = def.attributes || {};
+
+  for (const [key, value] of Object.entries(node.props || {})) {
     if (value === null || value === undefined) continue;
+    if (DENIED.has(key)) { report('denied_attribute', `"${key}" may not be set from a surface`); continue; }
+    const spec = attrs[key];
+    if (!spec) { report('unknown_attribute', `${node.tag} has no "${key}" attribute`); continue; }
 
-    if (value && typeof value === 'object' && value.type === 'action') {
-      wireAction(el, def, key, value, actionCtx);
+    if (spec.type === 'boolean') {
+      // Presence is what a boolean attribute means. Writing `search="false"`
+      // would read as true to every `hasAttribute` check in the component.
+      if (value === true || value === 'true' || value === '') el.setAttribute(key, '');
       continue;
     }
-
-    if (node.tag === 'app-action-menu' && key === 'items' && Array.isArray(value)) {
-      wireActionMenuItems(el, value, actionCtx);
+    if (spec.type === 'enum' && spec.values?.length && !spec.values.includes(String(value))) {
+      // Fall back rather than drop: a layout attribute with no value collapses
+      // the component's geometry, which looks like a rendering bug.
+      report('enum_violation', `"${value}" is not one of ${spec.values.join(', ')} for ${node.tag}.${key}`);
+      if (spec.default === undefined) continue;
+      el.setAttribute(key, String(spec.default));
       continue;
     }
-
-    if (propAssignments.has(key)) {
-      el[toPropertyName(key)] = value;
+    if (spec.type === 'json') {
+      el.setAttribute(key, typeof value === 'string' ? value : JSON.stringify(value));
       continue;
     }
+    el.setAttribute(key, toText(value));
+  }
 
-    const attrDef = def.attributes[key];
-    if (attrDef?.type === 'boolean') {
-      if (value) el.setAttribute(key, '');
-    } else if (attrDef?.type === 'json') {
-      el.setAttribute(key, JSON.stringify(sanitizeForJson(value)));
+  // textParam — the component's visible text is its own child text, not an
+  // attribute. textContent, so no markup can come out of it by construction.
+  if (node.text !== null && node.text !== undefined && def.textParam) {
+    el.textContent = toText(node.text);
+  }
+
+  // dataParam — always a property, never an attribute. Which property, and
+  // whether it wants a fetcher, is stated per component in the catalog.
+  if (node.data !== null && node.data !== undefined && def.dataParam) {
+    const prop = def.dataProp;
+    if (!prop) report('no_data_property', `${node.tag} declares dataParam but no dataProp`);
+    else if (def.dataAsFetcher) {
+      const rows = Array.isArray(node.data) ? node.data : [];
+      if (!Array.isArray(node.data)) report('data_not_rows', `${node.tag} needs an array of rows`);
+      el[prop] = async () => ({ data: rows, total: rows.length });
     } else {
-      el.setAttribute(key, String(value));
+      el[prop] = node.data;
     }
   }
 
-  if (typeof node.text === 'string') {
-    // textParam component (e.g. app-button/app-badge/app-tag): the real
-    // visible label is plain light-DOM text content, confirmed directly
-    // against each component's own source — never an attribute.
-    el.textContent = node.text;
+  // actionParam — the renderer wires the trigger and nothing else. What an
+  // Action means is the action runner's business; the spec never names a
+  // handler and no on* attribute is ever written.
+  if (node.action && node.action.type === 'action' && def.actionParam) {
+    el.addEventListener(triggerEvent(def), () => deps.onAction?.(node.action, el));
   }
 
-  if (propAssignments.has('data')) {
-    // e.g. app-chart: its real dataset is a JS property, not an attribute,
-    // and may legitimately be an array OR a {labels, datasets} object —
-    // materialize.js already skips the array-only coercion for this case.
-    if (node.data !== null && node.data !== undefined) el.data = node.data;
-  } else if (Array.isArray(node.data)) {
-    // app-table-style dataParam: always a row array, resolved via a
-    // synthetic one-off registered data source (its `data-fn` attribute
-    // names a function, not a literal — see core/data-sources.js).
-    const sourceName = `__surface_${node.statementId || 'anon'}`;
-    register(sourceName, async () => ({ data: node.data, total: node.data.length }), { replace: true });
-    el.setAttribute('data-fn', sourceName);
-  }
-
-  if (Array.isArray(node.children)) {
-    for (const child of node.children) {
-      if (!child || typeof child !== 'object' || child.type !== 'element') continue;
-      const childEl = renderNode(child, catalog, actionCtx, postAppend);
-      if (child.slot) {
-        const slotAttr = def.slots?.[child.slot];
-        if (slotAttr) childEl.setAttribute(slotAttr, child.slot);
-        else console.warn(`render.js: ${node.tag} has no mapped slot "${child.slot}" — appending as a plain child`);
-      }
-      el.appendChild(childEl);
-    }
+  for (const child of node.children || []) {
+    if (!child || child.type !== 'element') continue;
+    const childEl = renderNode(child, catalog, deps);
+    if (!childEl) continue;
+    if (child.slot) applySlot(childEl, child.slot, def, node.tag, report);
+    el.appendChild(childEl);
   }
 
   return el;
 }
 
-/** `key` is either a real attribute name or the synthetic `"action"` slot
- * (`dsl-overrides.json`'s `actionParam`). Either way, wire it to the
- * component's configured trigger event (default `"click"`).
+/**
+ * Mark a child as belonging to a named slot.
  *
- * Also extracts a real value from the triggering DOM event and exposes it
- * to that one Action's evaluation as `$event` (materialize.js's `StateRef`
- * case special-cases this reserved name) — without this, `@Set($x, ...)`
- * had no way to reference "what the user just typed/picked", only a
- * self-referential `@Set($x, $x)` no-op (confirmed live: a search box's
- * typed text never actually reached its own bound `$variable`). */
-function wireAction(el, def, key, actionValue, actionCtx) {
-  if (!actionCtx) return; // no context supplied — render without interactivity
-  const triggerEvent = def.actionEvent || def.events?.[0]?.name || 'click';
-  el.addEventListener(triggerEvent, (nativeEvent) => {
-    const evalCtx = actionCtx.evalCtx();
-    evalCtx.eventValue = extractEventValue(nativeEvent);
-    actionCtx.triggerAction(actionValue, evalCtx, actionCtx.deps());
-  });
-}
-
-/** Real event contracts, confirmed against each component's own source:
- * app-chatbox's `chatbox-submit` carries `detail: {value, files}`; app-search/
- * app-input/app-select bubble the native `input`/`change` from their inner
- * `<input>`/`<select>`, whose `.value` (or `.checked` for checkbox/radio) is
- * the real live value. Returns `undefined` (not `null`) when nothing
- * meaningful is extractable, matching "no event context" in `evaluateExpr`. */
-function extractEventValue(evt) {
-  if (evt?.detail && typeof evt.detail === 'object' && 'value' in evt.detail) return evt.detail.value;
-  const t = evt?.target;
-  if (t instanceof HTMLInputElement && (t.type === 'checkbox' || t.type === 'radio')) return t.checked;
-  if (t instanceof HTMLInputElement || t instanceof HTMLSelectElement || t instanceof HTMLTextAreaElement) {
-    return t.value;
+ * The attribute is not uniform across the design system — `app-card` and
+ * `app-empty-state` read `slot="…"`, while `app-modal`, `app-toolbar` and
+ * `app-select` read `data-slot="…"` — so it comes from the catalog per
+ * component. A mismatch appends the child anyway and reports: a misplaced
+ * footer button is a smaller failure than a missing one.
+ */
+function applySlot(childEl, slotName, parentDef, parentTag, report) {
+  const slots = parentDef.slots || [];
+  const match = slots.find((s) => (typeof s === 'string' ? s : s.name) === slotName);
+  if (!match) {
+    report('unknown_slot', `${parentTag} has no "${slotName}" slot`);
+    return;
   }
-  return undefined;
-}
-
-/** app-action-menu's real contract (confirmed against its source): `items`
- * is a plain `{id, label}` array, and it fires ONE `action-select` event
- * with `detail: {id}` for whichever item was clicked — not a per-item
- * listener. Our DSL lets the model attach a per-item `action` field
- * instead (`{label, action: someAction}`), which is not part of the real
- * component's contract at all, so previously nothing ever read it: clicking
- * any item did nothing but open/close the menu. This assigns each item a
- * synthetic `id`, strips the non-serializable `action` field before it
- * reaches the real component, and listens for the real event to dispatch
- * back to the right one. */
-function wireActionMenuItems(el, items, actionCtx) {
-  let warnedWrongShape = false;
-  const actionsById = new Map();
-  const cleaned = items.map((item, i) => {
-    const id = `item-${i}`;
-    // The correct shape is a plain `{label, action}` object literal. Two
-    // observed real-model variants, both handled defensively: (1) a bare
-    // `Action(...)` reference used directly as the item, with no label at
-    // all — the action still wires up, using a positional fallback label
-    // since none exists anywhere to recover; (2) a whole component
-    // reference (e.g. AppButton) — never rendered as a real DOM child here
-    // (no children slot for one), so its own action can't be recovered, but
-    // its visible text/label is used as a fallback so the item isn't blank.
-    let action = null;
-    if (item?.type === 'action') action = item;
-    else if (item?.action?.type === 'action') action = item.action;
-    if (action) actionsById.set(id, action);
-
-    const label = item?.label ?? item?.text ?? item?.props?.label ?? (action ? `Action ${i + 1}` : undefined);
-    if ((label === undefined || action === null) && !warnedWrongShape) {
-      warnedWrongShape = true;
-      console.warn(
-        'render.js: an AppActionMenu item is not a plain {label, action} object — see ' +
-          "agent.yaml's AppActionMenu worked example for the correct shape.",
-      );
-    }
-    return { id, label: label ?? '' };
-  });
-  el.setAttribute('items', JSON.stringify(cleaned));
-  if (!actionCtx) return;
-  el.addEventListener('action-select', (e) => {
-    const action = actionsById.get(e.detail?.id);
-    if (!action) return;
-    actionCtx.triggerAction(action, actionCtx.evalCtx(), actionCtx.deps());
-  });
-}
-
-/** Defensive: a JSON-typed attribute (e.g. app-card's `tags`) is meant to
- * hold plain data, but the model can accidentally nest a real component
- * call inside one (confirmed live: `AppCard(..., [AppTag("x")])` passed as
- * a `tags` value materializes each `AppTag` into a full `{type:'element',
- * tag:'app-tag', ...}` node, which isn't the `{label}` shape the real
- * component expects and renders as garbage). Strips any materialized
- * element/action node found anywhere inside the value, replacing it with
- * `null`, so a mistake like this renders visibly empty instead of garbled —
- * and warns once per render pass so it's diagnosable instead of silent. */
-function sanitizeForJson(value, warned = { done: false }) {
-  if (Array.isArray(value)) return value.map((v) => sanitizeForJson(v, warned));
-  if (value && typeof value === 'object') {
-    if (value.type === 'element' || value.type === 'action') {
-      if (!warned.done) {
-        warned.done = true;
-        console.warn(
-          'render.js: a real component/action was nested inside a plain JSON-typed attribute ' +
-            '(e.g. AppCard\'s `tags`) — dropped, since that attribute expects plain data, not a ' +
-            'DSL expression. Use a plain string/object literal there instead.',
-        );
-      }
-      return null;
-    }
-    const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = sanitizeForJson(v, warned);
-    return out;
-  }
-  return value;
-}
-
-function toPropertyName(attrKey) {
-  return attrKey.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+  const attribute = typeof match === 'string' ? 'slot' : match.attribute || 'slot';
+  childEl.setAttribute(attribute, slotName);
 }

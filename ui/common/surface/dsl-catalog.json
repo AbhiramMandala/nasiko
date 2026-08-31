@@ -1,10 +1,17 @@
 {
-  "catalogVersion": "1.0",
+  "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
+  "catalogVersion": "bb2bb4b4901a",
+  "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
+  "sourceCatalogVersion": "1.0",
+  "componentCount": 26,
   "components": {
     "app-action-menu": {
       "element": "app-action-menu",
       "summary": "Icon button that opens a compact dropdown list of actions.",
-      "source": "common/design-system/app-action-menu/app-action-menu.js",
+      "paramOrder": [
+        "trigger-title",
+        "items"
+      ],
       "attributes": {
         "trigger-title": {
           "type": "string",
@@ -23,10 +30,82 @@
         }
       ]
     },
+    "app-avatar": {
+      "element": "app-avatar",
+      "summary": "Avatar — the circular identity mark, optionally with the label beside it.",
+      "paramOrder": [
+        "size",
+        "image",
+        "initials",
+        "label",
+        "description",
+        "filled",
+        "interactive",
+        "disabled",
+        "state",
+        "alt"
+      ],
+      "attributes": {
+        "size": {
+          "type": "enum",
+          "values": [
+            "xs",
+            "sm",
+            "md",
+            "lg",
+            "xl"
+          ],
+          "description": "`xs` 20 | `sm` 24 | `md` 32 (default) | `lg` 40 | `xl` 48 | `2xl` 64"
+        },
+        "image": {
+          "type": "string",
+          "description": "src for the photo/logo. Wins over `initials`."
+        },
+        "initials": {
+          "type": "string",
+          "description": "Monogram, 1-2 characters. Used when there is no image."
+        },
+        "label": {
+          "type": "string",
+          "description": "Primary line (display name, org)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Secondary line (email, handle, role)."
+        },
+        "filled": {
+          "type": "boolean",
+          "description": "Wraps the whole thing in the dark chip."
+        },
+        "interactive": {
+          "type": "boolean",
+          "description": "The chip is a control: pointer + live hover."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "state": {
+          "type": "string",
+          "description": "`hover`, for rendering that state statically."
+        },
+        "alt": {
+          "type": "string",
+          "description": "Accessible name. Defaults to `label`/`description`; the mark is decorative (aria-hidden) whenever text is already showing."
+        }
+      },
+      "slots": [],
+      "events": [],
+      "note": "size/filled/interactive/disabled/state are CSS-only (app-avatar.css:86-113) rather than non-functional. They are absent from observedAttributes because nothing in JS re-runs on change; the renderer recreates elements per pass, so that costs nothing here."
+    },
     "app-badge": {
       "element": "app-badge",
       "summary": "Small inline label with color variants for status, category, or metadata.",
-      "source": "common/design-system/app-badge/app-badge.js",
+      "textParam": true,
+      "paramOrder": [
+        "text",
+        "variant"
+      ],
       "attributes": {
         "variant": {
           "type": "enum",
@@ -42,13 +121,26 @@
         }
       },
       "slots": [],
-      "events": [],
-      "textParam": true
+      "events": []
     },
     "app-button": {
       "element": "app-button",
       "summary": "Styled button with variants, sizes, loading spinner, and disabled state.",
-      "source": "common/design-system/app-button/app-button.js",
+      "textParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "text",
+        "variant",
+        "size",
+        "icon-only",
+        "disabled",
+        "loading",
+        "type",
+        "aria-label",
+        "title",
+        "aria-expanded",
+        "action"
+      ],
       "attributes": {
         "variant": {
           "type": "enum",
@@ -108,16 +200,31 @@
         }
       },
       "slots": [],
-      "events": [],
-      "textParam": true,
-      "actionParam": true,
-      "actionEvent": "click"
+      "events": []
     },
     "app-card": {
       "element": "app-card",
       "summary": "`<app-card>` — THE card component.",
-      "source": "common/design-system/app-card/app-card.js",
+      "paramOrder": [
+        "agent-id",
+        "name",
+        "card-title",
+        "version",
+        "status",
+        "description",
+        "tags",
+        "error-title",
+        "error-body",
+        "deploy-label",
+        "deploy-hint",
+        "max-visible-tags",
+        "loading"
+      ],
       "attributes": {
+        "agent-id": {
+          "type": "string",
+          "description": "Agent UUID. Drives the default hrefs and is echoed on the host."
+        },
         "name": {
           "type": "string",
           "required": true,
@@ -177,17 +284,42 @@
         }
       },
       "slots": [
-        "leading",
-        "actions",
-        "body",
-        "footer"
+        {
+          "name": "leading",
+          "attribute": "slot"
+        },
+        {
+          "name": "actions",
+          "attribute": "slot"
+        },
+        {
+          "name": "body",
+          "attribute": "slot"
+        },
+        {
+          "name": "footer",
+          "attribute": "slot"
+        }
       ],
       "events": []
     },
     "app-chart": {
       "element": "app-chart",
       "summary": "`<app-chart>` — the one chart component.",
-      "source": "common/design-system/app-chart/app-chart.js",
+      "dataParam": true,
+      "paramOrder": [
+        "data",
+        "type",
+        "stacked",
+        "format",
+        "currency",
+        "center-value",
+        "center-label",
+        "legend",
+        "empty-text",
+        "loading",
+        "label"
+      ],
       "attributes": {
         "type": {
           "type": "enum",
@@ -250,23 +382,21 @@
           "description": "Accessible name for the plot. Falls back to the type."
         }
       },
-      "excludedFromCatalog": [
-        {
-          "attribute": "height",
-          "reason": "takes a raw CSS length; a spec must not set dimensions"
-        }
-      ],
       "slots": [],
       "events": [],
-      "dataParam": true,
-      "propAssignments": [
-        "data"
-      ]
+      "dataProp": "data",
+      "note": "Chart data is a JS property, not an attribute (app-chart.js:189). Two shapes by `type`: canvas forms (line/bar/donut) need Chart.js {labels, datasets}; row forms (hbar/progress) take a bare array of {label, value}. The renderer passes it through unchanged."
     },
     "app-chatbox": {
       "element": "app-chatbox",
       "summary": "The chat composer: an auto-growing textarea with voice recording, file attachment, and submit-on-Enter.",
-      "source": "common/design-system/app-chatbox/app-chatbox.js",
+      "actionParam": true,
+      "paramOrder": [
+        "placeholder",
+        "no-attachments",
+        "transcription-callback",
+        "action"
+      ],
       "attributes": {
         "placeholder": {
           "type": "string",
@@ -288,13 +418,24 @@
           "description": "User submits; `detail: { value: string, files: [] }` — bubbles. The box goes into its loading state on submit; the owner calls `setLoading(false)` (or `setLoading(true)` then false) when the reply lands."
         }
       ],
-      "actionParam": true,
-      "actionEvent": "chatbox-submit"
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-checkbox": {
       "element": "app-checkbox",
       "summary": "Checkbox with an optional label and subtext, plus an indeterminate state.",
-      "source": "common/design-system/app-checkbox/app-checkbox.js",
+      "actionParam": true,
+      "paramOrder": [
+        "checked",
+        "indeterminate",
+        "disabled",
+        "state",
+        "label",
+        "hint",
+        "name",
+        "value",
+        "aria-label",
+        "action"
+      ],
       "attributes": {
         "checked": {
           "type": "boolean",
@@ -345,13 +486,15 @@
           "description": "Bubbles from the inner input."
         }
       ],
-      "actionParam": true,
-      "actionEvent": "change"
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-code-snippet": {
       "element": "app-code-snippet",
       "summary": "Labeled command/code block with a copy-to-clipboard button.",
-      "source": "common/design-system/app-code-snippet/app-code-snippet.js",
+      "paramOrder": [
+        "label",
+        "code"
+      ],
       "attributes": {
         "label": {
           "type": "string",
@@ -368,7 +511,13 @@
     "app-divider": {
       "element": "app-divider",
       "summary": "Rule / separator — a line between two blocks of content, optionally labelled.",
-      "source": "common/design-system/app-divider/app-divider.js",
+      "paramOrder": [
+        "vertical",
+        "thick",
+        "line",
+        "tone",
+        "label"
+      ],
       "attributes": {
         "vertical": {
           "type": "boolean",
@@ -403,7 +552,10 @@
     "app-empty-state": {
       "element": "app-empty-state",
       "summary": "Placeholder shown when a list or view has no content yet.",
-      "source": "common/design-system/app-empty-state/app-empty-state.js",
+      "paramOrder": [
+        "title",
+        "description"
+      ],
       "attributes": {
         "title": {
           "type": "string",
@@ -412,22 +564,30 @@
         "description": {
           "type": "string",
           "description": "Supporting description text"
-        },
-        "icon": {
-          "type": "string",
-          "description": "SVG markup string for the icon (alternative to slot). Deliberately NOT escaped: it is markup by contract. That makes it a sink, so a generated surface may not set it — see weave-surface/validate.js."
         }
       },
       "slots": [
-        "icon",
-        "default"
+        {
+          "name": "icon",
+          "attribute": "slot"
+        },
+        {
+          "name": "default",
+          "attribute": null
+        }
       ],
       "events": []
     },
     "app-grid": {
       "element": "app-grid",
       "summary": "CSS grid layout wrapper with configurable columns, gap, and padding.",
-      "source": "common/design-system/app-grid/app-grid.js",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "columns",
+        "gap",
+        "padding"
+      ],
       "attributes": {
         "columns": {
           "type": "number",
@@ -457,20 +617,38 @@
           "description": "Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`"
         }
       },
-      "excludedFromCatalog": [
-        {
-          "attribute": "min-width",
-          "reason": "takes a raw CSS length; a spec must not set dimensions"
-        }
-      ],
       "slots": [],
-      "events": [],
-      "childrenParam": true
+      "events": []
     },
     "app-input": {
       "element": "app-input",
       "summary": "Text input with label, hint, character count and leading/trailing icon slots.",
-      "source": "common/design-system/app-input/app-input.js",
+      "actionParam": true,
+      "paramOrder": [
+        "size",
+        "state",
+        "label",
+        "hint",
+        "count",
+        "required",
+        "disabled",
+        "readonly",
+        "type",
+        "name",
+        "placeholder",
+        "value",
+        "autocomplete",
+        "maxlength",
+        "inputmode",
+        "min",
+        "max",
+        "step",
+        "pattern",
+        "list",
+        "spellcheck",
+        "aria-label",
+        "action"
+      ],
       "attributes": {
         "size": {
           "type": "enum",
@@ -583,20 +761,33 @@
           "description": ""
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "trailing",
+          "attribute": "data-slot"
+        }
+      ],
       "events": [
         {
           "name": "input",
           "description": "|change - Native events bubble from the inner input."
         }
       ],
-      "actionParam": true,
-      "actionEvent": "input"
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-modal": {
       "element": "app-modal",
       "summary": "Accessible dialog modal with heading, body, footer slot, backdrop dismiss, and ESC/X close.",
-      "source": "common/design-system/app-modal/app-modal.js",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "heading",
+        "hide-footer"
+      ],
       "attributes": {
         "heading": {
           "type": "string",
@@ -607,16 +798,33 @@
           "description": "Hides the footer container even when a footer slot exists"
         }
       },
-      "slots": {
-        "footer": "data-slot"
-      },
-      "events": [],
-      "childrenParam": true
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        },
+        {
+          "name": "footer",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": []
     },
     "app-radio": {
       "element": "app-radio",
       "summary": "Radio button with an optional label and subtext.",
-      "source": "common/design-system/app-radio/app-radio.js",
+      "actionParam": true,
+      "paramOrder": [
+        "checked",
+        "disabled",
+        "state",
+        "label",
+        "hint",
+        "name",
+        "value",
+        "aria-label",
+        "action"
+      ],
       "attributes": {
         "checked": {
           "type": "boolean",
@@ -663,13 +871,20 @@
           "description": "Bubbles from the inner input."
         }
       ],
-      "actionParam": true,
-      "actionEvent": "change"
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-row": {
       "element": "app-row",
       "summary": "Horizontal flex row with configurable gap, alignment, and optional wrapping.",
-      "source": "common/design-system/app-row/app-row.js",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "gap",
+        "align",
+        "justify",
+        "padding",
+        "wrap"
+      ],
       "attributes": {
         "gap": {
           "type": "enum",
@@ -722,13 +937,26 @@
         }
       },
       "slots": [],
-      "events": [],
-      "childrenParam": true
+      "events": []
     },
     "app-search": {
       "element": "app-search",
       "summary": "Search field — the box only, not a results surface.",
-      "source": "common/design-system/app-search/app-search.js",
+      "actionParam": true,
+      "paramOrder": [
+        "size",
+        "state",
+        "loading",
+        "disabled",
+        "placeholder",
+        "value",
+        "name",
+        "autocomplete",
+        "maxlength",
+        "inputmode",
+        "aria-label",
+        "action"
+      ],
       "attributes": {
         "size": {
           "type": "enum",
@@ -783,7 +1011,16 @@
           "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "trailing",
+          "attribute": "data-slot"
+        }
+      ],
       "events": [
         {
           "name": "input",
@@ -794,13 +1031,26 @@
           "description": "After the clear button runs, for call sites that want the clear itself rather than \"value became empty\"."
         }
       ],
-      "actionParam": true,
-      "actionEvent": "input"
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-select": {
       "element": "app-select",
       "summary": "Single-select dropdown: a styled native `<select>` with the input's label, hint and state treatment.",
-      "source": "common/design-system/app-select/app-select.js",
+      "actionParam": true,
+      "paramOrder": [
+        "size",
+        "state",
+        "label",
+        "hint",
+        "placeholder",
+        "options",
+        "required",
+        "disabled",
+        "name",
+        "aria-label",
+        "value",
+        "action"
+      ],
       "attributes": {
         "size": {
           "type": "enum",
@@ -858,7 +1108,10 @@
         }
       },
       "slots": [
-        "leading"
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        }
       ],
       "events": [
         {
@@ -866,13 +1119,15 @@
           "description": "Bubbles from the inner select."
         }
       ],
-      "actionParam": true,
-      "actionEvent": "change"
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-skeleton": {
       "element": "app-skeleton",
       "summary": "Animated shimmer placeholder for content that is still loading.",
-      "source": "common/design-system/app-skeleton/app-skeleton.js",
+      "paramOrder": [
+        "lines",
+        "radius"
+      ],
       "attributes": {
         "lines": {
           "type": "number",
@@ -890,19 +1145,19 @@
           "description": "Corner size: `sm` (default) | `md` | `lg` | `full`"
         }
       },
-      "excludedFromCatalog": [
-        {
-          "attribute": "height",
-          "reason": "takes a raw CSS length; a spec must not set dimensions"
-        }
-      ],
       "slots": [],
       "events": []
     },
     "app-stack": {
       "element": "app-stack",
       "summary": "Vertical flex stack with configurable gap and alignment.",
-      "source": "common/design-system/app-stack/app-stack.js",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "gap",
+        "align",
+        "padding"
+      ],
       "attributes": {
         "gap": {
           "type": "enum",
@@ -940,13 +1195,18 @@
         }
       },
       "slots": [],
-      "events": [],
-      "childrenParam": true
+      "events": []
     },
     "app-stat-card": {
       "element": "app-stat-card",
       "summary": "Metric summary card showing a label, primary value, delta, and trend direction.",
-      "source": "common/design-system/app-stat-card/app-stat-card.js",
+      "paramOrder": [
+        "label",
+        "value",
+        "delta",
+        "trend",
+        "loading"
+      ],
       "attributes": {
         "label": {
           "type": "string",
@@ -980,7 +1240,10 @@
     "app-stat-row": {
       "element": "app-stat-row",
       "summary": "Row of headline metrics separated by hairlines — the one stat strip.",
-      "source": "common/design-system/app-stat-row/app-stat-row.js",
+      "paramOrder": [
+        "items",
+        "loading"
+      ],
       "attributes": {
         "items": {
           "type": "json",
@@ -998,7 +1261,20 @@
     "app-switch": {
       "element": "app-switch",
       "summary": "On/off toggle with an optional label and subtext.",
-      "source": "common/design-system/app-switch/app-switch.js",
+      "actionParam": true,
+      "paramOrder": [
+        "checked",
+        "disabled",
+        "size",
+        "state",
+        "label",
+        "hint",
+        "layout",
+        "name",
+        "value",
+        "aria-label",
+        "action"
+      ],
       "attributes": {
         "checked": {
           "type": "boolean",
@@ -1060,13 +1336,21 @@
           "description": "Bubbles from the inner input."
         }
       ],
-      "actionParam": true,
-      "actionEvent": "change"
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-table": {
       "element": "app-table",
       "summary": "Paginated data table — search, sortable auto-detected columns, an optional row-detail panel, and numbered page navigation.",
-      "source": "common/design-system/app-table/app-table.js",
+      "dataParam": true,
+      "paramOrder": [
+        "data",
+        "limit",
+        "pagination",
+        "search",
+        "search-placeholder",
+        "detail",
+        "empty-message"
+      ],
       "attributes": {
         "limit": {
           "type": "number",
@@ -1105,12 +1389,24 @@
           "description": "After each fetch — bubbles."
         }
       ],
-      "dataParam": true
+      "dataProp": "dataFn",
+      "dataAsFetcher": true,
+      "note": "Rows reach app-table as a fetcher on its `dataFn` property (app-table.js:24,113). Assigning the property avoids registering a synthetic source in the app-wide data-sources registry on every render pass — which never got unregistered and could collide with a real name."
     },
     "app-tag": {
       "element": "app-tag",
       "summary": "Tag / chip — an interactive, content-bearing label.",
-      "source": "common/design-system/app-tag/app-tag.js",
+      "textParam": true,
+      "paramOrder": [
+        "text",
+        "size",
+        "selected",
+        "selectable",
+        "removable",
+        "image",
+        "disabled",
+        "state"
+      ],
       "attributes": {
         "size": {
           "type": "enum",
@@ -1160,8 +1456,39 @@
           "name": "tag-remove",
           "description": "Cancelable; the tag removes itself unless prevented."
         }
+      ]
+    },
+    "app-toolbar": {
+      "element": "app-toolbar",
+      "summary": "Horizontal toolbar with named start and end slots for grouping actions.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "aria-label"
       ],
-      "textParam": true
+      "attributes": {
+        "aria-label": {
+          "type": "string",
+          "description": "Accessible label for the toolbar region"
+        }
+      },
+      "slots": [
+        {
+          "name": "start",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "end",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [],
+      "note": "Only useful with Slot() — its content is entirely start/end slotted."
     }
+  },
+  "blocked": {
+    "app-tabs": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) — an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism.",
+    "app-loading-bar": "Zero attributes; driven by global document events, not composition.",
+    "auto-complete": "Needs a live filter callback through data-sources.js — not designed yet."
   }
 }

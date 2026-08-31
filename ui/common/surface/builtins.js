@@ -1,105 +1,111 @@
 /**
- * `@builtin(...)` functions — ported directly from OpenUI Lang's real
- * implementation (session research, `builtins.ts:41-179`), forgiving-
- * coercion behavior kept exactly as-is per the production plan's decision:
- * no builtin ever throws; wrong types silently coerce to 0/null/[]/the
- * input itself, matching the rest of this DSL's evaluator (§2.3).
+ * The `@Name(...)` builtins.
  *
- * `Each` is deliberately NOT in this file — it is "lazy" (receives
- * unevaluated AST, not values) and is handled directly in materialize.js's
- * evaluator, exactly where `Query`/`Mutation`/`Action`/`Slot` are handled.
+ * A closed set of fourteen, matching `build_builtin_signatures()` in
+ * weave2.0's `dashboard/dsl_prompt.py` exactly — that function is what tells
+ * the model these exist, so a name here that is not there is unreachable, and
+ * a name there that is not here renders as nothing. Adding one means editing
+ * both, deliberately; there is no plugin mechanism and there should not be.
+ *
+ * Thirteen are eager: their arguments are evaluated before they are called.
+ * `@Each` is lazy — it takes its template unevaluated and evaluates it once per
+ * element against a child scope — so it is handled by the evaluator rather than
+ * from this table. `EACH` is exported as the name to special-case.
+ *
+ * None of them throw. Every one has a defined answer for a non-array, a
+ * non-numeric element and a missing argument, because all three are ordinary
+ * states while a query is still in flight.
+ *
+ * @module common/surface/builtins
  */
 
-function toNumber(val) {
-  if (typeof val === 'number') return val;
-  if (typeof val === 'string') {
-    const n = Number(val);
-    return Number.isNaN(n) ? 0 : n;
-  }
-  if (typeof val === 'boolean') return val ? 1 : 0;
-  return 0; // null/undefined/object/array
-}
+import { toNumber, toArray } from './coerce.js';
 
-function resolveField(item, field) {
-  if (item == null) return null;
-  return item[field];
-}
+/** The lazy one. The evaluator must intercept this before evaluating args. */
+export const EACH = 'Each';
 
-export const BUILTINS = {
-  Count: { fn: (arr) => (Array.isArray(arr) ? arr.length : 0) },
-  First: { fn: (arr) => (Array.isArray(arr) ? (arr[0] ?? null) : null) },
-  Last: { fn: (arr) => (Array.isArray(arr) ? (arr[arr.length - 1] ?? null) : null) },
-  Sum: {
-    fn: (arr) => (Array.isArray(arr) ? arr.reduce((a, b) => a + toNumber(b), 0) : 0),
-  },
-  Avg: {
-    fn: (arr) =>
-      Array.isArray(arr) && arr.length
-        ? arr.reduce((a, b) => a + toNumber(b), 0) / arr.length
-        : 0,
-  },
-  Min: {
-    fn: (arr) =>
-      Array.isArray(arr) && arr.length
-        ? arr.reduce((acc, b) => Math.min(acc, toNumber(b)), toNumber(arr[0]))
-        : 0,
-  },
-  Max: {
-    fn: (arr) =>
-      Array.isArray(arr) && arr.length
-        ? arr.reduce((acc, b) => Math.max(acc, toNumber(b)), toNumber(arr[0]))
-        : 0,
-  },
-  Sort: {
-    fn: (arr, field, dir) => {
-      if (!Array.isArray(arr)) return arr;
-      const direction = dir === 'desc' ? -1 : 1;
-      const copy = arr.slice();
-      copy.sort((a, b) => {
-        const av = resolveField(a, field);
-        const bv = resolveField(b, field);
-        const an = toNumber(av);
-        const bn = toNumber(bv);
-        if (!Number.isNaN(an) && !Number.isNaN(bn) && (typeof av === 'number' || typeof bv === 'number')) {
-          return (an - bn) * direction;
-        }
-        return String(av ?? '').localeCompare(String(bv ?? '')) * direction;
-      });
-      return copy;
-    },
-  },
-  Filter: {
-    fn: (arr, field, op, value) => {
-      if (!Array.isArray(arr)) return [];
-      return arr.filter((item) => {
-        const v = resolveField(item, field);
-        switch (op) {
-          case '==': return v == value; // eslint-disable-line eqeqeq
-          case '!=': return v != value; // eslint-disable-line eqeqeq
-          case '>': return toNumber(v) > toNumber(value);
-          case '<': return toNumber(v) < toNumber(value);
-          case '>=': return toNumber(v) >= toNumber(value);
-          case '<=': return toNumber(v) <= toNumber(value);
-          case 'contains': return String(v ?? '').includes(String(value ?? ''));
-          default: return false;
-        }
-      });
-    },
-  },
-  Round: {
-    fn: (n, decimals) => {
-      const num = toNumber(n);
-      const d = decimals != null ? toNumber(decimals) : 0;
-      return Math.round(num * 10 ** d) / 10 ** d;
-    },
-  },
-  Abs: { fn: (n) => Math.abs(toNumber(n)) },
-  Floor: { fn: (n) => Math.floor(toNumber(n)) },
-  Ceil: { fn: (n) => Math.ceil(toNumber(n)) },
+/** Comparison operators `@Filter` accepts, per its signature in the prompt. */
+const COMPARE = {
+  '==': (a, b) => a == b, // eslint-disable-line eqeqeq -- loose by specification
+  '!=': (a, b) => a != b, // eslint-disable-line eqeqeq
+  '>': (a, b) => toNumber(a) > toNumber(b),
+  '<': (a, b) => toNumber(a) < toNumber(b),
+  '>=': (a, b) => toNumber(a) >= toNumber(b),
+  '<=': (a, b) => toNumber(a) <= toNumber(b),
+  contains: (a, b) => String(a ?? '').toLowerCase().includes(String(b ?? '').toLowerCase()),
 };
 
-export function isBuiltin(name) {
-  return name in BUILTINS;
+/** Numbers out of any array, non-numeric entries reading as 0. */
+const nums = (v) => toArray(v).map(toNumber);
+
+export const BUILTINS = Object.freeze({
+  Count: (arr) => toArray(arr).length,
+  First: (arr) => (toArray(arr).length ? toArray(arr)[0] : null),
+  Last: (arr) => {
+    const a = toArray(arr);
+    return a.length ? a[a.length - 1] : null;
+  },
+  Sum: (arr) => nums(arr).reduce((a, b) => a + b, 0),
+  // An average of nothing is 0, not NaN — a KPI tile has to print something.
+  Avg: (arr) => {
+    const a = nums(arr);
+    return a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
+  },
+  Min: (arr) => {
+    const a = nums(arr);
+    return a.length ? Math.min(...a) : 0;
+  },
+  Max: (arr) => {
+    const a = nums(arr);
+    return a.length ? Math.max(...a) : 0;
+  },
+
+  /** Sorted copy. Numeric when both sides look numeric, else lexicographic. */
+  Sort: (arr, field, direction) => {
+    const dir = String(direction ?? 'asc').toLowerCase() === 'desc' ? -1 : 1;
+    const key = field === undefined || field === null ? null : String(field);
+    return [...toArray(arr)].sort((x, y) => {
+      const a = key === null ? x : x?.[key];
+      const b = key === null ? y : y?.[key];
+      const bothNumeric = a !== null && b !== null && a !== '' && b !== ''
+        && Number.isFinite(Number(a)) && Number.isFinite(Number(b));
+      if (bothNumeric) return (Number(a) - Number(b)) * dir;
+      return String(a ?? '').localeCompare(String(b ?? '')) * dir;
+    });
+  },
+
+  /** Filtered copy. An unknown operator keeps everything rather than nothing. */
+  Filter: (arr, field, operator, value) => {
+    const cmp = COMPARE[String(operator)];
+    if (!cmp) return toArray(arr);
+    const key = field === undefined || field === null ? null : String(field);
+    return toArray(arr).filter((row) => cmp(key === null ? row : row?.[key], value));
+  },
+
+  Round: (n, decimals) => {
+    const d = Math.max(0, Math.min(15, Math.trunc(toNumber(decimals))));
+    const f = 10 ** d;
+    return Math.round(toNumber(n) * f) / f;
+  },
+  Abs: (n) => Math.abs(toNumber(n)),
+  Floor: (n) => Math.floor(toNumber(n)),
+  Ceil: (n) => Math.ceil(toNumber(n)),
+});
+
+/** Is this a builtin the evaluator can call with evaluated arguments? */
+export function isEagerBuiltin(name) {
+  return Object.prototype.hasOwnProperty.call(BUILTINS, name);
 }
 
-export { toNumber };
+/**
+ * Call an eager builtin. An unknown name yields null rather than throwing —
+ * the model can invent one, and one empty cell beats a dead surface.
+ *
+ * @param {string} name
+ * @param {unknown[]} args already-evaluated arguments
+ */
+export function callBuiltin(name, args) {
+  const fn = BUILTINS[name];
+  if (!fn) return null;
+  return fn(...args);
+}

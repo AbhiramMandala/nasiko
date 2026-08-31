@@ -1,40 +1,64 @@
 /**
- * Tokenizer for the dynamic-UI DSL.
+ * Tokenizer for the Weave surface DSL.
  *
- * Grammar (see weave2.0/docs/DYNAMIC_UI_DSL_EXPLAINED.md and the production
- * implementation plan): statements, component/Query/Mutation/Action/Slot
- * calls, arrays, objects, refs, `$state` variables, `@builtin` calls, and a
- * full expression grammar (operators, ternary, member/index access) ported
- * from OpenUI Lang's real lexer/precedence table (session research, real
- * file+line evidence — see the plan). Comments and `$`/`@` prefixes were
- * deliberately cut in the POC; both are now real, per that plan.
+ * The grammar is the one `agent.yaml` teaches the model, so it is the full one
+ * from the start: operators with nine precedence levels, ternary, member and
+ * index access, `$state`, `@builtins`. There is no useful subset stage — the
+ * simplest worked example in the prompt already uses `Query(...)`, and a lexer
+ * that skips `$` and `?` does not fail loudly, it silently reinterprets
+ * `$view == "cost" ? a : b` as a different, valid-looking argument list.
+ *
+ * Two properties carry over from the POC and are load-bearing:
+ *
+ *   - `autoClose()` runs before tokenizing, so a buffer cut mid-stream still
+ *     lexes and parses as something complete. This is what makes rendering a
+ *     half-arrived response possible at all.
+ *   - An unrecognised character is skipped rather than thrown on. The model
+ *     writes prose around the DSL by design (agent.yaml rule 12), and a
+ *     tokenizer that refuses stray text would take the whole surface down with
+ *     the first friendly sentence.
+ *
+ * @module common/surface/lexer
  */
 
 export const T = Object.freeze({
-  NEWLINE: 'NEWLINE', LPAREN: 'LPAREN', RPAREN: 'RPAREN',
-  LBRACK: 'LBRACK', RBRACK: 'RBRACK', LBRACE: 'LBRACE', RBRACE: 'RBRACE',
-  COLON: 'COLON', COMMA: 'COMMA', EQUALS: 'EQUALS',
-  STR: 'STR', NUM: 'NUM', BOOL: 'BOOL', NULL: 'NULL', IDENT: 'IDENT', TYPE: 'TYPE', EOF: 'EOF',
-  // Operators / expression grammar additions:
+  NEWLINE: 'NEWLINE',
+  LPAREN: 'LPAREN', RPAREN: 'RPAREN',
+  LBRACK: 'LBRACK', RBRACK: 'RBRACK',
+  LBRACE: 'LBRACE', RBRACE: 'RBRACE',
+  COLON: 'COLON', COMMA: 'COMMA', EQUALS: 'EQUALS', DOT: 'DOT', QUESTION: 'QUESTION',
   PLUS: 'PLUS', MINUS: 'MINUS', STAR: 'STAR', SLASH: 'SLASH', PERCENT: 'PERCENT',
-  EQEQ: 'EQEQ', NOTEQ: 'NOTEQ', GREATER: 'GREATER', LESS: 'LESS',
-  GREATEREQ: 'GREATEREQ', LESSEQ: 'LESSEQ', AND: 'AND', OR: 'OR', NOT: 'NOT',
-  QUESTION: 'QUESTION', DOT: 'DOT',
-  // Reactive state / builtins:
-  STATEVAR: 'STATEVAR', BUILTINCALL: 'BUILTINCALL',
+  EQEQ: 'EQEQ', NOTEQ: 'NOTEQ', GT: 'GT', LT: 'LT', GTE: 'GTE', LTE: 'LTE',
+  ANDAND: 'ANDAND', OROR: 'OROR', BANG: 'BANG',
+  STR: 'STR', NUM: 'NUM', BOOL: 'BOOL', NULL: 'NULL',
+  IDENT: 'IDENT', TYPE: 'TYPE', STATE: 'STATE', BUILTIN: 'BUILTIN',
+  EOF: 'EOF',
 });
 
-// Single-character punctuation that never participates in a 2-char operator.
-const PUNCT = {
+/** Single-character punctuation with no two-character form starting with it. */
+const PUNCT1 = {
   '(': T.LPAREN, ')': T.RPAREN, '[': T.LBRACK, ']': T.RBRACK,
   '{': T.LBRACE, '}': T.RBRACE, ':': T.COLON, ',': T.COMMA,
+  '.': T.DOT, '?': T.QUESTION,
+  '+': T.PLUS, '-': T.MINUS, '*': T.STAR, '/': T.SLASH, '%': T.PERCENT,
 };
 
 /**
- * Repairs a streamed-but-incomplete buffer by closing any open string and any
- * open brackets, so the lexer/parser always run against a syntactically
- * complete (if partially-defined) buffer. Ported from OpenUI Lang's
- * `autoClose()` (packages/lang-core/src/parser/statements.ts).
+ * Two-character operators, checked before the single-character table.
+ * `=`, `!`, `>` and `<` each have both forms, so order matters here.
+ */
+const PUNCT2 = {
+  '==': T.EQEQ, '!=': T.NOTEQ, '>=': T.GTE, '<=': T.LTE, '&&': T.ANDAND, '||': T.OROR,
+};
+
+/** The single-character fallbacks for the four that also start a pair. */
+const PUNCT1_AMBIGUOUS = { '=': T.EQUALS, '!': T.BANG, '>': T.GT, '<': T.LT };
+
+/**
+ * Repair a streamed-but-incomplete buffer by closing any open string and any
+ * open bracket, so the lexer and parser always see something syntactically
+ * complete even when it is semantically half-written.
+ *
  * @param {string} input
  * @returns {{text: string, wasIncomplete: boolean}}
  */
@@ -65,7 +89,7 @@ export function autoClose(input) {
 
 /**
  * @param {string} text
- * @returns {Array<{t: string, v?: string|number}>}
+ * @returns {Array<{t: string, v?: string|number|boolean, i?: number}>}
  */
 export function tokenize(text) {
   const tokens = [];
@@ -74,8 +98,9 @@ export function tokenize(text) {
 
   while (i < n) {
     const c = text[i];
+    const start = i;
 
-    if (c === '\n') { tokens.push({ t: T.NEWLINE }); i++; continue; }
+    if (c === '\n') { tokens.push({ t: T.NEWLINE, i: start }); i++; continue; }
     if (c === ' ' || c === '\t' || c === '\r') { i++; continue; }
 
     if (c === '"') {
@@ -91,41 +116,41 @@ export function tokenize(text) {
           j++;
         }
       }
-      tokens.push({ t: T.STR, v: value });
-      i = j + 1; // skip closing quote (autoClose guarantees one exists)
+      tokens.push({ t: T.STR, v: value, i: start });
+      i = j + 1; // autoClose guarantees the closing quote exists
       continue;
     }
 
+    // Numbers are unsigned here. A leading `-` is always the MINUS operator and
+    // negation is the parser's job — otherwise `total -5` lexes as two values
+    // with no operator between them and silently means something else.
     if (/[0-9]/.test(c)) {
-      // Sign is never folded into the number token — always emit a separate
-      // MINUS and let the parser's unary-minus rule combine `-5` into
-      // UnaryOp('-', Num(5)). Folding sign into the literal would make
-      // `5-3` (no spaces) lex as NUM(5), NUM(-3) — losing the subtraction
-      // entirely. This is the standard approach and matches OpenUI's own
-      // lexer (sign is a real operator token, never part of a number).
       let j = i;
       while (j < n && /[0-9]/.test(text[j])) j++;
       if (text[j] === '.' && /[0-9]/.test(text[j + 1] || '')) {
         j++;
         while (j < n && /[0-9]/.test(text[j])) j++;
       }
-      tokens.push({ t: T.NUM, v: Number(text.slice(i, j)) });
+      tokens.push({ t: T.NUM, v: Number(text.slice(i, j)), i: start });
       i = j;
       continue;
     }
 
+    // `$name` — a reactive state reference. The value keeps the `$`, so a state
+    // name can never collide with a statement name of the same spelling.
     if (c === '$' && /[a-zA-Z_]/.test(text[i + 1] || '')) {
       let j = i + 1;
       while (j < n && /[a-zA-Z0-9_]/.test(text[j])) j++;
-      tokens.push({ t: T.STATEVAR, v: text.slice(i, j) }); // value INCLUDES the '$'
+      tokens.push({ t: T.STATE, v: text.slice(i, j), i: start });
       i = j;
       continue;
     }
 
+    // `@Name` — a builtin call. The `@` is consumed; the value is the bare name.
     if (c === '@' && /[a-zA-Z_]/.test(text[i + 1] || '')) {
       let j = i + 1;
       while (j < n && /[a-zA-Z0-9_]/.test(text[j])) j++;
-      tokens.push({ t: T.BUILTINCALL, v: text.slice(i + 1, j) }); // value EXCLUDES the '@'
+      tokens.push({ t: T.BUILTIN, v: text.slice(i + 1, j), i: start });
       i = j;
       continue;
     }
@@ -134,44 +159,25 @@ export function tokenize(text) {
       let j = i + 1;
       while (j < n && /[a-zA-Z0-9_]/.test(text[j])) j++;
       const word = text.slice(i, j);
-      if (word === 'true') tokens.push({ t: T.BOOL, v: true });
-      else if (word === 'false') tokens.push({ t: T.BOOL, v: false });
-      else if (word === 'null') tokens.push({ t: T.NULL });
-      else if (/^[A-Z]/.test(word)) tokens.push({ t: T.TYPE, v: word });
-      else tokens.push({ t: T.IDENT, v: word });
+      if (word === 'true') tokens.push({ t: T.BOOL, v: true, i: start });
+      else if (word === 'false') tokens.push({ t: T.BOOL, v: false, i: start });
+      else if (word === 'null') tokens.push({ t: T.NULL, i: start });
+      else if (/^[A-Z]/.test(word)) tokens.push({ t: T.TYPE, v: word, i: start });
+      else tokens.push({ t: T.IDENT, v: word, i: start });
       i = j;
       continue;
     }
 
-    // Two-character operators — must be checked before their single-char
-    // prefix falls through to PUNCT/unary handling.
-    const two = text.slice(i, i + 2);
-    if (two === '==') { tokens.push({ t: T.EQEQ }); i += 2; continue; }
-    if (two === '!=') { tokens.push({ t: T.NOTEQ }); i += 2; continue; }
-    if (two === '>=') { tokens.push({ t: T.GREATEREQ }); i += 2; continue; }
-    if (two === '<=') { tokens.push({ t: T.LESSEQ }); i += 2; continue; }
-    if (two === '&&') { tokens.push({ t: T.AND }); i += 2; continue; }
-    if (two === '||') { tokens.push({ t: T.OR }); i += 2; continue; }
+    const two = PUNCT2[text.slice(i, i + 2)];
+    if (two) { tokens.push({ t: two, i: start }); i += 2; continue; }
+    if (PUNCT1_AMBIGUOUS[c]) { tokens.push({ t: PUNCT1_AMBIGUOUS[c], i: start }); i++; continue; }
+    if (PUNCT1[c]) { tokens.push({ t: PUNCT1[c], i: start }); i++; continue; }
 
-    if (c === '=') { tokens.push({ t: T.EQUALS }); i++; continue; }
-    if (c === '+') { tokens.push({ t: T.PLUS }); i++; continue; }
-    if (c === '-') { tokens.push({ t: T.MINUS }); i++; continue; }
-    if (c === '*') { tokens.push({ t: T.STAR }); i++; continue; }
-    if (c === '/') { tokens.push({ t: T.SLASH }); i++; continue; }
-    if (c === '%') { tokens.push({ t: T.PERCENT }); i++; continue; }
-    if (c === '>') { tokens.push({ t: T.GREATER }); i++; continue; }
-    if (c === '<') { tokens.push({ t: T.LESS }); i++; continue; }
-    if (c === '!') { tokens.push({ t: T.NOT }); i++; continue; }
-    if (c === '?') { tokens.push({ t: T.QUESTION }); i++; continue; }
-    if (c === '.') { tokens.push({ t: T.DOT }); i++; continue; }
-
-    if (PUNCT[c]) { tokens.push({ t: PUNCT[c] }); i++; continue; }
-
-    // Unknown character (e.g. the model emitted stray prose) — skip, matching
-    // OpenUI's own streaming-tolerant lexer behavior.
+    // Unrecognised character — skip it. The model writes prose around the DSL
+    // on purpose, so this is an expected path, not an error path.
     i++;
   }
 
-  tokens.push({ t: T.EOF });
+  tokens.push({ t: T.EOF, i: n });
   return tokens;
 }
