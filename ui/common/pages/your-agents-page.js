@@ -15,6 +15,7 @@ import "/common/design-system/app-tag/app-tag.js";
 import "/common/design-system/app-tabs/app-tabs.js";
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
+import { readSearchParams, setSearchParams } from '../utils/url-policy.js';
 
 // your-agents-page.css is <link>ed by the host page, not imported here: a sheet
 // pulled in by this module only exists once the module does, which is too late
@@ -38,10 +39,25 @@ function parseImageTag(image) {
   return { name: parts[0] || image, version: parts[1] || "latest" };
 }
 
+// The status strip, in order — one source of truth for what renders and for
+// what `?tab=` is allowed to name. A closed enum, unlike the agent hub's
+// tag-derived categories, so it rides in the URL (see utils/url-policy.js) and
+// survives a trip to an agent card, a reload, and a copied link alike.
+const STATUS_TABS = [
+  ['all', 'All'], ['running', 'Running'], ['setting-up', 'Setting up'],
+  ['stopped', 'Stopped'], ['failed', 'Failed'],
+];
+
+/** The filter named in `?tab=`, ignoring anything that isn't one of ours. */
+const initialStatus = () => {
+  const { tab } = readSearchParams(['tab']);
+  return STATUS_TABS.some(([key]) => key === tab) ? tab : 'all';
+};
+
 class YourAgentsPage extends HTMLElement {
   #initialized = false;
   #agents = [];
-  #statusFilter = "all";
+  #statusFilter = initialStatus();
   #sortBy = "name";
   #pollTimer = null;
 
@@ -70,6 +86,8 @@ class YourAgentsPage extends HTMLElement {
     // buttons and the component owns the tablist semantics and the indicator.
     this.querySelector("#status-tabs").addEventListener("tab-change", (e) => {
       this.#statusFilter = e.detail.key;
+      // Dropped when it is the default, so the common URL stays clean.
+      setSearchParams({ tab: e.detail.key === "all" ? null : e.detail.key });
       this.#renderTabs();
       this.#renderGrid();
     });
@@ -217,12 +235,11 @@ class YourAgentsPage extends HTMLElement {
         aria-selected="${this.#statusFilter === key}" data-key="${key}">
         ${label}<span class="n">${n}</span></button>`;
 
+    const counts = {
+      all: this.#agents.length, running, "setting-up": settingUp, stopped, failed,
+    };
     this.querySelector("#status-tabs").innerHTML =
-      tab("all", "All", this.#agents.length) +
-      tab("running", "Running", running) +
-      tab("setting-up", "Setting up", settingUp) +
-      tab("stopped", "Stopped", stopped) +
-      tab("failed", "Failed", failed);
+      STATUS_TABS.map(([key, label]) => tab(key, label, counts[key])).join("");
   }
 
   /** Fallback shell — mirrors the static markup in web/agents.html's
@@ -270,8 +287,8 @@ class YourAgentsPage extends HTMLElement {
           <div class="secret-chips" id="secret-chips"></div>
         </div>
         <div data-slot="footer">
-          <app-button variant="tertiary" id="deploy-cancel">Cancel</app-button>
-          <app-button variant="primary" id="deploy-confirm">Deploy</app-button>
+          <app-button variant="tertiary" size="md" id="deploy-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="deploy-confirm">Deploy</app-button>
         </div>
       </app-modal>
     `;
@@ -329,8 +346,8 @@ class YourAgentsPage extends HTMLElement {
             title="No agents deployed"
             description="Deploy your first agent from the catalog or add a new one."
             icon='${icons.layers("", 40)}'>
-            <a href="/agents" class="empty-action-link">Browse catalog</a>
-            <a href="/add-agent" class="empty-action-link empty-action-link--secondary">Import agent</a>
+            <app-button variant="primary" href="/agents">Browse agents</app-button>
+            <app-button variant="tertiary" href="/add-agent">Import agent</app-button>
           </app-empty-state>
         </div>`;
       return;

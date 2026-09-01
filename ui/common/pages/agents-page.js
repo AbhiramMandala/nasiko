@@ -19,10 +19,23 @@ if (!document.adoptedStyleSheets.includes(agentsStyles)) {
   document.adoptedStyleSheets = [...document.adoptedStyleSheets, agentsStyles];
 }
 
+// The category tab is a tag, not an enum, so it must stay out of the URL (see
+// utils/url-policy.js: a URL is copied, logged, screenshotted and sent to third
+// parties in Referer, and a tag is author-supplied text). It still has to
+// survive a trip to an agent card and back, so it lives in sessionStorage —
+// same tab, same session, never leaves the browser.
+const CATEGORY_KEY = "agents-page:category";
+const storedCategory = () => {
+  try { return sessionStorage.getItem(CATEGORY_KEY) || "all"; } catch { return "all"; }
+};
+const storeCategory = (key) => {
+  try { sessionStorage.setItem(CATEGORY_KEY, key); } catch { /* private mode / quota */ }
+};
+
 class AgentsPage extends HTMLElement {
   #initialized = false;
   #agents = [];
-  #activeCategory = "all";
+  #activeCategory = storedCategory();
   #pinnedTabs = [];
 
   connectedCallback() {
@@ -42,6 +55,7 @@ class AgentsPage extends HTMLElement {
     // the tab set itself is data-driven, so this page renders the buttons.
     this.querySelector("#category-tabs").addEventListener("tab-change", (e) => {
       this.#activeCategory = e.detail.key;
+      storeCategory(e.detail.key);
       this.#renderFilter();
       this.#renderGrid();
     });
@@ -55,6 +69,7 @@ class AgentsPage extends HTMLElement {
     const result = await call('fetchAgents', "", 1, 100);
     this.#agents = result.data || [];
     await this.#loadPinnedTabs();
+    this.#dropStaleCategory();
     this.#renderFilter();
     this.#renderGrid();
   }
@@ -69,6 +84,23 @@ class AgentsPage extends HTMLElement {
         .filter(Boolean);
     } catch {
       this.#pinnedTabs = [];
+    }
+  }
+
+  /**
+   * A remembered category can vanish between visits — the last agent carrying
+   * the tag was deleted, the tag was renamed, an admin unpinned it. Fall back to
+   * "All" rather than opening on a tab whose grid is empty. Pinned tabs are kept
+   * even at zero: an admin pinned them on purpose.
+   */
+  #dropStaleCategory() {
+    if (this.#activeCategory === "all") return;
+    const known = this.#pinnedTabs.includes(this.#activeCategory)
+      || this.#agents.some((a) =>
+        (a.tags || []).some((t) => t.toLowerCase() === this.#activeCategory));
+    if (!known) {
+      this.#activeCategory = "all";
+      storeCategory("all");
     }
   }
 
@@ -161,6 +193,7 @@ class AgentsPage extends HTMLElement {
             title="No agents found"
             description="Try adjusting your search or filter criteria."
             icon='${icons.layers("", 40)}'>
+            <app-button variant="primary" href="/add-agent">Import agent</app-button>
           </app-empty-state>
         </div>`;
       return;
