@@ -134,10 +134,13 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.model_catalog_sync_interval_secs),
-            pricing_sync_interval_secs: std::env::var("PRICING_SYNC_INTERVAL_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(d.pricing_sync_interval_secs),
+            pricing_sync_interval_secs: env_parse_first(
+                &[
+                    "PRICING_SYNC_INTERVAL_SECS",
+                    "MODEL_PRICING_SYNC_INTERVAL_SECS",
+                ],
+                d.pricing_sync_interval_secs,
+            ),
             openai_api_base: env_or("OPENAI_API_BASE", &d.openai_api_base),
             anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
             gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),
@@ -155,6 +158,21 @@ impl GatewayConfig {
             _ => &self.platform_openai_api_key,
         }
     }
+}
+
+/// First parseable env var among `keys`, else `default`. Used where a setting
+/// has been renamed: the current key wins, the legacy key still works. Without
+/// this, dropping the old name would silently revert a deliberately tuned
+/// operator value back to the built-in default.
+fn env_parse_first<T: std::str::FromStr>(keys: &[&str], default: T) -> T {
+    for key in keys {
+        if let Ok(val) = std::env::var(key)
+            && let Ok(parsed) = val.parse()
+        {
+            return parsed;
+        }
+    }
+    default
 }
 
 fn env_or(key: &str, default: &str) -> String {
