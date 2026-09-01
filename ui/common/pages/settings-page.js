@@ -4,7 +4,7 @@ import { initialView, syncView } from '/common/utils/module-view.js';
 
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./settings-page.css', import.meta.url));
-import { call, callOptional } from '../core/data-sources.js';
+import { call } from '../core/data-sources.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the
 // gutter was reserved and the nav never upgraded.
@@ -218,8 +218,8 @@ class SettingsPage extends HTMLElement {
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label for="s-oidc-label">Provider label</label>
-              <div class="hint">Stored on every user/org row this IdP creates — not just cosmetic. Leave blank unless you know you need it; changing it on a live deployment splits existing users/org units from new ones under a different tag. If IDENTITY_ACTIVE_PROVIDER is set for org-hierarchy sync, this must match it exactly.</div>
+              <label>Button label</label>
+              <div class="hint">Overrides the sign in button text.</div>
             </div>
             <div class="setting-control">
               <app-input type="text" id="s-oidc-label" data-field="oidc_provider_label" data-allow-empty placeholder="Microsoft" aria-label="Button label"></app-input>
@@ -294,25 +294,17 @@ class SettingsPage extends HTMLElement {
   };
 
   async #load() {
-    // Two routes, two structs: general settings (oss/server/src/settings.rs)
-    // and SSO (ee/server/src/sso_settings.rs) are unrelated on the wire, so
-    // this page — which shows both in one form — has to fetch both. OSS has
-    // no OIDC login route, hence no /settings/oidc to fetch; skip it there
-    // rather than throwing and blanking the whole page.
-    const [s, oidc] = await Promise.all([
-      call('fetchSettings'),
-      callOptional('fetchOidcSettings'),
-    ]);
+    const s = await call('fetchSettings');
     if (!s) return;
-    this.#settings = { ...s, ...(oidc ?? {}) };
+    this.#settings = s;
     this.querySelectorAll('[data-field]').forEach(el => {
-      if (this.#settings[el.dataset.field] != null) el.value = this.#settings[el.dataset.field];
+      if (s[el.dataset.field] != null) el.value = s[el.dataset.field];
     });
 
     // The secret itself is never returned — only whether one is stored.
     const secretState = this.querySelector('#s-oidc-secret-state');
     if (secretState) {
-      secretState.textContent = oidc?.oidc_client_secret_configured
+      secretState.textContent = s.oidc_client_secret_configured
         ? 'A secret is stored. Leave blank to keep it, or enter a new one to replace it.'
         : 'No secret stored yet. SSO stays disabled until one is set.';
     }
@@ -321,32 +313,18 @@ class SettingsPage extends HTMLElement {
   #save() {
     const btn = this.querySelector('#btn-save');
     withLoading(btn, 'Saving…', async () => {
-      // Every control on this page maps to one of two unrelated structs on
-      // the wire (see #load) — split by the oidc_ prefix and PUT each to its
-      // own route, or a field silently lands nowhere (see the comment atop
-      // this file: the server drops unknown keys and still reports success).
-      const general = { ...this.#settings };
-      const oidc = {};
-      delete general.oidc_client_secret_configured;
+      const updated = { ...this.#settings };
+      // Read-only on the wire: sending it back is harmless (serde ignores it)
+      // but dropping it keeps the payload honest about what it's asking to set.
+      delete updated.oidc_client_secret_configured;
       this.querySelectorAll('[data-field]').forEach(el => {
         const v = el.value.trim();
-        const target = el.dataset.field.startsWith('oidc_') ? oidc : general;
         // data-allow-empty fields round-trip '' so they can be cleared.
         if (v || el.hasAttribute('data-allow-empty')) {
-          target[el.dataset.field] = el.type === 'number' ? Number(v) : v;
-        } else if (target === general) {
-          delete general[el.dataset.field];
+          updated[el.dataset.field] = el.getAttribute('type') === 'number' ? Number(v) : v;
         }
       });
-      for (const key of Object.keys(general)) {
-        if (key.startsWith('oidc_')) delete general[key];
-      }
-
-      const calls = [call('saveSettings', general)];
-      if (Object.keys(oidc).length) {
-        calls.push(callOptional('saveOidcSettings', oidc));
-      }
-      await Promise.all(calls);
+      await call('saveSettings', updated);
       showToast('Settings saved');
     })();
   }

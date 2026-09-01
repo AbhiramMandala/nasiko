@@ -13,32 +13,6 @@ const GITHUB_ICON = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0
 // with the bars recolored to currentColor so it adapts to the login card.
 const LOGO_ICON = `<svg viewBox="0 0 64 64" fill="none"><g fill="currentColor"><rect width="3.29" height="53.74" rx="1.64"/><rect x="5.52" width="3.29" height="58.45" rx="1.64"/><rect x="11.04" width="3.29" height="63.82" rx="1.64"/><rect x="16.56" width="3.29" height="63.82" rx="1.64"/><rect x="22.08" width="3.29" height="22.84" rx="1.64"/><rect x="27.6" width="3.29" height="22.84" rx="1.64"/><rect x="33.12" width="3.29" height="27.54" rx="1.64"/><rect x="38.63" width="3.29" height="32.25" rx="1.64"/><rect x="44.15" width="3.29" height="22.84" rx="1.64"/><rect x="49.56" y="6.03" width="3.35" height="16.74" rx="1.67"/><rect x="55.19" y="10.26" width="3.29" height="53.74" rx="1.64"/><rect x="60.71" y="14.82" width="3.29" height="49.04" rx="1.64"/><rect x="22.31" y="53.56" width="3.35" height="10.26" rx="1.67"/><rect x="27.89" y="53.56" width="3.29" height="10.08" rx="1.64"/><rect x="33.47" y="43.31" width="3.35" height="20.51" rx="1.67"/><rect x="39.05" y="47.87" width="3.35" height="15.96" rx="1.67"/><rect x="44.39" y="53.56" width="3.35" height="10.26" rx="1.67"/><rect x="49.97" y="53.56" width="3.35" height="10.26" rx="1.67"/></g></svg>`;
 
-/// Providers given a button whenever OIDC is configured at all, even when
-/// they aren't the one configured — so a deployment moving between IdPs can
-/// see both, and flipping `OIDC_ISSUER_URL` visibly moves which one is live.
-///
-/// They are NOT all clickable. There is exactly one `/api/auth/oidc/login`
-/// route and `IdentityConfig` enables exactly one provider (`ee/identity/
-/// src/config.rs`: "up to five providers may be declared; exactly one is
-/// enabled"), so a second live-looking button would post to the same route
-/// and land the user on the *other* IdP. The ones that aren't configured are
-/// therefore rendered `disabled` — present and legible, but honest.
-const ALWAYS_OFFERED = ['microsoft', 'okta'];
-
-/// How to present each IdP family that `/api/auth/oidc/status` can report.
-/// Keys are the slugs `ee/server/src/oidc.rs::provider_slug` emits; anything
-/// unrecognised (including a slug added server-side before this table catches
-/// up) falls back to `generic`, so a new provider degrades to a working
-/// "Continue with SSO" button rather than an unlabelled one.
-const OIDC_PROVIDERS = {
-  microsoft: { label: 'Microsoft', icon: icons.microsoft },
-  google:    { label: 'Google',    icon: icons.google },
-  okta:      { label: 'Okta',      icon: icons.okta },
-  keycloak:  { label: 'Keycloak',  icon: icons.sso },
-  aws:       { label: 'AWS',       icon: icons.sso },
-  generic:   { label: 'SSO',       icon: icons.sso },
-};
-
 /// True when the browser already holds a valid session cookie. The cookie is
 /// HttpOnly, so the only way to know is to ask the server (`/api/me` is the
 /// cheapest authed endpoint — it just echoes the claims).
@@ -98,31 +72,22 @@ class LoginPage extends HTMLElement {
     // DB-configured equivalent, see `resolve_oidc_client`) are actually set,
     // so a deployment that hasn't configured SSO never shows a button that
     // would just 503. Fails closed (hidden) on a network error.
-    //
-    // The same probe reports WHICH IdP family is configured, because there is
-    // exactly one `/api/auth/oidc/login` route and the provider is chosen
-    // server-side from the issuer URL. A fixed "Continue with Microsoft"
-    // label was therefore a coin flip: on an Okta or Keycloak deployment it
-    // named an IdP the user would never see, and offering one button per
-    // vendor would be worse still — every button would post to the same route
-    // and all but one would be a dead end.
-    const oidcStatus = async () => {
-      if (this.hasAttribute('no-microsoft') || this.hasAttribute('no-sso')) return null;
+    const oidcConfigured = async () => {
+      if (this.hasAttribute('no-microsoft')) return false;
       try {
         const res = await fetch('/api/auth/oidc/status', { credentials: 'same-origin' });
         const data = await res.json();
-        return data?.configured ? (data.provider || 'generic') : null;
+        return Boolean(data?.configured);
       } catch {
-        return null;
+        return false;
       }
     };
 
     // All three probes in flight together — the session check and the GitHub
     // one cost no extra wall clock on top of the OIDC one we already wait for.
-    const [sessionActive, showMicrosoft, oidcProvider, showGithub] = await Promise.all([
+    const [sessionActive, showMicrosoft, showGithub] = await Promise.all([
       hasSession(),
       oidcConfigured(),
-      oidcStatus(),
       githubConfigured(),
     ]);
     if (sessionActive) {
@@ -131,7 +96,7 @@ class LoginPage extends HTMLElement {
     }
 
     // google-status-href optionally gates the (already opt-in) Google button
-    // the same way the OIDC button's is gated above.
+    // the same way Microsoft's is gated above.
     const googleHref = this.getAttribute('google-href');
     const googleStatusHref = this.getAttribute('google-status-href');
     if (showGoogle && googleStatusHref) {
@@ -146,22 +111,9 @@ class LoginPage extends HTMLElement {
 
     document.title = `${brandTitle} — Sign In`;
     let oauthSection = '';
-    if (showGithub || showGoogle || oidcProvider) {
+    if (showGithub || showGoogle || showMicrosoft) {
       let buttons = '';
-      if (oidcProvider) {
-        // Configured provider first so the clickable one is never buried, then
-        // the rest of the offered set. `oidcProvider` may already be in
-        // ALWAYS_OFFERED, hence the filter rather than a concat.
-        const offered = [oidcProvider, ...ALWAYS_OFFERED.filter((p) => p !== oidcProvider)];
-        for (const slug of offered) {
-          const { label, icon } = OIDC_PROVIDERS[slug] || OIDC_PROVIDERS.generic;
-          buttons += slug === oidcProvider
-            ? `<a href="/api/auth/oidc/login" class="btn-oauth">${icon} Continue with ${label}</a>`
-            : `<button type="button" class="btn-oauth" disabled ` +
-              `title="${label} is not the identity provider configured on this deployment">` +
-              `${icon} Continue with ${label}</button>`;
-        }
-      }
+      if (showMicrosoft) buttons += `<a href="/api/auth/oidc/login" class="btn-oauth">${icons.microsoft} Continue with Microsoft</a>`;
       // GitHub is a button, not a link: unlike the OIDC route (a plain 302 to
       // the IdP), the GitHub login route answers with `{auth_url}` JSON that
       // has to be read and followed. Navigating straight to it lands on the
