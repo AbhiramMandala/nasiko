@@ -1,0 +1,1539 @@
+{
+  "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
+  "catalogVersion": "cae82ebcff8a",
+  "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
+  "sourceCatalogVersion": "1.0",
+  "componentCount": 26,
+  "components": {
+    "app-action-menu": {
+      "element": "app-action-menu",
+      "summary": "Icon button that opens a compact dropdown list of actions.",
+      "paramOrder": [
+        "trigger-title",
+        "items"
+      ],
+      "attributes": {
+        "trigger-title": {
+          "type": "string",
+          "description": "Tooltip text for the trigger button"
+        },
+        "items": {
+          "type": "json",
+          "description": "JSON array of `{ id, label }` action items"
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "action-select",
+          "description": "Item clicked; `detail: { id: string }` — bubbles"
+        }
+      ]
+    },
+    "app-avatar": {
+      "element": "app-avatar",
+      "summary": "Avatar — the circular identity mark, optionally with the label beside it.",
+      "paramOrder": [
+        "size",
+        "image",
+        "initials",
+        "label",
+        "description",
+        "filled",
+        "interactive",
+        "disabled",
+        "state",
+        "alt"
+      ],
+      "attributes": {
+        "size": {
+          "type": "enum",
+          "values": [
+            "xs",
+            "sm",
+            "md",
+            "lg",
+            "xl"
+          ],
+          "description": "`xs` 20 | `sm` 24 | `md` 32 (default) | `lg` 40 | `xl` 48 | `2xl` 64"
+        },
+        "image": {
+          "type": "string",
+          "description": "src for the photo/logo. Wins over `initials`."
+        },
+        "initials": {
+          "type": "string",
+          "description": "Monogram, 1-2 characters. Used when there is no image."
+        },
+        "label": {
+          "type": "string",
+          "description": "Primary line (display name, org)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Secondary line (email, handle, role)."
+        },
+        "filled": {
+          "type": "boolean",
+          "description": "Wraps the whole thing in the dark chip."
+        },
+        "interactive": {
+          "type": "boolean",
+          "description": "The chip is a control: pointer + live hover."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "state": {
+          "type": "string",
+          "description": "`hover`, for rendering that state statically."
+        },
+        "alt": {
+          "type": "string",
+          "description": "Accessible name. Defaults to `label`/`description`; the mark is decorative (aria-hidden) whenever text is already showing."
+        }
+      },
+      "slots": [],
+      "events": [],
+      "note": "size/filled/interactive/disabled/state are CSS-only (app-avatar.css:86-113) rather than non-functional. They are absent from observedAttributes because nothing in JS re-runs on change; the renderer recreates elements per pass, so that costs nothing here."
+    },
+    "app-badge": {
+      "element": "app-badge",
+      "summary": "Small inline label with color variants for status, category, or metadata.",
+      "textParam": true,
+      "paramOrder": [
+        "text",
+        "variant"
+      ],
+      "attributes": {
+        "variant": {
+          "type": "enum",
+          "values": [
+            "neutral",
+            "success",
+            "warning",
+            "error",
+            "info"
+          ],
+          "default": "neutral",
+          "description": "Visual style: `neutral` (default) | `success` | `warning` | `error` | `info`"
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-button": {
+      "element": "app-button",
+      "summary": "Styled button with variants, sizes, loading spinner, and disabled state.",
+      "textParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "text",
+        "variant",
+        "size",
+        "icon-only",
+        "href",
+        "disabled",
+        "loading",
+        "type",
+        "aria-label",
+        "title",
+        "aria-expanded",
+        "action"
+      ],
+      "attributes": {
+        "variant": {
+          "type": "enum",
+          "values": [
+            "primary",
+            "secondary",
+            "tertiary",
+            "outline",
+            "ghost",
+            "danger",
+            "danger-secondary",
+            "ghost-danger"
+          ],
+          "description": "Visual style: `primary` (default, dark fill) | `secondary` (brand tint) | `tertiary` (white + hairline border; `outline` is an alias) | `ghost` | `danger` | `danger-secondary` | `ghost-danger` (red ink, no fill — the quiet destructive icon in a rail of icons) | `dark` (alias of `primary`, kept for existing call sites) | `icon`"
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "sm",
+            "md"
+          ],
+          "description": "Size modifier: `sm` (28px) | `md` (32px) | (default) 36px"
+        },
+        "icon-only": {
+          "type": "boolean",
+          "description": "Squares the button to its size's control height with no padding, per Figma's Icon Button frame (4158:1100) — which is the same Type × Tone × Size matrix as the text button, so `variant` still supplies the colour. `variant=\"icon\"` remains as the ghost-coloured shorthand used across mcp-page and the EE pages."
+        },
+        "href": {
+          "type": "route",
+          "description": "Renders an `<a class=\"btn\">` instead of a `<button>`, so a navigation CTA is the same component as every other button. The SPA router intercepts internal anchor clicks, so no click handler is needed. A `disabled` (or `loading`) button keeps its `<button disabled>` — an anchor cannot be disabled."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Disables the button"
+        },
+        "loading": {
+          "type": "boolean",
+          "description": "Shows a spinner and disables the button"
+        },
+        "type": {
+          "type": "enum",
+          "values": [
+            "button",
+            "submit",
+            "reset"
+          ],
+          "default": "button",
+          "description": "HTML button type: `button` (default) | `submit` | `reset`"
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<button>`, which is the focusable element an AT actually names. Required on an `icon-only` button: the host is not focusable, so an aria-label left on it is never announced — and neither is a disclosure button's `aria-expanded`."
+        },
+        "title": {
+          "type": "string",
+          "description": "Forwarded to the inner `<button>`, which is the focusable element an AT actually names. Required on an `icon-only` button: the host is not focusable, so an aria-label left on it is never announced — and neither is a disclosure button's `aria-expanded`."
+        },
+        "aria-expanded": {
+          "type": "string",
+          "description": "Forwarded to the inner `<button>`, which is the focusable element an AT actually names. Required on an `icon-only` button: the host is not focusable, so an aria-label left on it is never announced — and neither is a disclosure button's `aria-expanded`."
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-card": {
+      "element": "app-card",
+      "summary": "`<app-card>` — THE card component.",
+      "paramOrder": [
+        "name",
+        "card-title",
+        "version",
+        "status",
+        "description",
+        "tags",
+        "href",
+        "error-title",
+        "error-body",
+        "deploy-label",
+        "deploy-hint",
+        "max-visible-tags",
+        "details-href",
+        "chat-href",
+        "loading"
+      ],
+      "attributes": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "Display name (required). `card-title` is accepted as an alias, because `title` is a reserved global attribute and the replaced card used that spelling — kept so call sites did not all have to change."
+        },
+        "card-title": {
+          "type": "string",
+          "description": "Alias for `name`, kept for the replaced card's call sites."
+        },
+        "version": {
+          "type": "string",
+          "description": "Rendered after the name; a leading \"v\" is added if absent"
+        },
+        "status": {
+          "type": "enum",
+          "values": [
+            "running",
+            "error",
+            "failed",
+            "deploying",
+            "starting"
+          ],
+          "description": "`running` | `error`/`failed` | `deploying`/`starting` | anything else → stopped"
+        },
+        "description": {
+          "type": "string",
+          "description": "Body copy, clamped to exactly two lines"
+        },
+        "tags": {
+          "type": "json",
+          "description": "JSON array, either of strings (`[\"a\",\"b\"]`) or of `{ label }` objects, which is the form the replaced card took."
+        },
+        "href": {
+          "type": "route",
+          "description": "Where the whole card navigates. Defaults to the details href."
+        },
+        "error-title": {
+          "type": "string",
+          "description": "Shown in place of the description when status is error/failed"
+        },
+        "error-body": {
+          "type": "string",
+          "description": "Supporting line for the error state"
+        },
+        "deploy-label": {
+          "type": "string",
+          "description": "Overrides the deploying headline (default \"Agent is being deployed...\")"
+        },
+        "deploy-hint": {
+          "type": "string",
+          "description": "Overrides the deploying hint line"
+        },
+        "max-visible-tags": {
+          "type": "number",
+          "default": 2,
+          "description": "Chips shown before the \"+N\" overflow chip (default 2)"
+        },
+        "details-href": {
+          "type": "route",
+          "description": "Overrides the default `/agent-card?id=…`"
+        },
+        "chat-href": {
+          "type": "route",
+          "description": "Overrides the default `/chat?agent_id=…&agent_name=…`"
+        },
+        "loading": {
+          "type": "boolean",
+          "description": "Renders the shimmer placeholder instead of content. The skeleton lives here, not in the consuming page, so the card's geometry has exactly one definition and the loading and loaded states cannot drift apart."
+        }
+      },
+      "slots": [
+        {
+          "name": "leading",
+          "attribute": "slot"
+        },
+        {
+          "name": "actions",
+          "attribute": "slot"
+        },
+        {
+          "name": "body",
+          "attribute": "slot"
+        },
+        {
+          "name": "footer",
+          "attribute": "slot"
+        }
+      ],
+      "events": []
+    },
+    "app-chart": {
+      "element": "app-chart",
+      "summary": "`<app-chart>` — the one chart component.",
+      "dataParam": true,
+      "paramOrder": [
+        "data",
+        "type",
+        "stacked",
+        "format",
+        "currency",
+        "center-value",
+        "center-label",
+        "legend",
+        "empty-text",
+        "loading",
+        "label"
+      ],
+      "attributes": {
+        "type": {
+          "type": "enum",
+          "values": [
+            "line",
+            "bar",
+            "donut",
+            "hbar",
+            "progress"
+          ],
+          "description": "`line` | `bar` | `donut` | `hbar` | `progress` (default `line`)"
+        },
+        "stacked": {
+          "type": "boolean",
+          "description": "`bar` only: stack datasets instead of grouping them"
+        },
+        "format": {
+          "type": "enum",
+          "values": [
+            "number",
+            "currency",
+            "percent",
+            "compact"
+          ],
+          "default": "number",
+          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact`"
+        },
+        "currency": {
+          "type": "string",
+          "default": "USD",
+          "description": "ISO code for `format=\"currency\"` (default `USD`)"
+        },
+        "center-value": {
+          "type": "string",
+          "description": "`donut` only: the figure drawn in the hole"
+        },
+        "center-label": {
+          "type": "string",
+          "description": "`donut` only: the caption under it"
+        },
+        "legend": {
+          "type": "enum",
+          "values": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "description": "`auto` (default: on for donut and for 2+ series) | `on` | `off`"
+        },
+        "empty-text": {
+          "type": "string",
+          "description": "Shown when `data` is empty (default \"No data\")"
+        },
+        "loading": {
+          "type": "boolean",
+          "description": "Shimmer placeholder instead of the plot"
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name for the plot. Falls back to the type."
+        }
+      },
+      "slots": [],
+      "events": [],
+      "dataProp": "data",
+      "note": "Chart data is a JS property, not an attribute (app-chart.js:189). Two shapes by `type`: canvas forms (line/bar/donut) need Chart.js {labels, datasets}; row forms (hbar/progress) take a bare array of {label, value}. The renderer passes it through unchanged."
+    },
+    "app-chatbox": {
+      "element": "app-chatbox",
+      "summary": "The chat composer: an auto-growing textarea with voice recording, file attachment, and submit-on-Enter.",
+      "actionParam": true,
+      "paramOrder": [
+        "placeholder",
+        "no-attachments",
+        "transcription-callback",
+        "action"
+      ],
+      "attributes": {
+        "placeholder": {
+          "type": "string",
+          "description": "Textarea placeholder text"
+        },
+        "no-attachments": {
+          "type": "boolean",
+          "description": "Hide the file attachment button"
+        },
+        "transcription-callback": {
+          "type": "string",
+          "description": "Name of a data-source function returning transcribed text"
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "chatbox-submit",
+          "description": "User submits; `detail: { value: string, files: [] }` — bubbles. The box goes into its loading state on submit; the owner calls `setLoading(false)` (or `setLoading(true)` then false) when the reply lands."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-checkbox": {
+      "element": "app-checkbox",
+      "summary": "Checkbox with an optional label and subtext, plus an indeterminate state.",
+      "actionParam": true,
+      "paramOrder": [
+        "checked",
+        "indeterminate",
+        "disabled",
+        "state",
+        "label",
+        "hint",
+        "name",
+        "value",
+        "aria-label",
+        "action"
+      ],
+      "attributes": {
+        "checked": {
+          "type": "boolean",
+          "description": ""
+        },
+        "indeterminate": {
+          "type": "boolean",
+          "description": "Renders the dash. Wins over `checked`."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "error",
+            "hover",
+            "focus"
+          ],
+          "description": "`error` | `hover` | `focus` (visual only)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Label text beside the box."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Subtext under the label (Figma Subtext=True)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "value": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "Bubbles from the inner input."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-code-snippet": {
+      "element": "app-code-snippet",
+      "summary": "Labeled command/code block with a copy-to-clipboard button.",
+      "paramOrder": [
+        "label",
+        "code"
+      ],
+      "attributes": {
+        "label": {
+          "type": "string",
+          "description": "Optional label rendered above the code well."
+        },
+        "code": {
+          "type": "string",
+          "description": "The command text. Falls back to the element's initial text content when the attribute is absent."
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-divider": {
+      "element": "app-divider",
+      "summary": "Rule / separator — a line between two blocks of content, optionally labelled.",
+      "paramOrder": [
+        "vertical",
+        "thick",
+        "line",
+        "tone",
+        "label"
+      ],
+      "attributes": {
+        "vertical": {
+          "type": "boolean",
+          "description": "Vertical rule. Stretches to the flex row's height."
+        },
+        "thick": {
+          "type": "boolean",
+          "description": "Type=Thick (2px instead of 1px)."
+        },
+        "line": {
+          "type": "enum",
+          "values": [
+            "solid",
+            "dashed",
+            "dotted"
+          ],
+          "default": "solid",
+          "description": "`solid` (default) | `dashed` | `dotted`"
+        },
+        "tone": {
+          "type": "string",
+          "description": "`subtle` for the lighter border token."
+        },
+        "label": {
+          "type": "string",
+          "description": "Leading label text. Horizontal only."
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-empty-state": {
+      "element": "app-empty-state",
+      "summary": "Placeholder shown when a list or view has no content yet.",
+      "paramOrder": [
+        "title",
+        "description"
+      ],
+      "attributes": {
+        "title": {
+          "type": "string",
+          "description": "Bold heading text"
+        },
+        "description": {
+          "type": "string",
+          "description": "Supporting description text"
+        }
+      },
+      "slots": [
+        {
+          "name": "icon",
+          "attribute": "slot"
+        },
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "events": []
+    },
+    "app-grid": {
+      "element": "app-grid",
+      "summary": "CSS grid layout wrapper with configurable columns, gap, and padding.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "columns",
+        "gap",
+        "padding"
+      ],
+      "attributes": {
+        "columns": {
+          "type": "number",
+          "description": "Column count (integer) or CSS grid-template value (e.g. `auto-fit`)"
+        },
+        "gap": {
+          "type": "enum",
+          "values": [
+            "xs",
+            "sm",
+            "md",
+            "lg",
+            "xl"
+          ],
+          "default": "md",
+          "description": "Gap between cells: `xs` | `sm` | `md` (default) | `lg` | `xl`"
+        },
+        "padding": {
+          "type": "enum",
+          "values": [
+            "xs",
+            "sm",
+            "md",
+            "lg",
+            "xl"
+          ],
+          "description": "Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`"
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-input": {
+      "element": "app-input",
+      "summary": "Text input with label, hint, character count and leading/trailing icon slots.",
+      "actionParam": true,
+      "paramOrder": [
+        "size",
+        "state",
+        "label",
+        "hint",
+        "count",
+        "required",
+        "disabled",
+        "readonly",
+        "type",
+        "name",
+        "placeholder",
+        "value",
+        "autocomplete",
+        "maxlength",
+        "inputmode",
+        "min",
+        "max",
+        "step",
+        "pattern",
+        "list",
+        "spellcheck",
+        "aria-label",
+        "action"
+      ],
+      "attributes": {
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "description": "`md` (default, 32px) | `sm` (28px)"
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "error",
+            "success",
+            "read-only",
+            "hover",
+            "focus"
+          ],
+          "description": "`error` | `success` | `read-only` | `hover` | `focus`. Omit for the default state. `disabled`/`readonly` below are the real attributes; `state` is for the two visual-only statuses plus the overrides."
+        },
+        "label": {
+          "type": "string",
+          "description": "Label above the box. Omit for no label."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Helper line below the box. Turns red in `state=\"error\"`."
+        },
+        "count": {
+          "type": "string",
+          "description": "Right-aligned counter in the hint row, e.g. `12/100`."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Renders the red `*` before the label."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "readonly": {
+          "type": "boolean",
+          "description": "Same paint as `state=\"read-only\"`."
+        },
+        "type": {
+          "type": "enum",
+          "values": [
+            "text",
+            "password",
+            "email",
+            "number",
+            "search",
+            "url",
+            "tel",
+            "date"
+          ],
+          "default": "text",
+          "description": "`text` (default) | `password` | `email` | `number` | `search` | `url` | `tel` | `date`. Forwarded verbatim to the inner `<input>`."
+        },
+        "name": {
+          "type": "string",
+          "description": ""
+        },
+        "placeholder": {
+          "type": "string",
+          "description": ""
+        },
+        "value": {
+          "type": "string",
+          "description": ""
+        },
+        "autocomplete": {
+          "type": "string",
+          "description": ""
+        },
+        "maxlength": {
+          "type": "string",
+          "description": ""
+        },
+        "inputmode": {
+          "type": "string",
+          "description": ""
+        },
+        "min": {
+          "type": "string",
+          "description": ""
+        },
+        "max": {
+          "type": "string",
+          "description": ""
+        },
+        "step": {
+          "type": "string",
+          "description": ""
+        },
+        "pattern": {
+          "type": "string",
+          "description": ""
+        },
+        "list": {
+          "type": "string",
+          "description": ""
+        },
+        "spellcheck": {
+          "type": "string",
+          "description": ""
+        },
+        "aria-label": {
+          "type": "string",
+          "description": ""
+        }
+      },
+      "slots": [
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "trailing",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [
+        {
+          "name": "input",
+          "description": "|change - Native events bubble from the inner input."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-modal": {
+      "element": "app-modal",
+      "summary": "Accessible dialog modal with heading, body, footer slot, backdrop dismiss, and ESC/X close.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "heading",
+        "hide-footer"
+      ],
+      "attributes": {
+        "heading": {
+          "type": "string",
+          "description": "Modal title shown in the header"
+        },
+        "hide-footer": {
+          "type": "boolean",
+          "description": "Hides the footer container even when a footer slot exists"
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        },
+        {
+          "name": "footer",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": []
+    },
+    "app-radio": {
+      "element": "app-radio",
+      "summary": "Radio button with an optional label and subtext.",
+      "actionParam": true,
+      "paramOrder": [
+        "checked",
+        "disabled",
+        "state",
+        "label",
+        "hint",
+        "name",
+        "value",
+        "aria-label",
+        "action"
+      ],
+      "attributes": {
+        "checked": {
+          "type": "boolean",
+          "description": ""
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "error",
+            "hover",
+            "focus"
+          ],
+          "description": "`error` | `hover` | `focus` (visual only)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Label text beside the control."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Subtext under the label (Figma Subtext=Yes)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"radio\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "value": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"radio\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"radio\">`. Pass `aria-label` when there is no visible `label`."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "Bubbles from the inner input."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-row": {
+      "element": "app-row",
+      "summary": "Horizontal flex row with configurable gap, alignment, and optional wrapping.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "gap",
+        "align",
+        "justify",
+        "padding",
+        "wrap"
+      ],
+      "attributes": {
+        "gap": {
+          "type": "enum",
+          "values": [
+            "xs",
+            "sm",
+            "md",
+            "lg",
+            "xl"
+          ],
+          "default": "md",
+          "description": "Space between items: `xs` | `sm` | `md` (default) | `lg` | `xl`"
+        },
+        "align": {
+          "type": "enum",
+          "values": [
+            "start",
+            "center",
+            "end",
+            "stretch"
+          ],
+          "default": "stretch",
+          "description": "Cross-axis alignment: `start` | `center` | `end` | `stretch` (default)"
+        },
+        "justify": {
+          "type": "enum",
+          "values": [
+            "start",
+            "center",
+            "end",
+            "between"
+          ],
+          "default": "start",
+          "description": "Main-axis alignment: `start` (default) | `center` | `end` | `between`"
+        },
+        "padding": {
+          "type": "enum",
+          "values": [
+            "xs",
+            "sm",
+            "md",
+            "lg",
+            "xl"
+          ],
+          "description": "Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`"
+        },
+        "wrap": {
+          "type": "boolean",
+          "description": "Allow items to wrap to next line"
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-search": {
+      "element": "app-search",
+      "summary": "Search field — the box only, not a results surface.",
+      "actionParam": true,
+      "paramOrder": [
+        "size",
+        "state",
+        "loading",
+        "disabled",
+        "placeholder",
+        "value",
+        "name",
+        "autocomplete",
+        "maxlength",
+        "inputmode",
+        "aria-label",
+        "action"
+      ],
+      "attributes": {
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "description": "`md` (default, 36px) | `sm` (28px)"
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "hover",
+            "focus"
+          ],
+          "description": "`hover` | `focus`, so the design-system page and the parity test can render those pseudo-classes statically. `disabled` and `loading` below are real attributes, not `state` values."
+        },
+        "loading": {
+          "type": "boolean",
+          "description": "Swaps the trailing slot for a spinner."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "placeholder": {
+          "type": "string",
+          "description": "Defaults to \"Search\"."
+        },
+        "value": {
+          "type": "string",
+          "description": "Initial value."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+        },
+        "autocomplete": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+        },
+        "maxlength": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+        },
+        "inputmode": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+        }
+      },
+      "slots": [
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "trailing",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [
+        {
+          "name": "input",
+          "description": "|change - Native events bubble from the inner input, including after the clear button empties it."
+        },
+        {
+          "name": "search-clear",
+          "description": "After the clear button runs, for call sites that want the clear itself rather than \"value became empty\"."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-select": {
+      "element": "app-select",
+      "summary": "Single-select dropdown: a styled native `<select>` with the input's label, hint and state treatment.",
+      "actionParam": true,
+      "paramOrder": [
+        "size",
+        "state",
+        "label",
+        "hint",
+        "placeholder",
+        "options",
+        "required",
+        "disabled",
+        "name",
+        "aria-label",
+        "value",
+        "action"
+      ],
+      "attributes": {
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "description": "`md` (default, 32px) | `sm` (28px)"
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "error",
+            "success",
+            "hover",
+            "focus"
+          ],
+          "description": "`error` | `success` | `hover` | `focus` (visual only)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Label above the trigger."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Helper line below. Turns red in `state=\"error\"`."
+        },
+        "placeholder": {
+          "type": "string",
+          "description": "Renders a selected-but-disabled first option."
+        },
+        "options": {
+          "type": "json",
+          "description": "JSON array of `\"value\"` or `{value, label, disabled}`."
+        },
+        "required": {
+          "type": "boolean",
+          "description": ""
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<select>`."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<select>`."
+        },
+        "value": {
+          "type": "string",
+          "description": "Initially selected value; matched against `options`."
+        }
+      },
+      "slots": [
+        {
+          "name": "leading",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [
+        {
+          "name": "change",
+          "description": "Bubbles from the inner select."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-skeleton": {
+      "element": "app-skeleton",
+      "summary": "Animated shimmer placeholder for content that is still loading.",
+      "paramOrder": [
+        "lines",
+        "radius"
+      ],
+      "attributes": {
+        "lines": {
+          "type": "number",
+          "description": "Number of skeleton text lines to render. Omit (or 0) for a single block sized by `height` — the form every current consumer of a block placeholder uses."
+        },
+        "radius": {
+          "type": "enum",
+          "values": [
+            "sm",
+            "md",
+            "lg",
+            "full"
+          ],
+          "default": "sm",
+          "description": "Corner size: `sm` (default) | `md` | `lg` | `full`"
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-stack": {
+      "element": "app-stack",
+      "summary": "Vertical flex stack with configurable gap and alignment.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "gap",
+        "align",
+        "padding"
+      ],
+      "attributes": {
+        "gap": {
+          "type": "enum",
+          "values": [
+            "xs",
+            "sm",
+            "md",
+            "lg",
+            "xl"
+          ],
+          "default": "md",
+          "description": "Space between items: `xs` | `sm` | `md` (default) | `lg` | `xl`"
+        },
+        "align": {
+          "type": "enum",
+          "values": [
+            "start",
+            "center",
+            "end",
+            "stretch"
+          ],
+          "default": "stretch",
+          "description": "Cross-axis alignment: `start` | `center` | `end` | `stretch` (default)"
+        },
+        "padding": {
+          "type": "enum",
+          "values": [
+            "xs",
+            "sm",
+            "md",
+            "lg",
+            "xl"
+          ],
+          "description": "Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`"
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-stat-card": {
+      "element": "app-stat-card",
+      "summary": "Metric summary card showing a label, primary value, delta, and trend direction.",
+      "paramOrder": [
+        "label",
+        "value",
+        "delta",
+        "trend",
+        "loading"
+      ],
+      "attributes": {
+        "label": {
+          "type": "string",
+          "description": "Metric label (e.g. \"Total Revenue\")"
+        },
+        "value": {
+          "type": "string",
+          "description": "Primary value to display"
+        },
+        "delta": {
+          "type": "string",
+          "description": "Change value shown below the main value (e.g. \"+12%\")"
+        },
+        "trend": {
+          "type": "enum",
+          "values": [
+            "up",
+            "down",
+            "neutral"
+          ],
+          "description": "Trend direction: `up` | `down` | `neutral`"
+        },
+        "loading": {
+          "type": "boolean",
+          "description": "Show a skeleton placeholder instead of data"
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-stat-row": {
+      "element": "app-stat-row",
+      "summary": "Row of headline metrics separated by hairlines — the one stat strip.",
+      "paramOrder": [
+        "items",
+        "loading"
+      ],
+      "attributes": {
+        "items": {
+          "type": "json",
+          "description": "JSON array of metric objects: `{ label, value, sub, pct }`. `sub` is the caption under the value; `pct` (a number) draws a severity meter and is omitted for metrics that have no ceiling. There is deliberately no per-metric colour: a value is a value, and the one that was tinted gold was drift, not meaning."
+        },
+        "loading": {
+          "type": "number",
+          "default": 4,
+          "description": "Number of skeleton cells to reserve while data loads (default: 4). The skeleton lives here so it cannot drift from the real geometry. Present-but-empty means the default."
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-switch": {
+      "element": "app-switch",
+      "summary": "On/off toggle with an optional label and subtext.",
+      "actionParam": true,
+      "paramOrder": [
+        "checked",
+        "disabled",
+        "size",
+        "state",
+        "label",
+        "hint",
+        "layout",
+        "name",
+        "value",
+        "aria-label",
+        "action"
+      ],
+      "attributes": {
+        "checked": {
+          "type": "boolean",
+          "description": ""
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "lg",
+            "sm"
+          ],
+          "description": "`lg` (default, 40×24) | `sm` (36×20)"
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "hover",
+            "focus"
+          ],
+          "description": "`hover` | `focus` (visual only)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Label text beside the track."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Subtext under the label (Figma Subtext=True)."
+        },
+        "layout": {
+          "type": "enum",
+          "values": [
+            "inline",
+            "settings"
+          ],
+          "description": "`inline` (default, control then label) | `settings` (label left, control pushed to the far right — Figma Layout=Settings, for settings rows)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "value": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<input type=\"checkbox\">`. Pass `aria-label` when there is no visible `label`."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "Bubbles from the inner input."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-table": {
+      "element": "app-table",
+      "summary": "Paginated data table — search, sortable auto-detected columns, an optional row-detail panel, and numbered page navigation.",
+      "dataParam": true,
+      "paramOrder": [
+        "data",
+        "limit",
+        "pagination",
+        "search",
+        "search-placeholder",
+        "detail",
+        "empty-message"
+      ],
+      "attributes": {
+        "limit": {
+          "type": "number",
+          "default": 10,
+          "description": "Rows per page (default: 10). Ignored for `pagination=\"none\"`, which renders whatever the data function returns."
+        },
+        "pagination": {
+          "type": "string",
+          "description": "`pages` (default) — prev / windowed page numbers / next — or `none` for no pager at all. Optional: omit it and you get pages."
+        },
+        "search": {
+          "type": "boolean",
+          "description": "Show the search input."
+        },
+        "search-placeholder": {
+          "type": "string",
+          "description": "Placeholder for the search input."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Present: clicking a row opens a detail modal."
+        },
+        "empty-message": {
+          "type": "string",
+          "description": "Body text when there are no rows and no query."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "loading-start",
+          "description": "Before each fetch — bubbles."
+        },
+        {
+          "name": "loading-end",
+          "description": "After each fetch — bubbles."
+        }
+      ],
+      "dataProp": "dataFn",
+      "dataAsFetcher": true,
+      "note": "Rows reach app-table as a fetcher on its `dataFn` property (app-table.js:24,113). Assigning the property avoids registering a synthetic source in the app-wide data-sources registry on every render pass — which never got unregistered and could collide with a real name."
+    },
+    "app-tag": {
+      "element": "app-tag",
+      "summary": "Tag / chip — an interactive, content-bearing label.",
+      "textParam": true,
+      "paramOrder": [
+        "text",
+        "size",
+        "selected",
+        "selectable",
+        "removable",
+        "image",
+        "disabled",
+        "state"
+      ],
+      "attributes": {
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "default": "md",
+          "description": "`md` (default) | `sm`"
+        },
+        "selected": {
+          "type": "boolean",
+          "description": "Gold fill. The filter chip's on state."
+        },
+        "selectable": {
+          "type": "boolean",
+          "description": "Click / Enter / Space toggles `selected`."
+        },
+        "removable": {
+          "type": "boolean",
+          "description": "Appends the trailing × button."
+        },
+        "image": {
+          "type": "string",
+          "description": "src for the circular leading image (provider logo, avatar)."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "hover",
+            "focus"
+          ],
+          "description": "`hover` | `focus`, for rendering those states statically."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "tag-change",
+          "description": "`{ selected }` after a `selectable` tag toggles."
+        },
+        {
+          "name": "tag-remove",
+          "description": "Cancelable; the tag removes itself unless prevented."
+        }
+      ]
+    },
+    "app-toolbar": {
+      "element": "app-toolbar",
+      "summary": "Horizontal toolbar with named start and end slots for grouping actions.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "aria-label"
+      ],
+      "attributes": {
+        "aria-label": {
+          "type": "string",
+          "description": "Accessible label for the toolbar region"
+        }
+      },
+      "slots": [
+        {
+          "name": "start",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "end",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [],
+      "note": "Only useful with Slot() — its content is entirely start/end slotted."
+    }
+  },
+  "routes": [
+    "/",
+    "/add-agent",
+    "/add-agent-github",
+    "/agent-card",
+    "/agents",
+    "/build",
+    "/builds",
+    "/chat",
+    "/design-system",
+    "/executions",
+    "/flow",
+    "/flows",
+    "/llm-router",
+    "/mcp",
+    "/mcp-detail",
+    "/observability-session",
+    "/resources",
+    "/secrets",
+    "/session-trace",
+    "/sessions",
+    "/settings",
+    "/setup-cli",
+    "/tokenops",
+    "/weave",
+    "/workflow",
+    "/workflow-new",
+    "/workflows",
+    "/your-agents"
+  ],
+  "blocked": {
+    "app-tabs": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) — an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism.",
+    "app-loading-bar": "Zero attributes; driven by global document events, not composition.",
+    "auto-complete": "Needs a live filter callback through data-sources.js — not designed yet."
+  }
+}
