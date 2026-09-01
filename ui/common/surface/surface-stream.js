@@ -37,6 +37,7 @@ import { render } from './render.js';
 import { createStore } from './store.js';
 import { createQueryManager } from './queries.js';
 import { createActionRunner } from './actions.js';
+import { createSurfaceTelemetry } from './telemetry.js';
 
 /**
  * A catalog version this client can actually compare against.
@@ -65,6 +66,7 @@ const FRAMES = new Set(['surface', 'dsl-chunk', 'end', 'fail', 'message', 'note'
  *   call?: (name: string, ...args: unknown[]) => unknown,
  *   routes?: {has(path: string): boolean}|null,
  *   navigate?: (path: string) => void,
+ *   onTurn?: (record: object) => void,
  *   fetchImpl?: typeof fetch,
  *   schedule?: (fn: () => void) => void,
  *   doc?: Document,
@@ -79,6 +81,7 @@ export function createSurfaceSession(options) {
     // may inject a stand-in for tests; passing null refuses every route.
     routes = router,
     navigate = (path) => router.navigate(path),
+    onTurn,
     fetchImpl = globalThis.fetch?.bind(globalThis),
     schedule = (fn) => (globalThis.requestAnimationFrame ?? ((f) => setTimeout(f, 0)))(fn),
     doc,
@@ -93,13 +96,21 @@ export function createSurfaceSession(options) {
   let painting = false;
   let ended = false;
 
+  const telemetry = createSurfaceTelemetry({ report: onTurn });
+  /** Every diagnostic, wherever it came from, is both shown and counted. */
+  const emitDiagnostics = (list) => {
+    if (!list?.length) return;
+    telemetry.record(list);
+    onDiagnostics?.(list);
+  };
+
   const store = createStore();
   /** Diagnostics raised outside a draw pass — a fetch that failed later, say. */
   const liveDiagnostics = [];
   const queries = createQueryManager({
     call,
     onChange: () => paint(),
-    onDiagnostic: (d) => { liveDiagnostics.push(d); onDiagnostics?.([d]); },
+    onDiagnostic: (d) => { liveDiagnostics.push(d); emitDiagnostics([d]); },
   });
   /** The evaluator belonging to the most recent pass. Actions read through it. */
   let lastOut = null;
@@ -111,7 +122,7 @@ export function createSurfaceSession(options) {
     // this runs between them — see actions.js.
     refresh: () => walk(),
     onAssistant: (text) => onAssistant?.(text),
-    onDiagnostic: (d) => onDiagnostics?.([d]),
+    onDiagnostic: (d) => emitDiagnostics([d]),
     routes,
     navigate,
   });
@@ -124,7 +135,24 @@ export function createSurfaceSession(options) {
   function paint() {
     if (painting) return;
     painting = true;
-    schedule(() => { painting = false; draw(); });
+    schedule(() => {
+      painting = false;
+      // A throw here is not a component's fault — render.js already catches
+      // those per node — so it is ours, on half-arrived text. Letting it escape
+      // would abandon the turn: `painting` is already false, but nothing would
+      // ever call draw() again for chunks that might well parse. Report and
+      // keep the stream alive; the buffer only grows, so the next chunk gets
+      // another attempt at the same statements.
+      try {
+        draw();
+      } catch (err) {
+        emitDiagnostics([{
+          source: 'stream',
+          code: 'paint_failed',
+          message: `a paint failed and was skipped: ${err?.message ?? err}`,
+        }]);
+      }
+    });
   }
 
   /**
@@ -143,7 +171,7 @@ export function createSurfaceSession(options) {
     if (remote === mine) return;
 
     if (CONTENT_HASH.test(remote) && CONTENT_HASH.test(mine)) {
-      onDiagnostics?.([{
+      emitDiagnostics([{
         source: 'stream',
         code: 'catalog_version_mismatch',
         message: `generator built against catalog ${remote}, this client has ${mine} — `
@@ -152,7 +180,7 @@ export function createSurfaceSession(options) {
       return;
     }
 
-    onDiagnostics?.([{
+    emitDiagnostics([{
       source: 'stream',
       code: 'catalog_version_unverifiable',
       message: `generator reported catalog version "${remote}", which is not a content hash — `
@@ -213,7 +241,7 @@ export function createSurfaceSession(options) {
     const key = JSON.stringify(diagnostics);
     if (key !== lastDiagnosticsKey) {
       lastDiagnosticsKey = key;
-      if (diagnostics.length) onDiagnostics?.(diagnostics);
+      if (diagnostics.length) emitDiagnostics(diagnostics);
     }
 
     return out;
@@ -234,6 +262,7 @@ export function createSurfaceSession(options) {
     let status = 'ok';
     let remoteCatalogVersion = null;
 
+    telemetry.begin({ promptLength: String(prompt ?? '').length, catalogVersion: catalog.catalogVersion });
     onStatus?.({ phase: 'requesting' });
 
     // Same multi-tenant seam as apiFetch: base from window.nasikoConfig.
@@ -269,6 +298,7 @@ export function createSurfaceSession(options) {
 
     if (!res.ok) {
       onStatus?.({ phase: 'failed', detail: `HTTP ${res.status}` });
+      telemetry.end({ status: 'http_error', rendered: false });
       return { status: 'http_error', surface: currentSurface, catalogVersion: null };
     }
 
@@ -278,7 +308,7 @@ export function createSurfaceSession(options) {
       signal: opts.signal,
       onFrame: ({ event, data }) => {
         if (!FRAMES.has(event)) {
-          onDiagnostics?.([{ source: 'stream', code: 'unknown_frame', message: `ignored "${event}"` }]);
+          emitDiagnostics([{ source: 'stream', code: 'unknown_frame', message: `ignored "${event}"` }]);
           return;
         }
         let body = {};
@@ -286,7 +316,7 @@ export function createSurfaceSession(options) {
           try {
             body = JSON.parse(data);
           } catch {
-            onDiagnostics?.([{ source: 'stream', code: 'malformed_frame', message: `frame "${event}" carried unparseable JSON` }]);
+            emitDiagnostics([{ source: 'stream', code: 'malformed_frame', message: `frame "${event}" carried unparseable JSON` }]);
             return;
           }
         }
@@ -294,11 +324,13 @@ export function createSurfaceSession(options) {
         switch (event) {
           case 'surface':
             remoteCatalogVersion = body.catalogVersion ?? null;
+            telemetry.identify({ surfaceId: body.surfaceId, catalogVersion: remoteCatalogVersion });
             reportCatalogVersion(remoteCatalogVersion);
             break;
 
           case 'dsl-chunk':
             buffer += body.text ?? '';
+            telemetry.chunk();
             paint();
             break;
 
@@ -307,7 +339,7 @@ export function createSurfaceSession(options) {
             break;
 
           case 'note':
-            onDiagnostics?.([{ source: 'generator', code: body.code ?? 'note', message: body.message }]);
+            emitDiagnostics([{ source: 'generator', code: body.code ?? 'note', message: body.message }]);
             break;
 
           case 'end':
@@ -316,7 +348,7 @@ export function createSurfaceSession(options) {
 
           case 'fail':
             status = 'failed';
-            onDiagnostics?.([{ source: 'generator', code: body.code ?? 'stream_failed', message: body.message }]);
+            emitDiagnostics([{ source: 'generator', code: body.code ?? 'stream_failed', message: body.message }]);
             break;
 
           default:
@@ -335,6 +367,13 @@ export function createSurfaceSession(options) {
     if (out.root) currentSurface = buffer;
 
     onStatus?.({ phase: status === 'ok' ? 'done' : 'failed' });
+    // One record for the whole turn. `rendered` is the honest measure of
+    // whether the user got anything — a turn can end "ok" and draw nothing.
+    telemetry.end({
+      status,
+      statements: lastOut?.symbols?.size ?? 0,
+      rendered: Boolean(out.root),
+    });
     return { status, surface: currentSurface, catalogVersion: remoteCatalogVersion };
   }
 
@@ -352,6 +391,8 @@ export function createSurfaceSession(options) {
     runAction: (action) => actions.run(action, lastOut?.evaluateAst ?? null),
     /** The most recent materialization. */
     get lastResult() { return lastOut; },
+    /** Subscribe to the per-turn telemetry record. */
+    onTurn: (fn) => telemetry.onTurn(fn),
     reset() {
       buffer = '';
       currentSurface = '';

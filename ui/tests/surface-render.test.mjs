@@ -19,17 +19,26 @@ const { render, renderNode } = await import(new URL('../common/surface/render.js
 const catalog = JSON.parse(readFileSync(new URL('../common/surface/dsl-catalog.json', import.meta.url), 'utf8'));
 const index = buildComponentIndex(catalog);
 
-/** Records every call the renderer makes, and nothing else. */
-function recorder() {
-  const make = (tag) => ({
+/** One recording element. Shared so a test can hand-build a hostile document. */
+function makeEl(tag) {
+  return {
     tag, attrs: {}, children: [], listeners: {}, textContent: undefined,
     setAttribute(k, v) { this.attrs[k] = v; },
     hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
     appendChild(c) { this.children.push(c); return c; },
     addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
     replaceChildren() { this.children.length = 0; },
-  });
-  return { doc: { createElement: make }, container: make('div') };
+  };
+}
+
+/** Records every call the renderer makes, and nothing else. */
+function recorder() {
+  return { doc: { createElement: makeEl }, container: makeEl('div') };
+}
+
+/** DSL → materialized tree, for tests that build their own document. */
+function materializeDsl(dsl) {
+  return materialize(parseBuffer(dsl).statements, index);
 }
 
 /** DSL → rendered recorder tree, plus whatever diagnostics came out. */
@@ -211,4 +220,59 @@ kpiCount = AppStatCard("Requests", requestCountQ, null, "neutral")`,
   assert.deepEqual([cost.attrs.label, cost.attrs.value, cost.attrs.trend], ['Total cost', '12.5', 'up']);
   assert.deepEqual([count.attrs.label, count.attrs.value], ['Requests', '342']);
   assert.deepEqual(diagnostics, []);
+});
+
+// ── The error boundary ──────────────────────────────────────────────────────
+// A generated tree meets attribute combinations nobody would hand-write, so
+// "a component threw" is a normal event here, not an exceptional one.
+
+test('a component that throws on construction costs its node, not the surface', () => {
+  const diagnostics = [];
+  const doc = {
+    createElement(tag) {
+      if (tag === 'app-badge') throw new TypeError('boom in constructor');
+      return makeEl(tag);
+    },
+  };
+  const container = makeEl('div');
+  const out = materializeDsl(`bad = AppBadge("nope")
+good = AppStatCard("Total", "12")
+root = AppStack([bad, good], "md")`);
+  render(out.root, container, catalog, { doc, onDiagnostic: (d) => diagnostics.push(d) });
+
+  const stack = container.children[0];
+  assert.equal(stack.tag, 'app-stack', 'the surface still rendered');
+  assert.deepEqual(stack.children.map((c) => c.tag), ['app-stat-card'],
+    'the sibling survives — the blast radius is the node that threw');
+  const d = diagnostics.find((x) => x.code === 'component_threw');
+  assert.ok(d);
+  assert.match(d.message, /app-badge/);
+  assert.match(d.message, /boom in constructor/);
+});
+
+test('a component that throws on append is caught too', () => {
+  const diagnostics = [];
+  const doc = {
+    createElement(tag) {
+      const el = makeEl(tag);
+      if (tag === 'app-badge') el.appendChild = () => { throw new Error('boom in connectedCallback'); };
+      return el;
+    },
+  };
+  const container = makeEl('div');
+  const out = materializeDsl(`inner = AppStatCard("Total", "12")
+bad = AppBadge("nope")
+root = AppStack([bad], "md")`);
+  render(out.root, container, catalog, { doc, onDiagnostic: (d) => diagnostics.push(d) });
+  assert.equal(container.children.length, 1, 'the root still attached');
+});
+
+test('a throwing root leaves the container empty and says why', () => {
+  const diagnostics = [];
+  const doc = { createElement(tag) { throw new Error('everything is broken'); } };
+  const container = makeEl('div');
+  const out = materializeDsl('root = AppStack([], "md")');
+  render(out.root, container, catalog, { doc, onDiagnostic: (d) => diagnostics.push(d) });
+  assert.equal(container.children.length, 0);
+  assert.ok(diagnostics.some((d) => d.code === 'component_threw'));
 });

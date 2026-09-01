@@ -66,7 +66,19 @@ export function render(root, container, catalog, deps = {}) {
   container.replaceChildren();
   if (!root) return;
   const el = renderNode(root, catalog, deps);
-  if (el) container.appendChild(el);
+  if (!el) return;
+  // The append is outside renderNode's own try, so it needs its own: attaching
+  // the root is where a connectedCallback finally runs for the whole tree.
+  try {
+    container.appendChild(el);
+  } catch (err) {
+    deps.onDiagnostic?.({
+      source: 'render',
+      code: 'component_threw',
+      message: `<${root.tag}> threw on attach: ${err?.message ?? err}`,
+      pointer: root.statementId,
+    });
+  }
 }
 
 /**
@@ -76,6 +88,32 @@ export function render(root, container, catalog, deps = {}) {
  * @returns {Element|null}
  */
 export function renderNode(node, catalog, deps = {}) {
+  // The boundary. Everything below can throw for reasons that are not this
+  // renderer's fault: `createElement` runs a custom element's constructor
+  // synchronously, `appendChild` runs its connectedCallback, and both are
+  // component code meeting an attribute combination a person would never have
+  // written. Without a catch, one such component takes down the whole surface
+  // — and because the throw escapes the paint, every later chunk dies the same
+  // way, so a dashboard that was 95% correct becomes a permanently blank box.
+  //
+  // Per node, so the blast radius is the node. Its children go with it, which
+  // is unavoidable — they were arguments to a thing that does not exist — but
+  // its siblings and its parent survive.
+  try {
+    return buildNode(node, catalog, deps);
+  } catch (err) {
+    deps.onDiagnostic?.({
+      source: 'render',
+      code: 'component_threw',
+      message: `<${node?.tag}> threw while rendering: ${err?.message ?? err}`,
+      pointer: node?.statementId,
+    });
+    return null;
+  }
+}
+
+/** @returns {Element|null} */
+function buildNode(node, catalog, deps = {}) {
   const doc = deps.doc ?? globalThis.document;
   // Injected so this module stays testable without a router, and so a host
   // that has none refuses every route rather than allowing every route.

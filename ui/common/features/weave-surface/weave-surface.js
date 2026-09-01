@@ -29,6 +29,8 @@
  * @fires weave-assistant   - `{detail: {text}}` `@ToAssistant` — the surface asking for a new turn
  * @fires weave-status      - `{detail: {phase, detail}}` requesting / streaming / done / failed
  * @fires weave-diagnostics - `{detail: {diagnostics}}` anything the runtime could not honour
+ * @fires weave-turn        - `{detail: {record}}` one per turn: codes, counts and timings,
+ *   never prompt or DSL content. The reporting sink subscribes here (NAS-211).
  */
 
 import { loadCss } from '/common/utils/css.js';
@@ -167,6 +169,7 @@ class WeaveSurface extends HTMLElement {
       onAssistant: (text) => this.#emit('weave-assistant', { text }),
       onStatus: (s) => this.#emit('weave-status', s),
       onDiagnostics: (diagnostics) => this.#emit('weave-diagnostics', { diagnostics }),
+      onTurn: (record) => this.#emit('weave-turn', { record }),
     });
     return this.#session;
   }

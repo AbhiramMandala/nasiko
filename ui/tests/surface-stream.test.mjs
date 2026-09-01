@@ -357,3 +357,71 @@ test('reset drops the data as well as the text', async () => {
   assert.equal(s.store.get('$days'), undefined);
   assert.equal(s.currentSurface, '');
 });
+
+test('a container that throws on replaceChildren does not abandon the turn', async () => {
+  const { doc, container } = recorder();
+  let thrown = false;
+  container.replaceChildren = function () {
+    this.children.length = 0;
+    if (!thrown) { thrown = true; throw new Error('detached'); }
+  };
+  const diagnostics = [];
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    fetchImpl: async () => sse(TURN),
+  });
+  const out = await s.send('go');
+  assert.equal(out.status, 'ok');
+  assert.ok(diagnostics.some((d) => d.code === 'paint_failed'));
+  assert.ok(container.children.length > 0, 'the turn recovered on the next chunk');
+});
+
+test('a turn emits exactly one telemetry record, with both catalog versions', async () => {
+  const records = [];
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onTurn: (r) => records.push(r),
+    fetchImpl: async () => sse(TURN),
+  });
+  await s.send('build me a spend dashboard');
+
+  assert.equal(records.length, 1, 'one turn, one record — however many chunks it took');
+  const r = records[0];
+  assert.equal(r.kind, 'weave-surface-turn');
+  assert.equal(r.status, 'ok');
+  assert.equal(r.rendered, true);
+  assert.equal(r.emptyRender, false);
+  assert.equal(r.chunks, 5);
+  assert.equal(r.catalogVersion, catalog.catalogVersion);
+  assert.equal(r.generatorCatalogVersion, catalog.catalogVersion);
+  assert.equal(r.promptLength, 'build me a spend dashboard'.length);
+  assert.equal(JSON.stringify(r).includes('spend dashboard'), false, 'the prompt itself must not travel');
+});
+
+test('a failed turn still produces a record, flagged', async () => {
+  const records = [];
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onTurn: (r) => records.push(r),
+    fetchImpl: async () => new Response('nope', { status: 502 }),
+  });
+  await s.send('go');
+  assert.equal(records.length, 1);
+  assert.equal(records[0].status, 'http_error');
+  assert.equal(records[0].rendered, false);
+});
