@@ -58,11 +58,15 @@ pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, St
         serde_json::from_str(&content).map_err(|e| format!("invalid AgentCard.json: {e}"))?;
 
     Ok(AgentMetadata {
-        name: card
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("agent")
-            .to_string(),
+        // Slugified, because this feeds `build_image_tag` and an OCI repository
+        // name may not contain spaces or uppercase. A card naming itself
+        // "Infrastructure Manager" otherwise produced the tag
+        // `nasiko/Infrastructure Manager:1.0.0`, which docker rejects — the
+        // import 500'd after the agent row had already committed. Matches the
+        // slug rule registry publishers apply, so a round-trip through the
+        // registry keeps one stable name.
+        name: slugify(card.get("name").and_then(|v| v.as_str()).unwrap_or("agent")),
+        // The human-readable original is preserved here for the UI.
         display_name: card.get("name").and_then(|v| v.as_str()).map(String::from),
         description: card
             .get("description")
@@ -329,6 +333,8 @@ pub(crate) async fn build_and_deploy(
         Some(owner_id),
     )
     .await;
+    // Per-agent MCP gateway credential (rotates on re-import).
+    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env_vars, agent_id).await;
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
         &meta.name,
@@ -650,22 +656,57 @@ async fn effective_allowed_hosts(state: &AppState) -> Vec<String> {
         .collect();
     allowed.extend(state.config.registry_import_allowed_hosts.iter().cloned());
 
-    let configured: Option<String> =
-        match sqlx::query_scalar::<_, Option<String>>("SELECT registry_url FROM settings LIMIT 1")
-            .fetch_optional(&state.db)
-            .await
-        {
-            Ok(Some(url)) => url,
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!(%e, "effective_allowed_hosts: could not read settings.registry_url");
-                None
-            }
-        };
+    let configured: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
+        "SELECT registry_url FROM settings LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(url)) => url,
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(%e, "effective_allowed_hosts: could not read settings.registry_url");
+            None
+        }
+    };
     if let Some(host) = configured.as_deref().and_then(registry_url_host) {
         allowed.push(host);
     }
     allowed
+}
+
+/// Lowercase a display name into an OCI-safe repository component.
+///
+/// Registry publishers apply the same rule before pushing, so a name survives
+/// publish → import unchanged and a re-import updates the existing agent
+/// instead of registering a second one under a differently-cased name.
+fn slugify(name: &str) -> String {
+    let s: String = name
+        .to_lowercase()
+        .replace(' ', "-")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let s = s.trim_matches('-').to_string();
+    if s.is_empty() { "agent".to_string() } else { s }
+}
+
+/// Split an OCI reference into `(repo_with_host, tag)`, defaulting the tag to
+/// `latest`.
+///
+/// The tag separator is the `:` *after* the last `/`. A naive
+/// `rsplit_once(':')` mis-parses a ported registry host with no tag —
+/// `localhost:5000/nasiko/a` becomes repo `localhost` + tag `5000/nasiko/a`,
+/// which then fails host validation for the wrong reason.
+fn split_reference_tag(reference: &str) -> (String, String) {
+    let last_slash = reference.rfind('/').map_or(0, |i| i + 1);
+    match reference[last_slash..].find(':') {
+        Some(rel) => {
+            let at = last_slash + rel;
+            (reference[..at].to_string(), reference[at + 1..].to_string())
+        }
+        None => (reference.to_string(), "latest".to_string()),
+    }
 }
 
 fn validate_registry_host(host: &str, allowed: &[String]) -> Result<(), (StatusCode, String)> {
@@ -718,10 +759,7 @@ pub(crate) async fn import_registry(
     };
 
     // Parse OCI reference: "registry.host/owner/name:tag"
-    let (repo_with_host, tag) = match req.reference.rsplit_once(':') {
-        Some((r, t)) => (r.to_string(), t.to_string()),
-        None => (req.reference.clone(), "latest".to_string()),
-    };
+    let (repo_with_host, tag) = split_reference_tag(&req.reference);
 
     // Split host from repo path: "registry.nasiko.dev/nasiko/agent" → ("registry.nasiko.dev", "nasiko/agent")
     let (host, repo) = match repo_with_host.split_once('/') {
@@ -981,6 +1019,8 @@ pub(crate) async fn import_registry(
             Some(owner_id),
         )
         .await;
+        // Per-agent MCP gateway credential (rotates on redeploy).
+        crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env_vars, agent_id).await;
         let mut spec = crate::agents::build_agent_spec(
             agent_id,
             &agent_name,
@@ -1047,7 +1087,7 @@ pub(crate) async fn import_registry(
 mod tests {
     use super::{
         BUILTIN_ALLOWED_REGISTRY_HOSTS, find_owned_agent, read_agent_card, registry_url_host,
-        validate_registry_host,
+        slugify, split_reference_tag, validate_registry_host,
     };
 
     #[test]
@@ -1177,5 +1217,63 @@ mod tests {
         let meta = read_agent_card(&dir).unwrap();
         assert_eq!(meta.version, "2.0.0");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ─── Reference parsing ──────────────────────────────────────────────────
+
+    #[test]
+    fn reference_tag_defaults_to_latest() {
+        let (repo, tag) = split_reference_tag("registry.nasiko.dev/nasiko/a");
+        assert_eq!(repo, "registry.nasiko.dev/nasiko/a");
+        assert_eq!(tag, "latest");
+    }
+
+    #[test]
+    fn reference_tag_is_split_after_the_last_slash() {
+        let (repo, tag) = split_reference_tag("registry.nasiko.dev/nasiko/a:1.0.1");
+        assert_eq!(repo, "registry.nasiko.dev/nasiko/a");
+        assert_eq!(tag, "1.0.1");
+    }
+
+    #[test]
+    fn a_ported_host_is_not_mistaken_for_a_tag() {
+        // The bug this guards: rsplit_once(':') split "localhost:5000/nasiko/a"
+        // into repo "localhost" + tag "5000/nasiko/a", so host validation then
+        // failed for entirely the wrong reason.
+        let (repo, tag) = split_reference_tag("localhost:5000/nasiko/a");
+        assert_eq!(repo, "localhost:5000/nasiko/a");
+        assert_eq!(tag, "latest");
+
+        let (repo, tag) = split_reference_tag("localhost:5000/nasiko/a:2.0.0");
+        assert_eq!(repo, "localhost:5000/nasiko/a");
+        assert_eq!(tag, "2.0.0");
+    }
+
+    // ─── Card name slugification ────────────────────────────────────────────
+
+    #[test]
+    fn display_names_become_oci_safe_repository_components() {
+        // "Infrastructure Manager" previously reached build_image_tag verbatim,
+        // producing `nasiko/Infrastructure Manager:1.0.0` — an invalid reference
+        // that made docker fail *after* the agent row had committed.
+        assert_eq!(slugify("Infrastructure Manager"), "infrastructure-manager");
+        assert_eq!(slugify("infrastructure_manager"), "infrastructure_manager");
+        assert_eq!(slugify("Code Reviewer 2.0"), "code-reviewer-20");
+    }
+
+    #[test]
+    fn slugify_never_yields_an_empty_name() {
+        // An empty repo component is as invalid as a spaced one.
+        assert_eq!(slugify("---"), "agent");
+        assert_eq!(slugify(""), "agent");
+    }
+
+    #[test]
+    fn slugified_names_are_stable_across_a_publish_import_round_trip() {
+        // Publish slugifies before pushing; import must land on the same name,
+        // otherwise a re-import creates a second agent instead of updating one.
+        let published = "infrastructure-manager";
+        assert_eq!(slugify("Infrastructure Manager"), published);
+        assert_eq!(slugify(published), published);
     }
 }

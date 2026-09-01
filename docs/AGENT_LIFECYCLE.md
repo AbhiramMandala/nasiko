@@ -150,6 +150,29 @@ Useful for CI or when you want to separate image upload from deployment:
     nasiko push .
     nasiko push . --name my-agent
 
+### Deploy from the registry
+
+Deploy an agent that is already published to an artifact registry, without
+building anything locally — the control plane pulls it itself, so no Docker
+daemon is needed on your machine:
+
+    nasiko import nasiko/my-agent:1.0.0                       # resolved against the connected registry
+    nasiko import registry.example.com/nasiko/my-agent:1.0.0  # or fully qualified
+
+The short `owner/name[:tag]` form resolves against whatever `nasiko registry
+connect` points at, the same way `nasiko new` resolves a template. The tag
+defaults to `latest`.
+
+Both packaging formats are accepted: a container image is pulled and deployed
+directly, while a source artifact is downloaded, built server-side, and then
+deployed (the command prints a `build_id` in that case — follow it with
+`nasiko logs <agent>`).
+
+The registry host must be listed in the control plane's
+`REGISTRY_IMPORT_ALLOWED_HOSTS`, otherwise the import is refused. Registries
+that require authentication are not supported yet — the server fetches
+manifests anonymously.
+
 ### Manage secrets
 
 Secrets are encrypted env vars injected into agent containers at runtime. There are two scopes:
@@ -307,6 +330,23 @@ Changed secrets only — restart to pick them up (no rebuild):
     nasiko secrets set NEW_KEY value --agent my-agent
     nasiko restart my-agent
 
+Published a new version to the registry — re-run the import with the new tag:
+
+    nasiko import nasiko/my-agent:1.0.1
+
+This updates the agent in place rather than creating a second one: it matches
+on owner + name, so the agent keeps its id, and its grants, ACLs, and stored
+secrets survive. The control plane re-pulls the image and recreates the
+container.
+
+Prefer bumping the tag. Re-publishing the *same* tag also works — the pull
+compares digests and the container is recreated either way — but the recorded
+version no longer identifies which build is running.
+
+Note that `nasiko restart` does **not** fetch a new image; it recreates the
+container from what the cluster already has. Only `deploy` and `import` bring
+in new code.
+
 ---
 
 ## Local cluster workflow
@@ -353,6 +393,7 @@ Test the full deploy flow locally before pushing to production:
 - `nasiko up` / `nasiko down` — Start/stop local cluster
 - `nasiko deploy .` — Build + push + deploy
 - `nasiko push .` — Push image only
+- `nasiko import <ref>` — Deploy from a registry reference (server pulls it)
 - `nasiko secrets set <key> <value>` — Store secret (vault or `--agent`)
 
 **Operate**
