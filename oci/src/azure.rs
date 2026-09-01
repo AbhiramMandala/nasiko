@@ -37,7 +37,9 @@ fn azure_error(context: &str, err: &object_store::Error) -> String {
 /// Absence must stay absence across the seam, whatever the backend calls it.
 fn map_err(context: &str, err: object_store::Error) -> BlobStoreError {
     match err {
-        object_store::Error::NotFound { .. } => BlobStoreError::NotFound(azure_error(context, &err)),
+        object_store::Error::NotFound { .. } => {
+            BlobStoreError::NotFound(azure_error(context, &err))
+        }
         other => BlobStoreError::Backend(azure_error(context, &other)),
     }
 }
@@ -68,7 +70,9 @@ impl AzureBlobStorage {
             // account key is a bearer credential and must not cross a network
             // in the clear. Mirrors the chart's same rule for S3 endpoints.
             let allow_http = ep.starts_with("http://");
-            builder = builder.with_endpoint(ep.to_owned()).with_allow_http(allow_http);
+            builder = builder
+                .with_endpoint(ep.to_owned())
+                .with_allow_http(allow_http);
         }
 
         let store = builder.build().map_err(|e| {
