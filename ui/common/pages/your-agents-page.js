@@ -423,7 +423,10 @@ class YourAgentsPage extends HTMLElement {
         try {
           const res = await apiFetch("/secrets");
           if (!res.ok) throw new Error();
-          userSecrets = await res.json();
+          // GET /api/secrets answers with the ApiResponse envelope
+          // ({data, status_code, message}); tolerate a bare array too.
+          const body = await res.json();
+          userSecrets = Array.isArray(body) ? body : (body?.data ?? []);
         } catch {
           userSecrets = [];
         }
