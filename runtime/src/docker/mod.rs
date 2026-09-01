@@ -541,21 +541,21 @@ fn extract_endpoint(
     {
         for ep_net in nets.values() {
             let ip = ep_net.ip_address.as_deref().filter(|ip| !ip.is_empty());
-            if let Some(ip) = ip
-                && let Some(ports) = ns.ports.as_ref()
-            {
-                let mut keys: Vec<&String> = ports.keys().collect();
-                keys.sort_by_key(|k| {
-                    k.split('/')
-                        .next()
-                        .and_then(|p| p.parse::<u16>().ok())
-                        .unwrap_or(0)
-                });
-                for key in &keys {
-                    if let Some(container_port) =
-                        key.split('/').next().and_then(|p| p.parse::<u16>().ok())
-                    {
-                        return Some(format!("http://{ip}:{container_port}"));
+            if let Some(ip) = ip {
+                if let Some(ports) = ns.ports.as_ref() {
+                    let mut keys: Vec<&String> = ports.keys().collect();
+                    keys.sort_by_key(|k| {
+                        k.split('/')
+                            .next()
+                            .and_then(|p| p.parse::<u16>().ok())
+                            .unwrap_or(0)
+                    });
+                    for key in &keys {
+                        if let Some(container_port) =
+                            key.split('/').next().and_then(|p| p.parse::<u16>().ok())
+                        {
+                            return Some(format!("http://{ip}:{container_port}"));
+                        }
                     }
                 }
             }
