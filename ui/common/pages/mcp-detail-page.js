@@ -9,6 +9,7 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./mcp-detail-page.css', import.meta.url));
 import '../design-system/app-badge/app-badge.js';
 import '../design-system/app-button/app-button.js';
+import '/common/utils/back-link.js';
 import '../design-system/app-empty-state/app-empty-state.js';
 import '../design-system/app-grid/app-grid.js';
 import '../design-system/app-input/app-input.js';
@@ -117,7 +118,7 @@ class McpDetailPage extends HTMLElement {
 
     this.innerHTML = `
       <div class="mdp-topbar">
-        <app-button variant="tertiary" icon-only href="/mcp"
+        <app-button variant="tertiary" size="sm" icon-only href="/mcp" data-back
           aria-label="Back to MCP servers">${icons.arrowLeft()}</app-button>
       </div>
 
@@ -386,9 +387,9 @@ class McpDetailPage extends HTMLElement {
           <h2 class="mdp-section-title">Grants</h2>
           <p class="mdp-muted">Who this server is shared with.${this.#isEe ? ' Members of a granted team or department inherit access automatically.' : ''}</p>
         </div>
-        <app-button variant="primary" id="mdp-grant-open">${icons.plus('', 14)} Grant access</app-button>
+        <app-button variant="primary" size="md" id="mdp-grant-open">${icons.plus('', 14)} Grant access</app-button>
       </div>
-      <app-search id="mdp-grant-filter" size="sm" class="mdp-grants-search"
+      <app-search id="mdp-grant-filter" class="mdp-grants-search"
         placeholder="Search ${defs.map((d) => d.label.toLowerCase()).join(', ')}"
         aria-label="Search grants"
         value="${escAttr(this.#grantFilter)}" autocomplete="off"></app-search>
@@ -520,8 +521,8 @@ class McpDetailPage extends HTMLElement {
           <p class="form-error" id="mdp-grant-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="tertiary" id="mdp-grant-cancel">Cancel</app-button>
-          <app-button variant="primary" id="mdp-grant-submit" disabled>Grant access</app-button>
+          <app-button variant="tertiary" size="md" id="mdp-grant-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="mdp-grant-submit" disabled>Grant access</app-button>
         </div>
       </app-modal>`;
   }

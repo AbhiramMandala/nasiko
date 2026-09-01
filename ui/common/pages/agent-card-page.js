@@ -14,6 +14,7 @@ import '/common/features/agent-llm-config.js';
 import '/common/features/secrets-manager.js';
 import { escHtml, escAttr } from '/common/utils/escape.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/utils/back-link.js';
 import '/common/design-system/app-input/app-input.js';
 import '/common/design-system/app-radio/app-radio.js';
 import '/common/design-system/app-search/app-search.js';
@@ -154,9 +155,8 @@ class AgentCardPage extends HTMLElement {
             <app-button variant="ghost" size="sm" data-action="stop" title="Stop agent">${icons.square()} Stop</app-button>` : '';
     return `
         <div class="acp-topbar">
-          <a class="acp-back" href="/agents" data-action="back" title="Back" aria-label="Back">
-            ${icons.x('', 16)}
-          </a>
+        <app-button href="/agents" variant="tertiary" size="sm" icon-only data-back
+            aria-label="Back">${icons.x('', 16)}</app-button>
           <div class="acp-topbar-actions">${actions}</div>
         </div>`;
   }
@@ -174,7 +174,7 @@ class AgentCardPage extends HTMLElement {
           <h1 class="acp-name">${escHtml(displayName)}</h1>
           <span class="acp-version">v${escHtml(a.version || '?')}</span>
           <span class="acp-verified" title="Registered agent">${icons.checkCircle('', 16)}</span>
-          <app-button class="acp-start-btn" variant="primary"
+          <app-button class="acp-start-btn" size="md" variant="primary"
             href="/chat?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(displayName)}">
             Start session ${icons.send()}
           </app-button>
@@ -323,13 +323,6 @@ class AgentCardPage extends HTMLElement {
     const btn = e.target.closest('[data-action]');
     if (!btn || !this.#agent) return;
     const action = btn.dataset.action;
-    // Back returns to wherever the card was opened from (hub, your-agents,
-    // chat). ponytail: history.back() over tracking a "came from" param; the
-    // href is the fallback for a deep link with no in-app history to pop.
-    if (action === 'back') {
-      if (history.length > 1) { e.preventDefault(); history.back(); }
-      return;
-    }
     if (action === 'restart') this.#runContainerAction(btn, 'restart', 'Restarting...');
     else if (action === 'stop') this.#runContainerAction(btn, 'stop', 'Stopping...');
     else if (action === 'delete') this.#deleteAgent(btn);
@@ -397,7 +390,7 @@ class AgentCardPage extends HTMLElement {
                 <p class="acp-section-sub">Every build of this agent. Re-upload to ship a new
                   version, or roll back to a previous image.</p>
               </div>
-              <app-button variant="primary" data-action="reupload">${icons.upload()} Re-upload</app-button>
+              <app-button variant="primary" size="md" data-action="reupload">${icons.upload()} Re-upload</app-button>
             </div>
             <div id="acp-versions-body"><app-skeleton height="200px"></app-skeleton></div>
           </section>
@@ -686,9 +679,9 @@ class AgentCardPage extends HTMLElement {
             <h2 class="acp-section-title">Access</h2>
             <p class="acp-section-sub">Grant access to ${isEe ? 'users, teams, or departments' : 'users or agents'}. ${isEe ? 'Access is automatically inherited by members.' : ''}</p>
           </div>
-          <app-button variant="primary" id="acp-grant-open">${icons.plus('', 14)} Grant access</app-button>
+          <app-button variant="primary" size="md" id="acp-grant-open">${icons.plus('', 14)} Grant access</app-button>
         </div>
-        <app-search id="acp-access-filter" size="sm" class="acp-access-search"
+        <app-search id="acp-access-filter" class="acp-access-search"
           placeholder="Search ${this.#granteeTabDefs().map(d => d.label.toLowerCase()).join(', ')}"
           aria-label="Search access grants"
           value="${escAttr(this.#accessFilter)}" autocomplete="off"></app-search>
@@ -921,8 +914,8 @@ class AgentCardPage extends HTMLElement {
           <p class="form-error" id="acp-grant-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="tertiary" id="acp-grant-cancel">Cancel</app-button>
-          <app-button variant="primary" id="acp-grant-submit" disabled>Grant access</app-button>
+          <app-button variant="tertiary" size="md" id="acp-grant-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="acp-grant-submit" disabled>Grant access</app-button>
         </div>
       </app-modal>
       <app-modal id="acp-transfer-modal" heading="Transfer ownership">
@@ -937,8 +930,8 @@ class AgentCardPage extends HTMLElement {
           <p class="form-error" id="acp-transfer-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="tertiary" id="acp-transfer-cancel">Cancel</app-button>
-          <app-button variant="primary" id="acp-transfer-submit" disabled>Transfer ownership</app-button>
+          <app-button variant="tertiary" size="md" id="acp-transfer-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="acp-transfer-submit" disabled>Transfer ownership</app-button>
         </div>
       </app-modal>
       <app-modal id="acp-reupload-modal" heading="Re-upload agent">
@@ -960,8 +953,8 @@ class AgentCardPage extends HTMLElement {
           <p class="form-error" id="acp-reupload-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="tertiary" id="acp-reupload-cancel">Cancel</app-button>
-          <app-button variant="primary" id="acp-reupload-submit">Queue build</app-button>
+          <app-button variant="tertiary" size="md" id="acp-reupload-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="acp-reupload-submit">Queue build</app-button>
         </div>
       </app-modal>
       <app-modal id="acp-rollback-modal" heading="Roll back version">
@@ -972,8 +965,8 @@ class AgentCardPage extends HTMLElement {
           <p class="form-error" id="acp-rollback-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="tertiary" id="acp-rollback-cancel">Cancel</app-button>
-          <app-button variant="primary" id="acp-rollback-submit">Roll back</app-button>
+          <app-button variant="tertiary" size="md" id="acp-rollback-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="acp-rollback-submit">Roll back</app-button>
         </div>
       </app-modal>`;
   }
@@ -1200,7 +1193,7 @@ class AgentCardPage extends HTMLElement {
             <div id="acp-mcp-list"><app-skeleton height="160px"></app-skeleton></div>
           </section>
           <section class="acp-section">
-            <h2 class="acp-section-title">LLM Router</h2>
+            <h2 class="acp-section-title">LLM router</h2>
             <p class="acp-section-sub">Which models this agent runs on. Overrides here apply to this agent only.</p>
             <agent-llm-config agent-id="${escAttr(a.id)}"></agent-llm-config>
           </section>
@@ -1377,12 +1370,12 @@ class AgentCardPage extends HTMLElement {
               <app-input label="Agent ID" value="${escAttr(a.id)}" readonly
                 hint="Generated when the agent was first published."></app-input>
               <div class="acp-identity-actions">
-                <app-button type="submit" variant="primary">Save changes</app-button>
+                <app-button type="submit" size="md" variant="primary">Save changes</app-button>
               </div>
             </form>
           </section>
           <section class="acp-section">
-            <h2 class="acp-section-title">Agent Configuration</h2>
+            <h2 class="acp-section-title">Agent configuration</h2>
             <dl class="acp-dl">
               <div><dt>Image</dt><dd><code>${escHtml(a.image || '—')}</code></dd></div>
               <div><dt>Port</dt><dd>${escHtml(String(a.port || '—'))}</dd></div>
@@ -1399,7 +1392,7 @@ class AgentCardPage extends HTMLElement {
           <section class="acp-section acp-danger">
             <h3 class="acp-danger-title">Danger zone</h3>
             <p class="acp-section-sub">Deleting this agent removes it from the registry, revokes all grants, and stops its container.</p>
-            <app-button variant="danger" data-action="delete">${icons.trash()} Delete agent</app-button>
+            <app-button variant="danger" size="md" data-action="delete">${icons.trash()} Delete agent</app-button>
           </section>
         </div>`;
   }
@@ -1591,7 +1584,7 @@ class AgentCardPage extends HTMLElement {
           <section class="acp-section">
             <div class="acp-logs-toolbar">
               <div class="acp-logs-toolbar-start">
-                <h2 class="acp-section-title">Container Logs</h2>
+                <h2 class="acp-section-title">Container logs</h2>
               </div>
               <div class="acp-logs-toolbar-end">
                 <label class="acp-logs-tail-label">
@@ -1695,12 +1688,14 @@ class AgentCardPage extends HTMLElement {
   }
 
   #levelVariant(level) {
-    switch (level) {
-      case 'error': return 'error';
-      case 'warn': return 'warning';
-      case 'debug': return 'neutral';
-      default: return 'success';
-    }
+    // Server emits uppercase levels (ERROR/WARN/INFO/DEBUG); structured logs can
+    // pass through abbreviations (ERR/WRN/DBG/TRC) verbatim.
+    const l = String(level || '').toUpperCase();
+    if (l.startsWith('ERR') || l.startsWith('CRIT') || l.startsWith('FATAL')) return 'error';
+    if (l.startsWith('WARN') || l === 'WRN') return 'warning';
+    if (l.startsWith('DEB') || l === 'DBG' || l.startsWith('TRA') || l === 'TRC') return 'neutral';
+    if (l.startsWith('INF')) return 'info';
+    return 'neutral';
   }
 
   /* ── Utilities ─────────────────────────────────────────────────────────── */

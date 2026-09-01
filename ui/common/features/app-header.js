@@ -27,6 +27,27 @@ import { navigate as routerNavigate } from '../core/router.js';
    key would have kept them expanded forever. Toggling still persists per user. */
 const RAIL_KEY = "app-rail-expanded-v2";
 
+/* Detail pages have no nav item of their own — and they hide the module nav
+   too, so the rail item for their module is the only selection the user gets.
+   Without this the rail was left with nothing highlighted on every one of
+   them (agent card, MCP server, workflow + its executions, build log,
+   observability session…). Keys are normalized paths (#normalizePath), and
+   every value must be a `module` key some nav item carries.
+
+   A page whose module depends on its query params claims it at runtime with
+   the `active-module` attribute instead — see chat-page. */
+const PAGE_MODULES = {
+  "/agent-card": "agents",
+  "/add-agent-github": "agents",
+  "/build": "agents",
+  "/workflow": "orchestrator",
+  "/workflow-new": "orchestrator",
+  "/observability-session": "observability",
+  "/session-trace": "observability",
+  "/flow": "observability",
+  "/mcp-detail": "mcp",
+};
+
 /* Collapsed is the default rail state. The key is versioned so the change reaches
    users who already toggled the old rail open — a stored `true` under the previous
    key would have kept them expanded forever. Toggling still persists per user. */
@@ -666,6 +687,7 @@ export class AppHeader extends HTMLElement {
   #activeModule(navLinks) {
     return navLinks.find(l => this.#isActive(l.url))?.module
       || this.getAttribute("active-module")
+      || PAGE_MODULES[this.#normalizePath(window.location.pathname)]
       || undefined;
   }
 

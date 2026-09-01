@@ -10,8 +10,10 @@ import { connectSSE } from '/common/services/sse.js';
 import { icons } from '/common/utils/icons.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/utils/back-link.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
+import '/common/design-system/app-stat-row/app-stat-row.js';
 
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./build-detail-page.css', import.meta.url));
@@ -25,16 +27,19 @@ class BuildDetailPage extends HTMLElement {
   #buildId = null;
   #evtSource = null;
 
-  #toolbar(sub = '') {
+  #toolbar(sub = '', badge = '') {
     // Back sits at the leading edge, ahead of the title — the same place every
     // detail page puts it — and is the design system's tertiary icon button
     // rather than a page-local `.back-link` anchor. `href` keeps it a real link
     // (the SPA router intercepts it), so no click handler is needed.
     return `<header class="page-head">
-      <app-button variant="tertiary" size="sm" icon-only href="/builds"
+      <app-button variant="tertiary" size="sm" icon-only href="/builds" data-back
         aria-label="Back to builds" title="Back to builds">${icons.chevronLeft()}</app-button>
       <div>
-        <h1 class="title-page">Build detail</h1>
+        <div class="title-row">
+          <h1 class="title-page">Build detail</h1>
+          ${badge}
+        </div>
         ${sub ? `<p class="page-sub">${sub}</p>` : ''}
       </div>
     </header>`;
@@ -81,25 +86,10 @@ class BuildDetailPage extends HTMLElement {
     const variant = STATUS_VARIANTS[build.status] || 'neutral';
     const fmtTs = (v) => v ? new Date(v).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 
-    this.innerHTML = `${this.#toolbar(`<span class="is-mono">#${escHtml(shortId)}</span> · ${escHtml(build.image_reference || '')}`)}
-      <div class="kpi-strip">
-        <div class="kpi">
-          <div class="kpi-label">Status</div>
-          <div class="kpi-value"><app-badge variant="${variant}" dot>${escHtml(build.status)}</app-badge></div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-label">Version</div>
-          <div class="kpi-value is-mono">${escHtml(build.version_tag || '—')}</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-label">Started</div>
-          <div class="kpi-value is-mono">${fmtTs(build.created_at)}</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-label">Updated</div>
-          <div class="kpi-value is-mono">${fmtTs(build.updated_at)}</div>
-        </div>
-      </div>
+    this.innerHTML = `${this.#toolbar(
+      `<span class="is-mono">#${escHtml(shortId)}</span> · ${escHtml(build.image_reference || '')}`,
+      `<app-badge variant="${variant}" dot>${escHtml(build.status)}</app-badge>`)}
+      <app-stat-row id="kpi-strip"></app-stat-row>
 
       <h2 class="section-title">Details</h2>
       <div class="detail-rows">
@@ -115,6 +105,14 @@ class BuildDetailPage extends HTMLElement {
       </div>
       <div class="log-viewer" id="log-viewer">${this.#initialLogLines(build)}</div>
     `;
+
+    // Status is the header badge, not a cell: <app-stat-row> escapes every value,
+    // and a build's outcome deserves the colour a plain string can't carry.
+    this.querySelector('#kpi-strip').items = [
+      { label: 'Version', value: build.version_tag || '—' },
+      { label: 'Started', value: fmtTs(build.created_at) },
+      { label: 'Updated', value: fmtTs(build.updated_at) },
+    ];
 
     if (build.status === 'building' || build.status === 'queued' || build.status === 'pending') {
       this.#connectSSE();
