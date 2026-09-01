@@ -37,6 +37,17 @@ import { createStore } from './store.js';
 import { createQueryManager } from './queries.js';
 import { createActionRunner } from './actions.js';
 
+/**
+ * A catalog version this client can actually compare against.
+ *
+ * Ours is a content hash — twelve hex characters of sha256 over the vocabulary
+ * (`gen-dsl-catalog.mjs:135`) — so two catalogs match if and only if every
+ * component, attribute and parameter position matches. A hand-written literal
+ * like "1.0" cannot express that: it stays "1.0" while the vocabulary underneath
+ * it changes, which is the exact failure the hash exists to catch.
+ */
+const CONTENT_HASH = /^[0-9a-f]{12}$/;
+
 /** Frames the generator sends. Anything else is reported and ignored. */
 const FRAMES = new Set(['surface', 'dsl-chunk', 'end', 'fail', 'message', 'note']);
 
@@ -105,6 +116,39 @@ export function createSurfaceSession(options) {
     if (painting) return;
     painting = true;
     schedule(() => { painting = false; draw(); });
+  }
+
+  /**
+   * Compare catalog versions, and say something useful either way.
+   *
+   * Comparing a hash to a literal is not a version check — the two can never be
+   * equal, so a plain `!==` fired on every single turn. A warning that is always
+   * on is a warning nobody reads, which means the day the catalogs genuinely
+   * diverge it looks exactly like every other day. So an incomparable version is
+   * reported as its own thing, once per turn, and only two real hashes are ever
+   * compared for equality.
+   */
+  function reportCatalogVersion(remote) {
+    const mine = catalog.catalogVersion;
+    if (!remote || !mine) return;
+    if (remote === mine) return;
+
+    if (CONTENT_HASH.test(remote) && CONTENT_HASH.test(mine)) {
+      onDiagnostics?.([{
+        source: 'stream',
+        code: 'catalog_version_mismatch',
+        message: `generator built against catalog ${remote}, this client has ${mine} — `
+          + 'component arguments may not mean what the generator thinks they mean',
+      }]);
+      return;
+    }
+
+    onDiagnostics?.([{
+      source: 'stream',
+      code: 'catalog_version_unverifiable',
+      message: `generator reported catalog version "${remote}", which is not a content hash — `
+        + `drift against this client's ${mine} cannot be detected`,
+    }]);
   }
 
   /**
@@ -200,7 +244,15 @@ export function createSurfaceSession(options) {
       },
       body: JSON.stringify({
         prompt,
-        context: { ...(opts.context || {}), currentSurface: currentSurface || undefined },
+        context: {
+          ...(opts.context || {}),
+          // The vocabulary this client will actually render with. The generator
+          // treats it as the authority and refetches if it is holding anything
+          // else, which is what closes the window where a deploy lands between
+          // its catalog fetch and this request.
+          catalogVersion: catalog.catalogVersion,
+          currentSurface: currentSurface || undefined,
+        },
       }),
       signal: opts.signal,
     });
@@ -232,17 +284,7 @@ export function createSurfaceSession(options) {
         switch (event) {
           case 'surface':
             remoteCatalogVersion = body.catalogVersion ?? null;
-            // Not fatal — the generator may legitimately be a version behind.
-            // Saying so beats a dashboard quietly wrong about which components
-            // exist and what their arguments mean.
-            if (remoteCatalogVersion && catalog.catalogVersion
-                && remoteCatalogVersion !== catalog.catalogVersion) {
-              onDiagnostics?.([{
-                source: 'stream',
-                code: 'catalog_version_mismatch',
-                message: `generator built against ${remoteCatalogVersion}, this client has ${catalog.catalogVersion}`,
-              }]);
-            }
+            reportCatalogVersion(remoteCatalogVersion);
             break;
 
           case 'dsl-chunk':
