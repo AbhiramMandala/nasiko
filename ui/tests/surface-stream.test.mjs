@@ -425,3 +425,119 @@ test('a failed turn still produces a record, flagged', async () => {
   assert.equal(records[0].status, 'http_error');
   assert.equal(records[0].rendered, false);
 });
+
+// ── Resume ──────────────────────────────────────────────────────────────────
+// A dropped connection used to lose the turn: the user re-prompts, and the
+// second generation costs the same as the first would have.
+
+/** A body that ends abruptly after `cut` chunks, with no terminal frame. */
+function truncated(cut) {
+  return [
+    frame('surface', { specVersion: '1.0', catalogVersion: catalog.catalogVersion, surfaceId: 's1' }, 1),
+    ...DSL.slice(0, cut).map((t, i) => frame('dsl-chunk', { text: t }, i + 2)),
+  ];
+}
+
+test('a dropped stream is picked back up, and the turn completes', async () => {
+  const requests = [];
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    fetchImpl: async (url, init) => {
+      requests.push(init.headers['Last-Event-ID'] ?? null);
+      // First attempt dies after two chunks; the retry replays the whole turn.
+      return sse(requests.length === 1 ? truncated(2) : TURN);
+    },
+  });
+  const out = await s.send('go');
+  assert.equal(out.status, 'ok');
+  assert.equal(requests.length, 2, 'it tried again rather than losing the turn');
+  assert.ok(requests[1], 'the retry says where it got to');
+  assert.equal(container.children[0].tag, 'app-stack');
+});
+
+test('a restart discards the partial surface rather than splicing two together', async () => {
+  const diagnostics = [];
+  let n = 0;
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    fetchImpl: async () => sse(++n === 1 ? truncated(3) : TURN),
+  });
+  await s.send('go');
+  // A second `surface` frame means the server started over. Appending would
+  // have produced two half-dashboards concatenated.
+  assert.ok(diagnostics.some((d) => d.code === 'stream_restarted'));
+  const stack = container.children[0];
+  assert.equal(stack.children.length, 1, 'one dashboard, not one and a half');
+});
+
+test('a stream that keeps dropping gives up rather than looping forever', async () => {
+  const diagnostics = [];
+  let n = 0;
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    fetchImpl: async () => { n++; return sse(truncated(1)); },
+  });
+  const out = await s.send('go');
+  assert.equal(out.status, 'interrupted');
+  assert.equal(n, 3, 'the first attempt plus two resumes');
+  assert.ok(diagnostics.some((d) => d.code === 'stream_interrupted'));
+});
+
+test('an aborted turn is not retried — the user cancelled it', async () => {
+  let n = 0;
+  const { doc, container } = recorder();
+  const controller = new AbortController();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    fetchImpl: async () => { n++; controller.abort(); return sse(truncated(1)); },
+  });
+  await s.send('go', { signal: controller.signal });
+  assert.equal(n, 1, 'cancelling means stop, not try harder');
+});
+
+test('a clean turn makes exactly one request', async () => {
+  let n = 0;
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface', catalog, container, doc,
+    schedule: (fn) => fn(),
+    fetchImpl: async () => { n++; return sse(TURN); },
+  });
+  await s.send('go');
+  assert.equal(n, 1);
+});
+
+test('by default the request is same-origin and carries no secret', async () => {
+  let seen = null;
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface', catalog, container, doc,
+    schedule: (fn) => fn(),
+    fetchImpl: async (url, init) => { seen = { url, headers: init.headers }; return sse(TURN); },
+  });
+  await s.send('go');
+  assert.equal(seen.url, '/api/weave/surface', 'the proxy path, not a host');
+  assert.equal('x-weave-internal-token' in seen.headers, false,
+    'a shared secret in a shipped build is a published secret');
+});
