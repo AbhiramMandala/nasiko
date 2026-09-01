@@ -238,23 +238,26 @@ pub async fn a2a_dispatch_handler(
 
 /// One orchestrator-routed turn. Grouped into a struct because the caller
 /// count crossed clippy's argument threshold, and these travel together.
-struct OrchestratorTurn<'a> {
+///
+/// `pub(crate)` (not module-private): also constructed by `crate::hitl`'s resume dispatcher to
+/// trigger a fresh orchestrator turn after a paused sub-agent call resumes (Step 7).
+pub(crate) struct OrchestratorTurn<'a> {
     /// The prompt actually sent downstream: history + `raw_text`.
-    query: &'a str,
+    pub(crate) query: &'a str,
     /// What the caller typed, before history enrichment — this is what gets
     /// persisted, so the next turn doesn't nest an already-glued blob.
-    raw_text: &'a str,
-    task_id: &'a str,
-    context_id: &'a str,
-    user_id: Uuid,
-    is_superuser: bool,
+    pub(crate) raw_text: &'a str,
+    pub(crate) task_id: &'a str,
+    pub(crate) context_id: &'a str,
+    pub(crate) user_id: Uuid,
+    pub(crate) is_superuser: bool,
     /// Caller persists its own turns (web UI) — the server must not also.
-    client_owns_transcript: bool,
+    pub(crate) client_owns_transcript: bool,
     /// File parts uploaded with the request (multipart upload path).
-    file_parts: Vec<nasiko_types::a2a::Part>,
+    pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
 }
 
-async fn orchestrator_stream(
+pub(crate) async fn orchestrator_stream(
     state: &AppState,
     turn: OrchestratorTurn<'_>,
 ) -> Result<Response, A2aDispatchError> {

@@ -3,6 +3,7 @@ mod common;
 use serde_json::{Value, json};
 use serial_test::serial;
 use sqlx::Row;
+use std::time::Duration;
 use uuid::Uuid;
 
 //  the orchestrator's
@@ -330,6 +331,196 @@ async fn hitl_pause_duplicate_for_same_task_is_idempotent_not_a_failure() {
     assert_eq!(
         count, 1,
         "the pre-existing row must be reused, not duplicated"
+    );
+
+    server.cleanup().await;
+}
+
+/// A completed A2A task reply, shaped for `nasiko_types::a2a::extract_text` (`task.status.message
+/// .parts[].text`) — the resume dispatcher's `consume_json_to_terminal` reads exactly this shape
+/// for a non-streaming reply, mockito's default content-type not being `text/event-stream`.
+fn sub_agent_completed_body(reply_text: &str) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {"task": {
+            "id": SUB_AGENT_TASK_ID,
+            "contextId": SUB_AGENT_CONTEXT_ID,
+            "status": {
+                "state": "TASK_STATE_COMPLETED",
+                "message": {"parts": [{"text": reply_text}]}
+            }
+        }}
+    })
+    .to_string()
+}
+
+/// One OpenAI-compatible streaming SSE chunk carrying a plain text final answer (no tool call) —
+/// what turn 0 of the *resumed* orchestrator turn should produce once the sub-agent's reply gives
+/// it enough to answer directly.
+fn streaming_text_chunk(text: &str) -> String {
+    let chunk = json!({ "choices": [{ "delta": { "content": text } }] });
+    format!("data: {chunk}\n\n")
+}
+
+/// Step 7, end to end: resolving a pending orchestrator-origin HITL request through the real
+/// `/api/hitl/{id}/resolve` API must (a) resume the sub-agent's own paused task with the human's
+/// answer, then (b) trigger a brand-new orchestrator turn on the same chat session — not just mark
+/// the row resolved. Exercises the actual background dispatcher (`crate::hitl::run`, already
+/// spawned by `TestServer::start()`, woken by `resolve()`'s best-effort notify) and
+/// `trigger_new_orchestrator_turn`'s stream-draining, not a direct function call standing in for
+/// either.
+///
+/// Two calls each to the LLM and the sub-agent mocks are distinguished by request body content
+/// (`Matcher::Regex`) rather than call order, since mockito's own mock-selection order among
+/// several registered mocks isn't a contract worth depending on.
+#[tokio::test]
+#[serial]
+async fn hitl_resolve_resumes_sub_agent_then_triggers_new_orchestrator_turn() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+
+    let mut agent_mock_server = mockito::Server::new_async().await;
+    // First call: the orchestrator's initial delegation — pauses.
+    let agent_pause_mock = agent_mock_server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex("please open a PR".into()))
+        .with_status(200)
+        .with_body(sub_agent_pause_body())
+        .expect(1)
+        .create_async()
+        .await;
+    // Second call: the dispatcher's resume `SendMessage(taskId, answer)` — matched on the real
+    // task_id `build_stream_request_for_task` embeds in the body, not on ordering.
+    let agent_resume_mock = agent_mock_server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex(SUB_AGENT_TASK_ID.into()))
+        .with_status(200)
+        .with_body(sub_agent_completed_body("PR opened at #42"))
+        .expect(1)
+        .create_async()
+        .await;
+    let agent_id = seed_running_agent(
+        &server,
+        user_id,
+        "hitl-test-agent-3",
+        &agent_mock_server.url(),
+    )
+    .await;
+
+    let tool_name = format!(
+        "call_agent_{}",
+        "hitl-test-agent-3".replace(['-', ' ', '.', '/'], "_")
+    );
+    let mut llm_mock_server = mockito::Server::new_async().await;
+    // First call: turn 0 of the original request — plans the delegation.
+    let llm_tool_call_mock = llm_mock_server
+        .mock("POST", "/chat/completions")
+        .match_body(mockito::Matcher::Regex("please help with the repo".into()))
+        .with_status(200)
+        .with_body(streaming_tool_call_chunk(&tool_name, "please open a PR"))
+        .expect(1)
+        .create_async()
+        .await;
+    // Second call: turn 0 of the *resumed* orchestrator turn — the continuation message
+    // (`trigger_new_orchestrator_turn`'s own text) names the sub-agent's reply.
+    let llm_final_answer_mock = llm_mock_server
+        .mock("POST", "/chat/completions")
+        .match_body(mockito::Matcher::Regex("PR opened at #42".into()))
+        .with_status(200)
+        .with_body(streaming_text_chunk("The pull request is now open."))
+        .expect(1)
+        .create_async()
+        .await;
+    unsafe { set_openai_env(&llm_mock_server.url()) };
+
+    let resp = common::as_superuser(
+        server
+            .client
+            .post(server.url("/api/orchestrator/a2a"))
+            .json(&orchestrator_request_body("please help with the repo")),
+        &user_id.to_string(),
+        "hitl-tester-3",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+
+    llm_tool_call_mock.assert_async().await;
+    agent_pause_mock.assert_async().await;
+
+    let hitl_id: Uuid = sqlx::query_scalar("SELECT id FROM hitl_requests WHERE agent_id = $1")
+        .bind(agent_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+
+    let resolve_resp = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{hitl_id}/resolve")))
+            .json(&json!({ "answer": "go ahead and open it" })),
+        &user_id.to_string(),
+        "hitl-tester-3",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resolve_resp.status(), 200, "resolve must succeed");
+
+    // The dispatcher runs in the background (woken by resolve()'s notify, or its own 2s poll as a
+    // fallback) — poll for the resumed turn's own final reply to land, rather than assuming any
+    // fixed delay.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut found = false;
+    while tokio::time::Instant::now() < deadline {
+        let text: Option<String> = sqlx::query_scalar(
+            "SELECT content FROM chat_messages
+             WHERE session_id = $1 AND role = 'assistant' AND content LIKE '%pull request is now open%'",
+        )
+        .bind(OUTER_CONTEXT_ID)
+        .fetch_optional(&server.db)
+        .await
+        .unwrap();
+        if text.is_some() {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        found,
+        "the resumed orchestrator turn's final reply never landed in chat_messages"
+    );
+
+    agent_resume_mock.assert_async().await;
+    llm_final_answer_mock.assert_async().await;
+
+    let resume_status: String =
+        sqlx::query_scalar("SELECT resume_status FROM hitl_requests WHERE id = $1")
+            .bind(hitl_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(resume_status, "completed");
+
+    // The continuation message itself must be visible in the resumed session's own history, not
+    // just the reply — it was persisted as an ordinary user-role turn (`client_owns_transcript:
+    // false`), the same mechanism every other orchestrator turn uses.
+    let continuation_persisted: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM chat_messages
+         WHERE session_id = $1 AND role = 'user' AND content LIKE '%PR opened at #42%')",
+    )
+    .bind(OUTER_CONTEXT_ID)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(
+        continuation_persisted,
+        "the continuation message must be persisted as a normal turn, not silently synthesized"
     );
 
     server.cleanup().await;

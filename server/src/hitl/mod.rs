@@ -12,7 +12,9 @@ use nasiko_types::a2a::StreamDisposition;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::router::a2a_dispatch::{build_pause_question, pause_kind, resolve_endpoint};
+use crate::router::a2a_dispatch::{
+    OrchestratorTurn, build_pause_question, orchestrator_stream, pause_kind, resolve_endpoint,
+};
 use crate::state::AppState;
 
 /// Delivery attempts before a resume gives up and `resume_status` becomes the terminal `failed`
@@ -90,8 +92,11 @@ async fn deliver(state: AppState, row: HitlRequest) {
         let _ = state.hitl_store.mark_resume_unknown(row.id).await;
         return;
     }
-    if !matches!(row.origin, HitlOrigin::DirectChat | HitlOrigin::AgentProxy) {
-        // Unreachable today — nothing creates orchestrator/maf/mcp_tool rows yet (Phases 6-8).
+    if !matches!(
+        row.origin,
+        HitlOrigin::DirectChat | HitlOrigin::AgentProxy | HitlOrigin::Orchestrator
+    ) {
+        // Unreachable today — nothing creates maf/mcp_tool rows yet (Phases 6/8).
         // Defensive, not a real path.
         tracing::warn!(id = %row.id, origin = ?row.origin, "hitl dispatcher: unsupported origin");
         let _ = state
@@ -255,9 +260,16 @@ async fn deliver(state: AppState, row: HitlRequest) {
     record_resume_trail(&state, &row, &agent_name, disposition).await;
 
     if disposition != StreamDisposition::Paused {
-        // A follow-up pause (below) gets its own row and its own future resolution instead —
-        // nothing final to show in chat history yet.
-        persist_resume_reply(&state, &row, &context_id, reply_text).await;
+        if row.origin == HitlOrigin::Orchestrator {
+            // Unlike direct_chat/agent_proxy, the sub-agent's reply isn't the final answer here —
+            // it needs to go back through the ReAct loop for the LLM to reason over, not be shown
+            // to the user directly.
+            trigger_new_orchestrator_turn(&state, &row, &agent_name, reply_text).await;
+        } else {
+            // A follow-up pause (below) gets its own row and its own future resolution instead —
+            // nothing final to show in chat history yet.
+            persist_resume_reply(&state, &row, &context_id, reply_text).await;
+        }
     }
 
     if disposition == StreamDisposition::Paused {
@@ -272,6 +284,18 @@ async fn deliver(state: AppState, row: HitlRequest) {
                 row.owner_user_id,
                 task_id,
                 context_id,
+                question,
+            ),
+            // Guaranteed `Some` by construction (`NewHitlRequest::orchestrator` always sets it) —
+            // `unwrap_or_default()` only guards against a defensive impossibility, matching how
+            // `trigger_new_orchestrator_turn` treats the same field.
+            HitlOrigin::Orchestrator => NewHitlRequest::orchestrator(
+                kind,
+                row.agent_id,
+                row.owner_user_id,
+                task_id,
+                context_id,
+                row.chat_session_id.clone().unwrap_or_default(),
                 question,
             ),
             // Propagate `chat_session_id` from the row that just resolved: it belongs to the
@@ -486,6 +510,75 @@ async fn record_resume_trail(
     .bind(status)
     .execute(&state.db)
     .await;
+}
+
+/// After an orchestrator-origin pause resumes successfully (not another pause), the sub-agent's
+/// reply is not the final answer — unlike direct_chat/agent_proxy, it needs to go back through the
+/// ReAct loop for the orchestrating LLM to reason over. Triggers a brand-new orchestrator turn on
+/// the same chat session, seeded with a continuation message describing what the sub-agent said.
+///
+/// Must actively drain the resulting stream to a terminal event itself: `orchestrator_stream`'s
+/// response body is an `async_stream::stream!` generator, and none of its side effects (persisting
+/// the reply, closing out flow_steps, handling a chained pause) happen unless something polls it —
+/// the same reason a disconnected browser client would otherwise silently lose them. There is no
+/// live client for this call, so this function is that consumer; the bytes themselves go nowhere.
+async fn trigger_new_orchestrator_turn(
+    state: &AppState,
+    row: &HitlRequest,
+    agent_name: &str,
+    reply_text: Option<String>,
+) {
+    let Some(chat_session_id) = row.chat_session_id.clone() else {
+        // Guaranteed by construction (`NewHitlRequest::orchestrator` always sets it) —
+        // defensive, not a real path.
+        tracing::error!(id = %row.id, "hitl dispatcher: orchestrator row missing chat_session_id");
+        return;
+    };
+
+    let continuation = match reply_text.filter(|t| !t.is_empty()) {
+        Some(text) => format!("The {agent_name} agent replied: {text}"),
+        // auth_required has no free-text reply — same "intent, not success" framing `answer_text`
+        // above already uses for the agent-facing side of this same resume.
+        None => format!("The {agent_name} agent has completed the requested step."),
+    };
+
+    let history = nasiko_orchestrator::SessionHistory::fetch(&chat_session_id, &state.db, 20).await;
+    let query = history.with_current_query(&continuation);
+    let new_task_id = Uuid::new_v4().to_string();
+
+    let result = orchestrator_stream(
+        state,
+        OrchestratorTurn {
+            query: &query,
+            raw_text: &continuation,
+            task_id: &new_task_id,
+            context_id: &chat_session_id,
+            user_id: row.owner_user_id,
+            // Never assume the original turn's privilege level — apply the resumed user's real,
+            // current grants rather than risk over-broad agent visibility on a stale assumption.
+            is_superuser: false,
+            client_owns_transcript: false,
+            file_parts: Vec::new(),
+        },
+    )
+    .await;
+
+    match result {
+        Ok(response) => {
+            let mut body = response.into_body().into_data_stream();
+            while body.next().await.is_some() {}
+        }
+        Err(e) => {
+            // The resume itself already succeeded and was marked `resume_status = completed`
+            // above — this failure only means the follow-up turn didn't run. Not retried: the
+            // same at-least-once, not-exactly-once gap already accepted for the two-phase resume
+            // more generally, not a new one introduced here.
+            tracing::error!(
+                id = %row.id, error = ?e,
+                "hitl dispatcher: failed to trigger the resumed orchestrator turn"
+            );
+        }
+    }
 }
 
 /// Persists the agent's final reply after a successful (non-`Paused`) resume into
