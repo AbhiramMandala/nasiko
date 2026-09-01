@@ -222,17 +222,31 @@ async fn hitl_pause_persists_request_and_emits_awaiting_human_event() {
     server.cleanup().await;
 }
 
-/// T13: a forced persistence failure — here, a real violation of `uq_hitl_pending_per_task`
-/// (`0007_hitl.sql`'s "at most one open pause per A2A task" guard), triggered by pre-seeding a
-/// `pending` row for the exact `task_id` the sub-agent's mocked pause response will report — must
-/// yield a hard SSE error, never a fake `completed`/success. Exercises the exact requirement
-/// Step 6's design states explicitly: "On a persistence failure, emit a hard SSE error — never a
-/// fake success." (An FK violation via an unauthenticated/nonexistent user was tried first and
-/// rejected: `require_auth` itself checks the calling user still exists in `users` — "session user
-/// no longer exists" — so that path never reaches the handler at all, let alone the insert.)
+/// T13 (revised): a duplicate pause for the same `task_id` is now idempotent, not a failure.
+///
+/// This test used to force a `uq_hitl_pending_per_task` violation (pre-seed a conflicting
+/// `pending` row for the same `task_id`) and assert it surfaced as a hard SSE error. Since Step 6
+/// was switched from a raw `INSERT` to the real `HitlStore::create()` (built on
+/// `feat/hitl-direct-chat`), that specific scenario is **no longer a failure at all** —
+/// `create()` catches exactly this unique-violation and returns the existing pending row instead
+/// of erroring (`oss/hitl/src/store.rs`'s `create`/`find_existing_pending`). That's a real,
+/// deliberate behavior improvement (idempotent creation, matching the design doc's own intent),
+/// not a regression — so this test now proves the idempotent behavior itself: the flow still
+/// completes as an ordinary pause (no error), and the pre-existing row is left as the sole row,
+/// not duplicated.
+///
+/// The original assertion this test made — "a real persistence failure surfaces as a hard SSE
+/// error, never a fake success" — is still true of the unchanged code in `a2a_dispatch.rs`
+/// (`if let Err(e) = persisted { ...emit `failed`...; break }`), but there is no longer a
+/// realistic way to force `HitlStore::create()` to return `Err` through this HTTP surface without
+/// either an impossible-to-time race (deleting the sub-agent's own `agents` row between routing
+/// and persistence, both of which happen inside one synchronous request) or bypassing
+/// authentication (tried: an unseeded calling user is rejected by `require_auth` itself —
+/// "session user no longer exists" — before the handler is ever reached, let alone the insert).
+/// Kept honest here rather than papered over with a contrived test.
 #[tokio::test]
 #[serial]
-async fn hitl_pause_persistence_failure_yields_sse_error_not_fake_success() {
+async fn hitl_pause_duplicate_for_same_task_is_idempotent_not_a_failure() {
     let server = common::TestServer::start().await;
     let user_id = Uuid::new_v4();
     seed_user(&server, user_id).await;
@@ -253,8 +267,9 @@ async fn hitl_pause_persistence_failure_yields_sse_error_not_fake_success() {
     )
     .await;
 
-    // Pre-seed a conflicting `pending` row for the same task_id the sub-agent mock will report —
-    // `uq_hitl_pending_per_task` allows only one, so the orchestrator's own insert must fail.
+    // Pre-seed a `pending` row for the same task_id the sub-agent mock will report.
+    // `uq_hitl_pending_per_task` allows only one — `HitlStore::create()` now treats hitting it as
+    // "already pending, return the existing row" rather than an error.
     sqlx::query(
         r#"INSERT INTO hitl_requests (kind, origin, agent_id, owner_user_id, task_id, status, question)
            VALUES ('input_required', 'orchestrator', $1, $2, $3, 'pending', '{}'::jsonb)"#,
@@ -296,12 +311,12 @@ async fn hitl_pause_persistence_failure_yields_sse_error_not_fake_success() {
     let body = resp.text().await.unwrap();
     assert_eq!(status, 200, "body: {body}");
     assert!(
-        body.contains("TASK_STATE_FAILED"),
-        "a persistence failure must surface as a hard SSE error, not a fake success: {body}"
+        body.contains("TASK_STATE_INPUT_REQUIRED"),
+        "a duplicate pause for the same task_id must still complete as an ordinary pause: {body}"
     );
     assert!(
-        !body.contains("TASK_STATE_COMPLETED"),
-        "must never report completed after a failed persistence write: {body}"
+        !body.contains("TASK_STATE_FAILED"),
+        "idempotent duplicate creation must not surface as an error: {body}"
     );
 
     llm_mock.assert_async().await;
@@ -314,7 +329,7 @@ async fn hitl_pause_persistence_failure_yields_sse_error_not_fake_success() {
         .unwrap();
     assert_eq!(
         count, 1,
-        "only the pre-seeded row should exist — the conflicting insert must not have landed a second row"
+        "the pre-existing row must be reused, not duplicated"
     );
 
     server.cleanup().await;

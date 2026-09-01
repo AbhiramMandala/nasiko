@@ -464,6 +464,7 @@ async fn orchestrator_stream(
     let mut flow_rx = state.flow_events.subscribe(&flow_id).await;
     let flow_id_cleanup = flow_id.clone();
     let db = state.db.clone();
+    let hitl_store = state.hitl_store.clone();
     let usage_tracker = state.usage_tracker.clone();
     let genai_metrics = state.genai_metrics.clone();
     let orchestrator_model = state.config.openai_model.clone();
@@ -629,40 +630,36 @@ async fn orchestrator_stream(
                             .await;
 
                             let hitl_kind = match pause.kind {
-                                a2a::AwaitingHumanKind::InputRequired => "input_required",
-                                a2a::AwaitingHumanKind::AuthRequired => "auth_required",
+                                a2a::AwaitingHumanKind::InputRequired => nasiko_hitl::HitlKind::InputRequired,
+                                a2a::AwaitingHumanKind::AuthRequired => nasiko_hitl::HitlKind::AuthRequired,
                             };
 
                             // hitl_requests.agent_id is a real FK to agents(id) — agent_id here is
                             // always the sub-agent's own UUID string (AgentInfo::id, set from the
                             // agents-table row this orchestrator discovered, never a display name).
+                            // Goes through the real `HitlStore` (not raw SQL) so a duplicate pause
+                            // for the same task_id is handled idempotently — `create()` catches the
+                            // uq_hitl_pending_per_task collision and returns the existing row
+                            // instead of erroring — and so `expires_at` gets a real TTL instead of
+                            // never expiring.
                             let persisted = match Uuid::parse_str(&agent_id) {
                                 Ok(sub_agent_id) => {
                                     let question = json!({
                                         "message": pause.message,
                                         "metadata": pause.metadata,
                                     });
-                                    // resume_state.phase starts here so the (not-yet-built) resume
-                                    // dispatcher's claim query has something to check against —
-                                    // see docs/HITL_ORCHESTRATOR_INTEGRATION.md §6.1.
-                                    let resume_state = json!({ "phase": "sub_agent_pending" });
-                                    sqlx::query(
-                                        r#"INSERT INTO hitl_requests
-                                             (kind, origin, agent_id, owner_user_id, task_id,
-                                              context_id, chat_session_id, question, resume_state)
-                                           VALUES ($1, 'orchestrator', $2, $3, $4, $5, $6, $7, $8)"#,
-                                    )
-                                    .bind(hitl_kind)
-                                    .bind(sub_agent_id)
-                                    .bind(user_id)
-                                    .bind(&pause.task_id)
-                                    .bind(&pause.context_id)
-                                    .bind(&context_id)
-                                    .bind(&question)
-                                    .bind(&resume_state)
-                                    .execute(&db)
-                                    .await
-                                    .map_err(|e| e.to_string())
+                                    hitl_store
+                                        .create(nasiko_hitl::NewHitlRequest::orchestrator(
+                                            hitl_kind,
+                                            sub_agent_id,
+                                            user_id,
+                                            pause.task_id.clone(),
+                                            pause.context_id.clone(),
+                                            context_id.clone(),
+                                            question,
+                                        ))
+                                        .await
+                                        .map_err(|e| e.to_string())
                                 }
                                 Err(e) => Err(e.to_string()),
                             };
@@ -672,12 +669,28 @@ async fn orchestrator_stream(
                             // rather than silently close the stream as if it were fine.
                             if let Err(e) = persisted {
                                 tracing::error!(error = %e, %agent, "failed to persist HITL pending question");
+                                let _ = sqlx::query(
+                                    "UPDATE flows SET status = 'failed', error_message = $2 WHERE flow_id = $1",
+                                )
+                                .bind(&flow_id_cleanup)
+                                .bind(&e)
+                                .execute(&db)
+                                .await;
                                 yield Ok(to_sse(a2a::status_event(a2a::failed(
                                     &task_id, &context_id,
                                     &format!("could not record pending question for {agent}: {e}"),
                                 ))));
                                 break;
                             }
+
+                            // Mirrors `persist_direct_chat_pause`'s convention — a paused flow is
+                            // not a completed one. Guarded (`status = 'running'`) at the shared
+                            // epilogue below so this stamp isn't immediately overwritten back to
+                            // 'completed'.
+                            let _ = sqlx::query("UPDATE flows SET status = 'paused' WHERE flow_id = $1")
+                                .bind(&flow_id_cleanup)
+                                .execute(&db)
+                                .await;
 
                             // NOTE: no chat_messages checkpoint is written here yet — how a
                             // resumed-turn checkpoint should be tagged in chat_messages is still
@@ -765,11 +778,15 @@ async fn orchestrator_stream(
             }
         }
 
+        // Guarded on `status = 'running'` so a pause (which already stamped 'paused'/'failed'
+        // above, before breaking the loop) isn't immediately overwritten back to 'completed' —
+        // Done/Error never change `flows.status` before reaching here, so this is a no-op change
+        // in behavior for either of those.
         let _ = sqlx::query(
             r#"UPDATE flows SET status = 'completed',
                duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
                completed_at = now()
-               WHERE flow_id = $1"#,
+               WHERE flow_id = $1 AND status = 'running'"#,
         )
         .bind(&flow_id_cleanup)
         .execute(&db)
