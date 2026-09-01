@@ -2,9 +2,8 @@ use aws_config::{BehaviorVersion, Region};
 use aws_sdk_s3::{
     Client, config::Credentials, error::ProvideErrorMetadata, presigning::PresigningConfig,
 };
+use nasiko_runtime::{BlobStore, BlobStoreError};
 use std::time::Duration;
-
-use crate::error::{OciError, Result};
 
 /// Renders an S3 failure with the detail needed to act on it.
 ///
@@ -94,8 +93,11 @@ impl S3Storage {
     pub fn blob_key(digest: &str) -> String {
         format!("blobs/{}", digest.replace(':', "/"))
     }
+}
 
-    pub async fn put_blob(&self, digest: &str, data: bytes::Bytes) -> Result<i64> {
+#[async_trait::async_trait]
+impl BlobStore for S3Storage {
+    async fn put_blob(&self, digest: &str, data: bytes::Bytes) -> Result<i64, BlobStoreError> {
         let key = Self::blob_key(digest);
         let size = data.len() as i64;
         self.client
@@ -105,11 +107,11 @@ impl S3Storage {
             .body(data.into())
             .send()
             .await
-            .map_err(|e| OciError::Storage(s3_error(&e)))?;
+            .map_err(|e| BlobStoreError::Backend(s3_error(&e)))?;
         Ok(size)
     }
 
-    pub async fn get_blob(&self, digest: &str) -> Result<bytes::Bytes> {
+    async fn get_blob(&self, digest: &str) -> Result<bytes::Bytes, BlobStoreError> {
         let key = Self::blob_key(digest);
         let resp = self
             .client
@@ -119,30 +121,34 @@ impl S3Storage {
             .send()
             .await
             // A missing object is "not found", not a storage failure. Collapsing
-            // both into `Storage` made a pull of an absent blob a 500, where the
+            // both into `Backend` made a pull of an absent blob a 500, where the
             // Distribution Spec requires 404 — and disagreed with `blob_size`,
             // which already reports absence as `NotFound`, so HEAD and GET on the
             // same missing digest answered differently.
             .map_err(|e| {
                 let msg = s3_error(&e);
                 if e.into_service_error().is_no_such_key() {
-                    OciError::NotFound(format!("blob {digest} not found"))
+                    BlobStoreError::NotFound(format!("blob {digest} not found"))
                 } else {
-                    OciError::Storage(msg)
+                    BlobStoreError::Backend(msg)
                 }
             })?;
         let data = resp
             .body
             .collect()
             .await
-            .map_err(|e| OciError::Storage(e.to_string()))?;
+            .map_err(|e| BlobStoreError::Backend(e.to_string()))?;
         Ok(data.into_bytes())
     }
 
-    pub async fn presigned_get_url(&self, digest: &str, ttl_secs: u64) -> Result<String> {
+    async fn presigned_get_url(
+        &self,
+        digest: &str,
+        ttl_secs: u64,
+    ) -> Result<String, BlobStoreError> {
         let key = Self::blob_key(digest);
         let config = PresigningConfig::expires_in(Duration::from_secs(ttl_secs))
-            .map_err(|e| OciError::Storage(e.to_string()))?;
+            .map_err(|e| BlobStoreError::Backend(e.to_string()))?;
         let url = self
             .client
             .get_object()
@@ -150,11 +156,11 @@ impl S3Storage {
             .key(&key)
             .presigned(config)
             .await
-            .map_err(|e| OciError::Storage(e.to_string()))?;
+            .map_err(|e| BlobStoreError::Backend(e.to_string()))?;
         Ok(url.uri().to_string())
     }
 
-    pub async fn delete_blob(&self, digest: &str) -> Result<()> {
+    async fn delete_blob(&self, digest: &str) -> Result<(), BlobStoreError> {
         let key = Self::blob_key(digest);
         self.client
             .delete_object()
@@ -162,11 +168,11 @@ impl S3Storage {
             .key(&key)
             .send()
             .await
-            .map_err(|e| OciError::Storage(s3_error(&e)))?;
+            .map_err(|e| BlobStoreError::Backend(s3_error(&e)))?;
         Ok(())
     }
 
-    pub async fn blob_exists(&self, digest: &str) -> bool {
+    async fn blob_exists(&self, digest: &str) -> bool {
         let key = Self::blob_key(digest);
         self.client
             .head_object()
@@ -177,7 +183,7 @@ impl S3Storage {
             .is_ok()
     }
 
-    pub async fn blob_size(&self, digest: &str) -> Result<i64> {
+    async fn blob_size(&self, digest: &str) -> Result<i64, BlobStoreError> {
         let key = Self::blob_key(digest);
         let resp = self
             .client
@@ -186,11 +192,15 @@ impl S3Storage {
             .key(&key)
             .send()
             .await
-            .map_err(|e| OciError::NotFound(s3_error(&e)))?;
+            // Every HEAD failure reads as absence, including a rejected
+            // credential — imprecise, but preserved verbatim from before the
+            // trait seam so this refactor changes no status code. The detail
+            // `s3_error` carries still names the real cause in the log.
+            .map_err(|e| BlobStoreError::NotFound(s3_error(&e)))?;
         Ok(resp.content_length.unwrap_or(0))
     }
 
-    pub async fn ensure_bucket(&self, skip_create: bool) -> std::result::Result<(), anyhow::Error> {
+    async fn ensure_bucket(&self, skip_create: bool) -> std::result::Result<(), anyhow::Error> {
         let exists = self
             .client
             .head_bucket()
@@ -226,7 +236,7 @@ impl S3Storage {
 #[async_trait::async_trait]
 impl nasiko_runtime::BucketProvisioner for S3Storage {
     async fn ensure_bucket(&self) -> std::result::Result<(), anyhow::Error> {
-        self.ensure_bucket(false).await
+        BlobStore::ensure_bucket(self, false).await
     }
 }
 

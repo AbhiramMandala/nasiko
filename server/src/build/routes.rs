@@ -372,7 +372,7 @@ pub async fn execute_build(
     github_url: Option<String>,
     source_key: Option<String>,
     version_tag: String,
-    oci_storage: nasiko_oci::storage::S3Storage,
+    oci_storage: std::sync::Arc<dyn nasiko_runtime::BlobStore>,
     http_client: reqwest::Client,
     allowed_hosts: Vec<String>,
     capability_generator_model: String,
@@ -402,15 +402,9 @@ pub async fn execute_build(
             return Err("no Dockerfile found in source".into());
         }
 
-        // Build image. tar_directory is synchronous CPU + IO over the whole
-        // source tree, so it goes on the blocking pool — with build_concurrency
-        // > 1, running it inline would block one runtime thread per in-flight
-        // build, on the same runtime serving the HTTP API.
-        let src = tmp_dir.clone();
-        let tar_bytes = tokio::task::spawn_blocking(move || crate::build::tar_directory(&src))
-            .await
-            .map_err(|e| format!("spawn_blocking tar: {e}"))?
-            .map_err(|e| format!("tar source: {e}"))?;
+        // Build image
+        let tar_bytes =
+            crate::build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
         runtime
             .build(&tar_bytes, &image_tag)
             .await
@@ -491,7 +485,7 @@ pub async fn execute_build(
             if let Some(ref key) = source_key {
                 auto_generate_capabilities_pub(
                     &db,
-                    &oci_storage,
+                    oci_storage.as_ref(),
                     &http_client,
                     key,
                     &agent_name,
@@ -741,7 +735,7 @@ async fn list_builds(
 
 pub async fn auto_generate_capabilities_pub(
     db: &sqlx::PgPool,
-    oci_storage: &nasiko_oci::storage::S3Storage,
+    oci_storage: &dyn nasiko_runtime::BlobStore,
     http_client: &reqwest::Client,
     source_key: &str,
     agent_name: &str,

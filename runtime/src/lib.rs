@@ -247,6 +247,78 @@ pub trait BucketProvisioner: Send + Sync {
     async fn ensure_bucket(&self) -> anyhow::Result<()>;
 }
 
+/// A [`BlobStore`] operation failure.
+///
+/// Deliberately two-variant: callers only ever branch on "the object isn't
+/// there" versus "the backend failed" — the OCI registry turns the former into
+/// a spec-required 404 and the latter into a 500 whose detail goes to the log,
+/// never the wire. The `String` payloads carry the backend's full diagnosis
+/// (error code + source chain), because a misconfigured managed store is only
+/// debuggable through that text.
+#[derive(Debug, thiserror::Error)]
+pub enum BlobStoreError {
+    /// The requested object does not exist. Not a fault of the backend.
+    #[error("not found: {0}")]
+    NotFound(String),
+    /// Any other backend failure: rejected credentials, unreachable endpoint,
+    /// missing bucket/container, transport errors.
+    #[error("{0}")]
+    Backend(String),
+}
+
+/// Content-addressed object storage for the platform's artifacts: OCI image
+/// blobs, uploaded source archives, chat file attachments.
+///
+/// One implementation per storage protocol — S3-compatible (RustFS/MinIO/AWS)
+/// and cloud-native backends (Azure Blob) — selected once at the composition
+/// root, mirroring [`ContainerRuntime`]. Keys are digests or digest-like paths;
+/// the store never interprets them beyond prefixing (see the implementations'
+/// key mapping).
+///
+/// Bucket/container *lifecycle* is deliberately a separate concern (see
+/// [`BucketProvisioner`]): not every backend grants the control plane the
+/// right to create containers, and external managed stores arrive
+/// pre-provisioned.
+#[async_trait]
+pub trait BlobStore: Send + Sync {
+    /// Stores `data` under `digest`, returning the stored size in bytes.
+    async fn put_blob(
+        &self,
+        digest: &str,
+        data: bytes::Bytes,
+    ) -> std::result::Result<i64, BlobStoreError>;
+
+    /// Fetches the full object. Absence is `BlobStoreError::NotFound`, never
+    /// `Backend` — HEAD and GET on the same missing digest must agree.
+    async fn get_blob(&self, digest: &str) -> std::result::Result<bytes::Bytes, BlobStoreError>;
+
+    /// Removes the object. Deleting an absent object is backend-defined; the
+    /// registry's delete path checks existence first.
+    async fn delete_blob(&self, digest: &str) -> std::result::Result<(), BlobStoreError>;
+
+    /// Existence probe. Failures read as `false` — callers treat this as a
+    /// fast-path hint, not a source of truth.
+    async fn blob_exists(&self, digest: &str) -> bool;
+
+    /// Size in bytes of a stored object; absence is `NotFound`.
+    async fn blob_size(&self, digest: &str) -> std::result::Result<i64, BlobStoreError>;
+
+    /// A time-limited URL a client can GET the object from directly, without
+    /// platform credentials (S3 presigned URL / Azure SAS). The URL's host is
+    /// the backend's own endpoint — reachability from the *caller's* network
+    /// is the deployment's concern, not this trait's.
+    async fn presigned_get_url(
+        &self,
+        digest: &str,
+        ttl_secs: u64,
+    ) -> std::result::Result<String, BlobStoreError>;
+
+    /// Ensures the backing bucket/container exists. With `skip_create`, or on
+    /// a backend where the platform has no create rights, verifies existence
+    /// and fails with an actionable message instead of creating.
+    async fn ensure_bucket(&self, skip_create: bool) -> anyhow::Result<()>;
+}
+
 /// Supplies image bytes for references the local container daemon doesn't have.
 ///
 /// When a `DeploymentSpec` names an image missing from the daemon's cache, a
