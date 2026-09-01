@@ -156,6 +156,7 @@ where
             state.http_client.clone(),
             state.observability.clone(),
             llm_config,
+            state.hitl_store.clone(),
         );
     } else {
         tracing::warn!(

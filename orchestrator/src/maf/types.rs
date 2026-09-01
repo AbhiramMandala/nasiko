@@ -60,3 +60,24 @@ pub struct ExecutionResult {
     pub step_results: Vec<StepResult>,
     pub tokens_used: i64,
 }
+
+/// What a MAF run produced: either it ran to completion, or one step's agent asked for a human
+/// (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3) and the run stopped there, awaiting
+/// `POST /api/hitl/{id}/resolve`.
+pub enum StepOutcome {
+    Completed(ExecutionResult),
+    AwaitingHuman(PausedStep),
+}
+
+/// One step's pause, carrying everything needed to create the `hitl_requests` row and, later,
+/// resume exactly this step via `executor::run_maf_from`.
+pub struct PausedStep {
+    pub step_index: i32,
+    /// The agent's own `taskId` — the A2A continuation must target this, never a synthetic one.
+    pub task_id: String,
+    /// The MAF execution id (stringified) — doubles as the A2A `contextId` for every step, per
+    /// `executor.rs::call_agent`'s existing convention.
+    pub context_id: String,
+    pub kind: nasiko_hitl::HitlKind,
+    pub question: serde_json::Value,
+}

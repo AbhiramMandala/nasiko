@@ -84,8 +84,11 @@ async fn deliver(state: AppState, row: HitlRequest) {
         let _ = state.hitl_store.mark_resume_unknown(row.id).await;
         return;
     }
+    if row.origin == HitlOrigin::Maf {
+        return deliver_maf(&state, row).await;
+    }
     if !matches!(row.origin, HitlOrigin::DirectChat | HitlOrigin::AgentProxy) {
-        // Unreachable today — nothing creates orchestrator/maf/mcp_tool rows yet (Phases 6-8).
+        // Unreachable today — nothing creates orchestrator/mcp_tool rows yet (Phases 6-7).
         // Defensive, not a real path.
         tracing::warn!(id = %row.id, origin = ?row.origin, "hitl dispatcher: unsupported origin");
         let _ = state
@@ -242,15 +245,117 @@ async fn deliver(state: AppState, row: HitlRequest) {
     }
 }
 
+/// MAF resume (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3/§9). Unlike `deliver()`'s direct-chat
+/// path above, this never talks to the agent itself — it hands off to the existing MAF worker
+/// (`oss/orchestrator/src/maf/worker.rs`) by re-`XADD`ing to the same Redis stream it already
+/// reads, carrying a continuation marker (`resume_step_index`/`resume_task_id`/`resume_answer`).
+/// The worker owns the actual agent call, LLM extraction, and continuation logic — "delivered"
+/// here means "the continuation job was durably enqueued" (§3.2's "Redis XADD acked" criterion,
+/// the plan's own stated confirmation-of-receipt for this origin).
+async fn deliver_maf(state: &AppState, row: HitlRequest) {
+    let (Some(task_id), Some(execution_id)) = (row.task_id.clone(), row.maf_execution_id) else {
+        let _ = state
+            .hitl_store
+            .mark_resume_failed(row.id, "row is missing task_id/maf_execution_id", 0)
+            .await;
+        return;
+    };
+    let Some(step_index) = row.maf_step_index else {
+        let _ = state
+            .hitl_store
+            .mark_resume_failed(row.id, "row is missing maf_step_index", 0)
+            .await;
+        return;
+    };
+
+    // The exact snapshot the original run started with — never the mutable `mafs.maf_json`,
+    // which may have changed since (§2.3 #6). Persisted at `POST /maf/workflow/{id}/run` time
+    // (`oss/server/src/maf.rs::run_workflow`).
+    let maf_json: Option<String> =
+        sqlx::query_scalar("SELECT maf_json::text FROM maf_executions WHERE id = $1")
+            .bind(execution_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    let Some(maf_json) = maf_json else {
+        let _ = state
+            .hitl_store
+            .mark_resume_failed(
+                row.id,
+                "maf execution or its snapshot no longer exists",
+                MAX_RESUME_ATTEMPTS,
+            )
+            .await;
+        return;
+    };
+
+    let answer = answer_text(&row);
+
+    // Interim status while the continuation job is in flight — `worker.rs::process_job`
+    // unconditionally sets `running` again on pickup, so this is cosmetic-but-correct, mirroring
+    // `worker.rs::re_enqueue`'s own `status='pending'` convention on a retryable failure.
+    let _ = sqlx::query("UPDATE maf_executions SET status = 'pending' WHERE id = $1")
+        .bind(execution_id)
+        .execute(&state.db)
+        .await;
+
+    let mut conn = match state.redis.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = state
+                .hitl_store
+                .mark_resume_failed(
+                    row.id,
+                    &format!("redis connection failed: {e}"),
+                    MAX_RESUME_ATTEMPTS,
+                )
+                .await;
+            return;
+        }
+    };
+
+    let enqueue: redis::RedisResult<String> = redis::cmd("XADD")
+        .arg("nasiko:maf:execute")
+        .arg("*")
+        .arg("execution_id")
+        .arg(execution_id.to_string())
+        .arg("maf_json")
+        .arg(&maf_json)
+        .arg("user_id")
+        .arg(row.owner_user_id.to_string())
+        .arg("resume_step_index")
+        .arg(step_index.to_string())
+        .arg("resume_task_id")
+        .arg(&task_id)
+        .arg("resume_answer")
+        .arg(&answer)
+        .query_async(&mut conn)
+        .await;
+
+    match enqueue {
+        Ok(_) => {
+            let _ = state.hitl_store.mark_resume_completed(row.id).await;
+        }
+        Err(e) => {
+            let _ = state
+                .hitl_store
+                .mark_resume_failed(
+                    row.id,
+                    &format!("failed to enqueue MAF resume job: {e}"),
+                    MAX_RESUME_ATTEMPTS,
+                )
+                .await;
+        }
+    }
+}
+
 /// The text sent back to the agent as the human's reply. `input_required` carries `answer`
 /// directly; `auth_required` has no free-text answer — only a "confirm" resolve ever reaches the
 /// dispatcher (a "start" resolve leaves the row `pending`, `router/hitl.rs::resolve`), so
-/// `auth_outcome` is always `"confirmed"` by this point. The literal reply is `"authorized"`, not
-/// a paraphrase — an agent's own `AuthRequired` pause message is free to tell the human to "reply
-/// authorized" (`docs/HITL_REFERENCE_AGENT.md`'s documented convention), and a deterministic agent
-/// may match that reply literally rather than semantically, so the platform must echo back exactly
-/// the word it told the human to send. The agent determines the real outcome from its own next
-/// response either way (§7's "intent ≠ success").
+/// `auth_outcome` is always `"confirmed"` by this point. A short confirmation stands in for a
+/// free-text answer; the agent determines the real outcome from its own next response (§7's
+/// "intent ≠ success").
 fn answer_text(row: &HitlRequest) -> String {
     let response = row.human_response.as_ref();
     if let Some(answer) = response
@@ -263,7 +368,7 @@ fn answer_text(row: &HitlRequest) -> String {
         .and_then(|r| r.get("auth_outcome"))
         .and_then(|v| v.as_str())
     {
-        Some(_) => "authorized".to_string(),
+        Some(_) => "the user has completed the requested authorization step".to_string(),
         None => String::new(),
     }
 }

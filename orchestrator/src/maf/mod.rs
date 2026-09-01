@@ -28,6 +28,7 @@ pub fn start_worker(
     http_client: reqwest::Client,
     observability: Arc<dyn ObservabilityProvider>,
     llm_config: LlmConfig,
+    hitl_store: Arc<dyn nasiko_hitl::HitlStore>,
 ) {
     let llm = LlmClient::new(
         http_client.clone(),
@@ -35,5 +36,12 @@ pub fn start_worker(
         llm_config.base_url,
         llm_config.model,
     );
-    tokio::spawn(worker::run(db, redis, http_client, observability, llm));
+    tokio::spawn(worker::run(
+        db,
+        redis,
+        http_client,
+        observability,
+        llm,
+        hitl_store,
+    ));
 }
