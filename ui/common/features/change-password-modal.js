@@ -19,9 +19,32 @@ import '/common/design-system/app-button/app-button.js';
 
 const styles = await loadCss(new URL('./change-password-modal.css', import.meta.url));
 
-// Mirrors MIN_PASSWORD_LEN in oss/server/src/auth/login.rs. Client-side only,
-// for fast feedback — the server enforces the rule regardless.
-const MIN_PASSWORD_LEN = 8;
+// Mirrors `validate_password` in oss/auth/src/lib.rs. Client-side only, for
+// fast feedback — the server enforces the policy regardless, and its slug is
+// what the user actually sees if these ever drift.
+const MIN_PASSWORD_LEN = 12;
+const MAX_PASSWORD_LEN = 64;
+const MAX_PASSWORD_BYTES = 72;
+
+/// Returns the first unmet rule, or null. Order matches the server so the
+/// client and the API complain about the same thing first.
+function passwordPolicyError(pw) {
+  // `TextEncoder` counts bytes the way bcrypt does; `.length` would count
+  // UTF-16 units and let a multibyte password past the truncation limit.
+  if (new TextEncoder().encode(pw).length > MAX_PASSWORD_BYTES) {
+    return `Password must be at most ${MAX_PASSWORD_BYTES} bytes`;
+  }
+  const chars = [...pw];
+  if (chars.length < MIN_PASSWORD_LEN) return `Password must be at least ${MIN_PASSWORD_LEN} characters`;
+  if (chars.length > MAX_PASSWORD_LEN) return `Password must be at most ${MAX_PASSWORD_LEN} characters`;
+  // Unicode-aware, matching the server: a non-Latin password is judged by the
+  // same rules rather than refused for lacking ASCII.
+  if (!/\p{Ll}/u.test(pw)) return 'Password must contain a lowercase letter';
+  if (!/\p{Lu}/u.test(pw)) return 'Password must contain an uppercase letter';
+  if (!/\p{N}/u.test(pw)) return 'Password must contain a digit';
+  if (!/[^\p{L}\p{N}]/u.test(pw)) return 'Password must contain a symbol';
+  return null;
+}
 
 class ChangePasswordModal extends HTMLElement {
   #modal = null;
@@ -43,7 +66,10 @@ class ChangePasswordModal extends HTMLElement {
             autocomplete="new-password"></app-input>
           <app-input id="cp-confirm" label="Confirm new password" type="password"
             autocomplete="new-password"></app-input>
-          <p class="hint">At least ${MIN_PASSWORD_LEN} characters. Your other sessions will be signed out.</p>
+          <p class="hint">
+            ${MIN_PASSWORD_LEN}-${MAX_PASSWORD_LEN} characters, with an uppercase letter,
+            a lowercase letter, a digit and a symbol. Your other sessions will be signed out.
+          </p>
           <div class="form-actions" data-slot="footer">
             <app-button variant="secondary" id="cp-cancel">Cancel</app-button>
             <app-button variant="primary" id="cp-save">Change password</app-button>
@@ -78,12 +104,8 @@ class ChangePasswordModal extends HTMLElement {
     if (!current_password || !new_password) {
       showToast('Enter your current and new password'); return;
     }
-    // Spread, not `.length`: the server counts characters, and `.length` would
-    // measure UTF-16 units — rejecting a 7-character CJK password the server
-    // accepts, and accepting 4 emoji it rejects.
-    if ([...new_password].length < MIN_PASSWORD_LEN) {
-      showToast(`Password must be at least ${MIN_PASSWORD_LEN} characters`); return;
-    }
+    const policyError = passwordPolicyError(new_password);
+    if (policyError) { showToast(policyError); return; }
     if (new_password !== confirm) {
       showToast('New passwords do not match'); return;
     }

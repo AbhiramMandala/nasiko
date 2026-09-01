@@ -55,7 +55,7 @@ async fn change_password_rotates_the_credential() {
         id,
         "admin",
     )
-    .json(&json!({"current_password": old, "new_password": "a-brand-new-password"}))
+    .json(&json!({"current_password": old, "new_password": "A-brand-new-password9"}))
     .send()
     .await
     .unwrap();
@@ -67,7 +67,7 @@ async fn change_password_rotates_the_credential() {
         "the replaced password must stop working"
     );
     assert_eq!(
-        login_status(&server, "admin", "a-brand-new-password").await,
+        login_status(&server, "admin", "A-brand-new-password9").await,
         200,
         "the new password must work"
     );
@@ -87,7 +87,7 @@ async fn change_password_rejects_a_wrong_current_password() {
         id,
         "admin",
     )
-    .json(&json!({"current_password": "not-the-password", "new_password": "another-password"}))
+    .json(&json!({"current_password": "Not-the-password9", "new_password": "Another-password9"}))
     .send()
     .await
     .unwrap();
@@ -118,7 +118,33 @@ async fn change_password_enforces_minimum_length_and_difference() {
     .send()
     .await
     .unwrap();
-    assert_eq!(short.status(), 400, "under 8 characters must be rejected");
+    assert_eq!(
+        short.status(),
+        400,
+        "under the minimum length must be rejected"
+    );
+
+    // Each composition rule is refused with its own slug, so a client can point
+    // at the rule the user missed instead of restating the whole policy.
+    for (password, code) in [
+        ("CORRECT-HORSE9", "password_missing_lowercase"),
+        ("correct-horse9", "password_missing_uppercase"),
+        ("Correct-Horsey", "password_missing_digit"),
+        ("CorrectHorse99", "password_missing_symbol"),
+    ] {
+        let res = as_superuser(
+            server.client.post(server.url("/api/auth/change-password")),
+            id,
+            "admin",
+        )
+        .json(&json!({"current_password": old, "new_password": password}))
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(res.status(), 400, "{password} must be rejected");
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["code"], code, "wrong slug for {password}");
+    }
 
     let same = as_superuser(
         server.client.post(server.url("/api/auth/change-password")),
@@ -170,7 +196,7 @@ async fn a_non_superuser_can_change_their_own_password() {
         alice_id,
         "alice",
     )
-    .json(&json!({"current_password": alice_secret, "new_password": "alice-new-password"}))
+    .json(&json!({"current_password": alice_secret, "new_password": "Alice-new-password9"}))
     .send()
     .await
     .unwrap();
@@ -181,7 +207,7 @@ async fn a_non_superuser_can_change_their_own_password() {
     );
 
     assert_eq!(
-        login_status(&server, "alice", "alice-new-password").await,
+        login_status(&server, "alice", "Alice-new-password9").await,
         200
     );
     server.cleanup().await;
@@ -210,7 +236,7 @@ async fn user_without_local_credentials_gets_a_conflict() {
         &id.to_string(),
         "sso-user",
     )
-    .json(&json!({"current_password": "anything", "new_password": "a-valid-password"}))
+    .json(&json!({"current_password": "anything", "new_password": "A-valid-password9"}))
     .send()
     .await
     .unwrap();
@@ -225,7 +251,7 @@ async fn change_password_requires_authentication() {
     let res = server
         .client
         .post(server.url("/api/auth/change-password"))
-        .json(&json!({"current_password": "x", "new_password": "a-valid-password"}))
+        .json(&json!({"current_password": "x", "new_password": "A-valid-password9"}))
         .send()
         .await
         .unwrap();
@@ -265,7 +291,7 @@ async fn change_password_revokes_old_sessions_but_not_the_new_one() {
         id,
         "admin",
     )
-    .json(&json!({"current_password": old, "new_password": "ordering-is-load-bearing"}))
+    .json(&json!({"current_password": old, "new_password": "Ordering-is-load-bearing9"}))
     .send()
     .await
     .unwrap();
@@ -365,7 +391,7 @@ async fn admin_password_reset_revokes_the_targets_sessions() {
     .json(&json!({
         "username": "mallory",
         "email": "mallory@test.local",
-        "password": "reset-by-an-administrator"
+        "password": "Reset-by-an-administrator9"
     }))
     .send()
     .await

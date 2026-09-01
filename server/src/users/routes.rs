@@ -13,7 +13,6 @@ use uuid::Uuid;
 
 use crate::Paginated;
 use crate::auth::Claims;
-use crate::auth::login::MIN_PASSWORD_LEN;
 use crate::state::AppState;
 
 /// Returns 409 if `target_id` is the only active admin left.
@@ -442,14 +441,13 @@ pub async fn update_user(
     if body.email.as_deref() == Some("") {
         return (StatusCode::BAD_REQUEST, "email cannot be empty").into_response();
     }
+    // Same policy as the self-service route: an administrator setting someone
+    // else's password must not be able to set one that user could not have
+    // chosen themselves.
     if let Some(ref p) = body.password
-        && p.chars().count() < MIN_PASSWORD_LEN
+        && let Err(policy) = nasiko_auth::validate_password(p)
     {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("password must be at least {MIN_PASSWORD_LEN} characters"),
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, policy.message()).into_response();
     }
 
     // AUTH-2: an `is_active: false` transition through this generic PUT must go

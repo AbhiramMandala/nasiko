@@ -17,11 +17,6 @@ use crate::state::AppState;
 /// left.
 const COOKIE_MAX_AGE: u64 = nasiko_auth::TOKEN_EXPIRY_SECS;
 
-/// Minimum accepted password length. Shared with `users::routes::update_user`
-/// so the self-service and admin-initiated paths enforce one rule rather than
-/// two literals that drift apart.
-pub(crate) const MIN_PASSWORD_LEN: usize = 8;
-
 /// Routes shared by OSS and EE: initialize-admin and token validation.
 /// Does not include /api/auth/login — each edition registers its own login
 /// handler via `public_router`.
@@ -332,14 +327,11 @@ async fn change_password(
         Err((status, msg)) => return (status, msg).into_response(),
     };
 
-    // Characters, not bytes: `len()` would accept a 4-character CJK password as
-    // "12 characters" while rejecting a 7-character one that the rule allows.
-    if body.new_password.chars().count() < MIN_PASSWORD_LEN {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "password_too_short",
-            &format!("password must be at least {MIN_PASSWORD_LEN} characters"),
-        );
+    // Length and composition, from the one policy both password-setting paths
+    // share. Each failure carries its own slug so a client can tell the user
+    // which rule they missed rather than restating the whole policy.
+    if let Err(policy) = nasiko_auth::validate_password(&body.new_password) {
+        return error_response(StatusCode::BAD_REQUEST, policy.code(), &policy.message());
     }
     if body.new_password == body.current_password {
         return error_response(
