@@ -245,9 +245,12 @@ async fn deliver(state: AppState, row: HitlRequest) {
 /// The text sent back to the agent as the human's reply. `input_required` carries `answer`
 /// directly; `auth_required` has no free-text answer — only a "confirm" resolve ever reaches the
 /// dispatcher (a "start" resolve leaves the row `pending`, `router/hitl.rs::resolve`), so
-/// `auth_outcome` is always `"confirmed"` by this point. A short confirmation stands in for a
-/// free-text answer; the agent determines the real outcome from its own next response (§7's
-/// "intent ≠ success").
+/// `auth_outcome` is always `"confirmed"` by this point. The literal reply is `"authorized"`, not
+/// a paraphrase — an agent's own `AuthRequired` pause message is free to tell the human to "reply
+/// authorized" (`docs/HITL_REFERENCE_AGENT.md`'s documented convention), and a deterministic agent
+/// may match that reply literally rather than semantically, so the platform must echo back exactly
+/// the word it told the human to send. The agent determines the real outcome from its own next
+/// response either way (§7's "intent ≠ success").
 fn answer_text(row: &HitlRequest) -> String {
     let response = row.human_response.as_ref();
     if let Some(answer) = response
@@ -260,7 +263,7 @@ fn answer_text(row: &HitlRequest) -> String {
         .and_then(|r| r.get("auth_outcome"))
         .and_then(|v| v.as_str())
     {
-        Some(_) => "the user has completed the requested authorization step".to_string(),
+        Some(_) => "authorized".to_string(),
         None => String::new(),
     }
 }
