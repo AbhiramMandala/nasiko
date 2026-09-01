@@ -21,6 +21,13 @@ struct CommonAssets;
 #[tokio::main]
 async fn main() {
     let _ = dotenvy::dotenv();
+    // Explicitly select ring as the Rustls crypto provider (the workspace
+    // convention). Required because sqlx/reqwest (ring) and the AWS SDK's HTTP
+    // client (aws-lc-rs) both pull in rustls, and rustls panics at first use if
+    // no provider is installed when multiple are compiled in — the redis client
+    // builds its rediss:// config through the process-default provider.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let telemetry_config = TelemetryConfig::from_env();
     init_telemetry(&telemetry_config);
 
@@ -38,7 +45,12 @@ async fn main() {
         .max_connections(50)
         .connect(&config.database_url)
         .await
-        .expect("failed to connect to postgres");
+        .unwrap_or_else(|e| {
+            panic!(
+                "{}",
+                nasiko_server::state::pg_connect_error_message(&config.database_url, &e)
+            )
+        });
 
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let auth: Arc<dyn nasiko_auth::AuthService> =

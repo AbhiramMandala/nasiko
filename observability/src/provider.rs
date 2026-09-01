@@ -138,10 +138,10 @@ fn agent_session_query(agent_id: &str) -> String {
 
 /// Resolves the session ↔ trace correlation from an external mapping.
 ///
-/// Pre-built agents (deployed via `nasiko deploy`) don't carry the
-/// sitecustomize.py patch and never set `session.id` on their spans; the
-/// agent_proxy records the session_id ↔ trace_id pair when it forwards A2A
-/// requests. The server injects a Postgres-backed implementation.
+/// Agents that aren't OTel-instrumented (or whose instrumentation doesn't tag
+/// spans) never set `session.id`; the agent_proxy records the session_id ↔
+/// trace_id pair when it forwards A2A requests. The server injects a
+/// Postgres-backed implementation.
 #[async_trait]
 pub trait SessionIdResolver: Send + Sync {
     async fn session_for_trace(&self, trace_id: &str) -> Option<String>;
@@ -149,6 +149,19 @@ pub trait SessionIdResolver: Send + Sync {
     /// Reverse lookup: all trace_ids recorded for a session, oldest first.
     /// Default: none — only resolvers backed by a real index override this.
     async fn traces_for_session(&self, _session_id: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Per-agent lookup: all trace_ids the index recorded for an agent (by
+    /// name) in a window. Backs the finops/stats aggregations for agents that
+    /// never set `session.id` on their spans, the same way
+    /// `traces_for_session` backs session drill-down. Default: none.
+    async fn traces_for_agent(
+        &self,
+        _agent_name: &str,
+        _start: DateTime<Utc>,
+        _end: DateTime<Utc>,
+    ) -> Vec<String> {
         Vec::new()
     }
 }
@@ -200,6 +213,40 @@ impl TempoLokiProvider {
         self.tempo
             .search(query, Some(start), Some(end), limit)
             .await
+    }
+
+    /// User-query traces for one agent: the Tempo `session.id` search, unioned
+    /// with the proxy-recorded session ↔ trace index. Agents that don't run
+    /// the Python auto-instrumentation patch never set `session.id` on their
+    /// spans, so the TraceQL search alone misses every one of their user
+    /// queries — the same gap `get_session` already covers per-session.
+    async fn user_traces_for_agent(
+        &self,
+        agent_id: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<TraceSearchResult>, ObservabilityError> {
+        let mut results = self
+            .search_traces(&agent_session_query(agent_id), start, end, limit)
+            .await?;
+        let indexed = self
+            .session_resolver
+            .traces_for_agent(agent_id, start, end)
+            .await;
+        if !indexed.is_empty() {
+            let known: std::collections::HashSet<String> =
+                results.iter().map(|(id, _, _)| id.clone()).collect();
+            results.extend(
+                indexed
+                    .into_iter()
+                    .filter(|id| !known.contains(id))
+                    // Start/duration unknown until the trace is fetched.
+                    .map(|id| (id, None, None)),
+            );
+            results.truncate(limit);
+        }
+        Ok(results)
     }
 
     /// Fetch tokens/model/latency-p50 over up to
@@ -552,7 +599,7 @@ impl ObservabilityProvider for TempoLokiProvider {
         end: DateTime<Utc>,
     ) -> Result<AgentStats, ObservabilityError> {
         let results = self
-            .search_traces(&agent_session_query(agent_id), start, end, 1000)
+            .user_traces_for_agent(agent_id, start, end, 1000)
             .await?;
 
         let durations: Vec<u64> = results.iter().filter_map(|(_, _, d)| *d).collect();
@@ -580,7 +627,7 @@ impl ObservabilityProvider for TempoLokiProvider {
         end: DateTime<Utc>,
     ) -> Result<AgentFinOps, ObservabilityError> {
         let results = self
-            .search_traces(&agent_session_query(agent_id), start, end, 1000)
+            .user_traces_for_agent(agent_id, start, end, 1000)
             .await?;
 
         let durations: Vec<u64> = results.iter().filter_map(|(_, _, d)| *d).collect();
@@ -608,7 +655,7 @@ impl ObservabilityProvider for TempoLokiProvider {
         end: DateTime<Utc>,
     ) -> Result<usize, ObservabilityError> {
         let results = self
-            .search_traces(&agent_session_query(agent_id), start, end, 1000)
+            .user_traces_for_agent(agent_id, start, end, 1000)
             .await?;
         Ok(results.len())
     }

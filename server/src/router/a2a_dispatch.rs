@@ -378,11 +378,16 @@ async fn orchestrator_stream(
     // Carry the A2A context_id so the LLM gateway keys its decision cache on the
     // conversation, not this turn's trace id — mirrors the direct-agent proxy
     // (`agent_proxy.rs`). `derive_boundary_signals` reads `metadata->>'context_id'`.
+    //
+    // Re-opens on conflict for the same reason as the proxy path: a repeat
+    // request under one traceparent must not inherit the `completed` status the
+    // previous one left, or strict attribution denies the agent's LLM calls.
     let flow_metadata = serde_json::json!({ "context_id": context_id });
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, 'orchestrator', $3, 'running', $4)
-           ON CONFLICT (flow_id) DO NOTHING"#,
+           ON CONFLICT (flow_id) DO UPDATE
+              SET status = 'running', completed_at = NULL"#,
     )
     .bind(&flow_id)
     .bind(user_id)
@@ -429,18 +434,12 @@ async fn orchestrator_stream(
     let a2a_client = nasiko_react_agent::A2aClient::new()
         .with_headers(vec![("traceparent".to_string(), traceparent)]);
 
+    // Each agent the orchestrator calls authenticates to /api/mcp with its own
+    // deploy-time MCP_GATEWAY_TOKEN; the user binding rides the forwarded
+    // traceparent + the flow_participants record `CpCallGuard` writes per leg.
     let mut orchestrator = Orchestrator::new(config, RegistrySource::Static(agents))
         .with_a2a_client(a2a_client)
         .with_guard(guard);
-    // Each agent the orchestrator calls gets its own MCP delegation token
-    // minted per-call (see `A2aTool`) — best-effort, omitted if JWT_SECRET
-    // is unset rather than failing the whole chat/orchestration request.
-    if let Ok(jwt_secret) = std::env::var("JWT_SECRET") {
-        orchestrator = orchestrator.with_delegation(nasiko_react_agent::DelegationContext {
-            user_id: user_id.to_string(),
-            jwt_secret,
-        });
-    }
     orchestrator
         .init()
         .await
@@ -799,10 +798,13 @@ async fn agent_stream(
     let flow_id = flow_ctx.flow_id.clone();
     state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
 
+    // Re-opens on conflict — see the orchestrator branch above: a repeat request
+    // under one traceparent must not inherit the previous one's `completed`.
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, $3, $4, $5, 'running', '{}'::jsonb)
-           ON CONFLICT (flow_id) DO NOTHING"#,
+           ON CONFLICT (flow_id) DO UPDATE
+              SET status = 'running', completed_at = NULL"#,
     )
     .bind(&flow_id)
     .bind(user_id)
@@ -811,6 +813,10 @@ async fn agent_stream(
     .bind(query)
     .execute(&state.db)
     .await;
+    // Participant record — load-bearing for MCP gateway / LLM router auth
+    // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4); same synchronous pre-forward write
+    // as the flows row above.
+    crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
 
     // Index the session ↔ trace mapping, exactly as `orchestrator_stream` and
     // `agent_proxy.rs` already do. Without it this branch — every "chat with
@@ -843,27 +849,15 @@ async fn agent_stream(
         nasiko_types::a2a::build_stream_request_with_parts(query, Some(context_id), file_parts)
     };
 
+    // No per-request MCP credential: the agent authenticates to /api/mcp with
+    // its own deploy-time MCP_GATEWAY_TOKEN; the forwarded traceparent + the
+    // flow_participants record written above carry the user binding.
     let build_agent_req = || {
-        let mut req = state
+        state
             .http_client
             .post(&endpoint)
             .header("A2A-Version", "1.0")
-            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx));
-
-        // Mint a delegation token so this agent can call back into `/api/mcp`
-        // proving "I am agent.id, acting for user_id" — mirrors `agent_proxy.rs`.
-        // Best-effort: if JWT_SECRET is unset, MCP delegation is simply
-        // unavailable to this agent rather than failing the whole chat call.
-        if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
-            && let Ok(delegation_token) = nasiko_auth::jwt::mint_delegation_token(
-                &jwt_secret,
-                &user_id.to_string(),
-                &agent.id.to_string(),
-            )
-        {
-            req = req.header("x-nasiko-agent-token", delegation_token);
-        }
-        req
+            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
     };
 
     let response = build_agent_req()

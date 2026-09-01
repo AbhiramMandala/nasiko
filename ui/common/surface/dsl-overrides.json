@@ -1,6 +1,6 @@
 {
-  "$comment2": "textParam marks a component whose visible text is its own child text content rather than an attribute \u2014 app-button reads this.innerHTML (app-button.js:80), app-badge and app-tag are styled wrappers around their text. Without it the model can emit them and they render empty.",
-  "$comment": "Hand-maintained decisions the generated design-system catalog cannot express: which components a generated surface may name, which take children or data as their first positional argument, and which attributes to withhold. gen-dsl-catalog.mjs merges this with design-system/catalog.json to produce dsl-catalog.json. Every component in catalog.json must have an entry here \u2014 `--check` fails otherwise, so a new component forces an explicit decision instead of silently becoming available or silently missing.",
+  "$comment2": "textParam marks a component whose visible text is its own child text content rather than an attribute — app-button reads this.innerHTML (app-button.js:80), app-badge and app-tag are styled wrappers around their text. Without it the model can emit them and they render empty.",
+  "$comment": "Hand-maintained decisions the generated design-system catalog cannot express: which components a generated surface may name, which take children or data as their first positional argument, and which attributes to withhold. gen-dsl-catalog.mjs merges this with design-system/catalog.json to produce dsl-catalog.json. Every component in catalog.json must have an entry here — `--check` fails otherwise, so a new component forces an explicit decision instead of silently becoming available or silently missing.",
   "components": {
     "app-stack": {
       "status": "ready",
@@ -23,7 +23,7 @@
       ],
       "dataProp": "dataFn",
       "dataAsFetcher": true,
-      "note": "Rows reach app-table as a fetcher on its `dataFn` property (app-table.js:24,113). Assigning the property avoids registering a synthetic source in the app-wide data-sources registry on every render pass \u2014 which never got unregistered and could collide with a real name."
+      "note": "Rows reach app-table as a fetcher on its `dataFn` property (app-table.js:24,113). Assigning the property avoids registering a synthetic source in the app-wide data-sources registry on every render pass — which never got unregistered and could collide with a real name."
     },
     "app-modal": {
       "status": "ready",
@@ -32,7 +32,7 @@
     "app-toolbar": {
       "status": "ready",
       "childrenParam": true,
-      "note": "Only useful with Slot() \u2014 its content is entirely start/end slotted."
+      "note": "Only useful with Slot() — its content is entirely start/end slotted."
     },
     "app-stat-card": {
       "status": "ready"
@@ -62,7 +62,7 @@
     },
     "app-empty-state": {
       "status": "ready",
-      "reason": "icon is SVG markup written unescaped by contract \u2014 the one markup sink in the design system. Use the icon slot instead.",
+      "reason": "icon is SVG markup written unescaped by contract — the one markup sink in the design system. Use the icon slot instead.",
       "dslExcludeAttributes": [
         "icon"
       ]
@@ -82,8 +82,9 @@
     },
     "app-card": {
       "status": "ready",
-      "reason": "Same as app-button \u2014 route-typed attributes stay out until the allowlist exists.",
+      "reason": "Same as app-button — route-typed attributes stay out until the allowlist exists. agent-id is excluded for a different reason: it is an internal record id the model cannot know, it drives the card's default hrefs (app-card.js:24,125), and as the FIRST positional it shifted every AppCard() call by one — the model wrote a name into it and got a card linking to an agent that does not exist.",
       "dslExcludeAttributes": [
+        "agent-id",
         "href",
         "details-href",
         "chat-href"
@@ -97,7 +98,7 @@
     },
     "app-tabs": {
       "status": "blocked",
-      "reason": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) \u2014 an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism."
+      "reason": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) — an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism."
     },
     "app-loading-bar": {
       "status": "blocked",
@@ -106,43 +107,43 @@
     "app-input": {
       "status": "ready",
       "actionParam": true,
-      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-select": {
       "status": "ready",
       "actionParam": true,
-      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-search": {
       "status": "ready",
       "actionParam": true,
-      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-checkbox": {
       "status": "ready",
       "actionParam": true,
-      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-radio": {
       "status": "ready",
       "actionParam": true,
-      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-switch": {
       "status": "ready",
       "actionParam": true,
-      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-chatbox": {
       "status": "ready",
       "actionParam": true,
-      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "auto-complete": {
       "status": "blocked",
-      "reason": "Needs a live filter callback through data-sources.js \u2014 not designed yet."
+      "reason": "Needs a live filter callback through data-sources.js — not designed yet."
     }
   },
-  "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation.",
-  "$comment4": "dataProp names the JS property a dataParam is assigned to; dataAsFetcher wraps the rows in an async () => ({data, total}) first. actionEvent overrides the event an Action is bound to \u2014 the default is the component's own 'change'/'input' event when it declares one, else 'click'."
+  "$comment3": "actionParam adds a trailing synthetic `action` parameter — the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation.",
+  "$comment4": "dataProp names the JS property a dataParam is assigned to; dataAsFetcher wraps the rows in an async () => ({data, total}) first. actionEvent overrides the event an Action is bound to — the default is the component's own 'change'/'input' event when it declares one, else 'click'."
 }

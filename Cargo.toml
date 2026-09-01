@@ -104,10 +104,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # ─── AWS ────────────────────────────────────────────────────────────────────
 aws-sdk-s3 = "1"
 aws-config = "1"
-# Cloud-agnostic object storage. `aws` backs the K8s build-context path;
-# `azure` backs the Azure Blob `BlobStore`, whose SAS signing comes from the
-# same crate's `Signer` impl rather than a second Azure SDK.
-object_store = { version = "0.10", features = ["aws", "azure"] }
 
 # ─── Crypto ─────────────────────────────────────────────────────────────────
 sha2 = "0.10"

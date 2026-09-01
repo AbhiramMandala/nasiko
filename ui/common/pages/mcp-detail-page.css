@@ -220,6 +220,7 @@
 
   /* ── Danger zone ───────────────────────────────────────────────────────── */
   .mdp-danger {
+    border: 1px solid var(--fg-error);
     border-radius: var(--r-8);
     padding: var(--s-16);
   }

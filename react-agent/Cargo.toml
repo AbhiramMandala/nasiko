@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-nasiko-auth = { workspace = true }
 # LLM orchestration
 rig-core = { version = "0.11", default-features = false, features = ["derive"] }
 
