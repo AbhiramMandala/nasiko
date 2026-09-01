@@ -230,6 +230,8 @@ pub struct AccessReason {
     pub user_id: Uuid,
     pub username: String,
     pub display_name: Option<String>,
+    pub email: Option<String>,
+    pub role: Option<String>,
     pub via: String,
     pub via_label: Option<String>,
 }

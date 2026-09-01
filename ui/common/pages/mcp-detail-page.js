@@ -9,7 +9,6 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./mcp-detail-page.css', import.meta.url));
 import '../design-system/app-badge/app-badge.js';
 import '../design-system/app-button/app-button.js';
-import '/common/utils/back-link.js';
 import '../design-system/app-empty-state/app-empty-state.js';
 import '../design-system/app-grid/app-grid.js';
 import '../design-system/app-input/app-input.js';
@@ -21,15 +20,17 @@ import '../design-system/app-tag/app-tag.js';
 import { call } from '../core/data-sources.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-// Team/department grants are EE-only routes; the tabs and chips for them are
-// hidden unless the running edition actually serves the org hierarchy.
+// Org-unit grants are EE-only; the tab and chip for them are hidden unless
+// the running edition actually serves the org hierarchy. Team and department
+// are one grant type on the backend (migration 1040 collapsed them into
+// `org_unit` — a grant on either reaches the unit and everything beneath it),
+// so there is one chip/tab here too, not two.
 const GRANT_TYPES = [
   { key: 'user', label: 'User', eeOnly: false },
-  { key: 'team', label: 'Team', eeOnly: true },
-  { key: 'department', label: 'Department', eeOnly: true },
+  { key: 'unit', label: 'Team / Department', eeOnly: true },
 ];
 /** grant type -> both the API path segment and the grantee tab key. */
-const GRANT_PATHS = { user: 'users', team: 'teams', department: 'departments' };
+const GRANT_PATHS = { user: 'users', unit: 'units' };
 
 const fmtDate = (v) => (v ? new Date(v).toLocaleDateString() : '');
 
@@ -118,7 +119,7 @@ class McpDetailPage extends HTMLElement {
 
     this.innerHTML = `
       <div class="mdp-topbar">
-        <app-button variant="tertiary" size="sm" icon-only href="/mcp" data-back
+        <app-button variant="tertiary" icon-only href="/mcp"
           aria-label="Back to MCP servers">${icons.arrowLeft()}</app-button>
       </div>
 
@@ -329,35 +330,58 @@ class McpDetailPage extends HTMLElement {
   async #loadGrants() {
     const section = this.querySelector('#mdp-grants-section');
     if (!section) return;
-    let data;
+    let consumers, shares;
     try {
-      const resp = await fetchApi(
-        '/mcp/connectors/' + encodeURIComponent(this.#connectorId) + '/consumers');
-      data = resp?.data ?? resp;
+      [consumers, shares] = await Promise.all([
+        fetchApi('/mcp/connectors/' + encodeURIComponent(this.#connectorId) + '/consumers'),
+        fetchApi('/mcp/connectors/' + encodeURIComponent(this.#connectorId) + '/grants'),
+      ]);
+      consumers = consumers?.data ?? consumers;
+      shares = shares?.data ?? shares;
     } catch {
       section.hidden = true;
       return;
     }
+    // `access_reasons` is the resolved, one-row-per-person view (owner,
+    // direct grant, or inherited via an org unit — already deduped
+    // server-side to the single most-specific reason, see `AccessReason`'s
+    // doc comment), which is what a "who has access" table should show —
+    // not just the direct grants `/consumers` lists, which is why an
+    // auto-inherited person never showed up here before.
+    const grantLabel = { owner: 'Owner', direct: 'Direct', org_unit: 'Inherited', public: 'Public' };
     this.#grants = {
-      users: data?.users || [],
-      teams: data?.teams || [],
-      departments: data?.departments || [],
+      users: (shares?.access_reasons || []).map((r) => ({
+        id: r.user_id,
+        name: r.display_name || r.username || r.user_id,
+        email: r.email || '',
+        role: r.role || '',
+        grant: grantLabel[r.via] || r.via,
+        via_label: r.via_label,
+      })),
+      // `teams`/`departments` are two JSON keys for one grant type (`org_unit`
+      // — migration 1040 collapsed team+department; `list_org_grant_consumers`
+      // always dumps every unit into `teams` and leaves `departments` empty,
+      // see `ee/auth/src/mcp_authorizer.rs`), so the UI reads one merged list.
+      units: [...(consumers?.teams || []), ...(consumers?.departments || [])],
     };
-    // `/consumers` answers with empty team/department arrays in OSS too, so it
-    // can't tell the editions apart — probe an org route that only EE mounts.
-    // Existence is the whole signal, so don't read the body: EE answers /teams
-    // with a bare `{teams, total}` (no `data` envelope), and unwrapping it was
-    // what made every EE deployment look like OSS and hid both tabs.
-    if (this.#isEe === null) this.#isEe = await this.#routeExists('/teams');
+    // `/consumers` answers with an empty list in OSS too, so it can't tell the
+    // editions apart on its own — probe an org route that only EE mounts.
+    // `/org/units` needs manager-or-above (`can_read_org`), so a lower-role
+    // owner viewing their own connector would wrongly read as OSS; a unit
+    // grant already existing on THIS connector is just as good a signal that
+    // the edition supports them, and needs no extra permission to see.
+    if (this.#isEe === null) {
+      this.#isEe = this.#grants.units.length > 0 || (await this.#routeExists('/org/units'));
+    }
     if (!this.#isEe) this.#granteeTab = 'users';
     section.hidden = false;
     this.#renderGrants();
   }
 
   /**
-   * False when the route is absent (OSS) *or* forbidden — `/teams` needs team
-   * lead or above, and a caller below that can't search teams to grant to one
-   * either, so hiding the tab matches what they can actually do.
+   * False when the route is absent (OSS) *or* forbidden for this caller —
+   * matches what they can actually do, same reasoning `#loadGrants` uses the
+   * existing-grant fallback for.
    */
   async #routeExists(path) {
     try {
@@ -371,7 +395,7 @@ class McpDetailPage extends HTMLElement {
   #granteeTabDefs() {
     const defs = [];
     if (this.#isEe) {
-      defs.push({ key: 'departments', label: 'Departments' }, { key: 'teams', label: 'Teams' });
+      defs.push({ key: 'units', label: 'Team / Department' });
     }
     defs.push({ key: 'users', label: 'Users' });
     return defs;
@@ -387,9 +411,9 @@ class McpDetailPage extends HTMLElement {
           <h2 class="mdp-section-title">Grants</h2>
           <p class="mdp-muted">Who this server is shared with.${this.#isEe ? ' Members of a granted team or department inherit access automatically.' : ''}</p>
         </div>
-        <app-button variant="primary" size="md" id="mdp-grant-open">${icons.plus('', 14)} Grant access</app-button>
+        <app-button variant="primary" id="mdp-grant-open">${icons.plus('', 14)} Grant access</app-button>
       </div>
-      <app-search id="mdp-grant-filter" class="mdp-grants-search"
+      <app-search id="mdp-grant-filter" size="sm" class="mdp-grants-search"
         placeholder="Search ${defs.map((d) => d.label.toLowerCase()).join(', ')}"
         aria-label="Search grants"
         value="${escAttr(this.#grantFilter)}" autocomplete="off"></app-search>
@@ -441,32 +465,30 @@ class McpDetailPage extends HTMLElement {
       return !q || (name || '').toLowerCase().includes(q);
     };
     const dash = (v) => (v === null || v === undefined || v === '' ? '—' : escHtml(String(v)));
+    const grantBadge = (kind) => {
+      const mod = kind === 'Owner' ? ' mdp-grant-owner' : kind === 'Direct' ? ' mdp-grant-direct' : '';
+      return `<span class="mdp-grant-badge${mod}">${escHtml(kind)}</span>`;
+    };
     if (this.#granteeTab === 'users') {
       return {
         columns: [
           { key: 'name', label: 'User' },
-          { key: 'granted_by', label: 'Granted by', render: dash },
-          { key: 'granted', label: 'Granted', render: dash },
-          { key: 'actions', label: '', render: (_v, r) => this.#revokeBtnHtml('user', r.id, r.name) },
+          { key: 'email', label: 'Email', render: dash },
+          { key: 'role', label: 'Role', render: dash },
+          { key: 'grant', label: 'Grant', render: (v) => grantBadge(v) },
+          { key: 'actions', label: '', render: (_v, r) =>
+            r.grant === 'Direct' ? this.#revokeBtnHtml('user', r.id, r.name) : '' },
         ],
-        rows: (this.#grants?.users || [])
-          .map((u) => ({
-            id: u.user_id,
-            name: u.display_name || u.username || u.user_id,
-            granted_by: u.granted_by_username || '',
-            granted: fmtDate(u.created_at),
-          }))
-          .filter((r) => matches(r.name)),
+        rows: (this.#grants?.users || []).filter((r) => matches(r.name)),
       };
     }
-    const kind = this.#granteeTab === 'teams' ? 'team' : 'department';
     return {
       columns: [
-        { key: 'name', label: kind === 'team' ? 'Team' : 'Department' },
+        { key: 'name', label: 'Team / Department' },
         { key: 'granted', label: 'Granted', render: dash },
-        { key: 'actions', label: '', render: (_v, r) => this.#revokeBtnHtml(kind, r.id, r.name) },
+        { key: 'actions', label: '', render: (_v, r) => this.#revokeBtnHtml('unit', r.id, r.name) },
       ],
-      rows: (this.#grants?.[this.#granteeTab] || [])
+      rows: (this.#grants?.units || [])
         .map((t) => ({ id: t.id, name: t.name, granted: fmtDate(t.created_at) }))
         .filter((r) => matches(r.name)),
     };
@@ -521,8 +543,8 @@ class McpDetailPage extends HTMLElement {
           <p class="form-error" id="mdp-grant-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="tertiary" size="md" id="mdp-grant-cancel">Cancel</app-button>
-          <app-button variant="primary" size="md" id="mdp-grant-submit" disabled>Grant access</app-button>
+          <app-button variant="tertiary" id="mdp-grant-cancel">Cancel</app-button>
+          <app-button variant="primary" id="mdp-grant-submit" disabled>Grant access</app-button>
         </div>
       </app-modal>`;
   }
@@ -581,7 +603,7 @@ class McpDetailPage extends HTMLElement {
       query.value = '';
       const type = GRANT_TYPES.find((t) => t.key === this.#grantType);
       query.setAttribute('label', type ? type.label : 'User');
-      query.setAttribute('placeholder', `Search ${this.#grantType}s`);
+      query.setAttribute('placeholder', this.#grantType === 'unit' ? 'Search teams, departments' : 'Search users');
       this.querySelector('#mdp-grant-results').hidden = true;
     });
   }
@@ -632,7 +654,8 @@ class McpDetailPage extends HTMLElement {
   }
 
   // Users come from the gateway's own share-target search (org-visibility
-  // scoped, username-only); teams/departments from the EE org search.
+  // scoped, username-only); org units from `GET /org/units` (manager-or-above
+  // — `can_read_org` — same as the org chart itself).
   async #searchGrantees(type, q) {
     const enc = encodeURIComponent(q);
     if (type === 'user') {
@@ -643,8 +666,8 @@ class McpDetailPage extends HTMLElement {
         sub: u.display_name ? u.username : '',
       }));
     }
-    const resp = await fetchApi(`/search/${GRANT_PATHS[type]}?q=${enc}`);
-    return (resp?.data || []).map((t) => ({ id: t.id, label: t.name, sub: t.description || '' }));
+    const resp = await fetchApi(`/org/units?q=${enc}`);
+    return (resp?.data || []).map((t) => ({ id: t.id, label: t.name, sub: '' }));
   }
 
   async #submitGrant() {

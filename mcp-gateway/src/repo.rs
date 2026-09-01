@@ -557,6 +557,35 @@ pub async fn resolve_user_labels(
         .collect())
 }
 
+/// One `users` row's worth of what [`resolve_user_details`] resolves.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct UserDetail {
+    pub id: Uuid,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub email: Option<String>,
+    pub role: Option<String>,
+}
+
+/// Like [`resolve_user_labels`], plus `email`/`role` — what `list_access_reasons`
+/// needs to render an agent-detail-page-style USER/EMAIL/ROLE/GRANT table.
+/// Kept separate rather than widening `resolve_user_labels` itself: that
+/// function's other caller (`list_consumers_view`'s user rows and
+/// `granted_by` labels) has no use for either column, and every existing
+/// call site would have to unpack two fields it throws away.
+pub async fn resolve_user_details(db: &PgPool, ids: &[Uuid]) -> Result<HashMap<Uuid, UserDetail>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<UserDetail> = sqlx::query_as(
+        "SELECT id, username, display_name, email, role::text FROM users WHERE id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(|u| (u.id, u)).collect())
+}
+
 /// Search users by username substring, for the "who do I share this with"
 /// picker. Username only (never email) — intentionally open to any
 /// authenticated caller, not just admins, so it must never leak more than a
