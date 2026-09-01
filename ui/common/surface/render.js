@@ -199,6 +199,31 @@ function buildNode(node, catalog, deps = {}) {
     el.addEventListener(triggerEvent(def), () => deps.onAction?.(node.action, el));
   }
 
+  // ── The accessibility floor ───────────────────────────────────────────
+  // A person operates this component, so it needs a name they can hear. The
+  // catalog says where a name may come from (`nameFrom`) and which components
+  // must have one (`requiresName`), both derived from the components
+  // themselves — see gen-dsl-catalog.mjs.
+  //
+  // Reported, never invented. Synthesising "Button 3" would satisfy the check
+  // and help nobody; a diagnostic reaches the eval harness, which fails the
+  // generation, which is the only pressure that actually changes what the model
+  // writes.
+  if (def.requiresName) {
+    const named = (def.nameFrom || []).some((src) =>
+      src === 'text'
+        ? node.text !== null && node.text !== undefined && String(node.text).trim() !== ''
+        : node.props?.[src] !== null && node.props?.[src] !== undefined && String(node.props[src]).trim() !== '');
+    if (!named) {
+      report('missing_accessible_name',
+        `${node.tag} is operable but has no name — set ${(def.nameFrom || []).join(' or ')}`);
+    } else if (isTruthy(node.props?.['icon-only']) && !String(node.props?.['aria-label'] ?? '').trim()) {
+      // An icon-only control hides its text, so text stops being its name.
+      report('missing_accessible_name',
+        `${node.tag} is icon-only, so its text is not its name — set aria-label`);
+    }
+  }
+
   for (const child of node.children || []) {
     if (!child || child.type !== 'element') continue;
     const childEl = renderNode(child, catalog, deps);
@@ -219,6 +244,11 @@ function buildNode(node, catalog, deps = {}) {
  * component. A mismatch appends the child anyway and reports: a misplaced
  * footer button is a smaller failure than a missing one.
  */
+/** Boolean attributes arrive as true, "true" or "" depending on the source. */
+function isTruthy(v) {
+  return v === true || v === 'true' || v === '';
+}
+
 function applySlot(childEl, slotName, parentDef, parentTag, report) {
   const slots = parentDef.slots || [];
   const match = slots.find((s) => (typeof s === 'string' ? s : s.name) === slotName);

@@ -98,6 +98,28 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     attributes[name] = spec;
   }
 
+  // ── Accessible name ──────────────────────────────────────────────────
+  // Where this component's name can come from, and whether it needs one.
+  //
+  // Derived rather than listed, for the same reason as everything else here: a
+  // hand-kept list of which components need a label stops matching the
+  // components. `actionParam` is the proxy for "a person operates this" — it
+  // is exactly the set the design system lets you attach a handler to — and
+  // the sources are whichever naming attributes the component actually has.
+  //
+  // A model composes trees nobody reviews. Left unchecked it produces icon
+  // buttons with no name and inputs with no label perfectly happily, and the
+  // result passes a sighted glance. This is the floor under that.
+  const NAME_ATTRS = ['label', 'aria-label', 'alt'];
+  const nameFrom = [
+    ...(ov.textParam ? ['text'] : []),
+    ...NAME_ATTRS.filter((n) => attributes[n]),
+  ];
+  const requiresName = Boolean(ov.actionParam) && nameFrom.length > 0;
+  if (ov.actionParam && !nameFrom.length) {
+    problems.push(`${tag}: takes an Action but has no attribute a name could come from — it cannot be made accessible.`);
+  }
+
   const firstArg = ['childrenParam', 'dataParam', 'textParam'].filter((k) => ov[k]);
   if (firstArg.length > 1) {
     problems.push(`${tag}: ${firstArg.join(' and ')} all claim the first positional argument — pick one.`);
@@ -120,6 +142,7 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     ...(ov.textParam && { textParam: true }),
     ...(ov.actionParam && { actionParam: true }),
     paramOrder,
+    ...(requiresName && { requiresName: true, nameFrom }),
     attributes,
     slots: def.slots ?? [],
     events: def.events ?? [],

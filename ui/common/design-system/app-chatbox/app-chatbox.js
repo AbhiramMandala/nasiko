@@ -7,6 +7,10 @@
  * @attr {string} placeholder - Textarea placeholder text
  * @attr {boolean} no-attachments - Hide the file attachment button
  * @attr {string} transcription-callback - Name of a data-source function returning transcribed text
+ * @attr {string} aria-label - Accessible name for the message box (default: `Message`).
+ *   A placeholder is not a name: it is announced inconsistently and disappears
+ *   the moment someone starts typing. Every button in here was labelled and the
+ *   textarea itself was not.
  * @prop {string} value - Get/set the textarea value
  * @method focus - Put the caret in the composer. Pages that prefill the box
  *   (a suggested-prompt chip, a retry) set `value` then call this — before it
@@ -83,6 +87,7 @@ export class AppChatbox extends HTMLElement {
   render() {
     const noAttach = this.hasAttribute("no-attachments");
     const placeholder = this.getAttribute("placeholder") || "Type your message...";
+    const ariaLabel = this.getAttribute("aria-label") || "Message";
 
     this.innerHTML = `
       <form class="chatbox">
@@ -92,6 +97,7 @@ export class AppChatbox extends HTMLElement {
             id="textarea"
             rows="1"
             placeholder="${escAttr(placeholder)}"
+            aria-label="${escAttr(ariaLabel)}"
           ></textarea>
 
           <div class="timer" id="timer">

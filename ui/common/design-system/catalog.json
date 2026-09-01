@@ -364,6 +364,11 @@
         "transcription-callback": {
           "type": "string",
           "description": "Name of a data-source function returning transcribed text"
+        },
+        "aria-label": {
+          "type": "string",
+          "default": "Message",
+          "description": "Accessible name for the message box (default: `Message`). A placeholder is not a name: it is announced inconsistently and disappears the moment someone starts typing. Every button in here was labelled and the textarea itself was not."
         }
       },
       "slots": [],

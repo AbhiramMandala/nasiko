@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "cae82ebcff8a",
+  "catalogVersion": "befefdb595b7",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 26,
@@ -141,6 +141,11 @@
         "title",
         "aria-expanded",
         "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "text",
+        "aria-label"
       ],
       "attributes": {
         "variant": {
@@ -410,7 +415,12 @@
         "placeholder",
         "no-attachments",
         "transcription-callback",
+        "aria-label",
         "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "aria-label"
       ],
       "attributes": {
         "placeholder": {
@@ -424,6 +434,11 @@
         "transcription-callback": {
           "type": "string",
           "description": "Name of a data-source function returning transcribed text"
+        },
+        "aria-label": {
+          "type": "string",
+          "default": "Message",
+          "description": "Accessible name for the message box (default: `Message`). A placeholder is not a name: it is announced inconsistently and disappears the moment someone starts typing. Every button in here was labelled and the textarea itself was not."
         }
       },
       "slots": [],
@@ -450,6 +465,11 @@
         "value",
         "aria-label",
         "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label",
+        "aria-label"
       ],
       "attributes": {
         "checked": {
@@ -664,6 +684,11 @@
         "aria-label",
         "action"
       ],
+      "requiresName": true,
+      "nameFrom": [
+        "label",
+        "aria-label"
+      ],
       "attributes": {
         "size": {
           "type": "enum",
@@ -840,6 +865,11 @@
         "aria-label",
         "action"
       ],
+      "requiresName": true,
+      "nameFrom": [
+        "label",
+        "aria-label"
+      ],
       "attributes": {
         "checked": {
           "type": "boolean",
@@ -972,6 +1002,10 @@
         "aria-label",
         "action"
       ],
+      "requiresName": true,
+      "nameFrom": [
+        "aria-label"
+      ],
       "attributes": {
         "size": {
           "type": "enum",
@@ -1065,6 +1099,11 @@
         "aria-label",
         "value",
         "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label",
+        "aria-label"
       ],
       "attributes": {
         "size": {
@@ -1289,6 +1328,11 @@
         "value",
         "aria-label",
         "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label",
+        "aria-label"
       ],
       "attributes": {
         "checked": {

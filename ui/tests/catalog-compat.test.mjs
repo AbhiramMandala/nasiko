@@ -104,3 +104,24 @@ test('several breakages are all reported, not just the first', () => {
   );
   assert.equal(breaking.length, 2, 'one fix per run is a slow way to find out');
 });
+
+test('the trailing synthetic action slot is not compared in place', () => {
+  // `action` is always last by construction, so adding any attribute to an
+  // interactive component shifts it. Comparing it positionally would make
+  // every safe addition read as breaking — and a gate that fires on safe
+  // changes is one people learn to wave through.
+  const { breaking, additive } = classify(
+    cat({ 'app-x': card(['a', 'action']) }),
+    cat({ 'app-x': card(['a', 'b', 'action']) }),
+  );
+  assert.deepEqual(breaking, []);
+  assert.match(additive[0], /gained "b" at the end/);
+});
+
+test('a real reorder is still caught on a component that takes an action', () => {
+  const { breaking } = classify(
+    cat({ 'app-x': card(['a', 'b', 'action']) }),
+    cat({ 'app-x': card(['b', 'a', 'action']) }),
+  );
+  assert.equal(breaking.length, 1);
+});

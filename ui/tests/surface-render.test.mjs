@@ -276,3 +276,44 @@ test('a throwing root leaves the container empty and says why', () => {
   assert.equal(container.children.length, 0);
   assert.ok(diagnostics.some((d) => d.code === 'component_threw'));
 });
+
+// ── The accessibility floor ─────────────────────────────────────────────────
+// A model composes trees nobody reviews, and an unnamed control passes a
+// sighted glance perfectly. These are the cases it produces by default.
+
+test('a button with text is named', () => {
+  const { diagnostics } = draw('root = AppButton("Delete agent", "danger")');
+  assert.equal(codes(diagnostics).includes('missing_accessible_name'), false);
+});
+
+test('a button with no text and no aria-label is reported', () => {
+  const { diagnostics } = draw('root = AppButton(null, "danger")');
+  assert.ok(codes(diagnostics).includes('missing_accessible_name'));
+});
+
+test('an icon-only button needs aria-label even when it has text', () => {
+  // icon-only squares the control and hides the label, so text stops being the
+  // accessible name — the one case where "it has text" is the wrong answer.
+  const withText = draw('root = AppButton("Delete", "danger", "md", true)');
+  assert.ok(codes(withText.diagnostics).includes('missing_accessible_name'));
+
+  const labelled = draw('root = AppButton("Delete", "danger", "md", true, null, false, false, "button", "Delete agent")');
+  assert.equal(codes(labelled.diagnostics).includes('missing_accessible_name'), false);
+});
+
+test('a search box with no aria-label is reported', () => {
+  const { diagnostics } = draw('root = AppSearch("Find an agent")');
+  assert.ok(codes(diagnostics).includes('missing_accessible_name'),
+    'a placeholder is not a name — it is announced inconsistently and vanishes on the first keystroke');
+});
+
+test('a non-interactive component is not asked for a name', () => {
+  const { diagnostics } = draw('root = AppStack([], "md")');
+  assert.equal(codes(diagnostics).includes('missing_accessible_name'), false);
+});
+
+test('the diagnostic says which attributes would fix it', () => {
+  const { diagnostics } = draw('root = AppButton(null, "danger")');
+  const d = diagnostics.find((x) => x.code === 'missing_accessible_name');
+  assert.match(d.message, /text or aria-label/);
+});

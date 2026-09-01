@@ -81,6 +81,11 @@ export const CASES = [
     expect: { minQueries: 1 } },
   { id: 'terse', prompt: 'spend',
     expect: { minQueries: 1 } },
+  // Interactive controls are where a model leaves things unnamed. The
+  // renderer's missing_accessible_name diagnostic is what catches it, and
+  // every diagnostic fails a case — so an unnamed control fails this run.
+  { id: 'interactive-controls', prompt: 'Cost dashboard with a search box and buttons to change the window',
+    expect: { minQueries: 1, minActions: 1 } },
   // Not a dashboard request. agent.yaml rule 10 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.

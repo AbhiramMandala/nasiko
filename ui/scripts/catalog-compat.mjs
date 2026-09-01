@@ -51,8 +51,14 @@ export function classify(before, after) {
   for (const tag of Object.keys(b)) {
     if (!a[tag]) { breaking.push(`component ${tag} was removed — every stored call to it now names nothing`); continue; }
 
-    const bp = b[tag].paramOrder ?? [];
-    const ap = a[tag].paramOrder ?? [];
+    // `action` is not an attribute — it is a synthetic slot that is always last
+    // by construction. Comparing it in place would make *every* new attribute
+    // on an interactive component read as breaking, because adding one shifts
+    // `action` by one. That is a gate firing on safe changes, which is how a
+    // gate stops being read.
+    const trim = (p) => (p[p.length - 1] === 'action' ? p.slice(0, -1) : p);
+    const bp = trim(b[tag].paramOrder ?? []);
+    const ap = trim(a[tag].paramOrder ?? []);
     // A prefix match is the whole test. Appending is safe because a stored
     // call simply does not pass the new trailing argument; anything else
     // rebinds arguments that were already written.
