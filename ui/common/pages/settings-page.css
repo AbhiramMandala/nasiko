@@ -69,4 +69,54 @@
     justify-content: flex-end;
     padding-top: var(--s-24);
   }
+
+  /* ── SCIM provisioning (SSO tab) ─────────────────────────────────────── */
+  .scim-heading {
+    margin-top: var(--s-24);
+    margin-bottom: var(--s-8);
+    font-weight: 500;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+  }
+
+  .scim-endpoint-row { display: flex; align-items: center; gap: var(--s-8); }
+
+  .scim-endpoint {
+    padding: var(--s-8) var(--s-12);
+    background: var(--bg-input);
+    border-radius: var(--r-8);
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    user-select: all;
+  }
+
+  .scim-token-display {
+    margin-top: var(--s-12);
+    padding: var(--s-12);
+    background: var(--color-success-bg);
+    border: 1px solid var(--color-success-border);
+    border-radius: var(--r-8);
+    word-break: break-all;
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+  }
+
+  .scim-token-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-12);
+    padding: var(--s-8) 0;
+    border-top: 1px solid var(--color-border);
+
+    &:first-child { border-top: none; }
+  }
+
+  .scim-token-meta {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-top: var(--s-4);
+  }
+
+  .scim-empty { font-size: var(--font-size-sm); color: var(--color-text-muted); }
 }
