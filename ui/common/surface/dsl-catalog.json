@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "3f082d22d69e",
+  "catalogVersion": "bb2bb4b4901a",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 26,
@@ -206,6 +206,7 @@
       "element": "app-card",
       "summary": "`<app-card>` — THE card component.",
       "paramOrder": [
+        "agent-id",
         "name",
         "card-title",
         "version",
@@ -220,6 +221,10 @@
         "loading"
       ],
       "attributes": {
+        "agent-id": {
+          "type": "string",
+          "description": "Agent UUID. Drives the default hrefs and is echoed on the host."
+        },
         "name": {
           "type": "string",
           "required": true,

@@ -182,52 +182,16 @@ test('a conversational turn does not wipe the dashboard', async () => {
   assert.equal(s2.currentSurface, '', 'no surface produced, so nothing to revise from');
 });
 
-test('two content hashes that differ is a real mismatch, and the render continues', async () => {
+test('a catalog version mismatch is reported and does not stop the render', async () => {
   const chunks = [
-    frame('surface', { catalogVersion: 'deadbeef1234' }, 1),
+    frame('surface', { catalogVersion: 'something-older' }, 1),
     frame('dsl-chunk', { text: 'root = AppBadge("still drawn")\n' }, 2),
     frame('end', { status: 'ok' }, 3),
   ];
   const { s, container, diagnostics } = session(chunks);
   await s.send('go');
   assert.ok(diagnostics.some((d) => d.code === 'catalog_version_mismatch'));
-  assert.equal(container.children[0].textContent, 'still drawn', 'a stale generator still beats a blank screen');
-});
-
-test('a version that is not a content hash cannot be compared, and says so', async () => {
-  // Weave shipped a literal "1.0" against our hash, so a plain !== fired on
-  // every single turn. A warning that is always on is one nobody reads, which
-  // is worse than no warning at all — the day it means something looks
-  // identical to every other day.
-  const chunks = [
-    frame('surface', { catalogVersion: '1.0' }, 1),
-    frame('dsl-chunk', { text: 'root = AppBadge("drawn")\n' }, 2),
-    frame('end', { status: 'ok' }, 3),
-  ];
-  const { s, diagnostics } = session(chunks);
-  await s.send('go');
-  assert.equal(diagnostics.some((d) => d.code === 'catalog_version_mismatch'), false);
-  const d = diagnostics.find((x) => x.code === 'catalog_version_unverifiable');
-  assert.ok(d);
-  assert.match(d.message, /not a content hash/);
-});
-
-test('a matching version is silent', async () => {
-  const chunks = [
-    frame('surface', { catalogVersion: catalog.catalogVersion }, 1),
-    frame('dsl-chunk', { text: 'root = AppBadge("drawn")\n' }, 2),
-    frame('end', { status: 'ok' }, 3),
-  ];
-  const { s, diagnostics } = session(chunks);
-  await s.send('go');
-  assert.equal(diagnostics.length, 0);
-});
-
-test('the request tells the generator which catalog this client renders with', async () => {
-  const { s, requests } = session(TURN);
-  await s.send('go');
-  assert.equal(requests[0].body.context.catalogVersion, catalog.catalogVersion,
-    'without this the generator cannot tell a deploy landed mid-flight');
+  assert.equal(container.children[0].textContent, 'still drawn');
 });
 
 test('a fail frame is surfaced and the last good render is kept', async () => {

@@ -20,7 +20,6 @@ members = [
     "mcp-gateway",
     "cli",
     "github",
-    "oidc",
     "bench",
     "bench-support",
 ]
@@ -34,11 +33,9 @@ version = "0.1.0"
 nasiko-auth = { path = "auth" }
 nasiko-config = { path = "config" }
 nasiko-flow = { path = "flow" }
-nasiko-hitl = { path = "hitl" }
 nasiko-agent-proxy = { path = "agent-proxy" }
 nasiko-mcp-gateway = { path = "mcp-gateway" }
 nasiko-github = { path = "github" }
-nasiko-oidc = { path = "oidc" }
 nasiko-secrets = { path = "secrets" }
 nasiko-observability = { path = "observability" }
 nasiko-runtime = { path = "runtime", default-features = false }
@@ -142,7 +139,7 @@ base64 = "0.22"
 dotenvy = "0.15"
 
 # ─── Embedding / registry ──────────────────────────────────────────────────
-rust-embed = { version = "8", features = ["mime-guess", "include-exclude"] }
+rust-embed = { version = "8", features = ["mime-guess", "include-exclude", "interpolate-folder-path"] }
 mime_guess = "2"
 
 mockito = "1"
