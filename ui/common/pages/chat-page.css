@@ -68,14 +68,19 @@
   }
 
   /* ── Messages area ───────────────────────────────────────────────────── */
+  /* Full-width scroll container so the scrollbar hugs the page edge (as in
+     ChatGPT); the 900px column is capped on the rows instead. */
   .messages {
     flex: 1;
     overflow-y: auto;
-    padding: var(--s-24) var(--s-16) var(--s-24) 0;
+    padding: var(--s-24) 0;
     min-height: 0;
     width: 100%;
-    max-width: 900px;
-    margin-inline: auto;
+
+    & > * {
+      max-width: 900px;
+      margin-inline: auto;
+    }
   }
 
   /* ── Welcome / empty state ───────────────────────────────────────────── */
