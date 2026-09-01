@@ -2,7 +2,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::{StatusCode, header},
-    response::{Html, IntoResponse, Redirect},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,11 @@ use crate::state::AppState;
 /// to expire early and the user had to log in again while their token had days
 /// left.
 const COOKIE_MAX_AGE: u64 = nasiko_auth::TOKEN_EXPIRY_SECS;
+
+/// Minimum accepted password length. Shared with `users::routes::update_user`
+/// so the self-service and admin-initiated paths enforce one rule rather than
+/// two literals that drift apart.
+pub(crate) const MIN_PASSWORD_LEN: usize = 8;
 
 /// Routes shared by OSS and EE: initialize-admin and token validation.
 /// Does not include /api/auth/login — each edition registers its own login
@@ -47,8 +52,24 @@ pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<Ap
 }
 
 /// Protected auth routes — require X-User-* headers from the gateway.
-pub fn protected_router() -> Router<AppState> {
+///
+/// `change_password_limiter` bounds the two bcrypt cost-12 operations
+/// `change_password` performs. It is keyed per caller (`limit_by_user`) rather
+/// than globally: the route is authenticated, so an identity is available, and
+/// a shared bucket would let one caller block every other user's password
+/// change.
+pub fn protected_router(
+    change_password_limiter: crate::rate_limit::RateLimiter,
+) -> Router<AppState> {
+    let credential_routes = Router::new()
+        .route("/auth/change-password", post(change_password))
+        .layer(axum::middleware::from_fn_with_state(
+            change_password_limiter,
+            crate::rate_limit::limit_by_user,
+        ));
+
     Router::new()
+        .merge(credential_routes)
         .route("/auth/logout", post(logout))
         .route("/auth/system/users-for-search", get(users_for_search))
         .route("/auth/users/{id}", get(get_user_profile))
@@ -246,6 +267,158 @@ async fn logout(
         )],
         StatusCode::NO_CONTENT,
     )
+}
+
+/// Body for `POST /api/auth/change-password`.
+///
+/// No `Debug` derive, for the same reason `LoginRequest` omits it: this struct
+/// holds two cleartext passwords and must never be formattable into a log line.
+#[derive(Deserialize)]
+struct ChangePasswordRequest {
+    current_password: String,
+    new_password: String,
+}
+
+#[derive(Serialize)]
+struct ChangePasswordResponse {
+    token: String,
+    expires_in: u64,
+}
+
+/// Self-service password change — any authenticated user rotating their own
+/// credential, including the admin.
+///
+/// Distinct from `PUT /api/users/{id}`, which is superuser-only and sets
+/// *someone else's* password. This route requires the caller's current
+/// password, so a stolen session alone cannot lock the owner out of their own
+/// account.
+///
+/// Mounted under `auth` rather than `/users/me/*` deliberately: the whole
+/// `/users/*` router sits behind `require_superuser` (see
+/// `build_app_with_user_router`), which is precisely the gate this endpoint
+/// must not have. EE inherits this router unchanged, so one registration
+/// serves both editions.
+async fn change_password(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    claims: Claims,
+    Json(body): Json<ChangePasswordRequest>,
+) -> Response {
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
+
+    if body.new_password.len() < MIN_PASSWORD_LEN {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("password must be at least {MIN_PASSWORD_LEN} characters")
+            })),
+        )
+            .into_response();
+    }
+    if body.new_password == body.current_password {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "new password must differ from the current one"})),
+        )
+            .into_response();
+    }
+
+    let existing: Option<(String,)> =
+        match sqlx::query_as("SELECT access_secret_hash FROM user_credentials WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::error!(%e, %user_id, "change_password: credential lookup failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
+        };
+
+    // SSO-provisioned users have no credential row at all (directory sync
+    // inserts the user without one), so there is nothing to verify against and
+    // nothing to update. That is a 409, not a 500 — and it is reachable the
+    // moment SSO is enabled, so it must not look like a server fault.
+    let Some((current_hash,)) = existing else {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "this account signs in through your identity provider and has no local password"
+            })),
+        )
+            .into_response();
+    };
+
+    if !nasiko_auth::verify_password_async(&body.current_password, &current_hash).await {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "current password is incorrect"})),
+        )
+            .into_response();
+    }
+
+    let new_hash = match nasiko_auth::hash_password_async(&body.new_password).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!(%e, %user_id, "change_password: password hash failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+
+    if let Err(e) = sqlx::query(
+        "UPDATE user_credentials SET access_secret_hash = $2, updated_at = now() WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .bind(&new_hash)
+    .execute(&state.db)
+    .await
+    {
+        tracing::error!(%e, %user_id, "change_password: credential update failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+    }
+
+    // The old password is gone, so every session established with it goes too.
+    // Note this is only *enforced* in EE: the OSS `validate_token` decodes the
+    // JWT without consulting `auth_tokens`, so there the row is written but old
+    // sessions survive until expiry.
+    if let Err(e) = state
+        .auth
+        .revoke_tokens_for_user(&user_id.to_string())
+        .await
+    {
+        tracing::warn!(%e, %user_id, "change_password: session revocation failed");
+    }
+
+    // Issued after the revoke so the caller's replacement is not swept up by
+    // it — otherwise changing your own password would log you out immediately.
+    let identity: nasiko_auth::Identity = claims.into();
+    let secure = request_is_https(&headers);
+    match state.auth.issue_token(&identity).await {
+        Ok(token) => (
+            [(header::SET_COOKIE, set_token_cookie(&token, secure))],
+            Json(ChangePasswordResponse {
+                token,
+                expires_in: nasiko_auth::TOKEN_EXPIRY_SECS,
+            }),
+        )
+            .into_response(),
+        // The password *did* change. Reporting 500 here would tell the caller
+        // their change failed when it succeeded, and they would retry with a
+        // password that is no longer current. Clear the cookie and report
+        // success — they simply have to sign in again with the new password.
+        Err(e) => {
+            tracing::error!(%e, %user_id, "change_password: re-issuing the session token failed");
+            (
+                [(header::SET_COOKIE, clear_token_cookie(secure))],
+                StatusCode::NO_CONTENT,
+            )
+                .into_response()
+        }
+    }
 }
 
 #[derive(Deserialize)]

@@ -1,9 +1,3 @@
-// Axum handlers here deliberately return `Result<T, axum::response::Response>`
-// so `?` can short-circuit with an already-built HTTP response — clippy's
-// large-Err-variant lint doesn't fit that idiom, which is used pervasively
-// across this crate's routes.
-#![allow(clippy::result_large_err)]
-
 pub mod acl;
 pub mod admin;
 pub mod admission;
@@ -233,6 +227,10 @@ where
     let oci_limiter = RateLimiter::new(300, Duration::from_secs(60));
     let non_login_limiter = RateLimiter::new(30, Duration::from_secs(60));
     let registry_limiter = RateLimiter::new(60, Duration::from_secs(60));
+    // Per-caller, not global: /auth/change-password is authenticated, and it
+    // costs two bcrypt cost-12 hashes. 10/min is generous for a human changing
+    // their own password and still bounds the CPU burn from a scripted loop.
+    let change_password_limiter = RateLimiter::new(10, Duration::from_secs(60));
 
     // Public A2A registry (agent discovery) — see registry_a2a.rs for why it
     // is unauthenticated; the global fixed window bounds enumeration abuse.
@@ -270,7 +268,7 @@ where
         )
         .merge(agents::upload::status_router())
         .merge(github::router())
-        .merge(auth::login::protected_router())
+        .merge(auth::login::protected_router(change_password_limiter))
         .merge(transcribe::router())
         .merge(mcp::router())
         .merge(mcp_upload_routes)
