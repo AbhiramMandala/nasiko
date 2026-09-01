@@ -291,6 +291,10 @@ export class AppModuleNav extends HTMLElement {
   #nav = null;
   #mobileOpen = false;
   #tooltipFrame = 0;
+  /** Session whose chat is open in a page that is not /chat — the orchestrator
+   *  page holds a live chat at its own url, so its row cannot be found by the
+   *  href match every other row uses. */
+  #activeSessionId = null;
 
   get #collapsed() {
     const module = this.getAttribute("module") || "";
@@ -327,12 +331,17 @@ export class AppModuleNav extends HTMLElement {
     // SPA: update active state when the router changes page
     document.removeEventListener("route-change", this.#onRouteChange);
     document.addEventListener("route-change", this.#onRouteChange);
+    // A chat started on this page mints a session server-side; without this the
+    // Session group only appeared on the next load of the tree (a nav or a
+    // refresh), so the chat the user was looking at was missing from the list.
+    document.addEventListener("session-created", this.#onSessionCreated);
     this.#load();
   }
 
   disconnectedCallback() {
     this.removeEventListener("click", this.#handleClick);
     this.removeEventListener("keydown", this.#handleKeyDown);
+    document.removeEventListener("session-created", this.#onSessionCreated);
     cancelAnimationFrame(this.#tooltipFrame);
   }
 
@@ -413,7 +422,16 @@ export class AppModuleNav extends HTMLElement {
     this.#render();
   }
 
+  /** Re-fetch the tree so a just-created chat shows up in the Session group.
+   *  #load() repaints from the cache first, so the visible rows never flash. */
+  #onSessionCreated = (e) => {
+    this.#activeSessionId = e.detail?.sessionId || null;
+    this.#load();
+  };
+
   #onRouteChange = () => {
+    // Leaving the page drops the in-page chat that row stood for.
+    this.#activeSessionId = null;
     // Re-evaluate which link is active after SPA navigation
     this.querySelectorAll("a.row[href]").forEach((a) => {
       const active = this.#isActive(a.getAttribute("href"));
@@ -653,7 +671,12 @@ export class AppModuleNav extends HTMLElement {
         data-section="${escHtml(item.section)}" ${active ? 'aria-current="true"' : ""}>
         <span class="row-label">${escHtml(item.label)}</span></${item.url ? "a" : "button"}>`;
     }
-    const active = this.#isActive(item.url);
+    // A live in-page chat owns the highlight outright (see #activeSessionId):
+    // its row is not reachable by the href match, and leaving "Orchestrate a
+    // task" lit alongside it would highlight two rows at once.
+    const active = this.#activeSessionId
+      ? item.sessionId === this.#activeSessionId
+      : this.#isActive(item.url);
     const link = `<a class="row ${cls}${active ? " is-active" : ""}" href="${escHtml(item.url)}"
       ${active ? 'aria-current="page"' : ""}><span class="row-label">${escHtml(item.label)}</span></a>`;
     if (item.sessionId == null) return link;
