@@ -4,8 +4,8 @@
 //! test creates and drops its own scratch database so tests can run
 //! concurrently without colliding.
 
+use nasiko_hitl::HitlStatus;
 use nasiko_hitl::repo::{self, NewAuthRequired, NewSessionGrant, NewToolApproval, ResolveDecision};
-use nasiko_hitl::{HitlStatus, authorize_hitl_action};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
@@ -288,8 +288,8 @@ async fn authorize_hitl_action_denies_a_different_owner() {
             .await
             .expect("create pending row");
 
-    assert!(authorize_hitl_action(&request, db.owner_user_id));
-    assert!(!authorize_hitl_action(&request, other_user_id));
+    assert!(repo::authorize_hitl_action(&request, db.owner_user_id));
+    assert!(!repo::authorize_hitl_action(&request, other_user_id));
 }
 
 #[tokio::test]

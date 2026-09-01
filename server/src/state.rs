@@ -251,8 +251,27 @@ impl AppState {
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
 
         // Spawn the HITL resume dispatcher — same shape as the build worker above.
+        // Handles `direct_chat`/`agent_proxy`-origin rows (real A2A task resume); its own
+        // `claim_for_resume` is scoped to just those two origins.
         let hitl_state = state.clone();
         tokio::spawn(crate::hitl::run(hitl_state, hitl_resume_rx));
+
+        // The `mcp_tool`-origin resume dispatcher (AuthRequired's auto-resume nudge, and any
+        // ToolApproval push) — lives inside `nasiko-hitl` since it isn't A2A-task-shaped (an MCP
+        // tool call has no `task_id` to resume; `RuntimeResumeNotifier` sends a standalone nudge
+        // message instead). Its own `claim_for_resume` is scoped to `origin = 'mcp_tool'`, so it
+        // can run alongside the dispatcher above without racing it for the same rows.
+        let resume_notifier: Arc<dyn nasiko_hitl::ResumeNotifier> =
+            Arc::new(nasiko_hitl::RuntimeResumeNotifier::new(
+                state.db.clone(),
+                state.runtime.clone(),
+                state.http_client.clone(),
+            ));
+        tokio::spawn(nasiko_hitl::dispatcher::run(
+            state.db.clone(),
+            resume_notifier,
+            nasiko_hitl::DispatcherConfig::default(),
+        ));
 
         // Container-hours meter: records per-instance run sessions for billing
         // (see agents/hours_meter.rs). 0 disables — used by tests that drive

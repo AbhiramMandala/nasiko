@@ -22,11 +22,13 @@ async fn pool() -> PgPool {
     // necessarily reset between invocations; a leftover row from an earlier run (e.g. an
     // unclaimed `resolved` row from a previous `stale_lease_is_reclaimable` run) would otherwise
     // outrank a fresh test's own fixture in `claim_for_resume`'s `ORDER BY resolved_at` and make
-    // the test flaky. This table belongs entirely to this crate, so truncating it here is safe.
-    sqlx::query("TRUNCATE hitl_requests")
+    // the test flaky. Both tables belong entirely to this crate (`mcp_session_tool_grants`
+    // foreign-keys onto `hitl_requests`, so a bare `TRUNCATE hitl_requests` fails without it),
+    // so truncating both here is safe.
+    sqlx::query("TRUNCATE mcp_session_tool_grants, hitl_requests")
         .execute(&pool)
         .await
-        .expect("truncate hitl_requests before the suite runs");
+        .expect("truncate hitl_requests/mcp_session_tool_grants before the suite runs");
     pool
 }
 

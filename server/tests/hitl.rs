@@ -75,7 +75,7 @@ async fn list_pending_returns_only_the_callers_own_rows() {
     let other = seed_user(&server, "hitl-other-1").await;
     let agent_id = seed_agent(&server, owner, "hitl-test-agent-1").await;
 
-    seed_pending_tool_approval(
+    let owned_request_id = seed_pending_tool_approval(
         &server,
         agent_id,
         owner,
@@ -110,7 +110,9 @@ async fn list_pending_returns_only_the_callers_own_rows() {
         1,
         "must only see the caller's own pending row: {rows:?}"
     );
-    assert_eq!(rows[0]["owner_user_id"], json!(owner.to_string()));
+    // `owner_user_id` isn't part of the response DTO — `list_pending_for`'s own DB-level
+    // scoping is what's under test here, so identity is confirmed via `id` instead.
+    assert_eq!(rows[0]["id"], json!(owned_request_id.to_string()));
     assert_eq!(rows[0]["status"], json!("pending"));
 
     server.cleanup().await;
@@ -188,8 +190,9 @@ async fn owner_can_approve_a_pending_request() {
     .unwrap();
     assert_eq!(res.status(), 200);
     let body = res.json::<Value>().await.unwrap();
-    assert_eq!(body["data"]["status"], json!("resolved"));
-    assert_eq!(body["data"]["resolved_by"], json!(owner.to_string()));
+    // Unlike `list_pending`, `resolve`'s response is the DTO directly — no `data` wrapper —
+    // and `resolved_by` isn't part of it; verified via the direct DB query below instead.
+    assert_eq!(body["status"], json!("resolved"));
 
     let (status, resolved_by, human_response): (String, Option<Uuid>, Value) = sqlx::query_as(
         "SELECT status, resolved_by, human_response FROM hitl_requests WHERE id = $1",
@@ -247,7 +250,7 @@ async fn owner_can_reject_a_pending_request() {
 
 #[tokio::test]
 #[serial]
-async fn resolving_an_already_resolved_request_returns_conflict() {
+async fn resolving_an_already_resolved_request_is_idempotent() {
     let server = common::TestServer::start().await;
     let owner = seed_user(&server, "hitl-owner-5").await;
     let agent_id = seed_agent(&server, owner, "hitl-test-agent-5").await;
@@ -285,7 +288,12 @@ async fn resolving_an_already_resolved_request_returns_conflict() {
     .send()
     .await
     .unwrap();
-    assert_eq!(second.status(), 409);
+    // A row that's already `resolved` (not `expired`) is an idempotent 200, not a conflict —
+    // matching `resolve`'s own convention for a lost double-resolve race. `already_resolved`
+    // in the body is what distinguishes this from a fresh decision being applied.
+    assert_eq!(second.status(), 200);
+    let second_body = second.json::<Value>().await.unwrap();
+    assert_eq!(second_body["already_resolved"], json!(true));
 
     let status: String = sqlx::query_scalar("SELECT status FROM hitl_requests WHERE id = $1")
         .bind(request_id)

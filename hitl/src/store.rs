@@ -333,10 +333,17 @@ impl HitlStore for PgHitlStore {
 
         let mut tx = self.pool.begin().await?;
 
+        // Scoped to the two origins this dispatcher actually knows how to deliver (a real A2A
+        // task resume via `task_id` — `deliver()` fails outright on anything else). `mcp_tool`
+        // rows have no `task_id` at all and are claimed by `oss/hitl`'s own dispatcher instead
+        // (`nasiko_hitl::repo::claim_for_resume`, scoped the other way) — without this filter
+        // the two dispatchers would race on the same rows and fail whichever they claimed by
+        // mistake.
         let row: Option<HitlRequestRow> = sqlx::query_as(
             "SELECT * FROM hitl_requests
               WHERE status = 'resolved' AND resume_status = 'not_started'
                 AND (resume_claimed_at IS NULL OR resume_claimed_at < $1)
+                AND origin IN ('direct_chat', 'agent_proxy')
               ORDER BY resolved_at
               FOR UPDATE SKIP LOCKED
               LIMIT 1",

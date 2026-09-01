@@ -37,17 +37,19 @@ pub fn router() -> Router<AppState> {
         .route("/hitl/{id}/stream", get(stream_one))
 }
 
-/// `input_required`/`auth_required` resolve shape (§11). `decision`/`scope`/`message` exist for
-/// forward-compat with Phase 6's `tool_approval` payload but are rejected here (§11 kinds this
-/// pass doesn't support resolving yet).
+/// Covers every `HitlKind`'s resolve shape: `answer` for `input_required`, `auth_action` for
+/// `auth_required`'s two-click start/confirm, `decision`/`scope`/`note` for `tool_approval`'s
+/// approve-once/approve-session/reject. `message` is unused — reserved, not yet part of any kind's
+/// contract.
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct HitlResolveRequest {
     answer: Option<String>,
     auth_action: Option<String>,
-    #[allow(dead_code)]
     decision: Option<String>,
-    #[allow(dead_code)]
     scope: Option<String>,
+    /// Free-form, audit-only note from the human — stored verbatim in `human_response` for
+    /// `tool_approval`, never interpreted by this handler.
+    note: Option<String>,
     #[allow(dead_code)]
     message: Option<String>,
 }
@@ -151,13 +153,78 @@ async fn resolve(
         )
             .into_response();
     }
+    // The finalized three-action dialog: allow once, allow for this session, deny — no `always`.
+    // `scope` only matters on `approve`; defaults to `once` when omitted, so an existing caller
+    // that never sends it keeps single-use behavior unchanged.
     if row.kind == HitlKind::ToolApproval {
-        // Phase 6's `once`/`session`/`always` scoped approval flow isn't wired up yet.
-        return (
-            StatusCode::BAD_REQUEST,
-            "tool_approval resolution is not supported by this endpoint yet",
-        )
-            .into_response();
+        let approve = match payload.decision.as_deref() {
+            Some("approve") => true,
+            Some("reject") => false,
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "decision must be \"approve\" or \"reject\" for tool_approval",
+                )
+                    .into_response();
+            }
+        };
+        let scope = match payload.scope.as_deref() {
+            None | Some("once") => "once",
+            Some("session") => "session",
+            Some(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "scope must be \"once\" or \"session\"",
+                )
+                    .into_response();
+            }
+        };
+
+        let status = if approve {
+            HitlStatus::Resolved
+        } else {
+            HitlStatus::Rejected
+        };
+        let human_response = json!({
+            "decision": if approve { "approve" } else { "reject" },
+            "scope": if approve { Some(scope) } else { None },
+            "note": payload.note,
+        });
+
+        let outcome = match state
+            .hitl_store
+            .resolve(id, human_response, user_id, status)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        };
+
+        let (row, already_resolved) = match outcome {
+            ResolveOutcome::Applied(row) => {
+                if approve && scope == "session" {
+                    grant_session_scope(&state, &row, user_id).await;
+                }
+                // Best-effort latency optimization — the dispatcher's own poll loop is
+                // the real delivery guarantee, same as the shared path below.
+                let _ = state.hitl_resume_tx.try_send(());
+                (row, false)
+            }
+            ResolveOutcome::AlreadyDecided(row) if row.status == HitlStatus::Expired => {
+                return (
+                    StatusCode::CONFLICT,
+                    "this HITL request expired before it was answered",
+                )
+                    .into_response();
+            }
+            ResolveOutcome::AlreadyDecided(row) => (row, true),
+        };
+
+        let mut body = to_response(&row);
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("already_resolved".to_string(), json!(already_resolved));
+        }
+        return Json(body).into_response();
     }
     if row.kind == HitlKind::InputRequired && payload.answer.is_none() {
         return (
@@ -251,6 +318,44 @@ async fn resolve(
         obj.insert("already_resolved".to_string(), json!(already_resolved));
     }
     Json(body).into_response()
+}
+
+/// Best-effort: record the `mcp_session_tool_grants` row an approved `scope=session` decision
+/// promises. `connector_id`/`tool_name`/`context_id` are guaranteed present by
+/// `chk_hitl_tool_approval_identity` for any `kind=tool_approval` row, which the caller has
+/// already confirmed `row` is. A failure here is logged but never turned into an error response —
+/// the resolution itself already succeeded and is the authoritative outcome; worst case the
+/// agent's retry finds no grant and gets asked again, which is safe (never silently
+/// over-permissive), just not maximally convenient.
+async fn grant_session_scope(state: &AppState, row: &HitlRequest, granted_by: Uuid) {
+    let (Some(connector_id), Some(tool_name), Some(context_id)) = (
+        row.connector_id,
+        row.tool_name.clone(),
+        row.context_id.clone(),
+    ) else {
+        tracing::error!(
+            id = %row.id,
+            "resolve: scope=session approved but tool_approval identity fields are missing — \
+             this should be impossible under chk_hitl_tool_approval_identity"
+        );
+        return;
+    };
+
+    if let Err(e) = nasiko_hitl::repo::create_session_grant(
+        &state.db,
+        nasiko_hitl::NewSessionGrant {
+            agent_id: row.agent_id,
+            connector_id,
+            tool_name,
+            context_id,
+            granted_by,
+            hitl_request_id: Some(row.id),
+        },
+    )
+    .await
+    {
+        tracing::error!(error = %e, id = %row.id, "resolve: failed to create session grant");
+    }
 }
 
 /// Lets the row's owner withdraw a pending request they no longer want answered — e.g. they

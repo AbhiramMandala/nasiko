@@ -414,6 +414,12 @@ pub const DEFAULT_RESUME_LEASE_MINUTES: i64 = 2;
 /// Concurrency-safe via `FOR UPDATE SKIP LOCKED` in the inner subquery: two
 /// concurrent callers racing this same query can never claim the same row,
 /// mirroring `build_worker::claim_next_job`'s own claim pattern.
+/// Scoped to `origin = 'mcp_tool'` — this dispatcher's `RuntimeResumeNotifier` sends a
+/// standalone nudge message, not a resumed A2A task, so it's only correct for MCP-originated
+/// rows. `direct_chat`/`agent_proxy` rows have their own dispatcher
+/// (`oss/server/src/hitl/mod.rs`) with a different delivery mechanism (a true A2A task resume,
+/// which requires a `task_id` this origin never has) — without this filter, the two dispatchers
+/// would race to claim each other's rows and fail whichever they won incorrectly.
 pub async fn claim_for_resume(db: &PgPool) -> Result<Option<HitlRequest>> {
     let row = sqlx::query_as::<_, HitlRequestRow>(
         r#"
@@ -423,6 +429,7 @@ pub async fn claim_for_resume(db: &PgPool) -> Result<Option<HitlRequest>> {
              SELECT id FROM hitl_requests
               WHERE status = 'resolved' AND resume_status = 'not_started'
                 AND resume_claimed_at IS NULL
+                AND origin = 'mcp_tool'
               ORDER BY created_at
               FOR UPDATE SKIP LOCKED
               LIMIT 1
