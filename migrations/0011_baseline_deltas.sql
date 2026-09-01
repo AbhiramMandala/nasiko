@@ -21,8 +21,8 @@
 ALTER TABLE agents ALTER COLUMN protocol_version SET DEFAULT '0.3.0';
 
 -- ── agents.status: admit 'crashed' ───────────────────────────────────────────
--- The EE crash-loop guardian (ee/server/src/crash_guardian.rs) writes 'crashed'
--- when a K8s deployment enters CrashLoopBackOff. The column had no CHECK at all
+-- The enterprise crash-loop guardian writes 'crashed' when a Kubernetes
+-- deployment enters CrashLoopBackOff. The column had no CHECK at all
 -- in the original baseline; adding one without 'crashed' would make that UPDATE
 -- fail with SQLSTATE 23514 and leave the row 'running' forever, so the crash
 -- would never surface in the API or the UI. Mirrors the deployment_status enum.
