@@ -276,11 +276,6 @@ class ChatPage extends HTMLElement {
         const session = body.data || body;
         this.#sessionId = session.session_id || session.id;
         if (!this.#sessionId) throw new Error("Session created without an id");
-        // The module nav lists chat sessions — tell it there is a new one, and
-        // which one, so it can highlight the row for the chat on screen.
-        document.dispatchEvent(new CustomEvent("session-created", {
-          detail: { sessionId: this.#sessionId },
-        }));
         const params = new URLSearchParams(location.search);
         const nameParam = params.get("agent_name")
           ? `&agent_name=${encodeURIComponent(params.get("agent_name"))}`

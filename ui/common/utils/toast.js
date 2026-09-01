@@ -50,19 +50,10 @@ styles.replaceSync(`@scope (.app-toast-container) {
     asserts these against the same numbers to catch drift.
   */
   :scope {
-    /* Manual popover: <dialog>.showModal() paints in the top layer, which no
-       z-index can reach, so a toast fired from inside a modal sat under the
-       backdrop. The rest of this block resets the UA popover styles. */
     position: fixed;
-    inset: auto var(--s-24) var(--s-24) auto;
-    margin: 0;
-    border: 0;
-    padding: 0;
-    background: none;
-    width: auto;
-    height: auto;
-    overflow: visible;
-    z-index: var(--z-toast);
+    bottom: var(--s-24);
+    right: var(--s-24);
+    z-index: 9999;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
@@ -222,7 +213,6 @@ class ToastManager {
   constructor() {
     this.container = document.createElement('div');
     this.container.className = 'app-toast-container';
-    this.container.popover = 'manual';
     document.body.appendChild(this.container);
   }
 
@@ -261,10 +251,6 @@ class ToastManager {
       });
     }
 
-    // Re-entering the top layer puts the container above any dialog opened
-    // since the last toast — top-layer order is order of entry, not z-index.
-    if (this.container.matches(':popover-open')) this.container.hidePopover();
-    this.container.showPopover?.();
     this.container.appendChild(el);
     // duration 0 = persistent. The Loading type defaults to it: a spinner that
     // vanishes on a timer says "done" when nothing finished.

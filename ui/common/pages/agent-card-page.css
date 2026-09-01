@@ -13,6 +13,22 @@
     gap: var(--s-16);
     margin-bottom: var(--s-24);
   }
+  .acp-back {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-h-md);
+    height: var(--control-h-md);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+    text-decoration: none;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .acp-back:hover {
+    background: var(--bg-surface-hover);
+  }
   .acp-topbar-actions {
     display: flex;
     align-items: center;
@@ -432,7 +448,6 @@
   .acp-access-head .acp-section-sub { margin-bottom: 0; }
   .acp-access-search {
     display: block;
-    width:580px;
     margin-bottom: var(--s-12);
     --search-bg: var(--bg-input);
   }
@@ -659,7 +674,7 @@
   .acp-field {
     display: flex;
     flex-direction: column;
-    /* input/layout/label-gap — the same 8 <app-input>'s own .field uses, so a
+    /* input/*/layout/label-gap — the same 8 <app-input>'s own .field uses, so a
        raw field lines up with a design-system one in the same form. */
     gap: var(--s-8);
     /* Some of these wrappers ARE the <label>; the global form-label margin

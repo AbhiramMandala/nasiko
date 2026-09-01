@@ -23,7 +23,7 @@ import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-tabs/app-tabs.js';
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
-import '/common/utils/back-link.js';
+import { navigate as routerNavigate } from '../core/router.js';
 
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -50,8 +50,7 @@ class ObservabilitySessionPage extends HTMLElement {
 
     this.innerHTML = `
       <div class="page-head">
-        <app-button variant="tertiary" size="sm" icon-only href="/sessions" data-back
-          aria-label="Back">${icons.arrowLeft()}</app-button>
+        <app-button variant="tertiary" icon-only id="back-btn" aria-label="Back">${icons.arrowLeft()}</app-button>
         <h1 class="page-title">${escHtml(this.#sessionId)}</h1>
       </div>
       <app-stat-row id="kpi-strip" loading="5"></app-stat-row>
@@ -70,6 +69,9 @@ class ObservabilitySessionPage extends HTMLElement {
       </div>
     `;
 
+    this.querySelector('#back-btn').addEventListener('click', () => {
+      routerNavigate('/sessions');
+    });
     this.querySelector('#chat-pane').addEventListener('click', (e) => {
       if (e.target.closest('.pane-collapse')) {
         this.querySelector('.panes').classList.toggle('chat-collapsed');

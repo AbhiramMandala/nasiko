@@ -2,17 +2,7 @@ import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
 import { initialView, syncView } from '/common/utils/module-view.js';
 
-import { loadCss } from '/common/utils/css.js';
-const styles = await loadCss(new URL('./settings-page.css', import.meta.url));
-import { call } from '../core/data-sources.js';
-// The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
-// gutter it pins into. Nothing imported it, so under the client router the
-// gutter was reserved and the nav never upgraded.
-import '/common/features/app-module-nav.js';
-import '/common/design-system/app-button/app-button.js';
-import '/common/design-system/app-input/app-input.js';
-import '/common/design-system/app-select/app-select.js';
-
+import styles from './settings-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 // Every field below must exist in the server's `SettingsUpdate`
@@ -26,7 +16,7 @@ const TABS = [
   { key: 'general', label: 'General', sub: 'Routing defaults and platform behaviour.' },
   { key: 'limits', label: 'Flow limits', sub: 'Cascade guards applied to every inter-agent call.' },
   { key: 'registry', label: 'Registry', sub: 'External OCI registry used for agent images.' },
-  { key: 'sso', label: 'Single sign-on', sub: 'OIDC provider used for "Continue with Microsoft".' },
+  { key: 'sso', label: 'Single sign-on', sub: 'Configure your identity provider for SSO, SCIM, and directory sync.' },
 ];
 
 // The key web/settings.html gives this element as a `data-view` of the Settings
@@ -56,7 +46,6 @@ class SettingsPage extends HTMLElement {
     this.#section = initialView(TABS.map(t => t.key), TABS[0].key);
 
     this.innerHTML = `
-      <app-module-nav module="settings"></app-module-nav>
       <div class="content">
         ${TABS.map(t => `
           <div class="panel-head${t.key === this.#section ? ' is-active' : ''}" data-panel-head="${t.key}">
@@ -68,41 +57,42 @@ class SettingsPage extends HTMLElement {
         <div class="panel${this.#section === 'general' ? ' is-active' : ''}" data-panel="general">
           <div class="setting-row">
             <div class="setting-info">
-              <label>Router model</label>
+              <label for="s-router-model">Router model</label>
               <div class="hint">Model the routing engine uses to pick an agent for each query (<code>ROUTER_MODEL</code>).</div>
             </div>
             <div class="setting-control">
-              <app-input type="text" id="s-router-model" data-field="router_model" placeholder="e.g. gpt-4o" aria-label="Router model"></app-input>
+              <input type="text" id="s-router-model" data-field="router_model" placeholder="e.g. gpt-4o" />
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label>Default provider</label>
+              <label for="s-default-provider">Default provider</label>
               <div class="hint">Provider used when an agent has no LLM config of its own.</div>
             </div>
             <div class="setting-control">
-              <app-select id="s-default-provider" data-field="default_provider" aria-label="Default provider">
+              <select id="s-default-provider" data-field="default_provider">
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
                 <option value="gemini">Gemini</option>
-              </app-select>
+              </select>
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label>Agent catalog tabs</label>
-              <div class="hint">Comma separated agent tags pinned as the catalog's filter tabs. Leave empty to derive tabs from the most common tags across agents.</div>
+              <label for="s-catalog-tabs">Agent catalog tabs</label>
+              <div class="hint">Comma-separated agent tags pinned as the catalog's filter tabs. Leave empty to derive tabs from the most common tags across agents.</div>
             </div>
             <div class="setting-control">
-              <app-input type="text" id="s-catalog-tabs" data-field="catalog_tabs" data-allow-empty placeholder="e.g. devops, finance, support" aria-label="Agent catalog tabs"></app-input>
+              <input type="text" id="s-catalog-tabs" data-field="catalog_tabs" data-allow-empty placeholder="e.g. devops, finance, support" />
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
               <label>Provider API keys</label>
-              <div class="hint">Keys aren't stored here. Each routing config references one of your
+              <div class="hint">Keys aren't stored here — each routing config references one of your
                 encrypted secrets. Manage them on the
-                <a href="/llm-router">LLM router</a> and <a href="/secrets">Secrets</a> pages.</div>
+                <a href="/llm-router.html">LLM router</a> and
+                <a href="/settings.html?view=secrets">Secrets</a> pages.</div>
             </div>
             <div class="setting-control"></div>
           </div>
@@ -111,38 +101,38 @@ class SettingsPage extends HTMLElement {
         <div class="panel${this.#section === 'limits' ? ' is-active' : ''}" data-panel="limits">
           <div class="setting-row">
             <div class="setting-info">
-              <label>Max call depth</label>
-              <div class="hint">How many agent to agent hops one flow may chain before it's rejected.</div>
+              <label for="s-flow-depth">Max call depth</label>
+              <div class="hint">How many agent-to-agent hops one flow may chain before it's rejected.</div>
             </div>
             <div class="setting-control">
-              <app-input type="number" id="s-flow-depth" data-field="max_flow_depth" min="1" aria-label="Max call depth"></app-input>
+              <input type="number" id="s-flow-depth" data-field="max_flow_depth" min="1" />
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label>Max fan out</label>
+              <label for="s-flow-fanout">Max fan-out</label>
               <div class="hint">Maximum agents a single flow may call in total.</div>
             </div>
             <div class="setting-control">
-              <app-input type="number" id="s-flow-fanout" data-field="max_flow_fan_out" min="1" aria-label="Max fan out"></app-input>
+              <input type="number" id="s-flow-fanout" data-field="max_flow_fan_out" min="1" />
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label>Token budget per flow</label>
+              <label for="s-flow-tokens">Token budget per flow</label>
               <div class="hint">Combined prompt + completion tokens a flow may spend.</div>
             </div>
             <div class="setting-control">
-              <app-input type="number" id="s-flow-tokens" data-field="max_flow_tokens" min="1" aria-label="Token budget per flow"></app-input>
+              <input type="number" id="s-flow-tokens" data-field="max_flow_tokens" min="1" />
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
-              <label>Flow timeout (seconds)</label>
-              <div class="hint">Wall clock limit for a whole flow.</div>
+              <label for="s-flow-timeout">Flow timeout (seconds)</label>
+              <div class="hint">Wall-clock limit for a whole flow.</div>
             </div>
             <div class="setting-control">
-              <app-input type="number" id="s-flow-timeout" data-field="flow_timeout_secs" min="1" aria-label="Flow timeout (seconds)"></app-input>
+              <input type="number" id="s-flow-timeout" data-field="flow_timeout_secs" min="1" />
             </div>
           </div>
         </div>
@@ -150,18 +140,18 @@ class SettingsPage extends HTMLElement {
         <div class="panel${this.#section === 'registry' ? ' is-active' : ''}" data-panel="registry">
           <div class="setting-row">
             <div class="setting-info">
-              <label>OCI registry URL</label>
+              <label for="s-registry-url">OCI registry URL</label>
               <div class="hint">Where imported agent images are pulled from.</div>
             </div>
             <div class="setting-control">
-              <app-input type="url" id="s-registry-url" data-field="registry_url" data-allow-empty placeholder="https://registry.example.com" aria-label="OCI registry URL"></app-input>
+              <input type="url" id="s-registry-url" data-field="registry_url" data-allow-empty placeholder="https://registry.example.com" />
             </div>
           </div>
           <div class="setting-row">
             <div class="setting-info">
               <label>Registry credentials</label>
-              <div class="hint">Per agent pull credentials are issued by the platform, and the
-                cluster-wide build credential comes from <code>BUILD_PUSH_TOKEN</code>, neither is
+              <div class="hint">Per-agent pull credentials are issued by the platform, and the
+                cluster-wide build credential comes from <code>BUILD_PUSH_TOKEN</code> — neither is
                 configured from this page.</div>
             </div>
             <div class="setting-control"></div>
@@ -171,64 +161,102 @@ class SettingsPage extends HTMLElement {
         <div class="panel${this.#section === 'sso' ? ' is-active' : ''}" data-panel="sso">
           <div class="setting-row">
             <div class="setting-info">
-              <label>Issuer URL</label>
-              <div class="hint">Your IdP's discovery base URL, e.g. <code>https://login.microsoftonline.com/&lt;tenant&gt;/v2.0</code>.</div>
+              <label for="s-idp-kind">Identity provider</label>
+              <div class="hint">Select your enterprise IdP. SCIM provisioning is auto-enabled when SSO is configured. Directory sync is available for Microsoft Entra.</div>
             </div>
             <div class="setting-control">
-              <app-input type="url" id="s-oidc-issuer" data-field="oidc_issuer_url" data-allow-empty aria-label="Issuer URL"></app-input>
+              <select id="s-idp-kind">
+                <option value="">Not configured</option>
+                <option value="entra">Microsoft Entra ID</option>
+                <option value="okta">Okta</option>
+              </select>
             </div>
           </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label>Client ID</label>
+          <div id="sso-fields" style="display:none">
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="s-oidc-issuer">Issuer URL</label>
+                <div class="hint" id="s-issuer-hint"></div>
+              </div>
+              <div class="setting-control">
+                <input type="url" id="s-oidc-issuer" data-field="oidc_issuer_url" data-allow-empty />
+              </div>
             </div>
-            <div class="setting-control">
-              <app-input type="text" id="s-oidc-client-id" data-field="oidc_client_id" data-allow-empty aria-label="Client ID"></app-input>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="s-oidc-client-id">Client ID</label>
+                <div class="hint" id="s-client-id-hint"></div>
+              </div>
+              <div class="setting-control">
+                <input type="text" id="s-oidc-client-id" data-field="oidc_client_id" data-allow-empty />
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="s-oidc-client-secret">Client secret</label>
+                <div class="hint" id="s-oidc-secret-state">Write-only — leave blank to keep the stored secret.</div>
+              </div>
+              <div class="setting-control">
+                <input type="password" id="s-oidc-client-secret" data-field="oidc_client_secret" placeholder="unchanged" />
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="s-oidc-redirect">Redirect URI</label>
+                <div class="hint">Must match the URI registered in your IdP app. Copy this value into your IdP's allowed redirect URIs.</div>
+              </div>
+              <div class="setting-control">
+                <input type="url" id="s-oidc-redirect" data-field="oidc_redirect_uri" data-allow-empty placeholder="${window.location.origin}/api/auth/oidc/callback" />
+              </div>
             </div>
           </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label>Client secret</label>
-              <!-- No data-allow-empty: the server treats an empty string as
-                   "clear the secret" and an absent field as "leave it alone",
-                   so a blank box must not be submitted. -->
-              <div class="hint" id="s-oidc-secret-state">Write-only — leave blank to keep the stored secret.</div>
-            </div>
-            <div class="setting-control">
-              <app-input type="password" id="s-oidc-client-secret" data-field="oidc_client_secret" placeholder="unchanged" aria-label="Client secret"></app-input>
+
+          <div id="sso-status" style="display:none">
+            <div class="setting-row">
+              <div class="setting-info">
+                <label>Status</label>
+              </div>
+              <div class="setting-control" id="s-sso-status-badges"></div>
             </div>
           </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label>Redirect URI</label>
-              <div class="hint">Must match the IdP registration exactly.</div>
+
+          <div id="scim-section" style="display:none">
+            <div style="margin-top:1.5rem;margin-bottom:0.5rem;font-weight:600;font-size:0.95rem;color:var(--text-primary, #1a1a1a)">SCIM provisioning</div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label>Tenant URL</label>
+                <div class="hint">Copy this URL into your IdP's SCIM provisioning "Tenant URL" field.</div>
+              </div>
+              <div class="setting-control">
+                <div style="display:flex;align-items:center;gap:0.5rem">
+                  <code id="s-scim-endpoint" style="padding:0.5rem 0.75rem;background:var(--sand-100, #f5f5f0);border-radius:var(--r-8);font-size:0.85rem;user-select:all">${window.location.origin}/scim/v2</code>
+                  <button type="button" id="btn-copy-scim-url" style="padding:0.35rem 0.75rem;font-size:0.8rem;cursor:pointer;border-radius:var(--r-8)">Copy</button>
+                </div>
+              </div>
             </div>
-            <div class="setting-control">
-              <app-input type="url" id="s-oidc-redirect" data-field="oidc_redirect_uri" data-allow-empty aria-label="Redirect URI"></app-input>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label>Secret Token</label>
+                <div class="hint">Generate a bearer token and paste it into your IdP's SCIM "Secret Token" field. The token is shown only once — copy it immediately.</div>
+              </div>
+              <div class="setting-control">
+                <button type="button" id="btn-generate-scim-token" style="width:auto;padding:0.5rem 1.25rem;font-size:0.9rem;cursor:pointer;border:1px solid var(--border-default, #ccc);border-radius:var(--r-8, 6px);background:var(--color-bg-surface, #fff)">Generate new token</button>
+                <div id="s-scim-token-display" style="display:none;margin-top:0.75rem;padding:0.75rem;background:var(--color-success-bg, #e6f4ea);border:1px solid var(--color-success, #1e7e34);border-radius:var(--r-8);word-break:break-all;font-size:0.85rem;font-family:monospace"></div>
+              </div>
             </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label>Scopes</label>
-              <div class="hint">Space separated. Defaults to <code>openid profile email</code>.</div>
-            </div>
-            <div class="setting-control">
-              <app-input type="text" id="s-oidc-scopes" data-field="oidc_scopes" data-allow-empty placeholder="openid profile email" aria-label="Scopes"></app-input>
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label>Button label</label>
-              <div class="hint">Overrides the sign in button text.</div>
-            </div>
-            <div class="setting-control">
-              <app-input type="text" id="s-oidc-label" data-field="oidc_provider_label" data-allow-empty placeholder="Microsoft" aria-label="Button label"></app-input>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label>Active tokens</label>
+              </div>
+              <div class="setting-control">
+                <div id="s-scim-token-list" style="font-size:0.9rem"></div>
+              </div>
             </div>
           </div>
         </div>
 
         <div class="save-bar">
-          <app-button id="btn-save">Save changes</app-button>
+          <button class="save-btn" id="btn-save">Save changes</button>
         </div>
       </div>
     `;
@@ -245,6 +273,18 @@ class SettingsPage extends HTMLElement {
     if (this.#isActiveView()) this.#highlightNav(this.#section);
 
     this.querySelector('#btn-save').addEventListener('click', () => this.#save());
+
+    // IdP picker drives field visibility + hints
+    const idpSelect = this.querySelector('#s-idp-kind');
+    idpSelect?.addEventListener('change', () => this.#updateIdpFields(idpSelect.value));
+
+    // SCIM token generation + copy URL
+    this.querySelector('#btn-generate-scim-token')?.addEventListener('click', () => this.#generateScimToken());
+    this.querySelector('#btn-copy-scim-url')?.addEventListener('click', () => {
+      const url = this.querySelector('#s-scim-endpoint')?.textContent;
+      if (url) { navigator.clipboard.writeText(url); showToast('SCIM URL copied'); }
+    });
+
     this.#load();
   }
 
@@ -294,19 +334,156 @@ class SettingsPage extends HTMLElement {
   };
 
   async #load() {
-    const s = await call('fetchSettings');
+    const s = await window.fetchSettings();
     if (!s) return;
     this.#settings = s;
     this.querySelectorAll('[data-field]').forEach(el => {
       if (s[el.dataset.field] != null) el.value = s[el.dataset.field];
     });
 
-    // The secret itself is never returned — only whether one is stored.
+    // Secret state indicator
     const secretState = this.querySelector('#s-oidc-secret-state');
     if (secretState) {
       secretState.textContent = s.oidc_client_secret_configured
         ? 'A secret is stored. Leave blank to keep it, or enter a new one to replace it.'
-        : 'No secret stored yet. SSO stays disabled until one is set.';
+        : 'No secret stored yet — SSO stays disabled until one is set.';
+    }
+
+    // Set the IdP picker from the derived provider_kind
+    const idpSelect = this.querySelector('#s-idp-kind');
+    if (idpSelect && s.provider_kind) {
+      const kind = s.provider_kind === 'microsoft' ? 'entra' : s.provider_kind;
+      if ([...idpSelect.options].some(o => o.value === kind)) {
+        idpSelect.value = kind;
+      }
+    }
+    this.#updateIdpFields(idpSelect?.value || '');
+
+    // Show status badges if configured
+    if (s.oidc_configured) {
+      const statusEl = this.querySelector('#sso-status');
+      const badges = this.querySelector('#s-sso-status-badges');
+      if (statusEl && badges) {
+        statusEl.style.display = '';
+        const providerName = s.provider_kind === 'microsoft' ? 'Entra' : (s.provider_kind || 'OIDC');
+        badges.innerHTML = `
+          <span style="display:inline-block;padding:0.25rem 0.75rem;border-radius:var(--r-8);background:var(--color-success-bg, #e6f4ea);color:var(--color-success, #1e7e34);font-weight:500;margin-right:0.5rem">SSO active (${providerName})</span>
+          <span style="display:inline-block;padding:0.25rem 0.75rem;border-radius:var(--r-8);background:var(--color-success-bg, #e6f4ea);color:var(--color-success, #1e7e34);font-weight:500;margin-right:0.5rem">SCIM enabled</span>
+          ${s.directory_sync_enabled ? '<span style="display:inline-block;padding:0.25rem 0.75rem;border-radius:var(--r-8);background:var(--color-success-bg, #e6f4ea);color:var(--color-success, #1e7e34);font-weight:500">Directory sync</span>' : ''}
+        `;
+      }
+    }
+
+    // Load SCIM tokens whenever the section is visible
+    this.#loadScimTokens();
+  }
+
+  #updateIdpFields(kind) {
+    const fields = this.querySelector('#sso-fields');
+    const scim = this.querySelector('#scim-section');
+    const issuerHint = this.querySelector('#s-issuer-hint');
+    const clientHint = this.querySelector('#s-client-id-hint');
+
+    if (!kind) {
+      if (fields) fields.style.display = 'none';
+      if (scim) scim.style.display = 'none';
+      return;
+    }
+
+    if (fields) fields.style.display = '';
+    if (scim) scim.style.display = '';
+
+    if (kind === 'entra') {
+      if (issuerHint) issuerHint.innerHTML = 'Azure Portal → App registrations → Endpoints → <code>https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0</code>';
+      if (clientHint) clientHint.textContent = 'Azure Portal → App registrations → Application (client) ID';
+    } else if (kind === 'okta') {
+      if (issuerHint) issuerHint.innerHTML = 'Okta Admin → Applications → your app → <code>https://&lt;org&gt;.okta.com/oauth2/default</code>';
+      if (clientHint) clientHint.textContent = 'Okta Admin → Applications → your app → Client ID';
+    }
+  }
+
+  async #generateScimToken() {
+    const btn = this.querySelector('#btn-generate-scim-token');
+    const display = this.querySelector('#s-scim-token-display');
+    if (!btn) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Generating…';
+    try {
+      // Derive provider from current IdP selection
+      const kind = this.querySelector('#s-idp-kind')?.value || 'default';
+      const provider = kind === 'entra' ? 'entra' : kind === 'okta' ? 'okta' : 'default';
+
+      const res = await fetch('/api/settings/scim/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ provider, description: `Generated from settings page` }),
+      });
+      if (!res.ok) throw new Error('Failed to generate token');
+      const data = await res.json();
+      if (display) {
+        display.style.display = '';
+        display.innerHTML = `<strong>Token (copy now — shown only once):</strong><br/>${data.token}<br/><button type="button" id="btn-copy-scim-token" style="margin-top:0.5rem;padding:0.25rem 0.75rem;font-size:0.8rem;cursor:pointer;border-radius:var(--r-8)">Copy token</button>`;
+        display.querySelector('#btn-copy-scim-token')?.addEventListener('click', () => {
+          navigator.clipboard.writeText(data.token);
+          showToast('Token copied to clipboard');
+        });
+      }
+      showToast('SCIM token generated — copy it now, it won\'t be shown again');
+      this.#loadScimTokens();
+    } catch (err) {
+      showToast(err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Generate token';
+    }
+  }
+
+  async #loadScimTokens() {
+    const list = this.querySelector('#s-scim-token-list');
+    if (!list) return;
+    try {
+      const res = await fetch('/api/settings/scim/tokens', { credentials: 'same-origin' });
+      if (!res.ok) {
+        if (res.status === 404) {
+          list.innerHTML = '<span style="color:var(--text-muted, #888)">No tokens found. Generate one above to enable SCIM provisioning.</span>';
+        } else if (res.status === 401 || res.status === 403) {
+          list.textContent = '';
+        } else {
+          list.textContent = 'Failed to load tokens';
+        }
+        return;
+      }
+      const data = await res.json();
+      const tokens = (data.tokens || []).filter(t => !t.revoked_at);
+      if (tokens.length === 0) {
+        list.innerHTML = '<span style="color:var(--text-muted, #888)">No active tokens. Generate one to enable SCIM provisioning.</span>';
+        return;
+      }
+      list.innerHTML = tokens.map(t => {
+        const created = new Date(t.created_at).toLocaleDateString();
+        const lastUsed = t.last_used_at ? new Date(t.last_used_at).toLocaleDateString() : 'never';
+        const revoked = t.revoked_at ? ' (revoked)' : '';
+        return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid var(--border-subtle, #e5e5e5)">
+          <div>
+            <strong>${t.description || 'Unnamed'}</strong>${revoked}<br/>
+            <small>Created ${created} · Last used ${lastUsed} · Provider: ${t.provider}</small>
+          </div>
+          ${!t.revoked_at ? `<button type="button" class="btn-revoke-token" data-token-id="${t.id}" style="padding:0.25rem 0.75rem;font-size:0.85rem;cursor:pointer">Revoke</button>` : ''}
+        </div>`;
+      }).join('');
+      // Attach revoke handlers
+      list.querySelectorAll('.btn-revoke-token').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.tokenId;
+          await fetch(`/api/settings/scim/tokens/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+          showToast('Token revoked');
+          this.#loadScimTokens();
+        });
+      });
+    } catch {
+      list.textContent = 'Failed to load tokens';
     }
   }
 
@@ -314,18 +491,22 @@ class SettingsPage extends HTMLElement {
     const btn = this.querySelector('#btn-save');
     withLoading(btn, 'Saving…', async () => {
       const updated = { ...this.#settings };
-      // Read-only on the wire: sending it back is harmless (serde ignores it)
-      // but dropping it keeps the payload honest about what it's asking to set.
+      // Read-only / derived fields — don't send back
       delete updated.oidc_client_secret_configured;
+      delete updated.provider_kind;
+      delete updated.oidc_configured;
+      delete updated.scim_enabled;
+      delete updated.directory_sync_enabled;
       this.querySelectorAll('[data-field]').forEach(el => {
         const v = el.value.trim();
-        // data-allow-empty fields round-trip '' so they can be cleared.
         if (v || el.hasAttribute('data-allow-empty')) {
-          updated[el.dataset.field] = el.getAttribute('type') === 'number' ? Number(v) : v;
+          updated[el.dataset.field] = el.type === 'number' ? Number(v) : v;
         }
       });
-      await call('saveSettings', updated);
+      await window.saveSettings(updated);
       showToast('Settings saved');
+      // Reload to update derived status
+      this.#load();
     })();
   }
 }

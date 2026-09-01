@@ -19,7 +19,6 @@ import { fmtDuration, fmtTokens } from '/common/utils/units.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
-import '/common/utils/back-link.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/features/wf-step-editor.js';
 import '/common/features/wf-run-steps.js';
@@ -41,11 +40,6 @@ class WorkflowDetailPage extends HTMLElement {
   #workflow = null;
   #executions = [];
   #execution = null;
-  // Whether the run view on screen was pushed onto history by this page. If it
-  // was, leaving it is a step back — pushing a review entry there instead made
-  // Back bounce into the run view forever (executions → run → review → Back →
-  // run → review → Back → run …).
-  #runPushed = false;
   #pollTimer = null;
   #dirty = false;
 
@@ -103,7 +97,7 @@ class WorkflowDetailPage extends HTMLElement {
             title="Workflow not found"
             description="It may have been deleted."
             icon='${icons.faceFrown('', 40)}'>
-            <app-button variant="tertiary" size="sm" href="/workflows">Back to workflows</app-button>
+            <app-button variant="tertiary" href="/workflows">Back to workflows</app-button>
           </app-empty-state>
         </div>`;
       return;
@@ -131,10 +125,10 @@ class WorkflowDetailPage extends HTMLElement {
     this.innerHTML = `
       <div class="col">
         <header class="page-head">
-          <app-button variant="tertiary" size="sm" icon-only href="/workflows" data-back
-            aria-label="Back">${icons.chevronLeft()}</app-button>
+          <app-button variant="tertiary" icon-only href="/workflows"
+            aria-label="Back to workflows">${icons.chevronLeft()}</app-button>
           <input class="name-input" id="wf-name" value="${escHtml(wf.name)}" aria-label="Workflow name" />
-          <app-button variant="primary" size="md" id="run-btn">${icons.play('', 12)} Run</app-button>
+          <app-button variant="primary" size="sm" id="run-btn">${icons.play('', 12)} Run</app-button>
         </header>
 
         <textarea class="desc-input" id="wf-desc" rows="2"
@@ -281,7 +275,6 @@ class WorkflowDetailPage extends HTMLElement {
     if (push) {
       const url = `/workflow?id=${encodeURIComponent(this.#workflowId)}&exec=${encodeURIComponent(execId)}`;
       history.pushState({}, '', url);
-      this.#runPushed = true;
     }
     this.#renderRunShell();
     try {
@@ -299,7 +292,7 @@ class WorkflowDetailPage extends HTMLElement {
     this.innerHTML = `
       <div class="col">
         <header class="page-head">
-          <app-button variant="tertiary" size="sm" icon-only id="run-back"
+          <app-button variant="tertiary" icon-only id="run-back"
             aria-label="Back to workflow">${icons.chevronLeft()}</app-button>
           <h1 class="title-page run-title" id="run-title">${escHtml(this.#workflow?.name || 'Execution')}</h1>
         </header>
@@ -318,19 +311,9 @@ class WorkflowDetailPage extends HTMLElement {
         </div>
       </div>`;
     this.querySelector('#run-back').addEventListener('click', async () => {
+      history.pushState({}, '', `/workflow?id=${encodeURIComponent(this.#workflowId)}`);
       // A run just happened — refresh the history list before showing it.
       this.#executions = await call('fetchWorkflowExecutions', this.#workflowId).catch(() => this.#executions);
-      // This page pushed the run view, so leaving it is a step back and the
-      // popstate handler renders the review. Otherwise the run view IS the
-      // entry (opened from /executions or a deep link) and there is no review
-      // entry to return to — replace it, never push, or Back lands right back
-      // on the run view.
-      if (this.#runPushed) {
-        this.#runPushed = false;
-        history.back();
-        return;
-      }
-      history.replaceState({}, '', `/workflow?id=${encodeURIComponent(this.#workflowId)}`);
       this.#showReview();
     });
   }

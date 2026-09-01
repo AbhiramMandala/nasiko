@@ -56,7 +56,7 @@ class OrchestratorPage extends HTMLElement {
       <div class="input-wrap">
         <app-chatbox
           id="chatbox"
-          placeholder="Describe the task you want to execute"
+          placeholder="Describe the task you want to execute..."
           transcription-callback="transcribeAudio"
         ></app-chatbox>
       </div>
@@ -130,11 +130,6 @@ class OrchestratorPage extends HTMLElement {
           const sessionBody = await sessionRes.json();
           const session = sessionBody.data || sessionBody;
           this.#sessionId = session.session_id || session.id;
-          // The module nav lists chat sessions — tell it there is a new one, and
-          // which one, so it can highlight the row for the chat on screen.
-          document.dispatchEvent(new CustomEvent('session-created', {
-            detail: { sessionId: this.#sessionId },
-          }));
         }
 
         // Persist user message
