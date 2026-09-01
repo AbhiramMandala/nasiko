@@ -158,13 +158,20 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
                 return denial;
             }
             match agent_owner(state, agent_id).await {
-                Some(owner) => owner,
-                None => {
+                Ok(Some(owner)) => owner,
+                Ok(None) => {
                     return (
                         StatusCode::UNAUTHORIZED,
                         "agent no longer exists — gateway token is stale",
                     )
                         .into_response();
+                }
+                // Rule 5 again: an unreachable identity store is not "the agent
+                // is gone". Reporting 401 here would tell a healthy agent its
+                // credential is stale and trigger a pointless rotate/redeploy.
+                Err(e) => {
+                    tracing::error!(error = %e, %agent_id, "mcp gateway: owner lookup failed — failing closed");
+                    return (StatusCode::FORBIDDEN, "identity store unavailable").into_response();
                 }
             }
         }
@@ -291,13 +298,15 @@ fn deny(body: String) -> Response {
 
 /// Owner of a live (non-deleted) agent — the agent-only identity used for
 /// read-only methods outside a flow.
-async fn agent_owner(state: &AppState, agent_id: Uuid) -> Option<Uuid> {
+///
+/// `Ok(None)` means the agent is genuinely gone (401, stale credential);
+/// `Err` means the store could not answer (403, fail closed). Collapsing the
+/// two would misreport a database outage as a revoked agent.
+async fn agent_owner(state: &AppState, agent_id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL")
         .bind(agent_id)
         .fetch_optional(&state.db)
         .await
-        .ok()
-        .flatten()
 }
 
 fn record_tool_usage(

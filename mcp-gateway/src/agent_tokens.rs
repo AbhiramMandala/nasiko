@@ -13,6 +13,16 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// How long a just-superseded credential keeps working after a rotation.
+///
+/// `mint` runs before the new workload is known to be live, so between the mint
+/// and a healthy rollout the *old* container is still serving with the *old*
+/// plaintext. Rejecting it immediately turns any slow or failed deploy into a
+/// wave of 401s from an agent that is otherwise fine. One window covers the
+/// rollout; past it, rotation is absolute again — an indefinite grace would
+/// mean redeploy never actually revokes anything.
+pub const ROTATION_GRACE_SECS: i64 = 900;
+
 /// SHA-256 hex digest — the stored form of a gateway token.
 pub fn hash_token(token: &str) -> String {
     let mut hasher = Sha256::new();
@@ -20,10 +30,16 @@ pub fn hash_token(token: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Mint a fresh gateway token for `agent_id`, replacing any previous one
+/// Mint a fresh gateway token for `agent_id`, superseding any previous one
 /// (rotate-on-deploy: the old plaintext lives only in the container env being
-/// replaced, so there is nothing worth keeping). Returns the plaintext exactly
-/// once — the caller must inject it into the deployment env immediately.
+/// replaced, so there is nothing worth keeping long-term). Returns the plaintext
+/// exactly once — the caller must inject it into the deployment env immediately.
+///
+/// The superseded hash is retained as `prev_token_hash` and stays accepted for
+/// [`ROTATION_GRACE_SECS`], because this runs *before* the new workload is known
+/// to be live — see the constant. A hash that was already revoked is not carried
+/// forward: re-minting for a previously destroyed agent must not resurrect the
+/// credential that destroy tombstoned.
 pub async fn mint(db: &PgPool, agent_id: Uuid) -> Result<String, sqlx::Error> {
     let mut buf = [0u8; 32];
     rand::rng().fill_bytes(&mut buf);
@@ -34,6 +50,11 @@ pub async fn mint(db: &PgPool, agent_id: Uuid) -> Result<String, sqlx::Error> {
          VALUES ($1, $2)
          ON CONFLICT (agent_id) DO UPDATE SET
              token_hash = EXCLUDED.token_hash,
+             prev_token_hash = CASE
+                 WHEN agent_gateway_tokens.revoked_at IS NULL
+                 THEN agent_gateway_tokens.token_hash
+             END,
+             rotated_at = now(),
              created_at = now(),
              revoked_at = NULL",
     )
@@ -46,14 +67,26 @@ pub async fn mint(db: &PgPool, agent_id: Uuid) -> Result<String, sqlx::Error> {
 }
 
 /// Resolve a presented bearer token to its agent, if it matches a live
-/// (non-revoked) credential. `None` = unknown or revoked → the caller must
-/// answer 401.
+/// (non-revoked) credential belonging to a live (non-deleted) agent. `None` =
+/// unknown, revoked, or the agent is gone → the caller must answer 401.
+///
+/// The `agents` join is what makes deletion fail closed. `revoke` runs on the
+/// destroy path but is best-effort, so a transient failure there would
+/// otherwise leave a destroyed agent's credential usable for the lifetime of
+/// any flow it still appears in. Soft-delete is the authoritative signal;
+/// `revoked_at` is the fast path, not the only one.
 pub async fn authenticate(db: &PgPool, token: &str) -> Result<Option<Uuid>, sqlx::Error> {
     sqlx::query_scalar(
-        "SELECT agent_id FROM agent_gateway_tokens
-         WHERE token_hash = $1 AND revoked_at IS NULL",
+        "SELECT t.agent_id FROM agent_gateway_tokens t
+         JOIN agents a ON a.id = t.agent_id
+         WHERE t.revoked_at IS NULL
+           AND a.deleted_at IS NULL
+           AND (t.token_hash = $1
+                OR (t.prev_token_hash = $1
+                    AND t.rotated_at > now() - make_interval(secs => $2)))",
     )
     .bind(hash_token(token))
+    .bind(ROTATION_GRACE_SECS as f64)
     .fetch_optional(db)
     .await
 }
@@ -62,7 +95,8 @@ pub async fn authenticate(db: &PgPool, token: &str) -> Result<Option<Uuid>, sqlx
 /// none exists — destroy must be safe to re-run.
 pub async fn revoke(db: &PgPool, agent_id: Uuid) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE agent_gateway_tokens SET revoked_at = now()
+        "UPDATE agent_gateway_tokens
+         SET revoked_at = now(), prev_token_hash = NULL
          WHERE agent_id = $1 AND revoked_at IS NULL",
     )
     .bind(agent_id)

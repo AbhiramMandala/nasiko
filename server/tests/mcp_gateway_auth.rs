@@ -113,19 +113,125 @@ async fn revoked_token_is_401() {
 
 #[tokio::test]
 #[serial]
-async fn rotation_invalidates_the_previous_token() {
-    // Every deploy re-mints: the old plaintext (only alive in the replaced
-    // container env) must stop authenticating the moment the new one exists.
+async fn rotation_keeps_the_previous_token_alive_for_the_grace_window() {
+    // `mint` runs before the new workload is known to be live. Until the rollout
+    // lands, the *old* container is still serving with the *old* plaintext, so
+    // rejecting it immediately turns a slow or failed deploy into a wave of 401s
+    // from a healthy agent (ROTATION_GRACE_SECS).
     let server = TestServer::start().await;
     let owner = seed_user(&server, "gw-owner-rot").await;
     let agent = seed_agent(&server, owner, "gw-agent-rot").await;
     let old = common::mint_gateway_token(&server.db, agent).await;
     let new = common::mint_gateway_token(&server.db, agent).await;
 
-    let res = post_mcp(&server, Some(&old), None, &rpc("initialize")).await;
-    assert_eq!(res.status(), 401);
     let res = post_mcp(&server, Some(&new), None, &rpc("initialize")).await;
+    assert_eq!(res.status(), 200, "the freshly minted credential must work");
+    let res = post_mcp(&server, Some(&old), None, &rpc("initialize")).await;
+    assert_eq!(
+        res.status(),
+        200,
+        "the superseded credential must survive the rollout window"
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn rotation_grace_expires() {
+    // Bounded, not indefinite — otherwise redeploy would never actually revoke
+    // anything. Age the rotation past the window rather than sleeping through it.
+    let server = TestServer::start().await;
+    let owner = seed_user(&server, "gw-owner-rot-exp").await;
+    let agent = seed_agent(&server, owner, "gw-agent-rot-exp").await;
+    let old = common::mint_gateway_token(&server.db, agent).await;
+    let new = common::mint_gateway_token(&server.db, agent).await;
+
+    sqlx::query(
+        "UPDATE agent_gateway_tokens
+         SET rotated_at = now() - make_interval(secs => $2)
+         WHERE agent_id = $1",
+    )
+    .bind(agent)
+    .bind((nasiko_mcp_gateway::agent_tokens::ROTATION_GRACE_SECS + 60) as f64)
+    .execute(&server.db)
+    .await
+    .expect("age the rotation");
+
+    let res = post_mcp(&server, Some(&old), None, &rpc("initialize")).await;
+    assert_eq!(res.status(), 401, "grace must expire");
+    let res = post_mcp(&server, Some(&new), None, &rpc("initialize")).await;
+    assert_eq!(res.status(), 200, "the current credential is unaffected");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn revoke_kills_the_grace_credential_too() {
+    // Destroy must not leave a second, still-accepted hash behind.
+    let server = TestServer::start().await;
+    let owner = seed_user(&server, "gw-owner-rot-rev").await;
+    let agent = seed_agent(&server, owner, "gw-agent-rot-rev").await;
+    let old = common::mint_gateway_token(&server.db, agent).await;
+    let new = common::mint_gateway_token(&server.db, agent).await;
+    nasiko_mcp_gateway::agent_tokens::revoke(&server.db, agent)
+        .await
+        .unwrap();
+
+    for (label, token) in [("superseded", &old), ("current", &new)] {
+        let res = post_mcp(&server, Some(token), None, &rpc("initialize")).await;
+        assert_eq!(res.status(), 401, "{label} credential must be dead");
+    }
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn re_minting_for_a_revoked_agent_does_not_resurrect_the_old_credential() {
+    // A revoked hash must never be carried into prev_token_hash: destroy
+    // tombstoned it, and a later re-mint is a new life, not a continuation.
+    let server = TestServer::start().await;
+    let owner = seed_user(&server, "gw-owner-rot-res").await;
+    let agent = seed_agent(&server, owner, "gw-agent-rot-res").await;
+    let destroyed = common::mint_gateway_token(&server.db, agent).await;
+    nasiko_mcp_gateway::agent_tokens::revoke(&server.db, agent)
+        .await
+        .unwrap();
+    let reborn = common::mint_gateway_token(&server.db, agent).await;
+
+    let res = post_mcp(&server, Some(&destroyed), None, &rpc("initialize")).await;
+    assert_eq!(res.status(), 401, "a tombstoned credential stays dead");
+    let res = post_mcp(&server, Some(&reborn), None, &rpc("initialize")).await;
     assert_eq!(res.status(), 200);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn soft_deleting_the_agent_kills_its_gateway_token() {
+    // `revoke` is best-effort on the destroy path; if it fails, the soft-delete
+    // must still close the door. Otherwise a destroyed agent keeps calling tools
+    // for as long as any flow it joined stays live.
+    let server = TestServer::start().await;
+    let owner = seed_user(&server, "gw-owner-del").await;
+    let agent = seed_agent(&server, owner, "gw-agent-del").await;
+    let token = common::mint_gateway_token(&server.db, agent).await;
+
+    let res = post_mcp(&server, Some(&token), None, &rpc("initialize")).await;
+    assert_eq!(res.status(), 200, "sanity: live agent authenticates");
+
+    // Soft-delete only — deliberately without calling revoke().
+    sqlx::query("UPDATE agents SET deleted_at = now() WHERE id = $1")
+        .bind(agent)
+        .execute(&server.db)
+        .await
+        .expect("soft delete");
+
+    let res = post_mcp(&server, Some(&token), None, &rpc("initialize")).await;
+    assert_eq!(
+        res.status(),
+        401,
+        "deletion must fail closed even when tombstoning did not run"
+    );
     server.cleanup().await;
 }
 
