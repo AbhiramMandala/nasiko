@@ -77,6 +77,9 @@ export function render(root, container, catalog, deps = {}) {
  */
 export function renderNode(node, catalog, deps = {}) {
   const doc = deps.doc ?? globalThis.document;
+  // Injected so this module stays testable without a router, and so a host
+  // that has none refuses every route rather than allowing every route.
+  const routes = deps.routes ?? null;
   const def = catalog.components?.[node.tag];
   const report = (code, message) => deps.onDiagnostic?.({ source: 'render', code, message, pointer: node.statementId });
 
@@ -110,6 +113,22 @@ export function renderNode(node, catalog, deps = {}) {
     }
     if (spec.type === 'json') {
       el.setAttribute(key, typeof value === 'string' ? value : JSON.stringify(value));
+      continue;
+    }
+    if (spec.type === 'route') {
+      // The one attribute family that can take the user somewhere. Checked
+      // against the routes this app actually registered — not a copy of them —
+      // so an off-site URL, a `javascript:` scheme or a path into something the
+      // user cannot see is dropped rather than rendered as a working link.
+      //
+      // Dropped, not defaulted: a link to the wrong place is worse than no
+      // link, and the diagnostic names the path so the failure is legible.
+      const path = toText(value);
+      if (!routes?.has(path)) {
+        report('route_not_allowed', `"${path}" is not a route this app has — ${node.tag}.${key} was left unset`);
+        continue;
+      }
+      el.setAttribute(key, path);
       continue;
     }
     el.setAttribute(key, toText(value));

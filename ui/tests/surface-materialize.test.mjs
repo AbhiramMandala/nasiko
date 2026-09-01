@@ -181,11 +181,12 @@ test('a Query records its positional args, including one read from $state', () =
 });
 
 test('an Action materializes to steps, with @Set keeping its value unevaluated', () => {
-  // Eleven parameters: text, variant, size, icon-only, disabled, loading,
+  // Twelve parameters: text, variant, size, icon-only, href, disabled, loading,
   // type, aria-label, title, aria-expanded, action. Miscount and the Action
   // lands on aria-expanded, silently — which is the whole reason paramOrder is
-  // written into the catalog rather than inferred.
-  const out = run(`root = AppButton("Go", "primary", null, null, null, null, null, null, null, null, act)
+  // written into the catalog rather than inferred. It went from eleven to
+  // twelve the day `href` was re-admitted, and the hash moved with it.
+  const out = run(`root = AppButton("Go", "primary", null, null, null, null, null, null, null, null, null, act)
 act = Action([@Set($days, 30), @Run(historyQ)])`);
   const action = out.root.action;
   assert.equal(action.type, 'action');

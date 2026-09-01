@@ -53,8 +53,17 @@ function cssFor(jsFile) {
 /** Attribute names whose value is a data-source key, not a literal (layer 6). */
 const DATA_SOURCE_ATTRS = new Set(['data-fn']);
 
-/** Attribute names whose value is an in-app route, validated against the router. */
+/**
+ * Attribute names whose value is an in-app route, validated against the router.
+ *
+ * Matched by suffix as well as by name: `details-href` and `chat-href` on
+ * app-card are routes exactly as much as `href` is, and typing them as plain
+ * strings would let a generated surface set the two the renderer does not
+ * check while the one it does check looks guarded. A name-only list is the
+ * kind that goes stale the first time somebody adds `settings-href`.
+ */
 const ROUTE_ATTRS = new Set(['href']);
+const isRouteAttr = (name) => ROUTE_ATTRS.has(name) || name.endsWith('-href');
 
 /**
  * Attributes that take a raw CSS length. The components keep them — hand-written
@@ -106,7 +115,7 @@ function docLines(block) {
  */
 function typeOf(name, declared, desc) {
   if (DATA_SOURCE_ATTRS.has(name)) return { type: 'dataSource' };
-  if (ROUTE_ATTRS.has(name)) return { type: 'route' };
+  if (isRouteAttr(name)) return { type: 'route' };
 
   // `a` | `b` | `c` — an enum written as backticked alternatives. For the
   // appearance-controlling family a single documented value is still a closed

@@ -121,7 +121,7 @@ root = AppChart({labels: rows.date, datasets: [{label: "Cost", data: rows.cost}]
 });
 
 test('an Action binds to click on a button and to change on a select', () => {
-  const btn = draw(`root = AppButton("Go", "primary", null, null, null, null, null, null, null, null, act)
+  const btn = draw(`root = AppButton("Go", "primary", null, null, null, null, null, null, null, null, null, act)
 act = Action([@Set($v, 1)])`);
   assert.deepEqual(Object.keys(btn.el.listeners), ['click']);
   btn.el.listeners.click[0]();
@@ -134,7 +134,7 @@ act = Action([@Set($v, 1)])`);
 });
 
 test('no on* attribute is ever written for an action', () => {
-  const { el } = draw(`root = AppButton("Go", "primary", null, null, null, null, null, null, null, null, act)
+  const { el } = draw(`root = AppButton("Go", "primary", null, null, null, null, null, null, null, null, null, act)
 act = Action([@Set($v, 1)])`);
   assert.deepEqual(Object.keys(el.attrs).filter((k) => k.startsWith('on')), []);
 });

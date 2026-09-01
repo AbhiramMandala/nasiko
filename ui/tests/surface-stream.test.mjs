@@ -296,7 +296,7 @@ const FILTER = [
   '$days = 7\n',
   'historyQ = Query("fetchUsageHistory", [$days], [])\n',
   'showThirty = Action([@Set($days, 30), @Run(historyQ)])\n',
-  'btn = AppButton("30 days", "primary", "md", false, false, false, "button", null, null, null, showThirty)\n',
+  'btn = AppButton("30 days", "primary", "md", false, null, false, false, "button", null, null, null, showThirty)\n',
   'chart = AppChart(historyQ, "line")\n',
   'root = AppStack([btn, chart], "md")\n',
   'Here you go — let me know if you want a different window.',

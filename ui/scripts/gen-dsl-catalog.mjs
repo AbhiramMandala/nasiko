@@ -38,6 +38,7 @@ const UI = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CATALOG = resolve(UI, 'common/design-system/catalog.json');
 const OVERRIDES = resolve(UI, 'common/surface/dsl-overrides.json');
 const OUT = resolve(UI, 'common/surface/dsl-catalog.json');
+const APP = resolve(UI, 'oss/app.js');
 
 const catalog = JSON.parse(readFileSync(CATALOG, 'utf8'));
 const overrides = JSON.parse(readFileSync(OVERRIDES, 'utf8')).components;
@@ -143,7 +144,41 @@ if (problems.length) {
 
 // Hash the contract itself, not the file: comments and ordering of the wrapper
 // must not move the version, and nothing else may fail to.
-const version = createHash('sha256').update(JSON.stringify(components)).digest('hex').slice(0, 12);
+/**
+ * The routes a generated surface may link to.
+ *
+ * Read out of `oss/app.js`'s own BASE_ROUTES rather than kept as a second
+ * list, because the whole point of an allowlist is that it says what the app
+ * can actually do — a copy would eventually say something else. The browser
+ * still checks every value against the live router at render time; this list
+ * exists so the *generator* writes routes that exist instead of guessing at
+ * plausible ones and having them refused.
+ *
+ * Parameterised patterns (`/agent/:id`) are withheld. A model has no way to
+ * know a real id, so every link it built from one would 404 — and inviting it
+ * to invent identifiers is inviting it to invent data.
+ */
+function readRoutes() {
+  const src = readFileSync(APP, 'utf8');
+  const block = src.match(/const BASE_ROUTES\s*=\s*\[([\s\S]*?)\n\];/);
+  if (!block) {
+    problems.push('gen-dsl-catalog: could not find BASE_ROUTES in oss/app.js — the route allowlist would silently be empty.');
+    return [];
+  }
+  const found = [...block[1].matchAll(/path:\s*'([^']+)'/g)].map((m) => m[1]);
+  if (!found.length) problems.push('gen-dsl-catalog: BASE_ROUTES parsed to zero routes.');
+  return found.filter((p) => !p.includes(':')).sort();
+}
+
+const routes = readRoutes();
+
+// Everything the generator is allowed to write is hashed, not just the
+// components: adding a route widens what a surface may link to, which is a
+// contract change like any other and has to move the version.
+const version = createHash('sha256')
+  .update(JSON.stringify({ components, routes }))
+  .digest('hex')
+  .slice(0, 12);
 
 const payload = {
   _generated: 'by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit',
@@ -157,6 +192,7 @@ const payload = {
   sourceCatalogVersion: catalog.catalogVersion,
   componentCount: Object.keys(components).length,
   components,
+  routes,
   blocked,
 };
 

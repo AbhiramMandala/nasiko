@@ -19,11 +19,11 @@
  *
  * Steps are therefore run sequentially and awaited, never fired in parallel.
  *
- * `@OpenUrl` is refused. Not unimplemented — refused, and reported as a
- * diagnostic. A model-authored string reaching navigation is the one step here
- * that can leave the application, and there is no allowlist to check it against
- * yet (`core/routes.json`, not built). Shipping it closed is a decision, so it
- * says so out loud rather than failing silently.
+ * `@OpenUrl` is the one step that can take the user somewhere, so it is the one
+ * step with an allowlist in front of it. The path is checked against the routes
+ * the app actually registered — the live router, not a copy — and anything else
+ * is dropped with a diagnostic naming it. A host that passes no router refuses
+ * every path, which is the right way round for a default.
  *
  * @module common/surface/actions
  */
@@ -38,9 +38,11 @@
  *                   mutations?: Array<{statementId: string, argsAst: object[]}>} | void,
  *   onAssistant?: (text: string) => void,
  *   onDiagnostic?: (d: object) => void,
+ *   routes?: {has(path: string): boolean},
+ *   navigate?: (path: string) => void,
  * }} deps
  */
-export function createActionRunner({ store, queries, refresh, onAssistant, onDiagnostic }) {
+export function createActionRunner({ store, queries, refresh, onAssistant, onDiagnostic, routes, navigate }) {
   const diag = (code, message, pointer) =>
     onDiagnostic?.({ source: 'actions', code, message, pointer });
 
@@ -132,13 +134,21 @@ export function createActionRunner({ store, queries, refresh, onAssistant, onDia
           }
 
           case 'openUrl': {
-            const url = evaluate(step.urlAst, step.scope);
-            diag(
-              'open_url_blocked',
-              `@OpenUrl(${JSON.stringify(String(url ?? ''))}) was not followed — navigation from a ` +
-                `generated surface stays closed until the route allowlist exists`,
-              id,
-            );
+            const path = String(evaluate(step.urlAst, step.scope) ?? '');
+            // Checked against the routes the app actually registered. This was
+            // refused outright until there was something to check against —
+            // shipping navigation with nothing validating the string is how a
+            // generated surface leaves the application.
+            if (!routes?.has(path)) {
+              diag('route_not_allowed', `@OpenUrl(${JSON.stringify(path)}) is not a route this app has`, id);
+              break;
+            }
+            if (!navigate) {
+              diag('no_navigator', `@OpenUrl(${JSON.stringify(path)}) is allowed but this host wired no navigator`, id);
+              break;
+            }
+            navigate(path);
+            ran++;
             break;
           }
 

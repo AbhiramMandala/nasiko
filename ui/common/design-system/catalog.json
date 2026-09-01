@@ -241,11 +241,11 @@
           "description": "Chips shown before the \"+N\" overflow chip (default 2)"
         },
         "details-href": {
-          "type": "string",
+          "type": "route",
           "description": "Overrides the default `/agent-card?id=…`"
         },
         "chat-href": {
-          "type": "string",
+          "type": "route",
           "description": "Overrides the default `/chat?agent_id=…&agent_name=…`"
         },
         "loading": {

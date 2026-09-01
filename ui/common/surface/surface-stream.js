@@ -30,6 +30,7 @@
 
 import { readSseFrames } from '../services/sse.js';
 import { call as callDataSource } from '../core/data-sources.js';
+import { router } from '../core/router.js';
 import { parseBuffer } from './parser.js';
 import { materialize, buildComponentIndex } from './materialize.js';
 import { render } from './render.js';
@@ -61,7 +62,9 @@ const FRAMES = new Set(['surface', 'dsl-chunk', 'end', 'fail', 'message', 'note'
  *   onStatus?: (s: {phase: string, detail?: string}) => void,
  *   onAction?: (action: object, el: Element) => void,
  *   onAssistant?: (text: string) => void,
- *   callDataSource?: (name: string, ...args: unknown[]) => unknown,
+ *   call?: (name: string, ...args: unknown[]) => unknown,
+ *   routes?: {has(path: string): boolean}|null,
+ *   navigate?: (path: string) => void,
  *   fetchImpl?: typeof fetch,
  *   schedule?: (fn: () => void) => void,
  *   doc?: Document,
@@ -72,6 +75,10 @@ export function createSurfaceSession(options) {
     endpoint, catalog, container,
     onMessage, onDiagnostics, onStatus, onAction, onAssistant,
     call = callDataSource,
+    // The live route table, not a copy — see render.js and actions.js. A host
+    // may inject a stand-in for tests; passing null refuses every route.
+    routes = router,
+    navigate = (path) => router.navigate(path),
     fetchImpl = globalThis.fetch?.bind(globalThis),
     schedule = (fn) => (globalThis.requestAnimationFrame ?? ((f) => setTimeout(f, 0)))(fn),
     doc,
@@ -105,6 +112,8 @@ export function createSurfaceSession(options) {
     refresh: () => walk(),
     onAssistant: (text) => onAssistant?.(text),
     onDiagnostic: (d) => onDiagnostics?.([d]),
+    routes,
+    navigate,
   });
 
   // A `$state` write repaints. It never re-fetches: that is `@Run`'s job alone
@@ -195,6 +204,7 @@ export function createSurfaceSession(options) {
         onAction?.(action, el);
         void actions.run(action, ev);
       },
+      routes,
       onDiagnostic: (d) => diagnostics.push(d),
     });
 

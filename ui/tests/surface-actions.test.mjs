@@ -97,7 +97,7 @@ test('@Reset returns a filter to its declared value', async () => {
 setOps = Action([@Set($view, "ops")])
 clear = Action([@Reset($view)])
 root = AppStack([b], "md")
-b = AppButton("Ops", "primary", "md", false, false, false, "button", null, null, null, setOps)`);
+b = AppButton("Ops", "primary", "md", false, null, false, false, "button", null, null, null, setOps)`);
   await s.run(evalAction(s.last, 'setOps'));
   assert.equal(s.store.get('$view'), 'ops');
   await s.run(evalAction(s.last, 'clear'));
@@ -109,7 +109,7 @@ test('a failed mutation skips every step after it', async () => {
   const s = surface(`del = Mutation("deleteAgent", ["a1"])
 refreshQ = Query("fetchAgents", [], [])
 doIt = Action([@Run(del), @Run(refreshQ)])
-btn = AppButton("Go", "primary", "md", false, false, false, "button", null, null, null, doIt)
+btn = AppButton("Go", "primary", "md", false, null, false, false, "button", null, null, null, doIt)
 tbl = AppTable(refreshQ)
 root = AppStack([btn, tbl], "md")`, {
     call: async (name) => {
@@ -132,7 +132,7 @@ test('a mutation that succeeds lets the refresh after it run', async () => {
   const s = surface(`del = Mutation("deleteAgent", ["a1"])
 refreshQ = Query("fetchAgents", [], [])
 doIt = Action([@Run(del), @Run(refreshQ)])
-btn = AppButton("Go", "primary", "md", false, false, false, "button", null, null, null, doIt)
+btn = AppButton("Go", "primary", "md", false, null, false, false, "button", null, null, null, doIt)
 tbl = AppTable(refreshQ)
 root = AppStack([btn, tbl], "md")`, {
     call: async (name) => { ran.push(name); return name === 'fetchAgents' ? ['b'] : 'ok'; },
@@ -149,7 +149,7 @@ test('a mutation sends its declared arguments', async () => {
   const calls = [];
   const s = surface(`del = Mutation("deleteAgent", ["a1", 2])
 doIt = Action([@Run(del)])
-btn = AppButton("Go", "primary", "md", false, false, false, "button", null, null, null, doIt)
+btn = AppButton("Go", "primary", "md", false, null, false, false, "button", null, null, null, doIt)
 root = AppStack([btn], "md")`, { call: async (...a) => { calls.push(a); return 'ok'; } });
   await s.run(evalAction(s.last, 'doIt'));
   assert.deepEqual(calls, [['deleteAgent', 'a1', 2]]);
@@ -158,26 +158,28 @@ root = AppStack([btn], "md")`, { call: async (...a) => { calls.push(a); return '
 test('@ToAssistant hands the host a message', async () => {
   const said = [];
   const s = surface(`ask = Action([@ToAssistant("show me last week instead")])
-btn = AppButton("Go", "primary", "md", false, false, false, "button", null, null, null, ask)
+btn = AppButton("Go", "primary", "md", false, null, false, false, "button", null, null, null, ask)
 root = AppStack([btn], "md")`, { onAssistant: (t) => said.push(t) });
   await s.run(evalAction(s.last, 'ask'));
   assert.deepEqual(said, ['show me last week instead']);
 });
 
-test('@OpenUrl is refused and reported, not quietly dropped', async () => {
-  const s = surface(`go = Action([@OpenUrl("/agents/a1")])
-btn = AppButton("Go", "primary", "md", false, false, false, "button", null, null, null, go)
+test('@OpenUrl with no router wired refuses, rather than navigating blind', async () => {
+  // `surface()` here passes no routes, which is the shape a host that forgot
+  // to wire one has. The default must be closed: an allowlist that permits
+  // everything when absent is not an allowlist. Route behaviour proper is
+  // covered in surface-routes.test.mjs against a real Router.
+  const s = surface(`go = Action([@OpenUrl("/agents")])
+btn = AppButton("Go", "primary", "md", false, null, false, false, "button", null, null, null, go)
 root = AppStack([btn], "md")`);
   await s.run(evalAction(s.last, 'go'));
-  const d = s.diagnostics.find((x) => x.code === 'open_url_blocked');
-  assert.ok(d, 'shipping it closed is a decision, so it has to be visible');
-  assert.match(d.message, /route allowlist/);
+  assert.ok(s.diagnostics.some((d) => d.code === 'route_not_allowed'));
 });
 
 test('@Run of a statement that is not a Query or Mutation is reported', async () => {
   const s = surface(`label = "hello"
 go = Action([@Run(label)])
-btn = AppButton("Go", "primary", "md", false, false, false, "button", null, null, null, go)
+btn = AppButton("Go", "primary", "md", false, null, false, false, "button", null, null, null, go)
 root = AppStack([btn], "md")`);
   await s.run(evalAction(s.last, 'go'));
   assert.ok(s.diagnostics.some((d) => d.code === 'run_unknown'));
@@ -188,7 +190,7 @@ test('a second fire while the first is still running is refused', async () => {
   const gate = new Promise((r) => { release = r; });
   const s = surface(`del = Mutation("deleteAgent", [])
 doIt = Action([@Run(del)])
-btn = AppButton("Go", "primary", "md", false, false, false, "button", null, null, null, doIt)
+btn = AppButton("Go", "primary", "md", false, null, false, false, "button", null, null, null, doIt)
 root = AppStack([btn], "md")`, { call: async () => { await gate; return 'ok'; } });
   const action = evalAction(s.last, 'doIt');
   const first = s.run(action);
@@ -205,7 +207,7 @@ test('steps run in order, not in parallel', async () => {
 q1 = Query("one", [$a], [])
 q2 = Query("two", [$a], [])
 doIt = Action([@Set($a, 2), @Run(q1), @Run(q2)])
-btn = AppButton("Go", "primary", "md", false, false, false, "button", null, null, null, doIt)
+btn = AppButton("Go", "primary", "md", false, null, false, false, "button", null, null, null, doIt)
 t1 = AppTable(q1)
 t2 = AppTable(q2)
 root = AppStack([btn, t1, t2], "md")`, {
@@ -221,7 +223,7 @@ test('an Action with a bad @Set target is reported and the rest still runs', asy
   const ran = [];
   const s = surface(`q = Query("fetchAgents", [], [])
 doIt = Action([@Set(notState, 1), @Run(q)])
-btn = AppButton("Go", "primary", "md", false, false, false, "button", null, null, null, doIt)
+btn = AppButton("Go", "primary", "md", false, null, false, false, "button", null, null, null, doIt)
 tbl = AppTable(q)
 root = AppStack([btn, tbl], "md")`, { call: async (n) => { ran.push(n); return []; } });
   await s.queries.settled();

@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "3f082d22d69e",
+  "catalogVersion": "cae82ebcff8a",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 26,
@@ -133,6 +133,7 @@
         "variant",
         "size",
         "icon-only",
+        "href",
         "disabled",
         "loading",
         "type",
@@ -167,6 +168,10 @@
         "icon-only": {
           "type": "boolean",
           "description": "Squares the button to its size's control height with no padding, per Figma's Icon Button frame (4158:1100) — which is the same Type × Tone × Size matrix as the text button, so `variant` still supplies the colour. `variant=\"icon\"` remains as the ghost-coloured shorthand used across mcp-page and the EE pages."
+        },
+        "href": {
+          "type": "route",
+          "description": "Renders an `<a class=\"btn\">` instead of a `<button>`, so a navigation CTA is the same component as every other button. The SPA router intercepts internal anchor clicks, so no click handler is needed. A `disabled` (or `loading`) button keeps its `<button disabled>` — an anchor cannot be disabled."
         },
         "disabled": {
           "type": "boolean",
@@ -212,11 +217,14 @@
         "status",
         "description",
         "tags",
+        "href",
         "error-title",
         "error-body",
         "deploy-label",
         "deploy-hint",
         "max-visible-tags",
+        "details-href",
+        "chat-href",
         "loading"
       ],
       "attributes": {
@@ -252,6 +260,10 @@
           "type": "json",
           "description": "JSON array, either of strings (`[\"a\",\"b\"]`) or of `{ label }` objects, which is the form the replaced card took."
         },
+        "href": {
+          "type": "route",
+          "description": "Where the whole card navigates. Defaults to the details href."
+        },
         "error-title": {
           "type": "string",
           "description": "Shown in place of the description when status is error/failed"
@@ -272,6 +284,14 @@
           "type": "number",
           "default": 2,
           "description": "Chips shown before the \"+N\" overflow chip (default 2)"
+        },
+        "details-href": {
+          "type": "route",
+          "description": "Overrides the default `/agent-card?id=…`"
+        },
+        "chat-href": {
+          "type": "route",
+          "description": "Overrides the default `/chat?agent_id=…&agent_name=…`"
         },
         "loading": {
           "type": "boolean",
@@ -1481,6 +1501,36 @@
       "note": "Only useful with Slot() — its content is entirely start/end slotted."
     }
   },
+  "routes": [
+    "/",
+    "/add-agent",
+    "/add-agent-github",
+    "/agent-card",
+    "/agents",
+    "/build",
+    "/builds",
+    "/chat",
+    "/design-system",
+    "/executions",
+    "/flow",
+    "/flows",
+    "/llm-router",
+    "/mcp",
+    "/mcp-detail",
+    "/observability-session",
+    "/resources",
+    "/secrets",
+    "/session-trace",
+    "/sessions",
+    "/settings",
+    "/setup-cli",
+    "/tokenops",
+    "/weave",
+    "/workflow",
+    "/workflow-new",
+    "/workflows",
+    "/your-agents"
+  ],
   "blocked": {
     "app-tabs": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) — an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism.",
     "app-loading-bar": "Zero attributes; driven by global document events, not composition.",

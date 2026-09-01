@@ -77,7 +77,10 @@ function matchRoute(pattern, path) {
 
 // ── Router singleton ────────────────────────────────────────────────────
 
-class Router {
+// Exported alongside the singleton so the allowlist can be tested against a
+// real route table rather than a stub of one. `has()` is a security boundary;
+// testing it against a hand-written fake would test the fake.
+export class Router {
   /** @type {Array<{pattern: string, tag: string, module: string, title?: string, noShell?: boolean}>} */
   #routes = [];
   /** @type {HTMLElement|null} */
@@ -121,6 +124,42 @@ class Router {
   addAll(routes) {
     for (const r of routes) this.add(r.path, r);
     return this;
+  }
+
+  /**
+   * Is this a path the app can actually navigate to?
+   *
+   * The allowlist for model-authored navigation. A generated surface may name
+   * a route in an `href` or an `@OpenUrl`, and without this the router would
+   * happily resolve whatever string arrived — an absolute URL off-site, or a
+   * path into a tenant the user cannot see. There is no guessing here: the
+   * answer comes from the routes this router was actually given, so it cannot
+   * drift from what the app can do.
+   *
+   * Rejects anything that is not a same-origin absolute path — a scheme, a
+   * protocol-relative `//host`, or a traversal — before pattern matching, so
+   * `javascript:` and `https://elsewhere` never reach the route table.
+   *
+   * @param {string} path
+   * @returns {boolean}
+   */
+  has(path) {
+    if (typeof path !== 'string' || !path) return false;
+    if (!path.startsWith('/') || path.startsWith('//')) return false;
+    if (/[\u0000-\u001f]/.test(path)) return false;
+    let normalized;
+    try {
+      normalized = normalizePath(path);
+    } catch {
+      return false;
+    }
+    if (normalized.includes('..')) return false;
+    return this.#routes.some((r) => matchRoute(r.pattern, normalized) !== null);
+  }
+
+  /** Every registered pattern. For diagnostics that want to say what *is* allowed. */
+  patterns() {
+    return this.#routes.map((r) => r.pattern);
   }
 
   /**
