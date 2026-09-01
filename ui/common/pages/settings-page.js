@@ -6,6 +6,7 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./settings-page.css', import.meta.url));
 import { call, callOptional } from '../core/data-sources.js';
 import { fetchApi, postJson, deleteJson } from '/common/services/api.js';
+import { authService } from '/common/services/auth-service.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the
 // gutter was reserved and the nav never upgraded.
@@ -61,10 +62,34 @@ class SettingsPage extends HTMLElement {
   #section = TABS[0].key;
   /** Where the nav's bubbling events are listened for (see connectedCallback). */
   #navRoot = null;
+  /** True once the server reports a complete OIDC configuration. */
+  #ssoConfigured = false;
 
-  connectedCallback() {
+  async connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
+
+    // Ensure user info is loaded before checking role.
+    await authService.fetchCurrentUser();
+    const isAdmin = authService.isSuperuser();
+
+    // Non-admin users see only their secrets — admin-level platform settings
+    // (General, Flow limits, Registry, SSO) are superuser-gated on the API.
+    if (!isAdmin) {
+      await import('/common/features/secrets-manager.js');
+      await import('/common/features/app-module-nav.js');
+      this.innerHTML = `
+        <app-module-nav module="settings"></app-module-nav>
+        <div class="content">
+          <div class="panel-head is-active">
+            <h1 class="title-page">Secrets</h1>
+            <p class="page-sub">Your API keys and credentials. Agents and router configs reference these by name.</p>
+          </div>
+          <secrets-manager scope="user"></secrets-manager>
+        </div>
+      `;
+      return;
+    }
 
     // Deep links name a section, not a view: `?view=limits` opens this page on
     // Flow limits. Same param and same validator as the shell's, so the two
@@ -240,24 +265,6 @@ class SettingsPage extends HTMLElement {
                 <app-input type="url" id="s-oidc-redirect" data-field="oidc_redirect_uri" data-allow-empty placeholder="${window.location.origin}/api/auth/oidc/callback" aria-label="Redirect URI"></app-input>
               </div>
             </div>
-            <div class="setting-row">
-              <div class="setting-info">
-                <label for="s-oidc-scopes">Scopes</label>
-                <div class="hint">Space-separated. Defaults to <code>openid profile email</code>.</div>
-              </div>
-              <div class="setting-control">
-                <app-input type="text" id="s-oidc-scopes" data-field="oidc_scopes" data-allow-empty placeholder="openid profile email" aria-label="Scopes"></app-input>
-              </div>
-            </div>
-            <div class="setting-row">
-              <div class="setting-info">
-                <label for="s-oidc-label">Provider label</label>
-                <div class="hint">Names this IdP in <code>user_identities.provider</code> and the "Continue with…" button — not cosmetic, changing it after users have signed in creates a second identity for each of them. Leave blank to derive it from the issuer.</div>
-              </div>
-              <div class="setting-control">
-                <app-input type="text" id="s-oidc-label" data-field="oidc_provider_label" data-allow-empty placeholder="Microsoft" aria-label="Provider label"></app-input>
-              </div>
-            </div>
           </div>
 
           <div id="sso-status" hidden>
@@ -415,12 +422,18 @@ class SettingsPage extends HTMLElement {
     if (kind && [...idpSelect.options].some(o => o.value === kind)) {
       idpSelect.value = kind;
     }
+    // SSO fields must be visible whenever the server has a configuration
+    // (oidc_configured), even if the provider_kind doesn't match one of the
+    // picker's named options (e.g. "generic", "keycloak", "google"). The IdP
+    // picker only switches hint text; it must not gate field visibility when
+    // the server already has real values.
+    this.#ssoConfigured = Boolean(oidc?.oidc_configured);
     this.#updateIdpFields(idpSelect.value);
 
     const statusEl = this.querySelector('#sso-status');
     const badges = this.querySelector('#s-sso-status-badges');
-    statusEl.hidden = !oidc?.oidc_configured;
-    if (oidc?.oidc_configured) {
+    statusEl.hidden = !this.#ssoConfigured;
+    if (this.#ssoConfigured) {
       const providerName = oidc.provider_kind === 'microsoft' ? 'Entra' : (oidc.provider_kind || 'OIDC');
       badges.innerHTML = `
         <app-badge variant="success">SSO active (${providerName})</app-badge>
@@ -429,14 +442,20 @@ class SettingsPage extends HTMLElement {
       `;
     }
 
+    // SCIM provisioning is available once SSO is configured — show it
+    // regardless of which IdP was picked.
+    this.querySelector('#scim-section').hidden = !this.#ssoConfigured;
     this.#loadScimTokens();
   }
 
   /** The IdP picker never writes a field (see IDP_HINTS) — it only toggles
-   *  which sections are visible and which hint text they show. */
+   *  which hint text the fields show. Fields are visible when a provider is
+   *  selected in the picker OR when the server reports SSO is already
+   *  configured (so a "generic"/"keycloak" provider whose kind has no picker
+   *  option still shows its stored values). SCIM visibility is driven
+   *  separately by #load based on oidc_configured. */
   #updateIdpFields(kind) {
-    this.querySelector('#sso-fields').hidden = !kind;
-    this.querySelector('#scim-section').hidden = !kind;
+    this.querySelector('#sso-fields').hidden = !kind && !this.#ssoConfigured;
 
     const hints = IDP_HINTS[kind];
     this.querySelector('#s-issuer-hint').innerHTML = hints

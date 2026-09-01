@@ -833,6 +833,32 @@ pub(crate) async fn regenerate_credentials(
 
 // ─── PUT /users/{id}/role ────────────────────────────────────────────────────
 
+/// The `user_role` values this database actually has, asked of Postgres.
+///
+/// A hardcoded list cannot be right here, because the set of roles is
+/// edition-dependent: OSS's schema declares `('admin', 'member')` and
+/// enterprise migrations `ALTER TYPE user_role ADD VALUE` on top. The list
+/// this replaced had drifted in both directions at once — it named three
+/// roles that no longer exist in either edition, and omitted one that does,
+/// so an OSS-only deployment accepted a role it could not store (passing
+/// validation, then failing the `::user_role` cast as a 500 rather than a
+/// 400) while an enterprise build had a valid role rejected on its way
+/// through this function.
+///
+/// Asking the database is correct in every edition, stays correct when a
+/// migration changes the enum, and — the point — lets this stay ignorant of
+/// any role name that isn't in OSS's own schema. Callers layer their own
+/// policy on top: enterprise narrows this to the roles it wants offered,
+/// since Postgres cannot remove an enum value once added, so retired names
+/// linger in `enum_range` forever.
+///
+/// One extra round trip on a rare administrative action; not worth caching.
+async fn valid_user_roles(state: &AppState) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT unnest(enum_range(NULL::user_role))::text")
+        .fetch_all(&state.db)
+        .await
+}
+
 /// Change a user's role and immediately revoke their live tokens. EE wraps
 /// this with a leadership-displacement cascade — see
 /// `ee/server/src/users.rs::ee_change_role`.
@@ -868,14 +894,18 @@ pub async fn change_role(
     }
 
     let new_role = req.role.trim().to_lowercase();
-    let valid_roles = [
-        "admin",
-        "member",
-        "team_member",
-        "team_lead",
-        "department_manager",
-    ];
-    if !valid_roles.contains(&new_role.as_str()) {
+    let valid_roles = match valid_user_roles(&state).await {
+        Ok(roles) => roles,
+        Err(e) => {
+            tracing::error!(%e, "change_role: could not read the user_role enum");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            )
+                .into_response();
+        }
+    };
+    if !valid_roles.iter().any(|r| r == &new_role) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": format!("invalid role '{}'; valid: {}", new_role, valid_roles.join(", "))})),
