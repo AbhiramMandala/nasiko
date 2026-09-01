@@ -280,9 +280,32 @@ struct ChangePasswordRequest {
 }
 
 #[derive(Serialize)]
-struct ChangePasswordResponse {
+struct ChangePasswordData {
     token: String,
     expires_in: u64,
+}
+
+/// `API_CONVENTIONS.md` §2: every error is JSON carrying a stable `code` slug
+/// clients switch on. Never plain text, and 5xx bodies never carry the internal
+/// detail — that goes to `tracing`, joined to the response by the trace id.
+fn error_response(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({ "error": message, "code": code })),
+    )
+        .into_response()
+}
+
+/// The password write committed but the replacement session could not be
+/// issued. Reporting 5xx would say the change failed when it succeeded, so
+/// clear the cookie and report success — the caller signs in again with the new
+/// password. 204 is the one bodyless response §2 allows.
+fn password_changed_but_signed_out(secure: bool) -> Response {
+    (
+        [(header::SET_COOKIE, clear_token_cookie(secure))],
+        StatusCode::NO_CONTENT,
+    )
+        .into_response()
 }
 
 /// Self-service password change — any authenticated user rotating their own
@@ -309,21 +332,21 @@ async fn change_password(
         Err((status, msg)) => return (status, msg).into_response(),
     };
 
-    if body.new_password.len() < MIN_PASSWORD_LEN {
-        return (
+    // Characters, not bytes: `len()` would accept a 4-character CJK password as
+    // "12 characters" while rejecting a 7-character one that the rule allows.
+    if body.new_password.chars().count() < MIN_PASSWORD_LEN {
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("password must be at least {MIN_PASSWORD_LEN} characters")
-            })),
-        )
-            .into_response();
+            "password_too_short",
+            &format!("password must be at least {MIN_PASSWORD_LEN} characters"),
+        );
     }
     if body.new_password == body.current_password {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "new password must differ from the current one"})),
-        )
-            .into_response();
+            "password_unchanged",
+            "new password must differ from the current one",
+        );
     }
 
     let existing: Option<(String,)> =
@@ -335,7 +358,11 @@ async fn change_password(
             Ok(row) => row,
             Err(e) => {
                 tracing::error!(%e, %user_id, "change_password: credential lookup failed");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    "internal error",
+                );
             }
         };
 
@@ -344,32 +371,44 @@ async fn change_password(
     // nothing to update. That is a 409, not a 500 — and it is reachable the
     // moment SSO is enabled, so it must not look like a server fault.
     let Some((current_hash,)) = existing else {
-        return (
+        return error_response(
             StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "this account signs in through your identity provider and has no local password"
-            })),
-        )
-            .into_response();
+            "no_local_password",
+            "this account signs in through your identity provider and has no local password",
+        );
     };
 
+    // 403, deliberately not 401. The caller IS authenticated — they just failed a
+    // confirmation factor (API_CONVENTIONS §3). A 401 would also be actively
+    // harmful: `common/services/api.js` treats every 401 as a dead session and
+    // navigates to /login.html, so a single typo would throw the user out of the
+    // app with their session still perfectly valid and no error ever shown.
     if !nasiko_auth::verify_password_async(&body.current_password, &current_hash).await {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "current password is incorrect"})),
-        )
-            .into_response();
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "current_password_incorrect",
+            "current password is incorrect",
+        );
     }
 
     let new_hash = match nasiko_auth::hash_password_async(&body.new_password).await {
         Ok(h) => h,
         Err(e) => {
             tracing::error!(%e, %user_id, "change_password: password hash failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "internal error",
+            );
         }
     };
 
-    if let Err(e) = sqlx::query(
+    // A matched-nothing write means the credential row vanished between the
+    // SELECT above and here (a concurrent delete cascades from `users`). Falling
+    // through would report a successful password change, and hand back a fresh
+    // session, for a credential that no longer exists. `update_user` already
+    // guards the identical write this way.
+    match sqlx::query(
         "UPDATE user_credentials SET access_secret_hash = $2, updated_at = now() WHERE user_id = $1",
     )
     .bind(user_id)
@@ -377,46 +416,55 @@ async fn change_password(
     .execute(&state.db)
     .await
     {
-        tracing::error!(%e, %user_id, "change_password: credential update failed");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        Ok(r) if r.rows_affected() == 0 => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "no_local_password",
+                "this account signs in through your identity provider and has no local password",
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(%e, %user_id, "change_password: credential update failed");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "internal error",
+            );
+        }
     }
 
     // The old password is gone, so every session established with it goes too.
-    // Note this is only *enforced* in EE: the OSS `validate_token` decodes the
-    // JWT without consulting `auth_tokens`, so there the row is written but old
-    // sessions survive until expiry.
-    if let Err(e) = state
-        .auth
-        .revoke_tokens_for_user(&user_id.to_string())
-        .await
-    {
-        tracing::warn!(%e, %user_id, "change_password: session revocation failed");
-    }
+    // Enforced in both editions: `auth::middleware::validate_session_token` does
+    // its own fail-closed `auth_tokens` lookup on every authenticated request,
+    // independently of whichever `AuthService` impl is wired in.
+    crate::users::routes::revoke_sessions(&state, user_id).await;
 
-    // Issued after the revoke so the caller's replacement is not swept up by
-    // it — otherwise changing your own password would log you out immediately.
-    let identity: nasiko_auth::Identity = claims.into();
+    // Re-read the caller rather than re-signing the presented token's claims, so
+    // a role change since that token was minted is reflected in the replacement
+    // instead of being replayed for another full expiry window.
+    let identity = match state.auth.lookup_user(&user_id.to_string()).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(%e, %user_id, "change_password: caller lookup failed after rotation");
+            return password_changed_but_signed_out(request_is_https(&headers));
+        }
+    };
     let secure = request_is_https(&headers);
     match state.auth.issue_token(&identity).await {
         Ok(token) => (
             [(header::SET_COOKIE, set_token_cookie(&token, secure))],
-            Json(ChangePasswordResponse {
-                token,
-                expires_in: nasiko_auth::TOKEN_EXPIRY_SECS,
-            }),
+            Json(serde_json::json!({
+                "data": ChangePasswordData {
+                    token,
+                    expires_in: nasiko_auth::TOKEN_EXPIRY_SECS,
+                }
+            })),
         )
             .into_response(),
-        // The password *did* change. Reporting 500 here would tell the caller
-        // their change failed when it succeeded, and they would retry with a
-        // password that is no longer current. Clear the cookie and report
-        // success — they simply have to sign in again with the new password.
         Err(e) => {
             tracing::error!(%e, %user_id, "change_password: re-issuing the session token failed");
-            (
-                [(header::SET_COOKIE, clear_token_cookie(secure))],
-                StatusCode::NO_CONTENT,
-            )
-                .into_response()
+            password_changed_but_signed_out(secure)
         }
     }
 }

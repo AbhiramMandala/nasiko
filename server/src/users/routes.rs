@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::Paginated;
 use crate::auth::Claims;
+use crate::auth::login::MIN_PASSWORD_LEN;
 use crate::state::AppState;
 
 /// Returns 409 if `target_id` is the only active admin left.
@@ -67,10 +68,10 @@ async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::res
 /// so a revocation failure is logged rather than turned into a failed request
 /// that would wrongly suggest the change did not happen.
 ///
-/// Note this is only *enforced* in EE. `AuthServiceImpl::validate_token` decodes
-/// the JWT without consulting `auth_tokens`, so in OSS the row is written but
-/// pre-existing sessions survive until they expire.
-async fn revoke_sessions(state: &AppState, user_id: Uuid) {
+/// Enforced in both editions: `auth::middleware::validate_session_token` runs its
+/// own fail-closed `auth_tokens` lookup on every authenticated request,
+/// independently of whichever `AuthService` impl is wired in.
+pub(crate) async fn revoke_sessions(state: &AppState, user_id: Uuid) {
     if let Err(e) = state
         .auth
         .revoke_tokens_for_user(&user_id.to_string())
@@ -442,11 +443,11 @@ pub async fn update_user(
         return (StatusCode::BAD_REQUEST, "email cannot be empty").into_response();
     }
     if let Some(ref p) = body.password
-        && p.len() < crate::auth::login::MIN_PASSWORD_LEN
+        && p.chars().count() < MIN_PASSWORD_LEN
     {
         return (
             StatusCode::BAD_REQUEST,
-            "password must be at least 8 characters",
+            format!("password must be at least {MIN_PASSWORD_LEN} characters"),
         )
             .into_response();
     }
@@ -707,7 +708,7 @@ pub(crate) async fn deactivate(
     {
         Ok(r) if r.rows_affected() > 0 => {
             // Revoke all live tokens immediately so the gateway stops accepting them.
-            let _ = state.auth.revoke_tokens_for_user(&id.to_string()).await;
+            revoke_sessions(&state, id).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
@@ -933,7 +934,7 @@ pub async fn change_role(
 
     // Revoke all live tokens — role is embedded in JWT so stale tokens would
     // carry the old (wrong) role until natural expiry.
-    let _ = state.auth.revoke_tokens_for_user(&id.to_string()).await;
+    revoke_sessions(&state, id).await;
 
     StatusCode::NO_CONTENT.into_response()
 }

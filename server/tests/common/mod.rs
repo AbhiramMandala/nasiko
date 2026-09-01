@@ -276,9 +276,6 @@ impl TestServer {
         }
     }
 
-    // Not every test binary tears down explicitly — same reason the other
-    // shared helpers in this file carry the attribute.
-    #[allow(dead_code)]
     pub async fn cleanup(&self) {
         // Terminate connections to the test DB before dropping it.
         sqlx::query(&format!(
