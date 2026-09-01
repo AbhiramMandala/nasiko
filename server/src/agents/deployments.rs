@@ -368,7 +368,11 @@ pub(crate) async fn restart_deployment(
         // the agent was stopped are picked up without requiring a full redeploy.
         // Non-fatal: proceed with scale-to-1 even if the Secret update fails —
         // the pod will start with the previously applied values.
-        if let Err(e) = state.runtime.refresh_secrets(&k8s_id, secrets).await {
+        if let Err(e) = state
+            .runtime
+            .refresh_secrets(&k8s_id, &info.name, secrets)
+            .await
+        {
             tracing::warn!(%e, %deployment_id, k8s_name, "restart: failed to refresh K8s secret (using existing values)");
         }
 
