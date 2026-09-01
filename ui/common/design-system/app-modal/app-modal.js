@@ -15,6 +15,7 @@
  *       same component — a yes/no <app-modal> built in JS. It is not a second modal.
  */
 import { icons } from "../../utils/icons.js";
+import { escHtml } from "../../utils/escape.js";
 import "../app-button/app-button.js";
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-modal.css', import.meta.url));
@@ -116,7 +117,10 @@ if (!customElements.get("app-modal")) customElements.define("app-modal", AppModa
  *
  * @param {object} opts
  * @param {string} opts.title - Modal heading
- * @param {string} opts.message - Body text (supports HTML)
+ * @param {string} opts.message - Body text. Escaped — this is a JS API whose
+ *   callers pass strings built from server data (an agent name, a team name),
+ *   and "supports HTML" made every one of those an injection point for a
+ *   sentence nobody thinks of as markup. Nothing in the tree was passing HTML.
  * @param {string} [opts.confirmLabel='Confirm'] - Primary button label
  * @param {string} [opts.cancelLabel='Cancel'] - Secondary button label
  * @param {boolean} [opts.danger=false] - Styles the confirm button as destructive
@@ -130,13 +134,16 @@ export function confirmDialog({
 }) {
   return new Promise((resolve) => {
     const modal = document.createElement("app-modal");
-    modal.setAttribute("heading", title);
+    modal.setAttribute("heading", title ?? "");
 
+    // Every interpolated string goes through escHtml. There is no attribute
+    // interpolation to guard: `danger` is a boolean picking between two
+    // literals, so it cannot carry a value at all.
     modal.innerHTML = `
-      <p style="margin:0; font-size:var(--font-size-sm); color:var(--color-text-muted); line-height:1.5;">${message}</p>
+      <p style="margin:0; font-size:var(--font-size-sm); color:var(--color-text-muted); line-height:1.5;">${escHtml(message ?? "")}</p>
       <div data-slot="footer" style="display:contents">
-        <app-button variant="tertiary" size="md" data-role="cancel">${cancelLabel}</app-button>
-        <app-button variant="${danger ? "danger" : "primary"}" size="md" data-role="confirm">${confirmLabel}</app-button>
+        <app-button variant="tertiary" data-role="cancel">${escHtml(cancelLabel)}</app-button>
+        <app-button variant="${danger ? "danger" : "primary"}" data-role="confirm">${escHtml(confirmLabel)}</app-button>
       </div>
     `;
 

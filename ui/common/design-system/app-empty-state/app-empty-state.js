@@ -4,10 +4,12 @@
  * @element app-empty-state
  * @attr {string} title - Bold heading text
  * @attr {string} description - Supporting description text
- * @attr {string} icon - SVG markup string for the icon (alternative to slot).
- *   Deliberately NOT escaped: it is markup by contract. That makes it a sink,
- *   so a generated surface may not set it — it is withheld from the DSL
- *   vocabulary in common/surface/dsl-overrides.json. Use the `icon` slot.
+ * @attr {string} icon - (markup) SVG markup string for the icon (alternative to
+ *   slot). Deliberately NOT escaped: it is markup by contract. That makes it a sink,
+ *   so a generated surface may not set it. The (markup) marker is what
+ *   gen-catalog reads to emit `markup: true`, and gen-dsl-catalog withholds
+ *   every marked attribute from the DSL vocabulary automatically. Use the
+ *   `icon` slot instead — it does the same job safely.
  * @slot [slot="icon"] - Element to use as the icon
  * @slot default - Action elements (e.g. a button)
  */

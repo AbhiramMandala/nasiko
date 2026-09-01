@@ -44,6 +44,8 @@ const overrides = JSON.parse(readFileSync(OVERRIDES, 'utf8')).components;
 
 /** Fail the run with a reason a reader can act on. */
 const problems = [];
+/** `tag.attribute` for every markup sink withheld — reported, never silent. */
+const markupSinks = [];
 
 // ── Drift between the two files ─────────────────────────────────────────────
 // Both directions matter. A component with no entry would silently be absent
@@ -83,6 +85,15 @@ for (const [tag, def] of Object.entries(catalog.components)) {
   const attributes = {};
   for (const [name, spec] of Object.entries(def.attributes || {})) {
     if (catalogExcluded.has(name) || ovExcluded.has(name)) continue;
+    // A markup sink is withheld here, unconditionally, and no override can
+    // re-admit it. The flag comes from the component's own `@attr` line, so
+    // adding a second sink withholds it on the next generator run rather than
+    // waiting for somebody to notice and edit a list — and a security
+    // exception that has to be remembered is one that eventually is not.
+    if (spec.markup) {
+      markupSinks.push(`${tag}.${name}`);
+      continue;
+    }
     attributes[name] = spec;
   }
 
@@ -159,7 +170,9 @@ if (process.argv.includes('--check')) {
     process.exit(1);
   }
   console.log(`gen-dsl-catalog: dsl-catalog.json up to date (${payload.componentCount} ready, ${Object.keys(blocked).length} blocked, version ${version})`);
+  if (markupSinks.length) console.log(`gen-dsl-catalog: withheld markup sinks — ${markupSinks.join(', ')}`);
 } else {
   writeFileSync(OUT, next);
   console.log(`gen-dsl-catalog: wrote dsl-catalog.json — ${payload.componentCount} ready, ${Object.keys(blocked).length} blocked, version ${version}`);
+  if (markupSinks.length) console.log(`gen-dsl-catalog: withheld markup sinks — ${markupSinks.join(', ')}`);
 }

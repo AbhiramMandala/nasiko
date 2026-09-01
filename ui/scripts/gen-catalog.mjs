@@ -216,6 +216,27 @@ function parseComponent(file) {
       );
     }
     if (/\(required\)/i.test(desc)) spec.required = true;
+    // An attribute whose value the component writes into innerHTML *unescaped*,
+    // on purpose, because it is markup by contract. There is exactly one today
+    // (app-empty-state's icon) and it is the only HTML sink in the design
+    // system — which makes it the one attribute a model-authored surface must
+    // never be able to set.
+    //
+    // This used to be a hand-kept Set in the renderer. A hand-kept list of
+    // security-relevant exceptions is the failure this codebase has already
+    // paid for once: the list does not move when the code does. Declaring it
+    // beside the attribute means adding a second sink cannot forget to update
+    // it, and gen-dsl-catalog withholds anything carrying the flag
+    // automatically — so the default for a new sink is closed.
+    if (/\(markup\)/i.test(desc)) {
+      spec.markup = true;
+      if (spec.type !== 'string') {
+        throw new Error(
+          `${relative(UI, file)}: <${element}> marks "${name}" (markup) but it resolves to ` +
+            `"${spec.type}". A markup sink must be a free string; anything else is a modelling error.`,
+        );
+      }
+    }
     spec.description = desc.replace(/\s+/g, ' ').trim();
     attributes[name] = spec;
     }

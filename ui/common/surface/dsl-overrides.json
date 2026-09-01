@@ -62,10 +62,7 @@
     },
     "app-empty-state": {
       "status": "ready",
-      "reason": "icon is SVG markup written unescaped by contract — the one markup sink in the design system. Use the icon slot instead.",
-      "dslExcludeAttributes": [
-        "icon"
-      ]
+      "reason": "icon is withheld automatically now — it carries (markup) in its @attr line, so gen-catalog flags it and gen-dsl-catalog drops it. Listed here previously by hand, which is exactly the list that stops matching the code."
     },
     "app-avatar": {
       "status": "ready",
