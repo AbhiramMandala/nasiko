@@ -208,6 +208,7 @@ pub async fn handle_tools_call(
             ToolAccess::Ask => {
                 match resolve_tool_approval_retry(
                     state,
+                    user_id,
                     perms.agent_id,
                     server.connector_id,
                     &original,
@@ -268,6 +269,7 @@ pub async fn handle_tools_call(
             ToolAccess::Ask => {
                 match resolve_tool_approval_retry(
                     state,
+                    user_id,
                     perms.agent_id,
                     cid,
                     tool_name,
@@ -364,6 +366,7 @@ pub async fn handle_tools_call(
                     ToolAccess::Ask => {
                         match resolve_tool_approval_retry(
                             state,
+                            user_id,
                             perms.agent_id,
                             cid,
                             slug,
@@ -454,6 +457,28 @@ pub async fn handle_tools_call(
         )
         .await
     {
+        Ok(response) if server.kind == ServerType::Composio && response.get("error").is_some() => {
+            match resolved
+                .toolkit_to_connector
+                .get(&toolkit_from_composio_slug(tool_name))
+            {
+                // Meta-tool (COMPOSIO_SEARCH_TOOLS/MANAGE_CONNECTIONS/...) or
+                // an unmapped toolkit — nothing to check against.
+                None => response,
+                Some(&connector_id) => {
+                    detect_composio_auth_required(
+                        state,
+                        user_id,
+                        req_id,
+                        perms.agent_id,
+                        connector_id,
+                        traceparent,
+                        response,
+                    )
+                    .await
+                }
+            }
+        }
         Ok(response) => response,
         Err(e) => {
             // Self-heal: an uploaded_build connector's container can move
@@ -503,6 +528,75 @@ pub async fn handle_tools_call(
             )
         }
     }
+}
+
+/// A composio-routed call's response carried a JSON-RPC `error` — before
+/// passing it straight through unchanged, check whether the specific
+/// toolkit's own connection is why.
+///
+/// Composio aggregates every one of a user's connected toolkits into a
+/// single shared Tool Router session (`composio_config`'s
+/// `connector_id: Uuid::nil()` — see `session.rs`), so unlike a generic
+/// connector, whose broken credential is caught before the call ever goes
+/// out (`build_generic_servers`'s pre-check populates `unusable_connectors`
+/// at `tools/list` time), a broken Composio toolkit can only ever be
+/// detected once a call to it actually fails — there is no per-toolkit
+/// session to pre-check. This re-verifies the specific toolkit's live
+/// status via the same `check_connection_status` call
+/// `connect.rs::handle_composio_callback` already uses, and — only if
+/// Composio itself confirms the connection isn't ACTIVE, never by guessing
+/// from the error's message text (undocumented and unverified against the
+/// live Tool Router) — routes through the exact same `handle_auth_required`
+/// (M3) a generic connector uses, so persistence, the resolve API, the
+/// dispatcher, and auto-resolve-on-reconnect (`connect.rs`'s own ACTIVE
+/// branch) are all unconditionally shared, never reimplemented for
+/// Composio. Any other tool-level failure (bad arguments, a real backend
+/// error, ...) or a connection this check can't resolve falls through to
+/// the original, unmodified response — this only ever narrows what counts
+/// as `AuthRequired`, never widens it.
+async fn detect_composio_auth_required(
+    state: &McpState,
+    user_id: Uuid,
+    req_id: &Value,
+    agent_id: Uuid,
+    connector_id: Uuid,
+    traceparent: Option<&str>,
+    original_response: Value,
+) -> Value {
+    let Some(provider) = &state.providers.composio else {
+        return original_response;
+    };
+    let Ok(Some(connector)) = crate::repo::get_connector_by_id(&state.db, connector_id).await
+    else {
+        return original_response;
+    };
+    let Some(auth_config_id) = connector.auth_config_id.as_deref() else {
+        return original_response;
+    };
+    let Ok(check) = provider
+        .check_connection_status(&user_id.to_string(), auth_config_id)
+        .await
+    else {
+        return original_response;
+    };
+    if check.status.eq_ignore_ascii_case("ACTIVE") {
+        return original_response;
+    }
+
+    tracing::info!(
+        connector = %connector.name, %connector_id, status = %check.status,
+        "composio tool call failed and the connection is no longer active — treating as auth_required"
+    );
+    handle_auth_required(
+        state,
+        user_id,
+        req_id,
+        agent_id,
+        connector_id,
+        &connector.name,
+        traceparent,
+    )
+    .await
 }
 
 /// A tool call's connector needs the user to (re-)authenticate
@@ -674,6 +768,7 @@ enum RetryOutcome {
 /// two pre-existing single-tool call sites.
 async fn resolve_tool_approval_retry(
     state: &McpState,
+    user_id: Uuid,
     agent_id: Uuid,
     connector_id: Uuid,
     tool_name: &str,
@@ -683,12 +778,33 @@ async fn resolve_tool_approval_retry(
         return RetryOutcome::AskAgain;
     };
 
+    // `session`-scope grants are keyed by the stable chat-session identity,
+    // not the per-message trace context above (see
+    // `repo::resolve_stable_session_context`'s own doc comment for the full
+    // reasoning) — `once`-scope claiming below deliberately keeps using
+    // `context_id` unchanged.
+    let session_context_id = match nasiko_hitl::repo::resolve_stable_session_context(
+        &state.db, user_id, agent_id,
+    )
+    .await
+    {
+        Ok(Some(session_id)) => session_id,
+        Ok(None) => context_id.clone(),
+        Err(e) => {
+            tracing::warn!(
+                %agent_id, %user_id, error = %e,
+                "stable session lookup failed — falling back to trace context for session-grant matching"
+            );
+            context_id.clone()
+        }
+    };
+
     match nasiko_hitl::repo::has_active_session_grant(
         &state.db,
         agent_id,
         connector_id,
         tool_name,
-        &context_id,
+        &session_context_id,
     )
     .await
     {

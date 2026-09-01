@@ -16,9 +16,11 @@ use std::collections::HashMap;
 use nasiko_mcp_gateway::config::McpConfig;
 use nasiko_mcp_gateway::permissions::PermissionContext;
 use nasiko_mcp_gateway::protocol::handle_tools_call;
-use nasiko_mcp_gateway::provider::{GenericMcpProvider, Providers};
+use nasiko_mcp_gateway::provider::{ComposioProvider, GenericMcpProvider, Providers};
 use nasiko_mcp_gateway::session::ResolvedSession;
-use nasiko_mcp_gateway::types::{ConnectorUnusable, MCPServerConfig, UnusableConnector, codes};
+use nasiko_mcp_gateway::types::{
+    ConnectorUnusable, MCPServerConfig, ServerType, UnusableConnector, codes,
+};
 use nasiko_mcp_gateway::{McpState, OssConnectorAuthorizer};
 use serde_json::json;
 use sqlx::PgPool;
@@ -339,5 +341,216 @@ async fn missing_credential_reason_never_persists_a_hitl_row() {
     assert_eq!(
         count, 0,
         "no hitl_requests row should exist for a non-AuthRequired reason"
+    );
+}
+
+// ─── Composio's own AuthRequired detection ──────────────────────────────────
+//
+// Unlike a generic connector (whose broken credential is caught before the
+// call ever goes out, at `build_generic_servers` time), Composio aggregates
+// every connected toolkit into one shared Tool Router session with no
+// per-toolkit pre-check — so this only fires once an actual `tools/call`
+// fails and `protocol::detect_composio_auth_required` re-verifies the
+// specific toolkit's live status via Composio's own `/api/v3/connected_accounts`.
+
+/// A resolved session with one Composio backend at `url` and the given
+/// `toolkit -> connector_id` mapping — mirrors
+/// `tool_approval.rs`'s own `composio_session` helper (private to that file).
+fn composio_session(url: &str, toolkit_to_connector: HashMap<String, Uuid>) -> ResolvedSession {
+    ResolvedSession {
+        servers: vec![MCPServerConfig {
+            connector_id: Uuid::nil(),
+            kind: ServerType::Composio,
+            name: "composio".into(),
+            url: url.into(),
+            headers: HashMap::new(),
+            transport: "streamable_http".into(),
+            trusted: false,
+        }],
+        connected_toolkits: toolkit_to_connector.keys().cloned().collect(),
+        toolkit_to_connector,
+        unusable_connectors: HashMap::new(),
+    }
+}
+
+#[tokio::test]
+async fn composio_tool_call_failure_with_inactive_connection_triggers_auth_required() {
+    let db = TestDb::new().await;
+    let connector_id = Uuid::new_v4();
+    let trace_id = "4ef7651916cd43dd8448eb211c80319g";
+    let session_id = "ses_composio_auth_required";
+    db.seed_session_trace(session_id, trace_id).await;
+
+    sqlx::query(
+        "INSERT INTO mcp_connectors (id, provider_type, name, auth_config_id) VALUES ($1, 'composio', 'github', 'ac_test_toolkit')",
+    )
+    .bind(connector_id)
+    .execute(&db.state.db)
+    .await
+    .expect("seed composio connector");
+
+    // Composio's REST API: the connected account for this auth_config_id is
+    // no longer ACTIVE — the real signal `check_connection_status` reads,
+    // exactly the same call `connect.rs::handle_composio_callback` already
+    // makes on the resolve side.
+    let mut status_backend = mockito::Server::new_async().await;
+    let status_mock = status_backend
+        .mock(
+            "GET",
+            mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()),
+        )
+        .with_status(200)
+        .with_body(
+            r#"{"items":[{"id":"ca_dead","status":"EXPIRED","auth_config":{"id":"ac_test_toolkit"}}]}"#,
+        )
+        .create_async()
+        .await;
+
+    // The actual Tool Router MCP endpoint the tool call itself is forwarded
+    // to — separate server, separate concern: this just needs to fail, the
+    // same way a real expired-token tool call would.
+    let mut toolcall_backend = mockito::Server::new_async().await;
+    let toolcall_mock = toolcall_backend
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Auth refresh required"}}"#,
+        )
+        .create_async()
+        .await;
+
+    let mut state = db.state;
+    state.providers.composio = Some(std::sync::Arc::new(ComposioProvider::new(
+        reqwest::Client::new(),
+        "test-composio-key".to_string(),
+        status_backend.url(),
+    )));
+
+    let resolved = composio_session(
+        &toolcall_backend.url(),
+        HashMap::from([("github".to_string(), connector_id)]),
+    );
+    let perms = PermissionContext {
+        agent_id: db.agent_id,
+        enabled_connectors: [connector_id].into_iter().collect(),
+        rules: vec![],
+        hash: "h".into(),
+    };
+    let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
+
+    let res = handle_tools_call(
+        &state,
+        db.owner_user_id,
+        &json!(1),
+        &json!({ "name": "GITHUB_LIST_REPOS", "arguments": {} }),
+        &resolved,
+        &perms,
+        Some(&traceparent),
+    )
+    .await;
+
+    toolcall_mock.assert_async().await;
+    status_mock.assert_async().await;
+
+    assert_eq!(
+        res["error"]["code"],
+        json!(codes::AUTH_REQUIRED),
+        "an inactive Composio connection behind a failed call must surface as AUTH_REQUIRED, \
+         not the raw backend error: {res}"
+    );
+    let hitl_request_id: Uuid = res["error"]["data"]["hitl_request_id"]
+        .as_str()
+        .expect("hitl_request_id present")
+        .parse()
+        .expect("valid uuid");
+
+    let row = nasiko_hitl::repo::get_by_id(&state.db, hitl_request_id)
+        .await
+        .expect("get_by_id")
+        .expect("row must exist");
+    assert_eq!(row.kind, nasiko_hitl::HitlKind::AuthRequired);
+    assert_eq!(row.origin, nasiko_hitl::HitlOrigin::McpTool);
+    assert_eq!(row.connector_id, Some(connector_id));
+    assert_eq!(row.context_id.as_deref(), Some(session_id));
+}
+
+#[tokio::test]
+async fn composio_tool_call_failure_with_active_connection_passes_through_unchanged() {
+    let db = TestDb::new().await;
+    let connector_id = Uuid::new_v4();
+
+    sqlx::query(
+        "INSERT INTO mcp_connectors (id, provider_type, name, auth_config_id) VALUES ($1, 'composio', 'github', 'ac_test_toolkit')",
+    )
+    .bind(connector_id)
+    .execute(&db.state.db)
+    .await
+    .expect("seed composio connector");
+
+    let mut status_backend = mockito::Server::new_async().await;
+    status_backend
+        .mock(
+            "GET",
+            mockito::Matcher::Regex("/api/v3/connected_accounts.*".into()),
+        )
+        .with_status(200)
+        .with_body(
+            r#"{"items":[{"id":"ca_live","status":"ACTIVE","auth_config":{"id":"ac_test_toolkit"}}]}"#,
+        )
+        .create_async()
+        .await;
+
+    let mut toolcall_backend = mockito::Server::new_async().await;
+    toolcall_backend
+        .mock("POST", "/")
+        .with_status(200)
+        .with_body(
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid repo name"}}"#,
+        )
+        .create_async()
+        .await;
+
+    let mut state = db.state;
+    state.providers.composio = Some(std::sync::Arc::new(ComposioProvider::new(
+        reqwest::Client::new(),
+        "test-composio-key".to_string(),
+        status_backend.url(),
+    )));
+
+    let resolved = composio_session(
+        &toolcall_backend.url(),
+        HashMap::from([("github".to_string(), connector_id)]),
+    );
+    let perms = PermissionContext {
+        agent_id: db.agent_id,
+        enabled_connectors: [connector_id].into_iter().collect(),
+        rules: vec![],
+        hash: "h".into(),
+    };
+
+    let res = handle_tools_call(
+        &state,
+        db.owner_user_id,
+        &json!(1),
+        &json!({ "name": "GITHUB_LIST_REPOS", "arguments": {} }),
+        &resolved,
+        &perms,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        res["error"]["code"],
+        json!(-32602),
+        "a genuine application-level error on a still-ACTIVE connection must \
+         pass through unchanged, not be reclassified as AUTH_REQUIRED: {res}"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM hitl_requests")
+        .fetch_one(&state.db)
+        .await
+        .expect("count rows");
+    assert_eq!(
+        count, 0,
+        "no hitl_requests row should exist when the connection is still active"
     );
 }

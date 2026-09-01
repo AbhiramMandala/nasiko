@@ -282,16 +282,35 @@ impl HitlStore for PgHitlStore {
         &self,
         identity: &HitlIdentity,
     ) -> Result<Vec<HitlRequest>, HitlError> {
+        // Excludes a `direct_chat`/`agent_proxy` row that only mirrors a still-pending
+        // `mcp_tool` row (an agent that maps MCP's `ask_required` onto the A2A
+        // `AUTH_REQUIRED` task state — see `NewHitlRequest::mcp_tool`'s doc comment and
+        // `auto_resolve_linked_direct_chat_row` in `router/hitl.rs`). Resolving the mirror
+        // directly triggers a real (but premature) resume without granting the actual MCP
+        // permission, so it must never be offered as its own actionable pending item — only
+        // the linked `mcp_tool` row is the one that does real work. The regex guards the
+        // `::uuid` cast: `hitl_request_id` is caller-supplied agent metadata, so a malformed
+        // value must not error the whole listing, just fail to match.
+        const MIRROR_FILTER: &str = "
+            AND NOT (
+                h.origin IN ('direct_chat', 'agent_proxy')
+                AND h.question->'metadata'->>'hitl_request_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                AND EXISTS (
+                    SELECT 1 FROM hitl_requests linked
+                     WHERE linked.id = (h.question->'metadata'->>'hitl_request_id')::uuid
+                       AND linked.status = 'pending'
+                )
+            )";
         let rows: Vec<HitlRequestRow> = if identity.is_superuser {
-            sqlx::query_as(
-                "SELECT * FROM hitl_requests WHERE status = 'pending' ORDER BY created_at",
-            )
+            sqlx::query_as(&format!(
+                "SELECT h.* FROM hitl_requests h WHERE h.status = 'pending' {MIRROR_FILTER} ORDER BY h.created_at"
+            ))
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as(
-                "SELECT * FROM hitl_requests WHERE status = 'pending' AND owner_user_id = $1 ORDER BY created_at",
-            )
+            sqlx::query_as(&format!(
+                "SELECT h.* FROM hitl_requests h WHERE h.status = 'pending' AND h.owner_user_id = $1 {MIRROR_FILTER} ORDER BY h.created_at"
+            ))
             .bind(identity.user_id)
             .fetch_all(&self.pool)
             .await?

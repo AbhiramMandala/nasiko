@@ -128,9 +128,28 @@ fn build_resume_message(request: &HitlRequest) -> String {
         .unwrap_or("the previously blocked action");
 
     match request.kind {
-        HitlKind::AuthRequired => format!(
-            "Authentication has been completed. You may retry the tool call now (`{label}`)."
-        ),
+        // `auth_required`/`mcp_tool` rows have no `tool_name` (the schema
+        // only carries it for `tool_approval` — see `chk_hitl_mcp_auth_required_identity`
+        // vs `chk_hitl_tool_approval_identity`), so `label` above is always
+        // its generic fallback here — confirmed live: a real deployed agent,
+        // forced to call some tool by this vague a nudge, called an
+        // unrelated tool of its own instead of retrying the right one. Name
+        // the connector instead — the one piece of real identity every
+        // `auth_required` row's `question` does carry
+        // (`handle_auth_required`'s own construction) — so the receiving
+        // agent has an actual anchor instead of a placeholder that reads
+        // like a real tool name but never is one.
+        HitlKind::AuthRequired => {
+            let connector = request
+                .question
+                .get("connector")
+                .and_then(Value::as_str)
+                .unwrap_or("the connector");
+            format!(
+                "Authentication for the `{connector}` connector has been completed. \
+                 You may retry whichever tool call needed it now."
+            )
+        }
         HitlKind::ToolApproval => {
             let approved = request
                 .human_response
@@ -166,6 +185,15 @@ mod tests {
         human_response: Option<Value>,
         tool_name: Option<&str>,
     ) -> HitlRequest {
+        request_with_question(kind, human_response, tool_name, serde_json::json!({}))
+    }
+
+    fn request_with_question(
+        kind: HitlKind,
+        human_response: Option<Value>,
+        tool_name: Option<&str>,
+        question: Value,
+    ) -> HitlRequest {
         let now = Utc::now();
         HitlRequest {
             id: Uuid::new_v4(),
@@ -185,7 +213,7 @@ mod tests {
             tool_name: tool_name.map(str::to_string),
             arguments_hash: None,
             consumed_at: None,
-            question: serde_json::json!({}),
+            question,
             human_response,
             resume_state: serde_json::json!({}),
             resume_claimed_at: Some(now),
@@ -199,11 +227,31 @@ mod tests {
     }
 
     #[test]
-    fn auth_required_message_mentions_retry() {
-        let req = request(HitlKind::AuthRequired, None, Some("GITHUB_CREATE_ISSUE"));
+    fn auth_required_message_names_the_connector_not_a_nonexistent_tool_name() {
+        // `auth_required`/`mcp_tool` rows never have `tool_name` set (only
+        // `tool_approval` rows do) — this must not fall back to the generic
+        // placeholder when `question.connector` is available, the way a
+        // real `handle_auth_required`-created row always has it.
+        let req = request_with_question(
+            HitlKind::AuthRequired,
+            None,
+            None,
+            serde_json::json!({"connector": "github", "connector_id": Uuid::new_v4()}),
+        );
         let msg = build_resume_message(&req);
         assert!(msg.contains("Authentication"));
-        assert!(msg.contains("GITHUB_CREATE_ISSUE"));
+        assert!(
+            msg.contains("`github`"),
+            "must name the actual connector, not a placeholder: {msg}"
+        );
+    }
+
+    #[test]
+    fn auth_required_message_falls_back_gracefully_with_no_connector_in_question() {
+        let req = request(HitlKind::AuthRequired, None, None);
+        let msg = build_resume_message(&req);
+        assert!(msg.contains("Authentication"));
+        assert!(msg.contains("the connector"));
     }
 
     #[test]

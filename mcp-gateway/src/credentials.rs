@@ -333,6 +333,36 @@ pub async fn register_credential(
     };
     repo::set_connector_setup_status(&state.db, connector.id, status, error).await?;
 
+    if outcome.verified {
+        // Same auto-resolve hook as the generic OAuth2 callback
+        // (`oauth.rs::handle_callback`) and the Composio callback
+        // (`connect.rs::handle_composio_callback`) — re-entering a working
+        // bearer/basic credential is just as much "the credential now
+        // works" as either of those, and this connector type has no OAuth
+        // callback at all to have caught it instead.
+        match nasiko_hitl::repo::resolve_pending_auth_required_for_connector(
+            &state.db,
+            user_id,
+            connector.id,
+        )
+        .await
+        {
+            Ok(resolved) if !resolved.is_empty() => {
+                tracing::info!(
+                    connector = %connector.name, %user_id, resolved_count = resolved.len(),
+                    "auto-resolved pending auth_required hitl requests after credential registration"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e, connector = %connector.name, %user_id,
+                    "failed to auto-resolve pending auth_required hitl requests"
+                );
+            }
+        }
+    }
+
     crate::session::invalidate_session_cache(state, user_id).await;
     tracing::info!(connector = %connector.name, %user_id, verified = outcome.verified, "registered user credential");
     Ok(outcome)

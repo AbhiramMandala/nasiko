@@ -167,6 +167,44 @@ pub async fn get_by_id(db: &PgPool, id: Uuid) -> Result<Option<HitlRequest>> {
     row.map(HitlRequestRow::try_into_domain).transpose()
 }
 
+/// The `direct_chat`/`agent_proxy`-origin row (if any, still `pending`)
+/// mirroring this resolved `mcp_tool`-origin row's own event — an agent that
+/// maps MCP's `ask_required`/`auth_required` onto the A2A `AUTH_REQUIRED`
+/// task state creates its own separate row for the same pause, tagging it
+/// with `question.metadata.hitl_request_id` pointing back at this one
+/// (`build_pause_question` in `oss/server/src/router/a2a_dispatch.rs`
+/// forwards the agent's own status-message metadata verbatim).
+///
+/// Resolving only the MCP row leaves that mirrored row pending forever —
+/// direct-chat's own resume dispatcher only ever acts on rows it owns, and
+/// MCP's own dispatcher sends a stateless, task-blind nudge that can never
+/// reach the *specific* chat task a human is watching (found live: the
+/// task-aware resume only exists on the `direct_chat`/`agent_proxy` side —
+/// see docs/MCP_HITL_MERGE_HANDOFF.md's dual-origin writeup). The caller
+/// (`router/hitl.rs::resolve`) uses this to auto-resolve the mirrored row in
+/// lockstep with the one the human actually clicked, so a single approval
+/// action both grants the real permission (this row) and resumes the
+/// specific visible task the human is looking at (the mirrored row, through
+/// its own existing, unmodified dispatcher).
+pub async fn find_linked_direct_chat_row(
+    db: &PgPool,
+    mcp_row_id: Uuid,
+) -> Result<Option<HitlRequest>> {
+    let row = sqlx::query_as::<_, HitlRequestRow>(
+        r#"
+        SELECT * FROM hitl_requests
+         WHERE origin IN ('direct_chat', 'agent_proxy')
+           AND status = 'pending'
+           AND question->'metadata'->>'hitl_request_id' = $1
+         LIMIT 1
+        "#,
+    )
+    .bind(mcp_row_id.to_string())
+    .fetch_optional(db)
+    .await?;
+    row.map(HitlRequestRow::try_into_domain).transpose()
+}
+
 /// `owner_user_id` is the sole authorization rule for every [`HitlKind`] — not
 /// a two-branch split by kind. A human's personal HITL inbox (`list_pending_for`)
 /// already scopes by this via its `WHERE` clause; this function is for a
@@ -340,6 +378,55 @@ pub async fn claim_resolved_tool_approval(
     .fetch_optional(db)
     .await?;
     row.map(HitlRequestRow::try_into_domain).transpose()
+}
+
+/// Resolve the stable chat-session identity a `tool_approval` session grant
+/// should be keyed by — the same `chat_sessions.session_id` direct-chat uses
+/// as its own durable conversation identity (`agent_proxy.rs` upserts one row
+/// per conversation and it never changes across messages within it).
+///
+/// This exists because the trace-derived `context_id` every other MCP HITL
+/// identity uses (`session::resolve_context_id` in `oss/mcp-gateway`) is a
+/// *per-message* value — a fresh distributed trace begins with every user
+/// message, so two calls a human would recognize as "the same conversation"
+/// can resolve to different context_ids. That's the right identity for a
+/// pending row itself (an `once`-scope claim is deliberately per-call, and
+/// stays on the old trace-derived context_id — this function changes nothing
+/// there), but it silently broke `session`-scope grants: matched by
+/// `(agent_id, connector_id, tool_name, context_id)`, a grant created against
+/// message 1's trace context could never match message 2's different trace
+/// context, so "Allow for Session" behaved almost exactly like "Allow Once."
+///
+/// `(owner_user_id, agent_id)` is available both when a grant is created
+/// (from the resolved row itself) and when it's looked up (from the live
+/// call's own identity), so this lookup is what both sides now share.
+/// Deliberately "most recent session for this (user, agent) pair," not an
+/// exact trace match — a user with two concurrent chats against the same
+/// agent is a real but rare edge case, and picking the most recently active
+/// one is a safe default (worst case: an unnecessary re-ask, never an
+/// over-broad grant) that needs no new protocol field to disambiguate
+/// further. Returns `None` when no chat session exists at all (e.g. a raw
+/// MCP integration outside any chat) — callers fall back to the existing
+/// trace-derived context in that case, so this is a pure addition to what
+/// `session` scope can match, never a narrowing.
+pub async fn resolve_stable_session_context(
+    db: &PgPool,
+    owner_user_id: Uuid,
+    agent_id: Uuid,
+) -> Result<Option<String>> {
+    let session_id: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT session_id FROM chat_sessions
+         WHERE user_id = $1 AND agent_id = $2 AND deleted_at IS NULL
+         ORDER BY updated_at DESC
+         LIMIT 1
+        "#,
+    )
+    .bind(owner_user_id)
+    .bind(agent_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(session_id)
 }
 
 /// Default validity window for an "allow for this session" grant — 24 hours,

@@ -491,6 +491,31 @@ pub async fn handle_composio_callback(
             }
             grant_user_agents_access(&state.db, user_id, connector_id).await;
             session::invalidate_session_cache(state, user_id).await;
+            // Same auto-resolve hook as the generic OAuth2 callback
+            // (`oauth.rs::handle_callback`) — a Composio connector going
+            // ACTIVE is just as much "the credential now works" as a
+            // generic connector's token exchange succeeding.
+            match nasiko_hitl::repo::resolve_pending_auth_required_for_connector(
+                &state.db,
+                user_id,
+                connector_id,
+            )
+            .await
+            {
+                Ok(resolved) if !resolved.is_empty() => {
+                    tracing::info!(
+                        connector = %connector.name, %user_id, resolved_count = resolved.len(),
+                        "auto-resolved pending auth_required hitl requests after composio callback"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e, connector = %connector.name, %user_id,
+                        "failed to auto-resolve pending auth_required hitl requests"
+                    );
+                }
+            }
             match success_url {
                 // Explicit success_url — redirect there (never off-origin).
                 Some(dest) => CallbackOutcome::Redirect(crate::net::safe_redirect(
