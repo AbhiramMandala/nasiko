@@ -681,6 +681,32 @@ pub async fn handle_callback(
     if outcome.verified {
         crate::connect::grant_user_agents_access(&state.db, oauth_state.user_id, connector.id)
             .await;
+        // The credential now works — resolve any hitl_requests rows that were
+        // waiting on exactly this fix so MCP's dispatcher (already running)
+        // nudges every paused conversation to retry. A plain function call,
+        // the same one the resolve API uses; no new store/dispatcher logic.
+        match nasiko_hitl::repo::resolve_pending_auth_required_for_connector(
+            &state.db,
+            oauth_state.user_id,
+            connector.id,
+        )
+        .await
+        {
+            Ok(resolved) if !resolved.is_empty() => {
+                tracing::info!(
+                    connector = %connector.name, user_id = %oauth_state.user_id,
+                    resolved_count = resolved.len(),
+                    "auto-resolved pending auth_required hitl requests after oauth callback"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e, connector = %connector.name, user_id = %oauth_state.user_id,
+                    "failed to auto-resolve pending auth_required hitl requests"
+                );
+            }
+        }
     }
     crate::session::invalidate_session_cache(state, oauth_state.user_id).await;
     tracing::info!(

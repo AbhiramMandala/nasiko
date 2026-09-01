@@ -251,6 +251,42 @@ pub async fn resolve(
     row.map(HitlRequestRow::try_into_domain).transpose()
 }
 
+/// Auto-resolve every pending `auth_required`/`mcp_tool` row for this
+/// `(owner_user_id, connector_id)` pair — the OAuth callback's hook
+/// (`oss/mcp-gateway/src/oauth.rs::handle_callback`) once it has confirmed
+/// the newly stored credential actually works.
+///
+/// Deliberately scoped by user+connector, not a single row id: the pending
+/// rows are keyed `(agent_id, connector_id, context_id)`
+/// (`uq_hitl_pending_per_connector_auth`), so a connector shared across
+/// multiple agents/conversations can have several rows waiting on the exact
+/// same credential fix. One successful re-auth clears all of them, not just
+/// whichever tool call happened to trigger the callback.
+pub async fn resolve_pending_auth_required_for_connector(
+    db: &PgPool,
+    owner_user_id: Uuid,
+    connector_id: Uuid,
+) -> Result<Vec<HitlRequest>> {
+    let human_response = serde_json::json!({"decision": "approve", "auth_outcome": "confirmed"});
+    let rows = sqlx::query_as::<_, HitlRequestRow>(
+        r#"
+        UPDATE hitl_requests
+           SET status = 'resolved', human_response = $3, resolved_by = $1, resolved_at = now()
+         WHERE owner_user_id = $1 AND connector_id = $2 AND status = 'pending'
+           AND kind = 'auth_required' AND origin = 'mcp_tool'
+        RETURNING *
+        "#,
+    )
+    .bind(owner_user_id)
+    .bind(connector_id)
+    .bind(human_response)
+    .fetch_all(db)
+    .await?;
+    rows.into_iter()
+        .map(HitlRequestRow::try_into_domain)
+        .collect()
+}
+
 /// Atomically claim the most recently resolved, not-yet-consumed
 /// `tool_approval` row matching this exact `(agent_id, connector_id,
 /// tool_name, context_id)` tuple — the M7 retry-matching lookup
