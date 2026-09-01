@@ -233,20 +233,6 @@ pub trait ContainerRuntime: Send + Sync {
     }
 }
 
-/// Ensures an object-storage bucket exists before first use, abstracting over
-/// which concrete backend provisions it.
-///
-/// The self-hosted, S3-protocol-compatible default (RustFS) is deployment-agnostic
-/// and works unmodified on any cloud or on-prem. A genuinely cloud-native
-/// implementation (real AWS S3 via IAM, Azure Blob Storage, GCS) can implement
-/// this same interface later - mirroring the [`ContainerRuntime`] OSS/EE split -
-/// without any call site needing to change.
-#[async_trait]
-pub trait BucketProvisioner: Send + Sync {
-    /// Idempotent: creates the bucket if it doesn't already exist, otherwise a no-op.
-    async fn ensure_bucket(&self) -> anyhow::Result<()>;
-}
-
 /// A [`BlobStore`] operation failure.
 ///
 /// Deliberately two-variant: callers only ever branch on "the object isn't
@@ -271,14 +257,10 @@ pub enum BlobStoreError {
 ///
 /// One implementation per storage protocol — S3-compatible (RustFS/MinIO/AWS)
 /// and cloud-native backends (Azure Blob) — selected once at the composition
-/// root, mirroring [`ContainerRuntime`]. Keys are digests or digest-like paths;
-/// the store never interprets them beyond prefixing (see the implementations'
-/// key mapping).
-///
-/// Bucket/container *lifecycle* is deliberately a separate concern (see
-/// [`BucketProvisioner`]): not every backend grants the control plane the
-/// right to create containers, and external managed stores arrive
-/// pre-provisioned.
+/// root by `nasiko_oci::storage::blob_store_from_env`, mirroring
+/// [`ContainerRuntime`]. Keys are digests; the store never interprets them
+/// beyond a shared prefix, so the same bucket layout is readable by either
+/// backend and a migration is a plain object copy.
 #[async_trait]
 pub trait BlobStore: Send + Sync {
     /// Stores `data` under `digest`, returning the stored size in bytes.
@@ -304,18 +286,22 @@ pub trait BlobStore: Send + Sync {
     async fn blob_size(&self, digest: &str) -> std::result::Result<i64, BlobStoreError>;
 
     /// A time-limited URL a client can GET the object from directly, without
-    /// platform credentials (S3 presigned URL / Azure SAS). The URL's host is
-    /// the backend's own endpoint — reachability from the *caller's* network
-    /// is the deployment's concern, not this trait's.
+    /// platform credentials (S3 presigned URL / Azure Service SAS). The URL's
+    /// host is the backend's own endpoint — reachability from the *caller's*
+    /// network is the deployment's concern, not this trait's.
     async fn presigned_get_url(
         &self,
         digest: &str,
         ttl_secs: u64,
     ) -> std::result::Result<String, BlobStoreError>;
 
-    /// Ensures the backing bucket/container exists. With `skip_create`, or on
-    /// a backend where the platform has no create rights, verifies existence
-    /// and fails with an actionable message instead of creating.
+    /// Ensures the backing bucket/container exists before first use.
+    ///
+    /// `skip_create` (and any backend where the platform holds no create
+    /// rights, which is every external managed store) makes this verify-only:
+    /// it must then fail with a message naming the resource and the command
+    /// that creates it, rather than surfacing later as an undiagnosable write
+    /// failure.
     async fn ensure_bucket(&self, skip_create: bool) -> anyhow::Result<()>;
 }
 
@@ -327,7 +313,7 @@ pub trait BlobStore: Send + Sync {
 /// can instead hand the runtime a direct source of image bytes (the embedded
 /// OCI registry in `nasiko-oci` implements it), so a cache miss is satisfied
 /// by a `docker load` with zero registry configuration. Mirrors the
-/// [`BucketProvisioner`] extension pattern.
+/// [`BlobStore`] extension pattern.
 #[async_trait]
 pub trait ImageSource: Send + Sync {
     /// The image as a docker-load–compatible tar archive, tagged exactly

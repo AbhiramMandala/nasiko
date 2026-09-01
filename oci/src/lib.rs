@@ -1,4 +1,5 @@
 pub mod authz;
+pub mod azure;
 pub mod error;
 pub mod ops;
 pub mod pull_credentials;

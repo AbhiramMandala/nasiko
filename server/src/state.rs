@@ -92,9 +92,8 @@ impl AppState {
     ) -> Self {
         let redis = redis::Client::open(config.redis_url.as_str()).expect("invalid redis url");
 
-        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
-            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
-        );
+        let oci_storage =
+            nasiko_oci::storage::blob_store_from_env(config.oci_storage_bucket.clone()).await;
         oci_storage.ensure_bucket(false).await.ok();
 
         let usage_tracker = UsageTracker::new(db.clone());

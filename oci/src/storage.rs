@@ -230,16 +230,6 @@ impl BlobStore for S3Storage {
     }
 }
 
-/// The default, cloud-agnostic [`BucketProvisioner`](nasiko_runtime::BucketProvisioner) -
-/// speaks the S3 protocol against whatever `S3_ENDPOINT` points to (RustFS in
-/// every real Nasiko deployment today, but any S3-compatible store works).
-#[async_trait::async_trait]
-impl nasiko_runtime::BucketProvisioner for S3Storage {
-    async fn ensure_bucket(&self) -> std::result::Result<(), anyhow::Error> {
-        BlobStore::ensure_bucket(self, false).await
-    }
-}
-
 /// `S3_FORCE_PATH_STYLE`: path-style requests (`endpoint.com/bucket/key`),
 /// defaulting **true** — RustFS/MinIO (every in-cluster install) require it,
 /// so only an explicit `false`/`0` switches to virtual-hosted style. The
@@ -265,5 +255,126 @@ mod tests {
         assert!(parse_force_path_style(Some("garbage")));
         assert!(!parse_force_path_style(Some("false")));
         assert!(!parse_force_path_style(Some("0")));
+    }
+}
+
+// ─── Backend selection ───────────────────────────────────────────────────────
+
+/// Which object-storage protocol the platform speaks, from `STORAGE_PROVIDER`.
+///
+/// Defaults to S3 so every existing deployment keeps its behavior with no
+/// values change; `azure-blob` is opt-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageProvider {
+    /// Any S3-compatible store: RustFS, MinIO, real AWS S3, Nebius object storage.
+    S3,
+    /// Native Azure Blob Storage.
+    AzureBlob,
+}
+
+impl StorageProvider {
+    /// Unknown values fail rather than silently falling back to S3: a typo'd
+    /// provider that quietly used the wrong backend would surface as a pile of
+    /// missing blobs long after startup.
+    pub fn parse(value: &str) -> Result<Self, anyhow::Error> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "s3" => Ok(Self::S3),
+            "azure-blob" | "azure_blob" | "azure" => Ok(Self::AzureBlob),
+            other => anyhow::bail!(
+                "unknown STORAGE_PROVIDER '{other}' — expected 's3' (default, any \
+                 S3-compatible store) or 'azure-blob'"
+            ),
+        }
+    }
+
+    pub fn from_env() -> Result<Self, anyhow::Error> {
+        Self::parse(&std::env::var("STORAGE_PROVIDER").unwrap_or_default())
+    }
+}
+
+/// Flags configuration that names two backends at once.
+///
+/// Both credential sets present is not a preference to resolve, it is a
+/// mistake: whichever one loses is silently ignored, and the operator learns
+/// about it when the wrong store turns out to be empty. Returns the message to
+/// fail with, or `None` when the config is coherent.
+pub fn conflicting_storage_config(
+    provider: StorageProvider,
+    s3_endpoint_set: bool,
+    azure_account_set: bool,
+) -> Option<String> {
+    match provider {
+        StorageProvider::AzureBlob if s3_endpoint_set => Some(
+            "STORAGE_PROVIDER=azure-blob but S3_ENDPOINT is also set. Only one object \
+             store is used; remove the S3 settings (chart: `minio.external.endpoint`) \
+             or switch STORAGE_PROVIDER back to s3."
+                .to_owned(),
+        ),
+        StorageProvider::S3 if azure_account_set => Some(
+            "AZURE_STORAGE_ACCOUNT is set but STORAGE_PROVIDER is not 'azure-blob', so \
+             the Azure store would be ignored. Set STORAGE_PROVIDER=azure-blob (chart: \
+             `minio.external.provider`) or remove the Azure settings."
+                .to_owned(),
+        ),
+        _ => None,
+    }
+}
+
+/// The composition-root factory: one call site shape for every backend.
+///
+/// Panics on a misconfiguration rather than degrading, matching the other
+/// startup-critical seams (`SECRETS_ENCRYPTION_KEY`, the Postgres connect): a
+/// control plane that boots with the wrong object store looks healthy and
+/// loses artifacts.
+pub async fn blob_store_from_env(bucket: String) -> std::sync::Arc<dyn BlobStore> {
+    let provider = StorageProvider::from_env().unwrap_or_else(|e| panic!("{e}"));
+
+    if let Some(msg) = conflicting_storage_config(
+        provider,
+        std::env::var("S3_ENDPOINT").is_ok_and(|v| !v.trim().is_empty()),
+        std::env::var("AZURE_STORAGE_ACCOUNT").is_ok_and(|v| !v.trim().is_empty()),
+    ) {
+        panic!("{msg}");
+    }
+
+    match provider {
+        StorageProvider::S3 => std::sync::Arc::new(S3Storage::from_env(bucket).await),
+        StorageProvider::AzureBlob => std::sync::Arc::new(
+            crate::azure::AzureBlobStorage::from_env(bucket).unwrap_or_else(|e| panic!("{e}")),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+
+    #[test]
+    fn provider_defaults_to_s3_and_rejects_typos() {
+        assert_eq!(StorageProvider::parse("").unwrap(), StorageProvider::S3);
+        assert_eq!(StorageProvider::parse("s3").unwrap(), StorageProvider::S3);
+        assert_eq!(
+            StorageProvider::parse(" Azure-Blob ").unwrap(),
+            StorageProvider::AzureBlob
+        );
+        let err = StorageProvider::parse("azureblob").unwrap_err().to_string();
+        assert!(err.contains("unknown STORAGE_PROVIDER"), "{err}");
+    }
+
+    #[test]
+    fn naming_two_backends_at_once_is_rejected_in_both_directions() {
+        assert!(
+            conflicting_storage_config(StorageProvider::AzureBlob, true, true)
+                .unwrap()
+                .contains("S3_ENDPOINT is also set")
+        );
+        assert!(
+            conflicting_storage_config(StorageProvider::S3, true, true)
+                .unwrap()
+                .contains("would be ignored")
+        );
+        // Each backend configured alone is fine.
+        assert!(conflicting_storage_config(StorageProvider::AzureBlob, false, true).is_none());
+        assert!(conflicting_storage_config(StorageProvider::S3, true, false).is_none());
     }
 }
