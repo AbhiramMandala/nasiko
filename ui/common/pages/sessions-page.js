@@ -88,7 +88,7 @@ class SessionsPage extends HTMLElement {
           <p class="sessions-subtitle">Review all queries across agents. Select a session to open its
             trace details.</p>
         </div>
-        <app-button variant="dark" size="sm" id="btn-new">New Chat</app-button>
+        <app-button variant="dark" size="md" id="btn-new">New chat</app-button>
       </div>
       <div class="session-list" id="session-list"></div>
       <div class="sessions-more" id="sessions-more" hidden>
@@ -260,6 +260,8 @@ class SessionsPage extends HTMLElement {
   /// app-table's own empty row is a sentence, and with no history at all the
   /// useful thing to show is a button.
   #syncList() {
+    // Both empty states carry their own CTA, so the header button would be a duplicate.
+    this.querySelector('#btn-new')?.toggleAttribute('hidden', !this.#sessions.length);
     if (this.#sessions.length) {
       const table = this.querySelector('#sessions-table');
       table ? table.refresh() : this.#mountTable();
@@ -268,7 +270,7 @@ class SessionsPage extends HTMLElement {
         title="No agents to run yet"
         description="Chat routes every query to a deployed agent. Import one and its queries, traces and token counts show up here."
         icon='${icons.plus()}'>
-        <app-button variant="dark" size="sm" id="btn-empty-import">Import agent</app-button>
+        <app-button variant="dark" id="btn-empty-import">Import agent</app-button>
       </app-empty-state>`);
       this.querySelector('#btn-empty-import')?.addEventListener('click',
         () => routerNavigate('/add-agent'));
@@ -277,7 +279,7 @@ class SessionsPage extends HTMLElement {
         title="No sessions yet"
         description="Ask the orchestrator a question and every query, trace and token count shows up here."
         icon='${icons.send()}'>
-        <app-button variant="dark" size="sm" id="btn-empty-chat">Start a Chat</app-button>
+        <app-button variant="dark" id="btn-empty-chat">Start a Chat</app-button>
       </app-empty-state>`);
       this.querySelector('#btn-empty-chat')?.addEventListener('click',
         () => routerNavigate('/chat?agent_name=Orchestrator'));

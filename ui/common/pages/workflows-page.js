@@ -52,7 +52,7 @@ class WorkflowsPage extends HTMLElement {
           <h1 class="title-page">Workflows</h1>
           <p class="page-sub">Reusable multi-agent sequences you can run on demand.</p>
         </div>
-        <app-button variant="primary" size="sm" href="/workflow-new">Create workflow ${icons.plus()}</app-button>
+        <app-button variant="primary" size="md" id="btn-new-wf" href="/workflow-new">Create workflow ${icons.plus()}</app-button>
       </header>
       <div class="grid" id="wf-grid">${this.#skeletonCards()}</div>
     `;
@@ -163,6 +163,8 @@ class WorkflowsPage extends HTMLElement {
 
   #renderGrid() {
     const grid = this.querySelector('#wf-grid');
+    // The empty state carries the same CTA, so the header one would be a duplicate.
+    this.querySelector('#btn-new-wf')?.toggleAttribute('hidden', !this.#workflows.length);
     if (!this.#workflows.length) {
       grid.className = 'empty-wrap';
       grid.innerHTML = `

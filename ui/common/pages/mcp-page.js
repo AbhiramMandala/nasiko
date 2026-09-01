@@ -23,17 +23,20 @@ const styles = await loadCss(new URL('./mcp-page.css', import.meta.url));
 import { icons } from '../utils/icons.js';
 import { confirmDialog } from '../design-system/app-modal/app-modal.js';
 import '../design-system/app-skeleton/app-skeleton.js';
+import '../design-system/app-empty-state/app-empty-state.js';
 import '../design-system/app-tabs/app-tabs.js';
 import '../features/app-module-nav.js';
 import '../design-system/auto-complete/auto-complete.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-card/app-card.js';
+import '/common/design-system/app-tooltip/app-tooltip.js';
 import '/common/design-system/app-input/app-input.js';
 import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-switch/app-switch.js';
 import { call } from '../core/data-sources.js';
 import { initialView } from '../utils/module-view.js';
+import { readSearchParams, setSearchParams } from '../utils/url-policy.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -52,22 +55,49 @@ const AUTH_FLOWS = { oauth2: 'oauth', bearer: 'api_key', basic: 'api_key', url_p
 // Nav scopes filter the unified catalog grid. Ownership scopes apply to
 // custom MCP servers only — Composio toolkits are platform-registered.
 const CATALOG_SCOPES = {
-  all: { filter: () => true, empty: '' },
+  all: {
+    filter: () => true,
+    empty: {
+      icon: 'network',
+      title: 'No connectable services yet',
+      desc: 'Register an external MCP server or upload your own to give agents new tools.',
+      cta: true,
+    },
+  },
   'my-servers': {
     filter: (s) => s.kind === 'server' && !s.__shared,
-    empty: 'You haven\'t registered or uploaded any MCP servers yet',
+    empty: {
+      icon: 'server',
+      title: 'No servers of your own yet',
+      desc: 'Register an external MCP server or upload your own. Anything you add shows up here with the tools it exposes.',
+      cta: true,
+    },
   },
   'shared-with-me': {
     filter: (s) => s.kind === 'server' && s.__shared,
-    empty: 'No MCP servers have been shared with you yet',
+    empty: {
+      icon: 'users',
+      title: 'Nothing shared with you yet',
+      desc: 'When a teammate shares one of their MCP servers, it lands here and its tools become available to your agents.',
+    },
   },
   toolkits: {
     filter: (s) => s.kind === 'toolkit',
-    empty: 'Platform-registered app toolkits (Gmail, Notion, …) show up here once an admin adds them',
+    empty: {
+      icon: 'layers',
+      title: 'No toolkits yet',
+      desc: 'Platform-registered app toolkits (Gmail, Notion, …) show up here once an admin adds them.',
+    },
   },
 };
 
 const CATALOG_TABS = [['all', 'All'], ['available', 'Available to connect'], ['connected', 'Connected']];
+
+/** The tab named in `?tab=`, ignoring anything that isn't one of ours. */
+const initialCatalogTab = () => {
+  const { tab } = readSearchParams(['tab']);
+  return CATALOG_TABS.some(([k]) => k === tab) ? tab : 'all';
+};
 
 class McpPage extends HTMLElement {
   #initialized = false;
@@ -78,7 +108,9 @@ class McpPage extends HTMLElement {
   #agentConnectors = [];
   #agentTools = new Map(); // connector_id → [{name, description, stance}]
   #catalogScope = initialView(Object.keys(CATALOG_SCOPES), 'all'); // key into CATALOG_SCOPES
-  #catalogTab = 'all'; // all | available | connected
+  // all | available | connected — in `?tab=` so back from a connector's detail
+  // page lands on the tab the user left, same as the scope in `?view=`.
+  #catalogTab = initialCatalogTab();
   #connectTargetId = ''; // service awaiting an API key in the connect modal
 
   connectedCallback() {
@@ -122,6 +154,7 @@ class McpPage extends HTMLElement {
       if (CATALOG_SCOPES[section]) {
         this.#catalogScope = section;
         this.#catalogTab = 'all';
+        setSearchParams({ tab: null });
         this.#renderCatalog();
         // The catalog is the first section — return to the top so the page
         // head and tab strip stay in view alongside the filtered grid.
@@ -139,6 +172,8 @@ class McpPage extends HTMLElement {
     // buttons and re-renders the strip whenever the catalog reloads.
     this.querySelector('#catalog-tabs').addEventListener('tab-change', (e) => {
       this.#catalogTab = e.detail.key;
+      // Dropped when it is the default, so the common URL stays clean.
+      setSearchParams({ tab: e.detail.key === 'all' ? null : e.detail.key });
       this.#renderCatalog();
     });
 
@@ -212,6 +247,7 @@ class McpPage extends HTMLElement {
     const grid = this.querySelector('#catalog-grid');
     grid.removeAttribute('aria-busy');
     const scoped = this.#services().filter(CATALOG_SCOPES[this.#catalogScope].filter);
+    this.querySelector('.head-actions')?.removeAttribute('hidden');
 
     if (!scoped.length) {
       tabs.hidden = true;
@@ -219,6 +255,12 @@ class McpPage extends HTMLElement {
       grid.innerHTML = this.#catalogEmptyHtml();
       grid.querySelector('#empty-register-btn')
         ?.addEventListener('click', () => this.#openRegister());
+      grid.querySelector('#empty-upload-btn')
+        ?.addEventListener('click', () => this.#openUpload());
+      // The empty card repeats both header actions, so hide the header pair
+      // rather than show each button twice on the same screen.
+      this.querySelector('.head-actions')
+        ?.toggleAttribute('hidden', !!grid.querySelector('#empty-register-btn'));
       return;
     }
 
@@ -243,26 +285,45 @@ class McpPage extends HTMLElement {
     }[this.#catalogTab] || scoped;
     grid.innerHTML = visible.length
       ? visible.map((s) => this.#serviceCardHtml(s)).join('')
-      : `<div class="tk-msg">${this.#catalogTab === 'connected'
-        ? 'Nothing connected yet'
-        : 'Everything here is already connected'}</div>`;
+      : this.#tabEmptyHtml();
+    // The "nothing connected" card sends you to the tab that has something.
+    grid.querySelector('#empty-browse-btn')?.addEventListener('click', () => {
+      this.#catalogTab = 'available';
+      setSearchParams({ tab: 'available' });
+      this.#renderCatalog();
+    });
 
     // Whole-card navigation is <app-card>'s own (from `href`); only the card's
     // action button and the logo fallback need wiring here.
     grid.querySelectorAll('app-card[data-id]').forEach((card) => this.#wireCard(card));
   }
 
-  #catalogEmptyHtml() {
-    if (this.#catalogScope !== 'all') {
-      return `<div class="tk-msg">${escHtml(CATALOG_SCOPES[this.#catalogScope].empty)}</div>`;
-    }
+  /** A tab with no rows under a scope that does have some: the scope card
+   *  would be a lie ("no servers yet" next to a count of 26), so say which
+   *  tab is empty and point at the one that isn't. */
+  #tabEmptyHtml() {
+    const connected = this.#catalogTab === 'connected';
     return `
-      <div class="empty-state">
-        ${icons.network('', 32)}
-        <h3>No connectable services yet</h3>
-        <p>Register an external MCP server or upload your own to give agents new tools.</p>
-        <app-button variant="primary" id="empty-register-btn">${icons.plus('', 14)} Register connector</app-button>
-      </div>`;
+      <app-empty-state
+        title="${connected ? 'Nothing connected yet' : 'Everything is connected'}"
+        description="${connected
+          ? 'Connect a server or toolkit and its tools become available to your agents.'
+          : 'Every server and toolkit in this view is already connected.'}"
+        icon='${connected ? icons.network('', 40) : icons.checkCircle('', 40)}'>
+        ${connected ? '<app-button variant="primary" id="empty-browse-btn">Browse available</app-button>' : ''}
+      </app-empty-state>`;
+  }
+
+  /** Every scope gets the same card — only the copy, icon and CTA differ. */
+  #catalogEmptyHtml() {
+    const { icon, title, desc, cta } = CATALOG_SCOPES[this.#catalogScope].empty;
+    return `
+      <app-empty-state title="${escAttr(title)}" description="${escAttr(desc)}"
+        icon='${icons[icon]('', 40)}'>
+        ${cta ? `
+          <app-button variant="tertiary" id="empty-upload-btn">${icons.upload('', 14)} Upload MCP server</app-button>
+          <app-button variant="primary" id="empty-register-btn">${icons.plus('', 14)} Register connector</app-button>` : ''}
+      </app-empty-state>`;
   }
 
   #serviceCardHtml(s) {
@@ -305,7 +366,9 @@ class McpPage extends HTMLElement {
           <span class="tk-hover">${icons.x('', 14)} Disconnect</span>
         </button>`;
     }
-    return `<button slot="actions" class="tk-action tk-action-ghost act-connect" type="button" title="Connect ${escAttr(name)}">${icons.plus('', 14)} Connect</button>`;
+    return `<app-button slot="actions" class="act-connect" variant="icon" size="sm"
+              aria-label="Connect ${escAttr(name)}"
+              data-tooltip="Connect ${escAttr(name)}">${icons.plus()}</app-button>`;
   }
 
   // ── Connect / disconnect (shared by toolkits and custom servers) ────────
@@ -394,8 +457,8 @@ class McpPage extends HTMLElement {
           <div class="form-error" id="connect-error" hidden></div>
         </div>
         <div data-slot="footer">
-          <app-button variant="tertiary" id="connect-cancel">Cancel</app-button>
-          <app-button variant="primary" id="connect-submit">Connect</app-button>
+          <app-button variant="tertiary" size="md" id="connect-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="connect-submit">Connect</app-button>
         </div>
       </app-modal>`;
   }
@@ -557,7 +620,7 @@ class McpPage extends HTMLElement {
       <div class="cred-form">
         <app-input type="password" id="cred-value" class="cred-input" aria-label="Credential"
           placeholder="${c.auth_type === 'basic' ? 'username:password' : 'API key / token'}"></app-input>
-        <app-button variant="primary" id="cred-save">${connected ? 'Replace' : 'Save'}</app-button>
+        <app-button variant="primary" size="md" id="cred-save">${connected ? 'Replace' : 'Save'}</app-button>
       </div>
       <div class="form-error" id="cred-error" hidden></div>
     `;
@@ -604,7 +667,7 @@ class McpPage extends HTMLElement {
         <span class="cred-actions">
           ${status.authorized
             ? `<app-button variant="danger-secondary" size="sm" id="oauth-revoke">Revoke</app-button>`
-            : `<app-button variant="primary" id="oauth-authorize">${icons.externalLink('', 14)} Authorize</app-button>`}
+            : `<app-button variant="primary" size="sm" id="oauth-authorize">${icons.externalLink('', 14)} Authorize</app-button>`}
         </span>
       </div>
       <div class="form-error" id="oauth-error" hidden></div>
@@ -1021,7 +1084,7 @@ class McpPage extends HTMLElement {
                   ${c.enabled ? 'checked' : ''}></app-switch>
               </td>
               <td class="cell-actions">
-                <app-button variant="ghost" class="act-tools">${icons.chevronDown('', 14)} Tools</app-button>
+                <app-button variant="ghost" size="md" class="act-tools">${icons.chevronDown('', 14)} Tools</app-button>
               </td>
             </tr>
             <tr class="tools-row" data-for="${escHtml(c.connector_id)}" hidden>
@@ -1087,7 +1150,7 @@ class McpPage extends HTMLElement {
       </div>
       <div class="tools-actions">
         <span class="tools-save-status" hidden></span>
-        <app-button variant="primary" class="tools-save">Save rules</app-button>
+        <app-button variant="primary" size="md" class="tools-save">Save rules</app-button>
       </div>`;
     editor.querySelector('.tools-save').addEventListener('click', async () => {
       const rules = [...editor.querySelectorAll('.tool-stance')].map((sel) => ({
