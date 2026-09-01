@@ -112,6 +112,32 @@ pub fn failed(task_id: &str, context_id: &str, error_msg: &str) -> TaskStatusUpd
     }
 }
 
+pub fn input_required(task_id: &str, context_id: &str, message: &str) -> TaskStatusUpdateEvent {
+    TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::InputRequired,
+            message: Some(agent_message(context_id, task_id, text_part(message))),
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    }
+}
+
+pub fn auth_required(task_id: &str, context_id: &str, message: &str) -> TaskStatusUpdateEvent {
+    TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::AuthRequired,
+            message: Some(agent_message(context_id, task_id, text_part(message))),
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    }
+}
+
 // ─── TaskArtifactUpdateEvent constructors ───────────────────────────────────
 
 pub fn text_chunk(
@@ -157,11 +183,11 @@ pub fn agent_message(context_id: &str, task_id: &str, part: Part) -> Message {
 // ─── Request builders ───────────────────────────────────────────────────────
 
 pub fn build_send_request(text: &str, context_id: Option<&str>) -> JsonRpcRequest {
-    build_request("SendMessage", text, context_id, &[])
+    build_request("SendMessage", text, context_id, &[], None)
 }
 
 pub fn build_stream_request(text: &str, context_id: Option<&str>) -> JsonRpcRequest {
-    build_request("SendStreamingMessage", text, context_id, &[])
+    build_request("SendStreamingMessage", text, context_id, &[], None)
 }
 
 pub fn build_stream_request_with_parts(
@@ -169,7 +195,7 @@ pub fn build_stream_request_with_parts(
     context_id: Option<&str>,
     extra_parts: &[Part],
 ) -> JsonRpcRequest {
-    build_request("SendStreamingMessage", text, context_id, extra_parts)
+    build_request("SendStreamingMessage", text, context_id, extra_parts, None)
 }
 
 pub fn build_stream_request_with_metadata(
@@ -177,13 +203,39 @@ pub fn build_stream_request_with_metadata(
     context_id: Option<&str>,
     metadata: serde_json::Value,
 ) -> JsonRpcRequest {
-    let mut req = build_request("SendStreamingMessage", text, context_id, &[]);
+    let mut req = build_request("SendStreamingMessage", text, context_id, &[], None);
     if let Some(params) = req.params.as_mut()
         && let Some(obj) = params.as_object_mut()
     {
         obj.insert("metadata".to_string(), metadata);
     }
     req
+}
+
+/// Continues an existing task rather than starting a new one — the only builder here that sets
+/// `message.taskId`. Used exclusively by the HITL resume dispatcher (`oss/server/src/hitl`) to
+/// send the human's answer back on the same `taskId`/`contextId` the agent paused on; every other
+/// builder above deliberately omits `taskId` (a fresh task per call is today's live-chat
+/// behavior).
+pub fn build_stream_request_for_task(
+    text: &str,
+    context_id: &str,
+    task_id: &str,
+) -> JsonRpcRequest {
+    build_request(
+        "SendStreamingMessage",
+        text,
+        Some(context_id),
+        &[],
+        Some(task_id),
+    )
+}
+
+/// Non-streaming counterpart to [`build_stream_request_for_task`] — used by the HITL resume
+/// dispatcher's one-shot `message/send` retry when an agent's `message/stream` resume attempt
+/// comes back with a JSON-RPC `error` (mirrors `a2a_dispatch.rs`'s own dispatch-time fallback).
+pub fn build_send_request_for_task(text: &str, context_id: &str, task_id: &str) -> JsonRpcRequest {
+    build_request("SendMessage", text, Some(context_id), &[], Some(task_id))
 }
 
 // ─── Response extractors ────────────────────────────────────────────────────
@@ -406,6 +458,85 @@ pub fn extract_text_from_response(response: &JsonRpcResponse) -> Option<String> 
     extract_text(response.result.as_ref()?)
 }
 
+// ─── Stream disposition (HITL) ──────────────────────────────────────────────
+
+/// What an SSE relay loop should do with one decoded event, per the HITL plan (§8). Distinct from
+/// [`SseEvent`]/[`classify_sse_event`] above, which extract *content* to relay to the client —
+/// this classifies the task's *lifecycle*, so a relay loop knows whether to keep reading, stop
+/// because the task is genuinely done, or stop because a human is now needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamDisposition {
+    /// Still working — keep relaying.
+    Continue,
+    /// A2A task terminal: success.
+    Completed,
+    /// A2A task terminal: failure, canceled, or rejected.
+    Failed,
+    /// A2A task NOT terminal, but this stream must stop relaying — a human is needed
+    /// (`input-required`/`auth-required`).
+    Paused,
+}
+
+/// Classify one A2A SSE `data:` JSON payload's stream disposition. Supersedes the old
+/// `is_terminal_event` boolean check that only this crate's callers used to have — same JSON
+/// navigation (JSONRPC-wrapped or bare, `statusUpdate`-nested or flat, the 0.3-dialect `final`
+/// bool fallback), widened from a 2-way (terminal/not) to a 4-way outcome so a real
+/// `input-required`/`auth-required` pause is distinguished from both "still working" and "truly
+/// done" — today `input-required` falls through as non-terminal and the caller hangs waiting for
+/// a stream close that never comes.
+pub fn classify_stream_disposition(data: &str) -> StreamDisposition {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
+        return StreamDisposition::Continue;
+    };
+    let result = parsed.get("result").unwrap_or(&parsed);
+    // `.task` handles the non-streaming, v1.0 task-wrapped dialect (a full `Task` snapshot with
+    // its own `status.state`, no `statusUpdate` event wrapper at all) — same fallback
+    // `extract_text` already has, needed here too or a non-streaming pause is never classified
+    // as `Paused` at all (confirmed live: this exact gap let a real agent_proxy.rs pause through
+    // undetected before this fallback was added).
+    let status_update = result
+        .get("statusUpdate")
+        .or_else(|| parsed.get("statusUpdate"))
+        .or_else(|| result.get("task"))
+        .unwrap_or(result);
+
+    if let Some(state) = status_update
+        .pointer("/status/state")
+        .and_then(|s| s.as_str())
+    {
+        let state = state.to_ascii_lowercase();
+        if state.contains("input_required") || state.contains("input-required") {
+            return StreamDisposition::Paused;
+        }
+        if state.contains("auth_required") || state.contains("auth-required") {
+            return StreamDisposition::Paused;
+        }
+        if state.contains("completed") {
+            return StreamDisposition::Completed;
+        }
+        if state.contains("failed")
+            || state.contains("canceled")
+            || state.contains("cancelled")
+            || state.contains("rejected")
+        {
+            return StreamDisposition::Failed;
+        }
+    }
+
+    // 0.3 dialect: {"result": {"kind": "status-update", "final": true}} with no recognizable
+    // `status.state` — a final event whose outcome couldn't be classified is treated as a
+    // (successful) completion, matching the old `is_terminal_event`'s behavior.
+    if result
+        .get("final")
+        .and_then(|f| f.as_bool())
+        .unwrap_or(false)
+    {
+        return StreamDisposition::Completed;
+    }
+
+    StreamDisposition::Continue
+}
+
 // ─── Private ────────────────────────────────────────────────────────────────
 
 fn build_request(
@@ -413,6 +544,7 @@ fn build_request(
     text: &str,
     context_id: Option<&str>,
     extra_parts: &[Part],
+    task_id: Option<&str>,
 ) -> JsonRpcRequest {
     let ctx = context_id
         .map(|s| s.to_string())
@@ -424,7 +556,7 @@ fn build_request(
     let message = Message {
         message_id: uuid::Uuid::new_v4().to_string(),
         context_id: Some(ctx),
-        task_id: None,
+        task_id: task_id.map(String::from),
         role: Role::User,
         parts,
         metadata: None,

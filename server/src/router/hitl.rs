@@ -1,257 +1,387 @@
-//! Human-in-the-loop resolve API — `GET /api/hitl/pending`, `POST /api/hitl/{id}/resolve`.
-//!
-//! Thin Axum layer over `nasiko_hitl`'s plain-function store: extract identity, authorize by
-//! `owner_user_id` (the sole rule for every `HitlKind`, per the HITL plan), call the store, shape
-//! the response. Deliberately generic across `origin` — MCP's `mcp_tool` rows are the only ones
-//! populated today, but nothing here is MCP-specific, so `direct_chat`/`orchestrator`/`maf` rows
-//! (once those teams build against the same `hitl_requests` table) resolve through this same API.
-//!
-//! Out of scope here (left for later milestones, per the M5 brief): the resume dispatcher, any
-//! automatic retry/push once a row resolves, session-scoped grants, and "allow once" retry
-//! matching — this module only makes a persisted row's `pending -> resolved/rejected` transition
-//! reachable by an authorized human. Nothing downstream reacts to that transition yet.
+//! HITL human-facing API (`docs/HITL_IMPLEMENTATION_PLAN.md` §11): `GET /api/hitl/pending`,
+//! `GET /api/hitl/{id}`, `POST /api/hitl/{id}/resolve`, `POST /api/hitl/{id}/cancel`,
+//! `GET /api/hitl/{id}/stream`.
+
+use std::convert::Infallible;
+use std::time::Duration;
 
 use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{get, post},
 };
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-use nasiko_hitl::{HitlKind, HitlRequest, HitlStatus, ResolveDecision};
+use nasiko_hitl::{
+    HitlAction, HitlIdentity, HitlKind, HitlRequest, HitlStatus, ResolveOutcome, ResumeStatus,
+    authorize_hitl_action,
+};
 
 use crate::auth::Claims;
-use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/hitl/pending", get(list_pending))
+        .route("/hitl/{id}", get(get_one))
         .route("/hitl/{id}/resolve", post(resolve))
+        .route("/hitl/{id}/cancel", post(cancel))
+        .route("/hitl/{id}/stream", get(stream_one))
 }
 
-/// Response shape for a `hitl_requests` row. `HitlRequest` is deliberately not
-/// `Serialize` (see its own doc comment — it's a DB row mirror, not a wire
-/// type), so this is the seam that DTO is meant to force: `resume_state` (an
-/// internal dispatcher field) and `resume_claimed_at`/`resume_dispatch_attempts`/
-/// `resume_last_error` (dispatcher lease bookkeeping) are deliberately omitted.
-#[derive(Debug, Serialize)]
-struct HitlRequestView {
-    id: Uuid,
-    kind: &'static str,
-    origin: &'static str,
-    status: &'static str,
-    agent_id: Uuid,
-    owner_user_id: Uuid,
-    resolved_by: Option<Uuid>,
-    context_id: Option<String>,
-    connector_id: Option<Uuid>,
-    tool_name: Option<String>,
-    question: serde_json::Value,
-    human_response: Option<serde_json::Value>,
-    created_at: DateTime<Utc>,
-    expires_at: Option<DateTime<Utc>>,
-    resolved_at: Option<DateTime<Utc>>,
+/// `input_required`/`auth_required` resolve shape (§11). `decision`/`scope`/`message` exist for
+/// forward-compat with Phase 6's `tool_approval` payload but are rejected here (§11 kinds this
+/// pass doesn't support resolving yet).
+#[derive(Deserialize, ToSchema)]
+pub(crate) struct HitlResolveRequest {
+    answer: Option<String>,
+    auth_action: Option<String>,
+    #[allow(dead_code)]
+    decision: Option<String>,
+    #[allow(dead_code)]
+    scope: Option<String>,
+    #[allow(dead_code)]
+    message: Option<String>,
 }
 
-impl From<HitlRequest> for HitlRequestView {
-    fn from(r: HitlRequest) -> Self {
-        Self {
-            id: r.id,
-            kind: r.kind.as_str(),
-            origin: r.origin.as_str(),
-            status: r.status.as_str(),
-            agent_id: r.agent_id,
-            owner_user_id: r.owner_user_id,
-            resolved_by: r.resolved_by,
-            context_id: r.context_id,
-            connector_id: r.connector_id,
-            tool_name: r.tool_name,
-            question: r.question,
-            human_response: r.human_response,
-            created_at: r.created_at,
-            expires_at: r.expires_at,
-            resolved_at: r.resolved_at,
-        }
+fn identity(claims: &Claims) -> Result<HitlIdentity, (StatusCode, &'static str)> {
+    let user_id = claims.user_uuid()?;
+    Ok(HitlIdentity {
+        user_id,
+        is_superuser: claims.is_superuser,
+    })
+}
+
+fn allowed_actions(kind: HitlKind) -> &'static [&'static str] {
+    match kind {
+        HitlKind::InputRequired => &["answer", "cancel"],
+        HitlKind::AuthRequired => &["start_auth", "confirm_auth", "cancel"],
+        HitlKind::ToolApproval => &["approve", "reject", "cancel"],
     }
 }
 
-/// The caller's own pending HITL requests, newest first — regardless of `kind`/`origin`.
+/// §11's response shape. `resume_state` is never included — `HitlRequest` isn't `Serialize` for
+/// exactly this reason, so this DTO is the only path an API response can take.
+fn to_response(row: &HitlRequest) -> Value {
+    json!({
+        "id": row.id,
+        "kind": row.kind.as_str(),
+        "status": row.status.as_str(),
+        "resume_status": row.resume_status.as_str(),
+        "question": row.question,
+        "human_response": row.human_response,
+        "execution": {
+            "origin": row.origin.as_str(),
+            "agent_id": row.agent_id,
+            "context_id": row.context_id,
+            "chat_session_id": row.chat_session_id,
+            "maf_execution_id": row.maf_execution_id,
+            "maf_step_index": row.maf_step_index,
+        },
+        "allowed_actions": allowed_actions(row.kind),
+        "expires_at": row.expires_at,
+        "created_at": row.created_at,
+        "resolved_at": row.resolved_at,
+    })
+}
+
 async fn list_pending(State(state): State<AppState>, claims: Claims) -> Response {
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
+    let identity = match identity(&claims) {
+        Ok(i) => i,
         Err(e) => return e.into_response(),
     };
-
-    match nasiko_hitl::repo::list_pending_for(&state.db, user_id).await {
-        Ok(rows) => {
-            let views: Vec<HitlRequestView> = rows.into_iter().map(Into::into).collect();
-            ApiResponse::ok(json!(views), "Pending HITL requests retrieved").into_response()
-        }
-        Err(e) => {
-            tracing::error!(error = %e, %user_id, "list_pending: hitl store error");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
+    match state.hitl_store.list_pending_for(&identity).await {
+        Ok(rows) => Json(json!({ "data": rows.iter().map(to_response).collect::<Vec<_>>() }))
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Decision {
-    Approve,
-    Reject,
+async fn get_one(State(state): State<AppState>, claims: Claims, Path(id): Path<Uuid>) -> Response {
+    let identity = match identity(&claims) {
+        Ok(i) => i,
+        Err(e) => return e.into_response(),
+    };
+    let row = match state.hitl_store.get(id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "hitl request not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    // §11 is explicit that this is 403, not the 404-for-view convention used elsewhere in this
+    // codebase for named/enumerable resources — `hitl_requests` ids are opaque UUIDs.
+    if authorize_hitl_action(&identity, &row, HitlAction::View).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            "not authorized to view this HITL request",
+        )
+            .into_response();
+    }
+    Json(to_response(&row)).into_response()
 }
 
-/// The finalized three-action `tool_approval` dialog's two "allow" flavors —
-/// `deny` needs no scope of its own, hence `Scope` is only ever read when
-/// `decision = approve`. There is deliberately no `always`/permanent-allow
-/// variant.
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum Scope {
-    Once,
-    Session,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResolveRequest {
-    decision: Decision,
-    /// Only meaningful when `decision = approve`; ignored for `reject`.
-    /// Defaults to `once` when omitted, so existing callers that never send
-    /// `scope` keep their prior single-use behavior unchanged. `session` is
-    /// only valid for a `kind = tool_approval` request — the grant table it
-    /// populates (`mcp_session_tool_grants`) has no meaning for `auth_required`.
-    #[serde(default)]
-    scope: Option<Scope>,
-    /// Free-form, audit-only note from the human — stored verbatim in
-    /// `human_response`, never interpreted by this handler.
-    #[serde(default)]
-    note: Option<String>,
-}
-
-/// Resolve (approve) or reject a pending request the caller owns.
-///
-/// Transitions `pending -> resolved`/`rejected` and, for an `approve` with
-/// `scope=session` on a `tool_approval` request, additionally records a
-/// `mcp_session_tool_grants` row (M7) so the agent's retry — and every
-/// subsequent call to the same tool in the same conversation, until the
-/// grant expires — can proceed without asking again. It does not itself
-/// retry the paused tool call or push anything to the agent; that is the
-/// resume dispatcher's job (M6, already wired) plus the retry-matching
-/// lookup in `mcp-gateway`'s `handle_tools_call` (M7) that actually consumes
-/// this resolution.
 async fn resolve(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<Uuid>,
-    Json(body): Json<ResolveRequest>,
+    Json(payload): Json<HitlResolveRequest>,
 ) -> Response {
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
+    let identity = match identity(&claims) {
+        Ok(i) => i,
+        Err(e) => return e.into_response(),
+    };
+    let user_id = identity.user_id;
+
+    let row = match state.hitl_store.get(id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "hitl request not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if authorize_hitl_action(&identity, &row, HitlAction::Resolve).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            "not authorized to resolve this HITL request",
+        )
+            .into_response();
+    }
+    if row.kind == HitlKind::ToolApproval {
+        // Phase 6's `once`/`session`/`always` scoped approval flow isn't wired up yet.
+        return (
+            StatusCode::BAD_REQUEST,
+            "tool_approval resolution is not supported by this endpoint yet",
+        )
+            .into_response();
+    }
+    if row.kind == HitlKind::InputRequired && payload.answer.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "answer is required for input_required",
+        )
+            .into_response();
+    }
+
+    // §7/Phase 4: `auth_required` is a two-click flow — "start" only records that the human
+    // began the external auth step (row stays `pending`, nothing is sent to the agent yet);
+    // only "confirm" is treated as the human's decision that triggers a resume. Anything else
+    // is rejected outright rather than silently sent to the agent as an unvalidated string.
+    if row.kind == HitlKind::AuthRequired {
+        match payload.auth_action.as_deref() {
+            Some("start") => {
+                let current = match state.hitl_store.record_auth_start(id).await {
+                    Ok(Some(row)) => row,
+                    // Already resolved/expired/canceled by the time this landed — report
+                    // current state rather than erroring, matching resolve/cancel's own
+                    // idempotent-success convention (§5).
+                    Ok(None) => match state.hitl_store.get(id).await {
+                        Ok(Some(row)) => row,
+                        Ok(None) => {
+                            return (StatusCode::NOT_FOUND, "hitl request not found")
+                                .into_response();
+                        }
+                        Err(e) => {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                                .into_response();
+                        }
+                    },
+                    Err(e) => {
+                        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                    }
+                };
+                return Json(to_response(&current)).into_response();
+            }
+            Some("confirm") => {} // falls through to the normal resolve path below
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "auth_action must be \"start\" or \"confirm\" for auth_required",
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let mut human_response = json!({});
+    if row.kind == HitlKind::AuthRequired {
+        // Only "confirm" reaches here (validated above). Intent, not proof — the agent's own
+        // next response is what determines whether the external auth actually succeeded (§7).
+        if let Some(obj) = human_response.as_object_mut() {
+            obj.insert("auth_outcome".to_string(), json!("confirmed"));
+        }
+    } else if let (Some(obj), Some(answer)) = (human_response.as_object_mut(), &payload.answer) {
+        obj.insert("answer".to_string(), json!(answer));
+    }
+
+    let outcome = match state
+        .hitl_store
+        .resolve(id, human_response, user_id, HitlStatus::Resolved)
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let (row, already_resolved) = match outcome {
+        ResolveOutcome::Applied(row) => {
+            // Best-effort latency optimization — the dispatcher's own poll loop is the real
+            // delivery guarantee (§ Phase 3 item 5).
+            let _ = state.hitl_resume_tx.try_send(());
+            (row, false)
+        }
+        // §11: 409 for resolve-after-expired — distinct from the idempotent-double-resolve 200
+        // below, which is for a row someone (possibly this same caller) already answered.
+        ResolveOutcome::AlreadyDecided(row) if row.status == HitlStatus::Expired => {
+            return (
+                StatusCode::CONFLICT,
+                "this HITL request expired before it was answered",
+            )
+                .into_response();
+        }
+        ResolveOutcome::AlreadyDecided(row) => (row, true),
+    };
+
+    let mut body = to_response(&row);
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("already_resolved".to_string(), json!(already_resolved));
+    }
+    Json(body).into_response()
+}
+
+/// Lets the row's owner withdraw a pending request they no longer want answered — e.g. they
+/// abandoned the task, or the question no longer applies. No resume is triggered; the row simply
+/// stops being `pending` and drops out of `list_pending_for`.
+async fn cancel(State(state): State<AppState>, claims: Claims, Path(id): Path<Uuid>) -> Response {
+    let identity = match identity(&claims) {
+        Ok(i) => i,
         Err(e) => return e.into_response(),
     };
 
-    let existing = match nasiko_hitl::repo::get_by_id(&state.db, id).await {
+    let row = match state.hitl_store.get(id).await {
         Ok(Some(row)) => row,
-        Ok(None) => return (StatusCode::NOT_FOUND, "no such HITL request").into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, %id, "resolve: hitl store error on lookup");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-        }
+        Ok(None) => return (StatusCode::NOT_FOUND, "hitl request not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-
-    if !nasiko_hitl::authorize_hitl_action(&existing, user_id) {
+    if authorize_hitl_action(&identity, &row, HitlAction::Cancel).is_err() {
         return (
             StatusCode::FORBIDDEN,
-            "you do not have permission to resolve this request",
+            "not authorized to cancel this HITL request",
         )
             .into_response();
     }
 
-    if existing.status != HitlStatus::Pending {
-        return (StatusCode::CONFLICT, "this request is no longer pending").into_response();
-    }
-
-    let scope = body.scope.unwrap_or(Scope::Once);
-    if matches!(body.decision, Decision::Approve)
-        && scope == Scope::Session
-        && existing.kind != HitlKind::ToolApproval
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            "scope=session only applies to tool_approval requests",
-        )
-            .into_response();
-    }
-
-    let (decision, decision_label) = match body.decision {
-        Decision::Approve => (ResolveDecision::Approve, "approve"),
-        Decision::Reject => (ResolveDecision::Reject, "reject"),
+    let outcome = match state.hitl_store.cancel(id, identity.user_id).await {
+        Ok(outcome) => outcome,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    let scope_label = matches!(body.decision, Decision::Approve).then(|| match scope {
-        Scope::Once => "once",
-        Scope::Session => "session",
-    });
-    let human_response =
-        json!({ "decision": decision_label, "scope": scope_label, "note": body.note });
 
-    match nasiko_hitl::repo::resolve(&state.db, id, decision, user_id, human_response).await {
-        Ok(Some(row)) => {
-            if matches!(body.decision, Decision::Approve) && scope == Scope::Session {
-                grant_session_scope(&state, &row, user_id).await;
-            }
-            ApiResponse::ok(json!(HitlRequestView::from(row)), "Request resolved").into_response()
+    let (row, already_canceled) = match outcome {
+        ResolveOutcome::Applied(row) => (row, false),
+        // Matches `resolve`'s own idempotency convention (§5): a lost double-cancel race is a
+        // 200, never a 500 or a second no-op — but a row already `resolved` (answered, not
+        // canceled) or `expired` before the cancel landed is a real conflict, not a race.
+        ResolveOutcome::AlreadyDecided(row) if row.status != HitlStatus::Canceled => {
+            return (
+                StatusCode::CONFLICT,
+                format!(
+                    "this HITL request is already {}, not pending",
+                    row.status.as_str()
+                ),
+            )
+                .into_response();
         }
-        // Lost the race against a concurrent resolve — the pre-check above already
-        // covers the common case; this is the atomic UPDATE's own guarantee.
-        Ok(None) => (StatusCode::CONFLICT, "this request is no longer pending").into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, %id, "resolve: hitl store error on update");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
+        ResolveOutcome::AlreadyDecided(row) => (row, true),
+    };
+
+    let mut body = to_response(&row);
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("already_canceled".to_string(), json!(already_canceled));
+    }
+    Json(body).into_response()
+}
+
+/// True once nothing further will ever happen to this row without a brand-new request from
+/// somewhere: either `status` itself is a dead end (no resume will ever be attempted), or the
+/// resume that was attempted has itself reached one of its own terminal states.
+fn is_terminal(row: &HitlRequest) -> bool {
+    match row.status {
+        HitlStatus::Pending | HitlStatus::Resolved => matches!(
+            row.resume_status,
+            ResumeStatus::Completed | ResumeStatus::Failed | ResumeStatus::DeliveryOutcomeUnknown
+        ),
+        HitlStatus::Rejected | HitlStatus::Expired | HitlStatus::Canceled => true,
     }
 }
 
-/// Best-effort: record the `mcp_session_tool_grants` row an approved
-/// `scope=session` decision promises. `connector_id`/`tool_name`/`context_id`
-/// are guaranteed present by `chk_hitl_tool_approval_identity` for any
-/// `kind=tool_approval` row, which the caller has already confirmed `row`
-/// is. A failure here is logged but never turned into an error response —
-/// the resolution itself already succeeded and is the authoritative outcome;
-/// worst case the agent's retry finds no grant and gets asked again, which
-/// is safe (never silently over-permissive), just not maximally convenient.
-async fn grant_session_scope(state: &AppState, row: &HitlRequest, granted_by: Uuid) {
-    let (Some(connector_id), Some(tool_name), Some(context_id)) = (
-        row.connector_id,
-        row.tool_name.clone(),
-        row.context_id.clone(),
-    ) else {
-        tracing::error!(
-            id = %row.id,
-            "resolve: scope=session approved but tool_approval identity fields are missing — \
-             this should be impossible under chk_hitl_tool_approval_identity"
-        );
-        return;
+/// `GET /api/hitl/{id}/stream` — DB-poll-wrapped SSE, cloned from the existing
+/// `deploy_status_sse`/`build_progress_sse` pattern (`oss/server/src/agents/upload.rs`,
+/// `oss/server/src/build/routes.rs`): poll every 3s, emit an event only when `status`/
+/// `resume_status` actually changes, close once the row reaches a terminal state. The
+/// authorization check runs once up front — a 403 is a normal HTTP response, not a stream — and
+/// every subsequent poll trusts that this connection is already scoped to its owner.
+async fn stream_one(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let identity = match identity(&claims) {
+        Ok(i) => i,
+        Err(e) => return e.into_response(),
+    };
+    let row = match state.hitl_store.get(id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "hitl request not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    if authorize_hitl_action(&identity, &row, HitlAction::View).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            "not authorized to view this HITL request",
+        )
+            .into_response();
+    }
+
+    let hitl_store = state.hitl_store.clone();
+    let stream = async_stream::stream! {
+        let mut last: Option<(String, String)> = None;
+
+        loop {
+            let row = match hitl_store.get(id).await {
+                Ok(Some(row)) => row,
+                Ok(None) => {
+                    yield Ok::<_, Infallible>(Event::default().data(
+                        json!({ "status": "not_found" }).to_string(),
+                    ));
+                    break;
+                }
+                Err(e) => {
+                    yield Ok(Event::default().event("error").data(
+                        json!({ "error": e.to_string() }).to_string(),
+                    ));
+                    break;
+                }
+            };
+
+            let key = (row.status.as_str().to_string(), row.resume_status.as_str().to_string());
+            if Some(&key) != last.as_ref() {
+                yield Ok(Event::default().data(to_response(&row).to_string()));
+                last = Some(key);
+            }
+
+            if is_terminal(&row) {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
     };
 
-    if let Err(e) = nasiko_hitl::repo::create_session_grant(
-        &state.db,
-        nasiko_hitl::NewSessionGrant {
-            agent_id: row.agent_id,
-            connector_id,
-            tool_name,
-            context_id,
-            granted_by,
-            hitl_request_id: Some(row.id),
-        },
-    )
-    .await
-    {
-        tracing::error!(error = %e, id = %row.id, "resolve: failed to create session grant");
-    }
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }

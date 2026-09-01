@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod chat;
 pub mod flows;
 pub mod github;
+pub mod hitl;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
@@ -258,6 +259,7 @@ where
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
+        .merge(router::hitl::router())
         .nest(
             "/observability",
             observability::protected_router(state.clone()),
@@ -268,7 +270,6 @@ where
         .merge(transcribe::router())
         .merge(mcp::router())
         .merge(mcp_upload_routes)
-        .merge(router::hitl::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,

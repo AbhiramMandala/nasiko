@@ -57,6 +57,13 @@ pub struct AppState {
     oidc_dynamic_cache: OidcClientCache,
     /// Wakes the build worker immediately when a new job is enqueued.
     pub build_tx: mpsc::Sender<()>,
+    /// HITL persistence (`hitl_requests`) — detection, human-facing API, and the resume
+    /// dispatcher all go through this. See `oss/hitl` and `docs/HITL_IMPLEMENTATION_PLAN.md`.
+    pub hitl_store: Arc<dyn nasiko_hitl::HitlStore>,
+    /// Best-effort wake for the HITL resume dispatcher right after a `resolve()` commits — a
+    /// latency optimization only; the dispatcher's own poll loop is the actual delivery
+    /// guarantee (§3.2/Phase 3 of the HITL plan).
+    pub hitl_resume_tx: mpsc::Sender<()>,
     /// UI mounts for the page gate (`auth::require_page_auth`) — each frontend
     /// prefix with its own login page. OSS serves the root mount only; the EE
     /// composition root adds the Flutter app mount at `/app/`.
@@ -71,12 +78,11 @@ impl AppState {
     ) -> Self {
         let db = PgPool::connect(&config.database_url)
             .await
-            .unwrap_or_else(|e| panic!("{}", pg_connect_error_message(&config.database_url, &e)));
+            .expect("failed to connect to postgres");
         Self::from_config_with_db(config, auth, runtime, db).await
     }
 
     pub async fn run_migrations(db: &PgPool) {
-        ensure_pg_extensions(db).await;
         sqlx::migrate!("../migrations")
             .set_ignore_missing(true)
             .run(db)
@@ -194,6 +200,10 @@ impl AppState {
         }
 
         let (build_tx, build_rx) = mpsc::channel(64);
+        let (hitl_resume_tx, hitl_resume_rx) = mpsc::channel(64);
+        let hitl_store: Arc<dyn nasiko_hitl::HitlStore> = Arc::new(
+            nasiko_hitl::PgHitlStore::with_ttl_days(db.clone(), config.hitl_request_ttl_days),
+        );
 
         // MCP gateway state: reuses the same pool, redis client, and pooled
         // HTTP client — no duplicated infrastructure.
@@ -231,12 +241,18 @@ impl AppState {
             oidc_svc,
             oidc_dynamic_cache: Arc::new(tokio::sync::RwLock::new(None)),
             build_tx,
+            hitl_store,
+            hitl_resume_tx,
             ui_mounts: &[crate::auth::UiMount::ROOT],
         };
 
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
         let worker_state = state.clone();
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
+
+        // Spawn the HITL resume dispatcher — same shape as the build worker above.
+        let hitl_state = state.clone();
+        tokio::spawn(crate::hitl::run(hitl_state, hitl_resume_rx));
 
         // Container-hours meter: records per-instance run sessions for billing
         // (see agents/hours_meter.rs). 0 disables — used by tests that drive
@@ -448,92 +464,5 @@ impl AppState {
         }
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
         env
-    }
-}
-
-/// Postgres extensions the migrations require (`0001_schema.sql` runs
-/// `CREATE EXTENSION IF NOT EXISTS` for each). Invisible on the in-cluster
-/// `pgvector/pgvector` image, which ships all three preinstalled.
-const REQUIRED_PG_EXTENSIONS: [&str; 3] = ["pgcrypto", "pg_trgm", "vector"];
-
-/// Creates the required extensions before the migration runner touches them,
-/// so a managed Postgres that hasn't installed or allowlisted one (Azure
-/// Flexible Server, RDS, Cloud SQL all gate `CREATE EXTENSION`) fails fast
-/// with an actionable message instead of a raw mid-migration SQL error.
-async fn ensure_pg_extensions(db: &PgPool) {
-    for ext in REQUIRED_PG_EXTENSIONS {
-        if let Err(err) = sqlx::query(&format!("CREATE EXTENSION IF NOT EXISTS \"{ext}\""))
-            .execute(db)
-            .await
-        {
-            panic!("{}", pg_extension_error_message(ext, &err.to_string()));
-        }
-    }
-}
-
-/// Explains a startup connect failure by naming the address it failed against.
-///
-/// sqlx reports a filtered or blackholed host as a bare `PoolTimedOut` after the
-/// acquire timeout elapses, with nothing logged in the meantime — so the most
-/// likely managed-Postgres misconfiguration (a firewall rule or egress
-/// NetworkPolicy that never admits the control plane) reads as "the platform
-/// hung" rather than "nothing answered at this address". The credentials the DSN
-/// also carries are never included: the options are parsed rather than the
-/// string printed, so there is no path by which the password reaches a log.
-pub fn pg_connect_error_message(database_url: &str, err: &sqlx::Error) -> String {
-    use std::str::FromStr;
-    let target = sqlx::postgres::PgConnectOptions::from_str(database_url)
-        .map(|o| {
-            format!(
-                "{}:{}/{}",
-                o.get_host(),
-                o.get_port(),
-                o.get_database().unwrap_or("<no database>")
-            )
-        })
-        .unwrap_or_else(|e| format!("<unparseable DATABASE_URL: {e}>"));
-    format!(
-        "failed to connect to Postgres at {target}: {err}\n\
-         A timeout here means nothing answered, not that the credentials are \
-         wrong — check that the host and port are reachable from the control \
-         plane (managed Postgres: firewall rule, private endpoint, or the \
-         egress NetworkPolicy derived from `postgres.external.egress_cidr`), \
-         and that `sslmode` matches what the server requires."
-    )
-}
-
-fn pg_extension_error_message(ext: &str, err: &str) -> String {
-    format!(
-        "required Postgres extension \"{ext}\" is unavailable: {err}\n\
-         The migrations need pgcrypto, pg_trgm, and vector. On a managed \
-         Postgres, install/allowlist them on the server first — e.g. Azure \
-         Flexible Server: `az postgres flexible-server parameter set \
-         --name azure.extensions --value VECTOR,PG_TRGM,PGCRYPTO` — then \
-         restart the control plane."
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn connect_error_names_the_address_but_never_the_password() {
-        let err = sqlx::Error::PoolTimedOut;
-        let msg = pg_connect_error_message(
-            "postgres://nasiko_admin:sup3rs3cret@pg.internal:5432/nasiko_prod?sslmode=require",
-            &err,
-        );
-        assert!(msg.contains("pg.internal:5432/nasiko_prod"));
-        assert!(msg.contains("egress_cidr"));
-        assert!(!msg.contains("sup3rs3cret"));
-    }
-
-    #[test]
-    fn extension_error_names_the_extension_and_the_remedy() {
-        let msg = pg_extension_error_message("vector", "permission denied");
-        assert!(msg.contains("\"vector\""));
-        assert!(msg.contains("permission denied"));
-        assert!(msg.contains("azure.extensions"));
     }
 }
