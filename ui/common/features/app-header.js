@@ -18,6 +18,7 @@ import { icons } from "../utils/icons.js";
 import { confirmDialog } from "../design-system/app-modal/app-modal.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
+import "./change-password-modal.js";
 import { escHtml } from '/common/utils/escape.js';
 import { callOptional } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';
@@ -812,6 +813,7 @@ export class AppHeader extends HTMLElement {
         this.#removeUser(e.detail.username),
       );
       userMenu.addEventListener("user-add-account", () => this.#addAccount());
+      userMenu.addEventListener("user-change-password", () => this.#changePassword());
       userMenu.addEventListener("user-logout", () => this.#logout());
     }
 
@@ -847,6 +849,17 @@ export class AppHeader extends HTMLElement {
     window.location.href =
       "/login/?add_account=true&redirect=" +
       encodeURIComponent(window.location.pathname);
+  }
+
+  /// Lazily mounted on first use and kept for the life of the header — both
+  /// `app-user-menu` instances (mobile and desktop) share the one dialog.
+  #changePassword() {
+    let modal = document.querySelector("change-password-modal");
+    if (!modal) {
+      modal = document.createElement("change-password-modal");
+      document.body.appendChild(modal);
+    }
+    modal.open();
   }
 
   async #logout() {

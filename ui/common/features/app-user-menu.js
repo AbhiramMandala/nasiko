@@ -4,6 +4,7 @@
  *
  * @element app-user-menu
  * @attr {string} current-user - JSON `{ name, email, avatar }` for the logged-in user
+ * @fires user-change-password - "Change Password" clicked — bubbles
  * @fires user-logout - "Logout" clicked — bubbles
  */
 import { icons } from "../utils/icons.js";
@@ -321,6 +322,9 @@ export class AppUserMenu extends HTMLElement {
           </div>
         </div>
         <div class="dropdown-footer">
+          <button class="dropdown-button" data-change-password>
+            ${icons.lock('btn-icon', 14)} Change Password
+          </button>
           <button class="dropdown-button is-danger" data-logout>
             ${icons.logOut('btn-icon', 14)} Sign Out
           </button>
@@ -333,6 +337,9 @@ export class AppUserMenu extends HTMLElement {
       this.#visible ? this.hide() : this.#showDropdown();
     });
 
+    this.querySelector('[data-change-password]')?.addEventListener('click', () => {
+      this.dispatchEvent(new CustomEvent('user-change-password', { bubbles: true }));
+    });
     this.querySelector('[data-logout]')?.addEventListener('click', () => {
       this.dispatchEvent(new CustomEvent('user-logout', { bubbles: true }));
     });
