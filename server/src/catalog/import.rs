@@ -48,6 +48,10 @@ pub(crate) struct AgentMetadata {
     version: String,
     skills: serde_json::Value,
     capabilities: serde_json::Value,
+    /// Flattened `skills[].tags`, deduplicated. Feeds `agents.tags`, which the
+    /// generated `search_vector` column indexes — an agent with no tags is
+    /// findable by name and description only.
+    tags: Vec<String>,
 }
 
 pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, String> {
@@ -56,8 +60,15 @@ pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, St
         .map_err(|e| format!("cannot read AgentCard.json: {e}"))?;
     let card: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("invalid AgentCard.json: {e}"))?;
+    Ok(agent_metadata_from_card(&card))
+}
 
-    Ok(AgentMetadata {
+/// Map a parsed AgentCard onto the catalog columns. Shared by the source
+/// import, which reads the card off disk, and the image import, which reads it
+/// out of the pushed manifest — so an agent describes itself identically in the
+/// catalog however it was published.
+pub(crate) fn agent_metadata_from_card(card: &serde_json::Value) -> AgentMetadata {
+    AgentMetadata {
         // Slugified, because this feeds `build_image_tag` and an OCI repository
         // name may not contain spaces or uppercase. A card naming itself
         // "Infrastructure Manager" otherwise produced the tag
@@ -91,7 +102,63 @@ pub(crate) fn read_agent_card(dir: &std::path::Path) -> Result<AgentMetadata, St
                 "pushNotifications": false,
                 "stateTransitionHistory": false,
             })),
-    })
+        // Same derivation registry publishers use for `org.nasiko.tags`, so a
+        // round trip through the registry keeps one set of tags.
+        tags: {
+            let mut seen: Vec<String> = Vec::new();
+            for tag in card
+                .get("skills")
+                .and_then(|s| s.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s.get("tags").and_then(|t| t.as_array()))
+                .flatten()
+                .filter_map(|t| t.as_str())
+            {
+                if !seen.iter().any(|existing| existing == tag) {
+                    seen.push(tag.to_string());
+                }
+            }
+            seen
+        },
+    }
+}
+
+/// Manifest annotation an agent's AgentCard travels in. A registry that doesn't
+/// know the convention stores and serves it untouched, so this stays a plain
+/// OCI pull.
+const AGENT_CARD_ANNOTATION: &str = "org.nasiko.agent_card";
+
+/// Media types the manifest fetch accepts. The index types come first so a
+/// multi-platform tag resolves to its *index* rather than one platform's
+/// manifest: the index is where a publisher puts the `org.nasiko.*` annotations,
+/// because child manifests are referenced by digest and cannot be rewritten.
+const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
+     application/vnd.docker.distribution.manifest.list.v2+json, \
+     application/vnd.oci.image.manifest.v1+json, \
+     application/vnd.docker.distribution.manifest.v2+json";
+
+/// Read the AgentCard a publisher embedded in an image's manifest annotations.
+///
+/// Reads the manifest the import already fetched — no second request, and no
+/// second HTTP client to keep SSRF-hardened. Uses only what the OCI
+/// Distribution spec guarantees, so an image published to any registry carries
+/// its card, not just one published to ours.
+///
+/// `None` whenever the card is absent or unusable: an image is perfectly
+/// deployable without one, so this never fails an import.
+fn agent_card_from_manifest(manifest: &serde_json::Value) -> Option<serde_json::Value> {
+    let raw = manifest
+        .pointer("/annotations")?
+        .get(AGENT_CARD_ANNOTATION)?
+        .as_str()?;
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(card) if card.is_object() => Some(card),
+        _ => {
+            tracing::warn!("import: agent card annotation is not a JSON object — ignoring");
+            None
+        }
+    }
 }
 
 /// Run a blocking archive/filesystem closure on Tokio's blocking pool so a large
@@ -185,8 +252,8 @@ pub(crate) async fn build_and_deploy(
         id
     } else {
         sqlx::query_scalar(
-            r#"INSERT INTO agents (name, display_name, description, owner_id, version, image, skills, capabilities)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            r#"INSERT INTO agents (name, display_name, description, owner_id, version, image, skills, capabilities, tags)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                RETURNING id"#,
         )
         .bind(&meta.name)
@@ -197,6 +264,7 @@ pub(crate) async fn build_and_deploy(
         .bind(&image_tag)
         .bind(&meta.skills)
         .bind(&meta.capabilities)
+        .bind(&meta.tags)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| {
@@ -656,19 +724,18 @@ async fn effective_allowed_hosts(state: &AppState) -> Vec<String> {
         .collect();
     allowed.extend(state.config.registry_import_allowed_hosts.iter().cloned());
 
-    let configured: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
-        "SELECT registry_url FROM settings LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(Some(url)) => url,
-        Ok(None) => None,
-        Err(e) => {
-            tracing::warn!(%e, "effective_allowed_hosts: could not read settings.registry_url");
-            None
-        }
-    };
+    let configured: Option<String> =
+        match sqlx::query_scalar::<_, Option<String>>("SELECT registry_url FROM settings LIMIT 1")
+            .fetch_optional(&state.db)
+            .await
+        {
+            Ok(Some(url)) => url,
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(%e, "effective_allowed_hosts: could not read settings.registry_url");
+                None
+            }
+        };
     if let Some(host) = configured.as_deref().and_then(registry_url_host) {
         allowed.push(host);
     }
@@ -800,7 +867,7 @@ pub(crate) async fn import_registry(
     let manifest_url = format!("{}/v2/{}/manifests/{}", registry_url, repo, tag);
     let manifest_res = registry_client
         .get(&manifest_url)
-        .header("Accept", "application/vnd.oci.image.manifest.v1+json")
+        .header("Accept", MANIFEST_ACCEPT)
         .send()
         .await;
 
@@ -971,15 +1038,59 @@ pub(crate) async fn import_registry(
         // Derive agent name from repo
         let agent_name = repo.rsplit('/').next().unwrap_or("agent").to_string();
 
+        // Describe the agent from the card the publisher embedded in the
+        // manifest. Without this an image import registered a bare name and
+        // version — no description, no skills — and skills are what the routing
+        // engine shortlists on, so an image-imported agent was effectively
+        // invisible to routing next to a source-imported one.
+        //
+        // Name and version deliberately keep coming from the image reference,
+        // not the card: the reference is what the caller asked to deploy, and
+        // taking the name from the card here would resurrect the split where
+        // one agent lands under two names depending on how it was published.
+        let described = agent_card_from_manifest(&manifest)
+            .as_ref()
+            .map(agent_metadata_from_card);
+        let (display_name, description, skills, capabilities, tags) = match &described {
+            Some(m) => (
+                m.display_name.clone(),
+                m.description.clone(),
+                Some(&m.skills),
+                Some(&m.capabilities),
+                Some(&m.tags),
+            ),
+            None => (None, None, None, None, None),
+        };
+
         // Register agent in catalog — only update if this caller owns the existing entry.
         let agent_id: Uuid = match sqlx::query_scalar(
             // Conflict target is the (owner_id, name) partial unique index
             // (migration 015); the owner is part of the key, so a conflict
             // only ever updates the same owner's row (no cross-owner takeover).
-            r#"INSERT INTO agents (name, display_name, owner_id, version, image)
-               VALUES ($1, $1, $2, $3, $4)
+            // COALESCE, not EXCLUDED, for the card-derived columns: an import
+            // with no card must leave whatever a previous one established
+            // rather than blanking it.
+            //
+            // `skills`/`capabilities` are NOT NULL, so the insert side spells
+            // out the same fallbacks the column defaults use — `DEFAULT` is not
+            // an expression and cannot appear inside COALESCE.
+            r#"INSERT INTO agents (name, display_name, owner_id, version, image,
+                                   description, skills, capabilities, tags)
+               VALUES ($1, COALESCE($5, $1), $2, $3, $4, $6,
+                       COALESCE($7, '[]'::jsonb),
+                       COALESCE($8, '{"streaming": false, "chat_agent": false,
+                                      "pushNotifications": false,
+                                      "stateTransitionHistory": false}'::jsonb),
+                       COALESCE($9, '{}'::text[]))
                ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL DO UPDATE
-                 SET version = EXCLUDED.version, image = EXCLUDED.image, updated_at = now()
+                 SET version = EXCLUDED.version,
+                     image = EXCLUDED.image,
+                     display_name = COALESCE($5, agents.display_name),
+                     description = COALESCE($6, agents.description),
+                     skills = COALESCE($7, agents.skills),
+                     capabilities = COALESCE($8, agents.capabilities),
+                     tags = COALESCE($9, agents.tags),
+                     updated_at = now()
                RETURNING id"#,
         )
         .bind(&agent_name)
@@ -989,6 +1100,11 @@ pub(crate) async fn import_registry(
         // below keeps the original OCI tag for pulls.
         .bind(tag.strip_prefix('v').unwrap_or(&tag))
         .bind(&image_with_tag)
+        .bind(&display_name)
+        .bind(&description)
+        .bind(skills)
+        .bind(capabilities)
+        .bind(tags)
         .fetch_optional(&state.db)
         .await
         {
@@ -1086,9 +1202,95 @@ pub(crate) async fn import_registry(
 #[cfg(test)]
 mod tests {
     use super::{
-        BUILTIN_ALLOWED_REGISTRY_HOSTS, find_owned_agent, read_agent_card, registry_url_host,
-        slugify, split_reference_tag, validate_registry_host,
+        BUILTIN_ALLOWED_REGISTRY_HOSTS, agent_card_from_manifest, agent_metadata_from_card,
+        find_owned_agent, read_agent_card, registry_url_host, slugify, split_reference_tag,
+        validate_registry_host,
     };
+
+    /// A manifest shaped like the one a multi-platform publish produces: the
+    /// `org.nasiko.*` annotations sit on the index, since child manifests are
+    /// referenced by digest and cannot be rewritten.
+    fn index_with_card(card: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [],
+            "annotations": {
+                "org.nasiko.type": "agent",
+                "org.nasiko.agent_card": serde_json::to_string(card).unwrap(),
+            }
+        })
+    }
+
+    #[test]
+    fn an_image_import_describes_itself_from_the_embedded_card() {
+        // The bug this locks out: the image branch registered only name and
+        // version, so an image-imported agent had no skills — and skills are
+        // what the routing engine shortlists on, making it invisible to routing
+        // next to a source-imported agent.
+        let card = serde_json::json!({
+            "name": "DevOps Engineer",
+            "description": "CI/CD pipelines and incident response",
+            "version": "1.0.0",
+            "capabilities": {"streaming": true},
+            "skills": [{"id": "ci", "tags": ["ci-cd"]}],
+        });
+        let found = agent_card_from_manifest(&index_with_card(&card)).expect("card");
+        let meta = agent_metadata_from_card(&found);
+
+        assert_eq!(
+            meta.description.as_deref(),
+            Some("CI/CD pipelines and incident response")
+        );
+        assert_eq!(meta.display_name.as_deref(), Some("DevOps Engineer"));
+        assert_eq!(meta.skills[0]["id"], "ci");
+        assert_eq!(meta.capabilities["streaming"], true);
+        assert_eq!(meta.tags, vec!["ci-cd"]);
+    }
+
+    #[test]
+    fn tags_flatten_across_skills_and_deduplicate() {
+        // `agents.tags` feeds the generated search_vector, so a repeated tag
+        // would weight search without adding anything, and the same list has to
+        // come out however many skills mention it.
+        let card = serde_json::json!({
+            "skills": [
+                {"id": "a", "tags": ["infra", "dns"]},
+                {"id": "b", "tags": ["dns", "tls"]},
+                {"id": "c"},
+            ],
+        });
+        let meta = agent_metadata_from_card(&card);
+        assert_eq!(meta.tags, vec!["infra", "dns", "tls"]);
+    }
+
+    #[test]
+    fn a_card_with_no_skills_yields_no_tags_not_a_panic() {
+        let meta = agent_metadata_from_card(&serde_json::json!({"name": "bare"}));
+        assert!(meta.tags.is_empty());
+        assert_eq!(meta.skills, serde_json::json!([]));
+        // Slug and display name still come through, so the agent is nameable.
+        assert_eq!(meta.name, "bare");
+    }
+
+    #[test]
+    fn a_manifest_with_no_usable_card_yields_none() {
+        // Each of these must leave the import running with whatever metadata it
+        // already had, never fail it.
+        let no_annotations = serde_json::json!({"schemaVersion": 2, "layers": []});
+        assert!(agent_card_from_manifest(&no_annotations).is_none());
+
+        let other_annotations = serde_json::json!({"annotations": {"org.nasiko.type": "agent"}});
+        assert!(agent_card_from_manifest(&other_annotations).is_none());
+
+        let malformed = serde_json::json!({"annotations": {"org.nasiko.agent_card": "{not json"}});
+        assert!(agent_card_from_manifest(&malformed).is_none());
+
+        // A non-object would be mapped onto agent columns as if it were a card.
+        let not_an_object =
+            serde_json::json!({"annotations": {"org.nasiko.agent_card": "[1,2,3]"}});
+        assert!(agent_card_from_manifest(&not_an_object).is_none());
+    }
 
     #[test]
     fn registry_url_host_strips_scheme_and_path() {
