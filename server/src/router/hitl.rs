@@ -321,9 +321,13 @@ fn is_terminal(row: &HitlRequest) -> bool {
 /// `GET /api/hitl/{id}/stream` — DB-poll-wrapped SSE, cloned from the existing
 /// `deploy_status_sse`/`build_progress_sse` pattern (`oss/server/src/agents/upload.rs`,
 /// `oss/server/src/build/routes.rs`): poll every 3s, emit an event only when `status`/
-/// `resume_status` actually changes, close once the row reaches a terminal state. The
-/// authorization check runs once up front — a 403 is a normal HTTP response, not a stream — and
-/// every subsequent poll trusts that this connection is already scoped to its owner.
+/// `resume_status`/`human_response` actually change, close once the row reaches a terminal state.
+/// `human_response` is in the dedup key (not just the two status columns) because
+/// `record_auth_start` writes into it without changing either status column — an `auth_required`
+/// row's "start" step would otherwise never surface as its own event, only on the next unrelated
+/// change or a fresh reconnect. The authorization check runs once up front — a 403 is a normal
+/// HTTP response, not a stream — and every subsequent poll trusts that this connection is already
+/// scoped to its owner.
 async fn stream_one(
     State(state): State<AppState>,
     claims: Claims,
@@ -348,7 +352,7 @@ async fn stream_one(
 
     let hitl_store = state.hitl_store.clone();
     let stream = async_stream::stream! {
-        let mut last: Option<(String, String)> = None;
+        let mut last: Option<(String, String, Option<String>)> = None;
 
         loop {
             let row = match hitl_store.get(id).await {
@@ -367,7 +371,11 @@ async fn stream_one(
                 }
             };
 
-            let key = (row.status.as_str().to_string(), row.resume_status.as_str().to_string());
+            let key = (
+                row.status.as_str().to_string(),
+                row.resume_status.as_str().to_string(),
+                row.human_response.as_ref().map(|v| v.to_string()),
+            );
             if Some(&key) != last.as_ref() {
                 yield Ok(Event::default().data(to_response(&row).to_string()));
                 last = Some(key);
