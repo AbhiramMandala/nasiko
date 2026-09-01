@@ -94,7 +94,19 @@ impl AppState {
 
         let oci_storage =
             nasiko_oci::storage::blob_store_from_env(config.oci_storage_bucket.clone()).await;
-        oci_storage.ensure_bucket(false).await.ok();
+        // Fail fast, exactly as the Postgres connect above does. This was
+        // `.ok()` — which discarded the error without even logging it, so a
+        // control plane whose object store was unreachable, misconfigured, or
+        // missing its bucket booted green and reported healthy, then failed
+        // every image push and agent deploy afterwards with no startup signal
+        // pointing at the cause. An unusable artifact store is not a degraded
+        // mode, it is a broken one. The startup-ordering race this used to
+        // paper over (the store not ready yet when the control plane boots)
+        // is handled the same way it already is for Postgres: the process
+        // exits and the orchestrator restarts it.
+        if let Err(e) = oci_storage.ensure_bucket(false).await {
+            panic!("object storage is not usable: {e}");
+        }
 
         let usage_tracker = UsageTracker::new(db.clone());
 
