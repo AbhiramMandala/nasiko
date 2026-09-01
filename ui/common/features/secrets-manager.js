@@ -40,7 +40,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Human copy for the empty state, per scope. */
 const EMPTY_COPY = {
-  user: 'No secrets yet. Add one below — agents and router configs reference it by name.',
+  user: 'No secrets yet. Add one below. Agents and router configs reference secrets by name.',
   agent: 'No secrets configured for this agent yet. Add one below.',
 };
 
@@ -168,7 +168,7 @@ class SecretsManager extends HTMLElement {
           spellcheck="false" required></app-input>
         <app-input id="sm-value" label="Value" type="password" placeholder="sk-…"
           autocomplete="off" required></app-input>
-        <app-button type="submit" id="sm-submit">
+        <app-button size="md" type="submit" id="sm-submit">
           ${icons.plus('', 14)} Add secret
         </app-button>
       </form>`;

@@ -76,7 +76,7 @@ class WeavePage extends HTMLElement {
       <form class="composer" id="composer">
         <input class="composer__input" id="prompt" type="text" autocomplete="off"
                placeholder="What should this dashboard show?" aria-label="Prompt" />
-        <app-button id="send" variant="primary" type="submit">Build</app-button>
+        <app-button id="send" variant="primary"size="md" type="submit">Build</app-button>
       </form>
 
       <div class="starters" id="starters"></div>

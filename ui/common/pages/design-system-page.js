@@ -240,7 +240,7 @@ const SPECS = [
     tag: 'app-chatbox',
     blurb: 'The chat composer, as the orchestrator and chat pages use it \u2014 auto-growing textarea, Enter to send (Shift+Enter for a newline), voice recording (F8 / Alt+R) with a live timer, drag-and-drop or picked file attachments, and a loading state the owner clears with setLoading(false). Fires chatbox-submit; the demo below echoes it back.',
     demo: `<app-stack gap="sm" align="start">
-  <app-chatbox data-demo="chatbox" placeholder="Describe the task you want to execute..."></app-chatbox>
+  <app-chatbox data-demo="chatbox" placeholder="Describe the task you want to execute"></app-chatbox>
   <span class="demo-note" data-demo="chatbox-out">chatbox-submit lands here.</span>
   <app-chatbox no-attachments placeholder="No attachments variant..."></app-chatbox>
 </app-stack>`,
@@ -715,11 +715,12 @@ const SPECS = [
   {
     group: 'State & feedback',
     tag: 'app-loading-bar',
-    blurb: 'Fixed 3px bar at the viewport top, driven by loading-start / loading-end on document. Mounted once per document (in the page HTML), never inside a page component \u2014 it is a viewport-fixed singleton.',
+    blurb: 'Fixed 3px bar at the viewport top, driven by loading-start / loading-end on document. Mounted once per document (in the page HTML), never inside a page component \u2014 it is a viewport-fixed singleton. The dark strip below is the exception that proves it: a transformed wrapper becomes the containing block for position:fixed, so a real second instance renders in place.',
     demo: `<app-row gap="sm" align="center">
-  <app-button variant="secondary" data-demo="loading">Pulse for 1.5s</app-button>
-  <span class="demo-note">Watch the very top of the window.</span>
-</app-row>`,
+  <app-button variant="secondary" data-demo="loading">Simulate a 1.5s load</app-button>
+  <span class="demo-note">Fires at the very top of the window \u2014 and in this strip, a real second instance.</span>
+</app-row>
+<div class="lb-stage"><app-loading-bar></app-loading-bar></div>`,
   },
   {
     group: 'State & feedback',

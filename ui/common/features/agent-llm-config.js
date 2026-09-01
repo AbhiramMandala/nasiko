@@ -156,8 +156,8 @@ class AgentLlmConfig extends HTMLElement {
       <p class="subtitle">${subtitle}</p>
       ${cardHtml}
       <div class="actions">
-        <app-button variant="primary" data-action="override">${pinned ? 'Change model' : 'Override model'}</app-button>
-        ${pinned ? `<app-button variant="tertiary" data-action="revert">Revert to default</app-button>` : ''}
+        <app-button variant="primary" size="md" data-action="override">${pinned ? 'Change model' : 'Override model'}</app-button>
+        ${pinned ? `<app-button variant="tertiary" size="md" data-action="revert">Revert to default</app-button>` : ''}
       </div>
     `;
 
@@ -263,8 +263,8 @@ class AgentLlmConfig extends HTMLElement {
     };
 
     footer.innerHTML = `
-      <app-button variant="tertiary" data-action="modal-cancel">Cancel</app-button>
-      <app-button variant="primary" data-action="modal-save">Save changes</app-button>
+      <app-button variant="tertiary" size="md" data-action="modal-cancel">Cancel</app-button>
+      <app-button variant="primary" size="md" data-action="modal-save">Save changes</app-button>
     `;
 
     renderBody();

@@ -123,4 +123,21 @@
     display: block;
     margin-top: var(--s-8);
   }
+
+  /* Live, in-place preview of app-loading-bar.
+     The component is viewport-fixed by design, so its own demo button — 15k
+     pixels down this gallery — used to fire feedback that only existed as a 3px
+     sliver at the top of the window, far outside where you are looking. Any
+     TRANSFORMED ancestor becomes the containing block for `position: fixed`, so
+     the bar renders inside this strip instead. It is the real component with its
+     real CSS and animation, not a copy — nothing to drift. */
+  .lb-stage {
+    margin-top: 10px;
+    position: relative;
+    transform: translateZ(0);
+    height: var(--s-24);
+    border-radius: var(--r-6);
+    background: var(--shell-bg);
+    overflow: hidden;
+  }
 }

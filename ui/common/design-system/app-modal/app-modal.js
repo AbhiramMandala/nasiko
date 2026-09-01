@@ -135,8 +135,8 @@ export function confirmDialog({
     modal.innerHTML = `
       <p style="margin:0; font-size:var(--font-size-sm); color:var(--color-text-muted); line-height:1.5;">${message}</p>
       <div data-slot="footer" style="display:contents">
-        <app-button variant="tertiary" data-role="cancel">${cancelLabel}</app-button>
-        <app-button variant="${danger ? "danger" : "primary"}" data-role="confirm">${confirmLabel}</app-button>
+        <app-button variant="tertiary" size="md" data-role="cancel">${cancelLabel}</app-button>
+        <app-button variant="${danger ? "danger" : "primary"}" size="md" data-role="confirm">${confirmLabel}</app-button>
       </div>
     `;
 

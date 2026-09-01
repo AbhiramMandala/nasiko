@@ -48,6 +48,7 @@
   :scope.has-response > .title {
     font-size: var(--font-size-lg);
     margin-bottom: var(--s-12);
+    margin-top: var(--s-12);
   }
   :scope.has-response > .subtitle { display: none; }
   .input-wrap {

@@ -93,10 +93,10 @@ class LlmRouterPage extends HTMLElement {
     return `
       <header class="page-head">
         <div>
-          <h1 class="title-page">LLM Router</h1>
+          <h1 class="title-page">LLM router</h1>
           <p class="page-sub">Connect providers, map a model to each reasoning level, and choose the config your agents follow by default.</p>
         </div>
-        ${withAction ? '<app-button variant="primary" data-action="new-config">Setup new config</app-button>' : ''}
+        ${withAction ? '<app-button variant="primary" size="md" data-action="new-config">Setup new config</app-button>' : ''}
       </header>
     `;
   }
@@ -214,7 +214,7 @@ class LlmRouterPage extends HTMLElement {
     const formDefault = c ? c.is_default : !this.#configs.length;
     return `
       <div class="form-head">
-        <app-button class="back-btn" variant="tertiary" icon-only
+        <app-button class="back-btn" variant="tertiary" icon-only size="sm"
           data-action="back" aria-label="Back">${icons.arrowLeft()}</app-button>
         <h1 class="title-page">${isEdit ? 'Edit config' : 'Configure router'}</h1>
       </div>
@@ -268,8 +268,8 @@ class LlmRouterPage extends HTMLElement {
           label="Make this the default routing config" ${formDefault ? 'checked' : ''}></app-checkbox>
         <div class="form-error" id="form-error" hidden></div>
         <div class="form-actions">
-          <app-button variant="primary" type="submit">${isEdit ? 'Save changes' : 'Save config'}</app-button>
-          <app-button variant="ghost" data-action="back">Cancel</app-button>
+          <app-button variant="ghost" size="md" data-action="back">Cancel</app-button>
+          <app-button variant="primary" size="md" type="submit">${isEdit ? 'Save changes' : 'Save config'}</app-button>
         </div>
       </form>
     `;

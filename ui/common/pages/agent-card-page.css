@@ -674,7 +674,7 @@
   .acp-field {
     display: flex;
     flex-direction: column;
-    /* input/*/layout/label-gap — the same 8 <app-input>'s own .field uses, so a
+    /* input /layout/label-gap — the same 8 <app-input>'s own .field uses, so a
        raw field lines up with a design-system one in the same form. */
     gap: var(--s-8);
     /* Some of these wrappers ARE the <label>; the global form-label margin

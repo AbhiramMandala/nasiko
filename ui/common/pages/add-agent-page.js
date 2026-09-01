@@ -74,7 +74,7 @@ class AddAgentPage extends HTMLElement {
         })}
         ${this.#methodCard({
           icon: icons.layers('', 22), id: 'btn-oci', title: 'Import from OCI registry',
-          req: "You'll need the image URL", cta: 'Connect Registry',
+          req: "You'll need the image URL", cta: 'Connect registry',
           desc: 'Pull a pre-built agent image directly from any OCI-compatible container registry.',
         })}
       </div>
@@ -94,8 +94,8 @@ class AddAgentPage extends HTMLElement {
           <p class="form-error" id="upload-error" hidden></p>
         </div>
         <div data-slot="footer">
-          <app-button variant="tertiary" id="upload-cancel">Cancel</app-button>
-          <app-button variant="primary" id="upload-submit">Upload and deploy</app-button>
+          <app-button variant="tertiary" size="md" id="upload-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="upload-submit">Upload and deploy</app-button>
         </div>
       </app-modal>
 
@@ -119,8 +119,8 @@ class AddAgentPage extends HTMLElement {
             minutes. You can close this dialog and it will continue running in the background.</p>
         </div>
         <div data-slot="footer">
-          <app-button variant="tertiary" id="oci-cancel">Cancel</app-button>
-          <app-button variant="primary" id="oci-submit">Import and deploy</app-button>
+          <app-button variant="tertiary" size="md" id="oci-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="oci-submit">Import and deploy</app-button>
         </div>
       </app-modal>
     `;

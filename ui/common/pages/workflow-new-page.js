@@ -36,7 +36,7 @@ class WorkflowNewPage extends HTMLElement {
     this.innerHTML = `
       <div class="col">
         <header class="page-head">
-          <app-button variant="tertiary" icon-only href="/workflows"
+          <app-button variant="tertiary" size="sm" icon-only href="/workflows"
             aria-label="Back to workflows">${icons.chevronLeft()}</app-button>
           <input class="name-input" id="wf-name" placeholder="Name this workflow" aria-label="Workflow name" />
           <app-badge variant="neutral">Draft</app-badge>

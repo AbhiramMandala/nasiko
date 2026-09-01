@@ -26,6 +26,12 @@
     display: block;
   }
 
+  /* The `display` above is an author rule, so it outranks the UA sheet's
+     `[hidden] { display: none }` — without this, hiding a button does nothing. */
+  :scope[hidden] {
+    display: none;
+  }
+
   .btn {
     width: 100%;
     position: relative; /* containing block for the :focus-visible ring below */

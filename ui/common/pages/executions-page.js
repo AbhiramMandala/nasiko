@@ -150,7 +150,7 @@ class ExecutionsPage extends HTMLElement {
           icon: icons.play('', 40),
           title: 'Your active runs will appear here',
           sub: 'Monitor live workflow executions, track progress across each step, and inspect outputs as they are generated.',
-          action: `<app-button variant="tertiary" href="/workflows">Browse workflows</app-button>`,
+          action: `<app-button variant="primary" href="/workflows">Browse workflows</app-button>`,
         });
         return;
       }
@@ -166,7 +166,7 @@ class ExecutionsPage extends HTMLElement {
         icon: icons.workflow('', 40),
         title: 'No finished runs yet',
         sub: 'Completed and failed workflow runs land here with their full step timelines.',
-        action: `<app-button variant="tertiary" href="/workflows">Browse workflows</app-button>`,
+        action: `<app-button variant="primary" href="/workflows">Browse workflows</app-button>`,
       });
       return;
     }

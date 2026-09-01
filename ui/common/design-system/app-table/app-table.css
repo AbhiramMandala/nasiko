@@ -98,7 +98,7 @@
   }
   .tbody {
     & tr:last-child .td { border-bottom: none; }
-    & tr:hover { background: var(--bg-subtle); }
+    & tr:not(:has(.empty)):hover { background: var(--bg-subtle); }
     & tr.is-clickable { cursor: pointer; }
   }
 

@@ -575,7 +575,8 @@ tbody tr:last-child td {
   border-bottom: none;
 }
 
-tbody tr:hover {
+/* The empty-state row is not a row you can act on, so it must not light up. */
+tbody tr:not(:has(.empty)):hover {
   background: var(--color-bg-base);
 }
 
