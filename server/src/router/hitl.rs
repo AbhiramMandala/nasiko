@@ -299,6 +299,15 @@ async fn resolve(
 
     let (row, already_resolved) = match outcome {
         ResolveOutcome::Applied(row) => {
+            // `auth_required`'s "confirm" is the manual counterpart to the ToolApproval
+            // branch's own call above — a real broken-connector-credential pause (not just a
+            // permission gate) gets exactly the same direct_chat mirror when an agent maps it
+            // onto its own A2A AUTH_REQUIRED state, and it needs the same single-action
+            // resolve. There's no reject path for auth_required (only "start"/"confirm" are
+            // valid `auth_action`s), so this is always an approval.
+            if row.kind == HitlKind::AuthRequired {
+                auto_resolve_linked_direct_chat_row(&state, &row, user_id, true).await;
+            }
             // Best-effort latency optimization — the dispatcher's own poll loop is the real
             // delivery guarantee (§ Phase 3 item 5).
             let _ = state.hitl_resume_tx.try_send(());

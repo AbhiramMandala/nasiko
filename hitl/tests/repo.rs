@@ -488,6 +488,7 @@ async fn claim_resolved_tool_approval_claims_an_approved_once_row() {
 
     let claimed = repo::claim_resolved_tool_approval(
         &db.pool,
+        db.owner_user_id,
         db.agent_id,
         connector_id,
         "GITHUB_DELETE_REPO",
@@ -519,6 +520,7 @@ async fn claim_resolved_tool_approval_is_single_use() {
 
     let first = repo::claim_resolved_tool_approval(
         &db.pool,
+        db.owner_user_id,
         db.agent_id,
         connector_id,
         "GITHUB_DELETE_REPO",
@@ -530,6 +532,7 @@ async fn claim_resolved_tool_approval_is_single_use() {
 
     let second = repo::claim_resolved_tool_approval(
         &db.pool,
+        db.owner_user_id,
         db.agent_id,
         connector_id,
         "GITHUB_DELETE_REPO",
@@ -558,6 +561,7 @@ async fn claim_resolved_tool_approval_claims_a_rejected_row() {
 
     let claimed = repo::claim_resolved_tool_approval(
         &db.pool,
+        db.owner_user_id,
         db.agent_id,
         connector_id,
         "GITHUB_DELETE_REPO",
@@ -588,6 +592,7 @@ async fn claim_resolved_tool_approval_never_claims_a_session_scoped_row() {
 
     let claimed = repo::claim_resolved_tool_approval(
         &db.pool,
+        db.owner_user_id,
         db.agent_id,
         connector_id,
         "GITHUB_DELETE_REPO",
@@ -616,6 +621,7 @@ async fn claim_resolved_tool_approval_ignores_a_still_pending_row() {
 
     let claimed = repo::claim_resolved_tool_approval(
         &db.pool,
+        db.owner_user_id,
         db.agent_id,
         connector_id,
         "GITHUB_DELETE_REPO",
@@ -646,6 +652,7 @@ async fn concurrent_claims_of_the_same_approval_exactly_one_wins() {
     let (a, b) = tokio::join!(
         repo::claim_resolved_tool_approval(
             &db.pool,
+            db.owner_user_id,
             db.agent_id,
             connector_id,
             "GITHUB_DELETE_REPO",
@@ -653,6 +660,7 @@ async fn concurrent_claims_of_the_same_approval_exactly_one_wins() {
         ),
         repo::claim_resolved_tool_approval(
             &db.pool,
+            db.owner_user_id,
             db.agent_id,
             connector_id,
             "GITHUB_DELETE_REPO",
@@ -690,6 +698,7 @@ async fn session_grant_is_visible_to_has_active_session_grant() {
     assert!(
         !repo::has_active_session_grant(
             &db.pool,
+            db.owner_user_id,
             db.agent_id,
             connector_id,
             "GITHUB_DELETE_REPO",
@@ -718,6 +727,7 @@ async fn session_grant_is_visible_to_has_active_session_grant() {
     assert!(
         repo::has_active_session_grant(
             &db.pool,
+            db.owner_user_id,
             db.agent_id,
             connector_id,
             "GITHUB_DELETE_REPO",
@@ -750,6 +760,7 @@ async fn session_grant_does_not_match_a_different_tool_or_conversation() {
     assert!(
         !repo::has_active_session_grant(
             &db.pool,
+            db.owner_user_id,
             db.agent_id,
             connector_id,
             "GITHUB_CREATE_ISSUE", // different tool
@@ -761,6 +772,7 @@ async fn session_grant_does_not_match_a_different_tool_or_conversation() {
     assert!(
         !repo::has_active_session_grant(
             &db.pool,
+            db.owner_user_id,
             db.agent_id,
             connector_id,
             "GITHUB_DELETE_REPO",
@@ -798,6 +810,7 @@ async fn expired_session_grant_is_not_active() {
     assert!(
         !repo::has_active_session_grant(
             &db.pool,
+            db.owner_user_id,
             db.agent_id,
             connector_id,
             "GITHUB_DELETE_REPO",
@@ -806,5 +819,180 @@ async fn expired_session_grant_is_not_active() {
         .await
         .expect("lookup must not error"),
         "an expired grant must not be treated as active"
+    );
+}
+
+/// Security regression: `context_id` alone is derived from the unauthenticated,
+/// agent-controlled `traceparent` header (`session::resolve_context_id`) — it is a
+/// trace-correlation id, not an identity boundary. On a shared agent, User A's approval
+/// decision must never be claimable by User B just because an agent replayed the same
+/// `context_id` while acting on User B's behalf; `owner_user_id` is a required predicate
+/// specifically to close that hole.
+#[tokio::test]
+async fn claim_resolved_tool_approval_never_claims_a_different_users_approval() {
+    let db = TestDb::new().await;
+    let other_user = db.seed_user().await;
+    let connector_id = Uuid::new_v4();
+
+    // User A (db.owner_user_id) approves — same (agent_id, connector_id, tool_name,
+    // context_id) tuple an adversarial or buggy shared agent could replay for anyone.
+    db.resolved_tool_approval(
+        connector_id,
+        "GITHUB_DELETE_REPO",
+        "ctx-shared",
+        ResolveDecision::Approve,
+        Some("once"),
+    )
+    .await;
+
+    let claimed_as_other_user = repo::claim_resolved_tool_approval(
+        &db.pool,
+        other_user,
+        db.agent_id,
+        connector_id,
+        "GITHUB_DELETE_REPO",
+        "ctx-shared",
+    )
+    .await
+    .expect("claim must not error");
+    assert!(
+        claimed_as_other_user.is_none(),
+        "a different user must never be able to claim another user's approval decision, \
+         even with an identical (agent_id, connector_id, tool_name, context_id) tuple"
+    );
+
+    // The real owner can still claim it — the row wasn't consumed by the failed attempt.
+    let claimed_as_owner = repo::claim_resolved_tool_approval(
+        &db.pool,
+        db.owner_user_id,
+        db.agent_id,
+        connector_id,
+        "GITHUB_DELETE_REPO",
+        "ctx-shared",
+    )
+    .await
+    .expect("claim must not error");
+    assert!(
+        claimed_as_owner.is_some(),
+        "the real owner's own claim must still succeed"
+    );
+}
+
+/// Same guarantee as the test above, for the reusable "approve for this session" grant path.
+#[tokio::test]
+async fn has_active_session_grant_never_matches_a_different_users_grant() {
+    let db = TestDb::new().await;
+    let other_user = db.seed_user().await;
+    let connector_id = Uuid::new_v4();
+
+    repo::create_session_grant(
+        &db.pool,
+        NewSessionGrant {
+            agent_id: db.agent_id,
+            connector_id,
+            tool_name: "GITHUB_DELETE_REPO".to_string(),
+            context_id: "ctx-shared".to_string(),
+            granted_by: db.owner_user_id,
+            hitl_request_id: None,
+        },
+    )
+    .await
+    .expect("create_session_grant must not error");
+
+    assert!(
+        !repo::has_active_session_grant(
+            &db.pool,
+            other_user,
+            db.agent_id,
+            connector_id,
+            "GITHUB_DELETE_REPO",
+            "ctx-shared",
+        )
+        .await
+        .expect("lookup must not error"),
+        "a different user must never see another user's session grant as active, \
+         even for an identical (agent_id, connector_id, tool_name, context_id) tuple"
+    );
+    assert!(
+        repo::has_active_session_grant(
+            &db.pool,
+            db.owner_user_id,
+            db.agent_id,
+            connector_id,
+            "GITHUB_DELETE_REPO",
+            "ctx-shared",
+        )
+        .await
+        .expect("lookup must not error"),
+        "the real grantee's own lookup must still succeed"
+    );
+}
+
+/// A real broken-connector-credential pause (not a permission gate) can also be mirrored by a
+/// `direct_chat`/`agent_proxy` row, the same way a `tool_approval` pause is — an agent that maps
+/// MCP's connector-level `auth_required` onto its own A2A `AUTH_REQUIRED` task state produces
+/// exactly this. `resolve_pending_auth_required_for_connector` is the OAuth/Composio/credential
+/// callbacks' bulk-resolve path, called directly from `oss/mcp-gateway` (never through
+/// `router/hitl.rs`'s single-row resolve API), so it must carry its own auto-resolve-linkage
+/// rather than relying on the one wired into the manual resolve handler.
+#[tokio::test]
+async fn resolve_pending_auth_required_for_connector_auto_resolves_a_linked_direct_chat_row() {
+    let db = TestDb::new().await;
+    let connector_id = Uuid::new_v4();
+
+    let mcp_row = repo::create_pending_auth_required(
+        &db.pool,
+        NewAuthRequired {
+            agent_id: db.agent_id,
+            owner_user_id: db.owner_user_id,
+            connector_id,
+            context_id: "ctx-reconnect".into(),
+            question: serde_json::json!({"provider": "github"}),
+        },
+    )
+    .await
+    .expect("create pending auth_required");
+
+    let mirror_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO hitl_requests
+            (kind, origin, agent_id, owner_user_id, task_id, context_id, question, status, expires_at)
+        VALUES
+            ('auth_required', 'direct_chat', $1, $2, 'task-1', 'ctx-mirror', $3, 'pending', now() + interval '7 days')
+        RETURNING id
+        "#,
+    )
+    .bind(db.agent_id)
+    .bind(db.owner_user_id)
+    .bind(serde_json::json!({
+        "message": "Tool(s) require user approval for this agent.",
+        "metadata": {"hitl_request_id": mcp_row.id.to_string()},
+    }))
+    .fetch_one(&db.pool)
+    .await
+    .expect("seed linked direct_chat mirror row");
+
+    let resolved =
+        repo::resolve_pending_auth_required_for_connector(&db.pool, db.owner_user_id, connector_id)
+            .await
+            .expect("resolve pending auth_required rows");
+    assert_eq!(resolved.len(), 1, "must resolve the one real mcp_tool row");
+    assert_eq!(resolved[0].id, mcp_row.id);
+
+    let (mirror_status, human_response): (String, Option<serde_json::Value>) =
+        sqlx::query_as("SELECT status, human_response FROM hitl_requests WHERE id = $1")
+            .bind(mirror_id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("fetch mirror row");
+    assert_eq!(
+        mirror_status, "resolved",
+        "the linked direct_chat mirror must be auto-resolved alongside the real mcp_tool row"
+    );
+    assert_eq!(
+        human_response
+            .as_ref()
+            .and_then(|v| v["auth_outcome"].as_str()),
+        Some("confirmed")
     );
 }

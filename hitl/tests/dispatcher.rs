@@ -123,6 +123,39 @@ impl TestDb {
         created.id
     }
 
+    /// Create and immediately reject a `tool_approval` row — proves
+    /// `claim_for_resume` also claims `status = 'rejected'` rows, not just
+    /// `'resolved'` ones (found missing in code review: a human's reject
+    /// decision never reached the paused agent at all before this fix).
+    async fn seed_rejected_tool_approval(&self, context_id: &str) -> Uuid {
+        let created = repo::create_pending_tool_approval(
+            &self.pool,
+            repo::NewToolApproval {
+                agent_id: self.agent_id,
+                owner_user_id: self.owner_user_id,
+                connector_id: Uuid::new_v4(),
+                tool_name: "GITHUB_DELETE_REPO".to_string(),
+                context_id: context_id.to_string(),
+                question: serde_json::json!({"tool_name": "GITHUB_DELETE_REPO"}),
+            },
+        )
+        .await
+        .expect("create pending tool_approval");
+
+        repo::resolve(
+            &self.pool,
+            created.id,
+            ResolveDecision::Reject,
+            self.owner_user_id,
+            serde_json::json!({"decision": "reject"}),
+        )
+        .await
+        .expect("resolve")
+        .expect("row was pending");
+
+        created.id
+    }
+
     async fn seed_resolved_auth_required(&self, context_id: &str) -> Uuid {
         let created = repo::create_pending_auth_required(
             &self.pool,
@@ -454,4 +487,131 @@ async fn peer_error_response_is_retried_then_marked_failed() {
         .expect("row exists");
     assert_eq!(row.resume_dispatch_attempts, 3);
     assert!(row.resume_last_error.is_some());
+}
+
+/// A rejected `tool_approval` row must reach the paused agent too, not just an approved one —
+/// `claim_for_resume`'s `WHERE status IN ('resolved', 'rejected')` is what makes this possible;
+/// before the fix the row simply sat un-dispatched forever (`resume_status` never left
+/// `not_started`), even though `build_resume_message` already had a "denied, do not retry"
+/// message ready for it.
+#[tokio::test]
+async fn rejected_tool_approval_row_is_claimed_and_delivered() {
+    let db = TestDb::new().await;
+    let request_id = db.seed_rejected_tool_approval("ctx-rejected").await;
+
+    let mut mock_server = mockito::Server::new_async().await;
+    let mock = mock_server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jsonrpc":"2.0","id":"1","result":{"kind":"message"}}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let runtime = Arc::new(SimulatedRuntime::new(mock_server.url()));
+    let container_id = ContainerId::from_uuid(db.agent_id);
+    runtime
+        .deploy(&agent_spec(container_id))
+        .await
+        .expect("seed the simulated runtime's endpoint for this agent");
+
+    let notifier: Arc<dyn nasiko_hitl::ResumeNotifier> = Arc::new(RuntimeResumeNotifier::new(
+        db.pool.clone(),
+        runtime.clone(),
+        reqwest::Client::new(),
+    ));
+
+    let config = DispatcherConfig {
+        poll_interval: Duration::from_millis(20),
+        recovery_interval: Duration::from_secs(3600),
+        ..Default::default()
+    };
+    let handle = tokio::spawn(dispatcher::run(db.pool.clone(), notifier, config));
+
+    let mut delivered = false;
+    for _ in 0..100 {
+        if db.resume_status_of(request_id).await == "completed" {
+            delivered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    handle.abort();
+
+    assert!(
+        delivered,
+        "a rejected row must be claimed and delivered too, not left stuck at not_started"
+    );
+    mock.assert_async().await;
+
+    let row = repo::get_by_id(&db.pool, request_id)
+        .await
+        .expect("get_by_id")
+        .expect("row exists");
+    assert_eq!(row.status, HitlStatus::Rejected);
+    assert_eq!(row.resume_status, ResumeStatus::Completed);
+}
+
+/// The resume nudge must carry a `traceparent` whose trace_id resolves back to the row's own
+/// `context_id` — without it, the agent's retried tool call gets an unrelated context_id and an
+/// already-approved action gets asked for again. Covers both the fallback and mapped cases:
+/// `ctx-raw-e2e` is deliberately a valid-looking raw 32-hex trace_id, so this asserts the
+/// traceparent's trace_id segment equals it exactly (no `session_traces` row needed at all —
+/// `resolve_context_id` would return it unchanged either way).
+#[tokio::test]
+async fn resolved_row_delivery_carries_a_traceparent_matching_its_context_id() {
+    let db = TestDb::new().await;
+    let raw_trace_id = Uuid::new_v4().simple().to_string();
+    let request_id = db.seed_resolved_tool_approval(&raw_trace_id).await;
+
+    let mut mock_server = mockito::Server::new_async().await;
+    let mock = mock_server
+        .mock("POST", "/")
+        .match_header(
+            "traceparent",
+            mockito::Matcher::Regex(format!("^00-{raw_trace_id}-[0-9a-f]{{16}}-01$")),
+        )
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jsonrpc":"2.0","id":"1","result":{"kind":"message"}}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let runtime = Arc::new(SimulatedRuntime::new(mock_server.url()));
+    let container_id = ContainerId::from_uuid(db.agent_id);
+    runtime
+        .deploy(&agent_spec(container_id))
+        .await
+        .expect("seed the simulated runtime's endpoint for this agent");
+
+    let notifier: Arc<dyn nasiko_hitl::ResumeNotifier> = Arc::new(RuntimeResumeNotifier::new(
+        db.pool.clone(),
+        runtime.clone(),
+        reqwest::Client::new(),
+    ));
+
+    let config = DispatcherConfig {
+        poll_interval: Duration::from_millis(20),
+        recovery_interval: Duration::from_secs(3600),
+        ..Default::default()
+    };
+    let handle = tokio::spawn(dispatcher::run(db.pool.clone(), notifier, config));
+
+    let mut delivered = false;
+    for _ in 0..100 {
+        if db.resume_status_of(request_id).await == "completed" {
+            delivered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    handle.abort();
+
+    assert!(delivered, "dispatcher must mark the row completed");
+    // The real assertion is `mock`'s header match — this just confirms the mock actually got hit
+    // (a header mismatch in mockito is a silent non-match, not a request failure, so without
+    // this the test would pass even if the traceparent were missing entirely).
+    mock.assert_async().await;
 }

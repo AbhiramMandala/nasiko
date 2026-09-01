@@ -801,6 +801,7 @@ async fn resolve_tool_approval_retry(
 
     match nasiko_hitl::repo::has_active_session_grant(
         &state.db,
+        user_id,
         agent_id,
         connector_id,
         tool_name,
@@ -821,6 +822,7 @@ async fn resolve_tool_approval_retry(
 
     match nasiko_hitl::repo::claim_resolved_tool_approval(
         &state.db,
+        user_id,
         agent_id,
         connector_id,
         tool_name,

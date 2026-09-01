@@ -235,6 +235,114 @@ async fn resolving_the_mcp_row_auto_resolves_the_linked_direct_chat_row() {
     server.cleanup().await;
 }
 
+/// Same guarantee as `resolving_the_mcp_row_auto_resolves_the_linked_direct_chat_row`, but for a
+/// genuinely broken connector credential (`kind = auth_required`, resolved via the two-click
+/// `auth_action: confirm` flow) rather than a permission gate (`kind = tool_approval`) — a
+/// separate code path in `router/hitl.rs::resolve()` that needs its own call into
+/// `auto_resolve_linked_direct_chat_row`, found missing by code review.
+#[tokio::test]
+#[serial]
+async fn confirming_an_auth_required_mcp_row_auto_resolves_the_linked_direct_chat_row() {
+    let server = common::TestServer::start().await;
+    let (admin_id, admin_uuid) = init_admin(&server).await;
+
+    let connector_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO mcp_connectors (provider_type, owner_id, name, url, auth_type)
+         VALUES ('mcp_server', $1, 'dup-pause-auth-connector', 'https://example.com', 'none')
+         RETURNING id",
+    )
+    .bind(admin_uuid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    let agent_placeholder_id: Uuid =
+        sqlx::query_scalar("INSERT INTO agents (name, owner_id) VALUES ($1, $2) RETURNING id")
+            .bind("dup-pause-auth-row-owner")
+            .bind(admin_uuid)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+
+    // A genuine broken-connector-credential row — `create_pending_auth_required`'s shape, not
+    // `create_tool_approval_id`'s.
+    let mcp_row_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO hitl_requests \
+            (kind, origin, agent_id, owner_user_id, connector_id, context_id, question, status, expires_at) \
+         VALUES ('auth_required', 'mcp_tool', $1, $2, $3, 'ses_dup_pause_auth_test', '{}'::jsonb, \
+                 'pending', now() + interval '7 days') \
+         RETURNING id",
+    )
+    .bind(agent_placeholder_id)
+    .bind(admin_uuid)
+    .bind(connector_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    let stub_url = start_stub_agent(json!({
+        "auth_kind": "mcp_connector",
+        "hitl_request_id": mcp_row_id.to_string(),
+    }))
+    .await;
+    let chat_agent_id = seed_running_agent(
+        &server.db,
+        admin_uuid,
+        "dup-pause-auth-chat-agent",
+        &stub_url,
+    )
+    .await;
+
+    let req = server.client.post(server.url("/api/orchestrator/a2a"));
+    let res = common::as_superuser(req, &admin_id, "admin")
+        .json(&dispatch_body(chat_agent_id))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+    let _ = res.bytes().await;
+
+    let (linked_row_id, linked_status_before): (Uuid, String) = sqlx::query_as(
+        "SELECT id, status FROM hitl_requests WHERE origin = 'direct_chat' AND agent_id = $1",
+    )
+    .bind(chat_agent_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(linked_status_before, "pending");
+
+    // The real, manual two-click confirm a human takes in the console for a broken-credential
+    // pause — not the OAuth-callback bulk path.
+    let req = server
+        .client
+        .post(server.url(&format!("/api/hitl/{mcp_row_id}/resolve")));
+    let res = common::as_superuser(req, &admin_id, "admin")
+        .json(&json!({"auth_action": "confirm"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let (linked_status_after, human_response): (String, Option<Value>) =
+        sqlx::query_as("SELECT status, human_response FROM hitl_requests WHERE id = $1")
+            .bind(linked_row_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        linked_status_after, "resolved",
+        "confirming the auth_required mcp_tool row must auto-resolve its linked direct_chat row"
+    );
+    assert_eq!(
+        human_response
+            .as_ref()
+            .and_then(|v| v["auth_outcome"].as_str()),
+        Some("confirmed")
+    );
+
+    server.cleanup().await;
+}
+
 /// Regression guard: an entirely unrelated, genuine direct-chat pause (no
 /// `hitl_request_id` at all — the ordinary case for e.g. `ask_human`) is
 /// completely unaffected by the linkage mechanism. It persists its own row

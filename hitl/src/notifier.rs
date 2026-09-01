@@ -84,6 +84,49 @@ impl RuntimeResumeNotifier {
             reason: "no live or stored endpoint".to_string(),
         })
     }
+
+    /// Build a `traceparent` for the resume nudge whose trace_id resolves back to `context_id`
+    /// via `session::resolve_context_id` (`oss/mcp-gateway/src/session.rs`) on the agent's
+    /// retried tool call — without this, the retry mints/forwards an unrelated trace_id, gets a
+    /// different resolved context_id, and `claim_resolved_tool_approval`'s exact-match lookup
+    /// fails, asking the user to approve the same already-approved action again (found in
+    /// review; confirmed against the real matching logic).
+    ///
+    /// `resolve_context_id` returns `context_id` unchanged for a traceparent whose trace_id has
+    /// no `session_traces` row — a valid (32 lowercase hex) trace_id equal to `context_id`
+    /// itself needs no DB write at all. `context_id` is otherwise already a resolved
+    /// `chat_sessions.session_id` (not a raw trace_id — `traceparent` requires exactly 32 hex
+    /// chars, which a `session_id` never is), so a fresh trace_id is minted and mapped to it via
+    /// `session_traces`, the same table `agent_proxy`'s normal request path populates.
+    async fn traceparent_for_context(&self, context_id: &str, agent_id: Uuid) -> String {
+        let is_raw_trace_id =
+            context_id.len() == 32 && context_id.chars().all(|c| c.is_ascii_hexdigit());
+        let trace_id = if is_raw_trace_id {
+            context_id.to_string()
+        } else {
+            let trace_id = Uuid::new_v4().simple().to_string();
+            if let Err(e) = sqlx::query(
+                "INSERT INTO session_traces (session_id, trace_id, agent_id) VALUES ($1, $2, $3)",
+            )
+            .bind(context_id)
+            .bind(&trace_id)
+            .bind(agent_id)
+            .execute(&self.db)
+            .await
+            {
+                tracing::warn!(
+                    %context_id, error = %e,
+                    "failed to record session_traces mapping for resume nudge traceparent"
+                );
+            }
+            trace_id
+        };
+        let span_id: String = Uuid::new_v4().as_bytes()[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        format!("00-{trace_id}-{span_id}-01")
+    }
 }
 
 #[async_trait::async_trait]
@@ -97,11 +140,15 @@ impl ResumeNotifier for RuntimeResumeNotifier {
         let endpoint = self.resolve_agent_endpoint(request.agent_id).await?;
         let message = build_resume_message(request);
         let body = nasiko_types::a2a::build_send_request(&message, Some(context_id));
+        let traceparent = self
+            .traceparent_for_context(context_id, request.agent_id)
+            .await;
 
         let response = self
             .http_client
             .post(&endpoint)
             .header("A2A-Version", "1.0")
+            .header("traceparent", traceparent)
             .json(&body)
             .send()
             .await?;

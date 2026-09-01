@@ -300,6 +300,16 @@ pub async fn resolve(
 /// multiple agents/conversations can have several rows waiting on the exact
 /// same credential fix. One successful re-auth clears all of them, not just
 /// whichever tool call happened to trigger the callback.
+///
+/// Also auto-resolves each resolved row's linked `direct_chat`/`agent_proxy`
+/// mirror, if any (see `find_linked_direct_chat_row`'s doc comment) — a real
+/// broken-connector-credential pause reaches this same mirroring as a
+/// `tool_approval` pause does, and this bulk path bypasses `router/hitl.rs`'s
+/// `resolve()` handler entirely (mcp-gateway calls this directly), so without
+/// this the mirror would stay pending until its TTL even after the real fix.
+/// Best-effort: the caller (an OAuth/Composio callback) must not fail the
+/// whole re-auth flow over a mirror-resolve error — this is only ever
+/// resolving a second, redundant row, not the credential fix itself.
 pub async fn resolve_pending_auth_required_for_connector(
     db: &PgPool,
     owner_user_id: Uuid,
@@ -320,16 +330,60 @@ pub async fn resolve_pending_auth_required_for_connector(
     .bind(human_response)
     .fetch_all(db)
     .await?;
-    rows.into_iter()
+    let resolved: Vec<HitlRequest> = rows
+        .into_iter()
         .map(HitlRequestRow::try_into_domain)
-        .collect()
+        .collect::<Result<_>>()?;
+    for row in &resolved {
+        if let Err(e) = resolve_linked_direct_chat_mirror(db, row.id, owner_user_id).await {
+            tracing::warn!(mcp_row_id = %row.id, error = %e, "failed to auto-resolve linked direct_chat mirror row");
+        }
+    }
+    Ok(resolved)
+}
+
+/// Shared by every place that resolves an `mcp_tool`-origin row outside the
+/// single-row `tool_approval` resolve API (`router/hitl.rs`'s own
+/// `auto_resolve_linked_direct_chat_row` covers that one) — currently just
+/// [`resolve_pending_auth_required_for_connector`]'s bulk OAuth-reconnect
+/// path. Finds the linked mirror (if any, if still pending) and resolves it
+/// with the same `{"auth_outcome": "confirmed"}` shape the console's own
+/// two-click `auth_action: confirm` flow produces.
+async fn resolve_linked_direct_chat_mirror(
+    db: &PgPool,
+    mcp_row_id: Uuid,
+    resolved_by: Uuid,
+) -> Result<()> {
+    let Some(linked) = find_linked_direct_chat_row(db, mcp_row_id).await? else {
+        return Ok(());
+    };
+    resolve(
+        db,
+        linked.id,
+        ResolveDecision::Approve,
+        resolved_by,
+        serde_json::json!({"auth_outcome": "confirmed"}),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Atomically claim the most recently resolved, not-yet-consumed
-/// `tool_approval` row matching this exact `(agent_id, connector_id,
-/// tool_name, context_id)` tuple — the M7 retry-matching lookup
+/// `tool_approval` row matching this exact `(owner_user_id, agent_id,
+/// connector_id, tool_name, context_id)` tuple — the M7 retry-matching lookup
 /// `protocol::handle_tools_call` performs right after `perms.decide()`
 /// returns `Ask`.
+///
+/// `owner_user_id` is a required predicate, not an afterthought:
+/// `context_id` alone is derived from the caller-supplied `traceparent`
+/// header (`session::resolve_context_id`), which is unauthenticated and
+/// fully controlled by whatever code the agent container runs — it is a
+/// trace-correlation id, not an identity boundary. Without also matching the
+/// caller's own `user_id` (from their delegation token, the one value here
+/// that actually is authenticated), an agent shared across users could
+/// replay a `context_id` it observed while serving one user to claim that
+/// user's approval decision on behalf of a different one (found in security
+/// review — this was exploitable before this parameter existed).
 ///
 /// Deliberately excludes `session`-scoped approvals
 /// (`human_response->>'scope' = 'session'`): a session grant's reusability
@@ -345,6 +399,7 @@ pub async fn resolve_pending_auth_required_for_connector(
 /// never both proceed.
 pub async fn claim_resolved_tool_approval(
     db: &PgPool,
+    owner_user_id: Uuid,
     agent_id: Uuid,
     connector_id: Uuid,
     tool_name: &str,
@@ -362,7 +417,8 @@ pub async fn claim_resolved_tool_approval(
              SELECT id FROM hitl_requests
               WHERE kind = 'tool_approval' AND status IN ('resolved', 'rejected')
                 AND consumed_at IS NULL
-                AND agent_id = $1 AND connector_id = $2 AND tool_name = $3 AND context_id = $4
+                AND owner_user_id = $1
+                AND agent_id = $2 AND connector_id = $3 AND tool_name = $4 AND context_id = $5
                 AND (human_response ->> 'scope') IS DISTINCT FROM 'session'
               ORDER BY resolved_at DESC NULLS LAST, created_at DESC
               FOR UPDATE SKIP LOCKED
@@ -371,6 +427,7 @@ pub async fn claim_resolved_tool_approval(
         RETURNING *
         "#,
     )
+    .bind(owner_user_id)
     .bind(agent_id)
     .bind(connector_id)
     .bind(tool_name)
@@ -486,13 +543,23 @@ pub async fn create_session_grant(db: &PgPool, grant: NewSessionGrant) -> Result
     Ok(())
 }
 
-/// True when an unexpired session grant exists for this exact `(agent_id,
-/// connector_id, tool_name, context_id)` tuple — the first check
+/// True when an unexpired session grant exists for this exact `(granted_by,
+/// agent_id, connector_id, tool_name, context_id)` tuple — the first check
 /// `protocol::handle_tools_call`'s retry-matching lookup performs (before
 /// [`claim_resolved_tool_approval`]), since a session grant is reusable for
 /// the rest of the conversation rather than single-use.
+///
+/// `granted_by` is a required predicate for the same reason
+/// [`claim_resolved_tool_approval`]'s `owner_user_id` is: `context_id` is
+/// derived from the unauthenticated, agent-controlled `traceparent` header,
+/// not an identity boundary. Without also matching the calling user's own
+/// `user_id` against who the grant was actually granted to, one user's
+/// "approve for this session" decision on a shared agent could be replayed
+/// to skip approval for a completely different user (found in security
+/// review).
 pub async fn has_active_session_grant(
     db: &PgPool,
+    granted_by: Uuid,
     agent_id: Uuid,
     connector_id: Uuid,
     tool_name: &str,
@@ -501,11 +568,13 @@ pub async fn has_active_session_grant(
     let found: Option<i32> = sqlx::query_scalar(
         r#"
         SELECT 1 FROM mcp_session_tool_grants
-         WHERE agent_id = $1 AND connector_id = $2 AND tool_name = $3 AND context_id = $4
+         WHERE granted_by = $1
+           AND agent_id = $2 AND connector_id = $3 AND tool_name = $4 AND context_id = $5
            AND expires_at > now()
          LIMIT 1
         "#,
     )
+    .bind(granted_by)
     .bind(agent_id)
     .bind(connector_id)
     .bind(tool_name)
@@ -550,7 +619,12 @@ pub async fn claim_for_resume(db: &PgPool) -> Result<Option<HitlRequest>> {
            SET resume_claimed_at = now()
          WHERE id = (
              SELECT id FROM hitl_requests
-              WHERE status = 'resolved' AND resume_status = 'not_started'
+              -- `rejected` included alongside `resolved`: `build_resume_message`'s
+              -- `ToolApproval` branch has a dedicated "denied" message for exactly this case
+              -- (found dead — never reachable — until this was widened; a human's reject
+              -- decision must still reach the paused agent, just with "do not retry" instead
+              -- of "you may retry").
+              WHERE status IN ('resolved', 'rejected') AND resume_status = 'not_started'
                 AND resume_claimed_at IS NULL
                 AND origin = 'mcp_tool'
               ORDER BY created_at
