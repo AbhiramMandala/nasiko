@@ -382,6 +382,18 @@ class SettingsPage extends HTMLElement {
     }
   };
 
+  /** OIDC config lives on its own route and its own table — a different
+   *  struct, superuser-gated separately (ee/server/src/sso_settings.rs). The
+   *  general `/settings` write ignores these keys entirely, so the SSO panel
+   *  has to read and write through `*OidcSettings`.
+   *
+   *  EE-only: OSS registers neither, has no OIDC login route, and simply gets
+   *  an SSO panel with nothing in it rather than a failed load. */
+  static #OIDC_KEYS = [
+    'oidc_issuer_url', 'oidc_client_id', 'oidc_client_secret',
+    'oidc_redirect_uri', 'oidc_scopes', 'oidc_provider_label',
+  ];
+
   async #load() {
     // Two routes, two structs: general settings (oss/server/src/settings.rs)
     // and SSO (ee/server/src/sso_settings.rs) are unrelated on the wire, so
