@@ -26,6 +26,9 @@
     display: flex;
     gap: var(--s-12);
     flex-shrink: 0;
+
+    /* Author `display` beats the UA `[hidden]` rule, so spell it out. */
+    &[hidden] { display: none; }
   }
 
   /* These three predate app-button and drifted off the DS: near-black
@@ -217,28 +220,6 @@
     padding: var(--s-32);
   }
 
-  /* ── Empty state ──────────────────────────────────────────────────────── */
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--s-12);
-    text-align: center;
-    padding: var(--s-48, 56px) var(--s-32);
-    border: 1px dashed var(--color-border);
-    border-radius: var(--r-10);
-    color: var(--color-text-muted);
-
-    & svg { width: 32px; height: 32px; }
-    & h3 {
-      font-size: var(--font-size-base);
-      font-weight: 600;
-      color: var(--color-text-main);
-      margin: var(--s-8) 0 0;
-    }
-    & p { margin: 0 0 var(--s-12); font-size: var(--font-size-sm); max-width: 420px; }
-  }
-
   /* ── Build logs panel ─────────────────────────────────────────────────── */
   .logs-panel {
     margin-top: var(--s-16);
@@ -414,7 +395,7 @@
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: var(--s-16);
 
-    & .empty-state, & .tk-msg { grid-column: 1 / -1; }
+    & app-empty-state, & .tk-msg { grid-column: 1 / -1; }
   }
 
   .tk-msg {
@@ -496,15 +477,6 @@
     display: inline-flex;
     align-items: center;
     gap: var(--s-4);
-  }
-
-  .tk-action.tk-action-ghost {
-    background: transparent;
-    color: var(--color-text-muted);
-    padding: 0 var(--s-4);
-    min-height: unset;
-
-    &:hover { background: var(--bg-input); color: var(--color-text); }
   }
 
   /* Connected: quiet success state that offers Disconnect on hover */

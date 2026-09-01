@@ -108,6 +108,7 @@
   .mdp-grants-head .mdp-muted { margin-bottom: 0; }
   .mdp-grants-search {
     display: block;
+    width:580px;
     margin-bottom: var(--s-12);
     --search-bg: var(--bg-input);
   }
