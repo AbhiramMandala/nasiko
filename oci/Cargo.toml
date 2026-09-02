@@ -22,7 +22,6 @@ sha2.workspace = true
 hex.workspace = true
 aws-sdk-s3.workspace = true
 aws-config.workspace = true
-object_store.workspace = true
 reqwest.workspace = true
 dashmap.workspace = true
 bytes.workspace = true

@@ -9,6 +9,13 @@ pub struct Config {
     pub agent_runtime: String,
     pub k8s_namespace: String,
     pub kubeconfig: Option<String>,
+    /// Which object-storage protocol backs artifacts: `s3` (default; any
+    /// S3-compatible store) or `azure-blob`. Carried here as an opaque string
+    /// and interpreted by the composition root that selects the backend — the
+    /// same arrangement as `agent_runtime`, whose `kubernetes` value only one
+    /// edition can serve. Held on `Config` so the value is visible to every
+    /// consumer without a second env read.
+    pub storage_provider: String,
     pub s3_endpoint: String,
     pub s3_bucket: String,
     pub s3_access_key: String,
@@ -59,16 +66,15 @@ pub struct Config {
     /// multi-tenant deployment. This crate has no notion of what a "tenant"
     /// is; it only passes the value through.
     pub tenant_id: Option<String>,
-    /// When true, a background loop refreshes `provider_models` from each
-    /// configured provider's `GET /models`. Reaches the network at boot, so
-    /// tests and benches turn it off; a disabled sync just means tier routing
-    /// falls back to whatever catalog rows already exist.
-    pub model_catalog_sync_enabled: bool,
-    /// When true, a background loop mirrors the Portkey price book into
-    /// `model_pricing`. Reaches the network at boot, so tests and benches turn
-    /// it off; a disabled sync leaves the boot seed rows as the only pricing.
-    /// Also the switch for air-gapped installs that must not call out.
+    /// When true, a background worker periodically mirrors LLM token pricing
+    /// from Portkey's public dataset (`configs.portkey.ai`) into the
+    /// `model_pricing` table. Fails soft — a fetch error leaves existing rows
+    /// untouched. See `nasiko_observability::pricing_sync`.
     pub model_pricing_sync_enabled: bool,
+    /// How often the pricing sync runs, in seconds. Provider list prices change
+    /// rarely, so daily (86400) is the default; the sync also runs once ~10s
+    /// after boot. Floored at 60s.
+    pub model_pricing_sync_interval_secs: u64,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
@@ -258,10 +264,19 @@ impl Config {
             agent_runtime: env_or("AGENT_RUNTIME", "local"),
             k8s_namespace: env_or("K8S_NAMESPACE", "nasiko-agents"),
             kubeconfig: std::env::var("KUBECONFIG").ok().filter(|s| !s.is_empty()),
+            storage_provider: env_or("STORAGE_PROVIDER", "s3"),
             s3_endpoint: env_or("S3_ENDPOINT", "http://localhost:9000"),
             s3_bucket: env_or("S3_BUCKET", "nasiko"),
             s3_access_key: env_or("S3_ACCESS_KEY", "nasiko"),
-            s3_secret_key: required_env("S3_SECRET_KEY")?,
+            // Required only for an S3 backend. An Azure Blob deployment holds
+            // no S3 credential at all, and demanding one there turned a
+            // correct config into a startup failure — so the requirement
+            // follows the selected provider rather than being unconditional.
+            s3_secret_key: if uses_s3_storage(&env_or("STORAGE_PROVIDER", "s3")) {
+                required_env("S3_SECRET_KEY")?
+            } else {
+                String::new()
+            },
             s3_region: env_or("S3_REGION", "us-east-1"),
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
@@ -302,8 +317,8 @@ impl Config {
             observability_enabled: std::env::var("TEMPO_URL").is_ok_and(|v| !v.is_empty())
                 && std::env::var("LOKI_URL").is_ok_and(|v| !v.is_empty()),
             tenant_id: std::env::var("TENANT_ID").ok(),
-            model_catalog_sync_enabled: env_bool("MODEL_CATALOG_SYNC_ENABLED", true),
             model_pricing_sync_enabled: env_bool("MODEL_PRICING_SYNC_ENABLED", true),
+            model_pricing_sync_interval_secs: env_parse("MODEL_PRICING_SYNC_INTERVAL_SECS", 86_400),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
@@ -525,5 +540,35 @@ mod tests {
             openai_base_url_without_v1("https://example.com/openai/v1/proxy"),
             "https://example.com/openai/v1/proxy"
         );
+    }
+}
+
+/// Whether `provider` selects an S3-compatible backend, and therefore whether
+/// the `S3_*` credentials are required at startup.
+///
+/// Unknown values answer `true`: the authoritative parse lives with whichever
+/// edition's composition root selects the backend, and it rejects them with a
+/// proper message. Answering `false` here would pre-empt that with a confusing
+/// missing-S3_SECRET_KEY error instead.
+pub fn uses_s3_storage(provider: &str) -> bool {
+    !matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "azure-blob" | "azure_blob" | "azure"
+    )
+}
+
+#[cfg(test)]
+mod storage_provider_tests {
+    use super::uses_s3_storage;
+
+    #[test]
+    fn s3_credentials_are_required_only_for_an_s3_backend() {
+        assert!(uses_s3_storage("s3"));
+        assert!(uses_s3_storage(""));
+        assert!(!uses_s3_storage("azure-blob"));
+        assert!(!uses_s3_storage(" Azure-Blob "));
+        // A typo must not silently waive the S3 requirement — the provider
+        // parser is what reports it.
+        assert!(uses_s3_storage("azureblob"));
     }
 }

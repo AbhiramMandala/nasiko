@@ -22,7 +22,7 @@ pub struct AppState {
     pub runtime: Arc<dyn ContainerRuntime>,
     pub db: PgPool,
     pub redis: redis::Client,
-    pub oci_storage: nasiko_oci::storage::S3Storage,
+    pub oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
     pub auth: Arc<dyn AuthService>,
@@ -68,11 +68,12 @@ impl AppState {
         config: Config,
         auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
+        oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
     ) -> Self {
         let db = PgPool::connect(&config.database_url)
             .await
             .unwrap_or_else(|e| panic!("{}", pg_connect_error_message(&config.database_url, &e)));
-        Self::from_config_with_db(config, auth, runtime, db).await
+        Self::from_config_with_db(config, auth, runtime, oci_storage, db).await
     }
 
     pub async fn run_migrations(db: &PgPool) {
@@ -82,23 +83,35 @@ impl AppState {
             .run(db)
             .await
             .expect("database migration failed");
-        // Offline pricing baseline: gap-filling upsert, so operator-set prices
-        // and pricing-sync history always win. Code (not a migration) so price
-        // updates ship with the binary.
-        nasiko_observability::pricing::seed_model_pricing(db).await;
     }
 
+    /// `oci_storage` is received, not constructed, for the same reason `auth`
+    /// and `runtime` are: which backend is in play is an edition decision. OSS
+    /// ships the S3-compatible one; the enterprise composition root selects
+    /// among more. Constructing it here would drag every backend — and their
+    /// dependencies — into the public edition that cannot configure them.
     pub async fn from_config_with_db(
         config: Config,
         auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
+        oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
         db: PgPool,
     ) -> Self {
         let redis = redis::Client::open(config.redis_url.as_str()).expect("invalid redis url");
 
-        let oci_storage =
-            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await;
-        oci_storage.ensure_bucket(false).await.ok();
+        // Fail fast, exactly as the Postgres connect above does. This was
+        // `.ok()` — which discarded the error without even logging it, so a
+        // control plane whose object store was unreachable, misconfigured, or
+        // missing its bucket booted green and reported healthy, then failed
+        // every image push and agent deploy afterwards with no startup signal
+        // pointing at the cause. An unusable artifact store is not a degraded
+        // mode, it is a broken one. The startup-ordering race this used to
+        // paper over (the store not ready yet when the control plane boots)
+        // is handled the same way it already is for Postgres: the process
+        // exits and the orchestrator restarts it.
+        if let Err(e) = oci_storage.ensure_bucket(false).await {
+            panic!("object storage is not usable: {e}");
+        }
 
         let usage_tracker = UsageTracker::new(db.clone());
 
@@ -251,6 +264,17 @@ impl AppState {
                 state.runtime.clone(),
                 state.config.agent_runtime.clone(),
                 std::time::Duration::from_secs(state.config.container_hours_poll_secs),
+            ));
+        }
+
+        // Mirror LLM pricing from Portkey into model_pricing on a schedule, so
+        // cost calculation stays current without hand-written seed migrations.
+        // Fails soft; the seed rows + StaticPricing remain the floor.
+        if state.config.model_pricing_sync_enabled {
+            tokio::spawn(nasiko_observability::pricing_sync::run(
+                state.db.clone(),
+                state.http_client.clone(),
+                state.config.model_pricing_sync_interval_secs,
             ));
         }
 

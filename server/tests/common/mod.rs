@@ -255,7 +255,13 @@ impl TestServer {
         let auth: Arc<dyn nasiko_auth::AuthService> =
             Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 
-        let state = AppState::from_config_with_db(config, auth, runtime, db.clone()).await;
+        // Integration tests run against the S3-compatible store `just infra`
+        // brings up, which is also the only backend this edition ships.
+        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
+            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
+        );
+        let state =
+            AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
 
         let app = nasiko_server::build_app(state, fallback);
 
@@ -324,6 +330,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_runtime: "local".into(),
         k8s_namespace: "nasiko-test".into(),
         kubeconfig: None,
+        storage_provider: "s3".into(),
         s3_endpoint,
         s3_bucket: "nasiko-test".into(),
         s3_access_key: "nasiko".into(),
@@ -352,9 +359,8 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         loki_url: "http://localhost:3100".into(),
         observability_enabled: false,
         tenant_id: None,
-        // Off in tests: both loops hit the network on their first tick.
-        model_catalog_sync_enabled: false,
         model_pricing_sync_enabled: false,
+        model_pricing_sync_interval_secs: 86_400,
         flow_max_depth: 5,
         flow_max_fan_out: 20,
         flow_max_tokens: 100_000,
@@ -489,48 +495,6 @@ pub fn as_member(
     username: &str,
 ) -> reqwest::RequestBuilder {
     rb.bearer_auth(sign_token(user_id, username, false, "member"))
-}
-
-// ─── MCP gateway auth test helpers (docs/MCP_GATEWAY_AGENT_AUTH.md) ──────────
-
-/// Mint the agent's MCP gateway credential — the plaintext that deploy-time
-/// wiring injects into the container env as `MCP_GATEWAY_TOKEN`.
-#[allow(dead_code)]
-pub async fn mint_gateway_token(db: &sqlx::PgPool, agent_id: uuid::Uuid) -> String {
-    nasiko_mcp_gateway::agent_tokens::mint(db, agent_id)
-        .await
-        .expect("mint gateway token")
-}
-
-/// Open a live flow for `(user, agent)` exactly the way a dispatch path does —
-/// `flows` row + `flow_participants` record — and return `(flow_id,
-/// traceparent)`, where the traceparent is what the platform forwards to the
-/// agent (its trace id IS the flow id).
-#[allow(dead_code)]
-pub async fn open_flow(
-    db: &sqlx::PgPool,
-    user_id: uuid::Uuid,
-    agent_id: uuid::Uuid,
-) -> (String, String) {
-    let flow_id = uuid::Uuid::new_v4().simple().to_string();
-    sqlx::query(
-        "INSERT INTO flows (flow_id, user_id, root_agent_id, status, metadata)
-         VALUES ($1, $2, $3, 'running', '{}'::jsonb)",
-    )
-    .bind(&flow_id)
-    .bind(user_id)
-    .bind(agent_id)
-    .execute(db)
-    .await
-    .expect("insert flows row");
-    sqlx::query("INSERT INTO flow_participants (flow_id, agent_id) VALUES ($1, $2)")
-        .bind(&flow_id)
-        .bind(agent_id)
-        .execute(db)
-        .await
-        .expect("insert flow participant");
-    let traceparent = format!("00-{flow_id}-00f067aa0ba902b7-01");
-    (flow_id, traceparent)
 }
 
 /// Attach HTTP Basic auth — the credential type the OCI registry's pull-only

@@ -56,6 +56,23 @@ async fn main() {
     let auth: Arc<dyn nasiko_auth::AuthService> =
         Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 
+    // Built before the runtime because the Docker runtime's `ImageSource` reads
+    // the same store the registry writes; one instance, handed to both.
+    //
+    // This edition ships the S3-compatible backend only. A provider it cannot
+    // serve must stop the boot rather than fall through to S3, which would
+    // write every artifact to a store the operator did not ask for and only
+    // surface once the intended one turned out to be empty.
+    if !nasiko_config::uses_s3_storage(&config.storage_provider) {
+        panic!(
+            "STORAGE_PROVIDER={} is not available in this edition, which ships the \
+             S3-compatible object store only. Leave STORAGE_PROVIDER unset or set it to 's3'.",
+            config.storage_provider
+        );
+    }
+    let oci_storage: Arc<dyn nasiko_runtime::BlobStore> =
+        Arc::new(nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await);
+
     let runtime: Arc<dyn nasiko_runtime::ContainerRuntime> = match config.agent_runtime.as_str() {
         "simulated" => {
             let sim_agent_url =
@@ -63,7 +80,7 @@ async fn main() {
             Arc::new(nasiko_runtime::SimulatedRuntime::new(sim_agent_url))
         }
         _ => Arc::new(
-            nasiko_server::runtime::build_docker_runtime(&config, db.clone())
+            nasiko_server::runtime::build_docker_runtime(&config, db.clone(), oci_storage.clone())
                 .await
                 .expect("failed to create Docker runtime"),
         ),
@@ -71,7 +88,8 @@ async fn main() {
 
     nasiko_server::state::AppState::run_migrations(&db).await;
     let state =
-        nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, db).await;
+        nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, oci_storage, db)
+            .await;
     state.init().await;
     let app = nasiko_server::build_app(state, static_handler);
 

@@ -197,16 +197,9 @@ pub trait ContainerRuntime: Send + Sync {
     /// The Kubernetes runtime overrides this to re-apply the K8s Secret so that
     /// secrets rotated while an agent was stopped are picked up on next restart
     /// without requiring a full redeploy.
-    ///
-    /// `env_vars` is the agent's **complete** desired environment, not a delta:
-    /// the Kubernetes backend server-side-applies it, so any key omitted here is
-    /// removed from the live Secret. `name` is the agent's human-readable name
-    /// (`DeploymentSpec::name`), which instrumentation decorators need to rebuild
-    /// the same injected environment `deploy()` would have produced.
     async fn refresh_secrets(
         &self,
         _id: &ContainerId,
-        _name: &str,
         _env_vars: std::collections::HashMap<String, String>,
     ) -> Result<()> {
         Ok(())
@@ -240,18 +233,77 @@ pub trait ContainerRuntime: Send + Sync {
     }
 }
 
-/// Ensures an object-storage bucket exists before first use, abstracting over
-/// which concrete backend provisions it.
+/// A [`BlobStore`] operation failure.
 ///
-/// The self-hosted, S3-protocol-compatible default (RustFS) is deployment-agnostic
-/// and works unmodified on any cloud or on-prem. A genuinely cloud-native
-/// implementation (real AWS S3 via IAM, Azure Blob Storage, GCS) can implement
-/// this same interface later - mirroring the [`ContainerRuntime`] OSS/EE split -
-/// without any call site needing to change.
+/// Deliberately two-variant: callers only ever branch on "the object isn't
+/// there" versus "the backend failed" — the OCI registry turns the former into
+/// a spec-required 404 and the latter into a 500 whose detail goes to the log,
+/// never the wire. The `String` payloads carry the backend's full diagnosis
+/// (error code + source chain), because a misconfigured managed store is only
+/// debuggable through that text.
+#[derive(Debug, thiserror::Error)]
+pub enum BlobStoreError {
+    /// The requested object does not exist. Not a fault of the backend.
+    #[error("not found: {0}")]
+    NotFound(String),
+    /// Any other backend failure: rejected credentials, unreachable endpoint,
+    /// missing bucket/container, transport errors.
+    #[error("{0}")]
+    Backend(String),
+}
+
+/// Content-addressed object storage for the platform's artifacts: OCI image
+/// blobs, uploaded source archives, chat file attachments.
+///
+/// One implementation per storage protocol, selected once at the composition
+/// root and handed to `AppState` — exactly as [`ContainerRuntime`] is. This
+/// crate and `nasiko-oci` provide the S3-compatible one (RustFS/MinIO/AWS/any
+/// S3 API); an edition that offers more wires its own. Keys are digests; the
+/// store never interprets them beyond a shared prefix, so the same bucket
+/// layout is readable by either backend and a migration is a plain object
+/// copy.
 #[async_trait]
-pub trait BucketProvisioner: Send + Sync {
-    /// Idempotent: creates the bucket if it doesn't already exist, otherwise a no-op.
-    async fn ensure_bucket(&self) -> anyhow::Result<()>;
+pub trait BlobStore: Send + Sync {
+    /// Stores `data` under `digest`, returning the stored size in bytes.
+    async fn put_blob(
+        &self,
+        digest: &str,
+        data: bytes::Bytes,
+    ) -> std::result::Result<i64, BlobStoreError>;
+
+    /// Fetches the full object. Absence is `BlobStoreError::NotFound`, never
+    /// `Backend` — HEAD and GET on the same missing digest must agree.
+    async fn get_blob(&self, digest: &str) -> std::result::Result<bytes::Bytes, BlobStoreError>;
+
+    /// Removes the object. Deleting an absent object is backend-defined; the
+    /// registry's delete path checks existence first.
+    async fn delete_blob(&self, digest: &str) -> std::result::Result<(), BlobStoreError>;
+
+    /// Existence probe. Failures read as `false` — callers treat this as a
+    /// fast-path hint, not a source of truth.
+    async fn blob_exists(&self, digest: &str) -> bool;
+
+    /// Size in bytes of a stored object; absence is `NotFound`.
+    async fn blob_size(&self, digest: &str) -> std::result::Result<i64, BlobStoreError>;
+
+    /// A time-limited URL a client can GET the object from directly, without
+    /// platform credentials (S3 presigned URL / Azure Service SAS). The URL's
+    /// host is the backend's own endpoint — reachability from the *caller's*
+    /// network is the deployment's concern, not this trait's.
+    async fn presigned_get_url(
+        &self,
+        digest: &str,
+        ttl_secs: u64,
+    ) -> std::result::Result<String, BlobStoreError>;
+
+    /// Ensures the backing bucket/container exists before first use.
+    ///
+    /// `skip_create` (and any backend where the platform holds no create
+    /// rights, which is every external managed store) makes this verify-only:
+    /// it must then fail with a message naming the resource and the command
+    /// that creates it, rather than surfacing later as an undiagnosable write
+    /// failure.
+    async fn ensure_bucket(&self, skip_create: bool) -> anyhow::Result<()>;
 }
 
 /// Supplies image bytes for references the local container daemon doesn't have.
@@ -262,7 +314,7 @@ pub trait BucketProvisioner: Send + Sync {
 /// can instead hand the runtime a direct source of image bytes (the embedded
 /// OCI registry in `nasiko-oci` implements it), so a cache miss is satisfied
 /// by a `docker load` with zero registry configuration. Mirrors the
-/// [`BucketProvisioner`] extension pattern.
+/// [`BlobStore`] extension pattern.
 #[async_trait]
 pub trait ImageSource: Send + Sync {
     /// The image as a docker-load–compatible tar archive, tagged exactly
