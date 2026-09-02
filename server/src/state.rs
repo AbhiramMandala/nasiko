@@ -13,10 +13,6 @@ use crate::usage::UsageTracker;
 use nasiko_config::Config;
 use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
 
-/// (config fingerprint, client) pair for the DB-configured OIDC client — see
-/// `AppState::resolve_oidc_client`.
-type OidcClientCache = Arc<tokio::sync::RwLock<Option<(String, Arc<nasiko_oidc::OidcClient>)>>>;
-
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<dyn ContainerRuntime>,
@@ -43,18 +39,6 @@ pub struct AppState {
     pub resource_stats: Arc<dyn nasiko_runtime::ResourceStatsProvider>,
     /// Shared GitHubService instance — None if GitHub OAuth is not configured.
     pub github_svc: Option<Arc<GitHubService>>,
-    /// Env-configured OIDC relying-party client (e.g. Microsoft Entra ID) —
-    /// None until `OIDC_ISSUER_URL`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`/
-    /// `OIDC_REDIRECT_URI` are all set. This is the fallback; prefer
-    /// `resolve_oidc_client()`, which lets DB-stored settings (configurable
-    /// by an admin via `PUT /api/settings`, see `oss/server/src/settings.rs`)
-    /// take precedence. See the enterprise OIDC SSO guide.
-    pub oidc_svc: Option<Arc<nasiko_oidc::OidcClient>>,
-    /// Cache for the DB-configured OIDC client: (config fingerprint, client).
-    /// Rebuilt only when the stored config actually changes, so a config
-    /// change takes effect on the next login without forcing a fresh
-    /// discovery/JWKS fetch on every single request. See `resolve_oidc_client`.
-    oidc_dynamic_cache: OidcClientCache,
     /// Wakes the build worker immediately when a new job is enqueued.
     pub build_tx: mpsc::Sender<()>,
     /// UI mounts for the page gate (`auth::require_page_auth`) — each frontend
@@ -182,38 +166,6 @@ impl AppState {
                 GitHubService::new(cfg).ok().map(Arc::new)
             });
 
-        let oidc_svc: Option<Arc<nasiko_oidc::OidcClient>> = config
-            .oidc_issuer_url
-            .as_ref()
-            .zip(config.oidc_client_id.as_ref())
-            .zip(config.oidc_client_secret.as_ref())
-            .zip(config.oidc_redirect_uri.as_ref())
-            .map(|(((issuer_url, client_id), client_secret), redirect_uri)| {
-                let oidc_config = nasiko_oidc::OidcConfig {
-                    issuer_url: issuer_url.clone(),
-                    client_id: client_id.clone(),
-                    client_secret: client_secret.clone(),
-                    redirect_uri: redirect_uri.clone(),
-                    central_callback_url: config.oidc_central_callback_url.clone(),
-                    scopes: config.oidc_scopes.clone(),
-                };
-                Arc::new(nasiko_oidc::OidcClient::new(
-                    oidc_config,
-                    http_client.clone(),
-                ))
-            });
-
-        if let Some(svc) = oidc_svc.clone() {
-            // Best-effort discovery warmup — a transient network hiccup at
-            // boot must not crash the server; the first real login attempt
-            // will just retry discovery lazily if this fails.
-            tokio::spawn(async move {
-                if let Err(e) = svc.warm().await {
-                    tracing::warn!(%e, "OIDC discovery warmup failed at boot — will retry lazily on first login");
-                }
-            });
-        }
-
         let (build_tx, build_rx) = mpsc::channel(64);
 
         // MCP gateway state: reuses the same pool, redis client, and pooled
@@ -249,8 +201,6 @@ impl AppState {
             routing_engine,
             observability,
             github_svc,
-            oidc_svc,
-            oidc_dynamic_cache: Arc::new(tokio::sync::RwLock::new(None)),
             build_tx,
             ui_mounts: &[crate::auth::UiMount::ROOT],
         };
@@ -310,125 +260,6 @@ impl AppState {
                 tracing::debug!("materialized views refreshed");
             }
         });
-    }
-
-    /// Resolves the OIDC client — and the `user_identities.provider` label
-    /// to file new logins under — to actually use for a login/callback: a
-    /// DB-stored config (set via `PUT /api/settings`, see
-    /// `oss/server/src/settings.rs`) takes precedence over the env-configured
-    /// `oidc_svc`/`config.oidc_provider_label`, so an admin can configure or
-    /// rotate SSO without a redeploy. Falls back to the env config when no
-    /// DB config is present.
-    ///
-    /// The built `OidcClient` is cached (see `oidc_dynamic_cache`) keyed by a
-    /// fingerprint of the config in use, so this is cheap on the common path
-    /// (one indexed row read + a string compare) and only pays for a fresh
-    /// `OidcClient` (and thus a fresh discovery/JWKS fetch on first use)
-    /// when the stored config has actually changed since last checked.
-    pub async fn resolve_oidc_client(&self) -> Option<(Arc<nasiko_oidc::OidcClient>, String)> {
-        match self.fetch_db_oidc_config().await {
-            Some((config, label)) => Some((self.cached_or_build_oidc_client(config).await, label)),
-            None => self
-                .oidc_svc
-                .clone()
-                .map(|svc| (svc, self.config.oidc_provider_label.clone())),
-        }
-    }
-
-    /// Same resolution order as [`resolve_oidc_client`](Self::resolve_oidc_client)
-    /// (DB `settings` row, falling back to env config) but returns the raw
-    /// `OidcConfig` fields instead of a built `OidcClient` — for callers that
-    /// need `client_id`/`client_secret`/`issuer_url` directly for a different
-    /// OAuth2 flow (e.g. EE's Azure AD directory sync uses Graph API's
-    /// client-credentials flow, not the login authorization-code flow
-    /// `OidcClient` is built for). Critically, the returned label is the same
-    /// one `resolve_oidc_client`'s caller writes to `user_identities.provider`
-    /// at login — any caller minting `user_identities` rows ahead of time
-    /// (like directory sync) must reuse this exact label or a later real
-    /// login's `(provider, provider_id)` lookup will never match.
-    pub async fn resolve_raw_oidc_config(&self) -> Option<(nasiko_oidc::OidcConfig, String)> {
-        if let Some(db_config) = self.fetch_db_oidc_config().await {
-            return Some(db_config);
-        }
-        let config = nasiko_oidc::OidcConfig {
-            issuer_url: self.config.oidc_issuer_url.clone()?,
-            client_id: self.config.oidc_client_id.clone()?,
-            client_secret: self.config.oidc_client_secret.clone()?,
-            redirect_uri: self.config.oidc_redirect_uri.clone()?,
-            central_callback_url: self.config.oidc_central_callback_url.clone(),
-            scopes: self.config.oidc_scopes.clone(),
-        };
-        Some((config, self.config.oidc_provider_label.clone()))
-    }
-
-    async fn fetch_db_oidc_config(&self) -> Option<(nasiko_oidc::OidcConfig, String)> {
-        #[derive(sqlx::FromRow)]
-        struct Row {
-            oidc_issuer_url: Option<String>,
-            oidc_client_id: Option<String>,
-            oidc_client_secret_encrypted: Option<String>,
-            oidc_redirect_uri: Option<String>,
-            oidc_scopes: Option<String>,
-            oidc_provider_label: Option<String>,
-        }
-
-        let row: Row = sqlx::query_as(
-            r#"SELECT oidc_issuer_url, oidc_client_id, oidc_client_secret_encrypted,
-                      oidc_redirect_uri, oidc_scopes, oidc_provider_label
-               FROM settings LIMIT 1"#,
-        )
-        .fetch_optional(&self.db)
-        .await
-        .ok()??;
-
-        let secret = nasiko_secrets::SecretsCrypto::for_platform_settings()
-            .decrypt(row.oidc_client_secret_encrypted.as_deref()?)
-            .ok()?;
-
-        let config = nasiko_oidc::OidcConfig {
-            issuer_url: row.oidc_issuer_url?,
-            client_id: row.oidc_client_id?,
-            client_secret: secret,
-            redirect_uri: row.oidc_redirect_uri?,
-            // Fleet-level env override applies whether OIDC config came from the
-            // settings row or env — a workspace CP still relays through the BFF.
-            central_callback_url: self.config.oidc_central_callback_url.clone(),
-            scopes: row
-                .oidc_scopes
-                .unwrap_or_else(|| "openid profile email".to_string()),
-        };
-        let label = row
-            .oidc_provider_label
-            .unwrap_or_else(|| "microsoft_entra".to_string());
-        Some((config, label))
-    }
-
-    async fn cached_or_build_oidc_client(
-        &self,
-        config: nasiko_oidc::OidcConfig,
-    ) -> Arc<nasiko_oidc::OidcClient> {
-        let fingerprint = format!(
-            "{}|{}|{}|{}|{}",
-            config.issuer_url,
-            config.client_id,
-            config.client_secret,
-            config.redirect_uri,
-            config.scopes
-        );
-        {
-            let cached = self.oidc_dynamic_cache.read().await;
-            if let Some((cached_fp, client)) = cached.as_ref()
-                && cached_fp == &fingerprint
-            {
-                return client.clone();
-            }
-        }
-        let client = Arc::new(nasiko_oidc::OidcClient::new(
-            config,
-            self.http_client.clone(),
-        ));
-        *self.oidc_dynamic_cache.write().await = Some((fingerprint, client.clone()));
-        client
     }
 
     /// Platform-level fallback env vars applied to every agent deployment
