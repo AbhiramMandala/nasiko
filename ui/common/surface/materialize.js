@@ -552,10 +552,12 @@ export function materialize(statements, componentIndex, ctx = {}) {
   /**
    * Statements nothing points at.
    *
-   * Reachability is walked over the ASTs rather than watched during
-   * evaluation, because a Ternary only evaluates one branch — an
-   * evaluation-time walk would call the other branch's statements dead every
-   * time the condition went the other way. A static walk visits both.
+   * Reachability is walked over the ASTs with `walkAstRefs` rather than
+   * watched during evaluation, because a Ternary only evaluates one branch —
+   * an evaluation-time walk would call the other branch's statements dead
+   * every time the condition went the other way. The static walk visits both.
+   * It is the same walker gc.js prunes with, so what renders and what gets
+   * sent back to the model next turn cannot disagree about what is live.
    *
    * Worth naming because of how it looks when it happens. The model writes
    * the component correctly and forgets to hang it off its parent:
@@ -567,25 +569,17 @@ export function materialize(statements, componentIndex, ctx = {}) {
    */
   const reachable = new Set();
   if (symbols.has('root')) {
-    reachable.add('root');
-    const walk = (node) => {
-      if (!node || typeof node !== 'object') return;
-      // StateRef counts as a reference. `$view` is declared by a statement
-      // like any other, and the only thing that ever points at it is a
-      // `$view == "cost"` or an `@Set($view, ...)` inside an Action — both
-      // StateRef nodes. Walking Ref alone called every state variable dead.
-      if ((node.k === 'Ref' || node.k === 'StateRef') && symbols.has(node.n)) {
-        if (reachable.has(node.n)) return;
-        reachable.add(node.n);
-        walk(symbols.get(node.n));
-        return;
-      }
-      for (const v of Object.values(node)) {
-        if (Array.isArray(v)) v.forEach(walk);
-        else if (v && typeof v === 'object') walk(v);
-      }
-    };
-    walk(symbols.get('root'));
+    const queue = ['root'];
+    while (queue.length) {
+      const id = queue.pop();
+      if (reachable.has(id) || !symbols.has(id)) continue;
+      reachable.add(id);
+      // Both kinds count. `$view` is a statement like any other and the only
+      // things that ever name it are a `$view == "cost"` comparison or an
+      // `@Set($view, ...)` inside an Action — StateRef nodes both. Following
+      // 'ref' alone called every state variable dead.
+      walkAstRefs(symbols.get(id), (_kind, name) => queue.push(name));
+    }
   }
   const orphans = [...symbols.keys()].filter((n) => !reachable.has(n));
   // Only once the stream is done. Mid-flight a statement is routinely an
