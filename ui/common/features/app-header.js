@@ -22,6 +22,13 @@ import "./change-password-modal.js";
 import { escHtml } from '/common/utils/escape.js';
 import { callOptional } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';
+// The rail writes `data-tooltip` and nothing else on a shell-only page imports
+// the module that acts on it, so the collapsed rail had no labels at all —
+// icon-only rows with nothing to read. It worked wherever <app-module-nav> or
+// one of two pages happened to pull app-tooltip in transitively, which is why
+// it survived a review. rail-tooltip.test.mjs is the test for exactly this,
+// and it had never been run by any recipe.
+import { scanTooltips } from '/common/design-system/app-tooltip/app-tooltip.js';
 
 /* Collapsed is the default rail state. The key is versioned so the change reaches
    users who already toggled the old rail open — a stored `true` under the previous
@@ -563,6 +570,11 @@ export class AppHeader extends HTMLElement {
       if (label) item.dataset.tooltip = label;
       item.dataset.tooltipPlacement = "right";
     }
+    // app-tooltip's MutationObserver only sees `data-tooltip` on a node as it
+    // is inserted. A rail that first painted expanded carries no attribute at
+    // that moment, so collapsing it later has to attach explicitly. scanTooltips
+    // tracks what it has bound in a WeakSet, so re-running it is idempotent.
+    if (!this.#expanded) scanTooltips(this);
   }
 
   static get observedAttributes() {

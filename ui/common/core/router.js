@@ -394,6 +394,16 @@ export class Router {
       });
       this.#activeTransition = transition;
 
+      // A transition that gets superseded — the user clicks a second link
+      // before the first animation lands — rejects `ready` with "Transition
+      // was skipped". That is ordinary, not a fault, but nothing was attached
+      // to it, so the rejection went unhandled and surfaced as a page error.
+      // Every browser test treats a page error as a failure, which is how
+      // module-nav.test.mjs found this. The real handling is on `finished`
+      // below; these two only say "yes, we know".
+      transition.ready.catch(() => {});
+      transition.updateCallbackDone.catch(() => {});
+
       // `finished` rejects when the update callback throws — the loading bar
       // used to hang forever in that case, since only the fulfilled path
       // cleared it.
