@@ -99,7 +99,13 @@ class WeaveSurface extends HTMLElement {
   #abort = null;
   /** Set by a host before the first `send()`; the preview fixtures use it. */
   catalog = null;
-  /** Extra request context — `scope`, and whatever else the backend grows. */
+  /**
+   * Extra request context. The proxy rebuilds the upstream body from the keys
+   * it knows, so anything here that the server does not read is dropped at the
+   * boundary rather than reaching the generator — in particular the data-source
+   * scope, which is decided server-side and is deliberately not something a
+   * page can ask to widen.
+   */
   context = {};
 
   connectedCallback() {

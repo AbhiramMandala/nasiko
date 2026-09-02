@@ -60,10 +60,12 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
  * A developer pointing this browser at a Weave running on their own machine.
  *
- * Exists because the control-plane proxy does not yet (NAS-394), and the
- * alternative people reach for is hardcoding the endpoint and the shared
- * secret into this file — which is how a secret gets published. The values
- * come from the developer's own browser instead:
+ * The control-plane proxy at `POST /api/weave/surface` is the normal path and
+ * holds the token server-side; this exists for the case the proxy cannot
+ * cover — reaching a Weave the control plane is not configured for, without
+ * rebuilding the Rust server. The alternative people reach for is hardcoding
+ * the endpoint and the shared secret into this file, which is how a secret
+ * gets published. The values come from the developer's own browser instead:
  *
  *   localStorage.setItem('weave-direct', JSON.stringify({
  *     baseUrl: 'http://localhost:8801', token: '…'
@@ -311,10 +313,11 @@ export function createSurfaceSession(options) {
     //
     // Normally same-origin: the control plane proxies to Weave and adds the
     // shared secret server-side, so the browser never holds it. Until that
-    // route exists (NAS-394) a developer can point straight at a local Weave —
-    // but the token for that comes from the developer's own machine, never
-    // from this file. A secret in shipped source is a secret that is published,
-    // whatever the comment above it says.
+    // proxy is what a normal build talks to, and it holds the token. A
+    // developer can still point straight at a local Weave — but the token for
+    // that comes from the developer's own machine, never from this file. A
+    // secret in shipped source is a secret that is published, whatever the
+    // comment above it says.
     const direct = readDirectConfig();
     if (direct) {
       emitDiagnostics([{
