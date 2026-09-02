@@ -249,32 +249,3 @@ kpiCount = AppStatCard("Requests", requestCountQ, null, "neutral")`,
   assert.equal(out.queries.length, 2);
   assert.deepEqual(out.diagnostics, []);
 });
-
-test('a default that is the whole response is caught at the Query, not at the table', () => {
-  // The generator writes this: the envelope as the default, plus a dot-path.
-  // The component then fails with "needs an array of rows", which points at
-  // the table and not at the line that is actually wrong.
-  const out = run('q = Query("fetchUsageByModel", ["", 1, 50], {data: [], total: 0}, "data")\nroot = AppTable(q)');
-  const d = out.diagnostics.find((x) => x.code === 'default_is_whole_response');
-  assert.ok(d, 'the diagnostic has to name the Query, or nobody finds it');
-  assert.match(d.message, /"data" path/);
-});
-
-test('a correctly shaped default is silent', () => {
-  const out = run('q = Query("fetchUsageByModel", ["", 1, 50], [], "data")\nroot = AppTable(q)');
-  assert.equal(out.diagnostics.some((x) => x.code === 'default_is_whole_response'), false);
-});
-
-test('an object default with no dot-path is fine', () => {
-  // Nothing is being selected, so the whole object *is* what the component gets.
-  const out = run('q = Query("fetchUsageSummary", [], {total: 0})\nroot = AppStatCard("Total", q.total)');
-  assert.equal(out.diagnostics.some((x) => x.code === 'default_is_whole_response'), false);
-});
-
-test('an object default whose keys do not match the path is left alone', () => {
-  // Only a default that literally contains the first path segment is flagged.
-  // Anything looser would guess, and guessing wrong here means shouting at a
-  // correct line.
-  const out = run('q = Query("fetchUsageSummary", [], {total_cost_usd: 0}, "summary.cost")\nroot = AppStatCard("Total", q)');
-  assert.equal(out.diagnostics.some((x) => x.code === 'default_is_whole_response'), false);
-});

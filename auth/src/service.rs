@@ -259,8 +259,15 @@ impl AuthService for AuthServiceImpl {
                 let email = verified_email
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("{}@{}.users", username, provider));
+                // ON CONFLICT: if the username already exists (e.g. the
+                // provider label changed since a previous login, or the user
+                // was seeded manually), link to the existing row rather than
+                // failing — the identity row created below is what matters.
                 let row: (uuid::Uuid,) = sqlx::query_as(
-                    "INSERT INTO users (username, email, is_superuser, is_active, last_login) VALUES ($1, $2, false, true, now()) RETURNING id",
+                    "INSERT INTO users (username, email, is_superuser, is_active, last_login) \
+                     VALUES ($1, $2, false, true, now()) \
+                     ON CONFLICT (username) DO UPDATE SET last_login = now() \
+                     RETURNING id",
                 )
                 .bind(username)
                 .bind(&email)

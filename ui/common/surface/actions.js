@@ -1,6 +1,3 @@
-/** @see materialize.js — the same binding mechanism @Each uses. */
-import { childScope } from './materialize.js';
-
 /**
  * The Action runner — what happens when a generated button is pressed.
  *
@@ -32,29 +29,6 @@ import { childScope } from './materialize.js';
  */
 
 /**
- * What the component that fired just produced.
- *
- * A custom element that reports through `detail.value` is preferred over the
- * DOM node, because a composed component's `target` can be an inner element
- * whose value means something else. Checkboxes report `checked`: their `value`
- * is a submit-time string and has nothing to do with what the user did.
- *
- * `undefined` when there is nothing meaningful — which leaves `$event` to fall
- * through to the store, rather than binding a confident-looking empty string.
- */
-export function valueOf(ev) {
-  if (!ev) return undefined;
-  const detail = ev.detail;
-  if (detail && typeof detail === 'object' && 'value' in detail) return detail.value;
-  const target = ev.target;
-  if (!target) return undefined;
-  if (target.type === 'checkbox' || target.type === 'radio') return target.checked;
-  if (typeof target.checked === 'boolean' && target.value === undefined) return target.checked;
-  if ('value' in target) return target.value;
-  return undefined;
-}
-
-/**
  * @param {{
  *   store: {set(name: string, value: unknown): boolean, reset(names: string[]): boolean},
  *   queries: {isQuery(id: string): boolean, isMutation(id: string): boolean,
@@ -78,10 +52,9 @@ export function createActionRunner({ store, queries, refresh, onAssistant, onDia
   /**
    * @param {{statementId: string, steps: object[]}} action
    * @param {((node: object, scope?: object|null) => unknown)|null} [evaluator]
-   * @param {Event|null} [ev] the DOM event that fired this, for `$event`
    * @returns {Promise<{ran: number, halted: boolean}>}
    */
-  async function run(action, evaluator = null, ev = null) {
+  async function run(action, evaluator = null) {
     if (!action || action.type !== 'action') return { ran: 0, halted: false };
     const id = action.statementId ?? '(anonymous)';
     if (running.has(id)) {
@@ -97,17 +70,11 @@ export function createActionRunner({ store, queries, refresh, onAssistant, onDia
       // re-materializes, that pass is gone.
       let evaluateAst = evaluator ?? action.evaluateAst ?? null;
 
-      // Bound once for the whole Action, not re-read per step: every step of
-      // one run should see the same value the user produced, even after an
-      // earlier step re-materialized.
-      const fired = valueOf(ev);
-
       for (const step of action.steps ?? []) {
         const evaluate = (node, scope) => {
           if (!node) return null;
           if (!evaluateAst) return null;
-          const bound = fired === undefined ? (scope ?? null) : childScope(scope ?? null, '$event', fired);
-          return evaluateAst(node, bound);
+          return evaluateAst(node, scope ?? null);
         };
 
         switch (step.kind) {

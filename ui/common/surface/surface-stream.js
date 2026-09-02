@@ -11,7 +11,7 @@
  * lines in a page:
  *
  *   **Prose is output, not noise.** The generator is told to wrap its DSL in
- *   two plain sentences (agent.yaml rule 13). Those lines are the assistant
+ *   two plain sentences (agent.yaml rule 12). Those lines are the assistant
  *   talking and belong in the chat log. They also arrive character by character
  *   like everything else, so a line is only emitted once it is no longer the
  *   tail of the buffer — otherwise the user watches "Sure — buil" appear as a
@@ -259,14 +259,12 @@ export function createSurfaceSession(options) {
 
     render(out.root, container, catalog, {
       doc,
-      onAction: (action, el, domEvent) => {
-        // Two things travel with the action. The evaluator from the pass that
-        // built this element, because an `@Each` row lives in its scope chain
-        // and nowhere else. And the DOM event, because `$event` is the only
-        // way a step can read what the user just typed.
-        const evaluator = out.evaluateAst;
-        onAction?.(action, el, domEvent);
-        void actions.run(action, evaluator, domEvent);
+      onAction: (action, el) => {
+        // The evaluator handed over is the one from the pass that built this
+        // element — an `@Each` row lives in its scope chain and nowhere else.
+        const ev = out.evaluateAst;
+        onAction?.(action, el);
+        void actions.run(action, ev);
       },
       routes,
       onDiagnostic: (d) => diagnostics.push(d),
@@ -492,7 +490,7 @@ export function createSurfaceSession(options) {
     /** Query manager, for tests and for a host that needs to await settlement. */
     queries,
     /** Fire an Action by hand — the acceptance flow and tests use this. */
-    runAction: (action, ev = null) => actions.run(action, lastOut?.evaluateAst ?? null, ev),
+    runAction: (action) => actions.run(action, lastOut?.evaluateAst ?? null),
     /** The most recent materialization. */
     get lastResult() { return lastOut; },
     /** Subscribe to the per-turn telemetry record. */

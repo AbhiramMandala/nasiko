@@ -48,11 +48,8 @@ function triggerEvent(def) {
 /**
  * @typedef {object} RenderDeps
  * @property {Document} [doc] Injected for tests; defaults to the real document.
- * @property {(action: object, el: Element, ev: Event) => void} [onAction] Called
- *   when an action-bearing element fires. The DOM event travels with it because
- *   `$event` is the only way an Action can read what the user actually typed —
- *   `@Set($query, $query)` just re-sets a variable to itself.
- *   The renderer never interprets an Action
+ * @property {(action: object, el: Element) => void} [onAction] Called when an
+ *   action-bearing element fires. The renderer never interprets an Action
  *   itself — it only wires the trigger.
  * @property {(d: {source: string, code: string, message: string, pointer?: string}) => void} [onDiagnostic]
  */
@@ -199,7 +196,7 @@ function buildNode(node, catalog, deps = {}) {
   // Action means is the action runner's business; the spec never names a
   // handler and no on* attribute is ever written.
   if (node.action && node.action.type === 'action' && def.actionParam) {
-    el.addEventListener(triggerEvent(def), (ev) => deps.onAction?.(node.action, el, ev));
+    el.addEventListener(triggerEvent(def), () => deps.onAction?.(node.action, el));
   }
 
   // ── The accessibility floor ───────────────────────────────────────────

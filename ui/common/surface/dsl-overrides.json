@@ -62,10 +62,7 @@
     },
     "app-empty-state": {
       "status": "ready",
-      "reason": "icon is SVG markup written unescaped by contract — the one markup sink in the design system. Use the icon slot instead.",
-      "dslExcludeAttributes": [
-        "icon"
-      ]
+      "reason": "icon is withheld automatically now — it carries (markup) in its @attr line, so gen-catalog flags it and gen-dsl-catalog drops it. Listed here previously by hand, which is exactly the list that stops matching the code."
     },
     "app-avatar": {
       "status": "ready",
@@ -74,20 +71,14 @@
     "app-button": {
       "status": "ready",
       "textParam": true,
-      "reason": "href is route-typed and there is no route allowlist to validate against yet. The button is still useful as an Action trigger; re-include href once core/routes.json exists.",
-      "actionParam": true,
-      "dslExcludeAttributes": [
-        "href"
-      ]
+      "reason": "Route attributes are checked against the live router at render time, so href is admitted again; an unregistered path is dropped with a diagnostic naming it.",
+      "actionParam": true
     },
     "app-card": {
       "status": "ready",
-      "reason": "Same as app-button — route-typed attributes stay out until the allowlist exists. agent-id is excluded for a different reason: it is an internal record id the model cannot know, it drives the card's default hrefs (app-card.js:24,125), and as the FIRST positional it shifted every AppCard() call by one — the model wrote a name into it and got a card linking to an agent that does not exist.",
+      "reason": "agent-id stays out: an internal record id the model cannot know, and as the first positional it shifted every AppCard() call. Route attributes are back in — render.js now checks each one against the live router and refuses anything unregistered.",
       "dslExcludeAttributes": [
-        "agent-id",
-        "href",
-        "details-href",
-        "chat-href"
+        "agent-id"
       ]
     },
     "app-chart": {
