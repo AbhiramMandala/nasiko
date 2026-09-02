@@ -270,6 +270,17 @@ if (offline) {
   }
 }
 
+// The token lives in the Weave repo's .env and this script runs from this one,
+// so "I sourced it" and "this process can see it" are different statements.
+// Checked once here rather than per case, because the same message ten times
+// is noise around the one line that matters.
+if (!offline && !process.env.WEAVE_INTERNAL_TOKEN) {
+  console.error('eval: WEAVE_INTERNAL_TOKEN is not set in this shell.\n');
+  console.error('  set -a && source ~/Documents/GitHub/Weave/.env && set +a\n');
+  console.error('Weave also has to be running — uvicorn on :8801, or set WEAVE_BASE_URL.');
+  process.exit(1);
+}
+
 let failed = 0;
 for (const kase of cases) {
   const path = resolve(FIXTURES, `${kase.id}.dsl`);
