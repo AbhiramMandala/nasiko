@@ -255,13 +255,7 @@ impl TestServer {
         let auth: Arc<dyn nasiko_auth::AuthService> =
             Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 
-        // Integration tests run against the S3-compatible store `just infra`
-        // brings up, which is also the only backend this edition ships.
-        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
-            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
-        );
-        let state =
-            AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
+        let state = AppState::from_config_with_db(config, auth, runtime, db.clone()).await;
 
         let app = nasiko_server::build_app(state, fallback);
 
@@ -330,7 +324,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_runtime: "local".into(),
         k8s_namespace: "nasiko-test".into(),
         kubeconfig: None,
-        storage_provider: "s3".into(),
         s3_endpoint,
         s3_bucket: "nasiko-test".into(),
         s3_access_key: "nasiko".into(),
@@ -340,6 +333,10 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         oci_storage_bucket: "nasiko-test-artifacts".into(),
         agent_image_registry: String::new(),
         build_push_token: String::new(),
+        // No Weave in the test topology; an empty token makes
+        // /api/weave/surface answer 503 rather than dial out.
+        weave_base_url: "http://localhost:8801".into(),
+        weave_internal_token: String::new(),
         seed_agents: None,
         openai_api_key: None,
         openai_base_url: None,
@@ -368,6 +365,13 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         flow_timeout_secs: 120,
         github_client_id: None,
         github_client_secret: None,
+        oidc_issuer_url: None,
+        oidc_client_id: None,
+        oidc_client_secret: None,
+        oidc_redirect_uri: None,
+        oidc_allowed_redirect_origins: vec![],
+        oidc_scopes: "openid profile email".into(),
+        oidc_provider_label: "microsoft_entra".into(),
         router_shortlist_threshold: 15,
         router_shortlist_size: 10,
         max_router_history_messages: 20,
@@ -375,6 +379,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         router_agent_timeout_secs: 60,
         github_callback_url: None,
         github_central_callback_url: None,
+        oidc_central_callback_url: None,
         docker_agent_network: None,
         oci_registry_host: None,
         container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly
@@ -385,14 +390,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         ],
         registry_import_allowed_hosts: vec![],
         cors_allowed_origins: vec![],
-        oidc_issuer_url: None,
-        oidc_client_id: None,
-        oidc_client_secret: None,
-        oidc_redirect_uri: None,
-        oidc_allowed_redirect_origins: vec![],
-        oidc_scopes: "".to_string(),
-        oidc_provider_label: "".to_string(),
-        oidc_central_callback_url: None,
         admin_username: "admin".into(),
         admin_password: "test-admin-password".into(),
         // Overridable so tests can point the Composio ToolProvider at a mockito

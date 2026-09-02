@@ -86,7 +86,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         agent_memory_init_image: "alpine:3.21".into(),
         k8s_namespace: "nasiko-bench".into(),
         kubeconfig: None,
-        storage_provider: "s3".into(),
         s3_endpoint: s3_ep,
         s3_bucket: "nasiko-bench".into(),
         s3_access_key: "nasiko".into(),
@@ -96,6 +95,10 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         oci_storage_bucket: "nasiko-bench-artifacts".into(),
         agent_image_registry: String::new(),
         build_push_token: String::new(),
+        // Empty token: the /api/weave/surface proxy answers 503 rather than
+        // reaching out, which is what a bench with no Weave running wants.
+        weave_base_url: "http://localhost:8801".into(),
+        weave_internal_token: String::new(),
         seed_agents: None,
         // Dummy but non-empty — ee build_ee_app requires Some(), and a
         // non-empty api_key is also what lets Stage 1 (VectorStore) attempt
@@ -133,21 +136,21 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         router_agent_timeout_secs: 60,
         github_callback_url: None,
         github_central_callback_url: None,
+        oidc_central_callback_url: None,
         docker_agent_network: None,
         oci_registry_host: None,
         git_clone_allowed_hosts: vec![],
         registry_import_allowed_hosts: vec![],
         cors_allowed_origins: vec![],
+        admin_username: "admin".into(),
+        admin_password: "bench-admin-password".into(),
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,
         oidc_redirect_uri: None,
         oidc_allowed_redirect_origins: vec![],
         oidc_scopes: "openid profile email".into(),
-        oidc_provider_label: String::new(),
-        oidc_central_callback_url: None,
-        admin_username: "admin".into(),
-        admin_password: "bench-admin-password".into(),
+        oidc_provider_label: "microsoft_entra".into(),
         container_hours_poll_secs: 60,
     }
 }
