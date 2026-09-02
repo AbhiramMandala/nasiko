@@ -37,19 +37,17 @@ pub fn router() -> Router<AppState> {
         .route("/hitl/{id}/stream", get(stream_one))
 }
 
-/// Covers every `HitlKind`'s resolve shape: `answer` for `input_required`, `auth_action` for
-/// `auth_required`'s two-click start/confirm, `decision`/`scope`/`note` for `tool_approval`'s
-/// approve-once/approve-session/reject. `message` is unused — reserved, not yet part of any kind's
-/// contract.
+/// `input_required`/`auth_required` resolve shape (§11). `decision`/`scope`/`message` exist for
+/// forward-compat with Phase 6's `tool_approval` payload but are rejected here (§11 kinds this
+/// pass doesn't support resolving yet).
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct HitlResolveRequest {
     answer: Option<String>,
     auth_action: Option<String>,
+    #[allow(dead_code)]
     decision: Option<String>,
+    #[allow(dead_code)]
     scope: Option<String>,
-    /// Free-form, audit-only note from the human — stored verbatim in `human_response` for
-    /// `tool_approval`, never interpreted by this handler.
-    note: Option<String>,
     #[allow(dead_code)]
     message: Option<String>,
 }
@@ -153,83 +151,20 @@ async fn resolve(
         )
             .into_response();
     }
-    // The finalized three-action dialog: allow once, allow for this session, deny — no `always`.
-    // `scope` only matters on `approve`; defaults to `once` when omitted, so an existing caller
-    // that never sends it keeps single-use behavior unchanged.
     if row.kind == HitlKind::ToolApproval {
-        let approve = match payload.decision.as_deref() {
-            Some("approve") => true,
-            Some("reject") => false,
-            _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "decision must be \"approve\" or \"reject\" for tool_approval",
-                )
-                    .into_response();
-            }
-        };
-        let scope = match payload.scope.as_deref() {
-            None | Some("once") => "once",
-            Some("session") => "session",
-            Some(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "scope must be \"once\" or \"session\"",
-                )
-                    .into_response();
-            }
-        };
-
-        let status = if approve {
-            HitlStatus::Resolved
-        } else {
-            HitlStatus::Rejected
-        };
-        let human_response = json!({
-            "decision": if approve { "approve" } else { "reject" },
-            "scope": if approve { Some(scope) } else { None },
-            "note": payload.note,
-        });
-
-        let outcome = match state
-            .hitl_store
-            .resolve(id, human_response, user_id, status)
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-        };
-
-        let (row, already_resolved) = match outcome {
-            ResolveOutcome::Applied(row) => {
-                if approve && scope == "session" {
-                    grant_session_scope(&state, &row, user_id).await;
-                }
-                // Unconditional on scope/decision — see `auto_resolve_linked_direct_chat_row`'s
-                // own doc comment for why a single approval action must resolve both rows.
-                auto_resolve_linked_direct_chat_row(&state, &row, user_id, approve).await;
-                // Best-effort latency optimization — the dispatcher's own poll loop is
-                // the real delivery guarantee, same as the shared path below.
-                let _ = state.hitl_resume_tx.try_send(());
-                (row, false)
-            }
-            ResolveOutcome::AlreadyDecided(row) if row.status == HitlStatus::Expired => {
-                return (
-                    StatusCode::CONFLICT,
-                    "this HITL request expired before it was answered",
-                )
-                    .into_response();
-            }
-            ResolveOutcome::AlreadyDecided(row) => (row, true),
-        };
-
-        let mut body = to_response(&row);
-        if let Some(obj) = body.as_object_mut() {
-            obj.insert("already_resolved".to_string(), json!(already_resolved));
-        }
-        return Json(body).into_response();
+        // Phase 6's `once`/`session`/`always` scoped approval flow isn't wired up yet.
+        return (
+            StatusCode::BAD_REQUEST,
+            "tool_approval resolution is not supported by this endpoint yet",
+        )
+            .into_response();
     }
-    if row.kind == HitlKind::InputRequired && payload.answer.is_none() {
+    let answer_missing = payload
+        .answer
+        .as_deref()
+        .map(|a| a.trim().is_empty())
+        .unwrap_or(true);
+    if row.kind == HitlKind::InputRequired && answer_missing {
         return (
             StatusCode::BAD_REQUEST,
             "answer is required for input_required",
@@ -299,15 +234,6 @@ async fn resolve(
 
     let (row, already_resolved) = match outcome {
         ResolveOutcome::Applied(row) => {
-            // `auth_required`'s "confirm" is the manual counterpart to the ToolApproval
-            // branch's own call above — a real broken-connector-credential pause (not just a
-            // permission gate) gets exactly the same direct_chat mirror when an agent maps it
-            // onto its own A2A AUTH_REQUIRED state, and it needs the same single-action
-            // resolve. There's no reject path for auth_required (only "start"/"confirm" are
-            // valid `auth_action`s), so this is always an approval.
-            if row.kind == HitlKind::AuthRequired {
-                auto_resolve_linked_direct_chat_row(&state, &row, user_id, true).await;
-            }
             // Best-effort latency optimization — the dispatcher's own poll loop is the real
             // delivery guarantee (§ Phase 3 item 5).
             let _ = state.hitl_resume_tx.try_send(());
@@ -330,125 +256,6 @@ async fn resolve(
         obj.insert("already_resolved".to_string(), json!(already_resolved));
     }
     Json(body).into_response()
-}
-
-/// Best-effort: record the `mcp_session_tool_grants` row an approved `scope=session` decision
-/// promises. `connector_id`/`tool_name`/`context_id` are guaranteed present by
-/// `chk_hitl_tool_approval_identity` for any `kind=tool_approval` row, which the caller has
-/// already confirmed `row` is. A failure here is logged but never turned into an error response —
-/// the resolution itself already succeeded and is the authoritative outcome; worst case the
-/// agent's retry finds no grant and gets asked again, which is safe (never silently
-/// over-permissive), just not maximally convenient.
-async fn grant_session_scope(state: &AppState, row: &HitlRequest, granted_by: Uuid) {
-    let (Some(connector_id), Some(tool_name), Some(context_id)) = (
-        row.connector_id,
-        row.tool_name.clone(),
-        row.context_id.clone(),
-    ) else {
-        tracing::error!(
-            id = %row.id,
-            "resolve: scope=session approved but tool_approval identity fields are missing — \
-             this should be impossible under chk_hitl_tool_approval_identity"
-        );
-        return;
-    };
-
-    // `session`-scope grants are keyed by the stable chat-session identity,
-    // not the row's own trace-derived `context_id` — see
-    // `repo::resolve_stable_session_context`'s own doc comment for why (it's
-    // the exact same lookup `resolve_tool_approval_retry`, MCP's own retry
-    // path, uses to look this grant back up — create and lookup must agree).
-    let session_context_id = match nasiko_hitl::repo::resolve_stable_session_context(
-        &state.db,
-        row.owner_user_id,
-        row.agent_id,
-    )
-    .await
-    {
-        Ok(Some(session_id)) => session_id,
-        Ok(None) => context_id,
-        Err(e) => {
-            tracing::warn!(
-                error = %e, id = %row.id,
-                "stable session lookup failed — falling back to trace context for the new grant"
-            );
-            context_id
-        }
-    };
-
-    if let Err(e) = nasiko_hitl::repo::create_session_grant(
-        &state.db,
-        nasiko_hitl::NewSessionGrant {
-            agent_id: row.agent_id,
-            connector_id,
-            tool_name,
-            context_id: session_context_id,
-            granted_by,
-            hitl_request_id: Some(row.id),
-        },
-    )
-    .await
-    {
-        tracing::error!(error = %e, id = %row.id, "resolve: failed to create session grant");
-    }
-}
-
-/// Auto-resolves the `direct_chat`/`agent_proxy`-origin row (if any) mirroring
-/// this just-resolved `mcp_tool` row's own event — see
-/// `nasiko_hitl::repo::find_linked_direct_chat_row`'s own doc comment for the
-/// full reasoning. Best-effort and silent on "nothing to link" (the ordinary
-/// case for most `tool_approval` rows, which were never mirrored into a
-/// direct-chat pause at all — e.g. a raw MCP integration outside any chat):
-/// only a genuine resolve failure on an existing linked row is worth logging.
-///
-/// `human_response` intentionally doesn't try to carry the tool-approval
-/// decision's own shape (`decision`/`scope`/`note`) into the linked row —
-/// that row's own kind is `auth_required` (from the agent's `AUTH_REQUIRED`
-/// mapping), whose dispatcher (`oss/server/src/hitl/mod.rs::answer_text`)
-/// only ever reads `human_response.auth_outcome` to build its resume
-/// message. This mirrors the exact shape the console's own two-click
-/// `auth_action: confirm` flow already produces for a real auth_required
-/// row, so the resume path this triggers is the same one already proven,
-/// not a new one.
-async fn auto_resolve_linked_direct_chat_row(
-    state: &AppState,
-    mcp_row: &HitlRequest,
-    resolved_by: Uuid,
-    approved: bool,
-) {
-    let linked = match nasiko_hitl::repo::find_linked_direct_chat_row(&state.db, mcp_row.id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => return,
-        Err(e) => {
-            tracing::warn!(error = %e, id = %mcp_row.id, "failed to look up linked direct-chat pause");
-            return;
-        }
-    };
-
-    let status = if approved {
-        HitlStatus::Resolved
-    } else {
-        HitlStatus::Rejected
-    };
-    let human_response = json!({
-        "auth_outcome": if approved { "confirmed" } else { "denied" },
-    });
-
-    match state
-        .hitl_store
-        .resolve(linked.id, human_response, resolved_by, status)
-        .await
-    {
-        Ok(_) => {
-            let _ = state.hitl_resume_tx.try_send(());
-        }
-        Err(e) => {
-            tracing::error!(
-                error = %e, mcp_row_id = %mcp_row.id, linked_row_id = %linked.id,
-                "failed to auto-resolve the linked direct-chat pause"
-            );
-        }
-    }
 }
 
 /// Lets the row's owner withdraw a pending request they no longer want answered — e.g. they

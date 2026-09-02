@@ -199,6 +199,12 @@ impl PgHitlStore {
 
     /// Re-fetch the pending row a unique-violation on `create` must have collided with — either
     /// the `uq_hitl_pending_per_task` or `uq_hitl_pending_per_tool_call` index (§5).
+    ///
+    /// The non-`McpTool` branch is scoped by `owner_user_id`/`agent_id` in addition to
+    /// `task_id`, matching `uq_hitl_pending_per_task` (0011_hitl_task_id_scope.sql) — `task_id`
+    /// is populated from agent-controlled A2A response data, not a Nasiko-minted id, so it must
+    /// never be trusted alone as a database-wide key: without this scoping, a non-random or
+    /// malicious agent's `taskId` could collide two different users' pauses onto the same row.
     async fn find_existing_pending(
         &self,
         req: &NewHitlRequest,
@@ -216,10 +222,15 @@ impl PgHitlStore {
             .fetch_optional(&self.pool)
             .await?
         } else {
-            sqlx::query_as("SELECT * FROM hitl_requests WHERE status = 'pending' AND task_id = $1")
-                .bind(&req.task_id)
-                .fetch_optional(&self.pool)
-                .await?
+            sqlx::query_as(
+                "SELECT * FROM hitl_requests
+                 WHERE status = 'pending' AND owner_user_id = $1 AND agent_id = $2 AND task_id = $3",
+            )
+            .bind(req.owner_user_id)
+            .bind(req.agent_id)
+            .bind(&req.task_id)
+            .fetch_optional(&self.pool)
+            .await?
         };
         row.map(HitlRequest::try_from).transpose()
     }
@@ -282,35 +293,16 @@ impl HitlStore for PgHitlStore {
         &self,
         identity: &HitlIdentity,
     ) -> Result<Vec<HitlRequest>, HitlError> {
-        // Excludes a `direct_chat`/`agent_proxy` row that only mirrors a still-pending
-        // `mcp_tool` row (an agent that maps MCP's `ask_required` onto the A2A
-        // `AUTH_REQUIRED` task state — see `NewHitlRequest::mcp_tool`'s doc comment and
-        // `auto_resolve_linked_direct_chat_row` in `router/hitl.rs`). Resolving the mirror
-        // directly triggers a real (but premature) resume without granting the actual MCP
-        // permission, so it must never be offered as its own actionable pending item — only
-        // the linked `mcp_tool` row is the one that does real work. The regex guards the
-        // `::uuid` cast: `hitl_request_id` is caller-supplied agent metadata, so a malformed
-        // value must not error the whole listing, just fail to match.
-        const MIRROR_FILTER: &str = "
-            AND NOT (
-                h.origin IN ('direct_chat', 'agent_proxy')
-                AND h.question->'metadata'->>'hitl_request_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-                AND EXISTS (
-                    SELECT 1 FROM hitl_requests linked
-                     WHERE linked.id = (h.question->'metadata'->>'hitl_request_id')::uuid
-                       AND linked.status = 'pending'
-                )
-            )";
         let rows: Vec<HitlRequestRow> = if identity.is_superuser {
-            sqlx::query_as(&format!(
-                "SELECT h.* FROM hitl_requests h WHERE h.status = 'pending' {MIRROR_FILTER} ORDER BY h.created_at"
-            ))
+            sqlx::query_as(
+                "SELECT * FROM hitl_requests WHERE status = 'pending' ORDER BY created_at",
+            )
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as(&format!(
-                "SELECT h.* FROM hitl_requests h WHERE h.status = 'pending' AND h.owner_user_id = $1 {MIRROR_FILTER} ORDER BY h.created_at"
-            ))
+            sqlx::query_as(
+                "SELECT * FROM hitl_requests WHERE status = 'pending' AND owner_user_id = $1 ORDER BY created_at",
+            )
             .bind(identity.user_id)
             .fetch_all(&self.pool)
             .await?
@@ -352,17 +344,10 @@ impl HitlStore for PgHitlStore {
 
         let mut tx = self.pool.begin().await?;
 
-        // Scoped to the two origins this dispatcher actually knows how to deliver (a real A2A
-        // task resume via `task_id` — `deliver()` fails outright on anything else). `mcp_tool`
-        // rows have no `task_id` at all and are claimed by `oss/hitl`'s own dispatcher instead
-        // (`nasiko_hitl::repo::claim_for_resume`, scoped the other way) — without this filter
-        // the two dispatchers would race on the same rows and fail whichever they claimed by
-        // mistake.
         let row: Option<HitlRequestRow> = sqlx::query_as(
             "SELECT * FROM hitl_requests
               WHERE status = 'resolved' AND resume_status = 'not_started'
                 AND (resume_claimed_at IS NULL OR resume_claimed_at < $1)
-                AND origin IN ('direct_chat', 'agent_proxy')
               ORDER BY resolved_at
               FOR UPDATE SKIP LOCKED
               LIMIT 1",
