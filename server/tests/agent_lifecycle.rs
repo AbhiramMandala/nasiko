@@ -485,7 +485,11 @@ async fn list_upload_agents_scoped_to_owner() {
     let res = get_as_superuser(&server, uid, "/api/agents/my-uploads").await;
     let body: Value = res.json().await.unwrap();
     let records = body["data"].as_array().unwrap();
-    assert_eq!(records.len(), 1, "my-uploads is own-only, superuser included");
+    assert_eq!(
+        records.len(),
+        1,
+        "my-uploads is own-only, superuser included"
+    );
     assert_eq!(records[0]["agent_name"].as_str().unwrap(), "mine");
 
     server.cleanup().await;
