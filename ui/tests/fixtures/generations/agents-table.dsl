@@ -1,7 +1,8 @@
 Sure — building that now.
 root = AppStack([heading, table], "md")
-heading = AppRow([title], "md")
-title = AppStatCard("Agent Cost Analysis", "", null, "neutral")
+heading = AppStatCard("Top agents by cost", totalCostQ, null, "neutral")
+totalCostQ = Query("fetchTokenopsDashboard", [], 0, "data.summary.total_cost")
 agentRows = Query("fetchTokenopsDashboard", [], [], "data.agents")
-table = AppTable(agentRows, 20, "pages", false)
-Here's your agent cost breakdown table — showing cost, tokens, operations, and latency per agent. Let me know if you'd like to add filters, charts, or drill-down details!
+sortedAgents = @Sort(agentRows, "total_cost", "desc")
+table = AppTable(sortedAgents, 20, "pages", false)
+Here's a cost breakdown table showing which agents cost the most, sorted from highest to lowest — let me know if you'd like to filter, search, or add more detail!

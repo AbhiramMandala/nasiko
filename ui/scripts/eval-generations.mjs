@@ -71,6 +71,11 @@ export const CASES = [
     expect: { minQueries: 1, tags: ['app-table'] } },
   { id: 'switchable', prompt: 'Give me a cost dashboard I can switch between cost and operations',
     expect: { minQueries: 1, minActions: 1, minStates: 1 } },
+  // The one case that names a component, and it earns it: the prompt says
+  // "with a chart", so a tree without one did not answer the question. It has
+  // already caught the failure it was written for — a generation that wrote
+  // two AppCharts and left the row holding them unreferenced, which the
+  // orphaned_statement diagnostic now names directly.
   { id: 'by-model-chart', prompt: 'Usage by model, with a chart',
     expect: { minQueries: 1, tags: ['app-chart'] } },
   { id: 'kpis-only', prompt: 'Just the headline numbers, nothing else',
@@ -113,7 +118,7 @@ export const CASES = [
  * we handled it" is not the same event as "the dashboard is broken", and a
  * checker that conflates the two teaches people to ignore it.
  */
-const ADVISORY = new Set(['default_is_whole_response']);
+const ADVISORY = new Set(['default_is_whole_response', 'excess_null_padding']);
 
 /** Every source the scope allows. Anything else must not survive to the client. */
 export const ALLOWED_SOURCES = new Set([
@@ -145,7 +150,7 @@ function walk(el, fn) {
 export function evaluateGeneration(text) {
   const diagnostics = [];
   const { statements, prose } = parseBuffer(text);
-  const out = materialize(statements, index, {});
+  const out = materialize(statements, index, { complete: true });
   diagnostics.push(...out.diagnostics);
 
   const container = makeEl('div');

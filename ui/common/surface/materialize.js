@@ -352,8 +352,24 @@ export function materialize(statements, componentIndex, ctx = {}) {
 
     const params = entry.def.paramOrder ?? Object.keys(entry.def.attributes ?? {});
     if (node.args.length > params.length) {
-      note('excess_arguments',
-        `${node.name} takes ${params.length} arguments, ${node.args.length} given`, statementId);
+      // Two different mistakes wear the same shape. Trailing nulls are
+      // padding — a model filling out a signature it half remembers, writing
+      // `AppCard(null, "title", null, null, ...)` well past the end. Nothing
+      // was lost and the card renders exactly right, so failing a run over it
+      // is reporting a problem nobody has. A non-null extra is the other
+      // thing: the model meant that value, and dropping it silently is how a
+      // card renders without the number it was handed.
+      const extra = node.args.slice(params.length);
+      const kept = extra.filter((a) => a && a.k !== 'Null');
+      if (kept.length) {
+        note('excess_arguments',
+          `${node.name} takes ${params.length} arguments, ${node.args.length} given — `
+          + `${kept.length} past the end held values, which were dropped`, statementId);
+      } else {
+        note('excess_null_padding',
+          `${node.name} takes ${params.length} arguments, ${node.args.length} given, all extras null`,
+          statementId);
+      }
     }
 
     const props = {};
@@ -534,6 +550,54 @@ export function materialize(statements, componentIndex, ctx = {}) {
   else if (rootAst) note('root_not_a_component', 'root did not resolve to a component', 'root');
 
   /**
+   * Statements nothing points at.
+   *
+   * Reachability is walked over the ASTs rather than watched during
+   * evaluation, because a Ternary only evaluates one branch — an
+   * evaluation-time walk would call the other branch's statements dead every
+   * time the condition went the other way. A static walk visits both.
+   *
+   * Worth naming because of how it looks when it happens. The model writes
+   * the component correctly and forgets to hang it off its parent:
+   * `chartSection = AppCard(null, "...")` with an unreferenced
+   * `chartRow = AppRow([costChart, tokenChart])` sitting right beside it. The
+   * chart is there in the DSL, so "no <app-chart> in the tree" reads like the
+   * model never made one, and the actual bug — one missing reference — goes
+   * unmentioned.
+   */
+  const reachable = new Set();
+  if (symbols.has('root')) {
+    reachable.add('root');
+    const walk = (node) => {
+      if (!node || typeof node !== 'object') return;
+      // StateRef counts as a reference. `$view` is declared by a statement
+      // like any other, and the only thing that ever points at it is a
+      // `$view == "cost"` or an `@Set($view, ...)` inside an Action — both
+      // StateRef nodes. Walking Ref alone called every state variable dead.
+      if ((node.k === 'Ref' || node.k === 'StateRef') && symbols.has(node.n)) {
+        if (reachable.has(node.n)) return;
+        reachable.add(node.n);
+        walk(symbols.get(node.n));
+        return;
+      }
+      for (const v of Object.values(node)) {
+        if (Array.isArray(v)) v.forEach(walk);
+        else if (v && typeof v === 'object') walk(v);
+      }
+    };
+    walk(symbols.get('root'));
+  }
+  const orphans = [...symbols.keys()].filter((n) => !reachable.has(n));
+  // Only once the stream is done. Mid-flight a statement is routinely an
+  // orphan for one chunk, until the parent that references it arrives.
+  if (ctx.complete && root) {
+    for (const name of orphans) {
+      note('orphaned_statement',
+        `"${name}" is defined but nothing references it, so it never reaches the surface`, name);
+    }
+  }
+
+  /**
    * Every `$name`'s declared value, for `@Reset` and for store hydration.
    * A name mentioned but never declared maps to null, deliberately: resetting
    * it should clear it, not leave whatever it happened to hold.
@@ -548,6 +612,8 @@ export function materialize(statements, componentIndex, ctx = {}) {
     mutations,
     states: [...stateNames],
     stateDefaults,
+    /** Defined, but unreachable from root — see the walk above. */
+    orphans,
     /**
      * Evaluate an AST fragment against *this* pass's symbols, store and scope.
      * The action runner needs it: `@Set($v, r.cost)` keeps its value

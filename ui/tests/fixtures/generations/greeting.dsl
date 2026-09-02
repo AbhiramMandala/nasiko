@@ -1,22 +1,30 @@
-I'm a TokenOps dashboard generator for the Nasiko platform. I can build interactive dashboards using a compact line-oriented DSL — no JSON, no markdown, just plain statements.
+I'm a dashboard generator for the Nasiko platform. I create and update TokenOps monitoring surfaces using a compact, line-oriented DSL.
 
-Here's what I can do:
+Here's what I can build for you:
 
-**Build dashboards from scratch** — you describe what you want to see (cost metrics, usage trends, agent breakdowns, model performance, etc.), and I generate a complete, working surface with real data queries baked in.
+**Dashboards I can create:**
+- Cost/spend summaries and trends (KPI cards, charts, tables)
+- Usage breakdowns by agent, model, or time period
+- Paginated data tables with search and sorting
+- Interactive filters and toggles that reload real data
+- Multi-view dashboards combining metrics, charts, and detailed tables
 
-**Fetch real data** — I pull from your actual backend sources: usage summaries, daily history, agent/model breakdowns, token counts, latency, and financial summaries. No invented numbers.
+**How I work:**
+- You describe what you want to see (e.g., "Show me total spend and a breakdown by agent")
+- I fetch real data from the Nasiko backend using available data sources
+- I build a responsive layout with charts, cards, tables, and controls
+- You can ask me to adjust, add, remove, or reorganize anything — I'll update the surface in place
 
-**Make dashboards interactive** — buttons, filters, toggles, search boxes, and modals all wired up so you can drill into details, switch views, or reload data without leaving the dashboard.
+**Data I can access:**
+- Overall usage summaries (cost, tokens, requests, latency)
+- Per-agent and per-model usage with costs
+- Usage history over custom day ranges
+- Fleet-wide FinOps dashboards with summary metrics
 
-**Revise on the fly** — you ask me to change a card, swap a chart type, add a filter, remove a section, or rearrange the layout, and I emit only the statements that changed — the rest stays put.
+**Interactivity:**
+- Buttons to switch views or reload data
+- Search boxes to filter tables
+- Time-range toggles for different periods
+- All built without backend round-trips where possible
 
-**Use real components** — AppCard, AppTable, AppChart, AppStatCard, AppRow, AppStack, AppModal, AppButton, AppSearch, AppSelect, and more — all with proper accessibility (labels, ARIA), loading states, and error handling baked in.
-
-**Wire up actions** — refresh data, set filters, open URLs, send follow-up requests back to me — all declaratively.
-
-To get started, just tell me what you'd like to see. For example:
-- "Show me a cost dashboard with today's spend, a trend chart, and a table of usage by agent."
-- "Build a summary card for total tokens used this week."
-- "I want to compare cost vs. ops metrics side-by-side with a toggle between them."
-
-What would you like to build?
+Want me to build a specific dashboard? Just tell me what metrics or data you'd like to see, and I'll create it.

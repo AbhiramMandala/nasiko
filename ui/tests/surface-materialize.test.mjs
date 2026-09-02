@@ -314,3 +314,63 @@ root = AppStack([a, b], "md")`);
   const hits = out.diagnostics.filter((d) => d.code === 'default_is_whole_response');
   assert.equal(hits.length, 1);
 });
+
+// ── unreachable statements ──────────────────────────────────────────────────
+
+test('a statement nothing references is reported once the stream is done', () => {
+  // The shape a real generation produced: two charts and the row holding
+  // them, with the card that should have held the row left holding null.
+  const out = run(`
+root = AppStack([header, chartSection], "md")
+header = AppRow([title], "md")
+title = AppStatCard("Usage by Model", null, null, "neutral")
+chartSection = AppCard(null, "Distribution")
+chartRow = AppRow([costChart], "md")
+costChart = AppChart({labels: []}, "bar", false, "compact")
+`, { complete: true });
+  const orphaned = out.diagnostics.filter((d) => d.code === 'orphaned_statement').map((d) => d.pointer);
+  assert.deepEqual(orphaned.sort(), ['chartRow', 'costChart']);
+  assert.deepEqual(out.orphans.sort(), ['chartRow', 'costChart']);
+});
+
+test('mid-stream, an orphan is not reported — its parent has not arrived yet', () => {
+  // Exactly the state a buffer is in between two chunks. Reporting here would
+  // fire on every well-formed generation, once per statement.
+  const out = run(`
+root = AppStack([body], "md")
+card = AppStatCard("Cost", 1, null, "neutral")
+`);
+  assert.deepEqual(out.diagnostics.filter((d) => d.code === 'orphaned_statement'), []);
+  assert.deepEqual(out.orphans, ['card']);
+});
+
+test('reachability follows both branches of a ternary, not the taken one', () => {
+  // An evaluation-time walk would call `ops` dead whenever $view is "cost".
+  const out = run(`
+$view = "cost"
+cost = AppStatCard("Cost", 1, null, "neutral")
+ops = AppStatCard("Ops", 2, null, "neutral")
+root = $view == "cost" ? cost : ops
+`, { complete: true });
+  assert.deepEqual(out.orphans, []);
+});
+
+test('a state variable is reachable through the Action that sets it', () => {
+  const out = run(`
+$view = "cost"
+showOps = Action([@Set($view, "ops")])
+btn = AppButton("Ops", "primary", "md", false, null, false, false, "button", null, null, null, showOps)
+root = AppStack([btn], "md")
+`, { complete: true });
+  assert.deepEqual(out.orphans, []);
+});
+
+// ── arguments past the end of a signature ───────────────────────────────────
+
+test('trailing null padding is separated from a dropped value', () => {
+  const pad = run('root = AppStatCard("Cost", 1, null, "neutral", null, null, null, null, null)');
+  const held = run('root = AppStatCard("Cost", 1, null, "neutral", null, null, null, null, "lost")');
+  assert.equal(pad.diagnostics.find((d) => d.code === 'excess_null_padding')?.code, 'excess_null_padding');
+  assert.equal(pad.diagnostics.some((d) => d.code === 'excess_arguments'), false);
+  assert.match(held.diagnostics.find((d) => d.code === 'excess_arguments')?.message ?? '', /1 past the end held values/);
+});
