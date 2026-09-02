@@ -122,6 +122,11 @@ class WeavePage extends HTMLElement {
     this.#surface.addEventListener('weave-message', (e) => this.#say('assistant', e.detail.text));
     this.#surface.addEventListener('weave-status', (e) => this.#status(e.detail));
     this.#surface.addEventListener('weave-diagnostics', (e) => this.#note(e.detail.diagnostics));
+    // One record per turn — codes, counts and timings, no content. Logged here
+    // rather than thrown away so the shape is visible while the real sink is
+    // still being wired (NAS-211); a page should not be the thing that decides
+    // where telemetry goes.
+    this.#surface.addEventListener('weave-turn', (e) => console.info('[weave] turn', e.detail.record));
     // `@ToAssistant` — the generated surface asking for another turn. Wiring it
     // here is what makes a "show me last week instead" button inside a
     // dashboard actually do something.

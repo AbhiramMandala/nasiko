@@ -276,39 +276,33 @@ pub fn composio_callback_router() -> Router<AppState> {
 pub struct ApiResponse {
     status: StatusCode,
     data: serde_json::Value,
-    message: std::borrow::Cow<'static, str>,
+    message: &'static str,
 }
 
 impl ApiResponse {
-    pub fn ok(data: serde_json::Value, message: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+    pub fn ok(data: serde_json::Value, message: &'static str) -> Self {
         Self {
             status: StatusCode::OK,
             data,
-            message: message.into(),
+            message,
         }
     }
 
-    pub fn created(
-        data: serde_json::Value,
-        message: impl Into<std::borrow::Cow<'static, str>>,
-    ) -> Self {
+    pub fn created(data: serde_json::Value, message: &'static str) -> Self {
         Self {
             status: StatusCode::CREATED,
             data,
-            message: message.into(),
+            message,
         }
     }
 
     /// 202 — request accepted, processing continues asynchronously (queued
     /// build jobs; see `handlers::upload`).
-    pub fn accepted(
-        data: serde_json::Value,
-        message: impl Into<std::borrow::Cow<'static, str>>,
-    ) -> Self {
+    pub fn accepted(data: serde_json::Value, message: &'static str) -> Self {
         Self {
             status: StatusCode::ACCEPTED,
             data,
-            message: message.into(),
+            message,
         }
     }
 }
@@ -321,7 +315,7 @@ impl IntoResponse for ApiResponse {
             Json(json!({
                 "data": self.data,
                 "status_code": code,
-                "message": self.message.as_ref(),
+                "message": self.message,
             })),
         )
             .into_response()

@@ -66,15 +66,11 @@ pub trait AuthService: Send + Sync + 'static {
         let _ = identity;
         true
     }
-    // There is deliberately no `can_manage_secrets` here. Secret access is
-    // authorized per-resource, not by role, and both surfaces already do it:
-    // `/api/secrets` is scoped to `user_secrets.user_id` and encrypted under a
-    // key derived from that id, and `/api/agents/{id}/secrets` goes through
-    // `acl::can_manage_agent` (owner or superuser — an invoke grant or a public
-    // flag must not confer secret-write). A role threshold would be strictly
-    // wider than either. One existed here for a while, called by nothing, which
-    // is worse than absent: it reads as protection while protecting nothing.
-
+    /// May the identity manage agent secrets? (EE: ≥ team_lead)
+    async fn can_manage_secrets(&self, identity: &Identity) -> bool {
+        let _ = identity;
+        true
+    }
     /// May the identity manage users? (EE: ≥ admin)
     async fn can_manage_users(&self, identity: &Identity) -> bool {
         let _ = identity;
