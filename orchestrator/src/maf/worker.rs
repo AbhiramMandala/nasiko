@@ -350,7 +350,7 @@ async fn process_job(
 
 /// Loads the durable state a resume needs from `maf_executions`: `step_results` (every step's
 /// plan is embedded in it — see `run_maf_from`'s doc comment), the running token total, and the
-/// planner's `output_generation` guideline (both new in `oss/migrations/0008_maf_hitl.sql`).
+/// planner's `output_generation` guideline (both new in `oss/migrations/0010_maf_hitl.sql`).
 async fn fetch_resume_state(
     db: &PgPool,
     execution_id: Uuid,
