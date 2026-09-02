@@ -486,6 +486,7 @@ async fn initialize_admin(
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn initialize_admin_inner(
     state: &AppState,
     username: &str,

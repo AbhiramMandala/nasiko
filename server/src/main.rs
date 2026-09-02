@@ -153,21 +153,21 @@ async fn static_handler(req: Request<Body>) -> Response {
     // file. The client-side router resolves the URL to the correct page
     // component. Paths with file extensions (CSS, JS, images, fonts) are
     // genuine 404s — they were requested as assets and should not get HTML.
-    if !path.contains('.') {
-        if let Some(file) = OssAssets::get("index.html") {
-            let etag = format!("\"{}\"", hex::encode(file.metadata.sha256_hash()));
-            return (
-                [
-                    (header::CONTENT_TYPE, "text/html".to_string()),
-                    // SPA shell must revalidate on every navigation so deploys
-                    // take effect within one page load.
-                    (header::CACHE_CONTROL, "no-cache".to_string()),
-                    (header::ETAG, etag),
-                ],
-                file.data,
-            )
-                .into_response();
-        }
+    if !path.contains('.')
+        && let Some(file) = OssAssets::get("index.html")
+    {
+        let etag = format!("\"{}\"", hex::encode(file.metadata.sha256_hash()));
+        return (
+            [
+                (header::CONTENT_TYPE, "text/html".to_string()),
+                // SPA shell must revalidate on every navigation so deploys
+                // take effect within one page load.
+                (header::CACHE_CONTROL, "no-cache".to_string()),
+                (header::ETAG, etag),
+            ],
+            file.data,
+        )
+            .into_response();
     }
 
     if let Some(file) = OssAssets::get("404.html") {

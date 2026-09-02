@@ -246,6 +246,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 /// the authenticated agent to be a recorded participant. Every failure is a
 /// 403 with a descriptive body: presence is not the check, resolution is —
 /// there is nothing an agent can fabricate to pass.
+#[allow(clippy::result_large_err)]
 async fn flow_user(
     state: &AppState,
     traceparent: Option<&str>,

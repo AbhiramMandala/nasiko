@@ -86,6 +86,7 @@ fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> S
 /// it, which is what the helper has always documented but never actually did:
 /// every call site passed `Some(user_id)` unconditionally, so an admin saw
 /// exactly what a `member` saw.
+#[allow(clippy::result_large_err)]
 async fn listing_scope(state: &AppState, claims: &Claims) -> Result<ListingScope, Response> {
     if claims.is_superuser {
         return Ok(ListingScope {

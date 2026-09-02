@@ -709,6 +709,7 @@ async fn resolve_agent_id_by_name(state: &AppState, name_or_id: &str) -> Option<
 /// secrets) of any OTHER team's agent just by knowing its name. The RUN-2b
 /// keying fix made this more directly reachable — these ops now resolve to the
 /// *correct* container instead of a name-keyed one that likely didn't exist.
+#[allow(clippy::result_large_err)]
 async fn resolve_authorized_container(
     state: &AppState,
     claims: &Claims,
