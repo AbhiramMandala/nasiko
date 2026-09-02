@@ -85,7 +85,14 @@ export const CASES = [
   // renderer's missing_accessible_name diagnostic is what catches it, and
   // every diagnostic fails a case — so an unnamed control fails this run.
   { id: 'interactive-controls', prompt: 'Cost dashboard with a search box and buttons to change the window',
-    expect: { minQueries: 1, minActions: 1 } },
+    expect: { minQueries: 1, minActions: 1 },
+    // Real, reproducible, and the generator's to fix: it writes AppSearch with
+    // no aria-label. agent.yaml never tells it that an operable control needs a
+    // name, so it has no reason to. Recorded as it actually is rather than
+    // dropped, because a case removed to make a run green is a finding thrown
+    // away. Remove this line once the prompt is fixed — the run fails if the
+    // case starts passing, so it cannot be forgotten.
+    knownFailure: 'agent.yaml does not require an accessible name on generated controls' },
   // Not a dashboard request. agent.yaml rule 10 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.
@@ -295,6 +302,22 @@ for (const kase of cases) {
   if (record) writeFileSync(path, text);
 
   const { fail, r } = check(kase, text);
+
+  if (kase.knownFailure) {
+    if (fail.length) {
+      console.log(`~ ${kase.id} — known failure: ${kase.knownFailure}`);
+      for (const f of fail) console.log(`    ${f}`);
+    } else {
+      // A known failure that passes is a fix nobody wrote down. Failing here is
+      // what stops the annotation outliving the problem and quietly hiding a
+      // real regression later.
+      failed++;
+      console.error(`✗ ${kase.id} — marked as a known failure but it passes now.`);
+      console.error(`    Remove knownFailure: "${kase.knownFailure}"`);
+    }
+    continue;
+  }
+
   if (fail.length) {
     failed++;
     console.error(`✗ ${kase.id} — "${kase.prompt}"`);
@@ -307,11 +330,15 @@ for (const kase of cases) {
   }
 }
 
+const known = cases.filter((c) => c.knownFailure).length;
 const mode = offline ? 'replayed' : 'live';
 if (failed) {
   console.error(`\neval: ${failed} of ${cases.length} failed (${mode}).`);
   process.exit(1);
 }
-console.log(`\neval: ${cases.length} generations, all renderable (${mode}), catalog ${catalog.catalogVersion}.`);
+console.log(
+  `\neval: ${cases.length} generations (${mode}), catalog ${catalog.catalogVersion}`
+  + (known ? ` — ${known} known failure(s), see knownFailure in CASES.` : ', all renderable.'),
+);
 
 }

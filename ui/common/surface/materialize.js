@@ -41,8 +41,12 @@ export function buildComponentIndex(catalog) {
   return index;
 }
 
-/** A lexical scope for `@Each`'s loop variable. Not `$state` — see agent.yaml. */
-function childScope(parent, name, value) {
+/**
+ * A lexical binding. Two things use it: `@Each`'s loop variable, and `$event`
+ * during a single Action run. Both are values that exist for the duration of
+ * one evaluation and must not outlive it.
+ */
+export function childScope(parent, name, value) {
   return { name, value, parent };
 }
 function lookupScope(scope, name) {
@@ -175,7 +179,14 @@ export function materialize(statements, componentIndex, ctx = {}) {
       case 'Null': return null;
 
       case 'StateRef': {
-        // The store first, then the statement that declared it. That fallback
+        // A per-fire binding first. `$event` is the live value the component
+        // just produced, and it belongs to one Action run — putting it in the
+        // store would leave the last thing anyone typed sitting there as
+        // durable state for every later expression to read.
+        const bound = lookupScope(scope, node.n);
+        if (bound.found) return bound.value;
+
+        // Then the store, then the statement that declared it. That fallback
         // is what makes the *first* paint of a turn correct: `$days = 7` and
         // `historyQ = Query("fetchUsageHistory", [$days], [])` arrive in the
         // same chunk, and the query has to fetch 7 rather than fetch null and

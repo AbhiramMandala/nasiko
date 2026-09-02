@@ -1,0 +1,15 @@
+Sure — building that now.
+root = AppStack([kpis, chart, table], "md")
+summaryQ = Query("fetchUsageSummary", [], 0)
+totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
+requestCountQ = Query("fetchUsageSummary", [], 0, "request_count")
+avgLatencyQ = Query("fetchUsageSummary", [], 0, "avg_latency_ms")
+historyRows = Query("fetchUsageHistory", [7], [])
+kpis = AppRow([costCard, requestCard, latencyCard], "md")
+costCard = AppStatCard("Total cost", totalCostQ, "neutral")
+requestCard = AppStatCard("Requests", requestCountQ, "neutral")
+latencyCard = AppStatCard("Avg latency", avgLatencyQ, "neutral")
+chart = AppChart({labels: historyRows.date, datasets: [{label: "Cost (USD)", data: historyRows.total_cost_usd}]}, "line", false, "currency", "USD")
+agentRows = Query("fetchUsageByAgent", [null, 1, 20], [], "data")
+table = AppTable(agentRows, 20, "pages", true)
+Here's your cost dashboard with top-level spend KPIs, a 7-day trend, and a searchable breakdown by agent — let me know if you'd like to adjust the timeframe, add more metrics, or dig deeper into any slice!
