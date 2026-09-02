@@ -311,6 +311,24 @@ impl Orchestrator {
                         if let Some(g) = &self.guard {
                             g.after_call(&agent_display, tokens_per_call).await;
                         }
+                        // Preserve any earlier calls in this same batch that already completed
+                        // before this one paused — without this, they're silently discarded here,
+                        // since the push_tool_result call below (which normally records the whole
+                        // batch) is never reached once we return. `results_for_context.len()` is
+                        // exactly the count of `tool_calls` processed so far: every earlier
+                        // iteration either pushed a result/error/block entry or hit this same
+                        // pause check itself, so the slice lines up with what's actually recorded.
+                        if !results_for_context.is_empty() {
+                            let completed_names = tool_calls[..results_for_context.len()]
+                                .iter()
+                                .map(|tc| tc.function.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join("+");
+                            self.context.push_tool_result(
+                                &completed_names,
+                                &results_for_context.join("\n\n"),
+                            );
+                        }
                         return Err(OrchestratorError::AwaitingHuman {
                             agent,
                             agent_id,
@@ -806,6 +824,24 @@ async fn run_stream_inner(
                         if let Some(g) = guard {
                             g.after_call(&agent_display, tokens_per_call).await;
                         }
+                        // Preserve any earlier calls in this same batch that already completed
+                        // before this one paused — without this, they're silently discarded here,
+                        // since the push_tool_result call below (which normally records the whole
+                        // batch) is never reached once we return. `results_for_context.len()` is
+                        // exactly the count of `tool_calls` processed so far: every earlier
+                        // iteration either pushed a result/error/block entry or hit this same
+                        // pause check itself, so the slice lines up with what's actually recorded.
+                        if !results_for_context.is_empty() {
+                            let completed_names = tool_calls[..results_for_context.len()]
+                                .iter()
+                                .map(|tc| tc.function.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join("+");
+                            context.push_tool_result(
+                                &completed_names,
+                                &results_for_context.join("\n\n"),
+                            );
+                        }
                         return Ok(());
                     }
 
@@ -1017,6 +1053,24 @@ async fn run_stream_inner(
                     if let ToolOutcome::AwaitingHuman { .. } = classify_tool_result(&result) {
                         if let Some(g) = guard {
                             g.after_call(&agent_display, 0).await;
+                        }
+                        // Preserve any earlier calls in this same batch that already completed
+                        // before this one paused — without this, they're silently discarded here,
+                        // since the push_tool_result call below (which normally records the whole
+                        // batch) is never reached once we return. `results_for_context.len()` is
+                        // exactly the count of `tool_calls` processed so far: every earlier
+                        // iteration either pushed a result/error/block entry or hit this same
+                        // pause check itself, so the slice lines up with what's actually recorded.
+                        if !results_for_context.is_empty() {
+                            let completed_names = tool_calls[..results_for_context.len()]
+                                .iter()
+                                .map(|tc| tc.function.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join("+");
+                            context.push_tool_result(
+                                &completed_names,
+                                &results_for_context.join("\n\n"),
+                            );
                         }
                         return Ok(());
                     }

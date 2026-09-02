@@ -546,6 +546,19 @@ async fn trigger_new_orchestrator_turn(
     let query = history.with_current_query(&continuation);
     let new_task_id = Uuid::new_v4().to_string();
 
+    // Never assume the original turn's privilege level — apply the resumed user's real, current
+    // grants rather than risk over-broad or under-broad agent visibility on a stale assumption.
+    // `owner_user_id` is a NOT NULL FK with ON DELETE CASCADE (0007_hitl.sql), so this row can only
+    // exist while its owner still does; a lookup failure is defensive, not a real path, and falls
+    // back to the safe (non-superuser) default rather than aborting the resume over it.
+    let is_superuser: bool = sqlx::query_scalar("SELECT is_superuser FROM users WHERE id = $1")
+        .bind(row.owner_user_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+
     let result = orchestrator_stream(
         state,
         OrchestratorTurn {
@@ -554,9 +567,7 @@ async fn trigger_new_orchestrator_turn(
             task_id: &new_task_id,
             context_id: &chat_session_id,
             user_id: row.owner_user_id,
-            // Never assume the original turn's privilege level — apply the resumed user's real,
-            // current grants rather than risk over-broad agent visibility on a stale assumption.
-            is_superuser: false,
+            is_superuser,
             client_owns_transcript: false,
             file_parts: Vec::new(),
         },

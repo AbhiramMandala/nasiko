@@ -621,11 +621,22 @@ pub(crate) async fn orchestrator_stream(
                         OrchestratorEvent::AwaitingHuman { agent, agent_id, pause } => {
                             // Close out the flow_steps row this pause interrupted instead of
                             // leaving it at 'running' forever — only ToolResult (never sent on a
-                            // pause) closed it before. Keyed on (flow_id, agent_name, running)
-                            // rather than step_order/turn: this event carries no turn number.
+                            // pause) closed it before. This event carries no turn/step_order (unlike
+                            // ToolCall/ToolResult), so matching by (flow_id, agent_name, running)
+                            // alone would be ambiguous if the same agent was called more than once
+                            // earlier in this flow and an earlier call's own close-out silently
+                            // failed (these UPDATEs are fire-and-forget) — that stale 'running' row
+                            // could then be the one this UPDATE hits instead of the current call's.
+                            // The subquery picks only the most recently inserted still-running row
+                            // for this agent (highest step_order), which is always the current call.
                             let _ = sqlx::query(
                                 "UPDATE flow_steps SET status = 'awaiting_human', completed_at = now()
-                                 WHERE flow_id = $1 AND agent_name = $2 AND status = 'running'",
+                                 WHERE id = (
+                                     SELECT id FROM flow_steps
+                                      WHERE flow_id = $1 AND agent_name = $2 AND status = 'running'
+                                      ORDER BY step_order DESC
+                                      LIMIT 1
+                                 )",
                             )
                             .bind(&flow_id_cleanup)
                             .bind(&agent)

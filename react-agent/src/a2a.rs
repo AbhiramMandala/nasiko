@@ -209,11 +209,18 @@ impl A2aClient {
     ) -> Result<A2aResponse, A2aClientError> {
         self.send_message_with_headers(endpoint, message, context_id, &[], &[])
             .await
+            .map(|(_, response)| response)
     }
 
     /// Like [`send_message`], plus per-call headers layered on top of the
     /// client-wide `extra_headers` (e.g. a delegation token scoped to the one
     /// specific agent being called, which differs per call unlike `traceparent`).
+    ///
+    /// Returns the resolved `context_id` alongside the response — when the caller passes `None`,
+    /// this mints a fresh one and sends it as the real `contextId` on the wire, so a caller that
+    /// needs to know what conversation id the agent was actually talked under (e.g. to record a
+    /// pause the agent's own reply didn't echo an id for) must use this returned value, not the
+    /// `None` it originally passed in.
     pub async fn send_message_with_headers(
         &self,
         endpoint: &str,
@@ -221,7 +228,7 @@ impl A2aClient {
         context_id: Option<&str>,
         per_call_headers: &[(String, String)],
         extra_parts: &[serde_json::Value],
-    ) -> Result<A2aResponse, A2aClientError> {
+    ) -> Result<(String, A2aResponse), A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -234,7 +241,7 @@ impl A2aClient {
             "a2a send_message → forwarding to agent (trace_id in traceparent = flow/conversation id)"
         );
 
-        match self
+        let result = match self
             .send_message_dialect(
                 endpoint,
                 message,
@@ -261,7 +268,8 @@ impl A2aClient {
                 .await
             }
             other => other,
-        }
+        };
+        result.map(|response| (ctx, response))
     }
 
     async fn send_message_dialect(

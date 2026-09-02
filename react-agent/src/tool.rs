@@ -194,7 +194,7 @@ impl Tool for A2aTool {
         let text = match streamed {
             Some(text) => text,
             None => {
-                let response = self
+                let (sent_context_id, response) = self
                     .client
                     .send_message_with_headers(
                         &self.agent.endpoint,
@@ -218,10 +218,13 @@ impl Tool for A2aTool {
                         metadata,
                     } = sse
                     {
-                        let (task_id, context_id) = A2aClient::extract_task_and_context_id(
-                            &result_value,
-                            args.context_id.as_deref().unwrap_or_default(),
-                        );
+                        // Fall back to `sent_context_id` (what was actually put on the wire —
+                        // real either way, whether the LLM supplied it or the client minted one),
+                        // never `args.context_id`, which is `None` in exactly the case this
+                        // fallback exists for and would otherwise default to an empty string that
+                        // doesn't match the conversation the agent was actually talked under.
+                        let (task_id, context_id) =
+                            A2aClient::extract_task_and_context_id(&result_value, &sent_context_id);
                         return Err(A2aToolError::AwaitingHuman {
                             agent: self.agent.name.clone(),
                             agent_id: self.agent.id.clone(),
