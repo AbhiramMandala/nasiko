@@ -1,9 +1,9 @@
 Sure — building that now.
-root = AppStack([kpis, chart], "md")
-summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0})
+root = AppStack([header, charts], "md")
+header = AppRow([titleCard], "md")
+titleCard = AppCard(null, "Usage over 14 days")
+charts = AppRow([costChart, requestChart], "md")
 historyQ = Query("fetchUsageHistory", [14], [])
-kpis = AppRow([costCard, requestCard], "md")
-costCard = AppStatCard("Total cost", summaryQ.total_cost_usd, null, "neutral")
-requestCard = AppStatCard("Requests", summaryQ.request_count, null, "neutral")
-chart = AppChart({labels: historyQ.date, datasets: [{label: "Cost (USD)", data: historyQ.total_cost_usd}, {label: "Requests", data: historyQ.request_count}]}, "line", false, "number", null)
-Here's your spend and request volume dashboard for the last 14 days — two summary KPIs at the top and a trend chart below. Let me know if you'd like to adjust the time window, break it down by agent or model, or add more metrics!
+costChart = AppChart({labels: historyQ.date, datasets: [{label: "Cost (USD)", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD")
+requestChart = AppChart({labels: historyQ.date, datasets: [{label: "Requests", data: historyQ.request_count}]}, "line", false, "number")
+Here's a 14-day spend and request volume dashboard with two trend charts — let me know if you'd like to adjust the layout, add KPI cards, or drill down further!

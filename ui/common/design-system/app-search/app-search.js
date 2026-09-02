@@ -19,8 +19,12 @@
  * @attr {boolean} disabled
  * @attr {string} placeholder - Defaults to "Search".
  * @attr {string} value - Initial value.
- * @attr {string} name|autocomplete|maxlength|inputmode|aria-label - Forwarded to the
- *   inner `<input>`; pass `aria-label`, the box has no label of its own.
+ * @attr {string} name|autocomplete|maxlength|inputmode - Forwarded to the inner
+ *   `<input>`.
+ * @attr {string} aria-label - Accessible name for the field. The box has no
+ *   visible label of its own, so one is always emitted: this if you set it,
+ *   otherwise the placeholder. Set it whenever the page holds more than one
+ *   search box, or the placeholder does not say what is being searched.
  * @cssprop --search-bg - Resting fill. Default `--bg-base` (white). Set it on the
  *   *surface*, not the field: the fill depends on the plane the field sits on.
  * @prop {string} value - Get/set the current value.
@@ -42,11 +46,15 @@ import { escAttr } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Attributes handed straight to the inner <input>, not styling. */
-const NATIVE = ['name', 'autocomplete', 'maxlength', 'inputmode', 'aria-label'];
+// `aria-label` is deliberately not in here — it is emitted separately below,
+// because it has a fallback and these do not.
+const NATIVE = ['name', 'autocomplete', 'maxlength', 'inputmode'];
 
 export class AppSearch extends HTMLElement {
   static get observedAttributes() {
-    return ['size', 'state', 'loading', 'disabled', 'placeholder', ...NATIVE];
+    // `aria-label` listed explicitly: it left NATIVE but still has to trigger
+    // a re-render when it changes.
+    return ['size', 'state', 'loading', 'disabled', 'placeholder', 'aria-label', ...NATIVE];
   }
 
   /** Slotted icon markup, captured once — render() replaces innerHTML. */
@@ -104,11 +112,21 @@ export class AppSearch extends HTMLElement {
       .map((a) => `${a}="${escAttr(this.getAttribute(a))}"`)
       .join(' ');
 
+    // The field has no visible label, so it must carry one — an unnamed search
+    // input is announced as "search, edit text" and nothing else. A caller who
+    // set aria-label wins; otherwise the placeholder is the only description
+    // of this box that exists, and naming it "Search agents" beats naming it
+    // nothing. Placeholder-as-label is a poor pattern when it is a *choice* —
+    // it disappears the moment someone types. As the floor under a missing
+    // aria-label it is strictly better than the alternative.
+    const placeholder = this.getAttribute('placeholder') ?? 'Search';
+    const label = this.getAttribute('aria-label') || placeholder;
+
     this.innerHTML = `
       <div class="search-box is-${size} is-${state}" role="search">
         <span data-slot="leading">${this.#slots.leading ?? icons.search()}</span>
-        <input type="search" ${native} placeholder="${
-          escAttr(this.getAttribute('placeholder') ?? 'Search')}"${disabled ? ' disabled' : ''}>
+        <input type="search" ${native} aria-label="${escAttr(label)}" placeholder="${
+          escAttr(placeholder)}"${disabled ? ' disabled' : ''}>
         ${loading ? '<span class="spinner" aria-hidden="true"></span>' : `
         <button type="button" class="clear" aria-label="Clear search"
           ${disabled ? 'disabled' : ''}>${this.#slots.trailing ?? icons.x()}</button>`}

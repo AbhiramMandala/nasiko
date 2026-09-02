@@ -111,9 +111,25 @@ for (const [tag, def] of Object.entries(catalog.components)) {
   // buttons with no name and inputs with no label perfectly happily, and the
   // result passes a sighted glance. This is the floor under that.
   const NAME_ATTRS = ['label', 'aria-label', 'alt'];
+  const named = NAME_ATTRS.filter((n) => attributes[n]);
+  // `nameFallback` is declared, not inferred. A first attempt derived it — any
+  // component whose only naming attribute is `aria-label` and that has a
+  // placeholder — and it immediately claimed `app-chatbox` was named by its
+  // placeholder, which is the opposite of what that component decided on
+  // purpose (see the @attr note on its aria-label: a placeholder disappears
+  // the moment someone types, so it defaults to a static "Message" instead).
+  // A catalog that describes behaviour a component does not have is worse than
+  // one that says less, so the component owner states it.
+  if (ov.nameFallback && !attributes[ov.nameFallback]) {
+    problems.push(`${tag}: nameFallback is "${ov.nameFallback}" but it has no such attribute.`);
+  }
+  if (ov.nameFallback && !named.length) {
+    problems.push(`${tag}: nameFallback needs a naming attribute to fall back *from*.`);
+  }
   const nameFrom = [
     ...(ov.textParam ? ['text'] : []),
-    ...NAME_ATTRS.filter((n) => attributes[n]),
+    ...named,
+    ...(ov.nameFallback && attributes[ov.nameFallback] ? [ov.nameFallback] : []),
   ];
   const requiresName = Boolean(ov.actionParam) && nameFrom.length > 0;
   if (ov.actionParam && !nameFrom.length) {

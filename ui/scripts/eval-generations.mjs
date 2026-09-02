@@ -87,16 +87,13 @@ export const CASES = [
   },
   { id: 'terse', prompt: 'spend',
     expect: { minQueries: 1 } },
-  // Interactive controls are where a model leaves things unnamed. The
-  // renderer's missing_accessible_name diagnostic is what catches it, and
-  // every diagnostic fails a case — so an unnamed control fails this run.
+  // Interactive controls are where a model leaves things unnamed. Three rounds
+  // of prompt edits could not make it fill AppSearch's aria-label when it had
+  // already written a placeholder saying the same thing, so app-search now
+  // names itself from the placeholder and the catalog says so. What this case
+  // still catches is a control with neither.
   { id: 'interactive-controls', prompt: 'Cost dashboard with a search box and buttons to change the window',
-    expect: { minQueries: 1, minActions: 1 },
-    // The prose rule alone did not move it: the model filled all twelve
-    // AppSearch arguments and put null in the aria-label slot, because the
-    // signature printed `aria-label?` and a question mark outranks a paragraph.
-    // The signature now prints it as required. Clears on the next re-record.
-    knownFailure: 'recorded before the signature marked aria-label required' },
+    expect: { minQueries: 1, minActions: 1 } },
   // Not a dashboard request. agent.yaml rule 11 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.
@@ -118,7 +115,7 @@ export const CASES = [
  * we handled it" is not the same event as "the dashboard is broken", and a
  * checker that conflates the two teaches people to ignore it.
  */
-const ADVISORY = new Set(['default_is_whole_response', 'excess_null_padding']);
+const ADVISORY = new Set(['default_is_whole_response', 'excess_null_padding', 'non_route_value']);
 
 /** Every source the scope allows. Anything else must not survive to the client. */
 export const ALLOWED_SOURCES = new Set([

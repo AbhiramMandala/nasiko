@@ -48,8 +48,11 @@ function triggerEvent(def) {
 /**
  * @typedef {object} RenderDeps
  * @property {Document} [doc] Injected for tests; defaults to the real document.
- * @property {(action: object, el: Element) => void} [onAction] Called when an
- *   action-bearing element fires. The renderer never interprets an Action
+ * @property {(action: object, el: Element, ev: Event) => void} [onAction] Called
+ *   when an action-bearing element fires. The DOM event travels with it because
+ *   `$event` is the only way an Action can read what the user actually typed —
+ *   `@Set($query, $query)` just re-sets a variable to itself.
+ *   The renderer never interprets an Action
  *   itself — it only wires the trigger.
  * @property {(d: {source: string, code: string, message: string, pointer?: string}) => void} [onDiagnostic]
  */
@@ -161,6 +164,17 @@ function buildNode(node, catalog, deps = {}) {
       //
       // Dropped, not defaulted: a link to the wrong place is worse than no
       // link, and the diagnostic names the path so the failure is legible.
+      // A boolean here is not a bad route, it is a value in the wrong slot —
+      // a model one position out of step with the signature, writing the
+      // `loading` flag into `chat-href`. Calling that "not a route this app
+      // has" is true and useless: it sends you looking for a route named
+      // false. Nothing renders wrong, because the slot is left unset either
+      // way, so this says what actually happened and stays out of the way.
+      if (typeof value === 'boolean') {
+        report('non_route_value',
+          `${node.tag}.${key} takes a route and was given ${value} — an argument is in the wrong position`);
+        continue;
+      }
       const path = toText(value);
       if (!routes?.has(path)) {
         report('route_not_allowed', `"${path}" is not a route this app has — ${node.tag}.${key} was left unset`);
@@ -196,7 +210,7 @@ function buildNode(node, catalog, deps = {}) {
   // Action means is the action runner's business; the spec never names a
   // handler and no on* attribute is ever written.
   if (node.action && node.action.type === 'action' && def.actionParam) {
-    el.addEventListener(triggerEvent(def), () => deps.onAction?.(node.action, el));
+    el.addEventListener(triggerEvent(def), (ev) => deps.onAction?.(node.action, el, ev));
   }
 
   // ── The accessibility floor ───────────────────────────────────────────
