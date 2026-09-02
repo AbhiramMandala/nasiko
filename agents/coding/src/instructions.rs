@@ -87,12 +87,20 @@ pub async fn discover(sandbox: &dyn Sandbox) -> Option<WorkspaceInstructions> {
 
 /// Build the full system prompt by prepending workspace instructions to the base prompt.
 /// If no workspace instructions exist, returns the base prompt unchanged.
-/// Includes the instruction mode directive so the agent knows whether to auto-add.
-pub fn build_system_prompt(base_prompt: &str, workspace_instructions: Option<&WorkspaceInstructions>) -> String {
-    let mode = get_instruction_mode(workspace_instructions);
-    let mode_note = match mode {
-        InstructionMode::Auto => "",
-        InstructionMode::Manual => "\n\n(Instruction mode: manual — only use update_instructions when the user explicitly asks you to remember or record something.)",
+///
+/// Instruction files are discovered and injected regardless of the prompt-comments feature
+/// gate: that is plain agent behavior. Only the instruction-mode note is gated, since it
+/// names `update_instructions`, a tool that is not registered when the feature is off.
+pub fn build_system_prompt(
+    base_prompt: &str,
+    workspace_instructions: Option<&WorkspaceInstructions>,
+    feature_enabled: bool,
+) -> String {
+    let mode_note = match get_instruction_mode(workspace_instructions) {
+        InstructionMode::Manual if feature_enabled => {
+            "\n\n(Instruction mode: manual — only use update_instructions when the user explicitly asks you to remember or record something.)"
+        }
+        _ => "",
     };
 
     match workspace_instructions {
@@ -115,6 +123,10 @@ pub fn format_new_instruction(instruction: &str, trigger: &str, hypothesis: &str
 
 /// Append a new annotated instruction to the workspace instruction file.
 /// If no instruction file exists, creates NASIKO.md with a header.
+///
+/// The file is re-read from the sandbox rather than appended to the session's cached copy.
+/// The cached copy goes stale as soon as anything else rewrites the file (a prune pass, or
+/// the agent's own edit_file), and appending to it would silently revert those writes.
 pub async fn add_instruction(
     sandbox: &dyn Sandbox,
     current: Option<&WorkspaceInstructions>,
@@ -126,7 +138,10 @@ pub async fn add_instruction(
 
     let (path, new_content) = match current {
         Some(wi) => {
-            let mut content = wi.raw.clone();
+            let mut content = sandbox
+                .read_file_raw(&wi.source_file)
+                .await
+                .unwrap_or_else(|_| wi.raw.clone());
             if !content.ends_with('\n') {
                 content.push('\n');
             }
@@ -156,7 +171,9 @@ pub async fn update_outcome(
     let raw = sandbox.read_file_raw(instructions_path).await?;
     let mut parsed = prompt_comments::parse(&raw);
 
-    let target = parsed.iter_mut().find(|inst| inst.text.contains(instruction_substring));
+    let target = parsed
+        .iter_mut()
+        .find(|inst| inst.text.contains(instruction_substring));
     match target {
         Some(inst) => {
             if let Some(ref mut comment) = inst.comment {
@@ -169,7 +186,11 @@ pub async fn update_outcome(
                 return Err("instruction has no prompt comment to update".into());
             }
         }
-        None => return Err(format!("no instruction matching '{instruction_substring}' found")),
+        None => {
+            return Err(format!(
+                "no instruction matching '{instruction_substring}' found"
+            ));
+        }
     }
 
     let rendered = prompt_comments::render(&parsed);
@@ -202,12 +223,7 @@ pub fn parse_instruction_mode(raw: &str) -> InstructionMode {
             };
         }
     }
-    if let Ok(val) = std::env::var("NASIKO_INSTRUCTION_MODE") {
-        if val.trim() == "auto" {
-            return InstructionMode::Auto;
-        }
-    }
-    InstructionMode::Manual
+    instruction_mode_from_env()
 }
 
 /// Determine the instruction mode for the current workspace. If no instruction file exists,
@@ -215,14 +231,15 @@ pub fn parse_instruction_mode(raw: &str) -> InstructionMode {
 pub fn get_instruction_mode(instructions: Option<&WorkspaceInstructions>) -> InstructionMode {
     match instructions {
         Some(wi) => parse_instruction_mode(&wi.raw),
-        None => {
-            if let Ok(val) = std::env::var("NASIKO_INSTRUCTION_MODE") {
-                if val.trim() == "auto" {
-                    return InstructionMode::Auto;
-                }
-            }
-            InstructionMode::Manual
-        }
+        None => instruction_mode_from_env(),
+    }
+}
+
+/// Platform-level default when no `<!-- @instructions -->` directive is present.
+fn instruction_mode_from_env() -> InstructionMode {
+    match std::env::var("NASIKO_INSTRUCTION_MODE") {
+        Ok(val) if val.trim() == "auto" => InstructionMode::Auto,
+        _ => InstructionMode::Manual,
     }
 }
 
@@ -283,7 +300,9 @@ pub fn needs_pruning(instructions: &WorkspaceInstructions) -> bool {
 
 /// Build the pruning prompt sent to the LLM. Lists each instruction with its rationale
 /// and asks the model to return a JSON array of indices to revoke.
-pub fn build_prune_prompt(instructions: &WorkspaceInstructions) -> (String, Vec<AnnotatedInstruction>) {
+pub fn build_prune_prompt(
+    instructions: &WorkspaceInstructions,
+) -> (String, Vec<AnnotatedInstruction>) {
     let parsed = prompt_comments::parse(&instructions.raw);
     let annotated: Vec<AnnotatedInstruction> = parsed
         .into_iter()
@@ -299,7 +318,11 @@ pub fn build_prune_prompt(instructions: &WorkspaceInstructions) -> (String, Vec<
             inst.text.trim(),
             c.trigger,
             c.hypothesis,
-            if c.outcome == Outcome::Confirmed { "confirmed" } else { "pending" },
+            if c.outcome == Outcome::Confirmed {
+                "confirmed"
+            } else {
+                "pending"
+            },
         ));
     }
 
@@ -340,16 +363,18 @@ pub async fn apply_pruning(
     let mut count = 0;
 
     for inst in &mut parsed {
-        if let Some(ref mut comment) = inst.comment {
-            if texts_to_revoke.iter().any(|t| inst.text.contains(t)) {
-                comment.outcome = Outcome::Revoked;
-                count += 1;
-            }
+        if texts_to_revoke.iter().any(|t| inst.text.contains(t))
+            && let Some(ref mut comment) = inst.comment
+        {
+            comment.outcome = Outcome::Revoked;
+            count += 1;
         }
     }
 
     let rendered = prompt_comments::render(&parsed);
-    sandbox.write_file(&instructions.source_file, &rendered).await?;
+    sandbox
+        .write_file(&instructions.source_file, &rendered)
+        .await?;
     Ok(count)
 }
 
@@ -411,10 +436,24 @@ mod tests {
             raw: "- Be concise.\n".into(),
             clean: "- Be concise.\n".into(),
         };
-        let full = build_system_prompt("You are a coding agent.", Some(&wi));
+        let full = build_system_prompt("You are a coding agent.", Some(&wi), true);
         assert!(full.starts_with("## Workspace Instructions"));
         assert!(full.contains("Be concise"));
         assert!(full.contains("You are a coding agent."));
+    }
+
+    #[test]
+    fn build_system_prompt_omits_mode_note_when_feature_disabled() {
+        let wi = WorkspaceInstructions {
+            source_file: "NASIKO.md".into(),
+            raw: "- Be concise.\n".into(),
+            clean: "- Be concise.\n".into(),
+        };
+        // Instructions are still injected, but nothing may reference update_instructions:
+        // that tool is not registered when the feature is opted out.
+        let full = build_system_prompt("You are a coding agent.", Some(&wi), false);
+        assert!(full.contains("Be concise"));
+        assert!(!full.contains("update_instructions"));
     }
 
     #[tokio::test]
@@ -437,6 +476,27 @@ mod tests {
         assert!(content.contains("@prompt-comment"));
         assert!(content.contains("Always run tests"));
         assert!(content.contains("broken CI from untested commits"));
+    }
+
+    #[tokio::test]
+    async fn add_instruction_does_not_clobber_newer_file() {
+        let root = temp_root("add-stale");
+        let sb = LocalSandbox::new(root.to_str().unwrap()).unwrap();
+        sb.write_file("NASIKO.md", "- First rule.\n").await.unwrap();
+        let wi = discover(&sb).await.unwrap();
+
+        // Something else rewrites the file after discovery (a prune pass, or edit_file).
+        sb.write_file("NASIKO.md", "- First rule.\n- Second rule.\n")
+            .await
+            .unwrap();
+
+        add_instruction(&sb, Some(&wi), "- Third rule.", "trigger", "hypothesis")
+            .await
+            .unwrap();
+
+        let content = sb.read_file_raw("NASIKO.md").await.unwrap();
+        assert!(content.contains("Second rule"), "lost the newer write");
+        assert!(content.contains("Third rule"));
     }
 
     #[tokio::test]

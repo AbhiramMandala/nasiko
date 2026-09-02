@@ -364,8 +364,18 @@ pub async fn execute_update_instructions(
         None => return "Error: missing 'hypothesis' field".into(),
     };
 
-    match instructions::add_instruction(sandbox, current_instructions, instruction, trigger, hypothesis).await {
-        Ok(path) => format!("Instruction added to {path} with prompt comment (trigger and hypothesis recorded for future maintenance)."),
+    match instructions::add_instruction(
+        sandbox,
+        current_instructions,
+        instruction,
+        trigger,
+        hypothesis,
+    )
+    .await
+    {
+        Ok(path) => format!(
+            "Instruction added to {path} with prompt comment (trigger and hypothesis recorded for future maintenance)."
+        ),
         Err(e) => format!("Error: {e}"),
     }
 }

@@ -25,6 +25,12 @@ Set on the coding agent container at deploy time:
 NASIKO_PROMPT_COMMENTS=enabled
 ```
 
+**Option C: Via the control plane UI** (the same thing as Option B, without a redeploy edit):
+
+Agent detail page > Settings > Features > "Prompt comments". The toggle writes
+`metadata.features.prompt_comments` on the agent, and `AppState::agent_env` turns every
+`features.<key>` entry into `NASIKO_<KEY>` on the container. Takes effect on next restart.
+
 ### How to disable
 
 **If enabled at the platform level and you want a specific workspace to opt out:**

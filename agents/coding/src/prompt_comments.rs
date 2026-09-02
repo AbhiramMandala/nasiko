@@ -137,9 +137,7 @@ pub fn render(instructions: &[AnnotatedInstruction]) -> String {
     out
 }
 
-fn parse_comment_block(
-    lines: &mut std::iter::Peekable<std::str::Lines<'_>>,
-) -> PromptComment {
+fn parse_comment_block(lines: &mut std::iter::Peekable<std::str::Lines<'_>>) -> PromptComment {
     let mut added = String::new();
     let mut trigger = String::new();
     let mut hypothesis = String::new();
@@ -169,9 +167,7 @@ fn parse_comment_block(
     }
 }
 
-fn collect_instruction_text(
-    lines: &mut std::iter::Peekable<std::str::Lines<'_>>,
-) -> String {
+fn collect_instruction_text(lines: &mut std::iter::Peekable<std::str::Lines<'_>>) -> String {
     let mut text = String::new();
     while let Some(line) = lines.peek() {
         if line.trim().is_empty() || line.trim_start().starts_with(COMMENT_START) {
@@ -238,14 +234,14 @@ mod tests {
 
         let first_annotated = &instructions[1];
         let comment = first_annotated.comment.as_ref().unwrap();
-        assert_eq!(comment.trigger, "test failures from missing type annotations");
+        assert_eq!(
+            comment.trigger,
+            "test failures from missing type annotations"
+        );
         assert_eq!(comment.outcome, Outcome::Pending);
 
         let revoked = &instructions[3];
-        assert_eq!(
-            revoked.comment.as_ref().unwrap().outcome,
-            Outcome::Revoked
-        );
+        assert_eq!(revoked.comment.as_ref().unwrap().outcome, Outcome::Revoked);
     }
 
     #[test]

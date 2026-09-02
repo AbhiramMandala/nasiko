@@ -85,8 +85,12 @@ explained what's blocking.
 - Be economical with tool calls — don't re-read a file you already have, and don't repeat an \
 identical command.
 - When done, respond with a concise summary of what you changed and the test/verification result \
-(no tool call).
+(no tool call).";
 
+/// Appended to the system prompt only when the prompt-comments feature is opted in.
+/// Kept separate so a default (opted-out) session never sees instructions referring to
+/// tools that were not registered.
+const INSTRUCTION_MAINTENANCE_PROMPT: &str = "\
 Instruction maintenance:
 - If you discover a recurring pattern, convention, or corrective rule that should persist across \
 future sessions, use update_instructions to record it with its rationale.
@@ -141,32 +145,37 @@ impl AgentExecutor for CodingAgent {
             let agent = CodingAgent { model, api_key, base_url, http };
 
             // Prune stale instructions if opted in and the list has grown past threshold.
-            if feature_enabled {
-                if let Some(ref wi) = workspace_instructions {
-                    if instructions::needs_pruning(wi) {
-                        yield Ok(status_working(&task_id, &context_id, Some("pruning stale instructions")));
-                        let (prune_prompt, annotated) = instructions::build_prune_prompt(wi);
-                        let prune_messages = vec![
-                            serde_json::json!({"role": "system", "content": "You review instruction files for staleness. Respond with only a JSON array."}),
-                            serde_json::json!({"role": "user", "content": prune_prompt}),
-                        ];
-                        if let Ok(resp) = agent.chat(&prune_messages, &[]).await {
-                            let answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
-                            let indices = instructions::parse_prune_response(answer);
-                            if !indices.is_empty() {
-                                let _ = instructions::apply_pruning(
-                                    sandbox.as_ref(), wi, &indices, &annotated,
-                                ).await;
-                                workspace_instructions = instructions::discover(sandbox.as_ref()).await;
-                            }
-                        }
+            if feature_enabled
+                && let Some(ref wi) = workspace_instructions
+                && instructions::needs_pruning(wi)
+            {
+                yield Ok(status_working(&task_id, &context_id, Some("pruning stale instructions")));
+                let (prune_prompt, annotated) = instructions::build_prune_prompt(wi);
+                let prune_messages = vec![
+                    serde_json::json!({"role": "system", "content": "You review instruction files for staleness. Respond with only a JSON array."}),
+                    serde_json::json!({"role": "user", "content": prune_prompt}),
+                ];
+                if let Ok(resp) = agent.chat(&prune_messages, &[]).await {
+                    let answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
+                    let indices = instructions::parse_prune_response(answer);
+                    if !indices.is_empty() {
+                        let _ = instructions::apply_pruning(
+                            sandbox.as_ref(), wi, &indices, &annotated,
+                        ).await;
+                        workspace_instructions = instructions::discover(sandbox.as_ref()).await;
                     }
                 }
             }
 
+            let base_prompt = if feature_enabled {
+                format!("{SYSTEM_PROMPT}\n\n{INSTRUCTION_MAINTENANCE_PROMPT}")
+            } else {
+                SYSTEM_PROMPT.to_string()
+            };
             let system_prompt = instructions::build_system_prompt(
-                SYSTEM_PROMPT,
+                &base_prompt,
                 workspace_instructions.as_ref(),
+                feature_enabled,
             );
             let mut tool_defs = tools::definitions();
             // Only expose instruction management tools when the feature is opted in.
