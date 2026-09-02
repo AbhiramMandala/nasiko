@@ -83,7 +83,11 @@ struct SurfaceContext {
 }
 
 fn bad_request(message: &str) -> Response {
-    (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": message }))).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        axum::Json(json!({ "error": message })),
+    )
+        .into_response()
 }
 
 async fn surface(
