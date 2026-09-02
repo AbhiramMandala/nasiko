@@ -400,6 +400,30 @@ export function materialize(statements, componentIndex, ctx = {}) {
           registered.add(statementId);
           queries.push({ statementId, source, args, select, stateful });
         }
+        // The default stands in for the value *after* the dot-path, because
+        // that is what the component will eventually receive. Handing it the
+        // whole response instead is a mistake the generator makes — it writes
+        // `Query(src, args, {data: [], total: 0}, "data")` and the table gets
+        // an object where it wanted rows, then fails somewhere else entirely
+        // with "needs an array of rows".
+        //
+        // Detected narrowly rather than guessed at: only when the default is a
+        // plain object that literally contains the first path segment, which no
+        // correct default ever does. Applying the path to the default instead
+        // would look like a fix and break the correct case — `selectPath([],
+        // "data")` is null, so a right answer would become a wrong one.
+        if (select && fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
+          const head = String(select).split('.')[0];
+          if (head && Object.prototype.hasOwnProperty.call(fallback, head)) {
+            note(
+              'default_is_whole_response',
+              `${statementId}'s default looks like the whole response — with a "${select}" path, `
+                + `the default should be what that path yields, not the object containing it`,
+              statementId,
+            );
+          }
+        }
+
         // Resolved value if the manager has one, otherwise the declared
         // default — which is why a dashboard shows zeroes rather than blanks
         // while its first fetch is in flight.
