@@ -46,6 +46,13 @@ function passwordPolicyError(pw) {
   return null;
 }
 
+const POLICY_HINT = `${MIN_PASSWORD_LEN}-${MAX_PASSWORD_LEN} characters, with an uppercase letter, `
+  + 'a lowercase letter, a digit and a symbol.';
+
+// What each field's hint row shows when it is not in the error state — so
+// clearing an error restores the guidance instead of leaving a blank row.
+const RESTING_HINTS = { '#cp-new': POLICY_HINT };
+
 class ChangePasswordModal extends HTMLElement {
   #modal = null;
   // Enter is bound on every field AND on the button, and the request spends
@@ -60,20 +67,20 @@ class ChangePasswordModal extends HTMLElement {
     this.innerHTML = `
       <app-modal id="cp-modal" heading="Change password">
         <div class="modal-form">
-          <app-input id="cp-current" label="Current password" type="password"
-            autocomplete="current-password"></app-input>
-          <app-input id="cp-new" label="New password" type="password"
-            autocomplete="new-password"></app-input>
-          <app-input id="cp-confirm" label="Confirm new password" type="password"
-            autocomplete="new-password"></app-input>
-          <p class="hint">
-            ${MIN_PASSWORD_LEN}-${MAX_PASSWORD_LEN} characters, with an uppercase letter,
-            a lowercase letter, a digit and a symbol. Your other sessions will be signed out.
-          </p>
-          <div class="form-actions" data-slot="footer">
-            <app-button variant="secondary" id="cp-cancel">Cancel</app-button>
-            <app-button variant="primary" id="cp-save">Change password</app-button>
-          </div>
+          <app-input id="cp-current" label="Current password" type="password" reveal
+            autocomplete="current-password" required
+            placeholder="the password you sign in with now"></app-input>
+          <app-input id="cp-new" label="New password" type="password" reveal
+            autocomplete="new-password" required hint="${POLICY_HINT}"
+            placeholder="a new, unused password"></app-input>
+          <app-input id="cp-confirm" label="Confirm new password" type="password" reveal
+            autocomplete="new-password" required
+            placeholder="retype the new password"></app-input>
+          <p class="hint">Your other sessions will be signed out.</p>
+        </div>
+        <div data-slot="footer">
+          <app-button variant="tertiary" size="md" id="cp-cancel">Cancel</app-button>
+          <app-button variant="primary" size="md" id="cp-save">Change password</app-button>
         </div>
       </app-modal>`;
 
@@ -81,17 +88,44 @@ class ChangePasswordModal extends HTMLElement {
     this.querySelector('#cp-cancel').addEventListener('click', () => this.#modal.close());
     this.querySelector('#cp-save').addEventListener('click', () => this.#submit());
 
-    // Enter anywhere in the form submits, matching native form behaviour.
     this.querySelectorAll('app-input').forEach((input) => {
+      // Enter anywhere in the form submits, matching native form behaviour —
+      // except on app-input's own reveal button, where Enter is the click that
+      // unmasks the field and submitting instead would be the opposite of what
+      // the key press asked for.
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); this.#submit(); }
+        if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
+        e.preventDefault();
+        this.#submit();
       });
+      // Clear the field's error the moment the user acts on it, so the message
+      // always describes the current value rather than the one that failed.
+      input.addEventListener('input', () => this.#setFieldError(`#${input.id}`, null));
     });
+  }
+
+  /** Paints one field with app-input's `error` state, or restores its resting
+   *  hint when `message` is null. Validation belongs on the field that is wrong;
+   *  toasts stay for whole-request failures the fields can't express. */
+  #setFieldError(selector, message) {
+    const field = this.querySelector(selector);
+    if (message) {
+      field.setAttribute('state', 'error');
+      field.setAttribute('hint', message);
+      return;
+    }
+    field.removeAttribute('state');
+    const resting = RESTING_HINTS[selector];
+    if (resting) field.setAttribute('hint', resting);
+    else field.removeAttribute('hint');
   }
 
   open() {
     this.connectedCallback();
-    for (const id of ['#cp-current', '#cp-new', '#cp-confirm']) this.querySelector(id).value = '';
+    for (const id of ['#cp-current', '#cp-new', '#cp-confirm']) {
+      this.querySelector(id).value = '';
+      this.#setFieldError(id, null);
+    }
     this.#modal.open();
     this.querySelector('#cp-current').focus?.();
   }
@@ -101,16 +135,19 @@ class ChangePasswordModal extends HTMLElement {
     const new_password = this.querySelector('#cp-new').value;
     const confirm = this.querySelector('#cp-confirm').value;
 
-    if (!current_password || !new_password) {
-      showToast('Enter your current and new password'); return;
+    if (!current_password) {
+      this.#setFieldError('#cp-current', 'Enter your current password'); return;
+    }
+    if (!new_password) {
+      this.#setFieldError('#cp-new', 'Enter a new password'); return;
     }
     const policyError = passwordPolicyError(new_password);
-    if (policyError) { showToast(policyError); return; }
-    if (new_password !== confirm) {
-      showToast('New passwords do not match'); return;
-    }
+    if (policyError) { this.#setFieldError('#cp-new', policyError); return; }
     if (new_password === current_password) {
-      showToast('New password must differ from the current one'); return;
+      this.#setFieldError('#cp-new', 'New password must differ from the current one'); return;
+    }
+    if (new_password !== confirm) {
+      this.#setFieldError('#cp-confirm', 'New passwords do not match'); return;
     }
 
     if (this.#busy) return;
@@ -123,7 +160,7 @@ class ChangePasswordModal extends HTMLElement {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ current_password, new_password }),
       });
-      if (!res.ok) { showToast(await this.#errorText(res)); return; }
+      if (!res.ok) { await this.#reportError(res); return; }
 
       // 204 means the password changed but the replacement session could not be
       // minted, so the server cleared the cookie — this session is gone too.
@@ -146,15 +183,32 @@ class ChangePasswordModal extends HTMLElement {
     }
   }
 
-  /** The server sends `{"error", "code"}` per API_CONVENTIONS §2; fall back to
-   *  the raw body so an unexpected shape still surfaces something useful. */
-  async #errorText(res) {
+  /** The server sends `{"error", "code"}` per API_CONVENTIONS §2, and its `code`
+   *  says which field is at fault — so a rejected change lands on that field in
+   *  app-input's error state, the same as client-side validation. Anything the
+   *  fields can't own (no local password, 5xx, an unexpected body shape) stays a
+   *  toast; the raw body is the last fallback so it still surfaces something. */
+  async #reportError(res) {
     const body = await res.text();
+    let error = '';
+    let code = '';
     try {
       const parsed = JSON.parse(body);
-      if (parsed?.error) return parsed.error;
+      error = parsed?.error ?? '';
+      code = parsed?.code ?? '';
     } catch { /* not JSON — fall through to the raw body */ }
-    return body || 'Could not change password';
+    // The API's messages are lowercase sentence fragments; the hint row reads
+    // as a sentence next to the client-side ones, so capitalise the first letter.
+    const raw = error || body || 'Could not change password';
+    const message = raw.charAt(0).toUpperCase() + raw.slice(1);
+
+    if (code === 'current_password_incorrect') {
+      this.#setFieldError('#cp-current', message);
+    } else if (code.startsWith('password_')) {
+      this.#setFieldError('#cp-new', message);
+    } else {
+      showToast(message);
+    }
   }
 }
 
