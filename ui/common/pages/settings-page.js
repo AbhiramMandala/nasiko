@@ -419,7 +419,10 @@ class SettingsPage extends HTMLElement {
     // value is `"entra"`, matching IDP_HINTS and the rest of this page).
     const idpSelect = this.querySelector('#s-idp-kind');
     const kind = oidc?.provider_kind === 'microsoft' ? 'entra' : oidc?.provider_kind;
-    if (kind && [...idpSelect.options].some(o => o.value === kind)) {
+    if (kind) {
+      // <app-select> wraps a native <select> internally — .select gives
+      // the inner element. Set value via the host's proxy setter; it works
+      // regardless of whether the option exists (silently no-ops if not).
       idpSelect.value = kind;
     }
     // SSO fields must be visible whenever the server has a configuration
