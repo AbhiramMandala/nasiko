@@ -393,21 +393,26 @@ impl AppState {
         }
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
 
-        // Inject feature flags from agents.metadata.features as env vars.
-        if let Ok(row) = sqlx::query_scalar::<_, serde_json::Value>(
+        // Inject feature flags from agents.metadata.features as `NASIKO_<KEY>` env vars.
+        // `metadata` is owner-writable through `PUT /api/agents/{id}`, so keys are filtered
+        // to identifier characters: anything else cannot form a valid env var name. Flags use
+        // `or_insert`, so an agent secret of the same name still wins.
+        if let Ok(metadata) = sqlx::query_scalar::<_, serde_json::Value>(
             "SELECT metadata FROM agents WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(agent_id)
         .fetch_one(&self.db)
         .await
+            && let Some(features) = metadata.get("features").and_then(|f| f.as_object())
         {
-            if let Some(features) = row.get("features").and_then(|f| f.as_object()) {
-                for (key, value) in features {
-                    if let Some(val) = value.as_str() {
-                        let env_key = format!("NASIKO_{}", key.to_uppercase());
-                        env.entry(env_key).or_insert_with(|| val.to_string());
-                    }
+            for (key, value) in features {
+                let Some(val) = value.as_str() else { continue };
+                if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    tracing::warn!(%agent_id, %key, "agent_env: skipping feature flag with non-identifier key");
+                    continue;
                 }
+                env.entry(format!("NASIKO_{}", key.to_uppercase()))
+                    .or_insert_with(|| val.to_string());
             }
         }
 
