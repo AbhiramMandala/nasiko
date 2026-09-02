@@ -1444,11 +1444,12 @@ class AgentCardPage extends HTMLElement {
           <section class="acp-section">
             <h2 class="acp-section-title">Features</h2>
             <p class="acp-section-sub">Agent-level feature flags. Changes take effect on next restart.</p>
-            <label class="acp-field acp-toggle-field">
-              <span class="acp-field-label">Prompt Comments</span>
+            <label class="acp-json-toggle">
               <input type="checkbox" id="acp-feature-prompt-comments" ${(a.metadata?.features?.prompt_comments === 'enabled') ? 'checked' : ''} />
-              <span class="acp-field-hint">Enable automatic instruction maintenance (prompt comments). The agent can record, prune, and manage workspace instructions with rationale annotations.</span>
+              <span class="acp-json-track" aria-hidden="true"></span>
+              <span class="acp-field-label">Prompt comments</span>
             </label>
+            <p class="acp-field-hint">Lets the agent record, prune, and maintain workspace instructions with rationale annotations. A workspace can still opt out with <code>&lt;!-- @prompt-comments disabled --&gt;</code> in its instruction file.</p>
           </section>
           <section class="acp-section">
             <secrets-manager id="acp-secrets" scope="agent" defer
@@ -1469,11 +1470,13 @@ class AgentCardPage extends HTMLElement {
     identityForm?.addEventListener('submit', (e) => this.#saveIdentity(e));
 
     const promptCommentsToggle = this.querySelector('#acp-feature-prompt-comments');
-    promptCommentsToggle?.addEventListener('change', (e) => this.#toggleFeature('prompt_comments', e.target.checked));
+    promptCommentsToggle?.addEventListener('change', (e) => this.#toggleFeature('prompt_comments', e.target));
   }
 
-  async #toggleFeature(key, enabled) {
+  async #toggleFeature(key, input) {
+    const enabled = input.checked;
     const metadata = { ...(this.#agent.metadata || {}), features: { ...(this.#agent.metadata?.features || {}), [key]: enabled ? 'enabled' : 'disabled' } };
+    input.disabled = true;
     try {
       await fetchApi(`/agents/${encodeURIComponent(this.#agent.id)}`, {
         method: 'PUT',
@@ -1481,11 +1484,15 @@ class AgentCardPage extends HTMLElement {
         body: JSON.stringify({ metadata }),
       });
     } catch (err) {
+      // Snap back so the switch never shows a state the server did not accept.
+      input.checked = !enabled;
       showToast(`Failed to update feature: ${err.message}`);
       return;
+    } finally {
+      input.disabled = false;
     }
     this.#agent.metadata = metadata;
-    showToast(`${key.replace(/_/g, ' ')} ${enabled ? 'enabled' : 'disabled'} — restart the agent to apply`);
+    showToast(`${key.replace(/_/g, ' ')} ${enabled ? 'enabled' : 'disabled'}. Restart the agent to apply.`);
   }
 
   async #saveIdentity(e) {
