@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 
 use super::models::{ChatMessage, ExternalTurn};
@@ -23,9 +23,10 @@ pub(crate) async fn persist_external_turn(
     tx: &mut Transaction<'_, Postgres>,
     session_id: &str,
     body: &ExternalTurn,
+    timestamp: DateTime<Utc>,
+    touch_session: bool,
 ) -> Result<PersistedExternalTurn, PersistExternalTurnError> {
     let turn_id = body.turn_id.trim();
-    let timestamp = Utc::now();
     let assistant_metadata = body
         .assistant_metadata
         .as_ref()
@@ -107,10 +108,12 @@ pub(crate) async fn persist_external_turn(
     .await?
     .ok_or(PersistExternalTurnError::Incomplete)?;
 
-    sqlx::query("UPDATE chat_sessions SET updated_at = now() WHERE session_id = $1")
-        .bind(session_id)
-        .execute(&mut **tx)
-        .await?;
+    if touch_session {
+        sqlx::query("UPDATE chat_sessions SET updated_at = now() WHERE session_id = $1")
+            .bind(session_id)
+            .execute(&mut **tx)
+            .await?;
+    }
     Ok(PersistedExternalTurn {
         inserted: true,
         user_message,

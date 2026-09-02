@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde_json::{Value, json};
 
-use super::chat::{RoutedRequest, authenticate_request, resolve_routed_request};
+use super::chat::{RequestSignals, RoutedRequest, authenticate_request, resolve_routed_request};
 use crate::LlmRouterCtx;
 use crate::error::GatewayError;
 use crate::inbound::responses::{
@@ -106,6 +106,11 @@ async fn responses_core(
             latest_user_text(object.get("input")),
         )
     };
+    let signals = RequestSignals {
+        turn_ordinal: user_turn_ordinal(body.get("input")),
+        is_tool_continuation: is_tool_continuation(body.get("input")),
+        query,
+    };
     let routed = resolve_routed_request(
         ctx,
         store,
@@ -116,7 +121,7 @@ async fn responses_core(
             provider: Some("openai"),
             model: requested_model.as_deref(),
         },
-        query,
+        signals,
     )
     .await?;
     let attempts = fallback::build_attempts(&routed.resolved, &ctx.cfg);
@@ -850,6 +855,33 @@ fn latest_user_text(input: Option<&Value>) -> Option<String> {
         .and_then(content_text)
 }
 
+/// Number of top-level user turns so far in a Responses-API `input` array — the
+/// `routing::user_turn_ordinal` equivalent for this wire format. Used only for a
+/// coding-agent integration's `conv_id` anchor (see `RequestSignals::turn_ordinal`).
+fn user_turn_ordinal(input: Option<&Value>) -> usize {
+    input
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Whether the `input` array's last item is a tool result — the `routing::is_tool_continuation`
+/// equivalent for the Responses API, whose tool results are top-level `function_call_output`
+/// (or `custom_tool_call_output`) items rather than a `{role: "tool"}` message.
+fn is_tool_continuation(input: Option<&Value>) -> bool {
+    input
+        .and_then(Value::as_array)
+        .and_then(|items| items.last())
+        .and_then(|item| item.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|t| t == "function_call_output" || t == "custom_tool_call_output")
+}
+
 fn content_text(content: &Value) -> Option<String> {
     if let Some(text) = content.as_str() {
         return Some(text.to_string());
@@ -951,6 +983,7 @@ mod tests {
                     tier3_model: None,
                 }),
                 agent_pinned_model: None,
+                is_coding_agent: false,
             }))
         }
 
@@ -1404,6 +1437,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: false,
+            is_coding_agent: false,
         };
         let routed = RoutedRequest {
             agent_id: AGENT.into(),
@@ -1788,6 +1822,7 @@ mod tests {
                 tier2_model: None,
                 tier3_model: None,
                 platform_paid: true,
+                is_coding_agent: false,
             },
             flow_id: None,
         };

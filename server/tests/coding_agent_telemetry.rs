@@ -207,6 +207,51 @@ async fn accepts_content_and_metadata_and_handles_replays_independently() {
 
 #[tokio::test]
 #[serial]
+async fn content_turns_keep_source_order_when_ingested_out_of_order() {
+    let server = common::TestServer::start().await;
+    let (user_id, _) = setup(&server).await;
+    let mut earlier = event("ordered-session", "turn-1", CapturePolicy::Content);
+    earlier.turn.prompt = Some("first question".into());
+    earlier.turn.response = Some("first answer".into());
+    let mut later = event("ordered-session", "turn-2", CapturePolicy::Content);
+    later.turn.started_at += chrono::Duration::minutes(1);
+    later.turn.ended_at += chrono::Duration::minutes(1);
+    later.captured_at = later.turn.ended_at;
+    later.turn.prompt = Some("second question".into());
+    later.turn.response = Some("second answer".into());
+
+    let response = post(&server, user_id, &[later, earlier]).await;
+    assert_eq!(response["data"]["results"][0]["status"], "accepted");
+    assert_eq!(response["data"]["results"][1]["status"], "accepted");
+    let contents: Vec<String> =
+        sqlx::query_scalar("SELECT content FROM chat_messages ORDER BY timestamp, id")
+            .fetch_all(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        contents,
+        [
+            "first question",
+            "first answer",
+            "second question",
+            "second answer"
+        ]
+    );
+    let bounds: (chrono::DateTime<Utc>, chrono::DateTime<Utc>) = sqlx::query_as(
+        "SELECT created_at, updated_at FROM chat_sessions WHERE title = 'Coding session'",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(bounds.0, Utc.timestamp_opt(1_700_000_000, 0).unwrap());
+    assert!(
+        bounds.1
+            >= Utc.timestamp_opt(1_700_000_002, 0).unwrap() + chrono::Duration::minutes(1)
+    );
+}
+
+#[tokio::test]
+#[serial]
 async fn route_requires_authentication() {
     let server = common::TestServer::start().await;
     let response = server

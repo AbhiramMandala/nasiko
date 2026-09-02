@@ -1010,7 +1010,8 @@ async fn save_external_turn(
         }
     }
 
-    let persisted = match persist_external_turn(&mut tx, &session_id, &body).await {
+    let persisted = match persist_external_turn(&mut tx, &session_id, &body, Utc::now(), true).await
+    {
         Ok(persisted) => persisted,
         Err(PersistExternalTurnError::Incomplete) => {
             let _ = tx.rollback().await;

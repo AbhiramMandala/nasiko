@@ -367,7 +367,21 @@ impl CodingAgentEventV1 {
                 return Err("metadata-only events must not contain tool content".into());
             }
         }
+        let payload = serde_json::to_value(self)
+            .map_err(|error| format!("coding-agent event could not be serialized: {error}"))?;
+        if json_contains_nul(&payload) {
+            return Err("coding-agent event must not contain NUL characters".into());
+        }
         Ok(())
+    }
+}
+
+fn json_contains_nul(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(value) => value.contains('\0'),
+        serde_json::Value::Array(values) => values.iter().any(json_contains_nul),
+        serde_json::Value::Object(values) => values.values().any(json_contains_nul),
+        _ => false,
     }
 }
 
@@ -479,6 +493,34 @@ mod tests {
             })
             .collect();
         assert!(too_many_calls.validate().unwrap_err().contains("llm_calls"));
+
+        let mut nul_content = event();
+        nul_content.capture_policy = CapturePolicy::Content;
+        nul_content.turn.prompt = Some("question\0with nul".into());
+        nul_content.turn.response = Some("response".into());
+        assert!(nul_content.validate().unwrap_err().contains("NUL"));
+
+        let mut nul_json = event();
+        nul_json.capture_policy = CapturePolicy::Content;
+        nul_json.turn.prompt = Some("question".into());
+        nul_json.turn.response = Some("response".into());
+        nul_json.turn.tool_calls.push(CodingAgentToolCall {
+            id: "tool".into(),
+            name: "Read".into(),
+            kind: "tool".into(),
+            model_call_id: None,
+            status: CodingAgentToolCallStatus::Unknown,
+            arguments: Some(serde_json::json!({"value": "bad\0value"})),
+            output: None,
+            raw: None,
+            error: None,
+            started_at: None,
+            ended_at: None,
+            duration_ms: None,
+            association: CodingAgentToolAssociation::Turn,
+            timestamp_quality: CodingAgentTimestampQuality::Unknown,
+        });
+        assert!(nul_json.validate().unwrap_err().contains("NUL"));
     }
 
     #[test]
