@@ -267,7 +267,7 @@ class SettingsPage extends HTMLElement {
                 <div class="hint" id="s-oidc-secret-state">Write-only — leave blank to keep the stored secret.</div>
               </div>
               <div class="setting-control">
-                <app-input type="password" id="s-oidc-client-secret" data-field="oidc_client_secret" placeholder="unchanged" aria-label="Client secret"></app-input>
+                <app-input type="password" reveal id="s-oidc-client-secret" data-field="oidc_client_secret" placeholder="unchanged" aria-label="Client secret"></app-input>
               </div>
             </div>
             <div class="setting-row">
@@ -300,7 +300,7 @@ class SettingsPage extends HTMLElement {
               <div class="setting-control">
                 <div class="scim-endpoint-row">
                   <code id="s-scim-endpoint" class="scim-endpoint">${window.location.origin}/scim/v2</code>
-                  <app-button id="btn-copy-scim-url" type="button" variant="secondary" size="sm">Copy</app-button>
+                  <app-button id="btn-copy-scim-url" type="button" variant="tertiary" size="sm">Copy</app-button>
                 </div>
               </div>
             </div>
@@ -326,7 +326,7 @@ class SettingsPage extends HTMLElement {
         </div>
 
         <div class="save-bar">
-          <button class="save-btn" id="btn-save">Save changes</button>
+       <app-button size="md" id="btn-save">Save changes</app-button>
         </div>
       </div>
     `;

@@ -1,10 +1,63 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "726a923eb428",
+  "catalogVersion": "4ad51ac6d49c",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 26,
+  "componentCount": 27,
   "components": {
+    "app-accordion": {
+      "element": "app-accordion",
+      "summary": "Collapsible disclosure section — a header row that opens to reveal its body.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "label",
+        "open",
+        "variant",
+        "disabled"
+      ],
+      "attributes": {
+        "label": {
+          "type": "string",
+          "required": true,
+          "description": "Header text (required)"
+        },
+        "open": {
+          "type": "boolean",
+          "description": "Expanded. Reflected, so it tracks user toggles."
+        },
+        "variant": {
+          "type": "enum",
+          "values": [
+            "card",
+            "flat"
+          ],
+          "default": "card",
+          "description": "`card` (default) draws its own surface | `flat` drops the border and radius, for stacking inside a bordered list or nesting."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Header is inert and the section cannot be toggled"
+        }
+      },
+      "slots": [
+        {
+          "name": "meta",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "events": [
+        {
+          "name": "accordion-toggle",
+          "description": "Opened or closed; `detail: { open: boolean }` — bubbles"
+        }
+      ],
+      "note": "Header text is the `label` attribute; the children are the body. Trailing header chips go through Slot(\"meta\")."
+    },
     "app-action-menu": {
       "element": "app-action-menu",
       "summary": "Icon button that opens a compact dropdown list of actions.",
@@ -666,6 +719,7 @@
         "hint",
         "count",
         "required",
+        "reveal",
         "disabled",
         "readonly",
         "type",
@@ -724,6 +778,10 @@
         "required": {
           "type": "boolean",
           "description": "Renders the red `*` before the label."
+        },
+        "reveal": {
+          "type": "boolean",
+          "description": "On `type=\"password\"`, adds a trailing show/hide button that flips the inner input between `password` and `text`. Opt-in rather than automatic: a field holding a *stored* secret (an API key already on the server) is not always one the viewer should be able to unmask, so the call site decides. Ignored on every other type."
         },
         "disabled": {
           "type": "boolean",
@@ -1004,8 +1062,7 @@
       ],
       "requiresName": true,
       "nameFrom": [
-        "aria-label",
-        "placeholder"
+        "aria-label"
       ],
       "attributes": {
         "size": {
@@ -1042,23 +1099,23 @@
         },
         "name": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`."
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
         },
         "autocomplete": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`."
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
         },
         "maxlength": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`."
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
         },
         "inputmode": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`."
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
         },
         "aria-label": {
           "type": "string",
-          "description": "Accessible name for the field. The box has no visible label of its own, so one is always emitted: this if you set it, otherwise the placeholder. Set it whenever the page holds more than one search box, or the placeholder does not say what is being searched."
+          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
         }
       },
       "slots": [
@@ -1081,7 +1138,7 @@
           "description": "After the clear button runs, for call sites that want the clear itself rather than \"value became empty\"."
         }
       ],
-      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute. nameFallback: the field has no visible label to fill in, so the component emits the placeholder as its accessible name when aria-label is absent — a floor, not the recommended path."
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-select": {
       "element": "app-select",

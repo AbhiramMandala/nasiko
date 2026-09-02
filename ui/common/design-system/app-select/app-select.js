@@ -33,6 +33,9 @@
  * @fires change - Bubbles from the inner select.
  * @note Options can be slotted as plain `<option>` children instead of the
  *       `options` attribute; whichever is present wins, attribute first.
+ * @note A `value` no option carries is ignored, not applied: a native <select>
+ *       given an unknown value renders blank, which would wipe the visible
+ *       selection (e.g. a leading "None"/"Not configured" option).
  * @note The leading glyph is sized by the component — 16px at md, 12px at sm —
  *       so pass a bare `icons.sortBoth()` and don't set a size at the call site.
  */
@@ -58,7 +61,7 @@ export class AppSelect extends HTMLElement {
   #leading = null;
 
   get value() { return this.select?.value ?? this.getAttribute('value') ?? ''; }
-  set value(v) { if (this.select) this.select.value = v; else this.setAttribute('value', v); }
+  set value(v) { if (this.select) this.#applyValue(v); else this.setAttribute('value', v); }
   get select() { return this.querySelector('select'); }
 
   /** The host is not focusable — a `focus()` on it would silently do nothing,
@@ -83,6 +86,16 @@ export class AppSelect extends HTMLElement {
       return `<option value="${escAttr(value)}"${
         disabled ? ' disabled' : ''}>${escHtml(label ?? value)}</option>`;
     }).join('');
+  }
+
+  /** Select `v` only if an option carries it. A native <select> assigned a
+   *  value no option has drops to selectedIndex -1 and renders *blank* — it
+   *  does not no-op — so a caller binding an unrecognised server value (an
+   *  IdP kind with no option, a role that was renamed) would erase the
+   *  selection the user can see, including the first option's default. */
+  #applyValue(v) {
+    const sel = this.select;
+    if ([...sel.options].some((o) => o.value === String(v))) sel.value = v;
   }
 
   render() {
@@ -129,7 +142,7 @@ export class AppSelect extends HTMLElement {
     // sheet — so app-select.css's 16/12 chevron rules only apply once dropped.
     unsizeIcons(this);
 
-    if (value) this.select.value = value;
+    if (value) this.#applyValue(value);
     if (refocus) this.select.focus();
   }
 }

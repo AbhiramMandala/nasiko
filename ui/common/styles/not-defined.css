@@ -183,6 +183,28 @@ app-tabs:not(:defined) {
 app-tabs:not(:defined) > [data-tab] ~ [data-tab] {
   display: none;
 }
+/*
+  A disclosure reserves only its collapsed header. `content-visibility: hidden`
+  is what makes that honest: the body is a plain light-DOM child until the module
+  lands, so without it every accordion on the page paints fully expanded and then
+  snaps shut on upgrade — the opposite of the contract.
+  Height matches the upgraded summary: --s-12 block padding either side of a 20px
+  line box. Keep in step with app-accordion.css.
+*/
+app-accordion:not(:defined) {
+  display: block;
+  min-height: calc(20px + var(--s-12) * 2);
+  content-visibility: hidden;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--r-12);
+}
+app-accordion[variant="flat"]:not(:defined) {
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+}
+
 /* Strip mode has no panels and no generated strip — the page's own buttons are
    already there, so reserve nothing and lay them out as the upgraded strip does. */
 app-tabs[strip]:not(:defined) {
