@@ -30,14 +30,12 @@
 
 import { readSseFrames } from '../services/sse.js';
 import { call as callDataSource } from '../core/data-sources.js';
-import { router } from '../core/router.js';
 import { parseBuffer } from './parser.js';
 import { materialize, buildComponentIndex } from './materialize.js';
 import { render } from './render.js';
 import { createStore } from './store.js';
 import { createQueryManager } from './queries.js';
 import { createActionRunner } from './actions.js';
-import { createSurfaceTelemetry } from './telemetry.js';
 
 /**
  * A catalog version this client can actually compare against.
@@ -49,40 +47,6 @@ import { createSurfaceTelemetry } from './telemetry.js';
  * it changes, which is the exact failure the hash exists to catch.
  */
 const CONTENT_HASH = /^[0-9a-f]{12}$/;
-
-/** How many times a dropped stream is picked back up before giving up. */
-const MAX_RESUMES = 2;
-const RESUME_BACKOFF_MS = 250;
-
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * A developer pointing this browser at a Weave running on their own machine.
- *
- * Exists because the control-plane proxy does not yet (NAS-394), and the
- * alternative people reach for is hardcoding the endpoint and the shared
- * secret into this file — which is how a secret gets published. The values
- * come from the developer's own browser instead:
- *
- *   localStorage.setItem('weave-direct', JSON.stringify({
- *     baseUrl: 'http://localhost:8801', token: '…'
- *   }))
- *
- * Absent in every normal build, so the request is same-origin and the token
- * stays server-side where it belongs.
- */
-function readDirectConfig() {
-  const configured = globalThis.window?.nasikoConfig?.weaveDirect;
-  if (configured?.baseUrl) return configured;
-  try {
-    const raw = globalThis.localStorage?.getItem('weave-direct');
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed?.baseUrl ? parsed : null;
-  } catch {
-    return null; // a browser with storage disabled is not a broken browser
-  }
-}
 
 /** Frames the generator sends. Anything else is reported and ignored. */
 const FRAMES = new Set(['surface', 'dsl-chunk', 'end', 'fail', 'message', 'note']);
@@ -97,10 +61,7 @@ const FRAMES = new Set(['surface', 'dsl-chunk', 'end', 'fail', 'message', 'note'
  *   onStatus?: (s: {phase: string, detail?: string}) => void,
  *   onAction?: (action: object, el: Element) => void,
  *   onAssistant?: (text: string) => void,
- *   call?: (name: string, ...args: unknown[]) => unknown,
- *   routes?: {has(path: string): boolean}|null,
- *   navigate?: (path: string) => void,
- *   onTurn?: (record: object) => void,
+ *   callDataSource?: (name: string, ...args: unknown[]) => unknown,
  *   fetchImpl?: typeof fetch,
  *   schedule?: (fn: () => void) => void,
  *   doc?: Document,
@@ -111,11 +72,6 @@ export function createSurfaceSession(options) {
     endpoint, catalog, container,
     onMessage, onDiagnostics, onStatus, onAction, onAssistant,
     call = callDataSource,
-    // The live route table, not a copy — see render.js and actions.js. A host
-    // may inject a stand-in for tests; passing null refuses every route.
-    routes = router,
-    navigate = (path) => router.navigate(path),
-    onTurn,
     fetchImpl = globalThis.fetch?.bind(globalThis),
     schedule = (fn) => (globalThis.requestAnimationFrame ?? ((f) => setTimeout(f, 0)))(fn),
     doc,
@@ -130,21 +86,13 @@ export function createSurfaceSession(options) {
   let painting = false;
   let ended = false;
 
-  const telemetry = createSurfaceTelemetry({ report: onTurn });
-  /** Every diagnostic, wherever it came from, is both shown and counted. */
-  const emitDiagnostics = (list) => {
-    if (!list?.length) return;
-    telemetry.record(list);
-    onDiagnostics?.(list);
-  };
-
   const store = createStore();
   /** Diagnostics raised outside a draw pass — a fetch that failed later, say. */
   const liveDiagnostics = [];
   const queries = createQueryManager({
     call,
     onChange: () => paint(),
-    onDiagnostic: (d) => { liveDiagnostics.push(d); emitDiagnostics([d]); },
+    onDiagnostic: (d) => { liveDiagnostics.push(d); onDiagnostics?.([d]); },
   });
   /** The evaluator belonging to the most recent pass. Actions read through it. */
   let lastOut = null;
@@ -156,9 +104,7 @@ export function createSurfaceSession(options) {
     // this runs between them — see actions.js.
     refresh: () => walk(),
     onAssistant: (text) => onAssistant?.(text),
-    onDiagnostic: (d) => emitDiagnostics([d]),
-    routes,
-    navigate,
+    onDiagnostic: (d) => onDiagnostics?.([d]),
   });
 
   // A `$state` write repaints. It never re-fetches: that is `@Run`'s job alone
@@ -169,24 +115,7 @@ export function createSurfaceSession(options) {
   function paint() {
     if (painting) return;
     painting = true;
-    schedule(() => {
-      painting = false;
-      // A throw here is not a component's fault — render.js already catches
-      // those per node — so it is ours, on half-arrived text. Letting it escape
-      // would abandon the turn: `painting` is already false, but nothing would
-      // ever call draw() again for chunks that might well parse. Report and
-      // keep the stream alive; the buffer only grows, so the next chunk gets
-      // another attempt at the same statements.
-      try {
-        draw();
-      } catch (err) {
-        emitDiagnostics([{
-          source: 'stream',
-          code: 'paint_failed',
-          message: `a paint failed and was skipped: ${err?.message ?? err}`,
-        }]);
-      }
-    });
+    schedule(() => { painting = false; draw(); });
   }
 
   /**
@@ -205,7 +134,7 @@ export function createSurfaceSession(options) {
     if (remote === mine) return;
 
     if (CONTENT_HASH.test(remote) && CONTENT_HASH.test(mine)) {
-      emitDiagnostics([{
+      onDiagnostics?.([{
         source: 'stream',
         code: 'catalog_version_mismatch',
         message: `generator built against catalog ${remote}, this client has ${mine} — `
@@ -214,7 +143,7 @@ export function createSurfaceSession(options) {
       return;
     }
 
-    emitDiagnostics([{
+    onDiagnostics?.([{
       source: 'stream',
       code: 'catalog_version_unverifiable',
       message: `generator reported catalog version "${remote}", which is not a content hash — `
@@ -266,7 +195,6 @@ export function createSurfaceSession(options) {
         onAction?.(action, el);
         void actions.run(action, ev);
       },
-      routes,
       onDiagnostic: (d) => diagnostics.push(d),
     });
 
@@ -275,7 +203,7 @@ export function createSurfaceSession(options) {
     const key = JSON.stringify(diagnostics);
     if (key !== lastDiagnosticsKey) {
       lastDiagnosticsKey = key;
-      if (diagnostics.length) emitDiagnostics(diagnostics);
+      if (diagnostics.length) onDiagnostics?.(diagnostics);
     }
 
     return out;
@@ -295,169 +223,97 @@ export function createSurfaceSession(options) {
     ended = false;
     let status = 'ok';
     let remoteCatalogVersion = null;
-    let sawSurface = false;
 
-    telemetry.begin({ promptLength: String(prompt ?? '').length, catalogVersion: catalog.catalogVersion });
     onStatus?.({ phase: 'requesting' });
 
-    // Where the request goes.
-    //
-    // Normally same-origin: the control plane proxies to Weave and adds the
-    // shared secret server-side, so the browser never holds it. Until that
-    // route exists (NAS-394) a developer can point straight at a local Weave —
-    // but the token for that comes from the developer's own machine, never
-    // from this file. A secret in shipped source is a secret that is published,
-    // whatever the comment above it says.
-    const direct = readDirectConfig();
-    if (direct) {
-      emitDiagnostics([{
-        source: 'stream',
-        code: 'weave_direct',
-        message: `talking to ${direct.baseUrl} directly, with a token held in this browser — `
-          + 'local development only, and never how a deployed build should work',
-      }]);
-    }
-    const base = direct?.baseUrl ?? (globalThis.window?.nasikoConfig?.apiBase || '');
-    const url = `${base}/api${endpoint}`;
-    const body = JSON.stringify({
-      prompt,
-      context: {
-        ...(opts.context || {}),
-        // The vocabulary this client will actually render with. The generator
-        // treats it as the authority and refetches if it is holding anything
-        // else, which is what closes the window where a deploy lands between
-        // its catalog fetch and this request.
-        catalogVersion: catalog.catalogVersion,
-        currentSurface: currentSurface || undefined,
+    // Same multi-tenant seam as apiFetch: base from window.nasikoConfig.
+    // TEMPORARY LOCAL TEST PATCH: no Rust proxy for /api/weave/surface exists yet
+    // on `development`, so point straight at a locally-running weave2.0 instead of
+    // going through nasikoConfig.apiBase (which every other call still uses).
+    // Remove once the real control-plane proxy route lands.
+    const base = 'http://localhost:8801';
+    const res = await fetchImpl(`${base}/api${endpoint}`, {
+      method: 'POST',
+      // TEMPORARY LOCAL TEST PATCH: weave2.0 requires this header from the caller.
+      // In the real architecture the Rust proxy adds it server-side (the browser
+      // never holds it) — sent here only because we're bypassing that proxy locally.
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        'x-weave-internal-token': 'local-dev-secret',
       },
+      body: JSON.stringify({
+        prompt,
+        context: {
+          ...(opts.context || {}),
+          // The vocabulary this client will actually render with. The generator
+          // treats it as the authority and refetches if it is holding anything
+          // else, which is what closes the window where a deploy lands between
+          // its catalog fetch and this request.
+          catalogVersion: catalog.catalogVersion,
+          currentSurface: currentSurface || undefined,
+        },
+      }),
+      signal: opts.signal,
     });
 
-    let attempt = 0;
-    let lastEventId = null;
-    let terminal = false;
-
-    while (!terminal) {
-      const res = await fetchImpl(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          accept: 'text/event-stream',
-          ...(direct?.token ? { 'x-weave-internal-token': direct.token } : {}),
-          // A resumed request says where it got to. A server that honours it
-          // replays from there; one that does not starts over, which the
-          // `surface` frame below detects.
-          ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
-        },
-        body,
-        signal: opts.signal,
-      });
-
-      if (!res.ok) {
-        onStatus?.({ phase: 'failed', detail: `HTTP ${res.status}` });
-        telemetry.end({ status: 'http_error', rendered: false });
-        return { status: 'http_error', surface: currentSurface, catalogVersion: null };
-      }
-
-      onStatus?.({ phase: attempt ? 'resuming' : 'streaming' });
-
-      const read = await readSseFrames(res, {
-        signal: opts.signal,
-        lastEventId,
-        onFrame: (frame) => { if (handleFrame(frame)) terminal = true; },
-      });
-      lastEventId = read.lastEventId ?? lastEventId;
-
-      if (terminal || read.aborted || opts.signal?.aborted) break;
-
-      // The stream ended without saying it was finished, which means the
-      // connection dropped. Losing the turn here costs the user a re-prompt
-      // and costs us a second generation anyway, so retrying is cheaper than
-      // not — but only a couple of times, because a server that closes
-      // immediately would otherwise be an infinite loop.
-      attempt++;
-      if (attempt > MAX_RESUMES) {
-        status = 'interrupted';
-        emitDiagnostics([{
-          source: 'stream',
-          code: 'stream_interrupted',
-          message: `the stream dropped and did not recover after ${MAX_RESUMES} attempts`,
-        }]);
-        break;
-      }
-      emitDiagnostics([{
-        source: 'stream',
-        code: 'stream_resumed',
-        message: `the stream dropped mid-generation; resuming from ${lastEventId ?? 'the start'}`,
-      }]);
-      await delay(RESUME_BACKOFF_MS * attempt);
+    if (!res.ok) {
+      onStatus?.({ phase: 'failed', detail: `HTTP ${res.status}` });
+      return { status: 'http_error', surface: currentSurface, catalogVersion: null };
     }
 
     onStatus?.({ phase: 'streaming' });
 
-    /** @returns {boolean} true when this frame ends the turn */
-    function handleFrame({ event, data }) {
-      if (!FRAMES.has(event)) {
-        emitDiagnostics([{ source: 'stream', code: 'unknown_frame', message: `ignored "${event}"` }]);
-        return false;
-      }
-      let body = {};
-      if (data) {
-        try {
-          body = JSON.parse(data);
-        } catch {
-          emitDiagnostics([{ source: 'stream', code: 'malformed_frame', message: `frame "${event}" carried unparseable JSON` }]);
-          return false;
+    await readSseFrames(res, {
+      signal: opts.signal,
+      onFrame: ({ event, data }) => {
+        if (!FRAMES.has(event)) {
+          onDiagnostics?.([{ source: 'stream', code: 'unknown_frame', message: `ignored "${event}"` }]);
+          return;
         }
-      }
-
-      switch (event) {
-        case 'surface':
-          // A second `surface` frame means the server started the generation
-          // over rather than replaying from Last-Event-ID. Whatever is in the
-          // buffer belongs to the abandoned attempt, and appending to it would
-          // splice two different dashboards together.
-          if (sawSurface) {
-            buffer = '';
-            proseEmitted = 0;
-            emitDiagnostics([{
-              source: 'stream',
-              code: 'stream_restarted',
-              message: 'the generator restarted rather than resuming; the partial surface was discarded',
-            }]);
+        let body = {};
+        if (data) {
+          try {
+            body = JSON.parse(data);
+          } catch {
+            onDiagnostics?.([{ source: 'stream', code: 'malformed_frame', message: `frame "${event}" carried unparseable JSON` }]);
+            return;
           }
-          sawSurface = true;
-          remoteCatalogVersion = body.catalogVersion ?? null;
-          telemetry.identify({ surfaceId: body.surfaceId, catalogVersion: remoteCatalogVersion });
-          reportCatalogVersion(remoteCatalogVersion);
-          return false;
+        }
 
-        case 'dsl-chunk':
-          buffer += body.text ?? '';
-          telemetry.chunk();
-          paint();
-          return false;
+        switch (event) {
+          case 'surface':
+            remoteCatalogVersion = body.catalogVersion ?? null;
+            reportCatalogVersion(remoteCatalogVersion);
+            break;
 
-        case 'message': // the generator answering rather than building
-          if (body.text) onMessage?.(body.text);
-          return false;
+          case 'dsl-chunk':
+            buffer += body.text ?? '';
+            paint();
+            break;
 
-        case 'note':
-          emitDiagnostics([{ source: 'generator', code: body.code ?? 'note', message: body.message }]);
-          return false;
+          case 'message': // the generator answering rather than building
+            if (body.text) onMessage?.(body.text);
+            break;
 
-        case 'end':
-          status = body.status ?? 'ok';
-          return true;
+          case 'note':
+            onDiagnostics?.([{ source: 'generator', code: body.code ?? 'note', message: body.message }]);
+            break;
 
-        case 'fail':
-          status = 'failed';
-          emitDiagnostics([{ source: 'generator', code: body.code ?? 'stream_failed', message: body.message }]);
-          return true;
+          case 'end':
+            status = body.status ?? 'ok';
+            break;
 
-        default:
-          return false;
-      }
-    }
+          case 'fail':
+            status = 'failed';
+            onDiagnostics?.([{ source: 'generator', code: body.code ?? 'stream_failed', message: body.message }]);
+            break;
+
+          default:
+            break;
+        }
+      },
+    });
 
     ended = true;
     // One final synchronous pass, so the last chunk and the closing sentence
@@ -469,13 +325,6 @@ export function createSurfaceSession(options) {
     if (out.root) currentSurface = buffer;
 
     onStatus?.({ phase: status === 'ok' ? 'done' : 'failed' });
-    // One record for the whole turn. `rendered` is the honest measure of
-    // whether the user got anything — a turn can end "ok" and draw nothing.
-    telemetry.end({
-      status,
-      statements: lastOut?.symbols?.size ?? 0,
-      rendered: Boolean(out.root),
-    });
     return { status, surface: currentSurface, catalogVersion: remoteCatalogVersion };
   }
 
@@ -493,8 +342,6 @@ export function createSurfaceSession(options) {
     runAction: (action) => actions.run(action, lastOut?.evaluateAst ?? null),
     /** The most recent materialization. */
     get lastResult() { return lastOut; },
-    /** Subscribe to the per-turn telemetry record. */
-    onTurn: (fn) => telemetry.onTurn(fn),
     reset() {
       buffer = '';
       currentSurface = '';

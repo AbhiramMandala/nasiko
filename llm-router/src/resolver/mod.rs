@@ -92,11 +92,6 @@ pub struct ResolvedConfig {
     /// `user_secrets` key). Recorded on usage rows so platform-paid spend can be
     /// metered separately from bring-your-own-key spend.
     pub platform_paid: bool,
-    /// Whether this agent is a coding-agent CLI integration. See
-    /// [`AgentConfigResult::is_coding_agent`] — the chat handler uses this to derive
-    /// model-routing boundary signals from the transcript instead of the (permanently
-    /// unreachable, for these agents) `flows`-table lookup.
-    pub is_coding_agent: bool,
 }
 
 /// What the incoming request itself asked for, used **only** when the agent has no
@@ -122,12 +117,6 @@ pub struct AgentConfigResult {
     pub config: Option<LLMConfig>,
     /// Agent-level model pin (`agents.pinned_model`). Overrides config-level pinning.
     pub agent_pinned_model: Option<String>,
-    /// Whether this agent is a coding-agent CLI integration (`agents.metadata` carries an
-    /// `integration_id`, set by `nasiko connect` — see `cli::commands::coding_agent_router`).
-    /// These agents are never dispatched through the orchestrator, so they never have a
-    /// `flows` row; the chat handler uses this to derive boundary signals from the
-    /// transcript instead ([`crate::routing::BoundarySignals::for_coding_agent`]).
-    pub is_coding_agent: bool,
 }
 
 /// Storage seam for the resolver — mockable in tests.
@@ -147,6 +136,18 @@ pub trait RegistryStore: Send + Sync {
         owner_id: Uuid,
         name: &str,
     ) -> Result<Option<String>, sqlx::Error>;
+
+    /// The live flow named by a forwarded traceparent's trace id, together
+    /// with whether `agent_id` is a recorded `flow_participants` member of it.
+    /// "Live" = `status = 'running'` and younger than `window_secs` (a row
+    /// whose completion marking never ran ages out of attribution).
+    /// `Ok(None)` = no live flow ⇒ the caller must deny attribution.
+    async fn fetch_live_flow(
+        &self,
+        flow_id: &str,
+        agent_id: Uuid,
+        window_secs: i64,
+    ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error>;
 }
 
 /// Postgres-backed [`RegistryStore`].
@@ -224,17 +225,15 @@ impl RegistryStore for PgRegistry {
         &self,
         agent_id: Uuid,
     ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
-        // The agent's attached config id, owner, agent-level pin, and whether it's a
-        // coding-agent integration (`metadata ? 'integration_id'`, set by `nasiko connect`).
-        // A missing row → NoRegistryEntry upstream.
-        let agent: Option<(Option<Uuid>, Uuid, Option<String>, bool)> = sqlx::query_as(
-            "SELECT llm_config_id, owner_id, pinned_model, metadata ? 'integration_id' \
-             FROM agents WHERE id = $1",
+        // The agent's attached config id, owner, and agent-level pin. A missing row →
+        // NoRegistryEntry upstream.
+        let agent: Option<(Option<Uuid>, Uuid, Option<String>)> = sqlx::query_as(
+            "SELECT llm_config_id, owner_id, pinned_model FROM agents WHERE id = $1",
         )
         .bind(agent_id)
         .fetch_optional(&self.db)
         .await?;
-        let Some((config_id, owner_id, agent_pinned_model, is_coding_agent)) = agent else {
+        let Some((config_id, owner_id, agent_pinned_model)) = agent else {
             return Ok(None);
         };
 
@@ -250,7 +249,6 @@ impl RegistryStore for PgRegistry {
         Ok(Some(AgentConfigResult {
             config,
             agent_pinned_model,
-            is_coding_agent,
         }))
     }
 
@@ -267,6 +265,38 @@ impl RegistryStore for PgRegistry {
         .fetch_optional(&self.db)
         .await?;
         Ok(row.map(|(v,)| v))
+    }
+
+    async fn fetch_live_flow(
+        &self,
+        flow_id: &str,
+        agent_id: Uuid,
+        window_secs: i64,
+    ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
+        let row: Option<(Option<Uuid>, Option<String>, Option<String>, bool)> = sqlx::query_as(
+            "SELECT f.user_id, f.metadata->>'context_id', f.metadata->>'mode', \
+                    EXISTS(SELECT 1 FROM flow_participants fp \
+                           WHERE fp.flow_id = f.flow_id AND fp.agent_id = $2) \
+             FROM flows f \
+             WHERE f.flow_id = $1 \
+               AND f.status = 'running' \
+               AND f.created_at > now() - make_interval(secs => $3)",
+        )
+        .bind(flow_id)
+        .bind(agent_id)
+        .bind(window_secs as f64)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(
+            row.map(|(user_id, context_id, mode, agent_is_participant)| {
+                crate::routing::attribution::LiveFlow {
+                    user_id,
+                    context_id,
+                    mode,
+                    agent_is_participant,
+                }
+            }),
+        )
     }
 }
 
@@ -286,7 +316,6 @@ pub async fn resolve(
     let agent_result = load_llm_config(store, cache, agent_uuid, agent_id).await?;
     let llm_config = agent_result.config;
     let agent_pinned_model = agent_result.agent_pinned_model;
-    let is_coding_agent = agent_result.is_coding_agent;
     let has_llm_config = llm_config.is_some();
     let secret_name = plan_secret_name(&llm_config);
     let plan = plan_config(llm_config, cfg, hint, agent_pinned_model.as_deref());
@@ -316,7 +345,6 @@ pub async fn resolve(
         tier2_model: plan.tier2_model,
         tier3_model: plan.tier3_model,
         platform_paid,
-        is_coding_agent,
     };
     tracing::info!(
         target: "nasiko::llm_router::resolver",
@@ -348,8 +376,7 @@ fn plan_secret_name(llm_config: &Option<LLMConfig>) -> Option<String> {
 
 /// Load `llm_config` via the cache (for the config part), falling back to the store.
 /// A missing agent row is an error (not cached); a present row is cached. The agent-level
-/// pin and the coding-agent flag are always read from the store (not cached) so changes
-/// (a re-pin, a fresh `nasiko connect`) take effect immediately.
+/// pin is always read from the store (not cached) so changes take effect immediately.
 async fn load_llm_config(
     store: &dyn RegistryStore,
     cache: &ConfigCache,
@@ -368,17 +395,17 @@ async fn load_llm_config(
             pinned_model = ?hit.as_ref().and_then(|c| c.pinned_model.clone()),
             "resolver: llm_config cache HIT (agent pin resolved from store)"
         );
-        // Config is cached, but we still need the agent-level pin and coding-agent flag
-        // from the store. Re-fetch just the agent row; fall back to safe defaults on error.
-        let agent_row = store.fetch_llm_config(agent_uuid).await.ok().flatten();
-        let agent_pin = agent_row
-            .as_ref()
-            .and_then(|r| r.agent_pinned_model.clone());
-        let is_coding_agent = agent_row.is_some_and(|r| r.is_coding_agent);
+        // Config is cached, but we still need the agent-level pin from the store.
+        // Re-fetch just the agent row for the pin; fall back to None on error.
+        let agent_pin = store
+            .fetch_llm_config(agent_uuid)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| r.agent_pinned_model);
         return Ok(AgentConfigResult {
             config: hit,
             agent_pinned_model: agent_pin,
-            is_coding_agent,
         });
     }
     tracing::debug!(
@@ -558,13 +585,18 @@ mod tests {
             Ok(self.config.as_ref().map(|c| AgentConfigResult {
                 config: c.clone(),
                 agent_pinned_model: self.agent_pinned_model.clone(),
-                // Coding-agent detection is exercised at the handler level
-                // (handlers::chat), where it's actually consumed.
-                is_coding_agent: false,
             }))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(self.secret.clone())
+        }
+        async fn fetch_live_flow(
+            &self,
+            _: &str,
+            _: Uuid,
+            _: i64,
+        ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
+            unreachable!("resolver tests never attribute flows")
         }
     }
 

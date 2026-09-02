@@ -28,44 +28,8 @@ use crate::ir::{ChatChunk, Usage};
 use crate::providers::{ProviderError, fallback};
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
-use crate::routing::{self, BoundarySignals, Mode, RouteInputs};
+use crate::routing::{self, BoundarySignals, RouteInputs};
 use crate::usage::{self, UsageRecord};
-
-#[derive(Clone)]
-pub(crate) struct RoutedRequest {
-    pub agent_id: String,
-    pub owner_id: String,
-    pub resolved: crate::resolver::ResolvedConfig,
-    pub flow_id: Option<String>,
-}
-
-/// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
-/// gathered once per format-specific handler since each wire format shapes its transcript
-/// differently (chat.rs's IR `Message` list vs. responses.rs's Responses-API `input` array).
-pub(crate) struct RequestSignals {
-    /// Latest user turn's text — the classifier's `query` input (Level 3) for every agent,
-    /// and (for a coding-agent integration) also the `conv_id` anchor for *this* turn.
-    pub query: Option<String>,
-    /// Count of top-level user turns so far. Combined with `query`, anchors a coding-agent's
-    /// `conv_id` to the current turn rather than the whole session — see
-    /// `BoundarySignals::for_coding_agent`'s doc comment for why that distinction matters.
-    /// Only used when the resolved agent is a coding-agent integration.
-    pub turn_ordinal: usize,
-    /// Whether the transcript's last turn is a tool result — keeps a coding-agent's
-    /// in-flight tool loop sticky. Only used when the resolved agent is a coding-agent
-    /// integration.
-    pub is_tool_continuation: bool,
-}
-
-pub(crate) fn authenticate_request(
-    headers: &HeaderMap,
-    cfg: &crate::config::GatewayConfig,
-) -> Result<(String, String), GatewayError> {
-    let authz = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-    verify_agent_jwt(authz, cfg)
-}
 
 /// Axum handler for the OpenAI surface (`POST /v1/chat/completions`).
 pub async fn chat_completions(
@@ -126,7 +90,8 @@ async fn chat_core(
     format: InboundFormat,
     force_stream: Option<bool>,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id) = authenticate_request(headers, &ctx.cfg)?;
+    let authz = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
+    let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id, %owner_id, ?format,
@@ -154,105 +119,38 @@ async fn chat_core(
         provider: Some(format.provider_label()),
         model: req.model.as_deref(),
     };
-    let signals = RequestSignals {
-        query: routing::latest_user_query(&req.messages),
-        turn_ordinal: routing::user_turn_ordinal(&req.messages),
-        is_tool_continuation: routing::is_tool_continuation(&req.messages),
-    };
-    let routed =
-        resolve_routed_request(ctx, store, headers, agent_id, owner_id, hint, signals).await?;
-    let RoutedRequest {
-        agent_id,
-        owner_id,
-        resolved,
-        flow_id,
-    } = routed;
-    tracing::info!(
-        target: "nasiko::llm_router::chat",
-        %agent_id,
-        litellm_model = %resolved.litellm_model,
-        provider = %resolved.provider,
-        fallback_models = ?resolved.fallback_models,
-        streaming = req.is_streaming(),
-        "chat_core: final model selected — dispatching to provider"
-    );
-
-    let started = Instant::now();
-    let platform_paid = resolved.platform_paid;
-
-    if req.is_streaming() {
-        let (stream, (provider, model)) =
-            fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req).await?;
-        let renderer = inbound.chat_stream_renderer();
-        return stream_chat(StreamChatArgs {
-            ctx,
-            renderer,
-            provider_stream: stream,
-            provider,
-            model,
-            agent_id,
-            owner_id,
-            started,
-            flow_id,
-            platform_paid,
-        });
-    }
-
-    // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) =
-        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req).await?;
-    let latency_ms = started.elapsed().as_millis() as i64;
-
-    usage::spawn_log(
-        ctx.db.clone(),
-        UsageRecord {
-            owner_id,
-            agent_id,
-            operation_type: "direct_llm",
-            provider,
-            model,
-            usage: resp.usage.clone(),
-            cached_tokens: None,
-            reasoning_tokens: None,
-            latency_ms,
-            streaming: false,
-            finish_reason: resp.choices.first().and_then(|c| c.finish_reason.clone()),
-            flow_id,
-            platform_paid,
-        },
-    );
-
-    Ok(Json(inbound.render_chat_response(resp)).into_response())
-}
-
-pub(crate) async fn resolve_routed_request(
-    ctx: &LlmRouterCtx,
-    store: &dyn RegistryStore,
-    headers: &HeaderMap,
-    agent_id: String,
-    owner_id: String,
-    hint: RequestHint<'_>,
-    signals: RequestSignals,
-) -> Result<RoutedRequest, GatewayError> {
     let mut resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
-    // Model routing: the resolver fixed provider/key/params; routing may override only model.
-    //
-    // A coding-agent CLI (Claude Code, Codex, OpenCode, Cursor) is never dispatched through
-    // the orchestrator, so it never has a `flows` row — derive_boundary_signals's
-    // traceparent lookup is a permanent dead end for it (see that fn's doc comment), which
-    // otherwise pins every request to Level 4 (the agent's configured `llm_config`) and
-    // makes the prompt classifier (Level 3) unreachable. Derive signals from the transcript
-    // itself instead for these agents.
-    let boundary = if resolved.is_coding_agent {
-        BoundarySignals::for_coding_agent(
-            &agent_id,
-            signals.turn_ordinal,
-            signals.query.as_deref(),
-            signals.is_tool_continuation,
-        )
-    } else {
-        derive_boundary_signals(headers, &ctx.db).await
-    };
+
+    let query = routing::latest_user_query(&req.messages);
+
+    // Flow attribution: which user conversation this LLM call belongs to. The
+    // agent's JWT only names the agent/owner; the caller's identity comes from
+    // the `flows` row named by the forwarded traceparent, gated on the agent
+    // being a recorded flow participant. STRICT: an unattributable call is
+    // rejected with 403 before any tokens are spent — no fallback, no guessing
+    // (see routing/attribution.rs and oss/docs/TOKEN_ATTRIBUTION.md).
+    let raw_traceparent = headers
+        .get(TRACEPARENT_HEADER)
+        .and_then(|v| v.to_str().ok());
+    let trace_flow = raw_traceparent.and_then(parse_flow_id);
+    let attribution = routing::attribution::resolve(
+        store,
+        &agent_id,
+        trace_flow,
+        ctx.cfg.attribution_window_secs as i64,
+    )
+    .await
+    .map_err(|denied| {
+        GatewayError::Forbidden(format!(
+            "{denied} (received traceparent: {})",
+            raw_traceparent.unwrap_or("<none>")
+        ))
+    })?;
+
+    // Model routing: the resolver fixed the provider/key/params; the router may override
+    // the *model* at a conversation boundary (else it stays the resolved model). Signals
+    // come from the attributed flow's trusted state.
+    let signals = boundary_signals_for(&attribution);
     let decision = routing::route_model(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
@@ -266,8 +164,8 @@ pub(crate) async fn resolve_routed_request(
             tier1_model: resolved.tier1_model.as_deref(),
             tier2_model: resolved.tier2_model.as_deref(),
             tier3_model: resolved.tier3_model.as_deref(),
-            signals: &boundary,
-            query: signals.query.as_deref(),
+            signals: &signals,
+            query: query.as_deref(),
         },
     )
     .await;
@@ -301,92 +199,99 @@ pub(crate) async fn resolve_routed_request(
         );
         resolved.fallback_models.clear();
     }
-    let flow_id = headers
-        .get(TRACEPARENT_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_flow_id);
-    Ok(RoutedRequest {
-        agent_id,
-        owner_id,
-        resolved,
-        flow_id,
-    })
-}
-
-/// Derive the model-routing [`BoundarySignals`] for this request (S5).
-///
-/// The opaque agent sets nothing: the gateway reads the `traceparent` the agent forwards,
-/// maps its trace id to a `flows` row (the conversation), and builds the signals from that
-/// trusted state. The flow lookup does double duty — it both confirms this is a genuine
-/// platform conversation (not an arbitrary trace) and reads the conversation `mode`.
-///
-/// Any of: no `traceparent`, an unparseable one, an unknown flow, or a DB error ⇒
-/// [`BoundarySignals::inert`] — the router doesn't fire and the resolved model is used.
-async fn derive_boundary_signals(headers: &HeaderMap, db: &sqlx::PgPool) -> BoundarySignals {
-    let Some(flow_id) = headers
-        .get(TRACEPARENT_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_flow_id)
-    else {
-        tracing::info!(
-            target: "nasiko::llm_router::boundary",
-            conv_id = "None",
-            "derive_boundary_signals: no/unparseable traceparent → INERT (router will not fire; resolved model used)"
-        );
-        return BoundarySignals::inert();
-    };
-    tracing::debug!(
-        target: "nasiko::llm_router::boundary",
-        %flow_id, "derive_boundary_signals: parsed flow_id from traceparent; looking up flow in DB"
+    tracing::info!(
+        target: "nasiko::llm_router::chat",
+        %agent_id,
+        litellm_model = %resolved.litellm_model,
+        provider = %resolved.provider,
+        fallback_models = ?resolved.fallback_models,
+        streaming = req.is_streaming(),
+        "chat_core: final model selected — dispatching to provider"
     );
 
-    let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-        "SELECT metadata->>'mode', metadata->>'context_id' FROM flows WHERE flow_id = $1",
-    )
-    .bind(&flow_id)
-    .fetch_optional(db)
-    .await;
-    match row {
-        Ok(Some((mode, context_id))) => {
-            let mode = mode
-                .as_deref()
-                .map(Mode::from_label)
-                .unwrap_or(Mode::FreeFlowing);
-            // Key the decision cache on the conversation's stable context_id, not
-            // the flow_id (= this turn's traceparent trace id, which the CLI
-            // re-mints every turn). The proxy/orchestrator writes context_id onto
-            // the flow row; turn 1 (cold start) writes the sticky decision under
-            // it and turn 2+ hit it. Fall back to flow_id for older flow rows (or
-            // a caller) that never set context_id — behaviour identical to before.
-            let conv_id = context_id
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| flow_id.clone());
-            let signals = BoundarySignals::in_flow(conv_id.clone(), mode);
-            tracing::info!(
-                target: "nasiko::llm_router::boundary",
-                %flow_id, %conv_id, mode = ?mode, phase = ?signals.phase,
-                is_fireable_boundary = signals.is_fireable_boundary(),
-                "derive_boundary_signals: known flow → IN-FLOW signals (router may re-select the model at this boundary)"
-            );
-            signals
-        }
-        Ok(None) => {
-            tracing::info!(
-                target: "nasiko::llm_router::boundary",
-                flow_id_lookup = %flow_id,
-                conv_id = "None",
-                "derive_boundary_signals: forwarded trace id is not a known flow → INERT (router will not fire; check the orchestrator's `nasiko::flow` flow_id — a mismatch means the agent didn't propagate the trace)"
-            );
-            BoundarySignals::inert() // trace id isn't a known flow → don't fire
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "nasiko::llm_router::boundary",
-                error = %e, %flow_id, "derive_boundary_signals: flow lookup failed; router INERT for request"
-            );
-            BoundarySignals::inert()
-        }
+    let started = Instant::now();
+    // The usage row's flow/session key is the attributed flow (attribution is
+    // strict, so it always exists here). The billed identity: the chatting
+    // user from the flow row (a shared agent's spend belongs to the caller),
+    // with the JWT's owner as the safety net for flows without a user.
+    let flow_id = Some(attribution.flow_id.clone());
+    let billed_user_id = attribution
+        .user_id
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| owner_id.clone());
+    let attribution_source = Some(attribution.source);
+    let platform_paid = resolved.platform_paid;
+
+    if req.is_streaming() {
+        let (stream, (provider, model)) =
+            fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req).await?;
+        let renderer = inbound.chat_stream_renderer();
+        return stream_chat(StreamChatArgs {
+            ctx,
+            renderer,
+            provider_stream: stream,
+            provider,
+            model,
+            agent_id,
+            owner_id: billed_user_id,
+            started,
+            flow_id,
+            attribution_source,
+            platform_paid,
+        });
     }
+
+    // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
+    let (resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req).await?;
+    let latency_ms = started.elapsed().as_millis() as i64;
+
+    usage::spawn_log(
+        ctx.db.clone(),
+        UsageRecord {
+            owner_id: billed_user_id,
+            agent_id,
+            operation_type: "direct_llm",
+            provider,
+            model,
+            usage: resp.usage.clone(),
+            latency_ms,
+            streaming: false,
+            finish_reason: resp.choices.first().and_then(|c| c.finish_reason.clone()),
+            flow_id,
+            attribution_source,
+            platform_paid,
+        },
+    );
+
+    Ok(Json(inbound.render_chat_response(resp)).into_response())
+}
+
+/// Derive the model-routing [`BoundarySignals`] from the attributed flow.
+///
+/// The flow lookup already happened in [`attribution::resolve`] — the signals
+/// here come from that same trusted flow state. Attribution is strict, so an
+/// unattributable call was rejected before this point; every served call is
+/// in-flow.
+fn boundary_signals_for(a: &routing::attribution::FlowAttribution) -> BoundarySignals {
+    // Key the decision cache on the conversation's stable context_id, not
+    // the flow_id (= this turn's trace id, which the CLI re-mints every
+    // turn). Turn 1 writes the sticky decision under it and turn 2+ hit
+    // it. Fall back to flow_id for flows that never set context_id.
+    let conv_id = a
+        .context_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| a.flow_id.clone());
+    let signals = BoundarySignals::in_flow(conv_id.clone(), a.mode);
+    tracing::info!(
+        target: "nasiko::llm_router::boundary",
+        flow_id = %a.flow_id, %conv_id, mode = ?a.mode,
+        source = a.source.as_label(), phase = ?signals.phase,
+        is_fireable_boundary = signals.is_fireable_boundary(),
+        "boundary signals: known flow → IN-FLOW (router may re-select the model at this boundary)"
+    );
+    signals
 }
 
 /// Everything [`stream_chat`] needs; bundled so the argument list stays readable.
@@ -400,6 +305,7 @@ struct StreamChatArgs<'a> {
     owner_id: String,
     started: Instant,
     flow_id: Option<String>,
+    attribution_source: Option<routing::attribution::AttributionSource>,
     platform_paid: bool,
 }
 
@@ -418,6 +324,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         owner_id,
         started,
         flow_id,
+        attribution_source,
         platform_paid,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
@@ -430,6 +337,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         started,
         state: state.clone(),
         flow_id,
+        attribution_source,
         platform_paid,
     };
 
@@ -493,6 +401,7 @@ struct UsageGuard {
     started: Instant,
     state: Arc<Mutex<StreamState>>,
     flow_id: Option<String>,
+    attribution_source: Option<routing::attribution::AttributionSource>,
     platform_paid: bool,
 }
 
@@ -508,12 +417,11 @@ impl Drop for UsageGuard {
                 provider: self.provider.clone(),
                 model: self.model.clone(),
                 usage: st.usage.clone(),
-                cached_tokens: None,
-                reasoning_tokens: None,
                 latency_ms: self.started.elapsed().as_millis() as i64,
                 streaming: true,
                 finish_reason: st.finish_reason.clone(),
                 flow_id: self.flow_id.clone(),
+                attribution_source: self.attribution_source,
                 platform_paid: self.platform_paid,
             },
         );
@@ -538,7 +446,6 @@ mod tests {
 
     struct Store {
         config: Option<LLMConfig>,
-        is_coding_agent: bool,
     }
     #[async_trait]
     impl RegistryStore for Store {
@@ -549,11 +456,39 @@ mod tests {
             Ok(Some(AgentConfigResult {
                 config: self.config.clone(),
                 agent_pinned_model: None,
-                is_coding_agent: self.is_coding_agent,
             }))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(None)
+        }
+        async fn fetch_live_flow(
+            &self,
+            _: &str,
+            _: Uuid,
+            _: i64,
+        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
+            // Every strict-attribution branch is unit-tested in
+            // routing/attribution.rs; here the flow always resolves so the
+            // format-translation paths under test are reachable.
+            Ok(Some(routing::attribution::LiveFlow {
+                user_id: None,
+                context_id: Some("ses_test".into()),
+                mode: None,
+                agent_is_participant: true,
+            }))
+        }
+    }
+
+    /// No-op tier registry: attribution now always resolves in these tests
+    /// (strict enforcement), which makes every call a fireable boundary — a
+    /// registry with tier mappings would then override the request model and
+    /// break the passthrough behaviour under test. No mapping ⇒ the resolved
+    /// model always passes through.
+    struct NoTiers;
+    #[async_trait]
+    impl routing::registry::TierRegistry for NoTiers {
+        async fn model_for(&self, _: &str, _: routing::classifier::Tier) -> Option<String> {
+            None
         }
     }
 
@@ -574,14 +509,18 @@ mod tests {
             cfg: Arc::new(cfg),
             cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
             router_cache: Arc::new(crate::routing::NoopCache),
-            tier_registry: Arc::new(crate::routing::StaticTierRegistry),
+            tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
         }
     }
 
+    const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
     fn auth_headers(token: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
+        // Strict attribution: every served call must carry trace context.
+        h.insert(TRACEPARENT_HEADER, TRACEPARENT.parse().unwrap());
         h
     }
 
@@ -638,10 +577,7 @@ mod tests {
             .await;
 
         let ctx = ctx_with(server.url());
-        let store = Store {
-            config: None,
-            is_coding_agent: false,
-        };
+        let store = Store { config: None };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
         let resp = chat_core(
             &ctx,
@@ -685,7 +621,6 @@ mod tests {
         let ctx = ctx_with(server.url());
         let store = Store {
             config: Some(openai_config()),
-            is_coding_agent: false,
         };
         // Anthropic Messages request shape: top-level system + max_tokens.
         let body = json!({
@@ -740,7 +675,6 @@ mod tests {
         let ctx = ctx_with(server.url());
         let store = Store {
             config: Some(openai_config()),
-            is_coding_agent: false,
         };
         // Gemini Messages request shape: systemInstruction + contents.
         let body = json!({
@@ -783,10 +717,7 @@ mod tests {
             .await;
 
         let ctx = ctx_with(server.url());
-        let store = Store {
-            config: None,
-            is_coding_agent: false,
-        };
+        let store = Store { config: None };
         let body = json!({ "model": "gpt-4o", "stream": true, "messages": [{ "role": "user", "content": "hi" }] });
         let resp = chat_core(
             &ctx,
@@ -813,10 +744,7 @@ mod tests {
     #[tokio::test]
     async fn missing_auth_is_401_before_any_provider_call() {
         let ctx = ctx_with("http://unused".into());
-        let store = Store {
-            config: None,
-            is_coding_agent: false,
-        };
+        let store = Store { config: None };
         let body = json!({ "model": "gpt-4o", "messages": [] });
         let err = chat_core(
             &ctx,
@@ -831,109 +759,42 @@ mod tests {
         assert!(matches!(err, GatewayError::MissingAuthHeader));
     }
 
-    #[tokio::test]
-    async fn derive_signals_inert_without_traceparent() {
-        // No traceparent ⇒ inert, returned before any DB access.
-        let ctx = ctx_with("http://unused".into());
-        let signals = derive_boundary_signals(&HeaderMap::new(), &ctx.db).await;
-        assert!(signals.conv_id.is_none());
-        assert!(!signals.is_fireable_boundary());
+    #[test]
+    fn boundary_signals_in_flow_when_attributed() {
+        let attribution = routing::attribution::FlowAttribution {
+            flow_id: "f1".into(),
+            user_id: None,
+            context_id: Some("ses_1".into()),
+            mode: routing::Mode::FreeFlowing,
+            source: routing::attribution::AttributionSource::Traceparent,
+        };
+        // The stable context_id keys the decision cache, not the per-turn flow id.
+        let signals = boundary_signals_for(&attribution);
+        assert_eq!(signals.conv_id.as_deref(), Some("ses_1"));
+        assert!(signals.is_fireable_boundary());
     }
 
     #[tokio::test]
-    async fn coding_agent_with_no_traceparent_still_gets_classified_not_pinned_to_config() {
-        // The bug this fixes: a coding-agent CLI (Claude Code, Codex, ...) never has a
-        // traceparent tied to a `flows` row, so `derive_boundary_signals` alone always goes
-        // inert for it — which pins every request to Level 4 (the attached llm_config) and
-        // makes the prompt classifier (Level 3) unreachable. `is_coding_agent: true` must
-        // make `resolve_routed_request` derive signals from the transcript instead, so the
-        // classifier actually gets to run.
+    async fn missing_traceparent_is_403_before_any_provider_call() {
+        // Strict enforcement: a valid agent JWT with no trace context is
+        // refused with 403 (not 401 — the credential itself is fine).
         let ctx = ctx_with("http://unused".into());
-        let store = Store {
-            // A configured model that is NOT one of openai's seeded tier models
-            // (gpt-5.5 / gpt-5.4 / gpt-4o-mini) — if the classifier never fires, the
-            // resolved model will be exactly this. If it does fire, it will be one of the
-            // seeded tier models instead.
-            config: Some(LLMConfig {
-                provider: "openai".into(),
-                model: Some("static-configured-model".into()),
-                fallback_models: vec![],
-                temperature: None,
-                max_tokens: None,
-                api_key_secret_name: None,
-                pinned: false,
-                pinned_model: None,
-                tier1_model: None,
-                tier2_model: None,
-                tier3_model: None,
-            }),
-            is_coding_agent: true,
-        };
-        let routed = resolve_routed_request(
-            &ctx,
-            &store,
-            &HeaderMap::new(), // no traceparent — a coding-agent CLI never sends one
-            AGENT.into(),
-            OWNER.into(),
-            RequestHint {
-                provider: Some("openai"),
-                model: None,
-            },
-            RequestSignals {
-                query: Some("write a function that reverses a string".into()),
-                turn_ordinal: 1,
-                is_tool_continuation: false,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(
-            ["gpt-5.5", "gpt-5.4", "gpt-4o-mini"].contains(&routed.resolved.model.as_str()),
-            "expected a classifier-selected tier model, got {}",
-            routed.resolved.model
+        let store = Store { config: None };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            format!("Bearer {}", token()).parse().unwrap(),
         );
-    }
-
-    #[tokio::test]
-    async fn non_coding_agent_with_no_traceparent_stays_pinned_to_config() {
-        // Control for the test above: an ordinary (non-coding-agent) agent with no
-        // traceparent keeps the pre-existing inert behavior — pinned to its llm_config.
-        let ctx = ctx_with("http://unused".into());
-        let store = Store {
-            config: Some(LLMConfig {
-                provider: "openai".into(),
-                model: Some("static-configured-model".into()),
-                fallback_models: vec![],
-                temperature: None,
-                max_tokens: None,
-                api_key_secret_name: None,
-                pinned: false,
-                pinned_model: None,
-                tier1_model: None,
-                tier2_model: None,
-                tier3_model: None,
-            }),
-            is_coding_agent: false,
-        };
-        let routed = resolve_routed_request(
-            &ctx,
-            &store,
-            &HeaderMap::new(),
-            AGENT.into(),
-            OWNER.into(),
-            RequestHint {
-                provider: Some("openai"),
-                model: None,
-            },
-            RequestSignals {
-                query: Some("write a function that reverses a string".into()),
-                turn_ordinal: 1,
-                is_tool_continuation: false,
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(routed.resolved.model, "static-configured-model");
+        let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
+        let err = chat_core(&ctx, &store, &headers, body, InboundFormat::OpenAi, None)
+            .await
+            .unwrap_err();
+        match err {
+            GatewayError::Forbidden(msg) => {
+                assert!(msg.contains("traceparent"), "descriptive body: {msg}")
+            }
+            other => panic!("expected Forbidden, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -953,7 +814,6 @@ mod tests {
                 tier2_model: None,
                 tier3_model: None,
             }),
-            is_coding_agent: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
         let err = chat_core(
