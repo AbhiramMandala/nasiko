@@ -197,9 +197,16 @@ pub trait ContainerRuntime: Send + Sync {
     /// The Kubernetes runtime overrides this to re-apply the K8s Secret so that
     /// secrets rotated while an agent was stopped are picked up on next restart
     /// without requiring a full redeploy.
+    ///
+    /// `env_vars` is the agent's **complete** desired environment, not a delta:
+    /// the Kubernetes backend server-side-applies it, so any key omitted here is
+    /// removed from the live Secret. `name` is the agent's human-readable name
+    /// (`DeploymentSpec::name`), which instrumentation decorators need to rebuild
+    /// the same injected environment `deploy()` would have produced.
     async fn refresh_secrets(
         &self,
         _id: &ContainerId,
+        _name: &str,
         _env_vars: std::collections::HashMap<String, String>,
     ) -> Result<()> {
         Ok(())

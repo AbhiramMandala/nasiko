@@ -86,6 +86,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         agent_memory_init_image: "alpine:3.21".into(),
         k8s_namespace: "nasiko-bench".into(),
         kubeconfig: None,
+        storage_provider: "s3".into(),
         s3_endpoint: s3_ep,
         s3_bucket: "nasiko-bench".into(),
         s3_access_key: "nasiko".into(),
