@@ -541,3 +541,49 @@ test('by default the request is same-origin and carries no secret', async () => 
   assert.equal('x-weave-internal-token' in seen.headers, false,
     'a shared secret in a shipped build is a published secret');
 });
+
+test('the surface sent back is pruned of what nothing references', async () => {
+  // A model that wrote a card and forgot to hang it off root. Handing that
+  // line back next turn tells the model a component is on screen that the
+  // user cannot see, and it rides along in the context forever.
+  const chunks = [
+    frame('surface', {}, 1),
+    frame('dsl-chunk', { text: 'root = AppStack([kpi], "md")\n' }, 2),
+    frame('dsl-chunk', { text: 'kpi = AppStatCard("Cost", "1", null, "up")\n' }, 3),
+    frame('dsl-chunk', { text: 'stray = AppStatCard("Nobody", "0", null, "up")\n' }, 4),
+    frame('end', { status: 'ok' }, 5),
+  ];
+  const { s, diagnostics, requests } = session(chunks);
+  await s.send('build it');
+  await s.send('now change it');
+
+  const sent = requests[1].body.context.currentSurface;
+  assert.ok(sent.includes('kpi = AppStatCard'), sent);
+  assert.equal(sent.includes('stray'), false, sent);
+  // What was stored stays the faithful record of what the model emitted.
+  assert.ok(s.currentSurface.includes('stray'));
+  // And the orphan is reported, not just quietly dropped.
+  assert.ok(diagnostics.some((d) => d.code === 'orphaned_statement' && d.pointer === 'stray'),
+    JSON.stringify(diagnostics));
+});
+
+test('a $state line goes back holding what the user set, not what the DSL declared', async () => {
+  // Otherwise the revision turn reasons about the cost view while the user is
+  // looking at the ops view they switched to.
+  const chunks = [
+    frame('surface', {}, 1),
+    frame('dsl-chunk', { text: '$view = "cost"\n' }, 2),
+    frame('dsl-chunk', { text: 'root = AppStatCard($view, "1", null, "up")\n' }, 3),
+    frame('end', { status: 'ok' }, 4),
+  ];
+  const { s, requests } = session(chunks);
+  await s.send('build it');
+  assert.ok(s.currentSurface.includes('$view = "cost"'), s.currentSurface);
+
+  // The user switches — which happens after the turn ended, which is exactly
+  // why the rewrite cannot be done when the surface was stored.
+  s.store.set('$view', 'ops');
+  await s.send('now change it');
+  assert.ok(requests[1].body.context.currentSurface.includes('$view = "ops"'),
+    requests[1].body.context.currentSurface);
+});

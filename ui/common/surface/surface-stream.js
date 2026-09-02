@@ -35,6 +35,7 @@ import { parseBuffer } from './parser.js';
 import { materialize, buildComponentIndex } from './materialize.js';
 import { render } from './render.js';
 import { createStore } from './store.js';
+import { pruneUnreachable } from './gc.js';
 import { createQueryManager } from './queries.js';
 import { createActionRunner } from './actions.js';
 import { createSurfaceTelemetry } from './telemetry.js';
@@ -334,7 +335,16 @@ export function createSurfaceSession(options) {
         // else, which is what closes the window where a deploy lands between
         // its catalog fetch and this request.
         catalogVersion: catalog.catalogVersion,
-        currentSurface: currentSurface || undefined,
+        // Pruned and re-stated here rather than when it was stored, because
+        // both corrections are only true as of now. Statements nothing
+        // references are dropped, so a card the model wrote and orphaned
+        // three turns ago stops being handed back as though it were on
+        // screen. And each `$state` line is rewritten to what the store
+        // actually holds — the user does their switching *after* the turn
+        // ends, so a value frozen at turn end would always be the stale one,
+        // and the model would revise the cost view while the user sits on
+        // ops.
+        currentSurface: currentSurface ? pruneUnreachable(currentSurface, store) : undefined,
       },
     });
 
@@ -472,6 +482,9 @@ export function createSurfaceSession(options) {
 
     // Only a turn that produced a surface replaces the one a revision builds
     // from. A conversational turn must not wipe the dashboard.
+    //
+    // Stored raw: this is the faithful record of what the model emitted, and
+    // pruning belongs at send time instead — see the call site below.
     if (out.root) currentSurface = buffer;
 
     onStatus?.({ phase: status === 'ok' ? 'done' : 'failed' });

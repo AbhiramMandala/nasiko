@@ -34,6 +34,7 @@ function same(a, b) {
 /**
  * @returns {{
  *   get(name: string): unknown,
+ *   has(name: string): boolean,
  *   set(name: string, value: unknown): boolean,
  *   reset(names: string[]): boolean,
  *   initialize(defaults: Map<string, unknown>|Record<string, unknown>): void,
@@ -62,6 +63,16 @@ export function createStore() {
     get(name) {
       if (values.has(name)) return values.get(name);
       return declared.has(name) ? declared.get(name) : undefined;
+    },
+
+    /**
+     * Whether this store speaks for `name` at all — a value the user set, or
+     * one a statement declared. gc.js asks before rewriting a `$state` line
+     * for the model: a name the store knows nothing about must keep whatever
+     * the DSL text already said rather than being flattened to null.
+     */
+    has(name) {
+      return values.has(name) || declared.has(name);
     },
 
     set(name, value) {
