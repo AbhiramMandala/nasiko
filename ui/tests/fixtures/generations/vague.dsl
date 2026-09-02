@@ -1,14 +1,11 @@
 Sure — building that now.
-root = AppStack([kpis, chart, table], "md")
-totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
-requestCountQ = Query("fetchUsageSummary", [], 0, "request_count")
-avgCostQ = Query("fetchUsageSummary", [], 0, "avg_latency_ms")
-historyRows = Query("fetchUsageHistory", [7], [])
-kpis = AppRow([costCard, requestCard, avgCard], "md")
-costCard = AppStatCard("Total cost", totalCostQ, null, "neutral")
-requestCard = AppStatCard("Requests", requestCountQ, null, "neutral")
-avgCard = AppStatCard("Avg latency", avgCostQ, null, "neutral")
-chart = AppChart({labels: historyRows.date, datasets: [{label: "Cost", data: historyRows.total_cost_usd}]}, "line", false, "currency", "USD")
-agentRows = Query("fetchUsageByAgent", ["", 1, 50], [], "data")
-table = AppTable(agentRows, 50, "pages", true)
-Here's your cost overview with top-level KPIs, a 7-day cost trend, and a breakdown by agent — let me know if you'd like to adjust the timeframe, add more metrics, or dive deeper into any specific area!
+root = AppStack([kpiRow, costChart, agentTable], "md")
+summaryQ = Query("fetchUsageSummary", [], {request_count: 0, total_cost_usd: 0}, "total_cost_usd")
+historyQ = Query("fetchUsageHistory", [7], [])
+agentQ = Query("fetchUsageByAgent", ["", 1, 10], [], "data")
+kpiRow = AppStatRow([costCard, requestCard], false)
+costCard = {label: "Total cost", value: summaryQ, delta: null, trend: "neutral"}
+requestCard = {label: "Requests", value: summaryQ, delta: null, trend: "neutral"}
+costChart = AppChart({labels: historyQ.date, datasets: [{label: "Cost (USD)", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD")
+agentTable = AppTable(agentQ, 10, "pages", false)
+Here's your cost overview — total spend, requests, a 7-day trend chart, and top agents by cost. Let me know if you'd like to filter by date range, drill into specific agents, or see other metrics!

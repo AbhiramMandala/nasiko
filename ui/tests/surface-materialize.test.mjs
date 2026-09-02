@@ -249,3 +249,57 @@ kpiCount = AppStatCard("Requests", requestCountQ, null, "neutral")`,
   assert.equal(out.queries.length, 2);
   assert.deepEqual(out.diagnostics, []);
 });
+
+test('a default that is the whole response is caught at the Query, not at the table', () => {
+  // The generator writes this: the envelope as the default, plus a dot-path.
+  // The component then fails with "needs an array of rows", which points at
+  // the table and not at the line that is actually wrong.
+  const out = run('q = Query("fetchUsageByModel", ["", 1, 50], {data: [], total: 0}, "data")\nroot = AppTable(q)');
+  const d = out.diagnostics.find((x) => x.code === 'default_is_whole_response');
+  assert.ok(d, 'the diagnostic has to name the Query, or nobody finds it');
+  assert.match(d.message, /"data" path/);
+});
+
+test('a correctly shaped default is silent', () => {
+  const out = run('q = Query("fetchUsageByModel", ["", 1, 50], [], "data")\nroot = AppTable(q)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'default_is_whole_response'), false);
+});
+
+test('an object default with no dot-path is fine', () => {
+  // Nothing is being selected, so the whole object *is* what the component gets.
+  const out = run('q = Query("fetchUsageSummary", [], {total: 0})\nroot = AppStatCard("Total", q.total)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'default_is_whole_response'), false);
+});
+
+test('an object default whose keys do not match the path is left alone', () => {
+  // Only a default that literally contains the first path segment is flagged.
+  // Anything looser would guess, and guessing wrong here means shouting at a
+  // correct line.
+  const out = run('q = Query("fetchUsageSummary", [], {total_cost_usd: 0}, "summary.cost")\nroot = AppStatCard("Total", q)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'default_is_whole_response'), false);
+});
+
+test('with no store attached, a $state still reads the statement that declared it', () => {
+  // "No store" means nothing is set, not that everything is null. Answering
+  // null made `$view = "cost"` evaluate to null, so every `$view == "cost"`
+  // took its else branch and whole halves of a dashboard — including the
+  // Queries behind them — silently never evaluated. Found by the eval harness
+  // reporting a generation as having no data when it plainly had a Query.
+  const out = run(`$view = "cost"
+summaryQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
+card = AppStatCard("Total", $view == "cost" ? summaryQ : null)
+root = AppStack([card], "md")`);
+  assert.equal(out.queries.length, 1, 'the branch that was taken must actually evaluate');
+  assert.equal(out.root.children[0].props.value, 0);
+});
+
+test('a Query referenced twice reports its bad default once', () => {
+  // Referencing evaluates, and there is no memoization — so a mistake in one
+  // statement was reported once per reader.
+  const out = run(`q = Query("fetchUsageSummary", [], {total_cost_usd: 0}, "total_cost_usd")
+a = AppStatCard("A", q)
+b = AppStatCard("B", q)
+root = AppStack([a, b], "md")`);
+  const hits = out.diagnostics.filter((d) => d.code === 'default_is_whole_response');
+  assert.equal(hits.length, 1);
+});

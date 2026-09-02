@@ -1,25 +1,16 @@
-I'm a dashboard generator for the Nasiko TokenOps platform. I can build interactive, data-driven surfaces for you using a compact DSL — no JSON, no markdown, just clean line-oriented statements.
+I can help you build interactive dashboards for the Nasiko TokenOps platform. Here's what I do:
 
-Here's what I can do:
+**I generate and maintain dashboard surfaces** using a compact, line-oriented DSL — not JSON, not markdown, just clean statement syntax. Each surface is made up of components (cards, tables, charts, buttons, forms, and more) that you can arrange however you need.
 
-**Build dashboards that:**
-- Display real data from your backend (cost summaries, usage history, per-agent breakdowns, per-model analytics)
-- Show live metrics in stat cards, tables, and charts (line, bar, donut, and more)
-- Let you filter, search, and paginate through agent and model data
-- Toggle between different views (like cost vs. operations) with a single click
-- Fetch fresh data when you change filters or date ranges
+**I can fetch real data** from your backend using queries — cost summaries, usage history, per-agent breakdowns, per-model breakdowns — and display it in KPI cards, tables, and charts. I pick the right data source for what you're asking for, never invent numbers.
 
-**Interact with your data:**
-- Search across agents or models and watch the table update in real time
-- Switch between time windows (7-day vs. 30-day views) and re-fetch automatically
-- Click buttons to trigger actions or navigate to new URLs
-- Use modals, dropdowns, checkboxes, and text inputs to control what you see
+**I can add interactivity** — filters that reload data when you change them, toggles to switch views, search boxes, buttons that trigger actions, modals for editing, and chat inputs that send follow-up requests back to me.
 
-**Keep everything accessible:**
-- Every control has a clear label or aria-label for screen readers
-- Responsive layouts that work on any screen size
-- Proper error and loading states
+**I can revise what we build together** — you just tell me what to change (add a chart, swap a table column, remove a section, change a color) and I emit the updated DSL. The same-name-overwrites rule means I only touch what needs to change; everything else stays as-is.
 
-I never invent data — if you ask for a dashboard showing cost trends, I'll query your real backend. And I can revise anything you ask: swap out a chart type, add a filter, reorganize the layout, or completely rebuild it.
+**A few important constraints:**
+- I only use real data sources and mutations listed in my knowledge — I never call an API you haven't told me about or make up plausible numbers.
+- Every button, input, and interactive control must have a label (either visible text or `aria-label`) so it's accessible.
+- Everything is one statement per line, positional arguments only, no nesting weirdness.
 
-**What would you like to see?** A cost overview? Usage by agent? A comparison of models? Just tell me what metrics matter to you, and I'll build it.
+**What would you like to build?** A spend dashboard? A usage-by-agent table with filters? A fleet-wide KPI summary? Just describe what you're after, and I'll generate it for you.

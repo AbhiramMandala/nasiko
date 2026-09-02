@@ -99,7 +99,12 @@ export function walkAstRefs(node, visit) {
 }
 
 export function materialize(statements, componentIndex, ctx = {}) {
-  const store = ctx.store ?? { get: () => null };
+  // `undefined`, not `null`. "No store" must mean "nothing is set", so a
+  // `$state` falls through to the statement that declared it. Answering null
+  // meant `$view = "cost"` evaluated to null with no store attached, every
+  // `$view == "cost"` took its else branch, and whole halves of a dashboard —
+  // including the Query behind them — silently never evaluated.
+  const store = ctx.store ?? { get: () => undefined };
   const queryResults = ctx.queryResults ?? new Map();
   const mutationResults = ctx.mutationResults ?? new Map();
 
@@ -124,6 +129,9 @@ export function materialize(statements, componentIndex, ctx = {}) {
    * per row. Declaring it twice would make one dashboard look like two fetches.
    */
   const registered = new Set();
+  /** Statements already warned about a whole-response default — a Query
+   *  referenced twice is evaluated twice, and one mistake is one message. */
+  const warnedDefault = new Set();
   const stateNames = new Set();
   const visiting = new Set();
 
@@ -414,7 +422,8 @@ export function materialize(statements, componentIndex, ctx = {}) {
         // "data")` is null, so a right answer would become a wrong one.
         if (select && fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
           const head = String(select).split('.')[0];
-          if (head && Object.prototype.hasOwnProperty.call(fallback, head)) {
+          if (head && Object.prototype.hasOwnProperty.call(fallback, head) && !warnedDefault.has(statementId)) {
+            warnedDefault.add(statementId);
             note(
               'default_is_whole_response',
               `${statementId}'s default looks like the whole response — with a "${select}" path, `
