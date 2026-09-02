@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "4ad51ac6d49c",
+  "catalogVersion": "5c3cfee77b27",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 27,
@@ -1062,7 +1062,8 @@
       ],
       "requiresName": true,
       "nameFrom": [
-        "aria-label"
+        "aria-label",
+        "placeholder"
       ],
       "attributes": {
         "size": {
@@ -1099,23 +1100,23 @@
         },
         "name": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+          "description": "Forwarded to the inner `<input>`."
         },
         "autocomplete": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+          "description": "Forwarded to the inner `<input>`."
         },
         "maxlength": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+          "description": "Forwarded to the inner `<input>`."
         },
         "inputmode": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+          "description": "Forwarded to the inner `<input>`."
         },
         "aria-label": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+          "description": "Accessible name for the field. The box has no visible label of its own, so one is always emitted: this if you set it, otherwise the placeholder. Set it whenever the page holds more than one search box, or the placeholder does not say what is being searched."
         }
       },
       "slots": [
@@ -1138,7 +1139,7 @@
           "description": "After the clear button runs, for call sites that want the clear itself rather than \"value became empty\"."
         }
       ],
-      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute. nameFallback: the field has no visible label to fill in, so the component emits the placeholder as its accessible name when aria-label is absent — a floor, not the recommended path."
     },
     "app-select": {
       "element": "app-select",

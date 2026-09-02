@@ -923,23 +923,23 @@
         },
         "name": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+          "description": "Forwarded to the inner `<input>`."
         },
         "autocomplete": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+          "description": "Forwarded to the inner `<input>`."
         },
         "maxlength": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+          "description": "Forwarded to the inner `<input>`."
         },
         "inputmode": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+          "description": "Forwarded to the inner `<input>`."
         },
         "aria-label": {
           "type": "string",
-          "description": "Forwarded to the inner `<input>`; pass `aria-label`, the box has no label of its own."
+          "description": "Accessible name for the field. The box has no visible label of its own, so one is always emitted: this if you set it, otherwise the placeholder. Set it whenever the page holds more than one search box, or the placeholder does not say what is being searched."
         }
       },
       "slots": [
