@@ -786,7 +786,7 @@ mod tests {
                 "cache_creation_input_tokens": 300
             }
         });
-        let resp = from_anthropic_response(&anthropic, "claude-3-5-sonnet-20241022");
+        let resp = from_anthropic_response(&anthropic, "claude-3-5-sonnet-20241022").unwrap();
         let usage = resp.usage.unwrap();
         assert_eq!(usage.cache_read_input_tokens, Some(1500));
         assert_eq!(usage.cache_creation_input_tokens, Some(300));

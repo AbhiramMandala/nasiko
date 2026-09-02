@@ -872,7 +872,10 @@ mod tests {
         // Strict enforcement: a valid agent JWT with no trace context is
         // refused with 403 (not 401 — the credential itself is fine).
         let ctx = ctx_with("http://unused".into());
-        let store = Store { config: None };
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+        };
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
@@ -898,7 +901,8 @@ mod tests {
         // makes the prompt classifier (Level 3) unreachable. `is_coding_agent: true` must
         // make `resolve_routed_request` derive signals from the transcript instead, so the
         // classifier actually gets to run.
-        let ctx = ctx_with("http://unused".into());
+        let mut ctx = ctx_with("http://unused".into());
+        ctx.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
         let store = Store {
             // A configured model that is NOT one of openai's seeded tier models
             // (gpt-5.5 / gpt-5.4 / gpt-4o-mini) — if the classifier never fires, the
@@ -945,9 +949,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_coding_agent_with_no_traceparent_stays_pinned_to_config() {
-        // Control for the test above: an ordinary (non-coding-agent) agent with no
-        // traceparent keeps the pre-existing inert behavior — pinned to its llm_config.
+    async fn non_coding_agent_with_no_traceparent_is_rejected() {
+        // Ordinary agents remain subject to development's strict flow attribution.
         let ctx = ctx_with("http://unused".into());
         let store = Store {
             config: Some(LLMConfig {
@@ -965,7 +968,7 @@ mod tests {
             }),
             is_coding_agent: false,
         };
-        let routed = resolve_routed_request(
+        let result = resolve_routed_request(
             &ctx,
             &store,
             &HeaderMap::new(),
@@ -981,9 +984,11 @@ mod tests {
                 is_tool_continuation: false,
             },
         )
-        .await
-        .unwrap();
-        assert_eq!(routed.resolved.model, "static-configured-model");
+        .await;
+        let Err(error) = result else {
+            panic!("expected strict attribution to reject the request");
+        };
+        assert!(matches!(error, GatewayError::Forbidden(_)));
     }
 
     #[tokio::test]

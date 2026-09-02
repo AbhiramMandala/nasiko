@@ -959,6 +959,15 @@ mod tests {
         fallback_models: Vec<String>,
     }
 
+    struct NoTiers;
+
+    #[async_trait]
+    impl crate::routing::TierRegistry for NoTiers {
+        async fn model_for(&self, _: &str, _: crate::routing::Tier) -> Option<String> {
+            None
+        }
+    }
+
     impl Store {
         fn new(provider: &'static str) -> Self {
             Self {
@@ -989,8 +998,17 @@ mod tests {
                     tier3_model: None,
                 }),
                 agent_pinned_model: None,
-                is_coding_agent: false,
+                is_coding_agent: true,
             }))
+        }
+
+        async fn fetch_live_flow(
+            &self,
+            _: &str,
+            _: Uuid,
+            _: i64,
+        ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
+            Ok(None)
         }
 
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
@@ -1015,7 +1033,7 @@ mod tests {
             }),
             cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
             router_cache: Arc::new(crate::routing::NoopCache),
-            tier_registry: Arc::new(crate::routing::StaticTierRegistry),
+            tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
         }
     }
@@ -1450,6 +1468,7 @@ mod tests {
             owner_id: OWNER.into(),
             resolved: attempt.clone(),
             flow_id: None,
+            attribution_source: None,
         };
         let parsed = parse_request(&json!({"input":"hi"})).unwrap();
         let result = translated_attempt(&context, &routed, &attempt, &parsed, Instant::now()).await;
