@@ -238,7 +238,7 @@ class McpDetailPage extends HTMLElement {
           ${connected ? '<app-button variant="danger-secondary" size="sm" id="mdp-cred-remove">Remove</app-button>' : ''}
         </div>
         <div class="mdp-cred-form">
-          <app-input type="password" id="mdp-cred-value" class="mdp-cred-input"
+          <app-input type="password" reveal id="mdp-cred-value" class="mdp-cred-input"
             aria-label="Credential"
             placeholder="${c.auth_type === 'basic' ? 'username:password' : 'API key / token'}"></app-input>
           <app-button variant="primary" size="sm" id="mdp-cred-save">${connected ? 'Replace' : 'Save'}</app-button>

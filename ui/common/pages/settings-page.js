@@ -195,7 +195,7 @@ class SettingsPage extends HTMLElement {
               <div class="hint" id="s-oidc-secret-state">Write-only — leave blank to keep the stored secret.</div>
             </div>
             <div class="setting-control">
-              <app-input type="password" id="s-oidc-client-secret" data-field="oidc_client_secret" placeholder="unchanged" aria-label="Client secret"></app-input>
+              <app-input type="password" reveal id="s-oidc-client-secret" data-field="oidc_client_secret" placeholder="unchanged" aria-label="Client secret"></app-input>
             </div>
           </div>
           <div class="setting-row">

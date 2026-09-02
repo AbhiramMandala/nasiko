@@ -599,6 +599,10 @@
           "type": "boolean",
           "description": "Renders the red `*` before the label."
         },
+        "reveal": {
+          "type": "boolean",
+          "description": "On `type=\"password\"`, adds a trailing show/hide button that flips the inner input between `password` and `text`. Opt-in rather than automatic: a field holding a *stored* secret (an API key already on the server) is not always one the viewer should be able to unmask, so the call site decides. Ignored on every other type."
+        },
         "disabled": {
           "type": "boolean",
           "description": ""

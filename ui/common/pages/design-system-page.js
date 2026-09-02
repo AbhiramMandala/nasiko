@@ -310,7 +310,7 @@ const SPECS = [
   {
     group: 'Controls',
     tag: 'app-input',
-    blurb: 'Figma’s Input (4190:129) — State × Size. Seven states (default, hover, focus, disabled, error, success, read-only) × two sizes (32 / 28px), with label, hint, counter, required marker and icon slots. Hover and focus are pseudo-classes; the state attribute renders them statically for review.',
+    blurb: 'Figma’s Input (4190:129) — State × Size. Seven states (default, hover, focus, disabled, error, success, read-only) × two sizes (32 / 28px), with label, hint, counter, required marker, icon slots and an opt-in show/hide toggle on password fields. Hover and focus are pseudo-classes; the state attribute renders them statically for review.',
     demo: `<app-stack gap="md" align="start">
   <app-grid min-width="240px" gap="md">
     <app-input label="Label" hint="Hint text" placeholder="Placeholder"></app-input>
@@ -328,6 +328,8 @@ const SPECS = [
       <span data-slot="leading">${icons.search()}</span>
       <span data-slot="trailing">${icons.x()}</span>
     </app-input>
+    <app-input label="Password" type="password" reveal value="hunter2-and-then-some"
+      hint="reveal adds the show/hide toggle"></app-input>
   </app-grid>
 </app-stack>`,
   },

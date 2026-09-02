@@ -452,7 +452,7 @@ class McpPage extends HTMLElement {
     return `
       <app-modal heading="Connect" id="connect-modal">
         <div class="modal-form">
-          <app-input type="password" id="connect-cred-value" label="API key / token"
+          <app-input type="password" reveal id="connect-cred-value" label="API key / token"
             placeholder="API key / token" autocomplete="off"></app-input>
           <div class="form-error" id="connect-error" hidden></div>
         </div>
@@ -618,7 +618,7 @@ class McpPage extends HTMLElement {
         ${connected ? `<app-button variant="danger-secondary" size="sm" id="cred-remove">Remove</app-button>` : ''}
       </div>
       <div class="cred-form">
-        <app-input type="password" id="cred-value" class="cred-input" aria-label="Credential"
+        <app-input type="password" reveal id="cred-value" class="cred-input" aria-label="Credential"
           placeholder="${c.auth_type === 'basic' ? 'username:password' : 'API key / token'}"></app-input>
         <app-button variant="primary" size="md" id="cred-save">${connected ? 'Replace' : 'Save'}</app-button>
       </div>
@@ -724,14 +724,14 @@ class McpPage extends HTMLElement {
           </div>
           <div class="auth-fields" data-auth="basic" hidden>
             <app-input name="basic_username" label="Username" autocomplete="off"></app-input>
-            <app-input name="basic_password" label="Password" type="password"
+            <app-input name="basic_password" label="Password" type="password" reveal
               autocomplete="off"></app-input>
           </div>
           <div class="auth-fields" data-auth="oauth2" hidden>
             <app-input name="oauth_client_id" label="OAuth client ID"
               hint="Leave blank if the server supports DCR" autocomplete="off"></app-input>
             <app-input name="oauth_client_secret" label="OAuth client secret"
-              type="password" autocomplete="off"></app-input>
+              type="password" reveal autocomplete="off"></app-input>
           </div>
           <div class="auth-fields" data-auth="url_param" hidden>
             <app-input name="url_param_name" label="URL parameter name"

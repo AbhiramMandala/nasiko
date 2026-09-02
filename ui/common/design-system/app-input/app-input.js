@@ -16,6 +16,11 @@
  * @attr {string} hint - Helper line below the box. Turns red in `state="error"`.
  * @attr {string} count - Right-aligned counter in the hint row, e.g. `12/100`.
  * @attr {boolean} required - Renders the red `*` before the label.
+ * @attr {boolean} reveal - On `type="password"`, adds a trailing show/hide button
+ *   that flips the inner input between `password` and `text`. Opt-in rather than
+ *   automatic: a field holding a *stored* secret (an API key already on the
+ *   server) is not always one the viewer should be able to unmask, so the call
+ *   site decides. Ignored on every other type.
  * @attr {boolean} disabled
  * @attr {boolean} readonly - Same paint as `state="read-only"`.
  * @attr {string} type - `text` (default) | `password` | `email` | `number` |
@@ -37,7 +42,7 @@
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-input.css', import.meta.url));
-import { unsizeIcons } from '../../utils/icons.js';
+import { icons, unsizeIcons } from '../../utils/icons.js';
 import { escAttr, escHtml } from '../../utils/escape.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -54,12 +59,16 @@ let uid = 0;
 export class AppInput extends HTMLElement {
   static get observedAttributes() {
     return ['size', 'state', 'label', 'hint', 'count', 'required', 'disabled', 'readonly',
-            ...NATIVE];
+            'reveal', ...NATIVE];
   }
 
   #id = `app-input-${++uid}`;
   /** Slotted icon markup, captured once — render() replaces innerHTML. */
   #slots = null;
+  /** Whether the reveal toggle is currently unmasking the value. Lives on the
+   *  element, not in the DOM, so a re-render (a `hint`/`state` flip from a
+   *  field error) doesn't silently re-mask a field the user asked to see. */
+  #revealed = false;
 
   get value() { return this.input?.value ?? this.getAttribute('value') ?? ''; }
   set value(v) { if (this.input) this.input.value = v; else this.setAttribute('value', v); }
@@ -98,8 +107,17 @@ export class AppInput extends HTMLElement {
     const hint     = this.getAttribute('hint');
     const count    = this.getAttribute('count');
 
+    // `type` is emitted separately because the reveal toggle overrides it: the
+    // attribute still reads `password` while the input is showing `text`, so
+    // the call site's own markup never has to change for a state the component
+    // owns. Everything else is forwarded verbatim.
+    const revealable = this.hasAttribute('reveal')
+      && this.getAttribute('type') === 'password' && !disabled && !readonly;
+    if (!revealable) this.#revealed = false;
+    const type = revealable && this.#revealed ? 'text' : this.getAttribute('type');
+
     const native = NATIVE
-      .filter((a) => a !== 'value' && this.hasAttribute(a))
+      .filter((a) => a !== 'value' && a !== 'type' && this.hasAttribute(a))
       .map((a) => `${a}="${escAttr(this.getAttribute(a))}"`)
       .join(' ');
 
@@ -109,9 +127,11 @@ export class AppInput extends HTMLElement {
           this.hasAttribute('required') ? '<span class="req">*</span>' : ''}${escHtml(label)}</label>`}
         <div class="input-box">
           ${this.#slots.leading}
-          <input id="${this.#id}" ${native}${disabled ? ' disabled' : ''}${
+          <input id="${this.#id}"${type === null ? '' : ` type="${escAttr(type)}"`} ${
+            native}${disabled ? ' disabled' : ''}${
             readonly ? ' readonly' : ''}${this.hasAttribute('required') ? ' required' : ''}>
           ${this.#slots.trailing}
+          ${revealable ? this.#revealButton() : ''}
         </div>
         ${hint === null && count === null ? '' : `<div class="hint-row">
           <span class="hint">${escHtml(hint)}</span>
@@ -125,11 +145,43 @@ export class AppInput extends HTMLElement {
     // know the field's size.
     unsizeIcons(this);
 
+    this.#wireReveal();
+
     this.input.value = value;
     if (refocus) {
       this.input.focus();
       if (caret?.[0] != null) this.input.setSelectionRange(caret[0], caret[1]);
     }
+  }
+
+  /** `type="button"`: app-input is used inside real <form>s (the registry admin
+   *  login, the MCP connector forms), where a bare <button> defaults to submit
+   *  and unmasking the password would post the form. */
+  #revealButton() {
+    return `<button type="button" class="reveal" data-reveal
+      aria-pressed="${this.#revealed}"
+      aria-label="${this.#revealed ? 'Hide password' : 'Show password'}">${this.#revealed ? icons.eyeOff() : icons.eye()}</button>`;
+  }
+
+  /** Flips the mask in place instead of re-rendering. A re-render would replace
+   *  the button mid-click and drop focus to the body, which is exactly the
+   *  keyboard user this control exists for. */
+  #wireReveal() {
+    const toggle = this.querySelector('[data-reveal]');
+    if (!toggle) return;
+    toggle.addEventListener('click', () => {
+      this.#revealed = !this.#revealed;
+      this.input.type = this.#revealed ? 'text' : 'password';
+      toggle.setAttribute('aria-pressed', String(this.#revealed));
+      toggle.setAttribute('aria-label', this.#revealed ? 'Hide password' : 'Show password');
+      toggle.innerHTML = this.#revealed ? icons.eyeOff() : icons.eye();
+      unsizeIcons(toggle);
+      // Focus goes back to the field with the caret at the end — the point of
+      // the toggle is to check what you just typed and carry on typing.
+      const end = this.input.value.length;
+      this.input.focus();
+      this.input.setSelectionRange(end, end);
+    });
   }
 }
 customElements.define('app-input', AppInput);

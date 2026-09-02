@@ -248,7 +248,7 @@ class LlmRouterPage extends HTMLElement {
           <div class="stacked-field" id="new-secret-field" hidden>
             <app-input id="cfg-secret-name" name="new_secret_name" label="Secret name"
               placeholder="e.g. OPENAI_API_KEY"></app-input>
-            <app-input id="cfg-secret-value" name="secret_value" type="password"
+            <app-input id="cfg-secret-value" name="secret_value" type="password" reveal
               label="Secret value" placeholder="Paste the API key" autocomplete="off"
               hint="Stored encrypted; only used to call the provider."></app-input>
           </div>
