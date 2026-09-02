@@ -1562,10 +1562,6 @@ impl ObservabilityService {
 
     pub async fn get_finops_dashboard(
         &self,
-        _user_id: &str,
-        _role: Option<&str>,
-        _department_id: Option<&str>,
-        _team_id: Option<&str>,
         start_time: Option<&str>,
         end_time: Option<&str>,
         accessible_agent_ids: Option<&[uuid::Uuid]>,

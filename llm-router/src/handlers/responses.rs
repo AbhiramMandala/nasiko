@@ -146,7 +146,7 @@ async fn responses_core(
             let started = Instant::now();
             match translated_attempt(ctx, &routed, &attempt, parsed, started).await {
                 Ok(response) => return Ok(response),
-                Err(TranslatedAttemptError::Terminal(response)) => return Ok(response),
+                Err(TranslatedAttemptError::Terminal(response)) => return Ok(*response),
                 Err(TranslatedAttemptError::Configuration(error)) => return Err(error),
                 Err(TranslatedAttemptError::Retry(error)) => {
                     last_error = Some(error.into());
@@ -224,7 +224,7 @@ fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
 }
 
 enum TranslatedAttemptError {
-    Terminal(Response),
+    Terminal(Box<Response>),
     Configuration(GatewayError),
     Retry(ProviderError),
 }
@@ -342,7 +342,7 @@ fn classify_translated_error(error: ProviderError) -> TranslatedAttemptError {
         ),
         _ => (StatusCode::BAD_GATEWAY, error.to_string()),
     };
-    TranslatedAttemptError::Terminal(mark_lossy(responses_error(
+    TranslatedAttemptError::Terminal(Box::new(mark_lossy(responses_error(
         status,
         message,
         if status.is_client_error() {
@@ -350,7 +350,7 @@ fn classify_translated_error(error: ProviderError) -> TranslatedAttemptError {
         } else {
             "upstream_error"
         },
-    )))
+    ))))
 }
 
 fn translated_stream_response(

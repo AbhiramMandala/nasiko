@@ -293,10 +293,12 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
                             pending.started_at,
                             pending.ended_at,
                             &mut turns,
-                            &mut owners,
-                            &mut calls,
-                            &mut tools,
-                            &mut fallback_turns,
+                            AssistantIndexes {
+                                owners: &mut owners,
+                                calls: &mut calls,
+                                tools: &mut tools,
+                                fallback_turns: &mut fallback_turns,
+                            },
                         );
                     } else {
                         remaining.push(pending);
@@ -379,10 +381,12 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
                 previous_at.unwrap_or(at),
                 at,
                 &mut turns,
-                &mut owners,
-                &mut calls,
-                &mut tools,
-                &mut fallback_turns,
+                AssistantIndexes {
+                    owners: &mut owners,
+                    calls: &mut calls,
+                    tools: &mut tools,
+                    fallback_turns: &mut fallback_turns,
+                },
             );
         } else if let (Some(uuid), Some(owner)) = (&entry.uuid, parent_owner) {
             // Tool results and metadata preserve ancestry to the open turn.
@@ -403,17 +407,27 @@ struct PendingAssistant {
     ended_at: DateTime<Utc>,
 }
 
+struct AssistantIndexes<'a> {
+    owners: &'a mut HashMap<String, usize>,
+    calls: &'a mut HashMap<String, (usize, usize)>,
+    tools: &'a mut HashMap<String, (usize, usize)>,
+    fallback_turns: &'a mut HashSet<usize>,
+}
+
 fn attach_assistant(
     entry: &Entry,
     owner: usize,
     started_at: DateTime<Utc>,
     ended_at: DateTime<Utc>,
     turns: &mut [Turn],
-    owners: &mut HashMap<String, usize>,
-    calls: &mut HashMap<String, (usize, usize)>,
-    tools: &mut HashMap<String, (usize, usize)>,
-    fallback_turns: &mut HashSet<usize>,
+    indexes: AssistantIndexes<'_>,
 ) {
+    let AssistantIndexes {
+        owners,
+        calls,
+        tools,
+        fallback_turns,
+    } = indexes;
     // Async hook records can be appended before an older assistant record.
     let started_at = started_at.min(ended_at);
     for tool in entry.tool_uses(ended_at) {

@@ -245,8 +245,7 @@ async fn content_turns_keep_source_order_when_ingested_out_of_order() {
     .unwrap();
     assert_eq!(bounds.0, Utc.timestamp_opt(1_700_000_000, 0).unwrap());
     assert!(
-        bounds.1
-            >= Utc.timestamp_opt(1_700_000_002, 0).unwrap() + chrono::Duration::minutes(1)
+        bounds.1 >= Utc.timestamp_opt(1_700_000_002, 0).unwrap() + chrono::Duration::minutes(1)
     );
 }
 

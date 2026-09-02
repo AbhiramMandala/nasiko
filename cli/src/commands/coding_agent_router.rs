@@ -511,8 +511,14 @@ mod tests {
 
     #[test]
     fn account_names_are_safe_and_stable_for_agent_registration() {
-        assert_eq!(normalize_agent_name_part("ankitkumarnath"), "ankitkumarnath");
-        assert_eq!(normalize_agent_name_part("Ankit Kumar_Nath"), "ankit-kumar-nath");
+        assert_eq!(
+            normalize_agent_name_part("ankitkumarnath"),
+            "ankitkumarnath"
+        );
+        assert_eq!(
+            normalize_agent_name_part("Ankit Kumar_Nath"),
+            "ankit-kumar-nath"
+        );
         assert_eq!(normalize_agent_name_part("--Alice--"), "alice");
     }
     use base64::Engine as _;

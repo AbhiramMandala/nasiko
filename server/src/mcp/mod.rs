@@ -66,48 +66,6 @@ pub(crate) fn redact_credential_uri(uri: &axum::http::Uri) -> String {
     uri.to_string()
 }
 
-#[cfg(test)]
-mod redaction_tests {
-    use super::redact_credential_uri;
-
-    fn uri(s: &str) -> axum::http::Uri {
-        s.parse().unwrap()
-    }
-
-    #[test]
-    fn strips_the_credential_segment() {
-        assert_eq!(
-            redact_credential_uri(&uri("/api/mcp/s/ngt_deadbeef")),
-            "/api/mcp/s/{token}"
-        );
-    }
-
-    #[test]
-    fn strips_it_with_a_query_string_too() {
-        // The token is in the path, so the whole URI is replaced rather than
-        // trying to reassemble it around the secret.
-        let redacted = redact_credential_uri(&uri("/api/mcp/s/ngt_deadbeef?trace=1"));
-        assert!(!redacted.contains("ngt_deadbeef"), "leaked: {redacted}");
-    }
-
-    #[test]
-    fn leaves_other_routes_untouched() {
-        assert_eq!(redact_credential_uri(&uri("/api/mcp")), "/api/mcp");
-        assert_eq!(
-            redact_credential_uri(&uri("/api/agents?page=2")),
-            "/api/agents?page=2"
-        );
-    }
-
-    #[test]
-    fn does_not_match_a_lookalike_prefix() {
-        assert_eq!(
-            redact_credential_uri(&uri("/api/mcp/share-targets")),
-            "/api/mcp/share-targets"
-        );
-    }
-}
-
 /// MCP-server-upload MUTATION routes (build a container from user-supplied
 /// source) — deployer+ only, gated the same way agent-build/upload mutations
 /// are in `lib.rs::build_app_with_user_router` (building a container is the
@@ -481,5 +439,45 @@ pub(crate) fn ensure_admin(claims: &Claims) -> Result<(), ApiError> {
         Err(ApiError(McpError::Forbidden(
             "admin privileges required for platform configuration".into(),
         )))
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::redact_credential_uri;
+
+    fn uri(s: &str) -> axum::http::Uri {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn strips_the_credential_segment() {
+        assert_eq!(
+            redact_credential_uri(&uri("/api/mcp/s/ngt_deadbeef")),
+            "/api/mcp/s/{token}"
+        );
+    }
+
+    #[test]
+    fn strips_it_with_a_query_string_too() {
+        let redacted = redact_credential_uri(&uri("/api/mcp/s/ngt_deadbeef?trace=1"));
+        assert!(!redacted.contains("ngt_deadbeef"), "leaked: {redacted}");
+    }
+
+    #[test]
+    fn leaves_other_routes_untouched() {
+        assert_eq!(redact_credential_uri(&uri("/api/mcp")), "/api/mcp");
+        assert_eq!(
+            redact_credential_uri(&uri("/api/agents?page=2")),
+            "/api/agents?page=2"
+        );
+    }
+
+    #[test]
+    fn does_not_match_a_lookalike_prefix() {
+        assert_eq!(
+            redact_credential_uri(&uri("/api/mcp/share-targets")),
+            "/api/mcp/share-targets"
+        );
     }
 }

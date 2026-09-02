@@ -251,8 +251,7 @@ pub(crate) fn trace_payload(event: &CodingAgentEventV1) -> Value {
         "",
         "coding_agent.turn",
         1,
-        event.turn.started_at,
-        event.turn.ended_at,
+        (event.turn.started_at, event.turn.ended_at),
         root_attributes,
     )];
     spans.extend(event.turn.llm_calls.iter().map(|call| {
@@ -286,8 +285,7 @@ pub(crate) fn trace_payload(event: &CodingAgentEventV1) -> Value {
             &root_id,
             &format!("chat {}", call.model),
             3,
-            call.started_at,
-            call.ended_at,
+            (call.started_at, call.ended_at),
             attributes,
         )
     }));
@@ -348,8 +346,7 @@ pub(crate) fn trace_payload(event: &CodingAgentEventV1) -> Value {
             &root_id,
             &format!("execute_tool {}", tool.name),
             1,
-            started_at,
-            ended_at,
+            (started_at, ended_at),
             attributes,
         );
         value["status"] = match tool.status {
@@ -524,10 +521,10 @@ fn span(
     parent_span_id: &str,
     name: &str,
     kind: u8,
-    started_at: DateTime<Utc>,
-    ended_at: DateTime<Utc>,
+    times: (DateTime<Utc>, DateTime<Utc>),
     attributes: Vec<Value>,
 ) -> Value {
+    let (started_at, ended_at) = times;
     json!({
         "traceId": trace_id, "spanId": span_id, "parentSpanId": parent_span_id,
         "name": name, "kind": kind,

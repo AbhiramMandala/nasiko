@@ -421,7 +421,7 @@ class ObservabilitySessionPage extends HTMLElement {
     const toolSummary = isTool ? `
       <div class="detail-section-title">Tool execution</div>
       <div class="msg-block">
-        <div class="msg-content">${this.#esc([
+        <div class="msg-content">${escHtml([
           `Tool: ${attrs.tool?.name || 'unknown'}`,
           `Status: ${attrs.tool?.status || s.status_code || 'unknown'}`,
           `Duration: ${s.latency_ms == null ? 'unknown' : this.#fmtLatency(s.latency_ms)}`,

@@ -72,7 +72,11 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
     let registration = control_plane::register_agent(agent)?;
     println!(
         "{} agent '{}' in the control plane",
-        if registration.created { "Registered" } else { "Found" },
+        if registration.created {
+            "Registered"
+        } else {
+            "Found"
+        },
         registration.agent_name
     );
 
