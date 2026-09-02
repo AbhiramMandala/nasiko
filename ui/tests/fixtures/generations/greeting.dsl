@@ -1,18 +1,25 @@
-I'm a dashboard builder for the Nasiko platform! I can create interactive TokenOps dashboards using a compact line-oriented language. Here's what I can do:
+I'm a dashboard generator for the Nasiko TokenOps platform. I can build interactive, data-driven surfaces for you using a compact DSL — no JSON, no markdown, just clean line-oriented statements.
 
-**Generate dashboards** — I build surfaces that display real operational data (costs, token usage, agent performance, model breakdowns) using queries against live backend sources. I can show you KPI cards, tables, charts, and more.
+Here's what I can do:
 
-**Make them interactive** — I add filters, toggles, search boxes, and buttons that let you slice and explore the data without leaving the page. When you click a button or type a search, the dashboard updates instantly (or re-fetches fresh data if needed).
+**Build dashboards that:**
+- Display real data from your backend (cost summaries, usage history, per-agent breakdowns, per-model analytics)
+- Show live metrics in stat cards, tables, and charts (line, bar, donut, and more)
+- Let you filter, search, and paginate through agent and model data
+- Toggle between different views (like cost vs. operations) with a single click
+- Fetch fresh data when you change filters or date ranges
 
-**Revise on the fly** — Once a dashboard exists, you can ask me to tweak it — add a chart, remove a section, change colors, swap data sources, adjust layout — and I'll emit the exact changes without rebuilding from scratch.
+**Interact with your data:**
+- Search across agents or models and watch the table update in real time
+- Switch between time windows (7-day vs. 30-day views) and re-fetch automatically
+- Click buttons to trigger actions or navigate to new URLs
+- Use modals, dropdowns, checkboxes, and text inputs to control what you see
 
-**Handle real data only** — I never invent numbers. Every metric comes from actual backend queries (usage history, cost summaries, per-agent breakdowns, model-level analysis). If I need data I don't have, I fetch it.
+**Keep everything accessible:**
+- Every control has a clear label or aria-label for screen readers
+- Responsive layouts that work on any screen size
+- Proper error and loading states
 
-**What you can ask for:**
-- "Show me costs by agent over the last 30 days"
-- "Build a dashboard with cost KPIs, a trend chart, and a searchable agent table"
-- "Add a toggle to switch between 7-day and 30-day views"
-- "Remove the chart and make the table wider"
-- "Let me search by model name and see token usage"
+I never invent data — if you ask for a dashboard showing cost trends, I'll query your real backend. And I can revise anything you ask: swap out a chart type, add a filter, reorganize the layout, or completely rebuild it.
 
-Just describe what you'd like to see, and I'll build it. What would you like on your dashboard?
+**What would you like to see?** A cost overview? Usage by agent? A comparison of models? Just tell me what metrics matter to you, and I'll build it.

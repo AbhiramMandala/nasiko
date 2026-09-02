@@ -1,9 +1,12 @@
 Sure — building that now.
-root = AppStack([kpis, chart], "md")
-summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0})
+root = AppStack([header, chartsRow], "md")
+header = AppStack([kpiRow], "md")
+kpiRow = AppRow([kpiCost, kpiRequests], "md")
+summaryQ = Query("fetchUsageSummary", [], 0)
+kpiCost = AppStatCard("Total cost", summaryQ.total_cost_usd, null, "neutral")
+kpiRequests = AppStatCard("Request volume", summaryQ.request_count, null, "neutral")
 historyQ = Query("fetchUsageHistory", [14], [])
-kpis = AppRow([costCard, requestCard], "md")
-costCard = AppStatCard("Total cost", summaryQ.total_cost_usd, "neutral")
-requestCard = AppStatCard("Requests", summaryQ.request_count, "neutral")
-chart = AppChart({labels: historyQ.date, datasets: [{label: "Cost (USD)", data: historyQ.total_cost_usd}, {label: "Requests", data: historyQ.request_count}]}, "line", false, "currency", "USD")
-Here's your spend and request volume dashboard with summary KPIs and a 14-day trend chart — let me know if you'd like to adjust the view or add more details!
+chartsRow = AppRow([costChart, requestChart], "md")
+costChart = AppChart({labels: historyQ.date, datasets: [{label: "Daily cost", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD")
+requestChart = AppChart({labels: historyQ.date, datasets: [{label: "Daily requests", data: historyQ.request_count}]}, "line", false, "number")
+Here's your spend and request dashboard with summary KPIs and 14-day trend charts — let me know if you'd like to adjust the timeframe or add more detail!

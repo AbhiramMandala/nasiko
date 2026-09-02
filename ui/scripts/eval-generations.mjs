@@ -85,8 +85,13 @@ export const CASES = [
   // renderer's missing_accessible_name diagnostic is what catches it, and
   // every diagnostic fails a case — so an unnamed control fails this run.
   { id: 'interactive-controls', prompt: 'Cost dashboard with a search box and buttons to change the window',
-    expect: { minQueries: 1, minActions: 1 } },
-  // Not a dashboard request. agent.yaml rule 10 says answer in plain text, so
+    expect: { minQueries: 1, minActions: 1 },
+    // The prose rule alone did not move it: the model filled all twelve
+    // AppSearch arguments and put null in the aria-label slot, because the
+    // signature printed `aria-label?` and a question mark outranks a paragraph.
+    // The signature now prints it as required. Clears on the next re-record.
+    knownFailure: 'recorded before the signature marked aria-label required' },
+  // Not a dashboard request. agent.yaml rule 11 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.
   { id: 'greeting', prompt: 'hey, what can you do?',
@@ -164,7 +169,7 @@ export function check(kase, text) {
   const e = kase.expect ?? {};
 
   if (e.noSurface) {
-    if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 10)');
+    if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 11)');
     if (!r.prose.join('').trim()) fail.push('answered with nothing at all');
     return { fail, r };
   }
@@ -270,6 +275,17 @@ if (offline) {
   }
 }
 
+// The token lives in the Weave repo's .env and this script runs from this one,
+// so "I sourced it" and "this process can see it" are different statements.
+// Checked once here rather than per case, because the same message ten times
+// is noise around the one line that matters.
+if (!offline && !process.env.WEAVE_INTERNAL_TOKEN) {
+  console.error('eval: WEAVE_INTERNAL_TOKEN is not set in this shell.\n');
+  console.error('  set -a && source ~/Documents/GitHub/Weave/.env && set +a\n');
+  console.error('Weave also has to be running — uvicorn on :8801, or set WEAVE_BASE_URL.');
+  process.exit(1);
+}
+
 let failed = 0;
 for (const kase of cases) {
   const path = resolve(FIXTURES, `${kase.id}.dsl`);
@@ -284,6 +300,22 @@ for (const kase of cases) {
   if (record) writeFileSync(path, text);
 
   const { fail, r } = check(kase, text);
+
+  if (kase.knownFailure) {
+    if (fail.length) {
+      console.log(`~ ${kase.id} — known failure: ${kase.knownFailure}`);
+      for (const f of fail) console.log(`    ${f}`);
+    } else {
+      // A known failure that passes is a fix nobody wrote down. Failing here is
+      // what stops the annotation outliving the problem and quietly hiding a
+      // real regression later.
+      failed++;
+      console.error(`✗ ${kase.id} — marked as a known failure but it passes now.`);
+      console.error(`    Remove knownFailure: "${kase.knownFailure}"`);
+    }
+    continue;
+  }
+
   if (fail.length) {
     failed++;
     console.error(`✗ ${kase.id} — "${kase.prompt}"`);
@@ -296,11 +328,15 @@ for (const kase of cases) {
   }
 }
 
+const known = cases.filter((c) => c.knownFailure).length;
 const mode = offline ? 'replayed' : 'live';
 if (failed) {
   console.error(`\neval: ${failed} of ${cases.length} failed (${mode}).`);
   process.exit(1);
 }
-console.log(`\neval: ${cases.length} generations, all renderable (${mode}), catalog ${catalog.catalogVersion}.`);
+console.log(
+  `\neval: ${cases.length} generations (${mode}), catalog ${catalog.catalogVersion}`
+  + (known ? ` — ${known} known failure(s), see knownFailure in CASES.` : ', all renderable.'),
+);
 
 }

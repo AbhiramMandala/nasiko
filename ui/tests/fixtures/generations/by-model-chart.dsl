@@ -1,6 +1,9 @@
 Sure — building that now.
-root = AppStack([modelChart, modelTable], "md")
-modelDataQ = Query("fetchUsageByModel", [null, 1, 50], {data: [], total: 0}, "data")
-modelChart = AppChart({labels: modelDataQ.model, datasets: [{label: "Cost (USD)", data: modelDataQ.total_cost_usd}]}, "bar", false, "currency", "USD")
-modelTable = AppTable(modelDataQ, 50, "pages", false)
-Here's your usage-by-model dashboard with a cost chart and a detailed table below — let me know if you'd like to filter, search, or adjust the layout!
+root = AppStack([header, chart, table], "md")
+header = AppRow([title], "md")
+title = AppStatCard("Usage by Model", null, null, "neutral")
+modelDataQ = Query("fetchUsageByModel", ["", 1, 50], [], "data")
+chartData = {labels: modelDataQ.model, datasets: [{label: "Total Cost (USD)", data: modelDataQ.total_cost_usd}]}
+chart = AppChart(chartData, "bar", false, "currency", "USD")
+table = AppTable(modelDataQ, 50, "pages", true)
+Here's a usage-by-model dashboard with a bar chart showing cost across models and a searchable table below — let me know if you'd like to adjust the chart type, add more metrics, or change anything else!

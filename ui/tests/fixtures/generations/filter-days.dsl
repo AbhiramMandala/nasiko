@@ -7,5 +7,5 @@ thirtyBtn = AppButton("30 days", "secondary", null, null, null, null, null, null
 showSeven = Action([@Set($days, 7), @Run(historyQ)])
 showThirty = Action([@Set($days, 30), @Run(historyQ)])
 historyQ = Query("fetchUsageHistory", [$days], [])
-chart = AppChart({labels: historyQ.date, datasets: [{label: "Cost (USD)", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD")
-Here's your history chart with 7/30-day toggle buttons — the chart updates when you switch ranges. Let me know if you'd like to add more metrics or adjust the styling!
+chart = AppChart({labels: historyQ.date, datasets: [{label: "Cost", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD")
+Here's your history chart with toggle buttons for 7 and 30-day views — let me know if you'd like to add another metric or adjust the styling!
