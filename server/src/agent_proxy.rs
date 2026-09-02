@@ -407,6 +407,10 @@ pub async fn agent_proxy(
                         .to_string();
                     let fallback_task_id = Uuid::new_v4().to_string();
 
+                    // This proxy's `session_id` is an A2A `context_id`-equivalent for its own
+                    // request/reply pairing, not a `chat_sessions.session_id` — there's no chat
+                    // session for `chat_session_id` to correlate to on this endpoint, so it's
+                    // `None` here (unlike `a2a_dispatch.rs::agent_stream`'s web-chat path).
                     if crate::router::a2a_dispatch::persist_direct_chat_pause(
                         &hitl_store,
                         &db,
@@ -415,11 +419,12 @@ pub async fn agent_proxy(
                         owner_user_id,
                         &session_id,
                         &fallback_task_id,
+                        None,
                         &flow_id,
                         &raw_body,
                     )
                     .await
-                    .is_some()
+                    .is_err()
                     {
                         tracing::error!(%session_id, "agent proxy: failed to persist HITL pause");
                     }
@@ -855,6 +860,8 @@ impl Drop for SseReplyTap {
                 let fallback_task_id = Uuid::new_v4().to_string();
 
                 if let Some(owner_user_id) = owner_user_id {
+                    // See the other call site's comment: this proxy has no `chat_sessions` row
+                    // to correlate to, so `chat_session_id` is `None` here too.
                     if crate::router::a2a_dispatch::persist_direct_chat_pause(
                         &hitl_store,
                         &db,
@@ -863,11 +870,12 @@ impl Drop for SseReplyTap {
                         owner_user_id,
                         &session_id,
                         &fallback_task_id,
+                        None,
                         &flow_id,
                         &pause_data,
                     )
                     .await
-                    .is_some()
+                    .is_err()
                     {
                         tracing::error!(%session_id, "agent proxy: failed to persist HITL pause");
                     }

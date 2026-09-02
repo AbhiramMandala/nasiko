@@ -220,7 +220,17 @@ pub async fn a2a_dispatch_handler(
         if !crate::acl::can_access_agent(&state, &claims, agent.id).await {
             return Err(A2aDispatchError::AgentNotFound(target.to_string()));
         }
-        agent_stream(&state, agent, &query, &task_id, &context_id, user_id, &[]).await
+        agent_stream(
+            &state,
+            agent,
+            &query,
+            &task_id,
+            &context_id,
+            user_id,
+            &[],
+            session_id,
+        )
+        .await
     }
 }
 
@@ -709,6 +719,7 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
     .ok_or_else(|| A2aDispatchError::AgentNotFound(target.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn agent_stream(
     state: &AppState,
     agent: AgentRow,
@@ -717,6 +728,16 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
     file_parts: &[nasiko_types::a2a::Part],
+    // The web UI's chat session id (metadata.session_id) — `None` for CLI/TUI callers that
+    // address history by contextId alone. Threaded through purely so a HITL pause created on
+    // this turn can be tagged with `chat_session_id`, letting `chat/routes.rs::list_messages`
+    // surface it on session load without a separate discovery call. Not used for anything else
+    // in this function — history lookup already happened in the caller.
+    //
+    // Owned, not `&str`: both pause branches below build an `async_stream::stream! {}` that
+    // `Sse::new(...).into_response()` requires to be `'static` — a caller-borrowed `&str`
+    // cannot satisfy that, only a value this function owns and moves into the generator can.
+    session_id: Option<String>,
 ) -> Result<Response, A2aDispatchError> {
     let endpoint = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
         .await
@@ -926,8 +947,15 @@ async fn agent_stream(
             if final_disposition == a2a::StreamDisposition::Paused {
                 // §8 (HITL plan): a Paused disposition is not "the task is done" — persist the
                 // pause and stop relaying, without the completed/failed tail below.
+                //
+                // Ordering is the point here: the agent's own input-required/auth-required event
+                // was already yielded above, inside the relay loop, before we knew whether a
+                // `hitl_requests` row would even exist. This second, synthetic frame is yielded
+                // ONLY after `persist_direct_chat_pause` returns `Ok` — i.e. only once the row is
+                // durably committed and its id is known — so the frontend can never observe a
+                // HITL id that doesn't yet exist in Postgres.
                 let pause_data = pause_payload.as_deref().unwrap_or("{}");
-                if let Some(error_event) = persist_direct_chat_pause(
+                match persist_direct_chat_pause(
                     &hitl_store,
                     &db,
                     nasiko_hitl::HitlOrigin::DirectChat,
@@ -935,12 +963,18 @@ async fn agent_stream(
                     user_id,
                     &context_id,
                     &task_id,
+                    session_id.as_deref(),
                     &flow_id_cleanup,
                     pause_data,
                 )
                 .await
                 {
-                    yield Ok(error_event);
+                    Ok(row) => {
+                        yield Ok(build_hitl_stream_event(&task_id, &context_id, &row));
+                    }
+                    Err(error_event) => {
+                        yield Ok(error_event);
+                    }
                 }
                 // Same cleanup every other terminal branch of this stream performs — a pause is
                 // a terminal state for THIS flow_id (resume mints its own, see `hitl/mod.rs`), so
@@ -1020,7 +1054,7 @@ async fn agent_stream(
                 _ => a2a::input_required(&task_id, &context_id, &question_text),
             };
             let flow_id_cleanup = flow_id.clone();
-            let error_event = persist_direct_chat_pause(
+            let pause_result = persist_direct_chat_pause(
                 &hitl_store,
                 &db,
                 nasiko_hitl::HitlOrigin::DirectChat,
@@ -1028,15 +1062,29 @@ async fn agent_stream(
                 user_id,
                 &context_id,
                 &task_id,
+                session_id.as_deref(),
                 &flow_id_cleanup,
                 &raw_body,
             )
             .await;
             flow_events.remove(&flow_id_cleanup).await;
 
+            // Same ordering as the streaming branch: the agent's own status event (`event`,
+            // built above) is queued first, but the synthetic HITL metadata frame — the one
+            // that actually carries `hitl_requests.id` — is only ever queued once persistence
+            // has returned `Ok`, never before.
+            let hitl_event = pause_result
+                .as_ref()
+                .ok()
+                .map(|row| build_hitl_stream_event(&task_id, &context_id, row));
+            let error_event = pause_result.err();
+
             let stream = async_stream::stream! {
                 yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
                 yield Ok(to_sse(a2a::status_event(event)));
+                if let Some(hitl_event) = hitl_event {
+                    yield Ok(hitl_event);
+                }
                 if let Some(error_event) = error_event {
                     yield Ok(error_event);
                 }
@@ -1570,10 +1618,16 @@ pub(crate) fn build_pause_question(data: &str) -> serde_json::Value {
 /// shared by `agent_stream()`'s streaming and non-streaming branches (`origin = DirectChat`)
 /// and `agent_proxy.rs`'s streaming and non-streaming branches (`origin = AgentProxy`), which
 /// previously reimplemented this inline and had drifted (the `agent_proxy.rs` copy never
-/// updated the `flows` row). On success, marks the flow `paused` and returns `None`. On a
-/// persistence failure, marks the flow `failed` and returns the SSE `error` event the caller
-/// must yield — a pause must never look like a silent success (§8: never pretend the stream
-/// closed cleanly when the pause itself might be lost).
+/// updated the `flows` row). On a persistence failure, marks the flow `failed` and returns the
+/// SSE `error` event the caller must yield — a pause must never look like a silent success (§8:
+/// never pretend the stream closed cleanly when the pause itself might be lost).
+///
+/// On success, marks the flow `paused` and returns the created row — the caller (both pause
+/// branches of `agent_stream()`) uses `row.id`/`row.kind`/`row.question` to build the
+/// frontend-facing HITL stream event (`build_hitl_stream_event`) from the SAME row the database
+/// just durably committed, never from the pre-persistence `pause_data`. This is the ordering fix:
+/// the id cannot exist, and therefore cannot be handed to the caller, before `hitl_store.create`
+/// has returned `Ok`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_direct_chat_pause(
     hitl_store: &std::sync::Arc<dyn nasiko_hitl::HitlStore>,
@@ -1583,14 +1637,36 @@ pub(crate) async fn persist_direct_chat_pause(
     user_id: Uuid,
     context_id: &str,
     task_id: &str,
+    chat_session_id: Option<&str>,
     flow_id: &str,
     pause_data: &str,
-) -> Option<Event> {
+) -> Result<nasiko_hitl::HitlRequest, Event> {
     let question = build_pause_question(pause_data);
     let kind = pause_kind(pause_data);
     // The agent's OWN task id, not Nasiko's synthetic per-request `task_id` — see
     // `paused_task_id`'s doc comment. Resume must address the task the agent's own store holds.
     let real_task_id = paused_task_id(pause_data, task_id);
+    // `hitl_requests.chat_session_id` carries a hard FK to `chat_sessions(session_id)` — unlike
+    // `context_id`/`task_id`, which are free-form strings, a bogus value here doesn't just fail
+    // to correlate, it fails the ENTIRE insert (confirmed live: `hitl_requests_chat_session_id_fkey`
+    // violation). The ordinary web-UI path always creates the `chat_sessions` row via
+    // `POST /chat/sessions` before ever sending a turn, so this is normally a no-op existence
+    // check — but a pause must never be lost over a stale/foreign session id some other caller
+    // supplied, so this degrades to `None` (this function's pre-existing behavior) rather than
+    // letting the whole pause fail on a FK violation the caller can't fix.
+    let chat_session_id = match chat_session_id {
+        Some(sid) => {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1)",
+            )
+            .bind(sid)
+            .fetch_one(db)
+            .await
+            .unwrap_or(false);
+            exists.then(|| sid.to_string())
+        }
+        None => None,
+    };
     let new_row = match origin {
         nasiko_hitl::HitlOrigin::AgentProxy => nasiko_hitl::NewHitlRequest::agent_proxy(
             kind,
@@ -1607,16 +1683,17 @@ pub(crate) async fn persist_direct_chat_pause(
             real_task_id,
             context_id.to_string(),
             question,
-        ),
+        )
+        .with_chat_session_id(chat_session_id),
     };
 
     match hitl_store.create(new_row).await {
-        Ok(_row) => {
+        Ok(row) => {
             let _ = sqlx::query("UPDATE flows SET status = 'paused' WHERE flow_id = $1")
                 .bind(flow_id)
                 .execute(db)
                 .await;
-            None
+            Ok(row)
         }
         Err(e) => {
             let _ = sqlx::query(
@@ -1626,13 +1703,39 @@ pub(crate) async fn persist_direct_chat_pause(
             .bind(e.to_string())
             .execute(db)
             .await;
-            Some(
-                Event::default().event("error").data(
-                    json!({ "error": format!("failed to persist HITL pause: {e}") }).to_string(),
-                ),
-            )
+            Err(Event::default()
+                .event("error")
+                .data(json!({ "error": format!("failed to persist HITL pause: {e}") }).to_string()))
         }
     }
+}
+
+/// The frontend-facing HITL metadata frame — yielded on the SAME still-open Direct Chat SSE
+/// connection immediately after `persist_direct_chat_pause` returns `Ok`, i.e. after the
+/// `hitl_requests` row (and therefore its id) is durably committed. Follows the exact
+/// `agent_message`/`data_part`/`status_event` convention already used for the `trace_meta` and
+/// `usage_meta` synthetic frames in this file, rather than inventing a new SSE event type: any
+/// client already parsing those (via `handleDataParts` in `a2a-stream.js`) sees this the same way.
+/// This is a synthetic, Nasiko-originated frame layered onto the agent's own
+/// `input-required`/`auth-required` status event (already yielded earlier, unmodified) — it does
+/// not replace or alter that event.
+fn build_hitl_stream_event(
+    task_id: &str,
+    context_id: &str,
+    row: &nasiko_hitl::HitlRequest,
+) -> Event {
+    let data = a2a::data_part(json!({
+        "type": "hitl",
+        "id": row.id,
+        "kind": row.kind.as_str(),
+        "task_id": row.task_id,
+        "context_id": row.context_id,
+        "question": row.question,
+    }));
+    let msg = a2a::agent_message(context_id, task_id, data);
+    to_sse(a2a::status_event(a2a::working_with_message(
+        task_id, context_id, msg,
+    )))
 }
 
 fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String {

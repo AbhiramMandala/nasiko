@@ -43,6 +43,17 @@ pub trait HitlStore: Send + Sync {
         &self,
         identity: &HitlIdentity,
     ) -> Result<Vec<HitlRequest>, HitlError>;
+    /// Every HITL request (pending or already resolved/rejected/expired/canceled) tied to a web
+    /// chat session, oldest first — the session-load discovery path (`chat/routes.rs::
+    /// list_messages`), an alternative to `list_pending_for` for a caller that already knows
+    /// which session it wants rather than "everything pending for this user". Filtered inside the
+    /// query by BOTH `chat_session_id` and `owner_user_id`, same rule as `list_pending_for` (§10)
+    /// — a session id alone is never sufficient to authorize the read.
+    async fn list_for_chat_session(
+        &self,
+        chat_session_id: &str,
+        owner_user_id: Uuid,
+    ) -> Result<Vec<HitlRequest>, HitlError>;
     /// The exact `UPDATE ... WHERE status = 'pending' RETURNING *` from §5. `status` is the
     /// human's decision (`Resolved` or, for future `tool_approval` rejects, `Rejected`).
     async fn resolve(
@@ -307,6 +318,21 @@ impl HitlStore for PgHitlStore {
             .fetch_all(&self.pool)
             .await?
         };
+        rows.into_iter().map(HitlRequest::try_from).collect()
+    }
+
+    async fn list_for_chat_session(
+        &self,
+        chat_session_id: &str,
+        owner_user_id: Uuid,
+    ) -> Result<Vec<HitlRequest>, HitlError> {
+        let rows: Vec<HitlRequestRow> = sqlx::query_as(
+            "SELECT * FROM hitl_requests WHERE chat_session_id = $1 AND owner_user_id = $2 ORDER BY created_at",
+        )
+        .bind(chat_session_id)
+        .bind(owner_user_id)
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter().map(HitlRequest::try_from).collect()
     }
 

@@ -274,6 +274,11 @@ async fn deliver(state: AppState, row: HitlRequest) {
                 context_id,
                 question,
             ),
+            // Propagate `chat_session_id` from the row that just resolved: it belongs to the
+            // same web-chat session as the whole multi-turn exchange, and only the very first
+            // pause in a chain has it threaded in from `a2a_dispatch.rs` — every later round in
+            // the same chain is built here, not there, so this is the only place it can carry
+            // forward from.
             _ => NewHitlRequest::direct_chat(
                 kind,
                 row.agent_id,
@@ -281,7 +286,8 @@ async fn deliver(state: AppState, row: HitlRequest) {
                 task_id,
                 context_id,
                 question,
-            ),
+            )
+            .with_chat_session_id(row.chat_session_id.clone()),
         };
         if let Err(e) = state.hitl_store.create(new_row).await {
             tracing::error!(id = %row.id, %e, "hitl dispatcher: failed to persist the follow-up pause");

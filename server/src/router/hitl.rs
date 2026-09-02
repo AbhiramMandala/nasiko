@@ -70,7 +70,11 @@ fn allowed_actions(kind: HitlKind) -> &'static [&'static str] {
 
 /// §11's response shape. `resume_state` is never included — `HitlRequest` isn't `Serialize` for
 /// exactly this reason, so this DTO is the only path an API response can take.
-fn to_response(row: &HitlRequest) -> Value {
+///
+/// `pub(crate)` (not private): `chat/routes.rs::list_messages` reuses this exact DTO to attach a
+/// session's HITL rows to session-load responses, rather than hand-rolling a second field
+/// selection that could drift from this one (e.g. accidentally including `resume_state`).
+pub(crate) fn to_response(row: &HitlRequest) -> Value {
     json!({
         "id": row.id,
         "kind": row.kind.as_str(),
@@ -81,6 +85,7 @@ fn to_response(row: &HitlRequest) -> Value {
         "execution": {
             "origin": row.origin.as_str(),
             "agent_id": row.agent_id,
+            "task_id": row.task_id,
             "context_id": row.context_id,
             "chat_session_id": row.chat_session_id,
             "maf_execution_id": row.maf_execution_id,
