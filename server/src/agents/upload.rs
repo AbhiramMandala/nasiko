@@ -1215,7 +1215,13 @@ pub async fn execute_upload_and_deploy(
 }
 
 /// Execute the full clone-and-deploy pipeline: extract tar.gz, OTel patch, docker build, deploy.
-/// Called by the build worker for `BuildJobPayload::Clone` jobs.
+/// Called by the build worker for `BuildJobPayload::Clone` jobs, and internally
+/// by [`execute_github_clone_and_deploy`] once its git-clone step succeeds.
+///
+/// `prior_version`/`prior_image`/`prior_status` are `Some` only if this
+/// pipeline overwrote a pre-existing agent — see
+/// [`restore_prior_state_or_clean_up`], which decides whether a failure here
+/// restores that snapshot or cleans up a genuinely brand-new agent.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_clone_and_deploy(
     runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
@@ -1236,6 +1242,9 @@ pub async fn execute_clone_and_deploy(
     agent_image_registry: String,
     max_replicas: u32,
     default_memory: String,
+    prior_version: Option<String>,
+    prior_image: Option<String>,
+    prior_status: Option<String>,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1435,8 +1444,46 @@ pub async fn execute_clone_and_deploy(
                 Some("clone and deploy failed"),
             )
             .await;
-            super::utils::delete_agent_or_mark_failed(&db, agent_id).await;
+            restore_prior_state_or_clean_up(
+                &db,
+                agent_id,
+                &prior_version,
+                &prior_image,
+                &prior_status,
+            )
+            .await;
             tracing::error!(build_id = %build_id, %e, "clone-and-deploy failed");
+        }
+    }
+}
+
+/// Restores this agent to `prior_version`/`prior_image`/`prior_status` — what
+/// it was before the queueing handler optimistically overwrote it with a
+/// placeholder — for any rejection or failure of a clone-and-deploy attempt
+/// against a pre-existing agent. A brand-new agent has nothing to restore to,
+/// so it's cleaned up like any other failure instead.
+async fn restore_prior_state_or_clean_up(
+    db: &sqlx::PgPool,
+    agent_id: Uuid,
+    prior_version: &Option<String>,
+    prior_image: &Option<String>,
+    prior_status: &Option<String>,
+) {
+    match (prior_version, prior_status) {
+        (Some(pv), Some(ps)) => {
+            let _ = sqlx::query(
+                "UPDATE agents SET version = $2, image = $3, status = $4, \
+                 updated_at = now() WHERE id = $1",
+            )
+            .bind(agent_id)
+            .bind(pv)
+            .bind(prior_image)
+            .bind(ps)
+            .execute(db)
+            .await;
+        }
+        _ => {
+            super::utils::delete_agent_or_mark_failed(db, agent_id).await;
         }
     }
 }
@@ -1478,6 +1525,9 @@ pub async fn execute_github_clone_and_deploy(
                 &name,
                 owner_id,
                 "GitHub OAuth not configured",
+                &prior_version,
+                &prior_image,
+                &prior_status,
             )
             .await;
             return;
@@ -1517,6 +1567,9 @@ pub async fn execute_github_clone_and_deploy(
                 &name,
                 owner_id,
                 "GitHub not connected",
+                &prior_version,
+                &prior_image,
+                &prior_status,
             )
             .await;
             return;
@@ -1539,6 +1592,9 @@ pub async fn execute_github_clone_and_deploy(
                 &name,
                 owner_id,
                 "git clone failed",
+                &prior_version,
+                &prior_image,
+                &prior_status,
             )
             .await;
             return;
@@ -1563,6 +1619,9 @@ pub async fn execute_github_clone_and_deploy(
             &name,
             owner_id,
             "internal error saving archive",
+            &prior_version,
+            &prior_image,
+            &prior_status,
         )
         .await;
         return;
@@ -1571,10 +1630,6 @@ pub async fn execute_github_clone_and_deploy(
     let version_tag = version_override.as_deref().unwrap_or("latest");
     let image_tag =
         crate::agents::build_image_tag(&state.config.agent_image_registry, &name, version_tag);
-
-    // If prior state was captured, restore on failure inside execute_clone_and_deploy
-    // (the prior_* fields are carried for future rollback support but unused today).
-    let _ = (&prior_version, &prior_image, &prior_status);
 
     let mut platform_env = state.agent_env(agent_id).await;
     platform_env.extend(env);
@@ -1597,12 +1652,18 @@ pub async fn execute_github_clone_and_deploy(
         state.config.agent_image_registry.clone(),
         state.config.agent_max_replicas,
         state.config.agent_default_memory.clone(),
+        prior_version,
+        prior_image,
+        prior_status,
     )
     .await;
 }
 
 /// Drive the agent and build to a terminal failed state when the clone step
-/// fails before `execute_clone_and_deploy` can take over status management.
+/// fails before `execute_clone_and_deploy` can take over status management —
+/// restoring `prior_*` on a pre-existing agent rather than deleting it, same
+/// as every other rejection branch (see `restore_prior_state_or_clean_up`).
+#[allow(clippy::too_many_arguments)]
 async fn fail_github_clone_terminal(
     db: &sqlx::PgPool,
     build_id: Uuid,
@@ -1611,10 +1672,13 @@ async fn fail_github_clone_terminal(
     name: &str,
     owner_id: Uuid,
     reason: &str,
+    prior_version: &Option<String>,
+    prior_image: &Option<String>,
+    prior_status: &Option<String>,
 ) {
     set_build_status(db, build_id, BuildStatus::Failed).await;
     set_upload_status(db, upload_id, name, owner_id, "failed", None, Some(reason)).await;
-    super::utils::delete_agent_or_mark_failed(db, agent_id).await;
+    restore_prior_state_or_clean_up(db, agent_id, prior_version, prior_image, prior_status).await;
 }
 
 // ─── GET /deploy-status/{build_id} (SSE) ─────────────────────────────────────
