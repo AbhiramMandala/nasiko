@@ -250,6 +250,17 @@ kpiCount = AppStatCard("Requests", requestCountQ, null, "neutral")`,
   assert.deepEqual(out.diagnostics, []);
 });
 
+test('a whole-response default is repaired, so the component still gets its shape', () => {
+  // Repair is safe under exactly the condition that detects it: we have
+  // already established the default IS the envelope, so the path through it is
+  // the value the model meant. A correct `[]` has no "data" key and is never
+  // touched. Reported as well as repaired — the mistake stays fixable upstream
+  // rather than being absorbed silently.
+  const out = run('q = Query("fetchUsageByModel", ["", 1, 50], {data: [], total: 0}, "data")\nroot = AppTable(q)');
+  assert.deepEqual(out.root.data, [], 'the table gets rows, not the envelope');
+  assert.ok(out.diagnostics.some((d) => d.code === 'default_is_whole_response'));
+});
+
 test('a default that is the whole response is caught at the Query, not at the table', () => {
   // The generator writes this: the envelope as the default, plus a dot-path.
   // The component then fails with "needs an array of rows", which points at

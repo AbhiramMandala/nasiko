@@ -79,13 +79,7 @@ export const CASES = [
     expect: { minQueries: 1, minActions: 1, minStates: 1 } },
   { id: 'vague', prompt: 'how are we doing on cost',
     expect: { minQueries: 1 },
-    // Prompt adherence, not a missing rule: rule 3 already says a dot-path
-    // default must be the shape after the path, and other cases now obey it.
-    // This sample did not. The grammar line it copies from said `defaultValue`,
-    // which is the same mistake as printing `aria-label?` — so that now reads
-    // `defaultShapedLikeTheResult`. Clears on the next re-record if the lever
-    // worked; if it recurs, the next step is structural, not more wording.
-    knownFailure: 'intermittent: whole-response default despite rule 3' },
+  },
   { id: 'terse', prompt: 'spend',
     expect: { minQueries: 1 } },
   // Interactive controls are where a model leaves things unnamed. The
@@ -109,6 +103,17 @@ export const CASES = [
   { id: 'out-of-scope', prompt: 'Show me our AWS bill by service',
     expect: { allowNoSurface: true } },
 ];
+
+/**
+ * Diagnostics that describe a mistake the runtime corrected.
+ *
+ * The surface renders properly, so failing the case would be reporting a
+ * problem the user never has. They are still shown, because the mistake is
+ * real and worth fixing upstream — but "the generator wrote something odd and
+ * we handled it" is not the same event as "the dashboard is broken", and a
+ * checker that conflates the two teaches people to ignore it.
+ */
+const ADVISORY = new Set(['default_is_whole_response']);
 
 /** Every source the scope allows. Anything else must not survive to the client. */
 export const ALLOWED_SOURCES = new Set([
@@ -173,21 +178,27 @@ export function evaluateGeneration(text) {
 export function check(kase, text) {
   const r = evaluateGeneration(text);
   const fail = [];
+  /** Corrected, not broken — shown, never fatal. */
+  const advisory = [];
   const e = kase.expect ?? {};
 
   if (e.noSurface) {
     if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 11)');
     if (!r.prose.join('').trim()) fail.push('answered with nothing at all');
-    return { fail, r };
+    return { fail, advisory, r };
   }
 
   if (!r.root) {
-    if (e.allowNoSurface) return { fail, r };
+    if (e.allowNoSurface) return { fail, advisory, r };
     fail.push('no root — nothing rendered');
   }
 
   // These are never acceptable, whatever the case asked for.
-  for (const d of r.diagnostics) fail.push(`diagnostic ${d.source}/${d.code}: ${d.message}`);
+  for (const d of r.diagnostics) {
+    const line = `diagnostic ${d.source}/${d.code}: ${d.message}`;
+    if (ADVISORY.has(d.code)) advisory.push(line);
+    else fail.push(line);
+  }
   for (const name of r.unresolved) fail.push(`references "${name}", which is not defined`);
   for (const q of r.queries) {
     if (!ALLOWED_SOURCES.has(q.source)) fail.push(`Query names "${q.source}", which the scope does not allow`);
@@ -210,7 +221,7 @@ export function check(kase, text) {
     if (!r.tags.includes(tag)) fail.push(`no <${tag}> anywhere in the tree`);
   }
 
-  return { fail, r };
+  return { fail, advisory, r };
 }
 
 /** Read one generation off the live endpoint, concatenating its dsl-chunks. */
@@ -229,6 +240,7 @@ async function generate(prompt) {
   if (!res.ok) throw new Error(`HTTP ${res.status} from ${base} — is Weave running, and is the token set?`);
 
   let text = '';
+  let generatorCatalog = null;
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -241,11 +253,16 @@ async function generate(prompt) {
     for (const frame of frames) {
       const event = frame.match(/^event:\s*(.+)$/m)?.[1]?.trim();
       const data = frame.match(/^data:\s*(.+)$/m)?.[1];
-      if (event !== 'dsl-chunk' || !data) continue;
+      if (!data) continue;
+      if (event === 'surface') {
+        try { generatorCatalog = JSON.parse(data).catalogVersion ?? null; } catch { /* reported below */ }
+        continue;
+      }
+      if (event !== 'dsl-chunk') continue;
       try { text += JSON.parse(data).text ?? ''; } catch { /* a truncated frame is the client's problem too */ }
     }
   }
-  return text;
+  return { text, generatorCatalog };
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
@@ -298,7 +315,23 @@ for (const kase of cases) {
   const path = resolve(FIXTURES, `${kase.id}.dsl`);
   let text;
   try {
-    text = offline ? readFileSync(path, 'utf8') : await generate(kase.prompt);
+    if (offline) {
+      text = readFileSync(path, 'utf8');
+    } else {
+      const got = await generate(kase.prompt);
+      text = got.text;
+      // The generator says which catalog it built against. Judging its output
+      // with a different one is judging the wrong thing — and a silent
+      // fallback to a stale bundled copy looks exactly like a model that will
+      // not follow a rule, which cost three rounds of prompt edits before
+      // anyone thought to check.
+      if (got.generatorCatalog && got.generatorCatalog !== catalog.catalogVersion) {
+        console.error(`\neval: the generator built against catalog ${got.generatorCatalog}, this repo has ${catalog.catalogVersion}.`);
+        console.error('Every result below would be judged against a vocabulary the generator never saw.');
+        console.error('Point WEAVE_CATALOG_URL at this control plane and restart Weave.');
+        process.exit(1);
+      }
+    }
   } catch (err) {
     console.error(`✗ ${kase.id}: ${err.message}`);
     failed++;
@@ -306,7 +339,7 @@ for (const kase of cases) {
   }
   if (record) writeFileSync(path, text);
 
-  const { fail, r } = check(kase, text);
+  const { fail, advisory, r } = check(kase, text);
 
   if (kase.knownFailure) {
     if (fail.length) {
@@ -333,6 +366,7 @@ for (const kase of cases) {
       : 'prose only';
     console.log(`✓ ${kase.id} — ${shape}`);
   }
+  for (const a of advisory) console.log(`    corrected: ${a}`);
 }
 
 const known = cases.filter((c) => c.knownFailure).length;

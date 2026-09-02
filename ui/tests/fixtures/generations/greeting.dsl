@@ -1,16 +1,22 @@
-I can help you build interactive dashboards for the Nasiko TokenOps platform. Here's what I do:
+I'm a TokenOps dashboard generator for the Nasiko platform. I can build interactive dashboards using a compact line-oriented DSL — no JSON, no markdown, just plain statements.
 
-**I generate and maintain dashboard surfaces** using a compact, line-oriented DSL — not JSON, not markdown, just clean statement syntax. Each surface is made up of components (cards, tables, charts, buttons, forms, and more) that you can arrange however you need.
+Here's what I can do:
 
-**I can fetch real data** from your backend using queries — cost summaries, usage history, per-agent breakdowns, per-model breakdowns — and display it in KPI cards, tables, and charts. I pick the right data source for what you're asking for, never invent numbers.
+**Build dashboards from scratch** — you describe what you want to see (cost metrics, usage trends, agent breakdowns, model performance, etc.), and I generate a complete, working surface with real data queries baked in.
 
-**I can add interactivity** — filters that reload data when you change them, toggles to switch views, search boxes, buttons that trigger actions, modals for editing, and chat inputs that send follow-up requests back to me.
+**Fetch real data** — I pull from your actual backend sources: usage summaries, daily history, agent/model breakdowns, token counts, latency, and financial summaries. No invented numbers.
 
-**I can revise what we build together** — you just tell me what to change (add a chart, swap a table column, remove a section, change a color) and I emit the updated DSL. The same-name-overwrites rule means I only touch what needs to change; everything else stays as-is.
+**Make dashboards interactive** — buttons, filters, toggles, search boxes, and modals all wired up so you can drill into details, switch views, or reload data without leaving the dashboard.
 
-**A few important constraints:**
-- I only use real data sources and mutations listed in my knowledge — I never call an API you haven't told me about or make up plausible numbers.
-- Every button, input, and interactive control must have a label (either visible text or `aria-label`) so it's accessible.
-- Everything is one statement per line, positional arguments only, no nesting weirdness.
+**Revise on the fly** — you ask me to change a card, swap a chart type, add a filter, remove a section, or rearrange the layout, and I emit only the statements that changed — the rest stays put.
 
-**What would you like to build?** A spend dashboard? A usage-by-agent table with filters? A fleet-wide KPI summary? Just describe what you're after, and I'll generate it for you.
+**Use real components** — AppCard, AppTable, AppChart, AppStatCard, AppRow, AppStack, AppModal, AppButton, AppSearch, AppSelect, and more — all with proper accessibility (labels, ARIA), loading states, and error handling baked in.
+
+**Wire up actions** — refresh data, set filters, open URLs, send follow-up requests back to me — all declaratively.
+
+To get started, just tell me what you'd like to see. For example:
+- "Show me a cost dashboard with today's spend, a trend chart, and a table of usage by agent."
+- "Build a summary card for total tokens used this week."
+- "I want to compare cost vs. ops metrics side-by-side with a toggle between them."
+
+What would you like to build?

@@ -84,7 +84,7 @@ test('a required component that never appears is caught', () => {
 
 test('a greeting case fails if it builds a dashboard anyway', () => {
   const { fail } = check(kase({ noSurface: true }), GOOD);
-  assert.ok(fail.some((f) => /rule 10/.test(f)));
+  assert.ok(fail.some((f) => /rule 11/.test(f)));
 });
 
 test('a greeting case passes on prose alone', () => {
@@ -130,4 +130,24 @@ test('every case names a scope source the manifest actually allows', () => {
   assert.ok(ALLOWED_SOURCES.has('fetchUsageSummary'));
   assert.ok(CASES.length >= 8, 'a handful of prompts is not a baseline');
   assert.equal(new Set(CASES.map((c) => c.id)).size, CASES.length, 'ids are the fixture filenames');
+});
+
+test('a corrected mistake is shown but does not fail the case', () => {
+  // The runtime repairs a whole-response default, so the dashboard is fine.
+  // Failing here would report a problem the user never has, and a checker that
+  // conflates "we handled it" with "it is broken" gets ignored.
+  const dsl = `Here.
+q = Query("fetchUsageByModel", ["", 1, 50], {data: [], total: 0}, "data")
+t = AppTable(q)
+root = AppStack([t], "md")
+Done.`;
+  const { fail, advisory } = check(kase({ minQueries: 1 }), dsl);
+  assert.deepEqual(fail, []);
+  assert.equal(advisory.length, 1);
+  assert.match(advisory[0], /default_is_whole_response/);
+});
+
+test('a genuine breakage is still fatal', () => {
+  const { fail } = check(kase({}), 'root = AppStack([ghost], "md")\n');
+  assert.ok(fail.length > 0);
 });

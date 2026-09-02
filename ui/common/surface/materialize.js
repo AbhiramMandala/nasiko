@@ -21,6 +21,7 @@
 
 import { toNumber, toText, toArray } from './coerce.js';
 import { EACH, isEagerBuiltin, callBuiltin } from './builtins.js';
+import { selectPath } from './queries.js';
 
 /** Call-shaped names that are not components. */
 const INTERCEPTED = new Set(['Query', 'Mutation', 'Action', 'Slot']);
@@ -415,28 +416,42 @@ export function materialize(statements, componentIndex, ctx = {}) {
         // an object where it wanted rows, then fails somewhere else entirely
         // with "needs an array of rows".
         //
-        // Detected narrowly rather than guessed at: only when the default is a
-        // plain object that literally contains the first path segment, which no
-        // correct default ever does. Applying the path to the default instead
-        // would look like a fix and break the correct case — `selectPath([],
-        // "data")` is null, so a right answer would become a wrong one.
+        // Detected narrowly: only when the default is a plain object that
+        // literally contains the first path segment, which no correct default
+        // ever does — a correct `[]` has no "data" key, so it is untouched.
+        //
+        // And repaired, under exactly that guard. Applying the path
+        // unconditionally would break the correct case; applying it only where
+        // we have already established the default IS the envelope cannot,
+        // because the path through it is the value the model meant. The
+        // diagnostic still fires, so the mistake stays visible and fixable
+        // upstream — but a dashboard is not broken over an error we can read
+        // unambiguously.
+        //
+        // Observed rate: roughly one generation in ten, moving between cases
+        // run to run. Three prompt levers reduced it and none removed it,
+        // which is what tipped this from "report" to "report and repair".
+        let usable = fallback;
         if (select && fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
           const head = String(select).split('.')[0];
-          if (head && Object.prototype.hasOwnProperty.call(fallback, head) && !warnedDefault.has(statementId)) {
-            warnedDefault.add(statementId);
-            note(
-              'default_is_whole_response',
-              `${statementId}'s default looks like the whole response — with a "${select}" path, `
-                + `the default should be what that path yields, not the object containing it`,
-              statementId,
-            );
+          if (head && Object.prototype.hasOwnProperty.call(fallback, head)) {
+            usable = selectPath(fallback, select);
+            if (!warnedDefault.has(statementId)) {
+              warnedDefault.add(statementId);
+              note(
+                'default_is_whole_response',
+                `${statementId}'s default is the whole response — with a "${select}" path it should be `
+                  + `what that path yields. Using ${JSON.stringify(usable)} until the fetch lands`,
+                statementId,
+              );
+            }
           }
         }
 
         // Resolved value if the manager has one, otherwise the declared
         // default — which is why a dashboard shows zeroes rather than blanks
         // while its first fetch is in flight.
-        return queryResults.has(statementId) ? queryResults.get(statementId) : fallback;
+        return queryResults.has(statementId) ? queryResults.get(statementId) : usable;
       }
 
       case 'Mutation': {

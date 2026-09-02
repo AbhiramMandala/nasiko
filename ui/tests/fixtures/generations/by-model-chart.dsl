@@ -1,11 +1,9 @@
 Sure — building that now.
-root = AppStack([header, chartSection, tableSection], "md")
+root = AppStack([header, chart, table], "md")
 header = AppRow([title], "md")
-title = AppStatCard("Usage by Model", null, null, "neutral")
-modelDataQ = Query("fetchUsageByModel", ["", 1, 50], [], "data")
-chartDataQ = Query("fetchUsageByModel", ["", 1, 50], [], "data")
-chartSection = AppStack([chart], "md")
-chart = AppChart({labels: chartDataQ.model, datasets: [{label: "Total Cost (USD)", data: chartDataQ.total_cost_usd}]}, "bar", false, "currency", "USD")
-tableSection = AppStack([table], "md")
-table = AppTable(modelDataQ, 50, "pages", true)
-Here's a usage-by-model dashboard with a bar chart showing cost per model and a sortable table below — let me know if you'd like to adjust the chart type, add more metrics, or filter the data!
+title = AppStatCard("Model Usage", null, null, "neutral")
+modelDataQ = Query("fetchUsageByModel", ["", 1, 50], {data: [], total: 0}, "data")
+chartData = {labels: modelDataQ.model, datasets: [{label: "Cost (USD)", data: modelDataQ.total_cost_usd}]}
+chart = AppChart(chartData, "bar", false, "currency", "USD")
+table = AppTable(modelDataQ, 50, "pages", false)
+Here's your model usage dashboard with a bar chart showing cost by model and a detailed table below — let me know if you'd like to add filters, change the chart type, or adjust anything else!
