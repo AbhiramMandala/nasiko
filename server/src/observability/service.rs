@@ -686,18 +686,8 @@ impl ObservabilityService {
     async fn get_agent_names(
         &self,
     ) -> Result<Vec<(uuid::Uuid, String, String, String)>, ObservabilityError> {
-        // Live agents only (deleted_at IS NULL): a soft-deleted agent's name is
-        // free to be re-registered by a re-upload, and leaving the dead rows in
-        // would make the finops dashboard list one row per past incarnation —
-        // all resolving to the same name — and double-count their spend in the
-        // fleet totals (the name-keyed `agent_finops`/`count_user_traces` queries
-        // return identical results for every duplicate). Historical spend of
-        // deleted agents still counts toward the fleet figures via the
-        // `token_usage`/`session_traces` queries, which are name/agent_id-keyed,
-        // not row-keyed.
         sqlx::query_as::<_, (uuid::Uuid, String, String, String)>(
-            "SELECT id, name, COALESCE(display_name, name), version FROM agents \
-             WHERE deleted_at IS NULL ORDER BY name",
+            "SELECT id, name, COALESCE(display_name, name), version FROM agents ORDER BY name",
         )
         .fetch_all(&self.db)
         .await

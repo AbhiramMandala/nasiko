@@ -309,7 +309,6 @@ fn deploy_from_directory(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn deploy_from_image(
     image: &str,
     name_override: Option<&str>,

@@ -396,11 +396,6 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.config.agent_image_registry.clone(),
                 state.config.agent_max_replicas,
                 state.config.agent_default_memory.clone(),
-                // This legacy variant never carried prior_* — it predates
-                // that snapshot-and-restore mechanism entirely.
-                None,
-                None,
-                None,
             )
             .await;
         }
