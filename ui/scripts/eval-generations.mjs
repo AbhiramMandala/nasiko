@@ -93,7 +93,7 @@ export const CASES = [
     // away. Remove this line once the prompt is fixed — the run fails if the
     // case starts passing, so it cannot be forgotten.
     knownFailure: 'agent.yaml does not require an accessible name on generated controls' },
-  // Not a dashboard request. agent.yaml rule 10 says answer in plain text, so
+  // Not a dashboard request. agent.yaml rule 11 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.
   { id: 'greeting', prompt: 'hey, what can you do?',
@@ -171,7 +171,7 @@ export function check(kase, text) {
   const e = kase.expect ?? {};
 
   if (e.noSurface) {
-    if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 10)');
+    if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 11)');
     if (!r.prose.join('').trim()) fail.push('answered with nothing at all');
     return { fail, r };
   }

@@ -84,7 +84,7 @@ test('a required component that never appears is caught', () => {
 
 test('a greeting case fails if it builds a dashboard anyway', () => {
   const { fail } = check(kase({ noSurface: true }), GOOD);
-  assert.ok(fail.some((f) => /rule 10/.test(f)));
+  assert.ok(fail.some((f) => /rule 11/.test(f)));
 });
 
 test('a greeting case passes on prose alone', () => {
