@@ -653,7 +653,7 @@ async fn update_maf(
 
             resolved.push(MafStep {
                 step_id: Uuid::new_v4(),
-                step_index: step.step_index,
+                step_index: idx as i32,
                 agent_id,
                 agent_name: name,
                 agent_endpoint: endpoint,
