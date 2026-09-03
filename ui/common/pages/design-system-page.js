@@ -15,6 +15,7 @@ const styles = await loadCss(new URL('./design-system-page.css', import.meta.url
 import { icons } from '../utils/icons.js';
 import { escAttr } from '/common/utils/escape.js';
 
+import '/common/design-system/app-action-menu/app-action-menu.js';
 import '/common/design-system/app-card/app-card.js';
 import '/common/design-system/app-chart/app-chart.js';
 import '/common/design-system/app-chatbox/app-chatbox.js';
@@ -42,45 +43,18 @@ import '/common/design-system/app-tabs/app-tabs.js';
 import '/common/design-system/app-tag/app-tag.js';
 import '/common/design-system/app-toolbar/app-toolbar.js';
 import '/common/design-system/app-tooltip/app-tooltip.js';
-import '/common/design-system/app-combobox/app-combobox.js';
-import '/common/design-system/app-alert/app-alert.js';
-import '/common/design-system/app-banner/app-banner.js';
-import '/common/design-system/app-breadcrumb/app-breadcrumb.js';
-import '/common/design-system/app-calendar/app-calendar.js';
-import '/common/design-system/app-command/app-command.js';
-import '/common/design-system/app-context-menu/app-context-menu.js';
-import '/common/design-system/app-date-field/app-date-field.js';
-import '/common/design-system/app-field/app-field.js';
-import '/common/design-system/app-hover-card/app-hover-card.js';
-import '/common/design-system/app-kbd/app-kbd.js';
-import '/common/design-system/app-list/app-list.js';
-import '/common/design-system/app-menu/app-menu.js';
-import '/common/design-system/app-otp-input/app-otp-input.js';
-import '/common/design-system/app-pagination/app-pagination.js';
-import '/common/design-system/app-popover/app-popover.js';
-import '/common/design-system/app-progress/app-progress.js';
-import '/common/design-system/app-resizable/app-resizable.js';
-import '/common/design-system/app-sheet/app-sheet.js';
-import '/common/design-system/app-slider/app-slider.js';
-import '/common/design-system/app-spinner/app-spinner.js';
-import '/common/design-system/app-tag-group/app-tag-group.js';
-import '/common/design-system/app-textarea/app-textarea.js';
-import '/common/design-system/app-time-field/app-time-field.js';
-import '/common/design-system/app-toggle-group/app-toggle-group.js';
-import '/common/design-system/app-toggle/app-toggle.js';
+import '/common/design-system/auto-complete/auto-complete.js';
 import { confirmDialog } from '/common/design-system/app-modal/app-modal.js';
 import { toast } from '/common/utils/toast.js';
-import { register } from '/common/core/data-sources.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-/** `<app-combobox>` takes its suggestions from a registered data source
- *  (`data-fn`) — the demo registers a page-local one, the same seam a real
- *  page's service module uses. `replace` so a hot re-import does not throw. */
-register('dsDemoSuggest', (q) =>
+/** `<auto-complete>` resolves its suggestions through `window[filter-function]`,
+ *  so the demo has to publish one. Not a data function — no registry seam. */
+window.dsDemoSuggest = (q) =>
   ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'gpt-4o']
     .filter((m) => m.toLowerCase().includes(q.toLowerCase()))
-    .map((m) => ({ label: m, value: m, description: m.startsWith('gpt') ? 'OpenAI' : 'Anthropic' })), { replace: true });
+    .map((m) => ({ label: m, value: m }));
 
 /**
  * `<app-table>` needs a fetcher. The design system has no data sources, so this
@@ -127,6 +101,38 @@ const DS_CHART_DATA = {
   'ds-chart-donut': {
     labels: ['gpt-4o 35%', 'claude 25%', 'embeddings 18%', 'gemini 12%', 'other 10%'],
     datasets: [{ label: 'Spend', data: [35, 25, 18, 12, 10] }],
+  },
+  // TokenOps "Spend over time": cost series on the left axis, token volume on
+  // the right (`axis: 'y2'`), with two flagged anomalies on the spend series.
+  'ds-chart-anomaly-line': {
+    labels: Array.from({ length: 31 }, (_, i) => String(i + 1)),
+    datasets: [
+      { label: 'Spend', data: [310, 250, 205, 240, 280, 305, 330, 355, 450, 340,
+        330, 345, 360, 365, 370, 372, 375, 374, 372, 370, 365, 360, 372, 371,
+        370, 372, 370, 340, 300, 270, 245], anomalies: [8, 22] },
+      { label: 'Waste', data: [85, 100, 120, 135, 145, 130, 105, 95, 110, 90,
+        88, 92, 118, 112, 104, 100, 98, 96, 100, 104, 108, 104, 100, 104, 110,
+        112, 108, 116, 112, 108, 110] },
+      { label: 'Tokens', axis: 'y2', data: [2.2e6, 4.1e6, 5.8e6, 6.9e6, 6.1e6,
+        5.4e6, 4.9e6, 5.6e6, 6.4e6, 5.2e6, 4.8e6, 5.1e6, 5.9e6, 6.6e6, 7.1e6,
+        6.8e6, 7.0e6, 7.6e6, 8.1e6, 7.2e6, 6.4e6, 5.8e6, 5.1e6, 4.4e6, 3.9e6,
+        3.4e6, 3.0e6, 3.6e6, 4.5e6, 5.6e6, 6.6e6] },
+    ],
+  },
+  // TokenOps "Spend concentration": one column per hour, one pill per agent.
+  'ds-chart-concentration': {
+    labels: ['12am', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11',
+      '12pm', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11'],
+    datasets: [
+      { label: 'Router', data: [38, 30, 26, 24, 26, 30, 36, 42, 50, 55, 52, 48,
+        50, 54, 52, 48, 44, 46, 42, 38, 40, 44, 40, 36] },
+      { label: 'DevOps Engineer', data: [12, 8, 6, 5, 6, 10, 18, 30, 44, 52, 48, 40,
+        44, 50, 46, 38, 30, 34, 26, 18, 22, 28, 20, 14] },
+      { label: 'Finance Analyst', data: [4, 3, 2, 2, 2, 4, 8, 16, 28, 34, 30, 24,
+        28, 32, 30, 22, 16, 18, 12, 8, 10, 14, 8, 5] },
+      { label: 'Other', data: [2, 1, 1, 1, 1, 2, 4, 8, 12, 14, 12, 10,
+        12, 14, 12, 9, 7, 8, 6, 4, 5, 6, 4, 3] },
+    ],
   },
   // Row forms take a flat array. `trend` is the sentiment, not the arrow:
   // rising spend is bad news, so it is `down` next to an up arrow.
@@ -231,18 +237,6 @@ const SPECS = [
 </app-tabs>`,
   },
 
-  {
-    group: 'Layout',
-    tag: 'app-resizable',
-    blurb: 'nasiko_ui NasikoResizablePanelGroup. Panels declare data-flex / data-min-flex / data-max-flex in one continuous unit; drag the divider (cascading redistribution at a bound), double-click to reset, arrow keys when focused. `sizes` reflects the layout and restores it.',
-    demo: `<div class="rz-stage">
-  <app-resizable>
-    <div data-flex="300" data-min-flex="200" data-max-flex="480" class="rz-pane">Sessions · min 200 / max 480</div>
-    <div data-flex="700" class="rz-pane">Detail</div>
-  </app-resizable>
-</div>`,
-  },
-
   // ── Controls ────────────────────────────────────────────────────────────
   {
     group: 'Controls',
@@ -330,12 +324,19 @@ const SPECS = [
   },
   {
     group: 'Controls',
-    tag: 'app-combobox',
-    blurb: 'Typeahead (formerly auto-complete) on app-search\u2019s box. Suggestions come from a registered data source (`data-fn`), a `filterFn` property, or a static `options` list; fires combobox-select with the picked value. Free text stays.',
-    demo: `<app-row gap="md" wrap align="start">
-  <app-combobox placeholder="Search models…" aria-label="Model" data-fn="dsDemoSuggest"></app-combobox>
-  <app-combobox placeholder="Region" aria-label="Region" size="sm" options='["us-east-1","us-west-2","eu-central-1",{"label":"ap-south-1","value":"ap-south-1","description":"Mumbai"}]'></app-combobox>
-</app-row>`,
+    tag: 'app-action-menu',
+    blurb: 'Icon trigger + dropdown of actions. Fires action-select.',
+    demo: `<app-action-menu trigger-title="Options"
+  items='[{"id":"restart","label":"Restart"},{"id":"logs","label":"View logs"},{"id":"rm","label":"Delete"}]'>
+  ${icons.moreVertical()}
+</app-action-menu>`,
+  },
+  {
+    group: 'Controls',
+    tag: 'auto-complete',
+    blurb: 'Typeahead input. Suggestions come from window[filter-function].',
+    demo: `<auto-complete placeholder="Search models…" aria-label="Model"
+  filter-function="dsDemoSuggest"></auto-complete>`,
   },
 
   {
@@ -488,87 +489,6 @@ const SPECS = [
 </app-stack>`,
   },
 
-  {
-    group: 'Controls',
-    tag: 'app-textarea',
-    blurb: 'The multi-line sibling of app-input: same label / hint / count / state contract, auto-grows between rows and max-rows. (app-chatbox is the chat composer; this is the plain field.)',
-    demo: `<app-row gap="md" wrap align="start">
-  <app-textarea label="System prompt" rows="3" max-rows="6" maxlength="500" placeholder="You are…" hint="Shown to the model on every turn."></app-textarea>
-  <app-textarea label="Notes" rows="3" value="Some notes" state="error" hint="Too long."></app-textarea>
-  <app-textarea label="Read-only" rows="2" value="Locked" readonly></app-textarea>
-</app-row>`,
-  },
-  {
-    group: 'Controls',
-    tag: 'app-field',
-    blurb: 'nasiko_ui NasikoField — label, description and error for any control that has no label row of its own (slider, OTP, toggle group, a checkbox set). app-input / app-select carry their own.',
-    demo: `<app-row gap="md" wrap align="start">
-  <app-field label="Temperature" description="0 is deterministic."><app-slider min="0" max="10" step="1" value="7" show-value aria-label="Temperature"></app-slider></app-field>
-  <app-field label="Verification code" required error="That code has expired."><app-otp-input length="6" groups="3 3" value="12"></app-otp-input></app-field>
-</app-row>`,
-  },
-  {
-    group: 'Controls',
-    tag: 'app-slider',
-    blurb: 'nasiko_ui NasikoSlider on a native range input: 8px track, 20px thumb in a 28px box that reserves the focus ring; ticks when step divides the range into ≤ 20; show-value floats the value while dragging.',
-    demo: `<app-stack gap="md">
-  <app-slider min="0" max="100" value="40" aria-label="Volume"></app-slider>
-  <app-slider min="0" max="10" step="1" value="6" show-value aria-label="Replicas"></app-slider>
-  <app-slider min="0" max="100" value="30" disabled aria-label="Disabled"></app-slider>
-</app-stack>`,
-  },
-  {
-    group: 'Controls',
-    tag: 'app-toggle',
-    blurb: 'nasiko_ui NasikoToggle — a pressed / unpressed button (aria-pressed), not a switch. Rests as a tertiary button, fills bg-secondary-brand when on. app-toggle-group adds single / multiple selection, one shared size, roving arrows and `attached` for a segmented bar.',
-    demo: `<app-row gap="md" wrap align="center">
-  <app-toggle pressed>Bold</app-toggle>
-  <app-toggle>Italic</app-toggle>
-  <app-toggle disabled>Underline</app-toggle>
-  <app-toggle-group selection="single" value="center" attached label="Alignment">
-    <app-toggle value="left">Left</app-toggle><app-toggle value="center">Center</app-toggle><app-toggle value="right">Right</app-toggle>
-  </app-toggle-group>
-  <app-toggle-group selection="multiple" value="b i" size="sm" label="Style">
-    <app-toggle value="b"><b>B</b></app-toggle><app-toggle value="i"><i>I</i></app-toggle><app-toggle value="u">U</app-toggle>
-  </app-toggle-group>
-</app-row>`,
-  },
-  {
-    group: 'Controls',
-    tag: 'app-otp-input',
-    blurb: 'nasiko_ui NasikoInputOtp — one hidden input over painted slots: type, Backspace, paste and one-time-code autofill all work; digits only unless `alphanumeric`; fires otp-complete at the last slot.',
-    demo: `<app-row gap="md" wrap align="center">
-  <app-otp-input length="6" groups="3 3"></app-otp-input>
-  <app-otp-input length="4" value="9" state="error"></app-otp-input>
-  <app-otp-input length="4" value="1234" disabled></app-otp-input>
-</app-row>`,
-  },
-  {
-    group: 'Controls',
-    tag: 'app-tag-group',
-    blurb: 'nasiko_ui NasikoChipGroup plus selection: `selection` multiple (default) or single makes the tags selectable and reflects the picks in `value`; none is a plain row; `scrollable` keeps one line.',
-    demo: `<app-tag-group selection="multiple" value="running" label="Status filter">
-  <app-tag value="running">Running</app-tag>
-  <app-tag value="stopped">Stopped</app-tag>
-  <app-tag value="error">Error</app-tag>
-  <app-tag value="deploying">Deploying</app-tag>
-</app-tag-group>`,
-  },
-  {
-    group: 'Controls',
-    tag: 'app-calendar',
-    blurb: 'nasiko_ui NasikoCalendar — Monday-first, always six rows, min/max, today marker; one tab stop with arrows / Home / End / PageUp / PageDown. app-date-field wraps it in a popover behind app-input\u2019s box; app-time-field is the HH : MM segment editor (`format="12h"` adds AM/PM, `seconds` adds a segment).',
-    demo: `<app-row gap="md" wrap align="start">
-  <app-calendar value="2026-09-15" min="2026-09-03"></app-calendar>
-  <app-stack gap="md">
-    <app-date-field label="Start date" value="2026-09-15" hint="When the schedule begins."></app-date-field>
-    <app-date-field label="End date" placeholder="Pick a date" size="sm"></app-date-field>
-    <app-time-field label="Run at" format="12h" value="15:45"></app-time-field>
-    <app-time-field label="Cutoff" seconds value="23:59:30"></app-time-field>
-  </app-stack>
-</app-row>`,
-  },
-
   // ── Overlays ────────────────────────────────────────────────────────────
   {
     group: 'Overlays',
@@ -596,70 +516,6 @@ const SPECS = [
     tag: 'app-tooltip',
     blurb: 'attachTooltip(el, text), or just data-tooltip — the module auto-scans.',
     demo: `<app-button variant="secondary" data-tooltip="Search · ⌘K">Hover me</app-button>`,
-  },
-
-  {
-    group: 'Overlays',
-    tag: 'app-popover',
-    blurb: 'nasiko_ui NasikoPopover — first child is the trigger, [data-slot="content"] is the surface. Top-layer popover="manual" (paints above an open dialog, never clipped); flips and clamps via utils/anchor.js, the one positioning engine every overlay here shares. Escape returns focus to the trigger.',
-    demo: `<app-row gap="md" wrap align="center">
-  <app-popover side="bottom" align="start">
-    <app-button variant="tertiary">Filters</app-button>
-    <div data-slot="content"><app-stack gap="sm"><app-checkbox label="Only running" checked></app-checkbox><app-checkbox label="Include archived"></app-checkbox></app-stack></div>
-  </app-popover>
-  <app-hover-card open-delay="300">
-    <span class="demo-mention">@satya</span>
-    <div data-slot="content"><strong>Satya</strong><br>Frontend · Nasiko<br><span class="demo-note">Hover card: opens after 700ms by default, never takes focus.</span></div>
-  </app-hover-card>
-</app-row>`,
-  },
-  {
-    group: 'Overlays',
-    tag: 'app-menu',
-    blurb: 'The one menu (formerly app-action-menu, merged with nasiko_ui NasikoPopupMenu): icons, destructive tone, disabled, shortcut caps, dividers. Give it your own trigger as the first child, or nothing — it renders the ⋯ icon button (`trigger-label` names it). Menu-button keyboard pattern end to end. app-context-menu renders the same items at the pointer on right-click / long-press.',
-    demo: `<app-row gap="md" wrap align="center">
-  <app-menu label="Agent actions" items='[{"id":"rename","label":"Rename","icon":"edit","shortcut":"⌘ R"},{"id":"dup","label":"Duplicate","icon":"copy"},{"divider":true},{"id":"del","label":"Delete","icon":"trash","destructive":true},{"id":"arch","label":"Archive","disabled":true}]'>
-    <app-button variant="tertiary">Actions</app-button>
-  </app-menu>
-  <app-menu label="Row actions" trigger-label="Options"
-    items='[{"id":"restart","label":"Restart"},{"id":"logs","label":"View logs"},{"id":"rm","label":"Delete","destructive":true}]'></app-menu>
-  <app-context-menu label="Row actions" items='[{"id":"copy","label":"Copy","icon":"copy"},{"id":"open","label":"Open in new tab","icon":"externalLink"},{"divider":true},{"id":"del","label":"Delete","destructive":true}]'>
-    <div class="demo-target">Right-click me</div>
-  </app-context-menu>
-  <span class="demo-out" data-demo="menu-out">—</span>
-</app-row>`,
-  },
-  {
-    group: 'Overlays',
-    tag: 'app-sheet',
-    blurb: 'nasiko_ui showNasikoSheet — a &lt;dialog&gt; pinned to one edge, sliding in over the same backdrop app-modal uses. For a task that keeps the page in view: filters, an inspector, a multi-field editor. `show()` / `close(result)`; sheet-close carries the result.',
-    demo: `<app-row gap="sm" align="center">
-  <app-button variant="tertiary" data-demo="open-sheet">Open right sheet</app-button>
-  <app-button variant="tertiary" data-demo="open-sheet-left">Open left sheet</app-button>
-  <span class="demo-out" data-demo="sheet-out">—</span>
-</app-row>
-<app-sheet id="ds-demo-sheet" heading="Filter agents" width="400px">
-  <app-stack gap="md">
-    <app-input label="Name" placeholder="Search…"></app-input>
-    <app-tag-group selection="multiple" label="Status"><app-tag value="running">Running</app-tag><app-tag value="stopped">Stopped</app-tag></app-tag-group>
-  </app-stack>
-  <div data-slot="footer">
-    <app-button variant="tertiary" size="md" data-demo="sheet-cancel">Cancel</app-button>
-    <app-button size="md" data-demo="sheet-apply">Apply</app-button>
-  </div>
-</app-sheet>`,
-  },
-  {
-    group: 'Overlays',
-    tag: 'app-command',
-    blurb: 'nasiko_ui showNasikoCommandPalette — top-aligned modal palette over grouped commands; prefix > word > substring / keyword scoring, groups hide when empty, `hotkey` (e.g. `mod+k`) opens it globally. command-select fires after close so a handler can navigate. (app-nav-search is the product\u2019s live entity search; this is the static primitive.)',
-    demo: `<app-row gap="sm" align="center">
-  <app-button variant="tertiary" data-demo="open-command">Open palette</app-button>
-  <app-kbd keys="⌘ J"></app-kbd>
-  <span class="demo-note">mod+k belongs to the header search, so the demo binds mod+j.</span>
-  <span class="demo-out" data-demo="command-out">—</span>
-</app-row>
-<app-command id="ds-demo-command" hotkey="mod+j" groups='[{"label":"Navigation","items":[{"id":"agents","label":"Go to Agents","icon":"bot","shortcut":"G A"},{"id":"builds","label":"Go to Builds","icon":"cube"},{"id":"settings","label":"Go to Settings","icon":"settings"}]},{"label":"Actions","items":[{"id":"new","label":"New agent","icon":"plus","keywords":["create"]},{"id":"deploy","label":"Deploy current build","icon":"play"}]}]'></app-command>`,
   },
 
   // ── Data display ────────────────────────────────────────────────────────
@@ -765,8 +621,8 @@ const SPECS = [
   <app-card name="stale-agent" version="0.9.0" status="failed"
     error-title="Agent failed" error-body="Container exited with an error."
     tags='[{"label":"a2a"}]'>
-    <app-button data-slot="footer" variant="tertiary" size="sm" href="/flows">View logs</app-button>
-    <app-button data-slot="footer" variant="primary" size="sm" href="/agents">Redeploy</app-button>
+    <app-button slot="footer" variant="tertiary" size="sm" href="/flows">View logs</app-button>
+    <app-button slot="footer" variant="primary" size="sm" href="/agents">Redeploy</app-button>
   </app-card>
   <app-card loading></app-card>
 </app-grid>`,
@@ -835,6 +691,20 @@ const SPECS = [
   {
     group: 'Data display',
     tag: 'app-chart',
+    blurb: 'TokenOps "Spend over time": a dataset with anomalies: [indices] gets status-red markers and bands (never a series colour \u2014 an anomaly is a state); a dataset with axis: "y2" binds to the right-hand scale, formatted by format-y2. Hovering draws the crosshair. Use y2 reluctantly \u2014 two scales invite reading a crossing the scale ratio invented.',
+    demo: `<app-chart id="ds-chart-anomaly-line" type="line" format="currency" format-y2="compact"
+  height="200px" label="Spend over time with anomalies"></app-chart>`,
+  },
+  {
+    group: 'Data display',
+    tag: 'app-chart',
+    blurb: 'TokenOps "Spend concentration": [segmented] draws each stack segment as a gapped pill and hides the y-axis; [average-line] adds the dashed mean-of-column-totals rule. One column per hour, colour per agent from the fixed --viz scale.',
+    demo: `<app-chart id="ds-chart-concentration" type="bar" segmented average-line legend="off"
+  height="200px" label="Spend concentration by hour"></app-chart>`,
+  },
+  {
+    group: 'Data display',
+    tag: 'app-chart',
     blurb: 'type="hbar" \u2014 one measure ranked. Every row shares slot 1: varying the hue would encode a difference that is not there. delta + trend add the trailing change column.',
     demo: `<app-chart id="ds-chart-hbar" type="hbar" label="Spend by model"></app-chart>`,
   },
@@ -873,89 +743,12 @@ const SPECS = [
   code="nasiko deploy research-agent --replicas 2"></app-code-snippet>`,
   },
 
-  {
-    group: 'Data display',
-    tag: 'app-kbd',
-    blurb: 'nasiko_ui NasikoKbd — key caps for a shortcut hint. Space-separated display glyphs, never key names.',
-    demo: `<app-row gap="md" align="center">
-  <app-kbd keys="⌘ K"></app-kbd>
-  <app-kbd keys="Ctrl Shift P"></app-kbd>
-  <app-kbd keys="Esc" size="sm"></app-kbd>
-</app-row>`,
-  },
-  {
-    group: 'Data display',
-    tag: 'app-breadcrumb',
-    blurb: 'nasiko_ui NasikoBreadcrumb — ancestors are links (or buttons, when they have no href — those fire crumb-select); the last item is aria-current="page".',
-    demo: `<app-breadcrumb leading-icon items='[{"label":"Home","href":"/"},{"label":"Agents","href":"/agents"},{"label":"research-agent"}]'></app-breadcrumb>`,
-  },
-  {
-    group: 'Data display',
-    tag: 'app-list',
-    blurb: 'nasiko_ui NasikoList + NasikoListItem — a roving-focus listbox. Selection is the caller\u2019s: listen for list-select and set `selected`. Items take indent, image / icon, expandable + expanded, status-dot and badge.',
-    demo: `<app-list label="Agents" style="max-width: 360px">
-  <app-list-item value="a" heading="research-agent" description="running · 3 replicas" selected status-dot badge="prod"></app-list-item>
-  <app-list-item value="b" heading="billing-agent" expandable expanded></app-list-item>
-  <app-list-item value="c" heading="invoice-worker" indent="1" badge="child"></app-list-item>
-  <app-list-item value="d" heading="devops-agent" disabled></app-list-item>
-</app-list>`,
-  },
-  {
-    group: 'Data display',
-    tag: 'app-pagination',
-    blurb: 'nasiko_ui NasikoPagination — the same windowing (`1 … 5 [6] 7 … 20`), small buttons throughout, controlled: it emits page-change and never moves itself. app-table has its own pager; this is for everything that is not a table.',
-    demo: `<app-stack gap="sm">
-  <app-pagination page="6" page-count="20" data-demo="pager"></app-pagination>
-  <app-pagination page="1" page-count="4"></app-pagination>
-</app-stack>`,
-  },
-
   // ── State & feedback ────────────────────────────────────────────────────
-  {
-    group: 'State & feedback',
-    tag: 'app-alert',
-    blurb: 'nasiko_ui NasikoAlert — inline status callout in the same feedback tokens as app-badge and the toast. Five variants; `dismissible` collapses it in place and fires a cancelable alert-dismiss.',
-    demo: `<app-stack gap="sm">
-  <app-alert heading="Heads up" description="A neutral note." dismissible></app-alert>
-  <app-alert variant="info" heading="New version" description="v2.3 is available."></app-alert>
-  <app-alert variant="success" heading="Saved" description="Your changes are live."></app-alert>
-  <app-alert variant="warning" heading="Certificate expiring" description="Renew before June 30." dismissible></app-alert>
-  <app-alert variant="destructive" heading="Deploy failed" description="Container exited with code 137."></app-alert>
-</app-stack>`,
-  },
-  {
-    group: 'State & feedback',
-    tag: 'app-banner',
-    blurb: 'nasiko_ui NasikoBanner — a page-level announcement built around one action, elevated. `orientation` horizontal for wide slots, vertical for a 280px rail card. The action is a live element in [data-slot="action"].',
-    demo: `<app-row gap="md" wrap align="start">
-  <app-banner heading="Connect GitHub" description="Deploy agents straight from a repository." dismissible style="flex: 1 1 360px">
-    <app-button data-slot="action" size="md">Connect</app-button>
-  </app-banner>
-  <app-banner orientation="vertical" heading="Finish setup" description="Two steps left before your first deploy.">
-    <app-button data-slot="action" size="sm" variant="secondary">Continue</app-button>
-  </app-banner>
-</app-row>`,
-  },
-  {
-    group: 'State & feedback',
-    tag: 'app-spinner',
-    blurb: 'nasiko_ui NasikoSpinner — waits `delay` (300ms) before fading in so a fast response never flashes a spinner; role="status" with a `label`. app-progress is the bar form: `value` for determinate, none for the looping segment.',
-    demo: `<app-row gap="md" align="center" wrap>
-  <app-spinner delay="0" size="sm"></app-spinner>
-  <app-spinner delay="0"></app-spinner>
-  <app-spinner delay="0" size="lg"></app-spinner>
-  <app-stack gap="sm" style="flex: 1 1 240px">
-    <app-progress value="62" label="Upload" show-value></app-progress>
-    <app-progress label="Working" size="sm"></app-progress>
-    <app-progress value="100" label="Done" size="lg"></app-progress>
-  </app-stack>
-</app-row>`,
-  },
   {
     group: 'State & feedback',
     tag: 'app-empty-state',
     blurb: 'Zero-content placeholder. Default slot takes the action.',
-    demo: `<app-empty-state heading="No agents yet"
+    demo: `<app-empty-state title="No agents yet"
   description="Deploy your first agent to see it here."
   icon='${escAttr(icons.bot('', 32))}'>
   <app-button>Add agent</app-button>
@@ -1124,28 +917,6 @@ class DesignSystemPage extends HTMLElement {
       e.target.reset();
       e.target.setLoading(false);
     });
-
-    // Sheet: two triggers, one element — the side flips per trigger.
-    const sheet = this.querySelector('#ds-demo-sheet');
-    const sheetOut = this.querySelector('[data-demo="sheet-out"]');
-    this.querySelector('[data-demo="open-sheet"]')?.addEventListener('click', () => { sheet?.setAttribute('side', 'right'); sheet?.show(); });
-    this.querySelector('[data-demo="open-sheet-left"]')?.addEventListener('click', () => { sheet?.setAttribute('side', 'left'); sheet?.show(); });
-    this.querySelector('[data-demo="sheet-cancel"]')?.addEventListener('click', () => sheet?.close(null));
-    this.querySelector('[data-demo="sheet-apply"]')?.addEventListener('click', () => sheet?.close('applied'));
-    sheet?.addEventListener('sheet-close', (e) => { if (sheetOut) sheetOut.textContent = `closed with ${JSON.stringify(e.detail.result)}`; });
-
-    const command = this.querySelector('#ds-demo-command');
-    const commandOut = this.querySelector('[data-demo="command-out"]');
-    this.querySelector('[data-demo="open-command"]')?.addEventListener('click', () => command?.show());
-    command?.addEventListener('command-select', (e) => { if (commandOut) commandOut.textContent = `selected ${e.detail.id}`; });
-
-    // Both menus bubble the same event; one delegated listener covers them.
-    const menuOut = this.querySelector('[data-demo="menu-out"]');
-    this.addEventListener('menu-select', (e) => { if (menuOut) menuOut.textContent = `selected ${e.detail.id}`; });
-
-    // Controlled pager: the demo is the owner that moves the page.
-    const pager = this.querySelector('[data-demo="pager"]');
-    pager?.addEventListener('pagination-change', (e) => pager.setAttribute('page', String(e.detail.page)));
 
     this.querySelector('[data-demo="loading"]')?.addEventListener('click', () => {
       document.dispatchEvent(new CustomEvent('loading-start', { bubbles: true }));
