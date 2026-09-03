@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "02c0266739e9",
+  "catalogVersion": "1fcdcced793d",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 53,
@@ -24,6 +24,7 @@
         },
         "open": {
           "type": "boolean",
+          "reflects": true,
           "description": "Expanded. Reflected, so it tracks user toggles."
         },
         "variant": {
@@ -53,7 +54,10 @@
       "events": [
         {
           "name": "accordion-toggle",
-          "description": "Opened or closed; `detail: { open: boolean }` — bubbles"
+          "description": "Opened or closed; `detail: { open: boolean }` — bubbles",
+          "detail": [
+            "open"
+          ]
         }
       ],
       "note": "Header text is the `label` attribute; the children are the body. Trailing header chips go through Slot(\"meta\")."
@@ -108,7 +112,8 @@
       "events": [
         {
           "name": "alert-dismiss",
-          "description": "Cancelable. Fired after the collapse animation; the element removes itself unless `preventDefault()` is called."
+          "description": "Cancelable. Fired after the collapse animation; the element removes itself unless `preventDefault()` is called.",
+          "cancelable": true
         }
       ],
       "note": "Inline status callout. Title/description are attributes; `variant` picks the feedback tone."
@@ -258,7 +263,8 @@
       "events": [
         {
           "name": "banner-close",
-          "description": "Cancelable. The element removes itself unless `preventDefault()` is called."
+          "description": "Cancelable. The element removes itself unless `preventDefault()` is called.",
+          "cancelable": true
         }
       ],
       "note": "The child is the call to action (an app-button) and lands in the action slot; text is attributes."
@@ -280,6 +286,17 @@
       "attributes": {
         "items": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "label",
+              "href",
+              "id"
+            ],
+            "optional": [
+              "href",
+              "id"
+            ]
+          },
           "description": "JSON array of `{ label, href?, id? }`, first to last. Items without `href` render as buttons and fire `crumb-select`."
         },
         "leading-icon": {
@@ -296,7 +313,12 @@
       "events": [
         {
           "name": "breadcrumb-select",
-          "description": "`{ id, label, index }` when an `href`-less item is clicked."
+          "description": "`{ id, label, index }` when an `href`-less item is clicked.",
+          "detail": [
+            "id",
+            "label",
+            "index"
+          ]
         }
       ],
       "actionEvent": "breadcrumb-select",
@@ -339,6 +361,7 @@
             "danger-secondary",
             "ghost-danger"
           ],
+          "default": "primary",
           "description": "Visual style: `primary` (default, dark fill) | `secondary` (brand tint) | `tertiary` (white + hairline border; `outline` is an alias) | `ghost` | `danger` | `danger-secondary` | `ghost-danger` (red ink, no fill — the quiet destructive icon in a rail of icons) | `dark` (alias of `primary`, kept for existing call sites) | `icon`"
         },
         "size": {
@@ -410,6 +433,7 @@
       "attributes": {
         "value": {
           "type": "string",
+          "reflects": true,
           "description": "Selected date, `YYYY-MM-DD`. Reflected on pick."
         },
         "min": {
@@ -422,6 +446,7 @@
         },
         "month": {
           "type": "string",
+          "reflects": true,
           "description": "Month to display, `YYYY-MM`. Defaults to the selected date's month, else today's. Reflected as the user navigates."
         },
         "label": {
@@ -434,7 +459,10 @@
       "events": [
         {
           "name": "change",
-          "description": "`{ value }` after the user picks a day. Bubbles."
+          "description": "`{ value }` after the user picks a day. Bubbles.",
+          "detail": [
+            "value"
+          ]
         }
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
@@ -490,6 +518,12 @@
         },
         "tags": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "label"
+            ],
+            "optional": []
+          },
           "description": "JSON array, either of strings (`[\"a\",\"b\"]`) or of `{ label }` objects, which is the form the replaced card took."
         },
         "href": {
@@ -577,6 +611,7 @@
             "hbar",
             "progress"
           ],
+          "default": "progress",
           "description": "`line` | `bar` | `donut` | `hbar` | `progress` (default `line`)"
         },
         "stacked": {
@@ -614,6 +649,7 @@
             "on",
             "off"
           ],
+          "default": "auto",
           "description": "`auto` (default: on for donut and for 2+ series) | `on` | `off`"
         },
         "empty-text": {
@@ -672,7 +708,11 @@
       "events": [
         {
           "name": "chatbox-submit",
-          "description": "User submits; `detail: { value: string, files: [] }` — bubbles. The box goes into its loading state on submit; the owner calls `setLoading(false)` (or `setLoading(true)` then false) when the reply lands."
+          "description": "User submits; `detail: { value: string, files: [] }` — bubbles. The box goes into its loading state on submit; the owner calls `setLoading(false)` (or `setLoading(true)` then false) when the reply lands.",
+          "detail": [
+            "value",
+            "files"
+          ]
         }
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
@@ -798,6 +838,14 @@
         },
         "options": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "label",
+              "value",
+              "description"
+            ],
+            "optional": []
+          },
           "description": "JSON array of `\"value\"` or `{ label, value, description }`, filtered client-side when there is no `data-fn` / `filterFn`."
         },
         "placeholder": {
@@ -815,6 +863,7 @@
             "md",
             "sm"
           ],
+          "default": "md",
           "description": "`md` (default, 36px) | `sm` (28px) — app-search's sizes."
         },
         "disabled": {
@@ -843,7 +892,11 @@
       "events": [
         {
           "name": "combobox-select",
-          "description": "`{ value, option }` when an option is picked. Bubbles."
+          "description": "`{ value, option }` when an option is picked. Bubbles.",
+          "detail": [
+            "value",
+            "option"
+          ]
         },
         {
           "name": "input",
@@ -872,6 +925,22 @@
       "attributes": {
         "items": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "id",
+              "label",
+              "icon",
+              "destructive",
+              "disabled",
+              "shortcut"
+            ],
+            "optional": [
+              "icon",
+              "destructive",
+              "disabled",
+              "shortcut"
+            ]
+          },
           "description": "JSON array of `{ id, label, icon?, destructive?, disabled?, shortcut? }` or `{ divider: true }` — the `<app-menu>` format."
         },
         "disabled": {
@@ -892,11 +961,17 @@
       "events": [
         {
           "name": "menu-select",
-          "description": "`{ id }` when an item is activated. Bubbles."
+          "description": "`{ id }` when an item is activated. Bubbles.",
+          "detail": [
+            "id"
+          ]
         },
         {
           "name": "menu-toggle",
-          "description": "`{ open }` after every open/close. Bubbles."
+          "description": "`{ open }` after every open/close. Bubbles.",
+          "detail": [
+            "open"
+          ]
         }
       ],
       "actionEvent": "menu-select",
@@ -927,6 +1002,7 @@
       "attributes": {
         "value": {
           "type": "string",
+          "reflects": true,
           "description": "Selected date, `YYYY-MM-DD`. Reflected on pick."
         },
         "min": {
@@ -967,6 +1043,7 @@
             "md",
             "sm"
           ],
+          "default": "md",
           "description": "`md` (default, 32px) | `sm` (28px)"
         },
         "name": {
@@ -978,7 +1055,10 @@
       "events": [
         {
           "name": "change",
-          "description": "`{ value }` after the user picks a day. Bubbles."
+          "description": "`{ value }` after the user picks a day. Bubbles.",
+          "detail": [
+            "value"
+          ]
         }
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
@@ -1093,6 +1173,9 @@
           "attribute": null
         }
       ],
+      "children": [
+        "*"
+      ],
       "events": [],
       "note": "Wraps one control child with label/description/error. Not for app-input/app-select/app-search, which carry their own."
     },
@@ -1135,7 +1218,15 @@
           "description": "Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`"
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "*"
+      ],
       "events": []
     },
     "app-hover-card": {
@@ -1200,7 +1291,10 @@
       "events": [
         {
           "name": "hover-card-toggle",
-          "description": "`{ open }` after every open/close. Bubbles."
+          "description": "`{ open }` after every open/close. Bubbles.",
+          "detail": [
+            "open"
+          ]
         }
       ],
       "note": "First child is the trigger; content goes through Slot(\"content\"). Hover-only — never the sole path to essential information."
@@ -1247,6 +1341,7 @@
             "md",
             "sm"
           ],
+          "default": "md",
           "description": "`md` (default, 32px) | `sm` (28px)"
         },
         "state": {
@@ -1432,10 +1527,17 @@
           "attribute": null
         }
       ],
+      "children": [
+        "app-list-item"
+      ],
       "events": [
         {
           "name": "list-select",
-          "description": "`{ id, index }` bubbled from an item's `item-select`."
+          "description": "`{ id, index }` bubbled from an item's `item-select`.",
+          "detail": [
+            "id",
+            "index"
+          ]
         }
       ],
       "actionEvent": "list-select",
@@ -1508,11 +1610,17 @@
       "events": [
         {
           "name": "list-item-select",
-          "description": "`{ id }` on click / Enter / Space. Bubbles; the list re-emits it as `list-select` with the row index."
+          "description": "`{ id }` on click / Enter / Space. Bubbles; the list re-emits it as `list-select` with the row index.",
+          "detail": [
+            "id"
+          ]
         },
         {
           "name": "list-item-toggle",
-          "description": "`{ expanded }` from the disclosure chevron. Bubbles."
+          "description": "`{ expanded }` from the disclosure chevron. Bubbles.",
+          "detail": [
+            "expanded"
+          ]
         }
       ],
       "note": "Selection is bound on the parent app-list (list-select carries id + index); the item itself takes no Action. Its identifier is `value`."
@@ -1540,10 +1648,27 @@
       "attributes": {
         "items": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "id",
+              "label",
+              "icon",
+              "destructive",
+              "disabled",
+              "shortcut"
+            ],
+            "optional": [
+              "icon",
+              "destructive",
+              "disabled",
+              "shortcut"
+            ]
+          },
           "description": "JSON array of `{ id, label, icon?, destructive?, disabled?, shortcut? }` or `{ divider: true }`. `icon` is a key of `utils/icons.js`; `shortcut` is an `<app-kbd>` keys string like `⌘ K`."
         },
         "open": {
           "type": "boolean",
+          "reflects": true,
           "description": "Whether the menu is showing. Reflected."
         },
         "side": {
@@ -1590,11 +1715,17 @@
       "events": [
         {
           "name": "menu-select",
-          "description": "`{ id }` when an item is activated. Bubbles."
+          "description": "`{ id }` when an item is activated. Bubbles.",
+          "detail": [
+            "id"
+          ]
         },
         {
           "name": "menu-toggle",
-          "description": "`{ open }` after every open/close. Bubbles."
+          "description": "`{ open }` after every open/close. Bubbles.",
+          "detail": [
+            "open"
+          ]
         }
       ],
       "actionEvent": "menu-select",
@@ -1638,11 +1769,17 @@
       "events": [
         {
           "name": "modal-toggle",
-          "description": "`{ open }` after the dialog opens or closes. Bubbles."
+          "description": "`{ open }` after the dialog opens or closes. Bubbles.",
+          "detail": [
+            "open"
+          ]
         },
         {
           "name": "modal-close",
-          "description": "`{ result }` after the dialog closes (× button, backdrop, Escape, or `hide(result)`). Bubbles."
+          "description": "`{ result }` after the dialog closes (× button, backdrop, Escape, or `hide(result)`). Bubbles.",
+          "detail": [
+            "result"
+          ]
         }
       ],
       "actionEvent": "modal-close"
@@ -1690,6 +1827,7 @@
         },
         "value": {
           "type": "string",
+          "reflects": true,
           "description": "The current code. Reflected as the user types."
         },
         "name": {
@@ -1709,7 +1847,10 @@
         },
         {
           "name": "otp-input-complete",
-          "description": "`{ value }` when the last slot is filled."
+          "description": "`{ value }` when the last slot is filled.",
+          "detail": [
+            "value"
+          ]
         }
       ],
       "actionEvent": "otp-input-complete",
@@ -1760,7 +1901,10 @@
       "events": [
         {
           "name": "pagination-change",
-          "description": "`{ page }` when the user picks a different page. Bubbles."
+          "description": "`{ page }` when the user picks a different page. Bubbles.",
+          "detail": [
+            "page"
+          ]
         }
       ],
       "actionEvent": "pagination-change",
@@ -1780,6 +1924,7 @@
       "attributes": {
         "open": {
           "type": "boolean",
+          "reflects": true,
           "description": "Whether the surface is showing. Reflected."
         },
         "side": {
@@ -1821,7 +1966,10 @@
       "events": [
         {
           "name": "popover-toggle",
-          "description": "`{ open }` after every open/close. Bubbles."
+          "description": "`{ open }` after every open/close. Bubbles.",
+          "detail": [
+            "open"
+          ]
         }
       ],
       "note": "First child is the trigger; content goes through Slot(\"content\"). Non-modal, top-layer."
@@ -1847,6 +1995,7 @@
             "sm",
             "lg"
           ],
+          "default": "md",
           "description": "`md` (default, 6px) | `sm` (4px) | `lg` (8px)"
         },
         "label": {
@@ -1946,10 +2095,12 @@
             "horizontal",
             "vertical"
           ],
+          "default": "horizontal",
           "description": "`horizontal` (default, panels side by side) | `vertical`"
         },
         "sizes": {
           "type": "string",
+          "reflects": true,
           "description": "Space-separated fractions to apply, e.g. `0.3 0.7`. Reflected after every change, so it doubles as the persistence format."
         },
         "no-reset": {
@@ -1963,10 +2114,31 @@
           "attribute": null
         }
       ],
+      "children": [
+        "*"
+      ],
+      "childAttributes": {
+        "data-flex": {
+          "type": "number",
+          "default": 1,
+          "description": "The panel's share of the axis, in any unit (default 1)."
+        },
+        "data-min-flex": {
+          "type": "number",
+          "description": "Smallest share the panel may shrink to, same unit."
+        },
+        "data-max-flex": {
+          "type": "number",
+          "description": "Largest share the panel may grow to, same unit."
+        }
+      },
       "events": [
         {
           "name": "resizable-change",
-          "description": "`{ sizes: number[] }` after an applied change. Bubbles."
+          "description": "`{ sizes: number[] }` after an applied change. Bubbles.",
+          "detail": [
+            "sizes"
+          ]
         }
       ],
       "note": "Children are the panels; per-panel flex is data-flex on the child. Layout persists through `sizes`."
@@ -2034,7 +2206,15 @@
           "description": "Allow items to wrap to next line"
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "*"
+      ],
       "events": []
     },
     "app-search": {
@@ -2067,6 +2247,7 @@
             "md",
             "sm"
           ],
+          "default": "md",
           "description": "`md` (default, 36px) | `sm` (28px)"
         },
         "state": {
@@ -2166,6 +2347,7 @@
             "md",
             "sm"
           ],
+          "default": "md",
           "description": "`md` (default, 32px) | `sm` (28px)"
         },
         "state": {
@@ -2192,6 +2374,14 @@
         },
         "options": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "value",
+              "label",
+              "disabled"
+            ],
+            "optional": []
+          },
           "description": "JSON array of `\"value\"` or `{value, label, disabled}`."
         },
         "required": {
@@ -2262,6 +2452,7 @@
         },
         "open": {
           "type": "boolean",
+          "reflects": true,
           "description": "Whether the sheet is showing. Reflected."
         },
         "no-backdrop-close": {
@@ -2282,11 +2473,17 @@
       "events": [
         {
           "name": "sheet-toggle",
-          "description": "`{ open }` after the sheet opens or closes. Bubbles."
+          "description": "`{ open }` after the sheet opens or closes. Bubbles.",
+          "detail": [
+            "open"
+          ]
         },
         {
           "name": "sheet-close",
-          "description": "`{ result }` after the sheet has closed. Bubbles."
+          "description": "`{ result }` after the sheet has closed. Bubbles.",
+          "detail": [
+            "result"
+          ]
         }
       ],
       "actionEvent": "sheet-close",
@@ -2341,6 +2538,7 @@
       "attributes": {
         "value": {
           "type": "number",
+          "reflects": true,
           "description": "Current value. Reflected back as the user drags."
         },
         "min": {
@@ -2403,6 +2601,7 @@
             "sm",
             "lg"
           ],
+          "default": "md",
           "description": "`md` (default, 24px) | `sm` (16px) | `lg` (32px)"
         },
         "delay": {
@@ -2465,7 +2664,15 @@
           "description": "Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`"
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "*"
+      ],
       "events": []
     },
     "app-stat-card": {
@@ -2518,6 +2725,15 @@
       "attributes": {
         "items": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "label",
+              "value",
+              "sub",
+              "pct"
+            ],
+            "optional": []
+          },
           "description": "JSON array of metric objects: `{ label, value, sub, pct }`. `sub` is the caption under the value; `pct` (a number) draws a severity meter and is omitted for metrics that have no ceiling. There is deliberately no per-metric colour: a value is a value, and the one that was tinted gold was drift, not meaning."
         },
         "loading": {
@@ -2566,6 +2782,7 @@
             "lg",
             "sm"
           ],
+          "default": "lg",
           "description": "`lg` (default, 40×24) | `sm` (36×20)"
         },
         "state": {
@@ -2590,6 +2807,7 @@
             "inline",
             "settings"
           ],
+          "default": "inline",
           "description": "`inline` (default, control then label) | `settings` (label left, control pushed to the far right — Figma Layout=Settings, for settings rows)."
         },
         "name": {
@@ -2694,10 +2912,18 @@
         },
         "tabs": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "key",
+              "label"
+            ],
+            "optional": []
+          },
           "description": "JSON array of `{ key, label }` naming the panels (panels mode). Each key matches a child's `data-tab` or `data-slot`. Optional: without it the strip reads each panel's `data-label`, falling back to the key."
         },
         "active": {
           "type": "string",
+          "reflects": true,
           "description": "Key of the active tab (panels mode). Reflected as the user switches."
         },
         "query-param": {
@@ -2715,10 +2941,26 @@
           "attribute": null
         }
       ],
+      "children": [
+        "*"
+      ],
+      "childAttributes": {
+        "data-tab": {
+          "type": "string",
+          "description": "The panel's key; matches a `tabs` entry. `data-slot` is the same thing."
+        },
+        "data-label": {
+          "type": "string",
+          "description": "Strip label for the panel when `tabs` does not name it."
+        }
+      },
       "events": [
         {
           "name": "tabs-change",
-          "description": "Tab switched; `detail: { key: string }` — bubbles"
+          "description": "Tab switched; `detail: { key: string }` — bubbles",
+          "detail": [
+            "key"
+          ]
         }
       ],
       "actionEvent": "tabs-change",
@@ -2781,11 +3023,15 @@
       "events": [
         {
           "name": "tag-change",
-          "description": "`{ selected }` after a `selectable` tag toggles."
+          "description": "`{ selected }` after a `selectable` tag toggles.",
+          "detail": [
+            "selected"
+          ]
         },
         {
           "name": "tag-remove",
-          "description": "Cancelable; the tag removes itself unless prevented."
+          "description": "Cancelable; the tag removes itself unless prevented.",
+          "cancelable": true
         }
       ]
     },
@@ -2820,6 +3066,7 @@
         },
         "value": {
           "type": "string",
+          "reflects": true,
           "description": "Selected tag values, space-separated. Reflected as the user picks. Each tag's value is its `value` attribute, falling back to its text."
         },
         "scrollable": {
@@ -2846,10 +3093,16 @@
           "attribute": null
         }
       ],
+      "children": [
+        "app-tag"
+      ],
       "events": [
         {
           "name": "tag-group-change",
-          "description": "`{ value: string[] }` after a selection change."
+          "description": "`{ value: string[] }` after a selection change.",
+          "detail": [
+            "value"
+          ]
         }
       ],
       "actionEvent": "tag-group-change",
@@ -2995,6 +3248,7 @@
       "attributes": {
         "value": {
           "type": "string",
+          "reflects": true,
           "description": "`HH:MM` or `HH:MM:SS`, 24-hour. Reflected on change."
         },
         "format": {
@@ -3042,7 +3296,10 @@
       "events": [
         {
           "name": "change",
-          "description": "`{ value }` when the segments form a complete time. Bubbles."
+          "description": "`{ value }` when the segments form a complete time. Bubbles.",
+          "detail": [
+            "value"
+          ]
         }
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
@@ -3069,6 +3326,7 @@
       "attributes": {
         "pressed": {
           "type": "boolean",
+          "reflects": true,
           "description": "The on state. Reflected as the user toggles."
         },
         "disabled": {
@@ -3082,6 +3340,7 @@
             "sm",
             "lg"
           ],
+          "default": "md",
           "description": "`md` (default, 32px) | `sm` (28px) | `lg` (36px)"
         },
         "value": {
@@ -3097,7 +3356,11 @@
       "events": [
         {
           "name": "toggle-change",
-          "description": "`{ pressed, value }` after a user toggle. Bubbles."
+          "description": "`{ pressed, value }` after a user toggle. Bubbles.",
+          "detail": [
+            "pressed",
+            "value"
+          ]
         }
       ],
       "actionEvent": "toggle-change"
@@ -3143,6 +3406,7 @@
         },
         "value": {
           "type": "string",
+          "reflects": true,
           "description": "In `single` mode, the `value` of the pressed item. Reflected as the user picks. In `multiple` mode, a space-separated list."
         },
         "disabled": {
@@ -3164,10 +3428,16 @@
           "attribute": null
         }
       ],
+      "children": [
+        "app-toggle"
+      ],
       "events": [
         {
           "name": "toggle-group-change",
-          "description": "`{ value }` — a string in `single` mode, an array in `multiple`."
+          "description": "`{ value }` — a string in `single` mode, an array in `multiple`.",
+          "detail": [
+            "value"
+          ]
         }
       ],
       "actionEvent": "toggle-group-change",

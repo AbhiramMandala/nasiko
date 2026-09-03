@@ -16,6 +16,7 @@
  * @attr {string} label - Accessible name for the `role="listbox"`.
  * @attr {boolean} dense - Tighter vertical padding (s4 instead of s8).
  * @slot default - `<app-list-item>` children.
+ * @children app-list-item
  * @fires list-select - `{ id, index }` bubbled from an item's `item-select`.
  */
 import { loadCss } from '/common/utils/css.js';

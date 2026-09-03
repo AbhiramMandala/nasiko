@@ -164,6 +164,8 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     ...(requiresName && { requiresName: true, nameFrom }),
     attributes,
     slots: def.slots ?? [],
+    ...(def.children && { children: def.children }),
+    ...(def.childAttributes && { childAttributes: def.childAttributes }),
     events: def.events ?? [],
     ...(ov.dataProp && { dataProp: ov.dataProp }),
     ...(ov.dataAsFetcher && { dataAsFetcher: true }),

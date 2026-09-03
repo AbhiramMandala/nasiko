@@ -20,6 +20,7 @@
  * @attr {string} size - `md` (default) | `sm` — applied to every tag.
  * @attr {string} label - Accessible name of the `role="group"`.
  * @slot default - `<app-tag>` children.
+ * @children app-tag
  * @prop {string[]} value - Selected values.
  * @fires tag-group-change - `{ value: string[] }` after a selection change.
  */

@@ -19,6 +19,9 @@
  * @attr {string} query-param - URL param kept in sync with the active tab (panels mode)
  * @attr {string} label - Accessible name of the tablist, e.g. `Agent sections`.
  * @slot default - The panels, each marked `data-tab="key"` or `data-slot="key"`.
+ * @children *
+ * @childattr {string} data-tab - The panel's key; matches a `tabs` entry. `data-slot` is the same thing.
+ * @childattr {string} data-label - Strip label for the panel when `tabs` does not name it.
  * @fires tabs-change - Tab switched; `detail: { key: string }` — bubbles
  */
 import { attachSlidingIndicator } from '../../utils/tab-indicator.js';

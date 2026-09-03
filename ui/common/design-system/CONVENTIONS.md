@@ -120,3 +120,13 @@ Flutter's `value` + `onChanged`).
   catalog; a markup sink is marked `(markup)`.
 - A deprecated alias attribute is marked `(deprecated: use x)` — observed for
   reactivity, withheld from the catalog.
+- **The JSDoc is the typed contract, so write it in the forms the generator reads:**
+  - a JSON attribute's items as a backticked literal — `` `{ id, label, icon?, items: [{ key, label }] }` ``
+    → `shape` (fields, optional, nested);
+  - an event's payload as `{ id, index }` in the `@fires` line → `detail`; the word
+    "cancelable" → `cancelable: true`;
+  - the word **Reflected** on an attribute the component writes back → `reflects: true`;
+  - a default as `` `md` (default) `` (a trailing `, 32px` is fine) or `(default 3)`;
+  - `@children app-toggle` (or `*`) for what a composite's default slot is made of;
+  - `@childattr {number} data-flex - …` for attributes read off children.
+  `catalog-compat` treats a removed shape field, detail field or child type as breaking.

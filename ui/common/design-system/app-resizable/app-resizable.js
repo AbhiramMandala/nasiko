@@ -23,6 +23,10 @@
  *   after every change, so it doubles as the persistence format.
  * @attr {boolean} no-reset - Disables the double-click reset.
  * @slot default - The panels, in order.
+ * @children *
+ * @childattr {number} data-flex - The panel's share of the axis, in any unit (default 1).
+ * @childattr {number} data-min-flex - Smallest share the panel may shrink to, same unit.
+ * @childattr {number} data-max-flex - Largest share the panel may grow to, same unit.
  * @fires resizable-change - `{ sizes: number[] }` after an applied change. Bubbles.
  */
 import { loadCss } from '/common/utils/css.js';

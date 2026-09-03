@@ -21,6 +21,7 @@
  *   line red. Also sets `state="error"` on an `app-*` control in the slot.
  * @attr {boolean} disabled - Dims the label and helper (the control handles itself).
  * @slot default - The control.
+ * @children *
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-field.css', import.meta.url));

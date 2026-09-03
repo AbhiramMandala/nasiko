@@ -21,6 +21,7 @@
  *   hairlines, radius on the outer corners only). CSS-only.
  * @attr {string} label - Accessible name of the `role="group"`.
  * @slot default - `<app-toggle value="…">` children.
+ * @children app-toggle
  * @prop {string|string[]} value - Selected value (single) or values (multiple).
  * @fires toggle-group-change - `{ value }` — a string in `single` mode, an array in `multiple`.
  */

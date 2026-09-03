@@ -83,6 +83,49 @@ const CSS_VALUED = new Set(['max-width', 'min-width', 'width', 'height', 'max-he
  */
 const CONSTRAINED = new Set(['gap', 'padding', 'align', 'justify', 'radius', 'size', 'variant', 'type', 'trend']);
 
+/**
+ * Parse a backticked object literal out of prose into a shape:
+ *   `{ id, label, icon?, items: [{ key, label }] }`
+ *   → { fields: [id, label, icon, items], optional: [icon], nested: { items: {…} } }
+ * Top-level commas only; a nested `[{ … }]` (or `{ … }`) becomes a nested shape.
+ * Returns null when the text carries no object literal.
+ */
+function parseShape(text) {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === '{' || text[i] === '[') depth++;
+    else if (text[i] === '}' || text[i] === ']') { depth--; if (depth === 0) { end = i; break; } }
+  }
+  if (end < 0) return null;
+  const body = text.slice(start + 1, end);
+  const parts = [];
+  let cur = '';
+  depth = 0;
+  for (const ch of body) {
+    if (ch === '{' || ch === '[') depth++;
+    if (ch === '}' || ch === ']') depth--;
+    if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; } else cur += ch;
+  }
+  parts.push(cur);
+  const shape = { fields: [], optional: [] };
+  for (const raw of parts) {
+    const part = raw.trim();
+    if (!part) continue;
+    const m = part.match(/^([\w-]+)(\?)?\s*(?::\s*([\s\S]*))?$/);
+    if (!m) continue;
+    shape.fields.push(m[1]);
+    if (m[2]) shape.optional.push(m[1]);
+    if (m[3] && /\{/.test(m[3])) {
+      const nested = parseShape(m[3]);
+      if (nested) (shape.nested ??= {})[m[1]] = nested;
+    }
+  }
+  return shape.fields.length ? shape : null;
+}
+
 /** Pull the JSDoc block that contains `@element`. */
 function docBlock(src) {
   for (const m of src.matchAll(/\/\*\*([\s\S]*?)\*\//g)) {
@@ -131,7 +174,10 @@ function typeOf(name, declared, desc) {
   if ((alternation && ticked.length >= 2) || (CONSTRAINED.has(name) && ticked.length >= 1)) {
     const values = [...new Set(ticked)];
     const out = { type: 'enum', values };
-    const def = valueList.match(/`([\w-]+)`\s*\(default\)/);
+    // `md` (default) — also `md` (default, 32px) and `md` (default: the usual),
+    // which is how most sizes are documented; the size after the comma is
+    // commentary, not part of the marker.
+    const def = valueList.match(/`([\w-]+)`\s*\(default\b[^)]*\)/);
     if (def) out.default = def[1];
     return out;
   }
@@ -234,6 +280,18 @@ function parseComponent(file) {
       );
     }
     if (/\(required\)/i.test(desc)) spec.required = true;
+    // "Reflected" in the prose means the component writes the attribute back
+    // as the user acts (value, open, page, sizes) — the attributes a renderer
+    // can two-way bind, and the ones a stored surface must not treat as fixed.
+    if (/\bReflected\b/.test(desc)) spec.reflects = true;
+    // A JSON attribute's item shape, read from the backticked object literal in
+    // the prose: `{ id, label, icon?, divider? }` → fields + which are optional.
+    // Without this a generator invents key names; with it, `items` is typed.
+    if (spec.type === 'json') {
+      const lit = desc.match(/`(\{[\s\S]*?\})`/);
+      const shape = lit ? parseShape(lit[1]) : null;
+      if (shape) spec.shape = shape;
+    }
     // An attribute whose value the component writes into innerHTML *unescaped*,
     // on purpose, because it is markup by contract. There is exactly one today
     // (app-empty-state's icon) and it is the only HTML sink in the design
@@ -295,6 +353,29 @@ function parseComponent(file) {
     }
   }
 
+  // `@children app-toggle` — the element(s) a component's default slot is
+  // made of, when it is a composite (list → list-item, tabs → any panel). A
+  // generator that knows this can build a list; one that does not emits a
+  // <div> child and the roving focus, selection and events all miss it.
+  // `*` means any element.
+  const children = lines
+    .filter((l) => l.startsWith('@children'))
+    .flatMap((l) => l.slice('@children'.length).trim().split(/\s*[|,]\s*/))
+    .map((c) => c.replace(/`/g, '').trim())
+    .filter(Boolean);
+
+  // `@childattr {number} data-flex - …` — attributes the component reads OFF
+  // ITS CHILDREN (a resizable panel's flex, a tab panel's key). Typed like
+  // @attr, so a generated child can be given them.
+  const childAttributes = {};
+  for (const line of lines) {
+    const m = line.match(/^@childattr\s+\{([^}]+)\}\s+([\w-]+)\s*-?\s*(.*)$/);
+    if (!m) continue;
+    const spec = typeOf(m[2], m[1].trim(), m[3]);
+    spec.description = m[3].replace(/\s+/g, ' ').trim();
+    childAttributes[m[2]] = spec;
+  }
+
   const slots = lines
     .filter((l) => l.startsWith('@slot'))
     .map((l) => slotEntry(l.slice('@slot'.length).trim()))
@@ -304,7 +385,16 @@ function parseComponent(file) {
     .filter((l) => /^@(fires|event)\s/.test(l))
     .map((l) => {
       const m = l.match(/^@(?:fires|event)\s+([\w-]+)\s*-?\s*(.*)$/);
-      return m ? { name: m[1], description: m[2].replace(/\s+/g, ' ').trim() } : null;
+      if (!m) return null;
+      const description = m[2].replace(/\s+/g, ' ').trim();
+      // `{ id, index }` in the prose is the event's detail — the fields an
+      // Action can read as $event.detail.<field>. Without it the DSL side
+      // can only bind "something happened".
+      // Also `detail: { open: boolean }` — the typed form some headers use.
+      const shape = parseShape(description);
+      const detail = shape ? shape.fields : [];
+      const cancelable = /\bcancelable\b/i.test(description);
+      return { name: m[1], description, ...(detail.length ? { detail } : {}), ...(cancelable ? { cancelable: true } : {}) };
     })
     .filter(Boolean);
 
@@ -319,6 +409,8 @@ function parseComponent(file) {
     attributes,
     ...(excluded.length ? { excludedFromCatalog: excluded } : {}),
     slots: dedupeSlots(slots),
+    ...(children.length ? { children } : {}),
+    ...(Object.keys(childAttributes).length ? { childAttributes } : {}),
     events,
   };
 }
