@@ -54,6 +54,18 @@ pub trait HitlStore: Send + Sync {
         chat_session_id: &str,
         owner_user_id: Uuid,
     ) -> Result<Vec<HitlRequest>, HitlError>;
+    /// Every HITL request (pending or already resolved/rejected/expired/canceled) tied to a MAF
+    /// execution, oldest first — the discovery path for `GET /api/maf/execution/{id}`, so the
+    /// frontend never has to call `list_pending_for`/`GET /api/hitl/pending` to correlate a
+    /// paused step back to its `hitl_requests.id`. `owner_user_id` is required and must be the
+    /// SAME value the caller already validated against `maf_executions.user_id` — this method
+    /// does not itself know whether the caller owns the execution, it only refuses to leak a
+    /// different owner's rows for the same execution id.
+    async fn list_for_maf_execution(
+        &self,
+        maf_execution_id: Uuid,
+        owner_user_id: Uuid,
+    ) -> Result<Vec<HitlRequest>, HitlError>;
     /// The exact `UPDATE ... WHERE status = 'pending' RETURNING *` from §5. `status` is the
     /// human's decision (`Resolved` or, for future `tool_approval` rejects, `Rejected`).
     async fn resolve(
@@ -409,6 +421,21 @@ impl HitlStore for PgHitlStore {
         rows.into_iter().map(HitlRequest::try_from).collect()
     }
 
+    async fn list_for_maf_execution(
+        &self,
+        maf_execution_id: Uuid,
+        owner_user_id: Uuid,
+    ) -> Result<Vec<HitlRequest>, HitlError> {
+        let rows: Vec<HitlRequestRow> = sqlx::query_as(
+            "SELECT * FROM hitl_requests WHERE maf_execution_id = $1 AND owner_user_id = $2 ORDER BY created_at",
+        )
+        .bind(maf_execution_id)
+        .bind(owner_user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(HitlRequest::try_from).collect()
+    }
+
     async fn resolve(
         &self,
         id: Uuid,
@@ -603,6 +630,13 @@ mod resolve_display_row_tests {
         async fn list_for_chat_session(
             &self,
             _chat_session_id: &str,
+            _owner_user_id: Uuid,
+        ) -> Result<Vec<HitlRequest>, HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn list_for_maf_execution(
+            &self,
+            _maf_execution_id: Uuid,
             _owner_user_id: Uuid,
         ) -> Result<Vec<HitlRequest>, HitlError> {
             unimplemented!("not exercised by resolve_display_row")

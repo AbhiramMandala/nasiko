@@ -1503,117 +1503,19 @@ fn extract_failure_message(data: &str) -> Option<String> {
     if text.is_empty() { None } else { Some(text) }
 }
 
-/// Extract the *agent's own* `taskId` from a `Paused` SSE payload — never the caller's locally
-/// minted `task_id` param `agent_stream()` uses for its own outbound envelope. Real a2a-sdk
-/// agents (e.g. python's) pass their real task/context ids through verbatim in the raw forwarded
-/// event (`normalize_agent_event` only rewrites the legacy `"kind"`-tagged dialect; the common
-/// JSONRPC-wrapped `{"result": {"statusUpdate": {"taskId": ..., ...}}}` shape is passed through
-/// untouched). Resume must target *this* id — the one the agent's own task store actually holds —
-/// not Nasiko's synthetic per-request id, or the agent will never recognize the follow-up as a
-/// continuation. Falls back to the caller's `task_id` only if the payload carries none (e.g. a
-/// bare `message` reply with no task wrapper at all).
-pub(crate) fn paused_task_id(data: &str, fallback: &str) -> String {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
-        return fallback.to_string();
-    };
-    let result = parsed.get("result").unwrap_or(&parsed);
-    let status_update = result
-        .get("statusUpdate")
-        .or_else(|| parsed.get("statusUpdate"))
-        .or_else(|| result.get("task"))
-        .unwrap_or(result);
+// `paused_task_id`/`build_pause_question` moved to `oss/types/src/a2a.rs` (shared with
+// `oss/orchestrator`'s MAF executor, which cannot depend on this crate) — re-exported here so
+// existing call sites in this file and in `oss/server/src/hitl/mod.rs` are unaffected.
+pub(crate) use nasiko_types::a2a::{build_pause_question, paused_task_id};
 
-    status_update
-        .get("taskId")
-        // Task-wrapped dialect: the task object's own id field is `id`, not `taskId` — already
-        // covered by this existing fallback, unchanged.
-        .or_else(|| result.pointer("/task/id"))
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .unwrap_or_else(|| fallback.to_string())
-}
-
-/// Derive a `hitl_requests.kind` from a `Paused`-classified SSE payload — `auth_required` if the
-/// wire state names it, `input_required` otherwise (the only two kinds `classify_stream_disposition`
-/// ever maps to `Paused`).
+/// Derive a `hitl_requests.kind` from a `Paused`-classified SSE payload — thin wrapper over
+/// `nasiko_types::a2a::pause_reason` (moved there so `oss/orchestrator`'s MAF executor can share
+/// the same parsing), mapped to this crate's `nasiko_hitl::HitlKind`.
 pub(crate) fn pause_kind(data: &str) -> nasiko_hitl::HitlKind {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
-        return nasiko_hitl::HitlKind::InputRequired;
-    };
-    let result = parsed.get("result").unwrap_or(&parsed);
-    // See `classify_stream_disposition`'s doc comment for why `.task` is needed here too.
-    let status_update = result
-        .get("statusUpdate")
-        .or_else(|| parsed.get("statusUpdate"))
-        .or_else(|| result.get("task"))
-        .unwrap_or(result);
-    let state = status_update
-        .pointer("/status/state")
-        .and_then(|s| s.as_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if state.contains("auth_required") || state.contains("auth-required") {
-        nasiko_hitl::HitlKind::AuthRequired
-    } else {
-        nasiko_hitl::HitlKind::InputRequired
+    match nasiko_types::a2a::pause_reason(data) {
+        nasiko_types::a2a::PauseReason::InputRequired => nasiko_hitl::HitlKind::InputRequired,
+        nasiko_types::a2a::PauseReason::AuthRequired => nasiko_hitl::HitlKind::AuthRequired,
     }
-}
-
-/// Well-known `metadata` keys the External Agent Contract documents (`auth_url`/`provider` for
-/// `auth_required`, `expected_input` for `input_required`, §4) — hoisted onto `question` itself
-/// so a client can read `question.auth_url` directly instead of reaching into an opaque
-/// `metadata` blob, matching §4's documented `question` shape exactly.
-const WELL_KNOWN_QUESTION_KEYS: &[&str] = &["auth_url", "provider", "expected_input"];
-
-/// Build the `hitl_requests.question` JSONB (§4's shape) from a `Paused` SSE payload: the
-/// message text (same parts-joining logic as [`extract_failure_message`]), plus whatever
-/// `metadata` the agent attached (the External Agent Contract's optional `auth_url`/`provider`/
-/// `expected_input`). Well-known keys are hoisted to the top level (§4's shape); the full
-/// `metadata` blob is also kept verbatim underneath for anything else the agent attached, since
-/// Nasiko does not know a given agent's metadata shape in advance beyond those three keys.
-pub(crate) fn build_pause_question(data: &str) -> serde_json::Value {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
-        return json!({ "message": "" });
-    };
-    let result = parsed.get("result").unwrap_or(&parsed);
-    // See `classify_stream_disposition`'s doc comment for why `.task` is needed here too.
-    let status_update = result
-        .get("statusUpdate")
-        .or_else(|| parsed.get("statusUpdate"))
-        .or_else(|| result.get("task"))
-        .unwrap_or(result);
-
-    let message = status_update
-        .pointer("/status/message/parts")
-        .and_then(|p| p.as_array())
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|p| p.get("text")?.as_str())
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
-
-    let metadata = status_update
-        .pointer("/status/message/metadata")
-        .or_else(|| status_update.get("metadata"))
-        .cloned();
-
-    let mut question = json!({ "message": message });
-    if let Some(metadata) = metadata
-        && let Some(obj) = question.as_object_mut()
-    {
-        if let Some(metadata_obj) = metadata.as_object() {
-            for key in WELL_KNOWN_QUESTION_KEYS {
-                if let Some(value) = metadata_obj.get(*key) {
-                    obj.insert((*key).to_string(), value.clone());
-                }
-            }
-        }
-        obj.insert("metadata".to_string(), metadata);
-    }
-    question
 }
 
 /// Persists a HITL pause from a `Paused`-classified payload for either direct-chat origin —
@@ -1867,103 +1769,16 @@ impl IntoResponse for A2aDispatchError {
 mod hitl_pause_tests {
     use super::*;
 
-    // Real payload shape (python a2a-sdk, JSONRPC-wrapped, no "kind" tag) — confirmed live
-    // against the github-hitl-agent reference agent. `normalize_agent_event` passes this dialect
-    // through to the client verbatim, so the agent's real taskId/contextId are exactly what's
-    // visible here, distinct from whatever synthetic task_id agent_stream() minted for its own
-    // outbound envelope.
-    const REAL_PAUSE_PAYLOAD: &str = r#"{"result": {"statusUpdate": {"taskId": "51914422-4548-47af-90b8-773a5ee4bed7", "contextId": "9e110c60-185f-4c3d-b14e-a473db66ed4c", "status": {"state": "TASK_STATE_INPUT_REQUIRED", "message": {"messageId": "6d3e7f9d-dea0-499b-af76-a3d12eff55bf", "contextId": "9e110c60-185f-4c3d-b14e-a473db66ed4c", "taskId": "51914422-4548-47af-90b8-773a5ee4bed7", "role": "ROLE_AGENT", "parts": [{"text": "Which repository should I create the issue in? (reply with owner/repo, on the same task)"}]}, "timestamp": "2026-08-29T13:09:49.292552Z"}}}, "id": "100260a7-0f6a-4606-a411-3a72c0cfa21e", "jsonrpc": "2.0"}"#;
+    // `paused_task_id`/`pause_kind`/`build_pause_question`'s own behavior is covered by
+    // `oss/types/src/a2a.rs`'s `pause_parsing_tests` now that the logic lives there. This test
+    // only covers the thin `pause_kind` wrapper's mapping onto this crate's `HitlKind`.
+    const AUTH_REQUIRED_PAYLOAD: &str = r#"{"result": {"statusUpdate": {"taskId": "t1", "contextId": "c1", "status": {"state": "TASK_STATE_AUTH_REQUIRED", "message": {"parts": [{"text": "Please authorize with GitHub"}]}}}}, "id": "1", "jsonrpc": "2.0"}"#;
 
     #[test]
-    fn paused_task_id_extracts_the_agents_real_task_not_the_callers_synthetic_one() {
-        let extracted = paused_task_id(REAL_PAUSE_PAYLOAD, "nasiko-synthetic-task-id");
-        assert_eq!(extracted, "51914422-4548-47af-90b8-773a5ee4bed7");
-    }
-
-    #[test]
-    fn paused_task_id_falls_back_when_the_payload_carries_no_task_id() {
-        let extracted =
-            paused_task_id(r#"{"message": {"parts": [{"text": "hi"}]}}"#, "fallback-id");
-        assert_eq!(extracted, "fallback-id");
-    }
-
-    #[test]
-    fn paused_task_id_falls_back_on_unparseable_payload() {
-        let extracted = paused_task_id("not json", "fallback-id");
-        assert_eq!(extracted, "fallback-id");
-    }
-
-    #[test]
-    fn pause_kind_reads_input_required_from_the_real_payload() {
-        assert_eq!(
-            pause_kind(REAL_PAUSE_PAYLOAD),
-            nasiko_hitl::HitlKind::InputRequired
-        );
-    }
-
-    #[test]
-    fn build_pause_question_extracts_the_message_text_from_the_real_payload() {
-        let question = build_pause_question(REAL_PAUSE_PAYLOAD);
-        assert_eq!(
-            question["message"],
-            "Which repository should I create the issue in? (reply with owner/repo, on the same task)"
-        );
-    }
-
-    const AUTH_REQUIRED_PAYLOAD: &str = r#"{"result": {"statusUpdate": {"taskId": "t1", "contextId": "c1", "status": {"state": "TASK_STATE_AUTH_REQUIRED", "message": {"parts": [{"text": "Please authorize with GitHub"}], "metadata": {"provider": "github", "auth_url": "https://github.com/login/oauth/authorize?client_id=abc"}}}}}, "id": "1", "jsonrpc": "2.0"}"#;
-
-    #[test]
-    fn build_pause_question_hoists_auth_url_and_provider_to_the_top_level() {
-        let question = build_pause_question(AUTH_REQUIRED_PAYLOAD);
-        assert_eq!(question["message"], "Please authorize with GitHub");
-        assert_eq!(question["provider"], "github");
-        assert_eq!(
-            question["auth_url"],
-            "https://github.com/login/oauth/authorize?client_id=abc"
-        );
-        // The full metadata blob is still kept underneath, unmodified.
-        assert_eq!(question["metadata"]["provider"], "github");
-    }
-
-    #[test]
-    fn pause_kind_reads_auth_required_from_the_real_payload() {
+    fn pause_kind_maps_auth_required_to_the_hitl_crate_enum() {
         assert_eq!(
             pause_kind(AUTH_REQUIRED_PAYLOAD),
             nasiko_hitl::HitlKind::AuthRequired
-        );
-    }
-
-    // Captured live from `agent_proxy.rs`'s non-streaming branch (`SendMessage`, not
-    // `SendStreamingMessage`) against `github-hitl-agent` — a full `Task` snapshot with no
-    // `statusUpdate` wrapper at all, `status.state` sitting under `result.task` instead. Before
-    // the `.task` fallback was added to `pause_kind`/`paused_task_id`/`build_pause_question`
-    // (and `classify_stream_disposition` in `oss/types`), this exact real-world payload made a
-    // real pause through `agent_proxy.rs` silently pass through as a non-paused reply — confirmed
-    // by triggering it live and finding no `hitl_requests` row was ever created.
-    const REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD: &str = r#"{"result":{"task":{"id":"3f43589f-fbaf-4936-8cac-e074b5843302","contextId":"nonstream-proxy-test","status":{"state":"TASK_STATE_INPUT_REQUIRED","message":{"messageId":"6c334d6d-e72b-4e3d-8e25-ac1a223085b9","contextId":"nonstream-proxy-test","taskId":"3f43589f-fbaf-4936-8cac-e074b5843302","role":"ROLE_AGENT","parts":[{"text":"Which repository should I create the issue in? (reply with owner/repo, on the same task)"}]},"timestamp":"2026-09-01T03:42:34.957766Z"},"history":[{"messageId":"293C90CE-26DB-4364-895D-A4A059DDC75E","contextId":"nonstream-proxy-test","taskId":"3f43589f-fbaf-4936-8cac-e074b5843302","role":"ROLE_USER","parts":[{"text":"hitl input test"}]}]}},"id":"1","jsonrpc":"2.0"}"#;
-
-    #[test]
-    fn pause_kind_reads_input_required_from_a_task_wrapped_non_streaming_payload() {
-        assert_eq!(
-            pause_kind(REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD),
-            nasiko_hitl::HitlKind::InputRequired
-        );
-    }
-
-    #[test]
-    fn paused_task_id_extracts_the_real_id_from_a_task_wrapped_non_streaming_payload() {
-        assert_eq!(
-            paused_task_id(REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD, "fallback"),
-            "3f43589f-fbaf-4936-8cac-e074b5843302"
-        );
-    }
-
-    #[test]
-    fn build_pause_question_reads_the_message_from_a_task_wrapped_non_streaming_payload() {
-        let question = build_pause_question(REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD);
-        assert_eq!(
-            question["message"],
-            "Which repository should I create the issue in? (reply with owner/repo, on the same task)"
         );
     }
 }
