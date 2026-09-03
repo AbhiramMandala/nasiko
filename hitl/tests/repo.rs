@@ -996,3 +996,61 @@ async fn resolve_pending_auth_required_for_connector_auto_resolves_a_linked_dire
         Some("confirmed")
     );
 }
+
+/// Regression: `find_linked_direct_chat_row` was scoped to `origin IN ('direct_chat',
+/// 'agent_proxy')` only — `'maf'` was never added when MAF's own HITL support was merged in, so
+/// resolving the real `mcp_tool` row never found (and therefore never auto-resolved) a MAF-step
+/// mirror, even though `list_pending_for` and the resume dispatcher have the exact same
+/// three-origin scoping elsewhere. A human approving the real row was left having to separately,
+/// manually resolve the mirror too.
+#[tokio::test]
+async fn find_linked_direct_chat_row_finds_a_maf_origin_mirror() {
+    let db = TestDb::new().await;
+    let connector_id = Uuid::new_v4();
+
+    let mcp_row = repo::create_pending_tool_approval(
+        &db.pool,
+        db.new_tool_approval(connector_id, "GITHUB_CREATE_AN_ISSUE", "ctx-maf-link"),
+    )
+    .await
+    .expect("create pending tool_approval");
+
+    let maf_execution_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO maf_executions (id, user_id) VALUES ($1, $2)")
+        .bind(maf_execution_id)
+        .bind(db.owner_user_id)
+        .execute(&db.pool)
+        .await
+        .expect("seed maf_executions row");
+
+    let mirror_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO hitl_requests
+            (kind, origin, agent_id, owner_user_id, task_id, context_id, maf_execution_id,
+             maf_step_index, question, status, expires_at)
+        VALUES
+            ('auth_required', 'maf', $1, $2, 'maf-task-1', 'maf-ctx-1', $3, 0, $4,
+             'pending', now() + interval '7 days')
+        RETURNING id
+        "#,
+    )
+    .bind(db.agent_id)
+    .bind(db.owner_user_id)
+    .bind(maf_execution_id)
+    .bind(serde_json::json!({
+        "message": "Tool(s) require user approval for this agent.",
+        "metadata": {"hitl_request_id": mcp_row.id.to_string()},
+    }))
+    .fetch_one(&db.pool)
+    .await
+    .expect("seed maf-origin mirror row");
+
+    let linked = repo::find_linked_direct_chat_row(&db.pool, mcp_row.id)
+        .await
+        .expect("find_linked_direct_chat_row must not error")
+        .expect(
+            "must find the maf-origin mirror — this is the regression this test guards against",
+        );
+    assert_eq!(linked.id, mirror_id);
+    assert_eq!(linked.origin, nasiko_hitl::HitlOrigin::Maf);
+}

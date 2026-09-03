@@ -115,37 +115,42 @@ pub trait HitlStore: Send + Sync {
 }
 
 /// Resolves the row that should actually be shown to a human through a **discovery** surface —
-/// Direct Chat's live SSE stream frame, or the session-load `hitl` array — for a row that's about
-/// to be surfaced there. Never used by the direct `GET /api/hitl/{id}` / `resolve` / `cancel` /
-/// per-id `stream` endpoints, which always operate on the exact row the caller already named by
-/// id; this is purely a display-layer substitution for the surfaces that decide *which* row to
-/// show in the first place.
+/// Direct Chat's live SSE stream frame, the session-load `hitl` array, or a MAF execution's own
+/// `hitl` array (`maf.rs::hitl_rows_for_execution`) — for a row that's about to be surfaced
+/// there. Never used by the direct `GET /api/hitl/{id}` / `resolve` / `cancel` / per-id `stream`
+/// endpoints, which always operate on the exact row the caller already named by id; this is
+/// purely a display-layer substitution for the surfaces that decide *which* row to show in the
+/// first place.
 ///
 /// Background: an agent that maps an MCP tool block onto its own A2A `AUTH_REQUIRED` task state
 /// causes two rows to exist for one real event — the real `mcp_tool` row (created by the MCP
-/// gateway, carries no `task_id`) and a `direct_chat`/`agent_proxy` mirror of it (created by
-/// `persist_direct_chat_pause`, carries the `task_id`/`context_id`/`chat_session_id` the resume
-/// mechanism needs to continue that specific chat task — see `NewHitlRequest::mcp_tool`'s doc
-/// comment). Direct Chat's discovery surfaces only ever see the mirror, since it's the only row
-/// with `task_id`/`chat_session_id`; left unpatched they'd show the mirror's own generic
-/// question, and a human resolving that id would resume the chat task without ever touching the
-/// real MCP permission — the tool would stay blocked.
+/// gateway, carries no `task_id`) and a `direct_chat`/`agent_proxy`/`maf` mirror of it (created
+/// by `persist_direct_chat_pause` or MAF's own equivalent pause-persist step, carries the
+/// `task_id`/`context_id`/`chat_session_id`/`maf_execution_id` the resume mechanism needs to
+/// continue that specific paused step — see `NewHitlRequest::mcp_tool`'s doc comment). A
+/// discovery surface only ever sees the mirror, since it's the only row with that
+/// correlation data; left unpatched it would show the mirror's own generic question, and a human
+/// resolving that id would resume the chat task/MAF step without ever touching the real MCP
+/// permission — the tool would stay blocked.
 ///
 /// The agent links the two by putting `hitl_request_id: <the mcp row's id>` in its own pause
 /// metadata, which lands verbatim in the mirror's `question.metadata.hitl_request_id`
-/// (`build_pause_question` in `oss/server/src/router/a2a_dispatch.rs` forwards the agent's
-/// status-message metadata through unmodified). This returns `row.clone()` unchanged unless ALL
-/// of the following hold: `row.origin` is `direct_chat`/`agent_proxy`,
-/// `question.metadata.hitl_request_id` is present and parses as a `Uuid`, and that id resolves to
-/// a real row via `store.get()`. Any failure at any step — no link, a malformed id, a
-/// stale/nonexistent id, or a lookup error — falls back to the mirror as-is: a broken link must
-/// never turn into a broken or missing HITL prompt for the human.
+/// (`build_pause_question` in `oss/types/src/a2a.rs` forwards the agent's status-message metadata
+/// through unmodified). This returns `row.clone()` unchanged unless ALL of the following hold:
+/// `row.origin` is `direct_chat`/`agent_proxy`/`maf`, `question.metadata.hitl_request_id` is
+/// present and parses as a `Uuid`, and that id resolves to a real row via `store.get()`. Any
+/// failure at any step — no link, a malformed id, a stale/nonexistent id, or a lookup error —
+/// falls back to the mirror as-is: a broken link must never turn into a broken or missing HITL
+/// prompt for the human.
 ///
 /// Only `id`/`kind`/`question` come from the linked row; every other field — crucially
 /// `task_id`/`context_id`/`chat_session_id` — stays the mirror's own, since those are what the
 /// frontend needs to correlate the prompt back to the visible chat task/session.
 pub async fn resolve_display_row(store: &dyn HitlStore, row: &HitlRequest) -> HitlRequest {
-    if !matches!(row.origin, HitlOrigin::DirectChat | HitlOrigin::AgentProxy) {
+    if !matches!(
+        row.origin,
+        HitlOrigin::DirectChat | HitlOrigin::AgentProxy | HitlOrigin::Maf
+    ) {
         return row.clone();
     }
     let Some(linked_id) = row
@@ -370,7 +375,7 @@ impl HitlStore for PgHitlStore {
         &self,
         identity: &HitlIdentity,
     ) -> Result<Vec<HitlRequest>, HitlError> {
-        // Excludes a `direct_chat`/`agent_proxy` row that only mirrors a still-pending
+        // Excludes a `direct_chat`/`agent_proxy`/`maf` row that only mirrors a still-pending
         // `mcp_tool` row (an agent that maps MCP's `ask_required` onto the A2A
         // `AUTH_REQUIRED` task state — see `NewHitlRequest::mcp_tool`'s doc comment and
         // `auto_resolve_linked_direct_chat_row` in `router/hitl.rs`). Resolving the mirror
@@ -381,7 +386,7 @@ impl HitlStore for PgHitlStore {
         // value must not error the whole listing, just fail to match.
         const MIRROR_FILTER: &str = "
             AND NOT (
-                h.origin IN ('direct_chat', 'agent_proxy')
+                h.origin IN ('direct_chat', 'agent_proxy', 'maf')
                 AND h.question->'metadata'->>'hitl_request_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                 AND EXISTS (
                     SELECT 1 FROM hitl_requests linked
@@ -470,17 +475,18 @@ impl HitlStore for PgHitlStore {
 
         let mut tx = self.pool.begin().await?;
 
-        // Scoped to the two origins this dispatcher actually knows how to deliver (a real A2A
-        // task resume via `task_id` — `deliver()` fails outright on anything else). `mcp_tool`
-        // rows have no `task_id` at all and are claimed by `oss/hitl`'s own dispatcher instead
-        // (`nasiko_hitl::repo::claim_for_resume`, scoped the other way) — without this filter
-        // the two dispatchers would race on the same rows and fail whichever they claimed by
-        // mistake.
+        // Scoped to the three origins this dispatcher actually knows how to deliver — `deliver()`
+        // branches on `HitlOrigin::Maf` to `deliver_maf` (an XADD continuation job for the MAF
+        // worker), and on `direct_chat`/`agent_proxy` to a real A2A task resume via `task_id`
+        // (`deliver()` fails outright on anything else). `mcp_tool` rows have no `task_id` at all
+        // and are claimed by `oss/hitl`'s own dispatcher instead (`nasiko_hitl::repo::
+        // claim_for_resume`, scoped the other way) — without this filter the two dispatchers
+        // would race on the same rows and fail whichever they claimed by mistake.
         let row: Option<HitlRequestRow> = sqlx::query_as(
             "SELECT * FROM hitl_requests
               WHERE status = 'resolved' AND resume_status = 'not_started'
                 AND (resume_claimed_at IS NULL OR resume_claimed_at < $1)
-                AND origin IN ('direct_chat', 'agent_proxy')
+                AND origin IN ('direct_chat', 'agent_proxy', 'maf')
               ORDER BY resolved_at
               FOR UPDATE SKIP LOCKED
               LIMIT 1",
@@ -830,14 +836,50 @@ mod resolve_display_row_tests {
             ),
         );
 
-        let maf_row = row(
+        // `mcp_tool` is the *real* row a mirror links to — it's never itself a mirror of
+        // another row, even one that happens to carry a (meaningless) metadata.hitl_request_id.
+        let mcp_row = row(
+            Uuid::new_v4(),
+            HitlOrigin::McpTool,
+            HitlKind::ToolApproval,
+            json!({ "message": "needs approval", "metadata": { "hitl_request_id": other_id.to_string() } }),
+        );
+        let display = resolve_display_row(&store, &mcp_row).await;
+        assert_eq!(display.id, mcp_row.id);
+        assert_eq!(display.question, mcp_row.question);
+    }
+
+    // `maf` is a mirror-capable origin too — a MAF step's underlying agent call can map an MCP
+    // tool block onto its own pause exactly like direct_chat/agent_proxy can, and its discovery
+    // surface (`maf.rs::hitl_rows_for_execution`) needs the same substitution.
+    #[tokio::test]
+    async fn maf_linked_mirror_shows_the_real_row() {
+        let mcp_id = Uuid::new_v4();
+        let mcp_row = row(
+            mcp_id,
+            HitlOrigin::McpTool,
+            HitlKind::ToolApproval,
+            json!({ "message": "Approve creating a GitHub issue?" }),
+        );
+        let mirror = row(
             Uuid::new_v4(),
             HitlOrigin::Maf,
-            HitlKind::InputRequired,
-            json!({ "message": "step paused", "metadata": { "hitl_request_id": other_id.to_string() } }),
+            HitlKind::AuthRequired,
+            json!({
+                "message": "Please authorize with GitHub",
+                "metadata": { "hitl_request_id": mcp_id.to_string() },
+            }),
         );
-        let display = resolve_display_row(&store, &maf_row).await;
-        assert_eq!(display.id, maf_row.id);
-        assert_eq!(display.question, maf_row.question);
+        let store = FakeStore::default();
+        store.0.lock().unwrap().insert(mcp_id, mcp_row.clone());
+
+        let display = resolve_display_row(&store, &mirror).await;
+
+        assert_eq!(display.id, mcp_row.id);
+        assert_eq!(display.kind, mcp_row.kind);
+        assert_eq!(display.question, mcp_row.question);
+        // The mirror's own identity — what MAF correlates back to the paused step — is untouched.
+        assert_eq!(display.task_id, mirror.task_id);
+        assert_eq!(display.context_id, mirror.context_id);
     }
 }

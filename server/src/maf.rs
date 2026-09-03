@@ -217,7 +217,19 @@ async fn hitl_rows_for_execution(
     let rows = hitl_store
         .list_for_maf_execution(execution_id, owner_user_id)
         .await?;
-    Ok(rows.iter().map(crate::router::hitl::to_response).collect())
+    // Each row goes through `resolve_display_row` before `to_response` — a no-op for the
+    // ordinary case, but substitutes the real row's id/kind/question when this row is a
+    // `maf`-origin mirror of a real `mcp_tool` block (a step's underlying agent call mapping an
+    // MCP tool-approval gate onto its own pause, the same dual-origin situation direct-chat's
+    // `chat/routes.rs::list_messages` already accounts for). The real `mcp_tool` row itself is
+    // never returned by `list_for_maf_execution` at all (it has no `maf_execution_id`), so
+    // without this the frontend would only ever see the mirror's own generic placeholder.
+    let mut hitl = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let display = nasiko_hitl::resolve_display_row(hitl_store.as_ref(), row).await;
+        hitl.push(crate::router::hitl::to_response(&display));
+    }
+    Ok(hitl)
 }
 
 fn maf_row_to_response(row: MafRow) -> MafResponse {

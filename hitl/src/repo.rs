@@ -167,25 +167,25 @@ pub async fn get_by_id(db: &PgPool, id: Uuid) -> Result<Option<HitlRequest>> {
     row.map(HitlRequestRow::try_into_domain).transpose()
 }
 
-/// The `direct_chat`/`agent_proxy`-origin row (if any, still `pending`)
+/// The `direct_chat`/`agent_proxy`/`maf`-origin row (if any, still `pending`)
 /// mirroring this resolved `mcp_tool`-origin row's own event — an agent that
 /// maps MCP's `ask_required`/`auth_required` onto the A2A `AUTH_REQUIRED`
 /// task state creates its own separate row for the same pause, tagging it
 /// with `question.metadata.hitl_request_id` pointing back at this one
-/// (`build_pause_question` in `oss/server/src/router/a2a_dispatch.rs`
-/// forwards the agent's own status-message metadata verbatim).
+/// (`build_pause_question` in `oss/types/src/a2a.rs` forwards the agent's
+/// own status-message metadata verbatim).
 ///
-/// Resolving only the MCP row leaves that mirrored row pending forever —
-/// direct-chat's own resume dispatcher only ever acts on rows it owns, and
-/// MCP's own dispatcher sends a stateless, task-blind nudge that can never
-/// reach the *specific* chat task a human is watching (found live: the
-/// task-aware resume only exists on the `direct_chat`/`agent_proxy` side —
-/// see docs/MCP_HITL_MERGE_HANDOFF.md's dual-origin writeup). The caller
+/// Resolving only the MCP row leaves that mirrored row pending forever — the
+/// mirror's own dispatcher only ever acts on rows it owns, and MCP's own
+/// dispatcher sends a stateless, task-blind nudge that can never reach the
+/// *specific* chat task/MAF step a human is watching (found live: task-aware
+/// resume only exists on the `direct_chat`/`agent_proxy`/`maf` side — see
+/// docs/MCP_HITL_MERGE_HANDOFF.md's dual-origin writeup). The caller
 /// (`router/hitl.rs::resolve`) uses this to auto-resolve the mirrored row in
 /// lockstep with the one the human actually clicked, so a single approval
 /// action both grants the real permission (this row) and resumes the
-/// specific visible task the human is looking at (the mirrored row, through
-/// its own existing, unmodified dispatcher).
+/// specific visible task/step the human is looking at (the mirrored row,
+/// through its own existing, unmodified dispatcher).
 pub async fn find_linked_direct_chat_row(
     db: &PgPool,
     mcp_row_id: Uuid,
@@ -193,7 +193,7 @@ pub async fn find_linked_direct_chat_row(
     let row = sqlx::query_as::<_, HitlRequestRow>(
         r#"
         SELECT * FROM hitl_requests
-         WHERE origin IN ('direct_chat', 'agent_proxy')
+         WHERE origin IN ('direct_chat', 'agent_proxy', 'maf')
            AND status = 'pending'
            AND question->'metadata'->>'hitl_request_id' = $1
          LIMIT 1

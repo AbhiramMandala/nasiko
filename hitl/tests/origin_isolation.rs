@@ -142,6 +142,46 @@ impl TestDb {
 
         created.id
     }
+
+    /// A resolved `origin = maf` row, seeded and resolved via `HitlStore` — same trait-based API
+    /// as `direct_chat`, since both are delivered by the same dispatcher (`oss/server/src/
+    /// hitl/mod.rs::run`, which branches to `deliver_maf` on `HitlOrigin::Maf`).
+    async fn seed_resolved_maf_row(&self) -> Uuid {
+        let maf_execution_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO maf_executions (id, user_id) VALUES ($1, $2)")
+            .bind(maf_execution_id)
+            .bind(self.owner_user_id)
+            .execute(&self.pool)
+            .await
+            .expect("seed maf_executions row");
+
+        let store = PgHitlStore::new(self.pool.clone());
+        let created = store
+            .create(NewHitlRequest::maf(
+                nasiko_hitl::HitlKind::InputRequired,
+                self.agent_id,
+                self.owner_user_id,
+                "task-maf",
+                "ctx-maf",
+                maf_execution_id,
+                0,
+                serde_json::json!({"message": "which value should step 0 use?"}),
+            ))
+            .await
+            .expect("create pending maf row");
+
+        store
+            .resolve(
+                created.id,
+                serde_json::json!({"answer": "42"}),
+                self.owner_user_id,
+                HitlStatus::Resolved,
+            )
+            .await
+            .expect("resolve");
+
+        created.id
+    }
 }
 
 #[tokio::test]
@@ -214,4 +254,46 @@ async fn direct_chat_dispatcher_never_claims_an_mcp_tool_row() {
         mcp_row_status, "not_started",
         "the mcp_tool row must be completely untouched by the direct-chat dispatcher"
     );
+}
+
+/// Regression: the direct-chat dispatcher's claim query was scoped to `origin IN ('direct_chat',
+/// 'agent_proxy')` only — correct when that scoping was first added (to avoid racing MCP's own
+/// dispatcher), but `'maf'` was never added to the list when MAF's own HITL support was merged in
+/// later, even though `deliver()` has always known how to handle `HitlOrigin::Maf` (branches to
+/// `deliver_maf`). A resolved `maf` row was therefore claimable by neither dispatcher at all —
+/// `resume_status` stuck at `not_started` forever, the workflow never resumes past
+/// `awaiting_human` even though the `hitl_requests` row itself shows `resolved`.
+#[tokio::test]
+async fn direct_chat_dispatcher_claims_a_resolved_maf_row() {
+    let db = TestDb::new().await;
+    let mcp_row = db.seed_resolved_mcp_tool_row().await;
+    let maf_row = db.seed_resolved_maf_row().await;
+
+    let store = PgHitlStore::new(db.pool.clone());
+    let claimed = store
+        .claim_for_resume(120)
+        .await
+        .expect("claim_for_resume")
+        .expect("must claim the maf row — this is the regression this test guards against");
+    assert_eq!(
+        claimed.id, maf_row,
+        "must claim the maf row, never the mcp_tool one"
+    );
+    assert_eq!(claimed.origin, nasiko_hitl::HitlOrigin::Maf);
+
+    // Isolation from MCP's dispatcher still holds — adding `maf` to the list must not also
+    // accidentally widen it to `mcp_tool`.
+    let second = store.claim_for_resume(120).await.expect("claim_for_resume");
+    assert!(
+        second.is_none(),
+        "the mcp_tool row must still never be claimable by the direct-chat dispatcher: {second:?}"
+    );
+
+    let mcp_row_status: String =
+        sqlx::query_scalar("SELECT resume_status FROM hitl_requests WHERE id = $1")
+            .bind(mcp_row)
+            .fetch_one(&db.pool)
+            .await
+            .expect("fetch resume_status");
+    assert_eq!(mcp_row_status, "not_started");
 }
