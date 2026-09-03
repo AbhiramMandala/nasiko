@@ -11,6 +11,10 @@
 //!   3. `GET /chat/sessions/{id}/messages` (session load) surfaces a pending HITL without the
 //!      caller ever touching `/api/hitl/pending`, and only to its owner.
 //!   4. A second pause on the same task/context gets its own, distinct `hitl_requests.id`.
+//!   5. When an agent's pause metadata links back to a real `mcp_tool` row (`hitl_request_id`),
+//!      both discovery surfaces show that row's id/kind/question instead of the mirror's own —
+//!      while the mirror's own task_id/context_id are preserved — and a stale/bogus link falls
+//!      back to the mirror rather than breaking either surface (`resolve_display_row`).
 //!
 //! Requires infra (Postgres, Redis) like the rest of the suite:
 //!   `just infra` then `cargo test -p nasiko-server --test hitl_stream_metadata -- --test-threads=1`
@@ -54,6 +58,34 @@ async fn seed_running_agent(server: &common::TestServer, owner_id: Uuid, url: &s
     .expect("seed_running_agent")
 }
 
+/// Seeds a real `mcp_tool`/`tool_approval` row directly, standing in for the row the MCP gateway
+/// itself would create when an agent's tool call gets blocked (out of scope for this test file —
+/// that path lives in `oss/mcp-gateway` on a separate branch). `context_id` deliberately does NOT
+/// need to match the direct-chat turn's own context id — the two rows are linked purely through
+/// `question.metadata.hitl_request_id` on the mirror, never through a shared `context_id`.
+async fn seed_mcp_tool_row(
+    server: &common::TestServer,
+    agent_id: Uuid,
+    owner_user_id: Uuid,
+    question: &Value,
+) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO hitl_requests
+            (kind, origin, agent_id, owner_user_id, context_id, connector_id, tool_name, question)
+         VALUES ('tool_approval', 'mcp_tool', $1, $2, $3, $4, $5, $6)
+         RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(owner_user_id)
+    .bind(format!("mcp-ctx-{}", Uuid::new_v4()))
+    .bind(Uuid::new_v4())
+    .bind("github_create_issue")
+    .bind(question)
+    .fetch_one(&server.db)
+    .await
+    .expect("seed_mcp_tool_row")
+}
+
 /// A minimal A2A fixture agent: each call consumes the next entry in `responses` (the last entry
 /// repeats once exhausted), so one mock server can script "pause, then pause again on resume"
 /// without a real agent SDK.
@@ -66,6 +98,14 @@ struct MockAgent {
 enum MockResponse {
     /// Streaming (`text/event-stream`) input-required/auth-required pause frame.
     Pause { auth: bool, message: &'static str },
+    /// Same as `Pause`, but with a `status.message.metadata` blob attached — used to simulate an
+    /// agent that maps an MCP tool block onto its own `AUTH_REQUIRED` state and links the two via
+    /// `metadata.hitl_request_id` (see `build_pause_question` in `router/a2a_dispatch.rs`).
+    PauseWithMetadata {
+        auth: bool,
+        message: &'static str,
+        metadata: Value,
+    },
 }
 
 async fn mock_agent_handler(
@@ -89,15 +129,28 @@ async fn mock_agent_handler(
         .or_else(|| agent.responses.last())
         .expect("MockAgent must be given at least one response");
 
-    let MockResponse::Pause { auth, message } = response;
-    let status = if *auth {
+    let (auth, message, metadata) = match response {
+        MockResponse::Pause { auth, message } => (*auth, *message, None),
+        MockResponse::PauseWithMetadata {
+            auth,
+            message,
+            metadata,
+        } => (*auth, *message, Some(metadata.clone())),
+    };
+    let status = if auth {
         nasiko_types::a2a::auth_required(&task_id, &context_id, message)
     } else {
         nasiko_types::a2a::input_required(&task_id, &context_id, message)
     };
-    let event = nasiko_types::a2a::status_event(status);
+    let mut event = serde_json::to_value(nasiko_types::a2a::status_event(status))
+        .expect("StreamResponse must serialize");
+    if let Some(metadata) = metadata
+        && let Some(msg) = event.pointer_mut("/statusUpdate/status/message")
+    {
+        msg["metadata"] = metadata;
+    }
 
-    let sse_body = format!("data: {}\n\n", nasiko_types::a2a::to_sse_data(&event));
+    let sse_body = format!("data: {event}\n\n");
     axum::response::Response::builder()
         .status(200)
         .header("content-type", "text/event-stream")
@@ -445,6 +498,216 @@ async fn sequential_pauses_on_same_task_get_distinct_hitl_ids() {
         first_row_status, "resolved",
         "the first round's row stays as a resolved audit record, not reused or overwritten"
     );
+
+    server.cleanup().await;
+}
+
+/// An agent that maps an MCP tool block onto its own `AUTH_REQUIRED` task state, linking its
+/// pause metadata to a real (pre-existing) `mcp_tool` row via `hitl_request_id`. The live stream
+/// frame must show the REAL row's id/kind/question, not the mirror's own — while `task_id`/
+/// `context_id` on the frame stay the mirror's own, since those are what ties it to this visible
+/// chat turn (`docs/HITL_ARCHITECTURE_INVESTIGATION.md`'s dual-origin write-up).
+#[tokio::test]
+#[serial]
+async fn mcp_linked_mirror_stream_frame_shows_the_real_row() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+
+    let session_id = format!("ses_{}", Uuid::new_v4().simple());
+
+    // The real MCP permission row — seeded up front, standing in for what the MCP gateway itself
+    // would have already inserted by the time the agent's own turn pauses. The agent row (whose
+    // id the mcp row's `agent_id` needs) has to exist first; its URL is patched in below once the
+    // fixture — which needs the mcp row's id baked into its own response metadata — is started.
+    let mcp_question = json!({ "message": "Approve creating a GitHub issue?" });
+    let agent_id = seed_running_agent(&server, user_id, "http://placeholder.invalid").await;
+    let mcp_row_id = seed_mcp_tool_row(&server, agent_id, user_id, &mcp_question).await;
+
+    let (agent_url, _agent_handle) = start_mock_agent(vec![MockResponse::PauseWithMetadata {
+        auth: true,
+        message: "Please authorize with GitHub",
+        metadata: json!({ "hitl_request_id": mcp_row_id.to_string() }),
+    }])
+    .await;
+    sqlx::query("UPDATE agents SET url = $1 WHERE id = $2")
+        .bind(&agent_url)
+        .bind(agent_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let hitl_frame = send_turn_and_extract_hitl_frame(
+        &server,
+        user_id,
+        agent_id,
+        &session_id,
+        &session_id,
+        "Please create a GitHub issue for this bug",
+    )
+    .await;
+
+    // The frame shows the REAL row's identity...
+    assert_eq!(hitl_frame["id"], mcp_row_id.to_string());
+    assert_eq!(hitl_frame["kind"], "tool_approval");
+    assert_eq!(
+        hitl_frame["question"]["message"],
+        "Approve creating a GitHub issue?"
+    );
+    // ...while task_id/context_id stay the MIRROR's own (this visible chat turn's ids), not the
+    // mcp row's (which has no task_id at all).
+    assert_eq!(hitl_frame["context_id"], session_id);
+    assert!(hitl_frame["task_id"].as_str().is_some());
+
+    // Both rows still exist independently: the mcp row untouched, plus a new mirror row carrying
+    // the link — this fix only changes what's DISPLAYED, never what's persisted.
+    let (mcp_status, mcp_kind): (String, String) =
+        sqlx::query_as("SELECT status, kind FROM hitl_requests WHERE id = $1")
+            .bind(mcp_row_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(mcp_status, "pending");
+    assert_eq!(mcp_kind, "tool_approval");
+
+    let mirror_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hitl_requests
+          WHERE origin = 'direct_chat' AND question->'metadata'->>'hitl_request_id' = $1",
+    )
+    .bind(mcp_row_id.to_string())
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        mirror_count, 1,
+        "exactly one mirror row must exist, linked to the mcp row"
+    );
+
+    server.cleanup().await;
+}
+
+/// The same MCP-linked scenario, proven through the OTHER discovery surface: session load
+/// (`GET /chat/sessions/{id}/messages`). Its `hitl` array must show the real row's identity too,
+/// not just the live stream — both surfaces share the same `resolve_display_row` substitution.
+#[tokio::test]
+#[serial]
+async fn mcp_linked_mirror_session_load_shows_the_real_row() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+
+    let agent_id = seed_running_agent(&server, user_id, "http://placeholder.invalid").await;
+    let mcp_question = json!({ "message": "Approve creating a GitHub issue?" });
+    let mcp_row_id = seed_mcp_tool_row(&server, agent_id, user_id, &mcp_question).await;
+
+    let (agent_url, _agent_handle) = start_mock_agent(vec![MockResponse::PauseWithMetadata {
+        auth: true,
+        message: "Please authorize with GitHub",
+        metadata: json!({ "hitl_request_id": mcp_row_id.to_string() }),
+    }])
+    .await;
+    sqlx::query("UPDATE agents SET url = $1 WHERE id = $2")
+        .bind(&agent_url)
+        .bind(agent_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let session_id = format!("ses_{}", Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, title) VALUES ($1, $2, $3, 'test')",
+    )
+    .bind(&session_id)
+    .bind(user_id)
+    .bind(agent_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    send_turn_and_extract_hitl_frame(
+        &server,
+        user_id,
+        agent_id,
+        &session_id,
+        &session_id,
+        "Please create a GitHub issue for this bug",
+    )
+    .await;
+
+    let res: Value = auth(
+        server
+            .client
+            .get(server.url(&format!("/api/chat/sessions/{session_id}/messages"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+
+    let hitl = res["hitl"].as_array().expect("hitl field present");
+    assert_eq!(
+        hitl.len(),
+        1,
+        "only the mirror row is tied to this session: {res}"
+    );
+    assert_eq!(hitl[0]["id"], mcp_row_id.to_string());
+    assert_eq!(hitl[0]["kind"], "tool_approval");
+    assert_eq!(
+        hitl[0]["question"]["message"],
+        "Approve creating a GitHub issue?"
+    );
+    assert_eq!(hitl[0]["execution"]["context_id"], session_id);
+
+    server.cleanup().await;
+}
+
+/// A mirror whose `hitl_request_id` doesn't resolve to anything real (agent bug, stale value, or
+/// simply an agent that isn't MCP-aware and never sets this key at all) must not break either
+/// discovery surface — it just falls back to showing the mirror as-is.
+#[tokio::test]
+#[serial]
+async fn unlinked_or_bogus_hitl_request_id_falls_back_to_the_mirror_live() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+
+    let (agent_url, _agent_handle) = start_mock_agent(vec![MockResponse::PauseWithMetadata {
+        auth: false,
+        message: "Which movie would you like to watch?",
+        metadata: json!({ "hitl_request_id": Uuid::new_v4().to_string() }), // resolves to nothing
+    }])
+    .await;
+    let agent_id = seed_running_agent(&server, user_id, &agent_url).await;
+
+    let session_id = format!("ses_{}", Uuid::new_v4().simple());
+    let hitl_frame = send_turn_and_extract_hitl_frame(
+        &server,
+        user_id,
+        agent_id,
+        &session_id,
+        &session_id,
+        "Book me a movie ticket",
+    )
+    .await;
+
+    assert_eq!(hitl_frame["kind"], "input_required");
+    assert_eq!(
+        hitl_frame["question"]["message"],
+        "Which movie would you like to watch?"
+    );
+    let hitl_id: Uuid = hitl_frame["id"].as_str().unwrap().parse().unwrap();
+
+    let (status, origin): (String, String) =
+        sqlx::query_as("SELECT status, origin FROM hitl_requests WHERE id = $1")
+            .bind(hitl_id)
+            .fetch_one(&server.db)
+            .await
+            .expect("the mirror row itself must still exist and be usable");
+    assert_eq!(status, "pending");
+    assert_eq!(origin, "direct_chat");
 
     server.cleanup().await;
 }

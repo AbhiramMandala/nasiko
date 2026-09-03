@@ -43,16 +43,15 @@ pub trait HitlStore: Send + Sync {
         &self,
         identity: &HitlIdentity,
     ) -> Result<Vec<HitlRequest>, HitlError>;
-    /// Every HITL request (pending or already resolved/rejected/expired/canceled) tied to a MAF
-    /// execution, oldest first — the discovery path for `GET /api/maf/execution/{id}`, so the
-    /// frontend never has to call `list_pending_for`/`GET /api/hitl/pending` to correlate a
-    /// paused step back to its `hitl_requests.id`. `owner_user_id` is required and must be the
-    /// SAME value the caller already validated against `maf_executions.user_id` — this method
-    /// does not itself know whether the caller owns the execution, it only refuses to leak a
-    /// different owner's rows for the same execution id.
-    async fn list_for_maf_execution(
+    /// Every HITL request (pending or already resolved/rejected/expired/canceled) tied to a web
+    /// chat session, oldest first — the session-load discovery path (`chat/routes.rs::
+    /// list_messages`), an alternative to `list_pending_for` for a caller that already knows
+    /// which session it wants rather than "everything pending for this user". Filtered inside the
+    /// query by BOTH `chat_session_id` and `owner_user_id`, same rule as `list_pending_for` (§10)
+    /// — a session id alone is never sufficient to authorize the read.
+    async fn list_for_chat_session(
         &self,
-        maf_execution_id: Uuid,
+        chat_session_id: &str,
         owner_user_id: Uuid,
     ) -> Result<Vec<HitlRequest>, HitlError>;
     /// The exact `UPDATE ... WHERE status = 'pending' RETURNING *` from §5. `status` is the
@@ -101,6 +100,60 @@ pub trait HitlStore: Send + Sync {
     /// `auth_required` row; `Ok(None)` means the row was already resolved/expired/canceled or was
     /// never `auth_required`, so the caller should fall back to reporting its current state.
     async fn record_auth_start(&self, id: Uuid) -> Result<Option<HitlRequest>, HitlError>;
+}
+
+/// Resolves the row that should actually be shown to a human through a **discovery** surface —
+/// Direct Chat's live SSE stream frame, or the session-load `hitl` array — for a row that's about
+/// to be surfaced there. Never used by the direct `GET /api/hitl/{id}` / `resolve` / `cancel` /
+/// per-id `stream` endpoints, which always operate on the exact row the caller already named by
+/// id; this is purely a display-layer substitution for the surfaces that decide *which* row to
+/// show in the first place.
+///
+/// Background: an agent that maps an MCP tool block onto its own A2A `AUTH_REQUIRED` task state
+/// causes two rows to exist for one real event — the real `mcp_tool` row (created by the MCP
+/// gateway, carries no `task_id`) and a `direct_chat`/`agent_proxy` mirror of it (created by
+/// `persist_direct_chat_pause`, carries the `task_id`/`context_id`/`chat_session_id` the resume
+/// mechanism needs to continue that specific chat task — see `NewHitlRequest::mcp_tool`'s doc
+/// comment). Direct Chat's discovery surfaces only ever see the mirror, since it's the only row
+/// with `task_id`/`chat_session_id`; left unpatched they'd show the mirror's own generic
+/// question, and a human resolving that id would resume the chat task without ever touching the
+/// real MCP permission — the tool would stay blocked.
+///
+/// The agent links the two by putting `hitl_request_id: <the mcp row's id>` in its own pause
+/// metadata, which lands verbatim in the mirror's `question.metadata.hitl_request_id`
+/// (`build_pause_question` in `oss/server/src/router/a2a_dispatch.rs` forwards the agent's
+/// status-message metadata through unmodified). This returns `row.clone()` unchanged unless ALL
+/// of the following hold: `row.origin` is `direct_chat`/`agent_proxy`,
+/// `question.metadata.hitl_request_id` is present and parses as a `Uuid`, and that id resolves to
+/// a real row via `store.get()`. Any failure at any step — no link, a malformed id, a
+/// stale/nonexistent id, or a lookup error — falls back to the mirror as-is: a broken link must
+/// never turn into a broken or missing HITL prompt for the human.
+///
+/// Only `id`/`kind`/`question` come from the linked row; every other field — crucially
+/// `task_id`/`context_id`/`chat_session_id` — stays the mirror's own, since those are what the
+/// frontend needs to correlate the prompt back to the visible chat task/session.
+pub async fn resolve_display_row(store: &dyn HitlStore, row: &HitlRequest) -> HitlRequest {
+    if !matches!(row.origin, HitlOrigin::DirectChat | HitlOrigin::AgentProxy) {
+        return row.clone();
+    }
+    let Some(linked_id) = row
+        .question
+        .get("metadata")
+        .and_then(|m| m.get("hitl_request_id"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        return row.clone();
+    };
+    match store.get(linked_id).await {
+        Ok(Some(linked)) => HitlRequest {
+            id: linked.id,
+            kind: linked.kind,
+            question: linked.question,
+            ..row.clone()
+        },
+        _ => row.clone(),
+    }
 }
 
 /// Mirrors the `hitl_requests` table with plain column types (`String` for the four CHECK-backed
@@ -211,6 +264,12 @@ impl PgHitlStore {
 
     /// Re-fetch the pending row a unique-violation on `create` must have collided with — either
     /// the `uq_hitl_pending_per_task` or `uq_hitl_pending_per_tool_call` index (§5).
+    ///
+    /// The non-`McpTool` branch is scoped by `owner_user_id`/`agent_id` in addition to
+    /// `task_id`, matching `uq_hitl_pending_per_task` (0011_hitl_task_id_scope.sql) — `task_id`
+    /// is populated from agent-controlled A2A response data, not a Nasiko-minted id, so it must
+    /// never be trusted alone as a database-wide key: without this scoping, a non-random or
+    /// malicious agent's `taskId` could collide two different users' pauses onto the same row.
     async fn find_existing_pending(
         &self,
         req: &NewHitlRequest,
@@ -228,10 +287,15 @@ impl PgHitlStore {
             .fetch_optional(&self.pool)
             .await?
         } else {
-            sqlx::query_as("SELECT * FROM hitl_requests WHERE status = 'pending' AND task_id = $1")
-                .bind(&req.task_id)
-                .fetch_optional(&self.pool)
-                .await?
+            sqlx::query_as(
+                "SELECT * FROM hitl_requests
+                 WHERE status = 'pending' AND owner_user_id = $1 AND agent_id = $2 AND task_id = $3",
+            )
+            .bind(req.owner_user_id)
+            .bind(req.agent_id)
+            .bind(&req.task_id)
+            .fetch_optional(&self.pool)
+            .await?
         };
         row.map(HitlRequest::try_from).transpose()
     }
@@ -311,15 +375,15 @@ impl HitlStore for PgHitlStore {
         rows.into_iter().map(HitlRequest::try_from).collect()
     }
 
-    async fn list_for_maf_execution(
+    async fn list_for_chat_session(
         &self,
-        maf_execution_id: Uuid,
+        chat_session_id: &str,
         owner_user_id: Uuid,
     ) -> Result<Vec<HitlRequest>, HitlError> {
         let rows: Vec<HitlRequestRow> = sqlx::query_as(
-            "SELECT * FROM hitl_requests WHERE maf_execution_id = $1 AND owner_user_id = $2 ORDER BY created_at",
+            "SELECT * FROM hitl_requests WHERE chat_session_id = $1 AND owner_user_id = $2 ORDER BY created_at",
         )
-        .bind(maf_execution_id)
+        .bind(chat_session_id)
         .bind(owner_user_id)
         .fetch_all(&self.pool)
         .await?;
@@ -478,5 +542,242 @@ impl HitlStore for PgHitlStore {
         .fetch_optional(&self.pool)
         .await?;
         row.map(HitlRequest::try_from).transpose()
+    }
+}
+
+#[cfg(test)]
+mod resolve_display_row_tests {
+    use super::*;
+    use crate::authz::HitlIdentity;
+    use crate::types::{HitlKind, HitlStatus, ResumeStatus};
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// A trivial in-memory `HitlStore` — only `get` is exercised by `resolve_display_row`, so
+    /// every other method is unreachable from these tests and left unimplemented rather than
+    /// faked out with meaningless behavior.
+    #[derive(Default)]
+    struct FakeStore(Mutex<HashMap<Uuid, HitlRequest>>);
+
+    #[async_trait]
+    impl HitlStore for FakeStore {
+        async fn create(&self, _req: NewHitlRequest) -> Result<HitlRequest, HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn get(&self, id: Uuid) -> Result<Option<HitlRequest>, HitlError> {
+            Ok(self.0.lock().unwrap().get(&id).cloned())
+        }
+        async fn list_pending_for(
+            &self,
+            _identity: &HitlIdentity,
+        ) -> Result<Vec<HitlRequest>, HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn list_for_chat_session(
+            &self,
+            _chat_session_id: &str,
+            _owner_user_id: Uuid,
+        ) -> Result<Vec<HitlRequest>, HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn resolve(
+            &self,
+            _id: Uuid,
+            _human_response: Value,
+            _resolved_by: Uuid,
+            _status: HitlStatus,
+        ) -> Result<ResolveOutcome, HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn claim_for_resume(
+            &self,
+            _lease_secs: i64,
+        ) -> Result<Option<HitlRequest>, HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn mark_resume_completed(&self, _id: Uuid) -> Result<(), HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn mark_resume_failed(
+            &self,
+            _id: Uuid,
+            _error: &str,
+            _max_attempts: i32,
+        ) -> Result<(), HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn expire_stale(&self) -> Result<u64, HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn cancel(&self, _id: Uuid, _canceled_by: Uuid) -> Result<ResolveOutcome, HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn mark_resume_unknown(&self, _id: Uuid) -> Result<(), HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn record_auth_start(&self, _id: Uuid) -> Result<Option<HitlRequest>, HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+    }
+
+    fn row(id: Uuid, origin: HitlOrigin, kind: HitlKind, question: Value) -> HitlRequest {
+        let now = Utc::now();
+        HitlRequest {
+            id,
+            kind,
+            origin,
+            status: HitlStatus::Pending,
+            resume_status: ResumeStatus::NotStarted,
+            agent_id: Uuid::new_v4(),
+            owner_user_id: Uuid::new_v4(),
+            resolved_by: None,
+            task_id: Some("task-1".to_string()),
+            context_id: Some("ctx-1".to_string()),
+            chat_session_id: Some("ses-1".to_string()),
+            maf_execution_id: None,
+            maf_step_index: None,
+            connector_id: None,
+            tool_name: None,
+            arguments_hash: None,
+            consumed_at: None,
+            question,
+            human_response: None,
+            resume_state: Value::Null,
+            resume_claimed_at: None,
+            resume_dispatch_attempts: 0,
+            resume_last_error: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+        }
+    }
+
+    // (1) A genuine, non-MCP-linked pause is shown unchanged.
+    #[tokio::test]
+    async fn non_linked_pause_is_shown_unchanged() {
+        let mirror = row(
+            Uuid::new_v4(),
+            HitlOrigin::DirectChat,
+            HitlKind::InputRequired,
+            json!({ "message": "Which movie would you like to watch?" }),
+        );
+        let store = FakeStore::default();
+
+        let display = resolve_display_row(&store, &mirror).await;
+
+        assert_eq!(display.id, mirror.id);
+        assert_eq!(display.kind, mirror.kind);
+        assert_eq!(display.question, mirror.question);
+        assert_eq!(display.task_id, mirror.task_id);
+        assert_eq!(display.context_id, mirror.context_id);
+        assert_eq!(display.chat_session_id, mirror.chat_session_id);
+    }
+
+    // (2) An MCP-linked mirror shows the real row's id/kind/question instead of its own, with
+    // the mirror's own task_id/context_id/chat_session_id preserved.
+    #[tokio::test]
+    async fn mcp_linked_mirror_shows_the_real_row() {
+        let mcp_id = Uuid::new_v4();
+        let mcp_row = row(
+            mcp_id,
+            HitlOrigin::McpTool,
+            HitlKind::ToolApproval,
+            json!({ "message": "Approve creating a GitHub issue?" }),
+        );
+        let mirror = row(
+            Uuid::new_v4(),
+            HitlOrigin::DirectChat,
+            HitlKind::AuthRequired,
+            json!({
+                "message": "Please authorize with GitHub",
+                "metadata": { "hitl_request_id": mcp_id.to_string() },
+            }),
+        );
+        let store = FakeStore::default();
+        store.0.lock().unwrap().insert(mcp_id, mcp_row.clone());
+
+        let display = resolve_display_row(&store, &mirror).await;
+
+        assert_eq!(display.id, mcp_row.id);
+        assert_eq!(display.kind, mcp_row.kind);
+        assert_eq!(display.question, mcp_row.question);
+        // The mirror's own identity — what the frontend correlates to the visible task — is
+        // untouched.
+        assert_eq!(display.task_id, mirror.task_id);
+        assert_eq!(display.context_id, mirror.context_id);
+        assert_eq!(display.chat_session_id, mirror.chat_session_id);
+    }
+
+    // (3) A stale/bogus hitl_request_id doesn't break the event — it falls back to the mirror.
+    #[tokio::test]
+    async fn stale_or_malformed_link_falls_back_to_the_mirror() {
+        let store = FakeStore::default();
+
+        let missing_link = row(
+            Uuid::new_v4(),
+            HitlOrigin::DirectChat,
+            HitlKind::AuthRequired,
+            json!({
+                "message": "Please authorize",
+                "metadata": { "hitl_request_id": Uuid::new_v4().to_string() },
+            }),
+        );
+        let display = resolve_display_row(&store, &missing_link).await;
+        assert_eq!(display.id, missing_link.id);
+        assert_eq!(display.kind, missing_link.kind);
+        assert_eq!(display.question, missing_link.question);
+
+        let malformed_link = row(
+            Uuid::new_v4(),
+            HitlOrigin::AgentProxy,
+            HitlKind::InputRequired,
+            json!({
+                "message": "What's next?",
+                "metadata": { "hitl_request_id": "not-a-uuid" },
+            }),
+        );
+        let display = resolve_display_row(&store, &malformed_link).await;
+        assert_eq!(display.id, malformed_link.id);
+        assert_eq!(display.question, malformed_link.question);
+
+        // No metadata at all — the ordinary agent_proxy/direct_chat case — is just as safe.
+        let no_metadata = row(
+            Uuid::new_v4(),
+            HitlOrigin::DirectChat,
+            HitlKind::InputRequired,
+            json!({ "message": "Plain pause, no MCP involved" }),
+        );
+        let display = resolve_display_row(&store, &no_metadata).await;
+        assert_eq!(display.id, no_metadata.id);
+    }
+
+    // origin=mcp_tool/orchestrator/maf rows are never mirrors themselves — even one that happens
+    // to carry a (meaningless) metadata.hitl_request_id must pass through unchanged rather than
+    // recursing into another lookup.
+    #[tokio::test]
+    async fn non_mirror_origins_are_never_substituted() {
+        let other_id = Uuid::new_v4();
+        let store = FakeStore::default();
+        store.0.lock().unwrap().insert(
+            other_id,
+            row(
+                other_id,
+                HitlOrigin::DirectChat,
+                HitlKind::InputRequired,
+                json!({ "message": "unrelated" }),
+            ),
+        );
+
+        let maf_row = row(
+            Uuid::new_v4(),
+            HitlOrigin::Maf,
+            HitlKind::InputRequired,
+            json!({ "message": "step paused", "metadata": { "hitl_request_id": other_id.to_string() } }),
+        );
+        let display = resolve_display_row(&store, &maf_row).await;
+        assert_eq!(display.id, maf_row.id);
+        assert_eq!(display.question, maf_row.question);
     }
 }
