@@ -517,8 +517,9 @@ async fn docker_runtime_reads_workspace_files_even_after_the_agent_is_gone() {
     runtime.deploy(&spec).await.expect("deploy writable agent");
     let container = "nasiko-agent-test-workspace-reader";
 
-    // The agent runs as uid 65534 now, and the init helper chowned the
-    // subdirectory to match — if either half were missing this write fails.
+    // A --writable agent keeps the image user (root here) and can write its
+    // mount regardless of the subdir's ownership — read-only root confines it to
+    // the mount, running as root lets it write there without a matching chown.
     let write = docker_exec(
         container,
         &[
@@ -529,7 +530,7 @@ async fn docker_runtime_reads_workspace_files_even_after_the_agent_is_gone() {
     );
     assert!(
         write.status.success(),
-        "a --writable agent must be able to write its mount as uid 65534: {}",
+        "a --writable agent must be able to write its mount: {}",
         String::from_utf8_lossy(&write.stderr)
     );
 

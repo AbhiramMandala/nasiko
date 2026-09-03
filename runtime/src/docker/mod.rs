@@ -404,33 +404,35 @@ fn agent_memory_subpath(spec: &DeploymentSpec) -> String {
     format!("{}/{}", spec.owner_id, spec.container_id.as_str())
 }
 
-/// The `user` a container runs as: the conventional "nobody" uid:gid for
-/// hardened and `--writable` agents, otherwise whatever the image declares.
+/// The `user` a container runs as: the conventional "nobody" uid:gid for fully
+/// hardened agents, otherwise whatever the image declares (root for most).
 ///
-/// 65534 is the same value `ee/k8s-runtime` puts in its non-root pod security
-/// context, so a `--writable` agent runs as one uid across both editions and
-/// its files carry one ownership. `ensure_agent_memory_subdir` hands the
-/// agent's subdirectory to that uid, since Docker has no `fsGroup`.
+/// `--writable` agents deliberately keep the image's user (typically root):
+/// read-only root already confines their writes to the `/workspace` mount and
+/// `/tmp` tmpfs, and running as root lets them write into the volume subdir
+/// without depending on a deploy-time `chown` (Docker has no `fsGroup`, and the
+/// image may declare its own non-65534 user). `KubeRuntime` uses `fsGroup: 65534`
+/// to solve the same problem the other way; each runtime is internally
+/// consistent, and the workspace reader only ever reads world-readable files.
 fn run_as_user(spec: &DeploymentSpec) -> Option<String> {
-    (spec.harden || spec.writable).then(|| "65534:65534".to_owned())
+    spec.harden.then(|| "65534:65534".to_owned())
 }
 
-/// Builds the `HostConfig` for a container, applying OS-level hardening
-/// (read-only rootfs, dropped capabilities, no-new-privileges) when
-/// `spec.harden` **or** `spec.writable` is set. Pure and hermetically testable:
-/// no Docker client involved.
+/// Builds the `HostConfig` for a container. `spec.harden` or `spec.writable`
+/// both get **filesystem** hardening — read-only rootfs plus a `/tmp` tmpfs;
+/// only full `spec.harden` additionally drops capabilities and sets
+/// no-new-privileges. Pure and hermetically testable: no Docker client involved.
 ///
-/// `writable` implies the same hardening because otherwise the two runtimes
-/// disagree about where a stray write lands. `KubeRuntime` hardens every agent
-/// pod unconditionally, so an agent that writes an absolute path outside its
+/// `writable` takes the filesystem half because otherwise the two runtimes
+/// disagree about where a stray write lands. `KubeRuntime` gives every writable
+/// pod a read-only root, so an agent that writes an absolute path outside its
 /// mount fails loudly there — while on Docker the same write silently landed on
-/// the ephemeral container layer and was lost on the next restart, which is the
-/// opposite of what `--writable` promises. Making the mount the only writable
-/// location is what makes the promise true.
-///
-/// The `/tmp` tmpfs stays on `harden` alone: Kubernetes gives agent pods no
-/// `/tmp`, so granting one here would re-open the same divergence in a smaller
-/// form — an agent that works on Docker and breaks on Kubernetes.
+/// the ephemeral container layer and was lost on the next restart, the opposite
+/// of what `--writable` promises. Read-only root makes `/workspace` (or the
+/// `--writable-path`) plus `/tmp` the only writable locations, which makes the
+/// promise true — but it does *not* drop capabilities, because `--writable` is
+/// about *where* writes land, not privilege reduction, and some agents shell
+/// out to tools that need those capabilities.
 fn build_host_config(
     spec: &DeploymentSpec,
     port_bindings: PortBindingsMap,
@@ -474,12 +476,24 @@ fn build_host_config(
         return base;
     }
     HostConfig {
+        // Read-only root for both: it is what makes `/workspace` (or the
+        // `--writable-path`) plus `/tmp` the *only* writable locations, so a
+        // stray write to the image filesystem fails loudly instead of silently
+        // landing on the ephemeral layer and being lost on the next restart.
         readonly_rootfs: Some(true),
-        cap_drop: Some(vec!["ALL".to_owned()]),
-        security_opt: Some(vec!["no-new-privileges:true".to_owned()]),
-        tmpfs: spec
+        // The `/tmp` tmpfs comes along for writable too: without a writable
+        // `/tmp`, read-only root breaks agents that use it at runtime (opencode,
+        // the coding/claude-sdk agents). `KubeRuntime` gives writable pods an
+        // `emptyDir` `/tmp` for the same reason.
+        tmpfs: Some(HashMap::from([("/tmp".to_owned(), "size=64m".to_owned())])),
+        // Capability/privilege hardening is full-`--harden` only. `--writable`
+        // is about *where writes land*, not dropping capabilities — some agents
+        // shell out to tools (cargo/git/rustc) that need them, and read-only
+        // root already delivers the write-confinement `--writable` promises.
+        cap_drop: spec.harden.then(|| vec!["ALL".to_owned()]),
+        security_opt: spec
             .harden
-            .then(|| HashMap::from([("/tmp".to_owned(), "size=64m".to_owned())])),
+            .then(|| vec!["no-new-privileges:true".to_owned()]),
         ..base
     }
 }
@@ -2063,14 +2077,16 @@ mod writable_tests {
         let hc = build_host_config(&spec(true), bindings, "nasiko-agent-memory");
 
         assert_eq!(hc.readonly_rootfs, Some(true));
-        assert_eq!(hc.cap_drop.as_deref(), Some(["ALL".to_owned()].as_slice()));
+        // `/tmp` tmpfs comes along so read-only root doesn't break agents that
+        // write to `/tmp` at runtime.
         assert_eq!(
-            hc.security_opt.as_deref(),
-            Some(["no-new-privileges:true".to_owned()].as_slice())
+            hc.tmpfs,
+            Some(HashMap::from([("/tmp".to_owned(), "size=64m".to_owned())]))
         );
-        // No `/tmp` tmpfs: Kubernetes gives agent pods none, and granting one
-        // here would re-open the same Docker-works/Kubernetes-breaks gap.
-        assert_eq!(hc.tmpfs, None);
+        // Capability/privilege hardening is full-`--harden` only, not `--writable`:
+        // `--writable` confines *writes* (read-only root), it does not drop caps.
+        assert_eq!(hc.cap_drop, None);
+        assert_eq!(hc.security_opt, None);
         // The mount still has to survive the hardening branch, or the agent
         // has a read-only root and nowhere to write at all.
         assert!(hc.mounts.is_some());
@@ -2092,12 +2108,15 @@ mod writable_tests {
     }
 
     #[test]
-    fn writable_runs_as_the_same_uid_as_on_kubernetes() {
-        // Ownership has to match across editions, and it has to match what
-        // `ensure_agent_memory_subdir` chowns the subdirectory to — otherwise
-        // the agent gets a read-only root and a volume it cannot write to.
-        assert_eq!(run_as_user(&spec(true)).as_deref(), Some("65534:65534"));
-        assert_eq!(run_as_user(&spec(false)), None);
+    fn writable_keeps_the_image_user_only_full_harden_forces_65534() {
+        // `--writable` alone keeps the image's own user (typically root): read-only
+        // root already confines writes to the mount, and running as root lets the
+        // agent write the volume subdir without depending on a deploy-time chown.
+        // Only full `--harden` pins the non-root uid (matching KubeRuntime).
+        assert_eq!(run_as_user(&spec(true)), None);
+        let mut hardened = spec(true);
+        hardened.harden = true;
+        assert_eq!(run_as_user(&hardened).as_deref(), Some("65534:65534"));
     }
 
     #[test]
