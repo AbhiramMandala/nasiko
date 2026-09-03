@@ -67,10 +67,6 @@
   .chart-tooltip.is-above::after { bottom: -4px; left: calc(50% - 4px); }
   .chart-tooltip.is-right::after { left: -4px; top: calc(50% - 4px); }
 
-  /* Clamping pulled the card off its anchor — a caret aimed at nothing is
-     worse than none. */
-  .chart-tooltip.is-detached::after { display: none; }
-
   .chart-tooltip-title {
     font-weight: var(--fw-semibold);
     font-size: var(--font-size-sm);

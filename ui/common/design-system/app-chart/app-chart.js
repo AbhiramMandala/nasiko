@@ -669,18 +669,18 @@ export class AppChart extends HTMLElement {
     }
 
     // Placement, per the design: beside the point on the right when there is
-    // room, otherwise above — anchored to the topmost active element (a
-    // stacked column's top, not the average of its segments), and clamped
-    // inside the plot rather than ever flipping below it. Below was where the
-    // card escaped the plot box and later page sections painted over it. The
-    // caret (::after) points back at the datum, and hides when clamping has
-    // pulled the card off its anchor — a caret aimed at nothing is worse than
-    // none.
+    // room, otherwise above the topmost active element (a stacked column's
+    // top, not the average of its segments) so the card sits clear of the
+    // data it describes. Above may extend past the plot's top edge — that is
+    // what the design shows, it only overlaps EARLIER content (the panel
+    // header), which the later-in-DOM tooltip paints over — but never below,
+    // where later page sections would paint over the card. The caret
+    // (::after) always points back at the datum.
     tip.classList.add('is-visible');
     const w = tip.offsetWidth;
     const h = tip.offsetHeight;
     const GAP = 14;
-    tip.classList.remove('is-right', 'is-above', 'is-detached');
+    tip.classList.remove('is-right', 'is-above');
     if (model.caretX + GAP + w <= plot.clientWidth - 2) {
       tip.classList.add('is-right');
       tip.style.left = `${model.caretX + GAP}px`;
@@ -690,12 +690,9 @@ export class AppChart extends HTMLElement {
     } else {
       const anchorY = Math.min(model.caretY,
         ...model.dataPoints.map((dp) => dp.element?.y ?? model.caretY));
-      const idealTop = anchorY - GAP + 2;
-      const top = Math.max(idealTop, h + 2);
       tip.classList.add('is-above');
-      tip.classList.toggle('is-detached', top !== idealTop);
       tip.style.left = `${Math.min(Math.max(model.caretX, w / 2 + 2), plot.clientWidth - w / 2 - 2)}px`;
-      tip.style.top = `${top}px`;
+      tip.style.top = `${anchorY - GAP + 2}px`;
     }
   }
 
