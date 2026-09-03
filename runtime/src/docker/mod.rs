@@ -689,11 +689,18 @@ async fn create_and_start(
         .await?;
     }
 
-    let env_vec: Vec<String> = spec
-        .env_vars
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    // The writable directory *is* the agent's HOME. Agents that keep state or
+    // cache under `$HOME` (opencode, most CLIs) then write it into the persistent
+    // mount instead of the image filesystem — which, under read-only root, is the
+    // difference between working and crashing on a `mkdir $HOME`. Only defaulted:
+    // an explicit `HOME` in the caller's env still wins.
+    let mut env_map = spec.env_vars.clone();
+    if spec.writable {
+        env_map
+            .entry("HOME".to_owned())
+            .or_insert_with(|| spec.writable_mount_path().to_owned());
+    }
+    let env_vec: Vec<String> = env_map.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
     let (port_bindings, exposed_ports) = build_port_config(&spec.ports, bind_host);
 
