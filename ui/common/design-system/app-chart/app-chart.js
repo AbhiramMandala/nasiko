@@ -570,7 +570,10 @@ export class AppChart extends HTMLElement {
         maintainAspectRatio: false,
         // 16px of the card's own ground between its rounded edge and anything
         // drawn — axis labels included. The --s-16 step, as a canvas number.
-        layout: { padding: 16 },
+        // Top is 24, not 16: the topmost tick label centres on the top
+        // gridline, so half its 16px line overhangs the plot — 16 + 8 keeps a
+        // true 16px of clear ground above the tallest ink.
+        layout: { padding: { top: 24, right: 16, bottom: 16, left: 16 } },
         // Chart.js animates on every re-render, and this element re-renders on
         // theme change — an animated repaint on a theme flip reads as a glitch.
         animation: { duration: 240 },
