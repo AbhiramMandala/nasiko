@@ -46,6 +46,21 @@ pub struct StepResult {
     pub prompt: String,
     pub extracted_info: Option<String>,
     pub tokens_used: i64,
+    /// Agent-call input tokens for this step (see `wait_for_agent_usage`) —
+    /// excludes MAF's own planning/reasoning LLM calls, so this is directly
+    /// comparable to an agent-view FinOps row's `prompt_tokens`.
+    #[serde(default)]
+    pub input_tokens: i64,
+    /// Agent-call output tokens for this step. Same scope note as `input_tokens`.
+    #[serde(default)]
+    pub output_tokens: i64,
+    /// Model used for this step's agent call, when known.
+    #[serde(default)]
+    pub model_used: Option<String>,
+    /// USD cost of this step's agent call only (not MAF's own reasoning
+    /// calls) — priced via `ObservabilityProvider::cost`.
+    #[serde(default)]
+    pub cost_usd: f64,
     pub latency_ms: i64,
     pub context: Option<String>,
     pub obs_logs: serde_json::Value,
@@ -59,25 +74,6 @@ pub struct ExecutionResult {
     pub output: String,
     pub step_results: Vec<StepResult>,
     pub tokens_used: i64,
-}
-
-/// What a MAF run produced: either it ran to completion, or one step's agent asked for a human
-/// (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3) and the run stopped there, awaiting
-/// `POST /api/hitl/{id}/resolve`.
-pub enum StepOutcome {
-    Completed(ExecutionResult),
-    AwaitingHuman(PausedStep),
-}
-
-/// One step's pause, carrying everything needed to create the `hitl_requests` row and, later,
-/// resume exactly this step via `executor::run_maf_from`.
-pub struct PausedStep {
-    pub step_index: i32,
-    /// The agent's own `taskId` — the A2A continuation must target this, never a synthetic one.
-    pub task_id: String,
-    /// The MAF execution id (stringified) — doubles as the A2A `contextId` for every step, per
-    /// `executor.rs::call_agent`'s existing convention.
-    pub context_id: String,
-    pub kind: nasiko_hitl::HitlKind,
-    pub question: serde_json::Value,
+    /// Sum of every step's `cost_usd` — agent-call spend only.
+    pub cost_usd: f64,
 }

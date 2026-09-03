@@ -256,6 +256,10 @@ pub struct AgentStats {
     pub agent_id: String,
     /// Number of user-query traces in the window.
     pub trace_count: usize,
+    /// True when `trace_count` exceeded the token-aggregation trace cap, so
+    /// `input_tokens`/`output_tokens`/`cost` were only summed over the first
+    /// `TOKEN_AGGREGATION_TRACE_CAP` traces and understate the real total.
+    pub is_capped: bool,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub model_used: Option<String>,
@@ -271,6 +275,10 @@ pub struct AgentFinOps {
     pub agent_id: String,
     /// User-query trace count in the window.
     pub operations: usize,
+    /// True when `operations` exceeded the token-aggregation trace cap, so
+    /// the token/cost fields below were only summed over the first
+    /// `TOKEN_AGGREGATION_TRACE_CAP` traces and understate the real total.
+    pub is_capped: bool,
     pub input_tokens: u64,
     pub output_tokens: u64,
     /// Prompt tokens served from provider cache (OpenAI cached / Anthropic cache read).

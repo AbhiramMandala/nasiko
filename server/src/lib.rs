@@ -10,7 +10,6 @@ pub mod catalog;
 pub mod chat;
 pub mod flows;
 pub mod github;
-pub mod hitl;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
@@ -31,6 +30,7 @@ pub mod telemetry;
 pub mod transcribe;
 pub mod usage;
 pub mod users;
+pub mod weave;
 
 use axum::handler::Handler;
 use axum::http::Method;
@@ -156,7 +156,6 @@ where
             state.http_client.clone(),
             state.observability.clone(),
             llm_config,
-            state.hitl_store.clone(),
         );
     } else {
         tracing::warn!(
@@ -229,6 +228,16 @@ where
     let oci_limiter = RateLimiter::new(300, Duration::from_secs(60));
     let non_login_limiter = RateLimiter::new(30, Duration::from_secs(60));
     let registry_limiter = RateLimiter::new(60, Duration::from_secs(60));
+    // Per-caller, not global: /auth/change-password is authenticated, and it
+    // costs two bcrypt cost-12 hashes. 10/min is generous for a human changing
+    // their own password and still bounds the CPU burn from a scripted loop.
+    let change_password_limiter = RateLimiter::new(10, Duration::from_secs(60));
+    // The FinOps dashboard/timeseries/calendar/attributions endpoints fan out
+    // several concurrent Tempo searches per request (bounded concurrency, but
+    // real load nonetheless) — a tighter, dedicated budget than the rest of
+    // the observability router (session/trace/span reads are cheap single
+    // lookups and shouldn't share it).
+    let finops_limiter = RateLimiter::new(20, Duration::from_secs(60));
 
     // Public A2A registry (agent discovery) — see registry_a2a.rs for why it
     // is unauthenticated; the global fixed window bounds enumeration abuse.
@@ -260,17 +269,17 @@ where
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
-        .merge(router::hitl::router())
         .nest(
             "/observability",
-            observability::protected_router(state.clone()),
+            observability::protected_router(state.clone(), finops_limiter),
         )
         .merge(agents::upload::status_router())
         .merge(github::router())
-        .merge(auth::login::protected_router())
+        .merge(auth::login::protected_router(change_password_limiter))
         .merge(transcribe::router())
         .merge(mcp::router())
         .merge(mcp_upload_routes)
+        .merge(weave::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -281,13 +290,13 @@ where
         .merge(mcp::public_api_router());
 
     // Agent-facing MCP gateway (`POST /api/mcp`) — deliberately mounted OUTSIDE
-    // `require_auth`. An agent's only credential is the short-lived delegation
-    // JWT (`agent_proxy.rs` strips the caller's real `Authorization`/`Cookie`
-    // before forwarding to a container), so this route validates that token
-    // itself via `mcp::require_delegation` instead of a user session JWT.
+    // `require_auth`. Agents authenticate with their deploy-time gateway
+    // credential (`Authorization: Bearer $MCP_GATEWAY_TOKEN`) and the user
+    // identity is resolved from the request's `traceparent` via the flow
+    // record — both validated inside the handler itself
+    // (docs/MCP_GATEWAY_AGENT_AUTH.md).
     let mcp_agent_gateway = Router::new()
         .nest("/api", mcp::agent_gateway_router())
-        .layer(middleware::from_fn(mcp::require_delegation))
         .with_state(state.clone());
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
@@ -332,10 +341,30 @@ where
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let llm_routes = nasiko_llm_router::router(nasiko_llm_router::LlmRouterCtx::from_shared(
-        state.db.clone(),
-        state.http_client.clone(),
-    ));
+    let llm_ctx =
+        nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone(), state.http_client.clone());
+    // Both sync loops below read the router's effective config, resolved once here
+    // rather than re-read from env per loop.
+    let llm_cfg = llm_ctx.cfg.clone();
+    let llm_routes = nasiko_llm_router::router(llm_ctx);
+    // Keep the provider model catalog (tier-routing candidates) fresh from each
+    // provider's GET /models. Runs immediately, then every 10 min; fail-open.
+    if state.config.model_catalog_sync_enabled {
+        nasiko_llm_router::routing::catalog::spawn_sync(
+            state.db.clone(),
+            state.http_client.clone(),
+            llm_cfg.clone(),
+        );
+    }
+    // Keep model_pricing fresh from the Portkey price book (free, no-auth, MIT);
+    // curated seed rows remain the offline baseline. Daily; fail-open.
+    if state.config.model_pricing_sync_enabled {
+        nasiko_llm_router::routing::pricing_sync::spawn_sync(
+            state.db.clone(),
+            state.http_client.clone(),
+            llm_cfg,
+        );
+    }
 
     // UI pages: the static fallback is gated server-side — unauthenticated
     // page navigations get a redirect to /login.html instead of the document
@@ -363,7 +392,19 @@ where
         .merge(mcp_agent_gateway)
         .fallback_service(ui_pages)
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        // Default span-making records the full request URI, which would publish
+        // the agent credential carried by `/api/mcp/s/{token}` into every span
+        // and log line. Redact that one route; everything else is unchanged.
+        .layer(TraceLayer::new_for_http().make_span_with(
+            |req: &axum::http::Request<axum::body::Body>| {
+                tracing::info_span!(
+                    "request",
+                    method = %req.method(),
+                    uri = %mcp::redact_credential_uri(req.uri()),
+                    version = ?req.version(),
+                )
+            },
+        ))
 }
 
 /// State for [`authenticate_oci_request`] — bundles the two things it needs
