@@ -185,6 +185,41 @@ struct ExecResponse {
     created_at: DateTime<Utc>,
 }
 
+/// `GET /maf/workflow/result/{exec_id}` and `GET /maf/execution/{id}` only — additive on top of
+/// `ExecResponse` (`#[serde(flatten)]` keeps every existing field byte-identical). `hitl` is how
+/// the frontend recovers a paused step's `hitl_requests.id` directly from the execution it's
+/// already polling — see `hitl_rows_for_execution` — so it never has to call
+/// `GET /api/hitl/pending` to correlate a MAF pause. Not added to `ExecResponse` itself: doing so
+/// would also touch `list_executions`/`list_all_executions`, which return many rows at once and
+/// have no comparable "resume this one" use case to justify an extra query per row.
+#[derive(Serialize)]
+struct ExecWithHitlResponse {
+    #[serde(flatten)]
+    exec: ExecResponse,
+    /// Every HITL tied to this execution, pending or already resolved — oldest first, same shape
+    /// `GET /api/hitl/{id}` returns. At most one entry is ever `status: "pending"` at a time
+    /// (MAF steps run strictly sequentially); the rest are historical audit records.
+    hitl: Vec<serde_json::Value>,
+}
+
+/// Shared by `get_result`/`get_execution` — fetches this execution's HITL rows scoped by the
+/// SAME `user_id` the caller already validated against `maf_executions.user_id` (both call sites
+/// check `row.user_id == user_id` before reaching here), so a HITL row can never leak across
+/// owners even if `hitl_requests.owner_user_id` and `maf_executions.user_id` were ever to drift.
+/// A lookup failure surfaces as a real 500 (matching `chat/routes.rs::list_messages`'s own HITL
+/// lookup) rather than silently degrading to an empty array — an execution genuinely
+/// `awaiting_human` must never be misreported as having nothing pending.
+async fn hitl_rows_for_execution(
+    hitl_store: &std::sync::Arc<dyn nasiko_hitl::HitlStore>,
+    execution_id: Uuid,
+    owner_user_id: Uuid,
+) -> Result<Vec<serde_json::Value>, nasiko_hitl::HitlError> {
+    let rows = hitl_store
+        .list_for_maf_execution(execution_id, owner_user_id)
+        .await?;
+    Ok(rows.iter().map(crate::router::hitl::to_response).collect())
+}
+
 fn maf_row_to_response(row: MafRow) -> MafResponse {
     let maf_json = serde_json::from_str(&row.maf_json).unwrap_or(serde_json::Value::Null);
     MafResponse {
@@ -855,11 +890,17 @@ async fn get_result(
     };
 
     match fetch_exec(&state.db, exec_id).await {
-        Ok(Some(row)) if row.user_id == user_id => ok_json(
-            StatusCode::OK,
-            exec_row_to_response(row),
-            "Execution result retrieved successfully",
-        ),
+        Ok(Some(row)) if row.user_id == user_id => {
+            let exec = exec_row_to_response(row);
+            match hitl_rows_for_execution(&state.hitl_store, exec_id, user_id).await {
+                Ok(hitl) => ok_json(
+                    StatusCode::OK,
+                    ExecWithHitlResponse { exec, hitl },
+                    "Execution result retrieved successfully",
+                ),
+                Err(e) => internal_err(e),
+            }
+        }
         Ok(Some(_)) => forbidden("not owned by caller"),
         Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),
@@ -980,11 +1021,17 @@ async fn get_execution(
     };
 
     match fetch_exec(&state.db, id).await {
-        Ok(Some(row)) if row.user_id == user_id => ok_json(
-            StatusCode::OK,
-            exec_row_to_response(row),
-            "Execution retrieved successfully",
-        ),
+        Ok(Some(row)) if row.user_id == user_id => {
+            let exec = exec_row_to_response(row);
+            match hitl_rows_for_execution(&state.hitl_store, id, user_id).await {
+                Ok(hitl) => ok_json(
+                    StatusCode::OK,
+                    ExecWithHitlResponse { exec, hitl },
+                    "Execution retrieved successfully",
+                ),
+                Err(e) => internal_err(e),
+            }
+        }
         Ok(Some(_)) => forbidden("not owned by caller"),
         Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),

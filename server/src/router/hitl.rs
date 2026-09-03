@@ -71,9 +71,9 @@ fn allowed_actions(kind: HitlKind) -> &'static [&'static str] {
 /// §11's response shape. `resume_state` is never included — `HitlRequest` isn't `Serialize` for
 /// exactly this reason, so this DTO is the only path an API response can take.
 ///
-/// `pub(crate)` (not private): `chat/routes.rs::list_messages` reuses this exact DTO to attach a
-/// session's HITL rows to session-load responses, rather than hand-rolling a second field
-/// selection that could drift from this one (e.g. accidentally including `resume_state`).
+/// `pub(crate)` (not private): `maf.rs::get_execution`/`get_result` reuse this exact DTO to
+/// attach a MAF execution's HITL rows to its own response, rather than hand-rolling a second
+/// field selection that could drift from this one (e.g. accidentally including `resume_state`).
 pub(crate) fn to_response(row: &HitlRequest) -> Value {
     json!({
         "id": row.id,
@@ -164,12 +164,7 @@ async fn resolve(
         )
             .into_response();
     }
-    let answer_missing = payload
-        .answer
-        .as_deref()
-        .map(|a| a.trim().is_empty())
-        .unwrap_or(true);
-    if row.kind == HitlKind::InputRequired && answer_missing {
+    if row.kind == HitlKind::InputRequired && payload.answer.is_none() {
         return (
             StatusCode::BAD_REQUEST,
             "answer is required for input_required",

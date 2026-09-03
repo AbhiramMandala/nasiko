@@ -43,15 +43,16 @@ pub trait HitlStore: Send + Sync {
         &self,
         identity: &HitlIdentity,
     ) -> Result<Vec<HitlRequest>, HitlError>;
-    /// Every HITL request (pending or already resolved/rejected/expired/canceled) tied to a web
-    /// chat session, oldest first — the session-load discovery path (`chat/routes.rs::
-    /// list_messages`), an alternative to `list_pending_for` for a caller that already knows
-    /// which session it wants rather than "everything pending for this user". Filtered inside the
-    /// query by BOTH `chat_session_id` and `owner_user_id`, same rule as `list_pending_for` (§10)
-    /// — a session id alone is never sufficient to authorize the read.
-    async fn list_for_chat_session(
+    /// Every HITL request (pending or already resolved/rejected/expired/canceled) tied to a MAF
+    /// execution, oldest first — the discovery path for `GET /api/maf/execution/{id}`, so the
+    /// frontend never has to call `list_pending_for`/`GET /api/hitl/pending` to correlate a
+    /// paused step back to its `hitl_requests.id`. `owner_user_id` is required and must be the
+    /// SAME value the caller already validated against `maf_executions.user_id` — this method
+    /// does not itself know whether the caller owns the execution, it only refuses to leak a
+    /// different owner's rows for the same execution id.
+    async fn list_for_maf_execution(
         &self,
-        chat_session_id: &str,
+        maf_execution_id: Uuid,
         owner_user_id: Uuid,
     ) -> Result<Vec<HitlRequest>, HitlError>;
     /// The exact `UPDATE ... WHERE status = 'pending' RETURNING *` from §5. `status` is the
@@ -210,12 +211,6 @@ impl PgHitlStore {
 
     /// Re-fetch the pending row a unique-violation on `create` must have collided with — either
     /// the `uq_hitl_pending_per_task` or `uq_hitl_pending_per_tool_call` index (§5).
-    ///
-    /// The non-`McpTool` branch is scoped by `owner_user_id`/`agent_id` in addition to
-    /// `task_id`, matching `uq_hitl_pending_per_task` (0011_hitl_task_id_scope.sql) — `task_id`
-    /// is populated from agent-controlled A2A response data, not a Nasiko-minted id, so it must
-    /// never be trusted alone as a database-wide key: without this scoping, a non-random or
-    /// malicious agent's `taskId` could collide two different users' pauses onto the same row.
     async fn find_existing_pending(
         &self,
         req: &NewHitlRequest,
@@ -233,15 +228,10 @@ impl PgHitlStore {
             .fetch_optional(&self.pool)
             .await?
         } else {
-            sqlx::query_as(
-                "SELECT * FROM hitl_requests
-                 WHERE status = 'pending' AND owner_user_id = $1 AND agent_id = $2 AND task_id = $3",
-            )
-            .bind(req.owner_user_id)
-            .bind(req.agent_id)
-            .bind(&req.task_id)
-            .fetch_optional(&self.pool)
-            .await?
+            sqlx::query_as("SELECT * FROM hitl_requests WHERE status = 'pending' AND task_id = $1")
+                .bind(&req.task_id)
+                .fetch_optional(&self.pool)
+                .await?
         };
         row.map(HitlRequest::try_from).transpose()
     }
@@ -321,15 +311,15 @@ impl HitlStore for PgHitlStore {
         rows.into_iter().map(HitlRequest::try_from).collect()
     }
 
-    async fn list_for_chat_session(
+    async fn list_for_maf_execution(
         &self,
-        chat_session_id: &str,
+        maf_execution_id: Uuid,
         owner_user_id: Uuid,
     ) -> Result<Vec<HitlRequest>, HitlError> {
         let rows: Vec<HitlRequestRow> = sqlx::query_as(
-            "SELECT * FROM hitl_requests WHERE chat_session_id = $1 AND owner_user_id = $2 ORDER BY created_at",
+            "SELECT * FROM hitl_requests WHERE maf_execution_id = $1 AND owner_user_id = $2 ORDER BY created_at",
         )
-        .bind(chat_session_id)
+        .bind(maf_execution_id)
         .bind(owner_user_id)
         .fetch_all(&self.pool)
         .await?;
