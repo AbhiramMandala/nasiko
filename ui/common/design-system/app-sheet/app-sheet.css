@@ -38,6 +38,10 @@
     overflow: hidden;
   }
 
+  /* `display: flex` above would otherwise override the UA's
+     `dialog:not([open]) { display: none }` and paint a closed sheet. */
+  .app-sheet:not([open]) { display: none; }
+
   .app-sheet[open] {
     animation: sheet-in-right var(--transition-slow);
   }

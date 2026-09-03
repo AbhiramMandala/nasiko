@@ -62,7 +62,10 @@ export class AppAlert extends HTMLElement {
   dismiss() {
     if (this.#dismissing) return;
     this.#dismissing = true;
+    let finished = false;
     const finish = () => {
+      if (finished) return;
+      finished = true;
       const ev = new CustomEvent('alert-dismiss', { bubbles: true, cancelable: true });
       const keep = !this.dispatchEvent(ev);
       if (!keep) this.remove();
@@ -72,7 +75,10 @@ export class AppAlert extends HTMLElement {
     if (matchMedia('(prefers-reduced-motion: reduce)').matches) return finish();
     this.style.setProperty('--alert-h', `${this.offsetHeight}px`);
     this.classList.add('is-leaving');
+    // animationend is the normal path; the timer guarantees the alert goes
+    // even if the animation never runs (hidden ancestor, throttled tab).
     this.addEventListener('animationend', finish, { once: true });
+    setTimeout(finish, 400);
   }
 
   render() {
