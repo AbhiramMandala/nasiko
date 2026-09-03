@@ -22,11 +22,13 @@ async fn pool() -> PgPool {
     // necessarily reset between invocations; a leftover row from an earlier run (e.g. an
     // unclaimed `resolved` row from a previous `stale_lease_is_reclaimable` run) would otherwise
     // outrank a fresh test's own fixture in `claim_for_resume`'s `ORDER BY resolved_at` and make
-    // the test flaky. This table belongs entirely to this crate, so truncating it here is safe.
-    sqlx::query("TRUNCATE hitl_requests")
+    // the test flaky. Both tables belong entirely to this crate (`mcp_session_tool_grants`
+    // foreign-keys onto `hitl_requests`, so a bare `TRUNCATE hitl_requests` fails without it),
+    // so truncating both here is safe.
+    sqlx::query("TRUNCATE mcp_session_tool_grants, hitl_requests")
         .execute(&pool)
         .await
-        .expect("truncate hitl_requests before the suite runs");
+        .expect("truncate hitl_requests/mcp_session_tool_grants before the suite runs");
     pool
 }
 
@@ -786,5 +788,112 @@ async fn record_auth_start_is_a_noop_once_already_resolved() {
         after.human_response.unwrap()["auth_outcome"],
         json!("confirmed"),
         "the earlier confirm's human_response must be untouched"
+    );
+}
+
+/// A `direct_chat` row that only mirrors a still-pending `mcp_tool` row (the dual-origin
+/// scenario: an agent maps MCP's `ask_required` onto the A2A `AUTH_REQUIRED` task state) must
+/// never appear in `list_pending_for` — resolving it directly triggers a real but premature
+/// resume without granting the actual MCP permission, so it must not be offered as its own
+/// actionable item. The linked `mcp_tool` row is the one that does real work and must stay
+/// visible.
+#[tokio::test]
+#[ignore = "requires PostgreSQL (DATABASE_URL)"]
+async fn list_pending_hides_a_direct_chat_mirror_of_a_still_pending_mcp_tool_row() {
+    let pool = pool().await;
+    let store = PgHitlStore::new(pool.clone());
+    let owner = fixture_user(&pool).await;
+    let agent = fixture_agent(&pool, owner).await;
+
+    let mcp_row = store
+        .create(NewHitlRequest::mcp_tool(
+            agent,
+            owner,
+            format!("ctx-{}", Uuid::new_v4()),
+            Uuid::new_v4(),
+            "some_tool",
+            None,
+            json!({"tool_name": "some_tool"}),
+        ))
+        .await
+        .unwrap();
+    let mirror_row = store
+        .create(NewHitlRequest::direct_chat(
+            HitlKind::AuthRequired,
+            agent,
+            owner,
+            format!("task-{}", Uuid::new_v4()),
+            format!("ctx-{}", Uuid::new_v4()),
+            json!({
+                "message": "Tool(s) require user approval for this agent.",
+                "metadata": {"hitl_request_id": mcp_row.id.to_string()},
+            }),
+        ))
+        .await
+        .unwrap();
+
+    let identity = HitlIdentity {
+        user_id: owner,
+        is_superuser: false,
+    };
+    let visible = store.list_pending_for(&identity).await.unwrap();
+    assert!(
+        visible.iter().any(|r| r.id == mcp_row.id),
+        "the real mcp_tool row must still be listed"
+    );
+    assert!(
+        visible.iter().all(|r| r.id != mirror_row.id),
+        "the direct_chat mirror must not be listed while its linked mcp_tool row is pending"
+    );
+
+    // Once the real row stops being pending (resolved here directly, bypassing
+    // `auto_resolve_linked_direct_chat_row`, to isolate the list filter itself), the mirror
+    // is no longer hidden — it's a genuinely orphaned row a human must be able to see and act
+    // on, e.g. if the linkage resolve step ever failed.
+    store
+        .resolve(mcp_row.id, json!({}), owner, HitlStatus::Resolved)
+        .await
+        .unwrap();
+    let visible_after = store.list_pending_for(&identity).await.unwrap();
+    assert!(
+        visible_after.iter().any(|r| r.id == mirror_row.id),
+        "an orphaned mirror (linked row no longer pending) must become visible again"
+    );
+}
+
+/// A malformed or unrelated `hitl_request_id` in a `direct_chat` row's metadata (any agent may
+/// put arbitrary metadata there) must not break the `::uuid` cast the filter relies on — the
+/// row simply isn't treated as a mirror, and the listing must not error.
+#[tokio::test]
+#[ignore = "requires PostgreSQL (DATABASE_URL)"]
+async fn list_pending_is_unaffected_by_a_malformed_hitl_request_id() {
+    let pool = pool().await;
+    let store = PgHitlStore::new(pool.clone());
+    let owner = fixture_user(&pool).await;
+    let agent = fixture_agent(&pool, owner).await;
+
+    let row = store
+        .create(NewHitlRequest::direct_chat(
+            HitlKind::AuthRequired,
+            agent,
+            owner,
+            format!("task-{}", Uuid::new_v4()),
+            format!("ctx-{}", Uuid::new_v4()),
+            json!({
+                "message": "some other agent's pause, unrelated to MCP",
+                "metadata": {"hitl_request_id": "not-a-uuid"},
+            }),
+        ))
+        .await
+        .unwrap();
+
+    let identity = HitlIdentity {
+        user_id: owner,
+        is_superuser: false,
+    };
+    let visible = store.list_pending_for(&identity).await.unwrap();
+    assert!(
+        visible.iter().any(|r| r.id == row.id),
+        "a row with a malformed hitl_request_id must still list normally, not error out"
     );
 }

@@ -220,7 +220,17 @@ pub async fn a2a_dispatch_handler(
         if !crate::acl::can_access_agent(&state, &claims, agent.id).await {
             return Err(A2aDispatchError::AgentNotFound(target.to_string()));
         }
-        agent_stream(&state, agent, &query, &task_id, &context_id, user_id, &[]).await
+        agent_stream(
+            &state,
+            agent,
+            &query,
+            &task_id,
+            &context_id,
+            user_id,
+            &[],
+            session_id,
+        )
+        .await
     }
 }
 
@@ -378,16 +388,11 @@ async fn orchestrator_stream(
     // Carry the A2A context_id so the LLM gateway keys its decision cache on the
     // conversation, not this turn's trace id — mirrors the direct-agent proxy
     // (`agent_proxy.rs`). `derive_boundary_signals` reads `metadata->>'context_id'`.
-    //
-    // Re-opens on conflict for the same reason as the proxy path: a repeat
-    // request under one traceparent must not inherit the `completed` status the
-    // previous one left, or strict attribution denies the agent's LLM calls.
     let flow_metadata = serde_json::json!({ "context_id": context_id });
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, 'orchestrator', $3, 'running', $4)
-           ON CONFLICT (flow_id) DO UPDATE
-              SET status = 'running', completed_at = NULL"#,
+           ON CONFLICT (flow_id) DO NOTHING"#,
     )
     .bind(&flow_id)
     .bind(user_id)
@@ -434,12 +439,18 @@ async fn orchestrator_stream(
     let a2a_client = nasiko_react_agent::A2aClient::new()
         .with_headers(vec![("traceparent".to_string(), traceparent)]);
 
-    // Each agent the orchestrator calls authenticates to /api/mcp with its own
-    // deploy-time MCP_GATEWAY_TOKEN; the user binding rides the forwarded
-    // traceparent + the flow_participants record `CpCallGuard` writes per leg.
     let mut orchestrator = Orchestrator::new(config, RegistrySource::Static(agents))
         .with_a2a_client(a2a_client)
         .with_guard(guard);
+    // Each agent the orchestrator calls gets its own MCP delegation token
+    // minted per-call (see `A2aTool`) — best-effort, omitted if JWT_SECRET
+    // is unset rather than failing the whole chat/orchestration request.
+    if let Ok(jwt_secret) = std::env::var("JWT_SECRET") {
+        orchestrator = orchestrator.with_delegation(nasiko_react_agent::DelegationContext {
+            user_id: user_id.to_string(),
+            jwt_secret,
+        });
+    }
     orchestrator
         .init()
         .await
@@ -474,13 +485,6 @@ async fn orchestrator_stream(
         }
 
         let mut content_started = false;
-        // A `Usage` event carries no agent reference (it's the orchestrator's
-        // own reasoning-LLM call, evidence: react_loop.rs emits `Usage`
-        // immediately before the `ToolCall` it produces, same turn) — held
-        // here so the *next* event can attach the selected agent's real id
-        // before the DB insert, giving `usage/by-agent` real attribution
-        // instead of every orchestrator-tracked row being agent_id NULL.
-        let mut pending_usage: Option<(u64, u64, String, bool)> = None;
 
         loop {
             tokio::select! {
@@ -494,39 +498,6 @@ async fn orchestrator_stream(
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
                         OrchestratorEvent::ToolCall { agent, message, turn } => {
-                            // This ToolCall is the direct result of the reasoning
-                            // turn `pending_usage` was reported for — attach the
-                            // agent it resolved to before inserting.
-                            if let Some((it, ot, m, est)) = pending_usage.take() {
-                                let tracker = usage_tracker.clone();
-                                let uid = user_id;
-                                let fid = flow_id_cleanup.clone();
-                                let db2 = db.clone();
-                                let agent_name = agent.clone();
-                                tokio::spawn(async move {
-                                    let agent_uuid: Option<Uuid> = sqlx::query_scalar(
-                                        "SELECT id FROM agents WHERE name = $1 AND status = 'running'",
-                                    )
-                                    .bind(&agent_name)
-                                    .fetch_optional(&db2)
-                                    .await
-                                    .ok()
-                                    .flatten();
-
-                                    let mut builder = TokenUsageBuilder::new(uid, "orchestrator", "openai", &m)
-                                        .tokens(it as i32, ot as i32)
-                                        .session_id(&fid)
-                                        .streaming(false)
-                                        .metadata(json!({"key_source": "platform", "estimated": est}));
-                                    if let Some(aid) = agent_uuid {
-                                        builder = builder.agent_id(aid);
-                                    }
-                                    if let Err(e) = tracker.track_tokens(builder.build()).await {
-                                        tracing::warn!(error = %e, "failed to track orchestrator token usage (tool-call turn)");
-                                    }
-                                });
-                            }
-
                             let _ = sqlx::query(
                                 r#"INSERT INTO flow_steps (flow_id, step_order, depth, agent_name, caller_agent_name, input_summary, status, created_at)
                                    VALUES ($1, $2, 1, $3, 'orchestrator', $4, 'running', now())"#,
@@ -602,29 +573,30 @@ async fn orchestrator_stream(
                         OrchestratorEvent::Usage { input_tokens, output_tokens, model, estimated } => {
                             turn_usage.add(input_tokens, output_tokens, &model, estimated);
 
-                            // Flush a previous turn's usage that never got a
-                            // following ToolCall (e.g. a final synthesis-only
-                            // turn that just answers directly) — unattributed,
-                            // same as before this change.
-                            if let Some((it, ot, m, est)) = pending_usage.take() {
-                                let tracker = usage_tracker.clone();
-                                let uid = user_id;
-                                let fid = flow_id_cleanup.clone();
-                                tokio::spawn(async move {
-                                    let usage = TokenUsageBuilder::new(uid, "orchestrator", "openai", &m)
-                                        .tokens(it as i32, ot as i32)
-                                        .session_id(&fid)
-                                        .streaming(false)
-                                        .metadata(json!({"key_source": "platform", "estimated": est}))
-                                        .build();
-                                    if let Err(e) = tracker.track_tokens(usage).await {
-                                        tracing::warn!(error = %e, "failed to track orchestrator token usage");
-                                    }
-                                });
-                            }
-                            // Hold this turn's usage — the ToolCall arm above
-                            // attaches the real agent_id if one follows.
-                            pending_usage = Some((input_tokens, output_tokens, model.clone(), estimated));
+                            // Fire-and-forget: track token usage in DB
+                            let tracker = usage_tracker.clone();
+                            let uid = user_id;
+                            let fid = flow_id_cleanup.clone();
+                            let m = model.clone();
+                            tokio::spawn(async move {
+                                let usage = TokenUsageBuilder::new(
+                                    uid,
+                                    "orchestrator",
+                                    "openai",
+                                    &m,
+                                )
+                                .tokens(input_tokens as i32, output_tokens as i32)
+                                .session_id(&fid)
+                                .streaming(false)
+                                .metadata(json!({
+                                    "key_source": "platform",
+                                    "estimated": estimated,
+                                }))
+                                .build();
+                                if let Err(e) = tracker.track_tokens(usage).await {
+                                    tracing::warn!(error = %e, "failed to track orchestrator token usage");
+                                }
+                            });
 
                             // Also record in OTel GenAI metrics
                             genai_metrics.record_tokens(
@@ -715,21 +687,6 @@ async fn orchestrator_stream(
             }
         }
 
-        // Stream ended (Done/Error/channel-closed) with a still-unflushed
-        // final turn's usage (no ToolCall ever followed it) — flush it here,
-        // unattributed, so it's never silently dropped.
-        if let Some((it, ot, m, est)) = pending_usage.take() {
-            let usage = TokenUsageBuilder::new(user_id, "orchestrator", "openai", &m)
-                .tokens(it as i32, ot as i32)
-                .session_id(&flow_id_cleanup)
-                .streaming(false)
-                .metadata(json!({"key_source": "platform", "estimated": est}))
-                .build();
-            if let Err(e) = usage_tracker.track_tokens(usage).await {
-                tracing::warn!(error = %e, "failed to track orchestrator token usage (final flush)");
-            }
-        }
-
         let _ = sqlx::query(
             r#"UPDATE flows SET status = 'completed',
                duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
@@ -753,7 +710,7 @@ async fn orchestrator_stream(
 /// before using it — this function does no access control of its own.
 async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDispatchError> {
     sqlx::query_as::<_, AgentRow>(
-        "SELECT id, name, status, writable FROM agents WHERE (id::text = $1 OR name = $1) AND status = 'running'",
+        "SELECT id, name, status FROM agents WHERE (id::text = $1 OR name = $1) AND status = 'running'",
     )
     .bind(target)
     .fetch_optional(&state.db)
@@ -771,6 +728,16 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
     file_parts: &[nasiko_types::a2a::Part],
+    // The web UI's chat session id (metadata.session_id) — `None` for CLI/TUI callers that
+    // address history by contextId alone. Threaded through purely so a HITL pause created on
+    // this turn can be tagged with `chat_session_id`, letting `chat/routes.rs::list_messages`
+    // surface it on session load without a separate discovery call. Not used for anything else
+    // in this function — history lookup already happened in the caller.
+    //
+    // Owned, not `&str`: both pause branches below build an `async_stream::stream! {}` that
+    // `Sse::new(...).into_response()` requires to be `'static` — a caller-borrowed `&str`
+    // cannot satisfy that, only a value this function owns and moves into the generator can.
+    session_id: Option<String>,
 ) -> Result<Response, A2aDispatchError> {
     let endpoint = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
         .await
@@ -799,13 +766,10 @@ async fn agent_stream(
     let flow_id = flow_ctx.flow_id.clone();
     state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
 
-    // Re-opens on conflict — see the orchestrator branch above: a repeat request
-    // under one traceparent must not inherit the previous one's `completed`.
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, $3, $4, $5, 'running', '{}'::jsonb)
-           ON CONFLICT (flow_id) DO UPDATE
-              SET status = 'running', completed_at = NULL"#,
+           ON CONFLICT (flow_id) DO NOTHING"#,
     )
     .bind(&flow_id)
     .bind(user_id)
@@ -814,10 +778,6 @@ async fn agent_stream(
     .bind(query)
     .execute(&state.db)
     .await;
-    // Participant record — load-bearing for MCP gateway / LLM router auth
-    // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4); same synchronous pre-forward write
-    // as the flows row above.
-    crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
 
     // Index the session ↔ trace mapping, exactly as `orchestrator_stream` and
     // `agent_proxy.rs` already do. Without it this branch — every "chat with
@@ -850,15 +810,27 @@ async fn agent_stream(
         nasiko_types::a2a::build_stream_request_with_parts(query, Some(context_id), file_parts)
     };
 
-    // No per-request MCP credential: the agent authenticates to /api/mcp with
-    // its own deploy-time MCP_GATEWAY_TOKEN; the forwarded traceparent + the
-    // flow_participants record written above carry the user binding.
     let build_agent_req = || {
-        state
+        let mut req = state
             .http_client
             .post(&endpoint)
             .header("A2A-Version", "1.0")
-            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
+            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx));
+
+        // Mint a delegation token so this agent can call back into `/api/mcp`
+        // proving "I am agent.id, acting for user_id" — mirrors `agent_proxy.rs`.
+        // Best-effort: if JWT_SECRET is unset, MCP delegation is simply
+        // unavailable to this agent rather than failing the whole chat call.
+        if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
+            && let Ok(delegation_token) = nasiko_auth::jwt::mint_delegation_token(
+                &jwt_secret,
+                &user_id.to_string(),
+                &agent.id.to_string(),
+            )
+        {
+            req = req.header("x-nasiko-agent-token", delegation_token);
+        }
+        req
     };
 
     let response = build_agent_req()
@@ -889,6 +861,8 @@ async fn agent_stream(
     let mut flow_rx = state.flow_events.subscribe(&flow_id).await;
     let db = state.db.clone();
     let observability = state.observability.clone();
+    let hitl_store = state.hitl_store.clone();
+    let agent_id_for_hitl = agent.id;
     let agent_start = Instant::now();
 
     if content_type.contains("text/event-stream") {
@@ -914,6 +888,8 @@ async fn agent_stream(
             let mut pinned = std::pin::pin!(byte_stream);
             let mut agent_done = false;
             let mut agent_error: Option<String> = None;
+            let mut final_disposition = a2a::StreamDisposition::Continue;
+            let mut pause_payload: Option<String> = None;
 
             loop {
                 if agent_done { break; }
@@ -946,9 +922,14 @@ async fn agent_stream(
                                 let normalized = normalize_agent_event(data, &task_id, &context_id);
                                 yield Ok(Event::default().data(normalized));
                                 // The python a2a-sdk never closes its SSE stream;
-                                // end the exchange on the task's terminal event.
-                                if is_terminal_event(data) {
+                                // end the exchange on the task's terminal (or paused) event.
+                                let disposition = a2a::classify_stream_disposition(data);
+                                if disposition != a2a::StreamDisposition::Continue {
                                     agent_done = true;
+                                    final_disposition = disposition;
+                                    if disposition == a2a::StreamDisposition::Paused {
+                                        pause_payload = Some(data.to_string());
+                                    }
                                     break;
                                 }
                             }
@@ -963,35 +944,74 @@ async fn agent_stream(
                 }
             }
 
-            // Terminal usage summary: duration always; tokens/cost only when the
-            // agent's calls were platform-paid through the LLM gateway.
-            {
-                let summary = super::usage_meta::summarize_flow_usage(
+            if final_disposition == a2a::StreamDisposition::Paused {
+                // §8 (HITL plan): a Paused disposition is not "the task is done" — persist the
+                // pause and stop relaying, without the completed/failed tail below.
+                //
+                // Ordering is the point here: the agent's own input-required/auth-required event
+                // was already yielded above, inside the relay loop, before we knew whether a
+                // `hitl_requests` row would even exist. This second, synthetic frame is yielded
+                // ONLY after `persist_direct_chat_pause` returns `Ok` — i.e. only once the row is
+                // durably committed and its id is known — so the frontend can never observe a
+                // HITL id that doesn't yet exist in Postgres.
+                let pause_data = pause_payload.as_deref().unwrap_or("{}");
+                match persist_direct_chat_pause(
+                    &hitl_store,
                     &db,
-                    observability.as_ref(),
+                    nasiko_hitl::HitlOrigin::DirectChat,
+                    agent_id_for_hitl,
+                    user_id,
+                    &context_id,
+                    &task_id,
+                    session_id.as_deref(),
                     &flow_id_cleanup,
-                    &super::usage_meta::TurnUsage::default(),
-                    agent_start.elapsed().as_millis() as i64,
+                    pause_data,
                 )
-                .await;
-                let usage_msg = a2a::agent_message(&context_id, &task_id,
-                    a2a::data_part(summary.to_data_part(&flow_id_cleanup)));
-                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
-            }
-
-            if let Some(err) = agent_error {
-                yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, &err))));
+                .await
+                {
+                    Ok(row) => {
+                        yield Ok(build_hitl_stream_event(&hitl_store, &task_id, &context_id, &row).await);
+                    }
+                    Err(error_event) => {
+                        yield Ok(error_event);
+                    }
+                }
+                // Same cleanup every other terminal branch of this stream performs — a pause is
+                // a terminal state for THIS flow_id (resume mints its own, see `hitl/mod.rs`), so
+                // leaving the entry behind would orphan its broadcast::Sender in the process-wide
+                // FlowEventBus map for the life of the server.
+                flow_events.remove(&flow_id_cleanup).await;
             } else {
-                yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
-            }
+                // Terminal usage summary: duration always; tokens/cost only when the
+                // agent's calls were platform-paid through the LLM gateway.
+                {
+                    let summary = super::usage_meta::summarize_flow_usage(
+                        &db,
+                        observability.as_ref(),
+                        &flow_id_cleanup,
+                        &super::usage_meta::TurnUsage::default(),
+                        agent_start.elapsed().as_millis() as i64,
+                    )
+                    .await;
+                    let usage_msg = a2a::agent_message(&context_id, &task_id,
+                        a2a::data_part(summary.to_data_part(&flow_id_cleanup)));
+                    yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
+                }
 
-            let _ = sqlx::query(
-                r#"UPDATE flows SET status = 'completed',
-                   duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
-                   completed_at = now()
-                   WHERE flow_id = $1"#,
-            ).bind(&flow_id_cleanup).execute(&db).await;
-            flow_events.remove(&flow_id_cleanup).await;
+                if let Some(err) = agent_error {
+                    yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, &err))));
+                } else {
+                    yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
+                }
+
+                let _ = sqlx::query(
+                    r#"UPDATE flows SET status = 'completed',
+                       duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
+                       completed_at = now()
+                       WHERE flow_id = $1"#,
+                ).bind(&flow_id_cleanup).execute(&db).await;
+                flow_events.remove(&flow_id_cleanup).await;
+            }
         };
 
         Ok(Sse::new(stream).into_response())
@@ -1015,6 +1035,63 @@ async fn agent_stream(
                 .json()
                 .await
                 .map_err(|e| A2aDispatchError::Internal(format!("invalid agent JSON: {e}")))?;
+        }
+
+        // A non-streaming reply can pause too (an agent that only implements
+        // `message/send`, or whose `message/stream` fell back here) — §8 applies here just as
+        // much as it does to the streaming branch; without this check the pause was silently
+        // flattened into `extract_text`'s ordinary-reply fallback and lost entirely.
+        let raw_body = resp_body.to_string();
+        if a2a::classify_stream_disposition(&raw_body) == a2a::StreamDisposition::Paused {
+            let question_text = build_pause_question(&raw_body)["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let event = match pause_kind(&raw_body) {
+                nasiko_hitl::HitlKind::AuthRequired => {
+                    a2a::auth_required(&task_id, &context_id, &question_text)
+                }
+                _ => a2a::input_required(&task_id, &context_id, &question_text),
+            };
+            let flow_id_cleanup = flow_id.clone();
+            let pause_result = persist_direct_chat_pause(
+                &hitl_store,
+                &db,
+                nasiko_hitl::HitlOrigin::DirectChat,
+                agent_id_for_hitl,
+                user_id,
+                &context_id,
+                &task_id,
+                session_id.as_deref(),
+                &flow_id_cleanup,
+                &raw_body,
+            )
+            .await;
+            flow_events.remove(&flow_id_cleanup).await;
+
+            // Same ordering as the streaming branch: the agent's own status event (`event`,
+            // built above) is queued first, but the synthetic HITL metadata frame — the one
+            // that actually carries `hitl_requests.id` — is only ever queued once persistence
+            // has returned `Ok`, never before.
+            let hitl_event = match pause_result.as_ref() {
+                Ok(row) => {
+                    Some(build_hitl_stream_event(&hitl_store, &task_id, &context_id, row).await)
+                }
+                Err(_) => None,
+            };
+            let error_event = pause_result.err();
+
+            let stream = async_stream::stream! {
+                yield Ok::<_, Infallible>(to_sse(a2a::status_event(a2a::working(&task_id, &context_id))));
+                yield Ok(to_sse(a2a::status_event(event)));
+                if let Some(hitl_event) = hitl_event {
+                    yield Ok(hitl_event);
+                }
+                if let Some(error_event) = error_event {
+                    yield Ok(error_event);
+                }
+            };
+            return Ok(Sse::new(stream).into_response());
         }
 
         let text = nasiko_types::a2a::extract_text(resp_body.get("result").unwrap_or(&resp_body))
@@ -1337,7 +1414,7 @@ async fn ensure_orchestrator_chat_session(
     .await;
 }
 
-async fn resolve_endpoint(
+pub(crate) async fn resolve_endpoint(
     state: &AppState,
     agent_id: &str,
     agent_name: &str,
@@ -1426,37 +1503,251 @@ fn extract_failure_message(data: &str) -> Option<String> {
     if text.is_empty() { None } else { Some(text) }
 }
 
-/// True when this SSE event is a terminal task status (completed/failed/
-/// canceled/rejected) or a final status-update — the python a2a-sdk never
-/// closes its SSE stream, so the proxy must end the exchange itself.
-fn is_terminal_event(data: &str) -> bool {
+/// Extract the *agent's own* `taskId` from a `Paused` SSE payload — never the caller's locally
+/// minted `task_id` param `agent_stream()` uses for its own outbound envelope. Real a2a-sdk
+/// agents (e.g. python's) pass their real task/context ids through verbatim in the raw forwarded
+/// event (`normalize_agent_event` only rewrites the legacy `"kind"`-tagged dialect; the common
+/// JSONRPC-wrapped `{"result": {"statusUpdate": {"taskId": ..., ...}}}` shape is passed through
+/// untouched). Resume must target *this* id — the one the agent's own task store actually holds —
+/// not Nasiko's synthetic per-request id, or the agent will never recognize the follow-up as a
+/// continuation. Falls back to the caller's `task_id` only if the payload carries none (e.g. a
+/// bare `message` reply with no task wrapper at all).
+pub(crate) fn paused_task_id(data: &str, fallback: &str) -> String {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
-        return false;
+        return fallback.to_string();
     };
     let result = parsed.get("result").unwrap_or(&parsed);
     let status_update = result
         .get("statusUpdate")
         .or_else(|| parsed.get("statusUpdate"))
+        .or_else(|| result.get("task"))
         .unwrap_or(result);
-    if let Some(state) = status_update
+
+    status_update
+        .get("taskId")
+        // Task-wrapped dialect: the task object's own id field is `id`, not `taskId` — already
+        // covered by this existing fallback, unchanged.
+        .or_else(|| result.pointer("/task/id"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Derive a `hitl_requests.kind` from a `Paused`-classified SSE payload — `auth_required` if the
+/// wire state names it, `input_required` otherwise (the only two kinds `classify_stream_disposition`
+/// ever maps to `Paused`).
+pub(crate) fn pause_kind(data: &str) -> nasiko_hitl::HitlKind {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
+        return nasiko_hitl::HitlKind::InputRequired;
+    };
+    let result = parsed.get("result").unwrap_or(&parsed);
+    // See `classify_stream_disposition`'s doc comment for why `.task` is needed here too.
+    let status_update = result
+        .get("statusUpdate")
+        .or_else(|| parsed.get("statusUpdate"))
+        .or_else(|| result.get("task"))
+        .unwrap_or(result);
+    let state = status_update
         .pointer("/status/state")
         .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if state.contains("auth_required") || state.contains("auth-required") {
+        nasiko_hitl::HitlKind::AuthRequired
+    } else {
+        nasiko_hitl::HitlKind::InputRequired
+    }
+}
+
+/// Well-known `metadata` keys the External Agent Contract documents (`auth_url`/`provider` for
+/// `auth_required`, `expected_input` for `input_required`, §4) — hoisted onto `question` itself
+/// so a client can read `question.auth_url` directly instead of reaching into an opaque
+/// `metadata` blob, matching §4's documented `question` shape exactly.
+const WELL_KNOWN_QUESTION_KEYS: &[&str] = &["auth_url", "provider", "expected_input"];
+
+/// Build the `hitl_requests.question` JSONB (§4's shape) from a `Paused` SSE payload: the
+/// message text (same parts-joining logic as [`extract_failure_message`]), plus whatever
+/// `metadata` the agent attached (the External Agent Contract's optional `auth_url`/`provider`/
+/// `expected_input`). Well-known keys are hoisted to the top level (§4's shape); the full
+/// `metadata` blob is also kept verbatim underneath for anything else the agent attached, since
+/// Nasiko does not know a given agent's metadata shape in advance beyond those three keys.
+pub(crate) fn build_pause_question(data: &str) -> serde_json::Value {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
+        return json!({ "message": "" });
+    };
+    let result = parsed.get("result").unwrap_or(&parsed);
+    // See `classify_stream_disposition`'s doc comment for why `.task` is needed here too.
+    let status_update = result
+        .get("statusUpdate")
+        .or_else(|| parsed.get("statusUpdate"))
+        .or_else(|| result.get("task"))
+        .unwrap_or(result);
+
+    let message = status_update
+        .pointer("/status/message/parts")
+        .and_then(|p| p.as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("text")?.as_str())
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+
+    let metadata = status_update
+        .pointer("/status/message/metadata")
+        .or_else(|| status_update.get("metadata"))
+        .cloned();
+
+    let mut question = json!({ "message": message });
+    if let Some(metadata) = metadata
+        && let Some(obj) = question.as_object_mut()
     {
-        let state = state.to_ascii_lowercase();
-        if state.contains("completed")
-            || state.contains("failed")
-            || state.contains("canceled")
-            || state.contains("cancelled")
-            || state.contains("rejected")
-        {
-            return true;
+        if let Some(metadata_obj) = metadata.as_object() {
+            for key in WELL_KNOWN_QUESTION_KEYS {
+                if let Some(value) = metadata_obj.get(*key) {
+                    obj.insert((*key).to_string(), value.clone());
+                }
+            }
+        }
+        obj.insert("metadata".to_string(), metadata);
+    }
+    question
+}
+
+/// Persists a HITL pause from a `Paused`-classified payload for either direct-chat origin —
+/// shared by `agent_stream()`'s streaming and non-streaming branches (`origin = DirectChat`)
+/// and `agent_proxy.rs`'s streaming and non-streaming branches (`origin = AgentProxy`), which
+/// previously reimplemented this inline and had drifted (the `agent_proxy.rs` copy never
+/// updated the `flows` row). On a persistence failure, marks the flow `failed` and returns the
+/// SSE `error` event the caller must yield — a pause must never look like a silent success (§8:
+/// never pretend the stream closed cleanly when the pause itself might be lost).
+///
+/// On success, marks the flow `paused` and returns the created row — the caller (both pause
+/// branches of `agent_stream()`) uses `row.id`/`row.kind`/`row.question` to build the
+/// frontend-facing HITL stream event (`build_hitl_stream_event`) from the SAME row the database
+/// just durably committed, never from the pre-persistence `pause_data`. This is the ordering fix:
+/// the id cannot exist, and therefore cannot be handed to the caller, before `hitl_store.create`
+/// has returned `Ok`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn persist_direct_chat_pause(
+    hitl_store: &std::sync::Arc<dyn nasiko_hitl::HitlStore>,
+    db: &sqlx::PgPool,
+    origin: nasiko_hitl::HitlOrigin,
+    agent_id_for_hitl: Uuid,
+    user_id: Uuid,
+    context_id: &str,
+    task_id: &str,
+    chat_session_id: Option<&str>,
+    flow_id: &str,
+    pause_data: &str,
+) -> Result<nasiko_hitl::HitlRequest, Event> {
+    let question = build_pause_question(pause_data);
+    let kind = pause_kind(pause_data);
+    // The agent's OWN task id, not Nasiko's synthetic per-request `task_id` — see
+    // `paused_task_id`'s doc comment. Resume must address the task the agent's own store holds.
+    let real_task_id = paused_task_id(pause_data, task_id);
+    // `hitl_requests.chat_session_id` carries a hard FK to `chat_sessions(session_id)` — unlike
+    // `context_id`/`task_id`, which are free-form strings, a bogus value here doesn't just fail
+    // to correlate, it fails the ENTIRE insert (confirmed live: `hitl_requests_chat_session_id_fkey`
+    // violation). The ordinary web-UI path always creates the `chat_sessions` row via
+    // `POST /chat/sessions` before ever sending a turn, so this is normally a no-op existence
+    // check — but a pause must never be lost over a stale/foreign session id some other caller
+    // supplied, so this degrades to `None` (this function's pre-existing behavior) rather than
+    // letting the whole pause fail on a FK violation the caller can't fix.
+    let chat_session_id = match chat_session_id {
+        Some(sid) => {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1)",
+            )
+            .bind(sid)
+            .fetch_one(db)
+            .await
+            .unwrap_or(false);
+            exists.then(|| sid.to_string())
+        }
+        None => None,
+    };
+    let new_row = match origin {
+        nasiko_hitl::HitlOrigin::AgentProxy => nasiko_hitl::NewHitlRequest::agent_proxy(
+            kind,
+            agent_id_for_hitl,
+            user_id,
+            real_task_id,
+            context_id.to_string(),
+            question,
+        ),
+        _ => nasiko_hitl::NewHitlRequest::direct_chat(
+            kind,
+            agent_id_for_hitl,
+            user_id,
+            real_task_id,
+            context_id.to_string(),
+            question,
+        )
+        .with_chat_session_id(chat_session_id),
+    };
+
+    match hitl_store.create(new_row).await {
+        Ok(row) => {
+            let _ = sqlx::query("UPDATE flows SET status = 'paused' WHERE flow_id = $1")
+                .bind(flow_id)
+                .execute(db)
+                .await;
+            Ok(row)
+        }
+        Err(e) => {
+            let _ = sqlx::query(
+                "UPDATE flows SET status = 'failed', error_message = $2 WHERE flow_id = $1",
+            )
+            .bind(flow_id)
+            .bind(e.to_string())
+            .execute(db)
+            .await;
+            Err(Event::default()
+                .event("error")
+                .data(json!({ "error": format!("failed to persist HITL pause: {e}") }).to_string()))
         }
     }
-    // 0.3 dialect: {"result": {"kind": "status-update", "final": true}}
-    result
-        .get("final")
-        .and_then(|f| f.as_bool())
-        .unwrap_or(false)
+}
+
+/// The frontend-facing HITL metadata frame — yielded on the SAME still-open Direct Chat SSE
+/// connection immediately after `persist_direct_chat_pause` returns `Ok`, i.e. after the
+/// `hitl_requests` row (and therefore its id) is durably committed. Follows the exact
+/// `agent_message`/`data_part`/`status_event` convention already used for the `trace_meta` and
+/// `usage_meta` synthetic frames in this file, rather than inventing a new SSE event type: any
+/// client already parsing those (via `handleDataParts` in `a2a-stream.js`) sees this the same way.
+/// This is a synthetic, Nasiko-originated frame layered onto the agent's own
+/// `input-required`/`auth-required` status event (already yielded earlier, unmodified) — it does
+/// not replace or alter that event.
+///
+/// `id`/`kind`/`question` go through `nasiko_hitl::resolve_display_row` first — for the ordinary
+/// case (no MCP tool block involved) this is a no-op clone of `row` itself, but when `row` is a
+/// mirror of a real `mcp_tool` row (see that function's doc comment), it substitutes the real
+/// row's identity so the frontend never shows — or lets a human resolve — the mirror's own
+/// generic placeholder. `task_id`/`context_id` in the frame are always the mirror's own
+/// (`row.task_id`/`row.context_id`), never the linked row's, since those are what ties this frame
+/// to the visible chat task.
+async fn build_hitl_stream_event(
+    hitl_store: &std::sync::Arc<dyn nasiko_hitl::HitlStore>,
+    task_id: &str,
+    context_id: &str,
+    row: &nasiko_hitl::HitlRequest,
+) -> Event {
+    let display = nasiko_hitl::resolve_display_row(hitl_store.as_ref(), row).await;
+    let data = a2a::data_part(json!({
+        "type": "hitl",
+        "id": display.id,
+        "kind": display.kind.as_str(),
+        "task_id": row.task_id,
+        "context_id": row.context_id,
+        "question": display.question,
+    }));
+    let msg = a2a::agent_message(context_id, task_id, data);
+    to_sse(a2a::status_event(a2a::working_with_message(
+        task_id, context_id, msg,
+    )))
 }
 
 fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String {
@@ -1525,10 +1816,6 @@ struct AgentRow {
     id: Uuid,
     name: String,
     status: String,
-    /// Deployed `--writable`: the agent has a persistent `/workspace`. After a
-    /// turn the server captures whatever it wrote there onto the assistant
-    /// message (see `chat::routes::capture_turn_files`), session-scoped.
-    writable: bool,
 }
 
 #[derive(Debug)]
@@ -1573,5 +1860,110 @@ impl IntoResponse for A2aDispatchError {
         }));
 
         (status, body).into_response()
+    }
+}
+
+#[cfg(test)]
+mod hitl_pause_tests {
+    use super::*;
+
+    // Real payload shape (python a2a-sdk, JSONRPC-wrapped, no "kind" tag) — confirmed live
+    // against the github-hitl-agent reference agent. `normalize_agent_event` passes this dialect
+    // through to the client verbatim, so the agent's real taskId/contextId are exactly what's
+    // visible here, distinct from whatever synthetic task_id agent_stream() minted for its own
+    // outbound envelope.
+    const REAL_PAUSE_PAYLOAD: &str = r#"{"result": {"statusUpdate": {"taskId": "51914422-4548-47af-90b8-773a5ee4bed7", "contextId": "9e110c60-185f-4c3d-b14e-a473db66ed4c", "status": {"state": "TASK_STATE_INPUT_REQUIRED", "message": {"messageId": "6d3e7f9d-dea0-499b-af76-a3d12eff55bf", "contextId": "9e110c60-185f-4c3d-b14e-a473db66ed4c", "taskId": "51914422-4548-47af-90b8-773a5ee4bed7", "role": "ROLE_AGENT", "parts": [{"text": "Which repository should I create the issue in? (reply with owner/repo, on the same task)"}]}, "timestamp": "2026-08-29T13:09:49.292552Z"}}}, "id": "100260a7-0f6a-4606-a411-3a72c0cfa21e", "jsonrpc": "2.0"}"#;
+
+    #[test]
+    fn paused_task_id_extracts_the_agents_real_task_not_the_callers_synthetic_one() {
+        let extracted = paused_task_id(REAL_PAUSE_PAYLOAD, "nasiko-synthetic-task-id");
+        assert_eq!(extracted, "51914422-4548-47af-90b8-773a5ee4bed7");
+    }
+
+    #[test]
+    fn paused_task_id_falls_back_when_the_payload_carries_no_task_id() {
+        let extracted =
+            paused_task_id(r#"{"message": {"parts": [{"text": "hi"}]}}"#, "fallback-id");
+        assert_eq!(extracted, "fallback-id");
+    }
+
+    #[test]
+    fn paused_task_id_falls_back_on_unparseable_payload() {
+        let extracted = paused_task_id("not json", "fallback-id");
+        assert_eq!(extracted, "fallback-id");
+    }
+
+    #[test]
+    fn pause_kind_reads_input_required_from_the_real_payload() {
+        assert_eq!(
+            pause_kind(REAL_PAUSE_PAYLOAD),
+            nasiko_hitl::HitlKind::InputRequired
+        );
+    }
+
+    #[test]
+    fn build_pause_question_extracts_the_message_text_from_the_real_payload() {
+        let question = build_pause_question(REAL_PAUSE_PAYLOAD);
+        assert_eq!(
+            question["message"],
+            "Which repository should I create the issue in? (reply with owner/repo, on the same task)"
+        );
+    }
+
+    const AUTH_REQUIRED_PAYLOAD: &str = r#"{"result": {"statusUpdate": {"taskId": "t1", "contextId": "c1", "status": {"state": "TASK_STATE_AUTH_REQUIRED", "message": {"parts": [{"text": "Please authorize with GitHub"}], "metadata": {"provider": "github", "auth_url": "https://github.com/login/oauth/authorize?client_id=abc"}}}}}, "id": "1", "jsonrpc": "2.0"}"#;
+
+    #[test]
+    fn build_pause_question_hoists_auth_url_and_provider_to_the_top_level() {
+        let question = build_pause_question(AUTH_REQUIRED_PAYLOAD);
+        assert_eq!(question["message"], "Please authorize with GitHub");
+        assert_eq!(question["provider"], "github");
+        assert_eq!(
+            question["auth_url"],
+            "https://github.com/login/oauth/authorize?client_id=abc"
+        );
+        // The full metadata blob is still kept underneath, unmodified.
+        assert_eq!(question["metadata"]["provider"], "github");
+    }
+
+    #[test]
+    fn pause_kind_reads_auth_required_from_the_real_payload() {
+        assert_eq!(
+            pause_kind(AUTH_REQUIRED_PAYLOAD),
+            nasiko_hitl::HitlKind::AuthRequired
+        );
+    }
+
+    // Captured live from `agent_proxy.rs`'s non-streaming branch (`SendMessage`, not
+    // `SendStreamingMessage`) against `github-hitl-agent` — a full `Task` snapshot with no
+    // `statusUpdate` wrapper at all, `status.state` sitting under `result.task` instead. Before
+    // the `.task` fallback was added to `pause_kind`/`paused_task_id`/`build_pause_question`
+    // (and `classify_stream_disposition` in `oss/types`), this exact real-world payload made a
+    // real pause through `agent_proxy.rs` silently pass through as a non-paused reply — confirmed
+    // by triggering it live and finding no `hitl_requests` row was ever created.
+    const REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD: &str = r#"{"result":{"task":{"id":"3f43589f-fbaf-4936-8cac-e074b5843302","contextId":"nonstream-proxy-test","status":{"state":"TASK_STATE_INPUT_REQUIRED","message":{"messageId":"6c334d6d-e72b-4e3d-8e25-ac1a223085b9","contextId":"nonstream-proxy-test","taskId":"3f43589f-fbaf-4936-8cac-e074b5843302","role":"ROLE_AGENT","parts":[{"text":"Which repository should I create the issue in? (reply with owner/repo, on the same task)"}]},"timestamp":"2026-09-01T03:42:34.957766Z"},"history":[{"messageId":"293C90CE-26DB-4364-895D-A4A059DDC75E","contextId":"nonstream-proxy-test","taskId":"3f43589f-fbaf-4936-8cac-e074b5843302","role":"ROLE_USER","parts":[{"text":"hitl input test"}]}]}},"id":"1","jsonrpc":"2.0"}"#;
+
+    #[test]
+    fn pause_kind_reads_input_required_from_a_task_wrapped_non_streaming_payload() {
+        assert_eq!(
+            pause_kind(REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD),
+            nasiko_hitl::HitlKind::InputRequired
+        );
+    }
+
+    #[test]
+    fn paused_task_id_extracts_the_real_id_from_a_task_wrapped_non_streaming_payload() {
+        assert_eq!(
+            paused_task_id(REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD, "fallback"),
+            "3f43589f-fbaf-4936-8cac-e074b5843302"
+        );
+    }
+
+    #[test]
+    fn build_pause_question_reads_the_message_from_a_task_wrapped_non_streaming_payload() {
+        let question = build_pause_question(REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD);
+        assert_eq!(
+            question["message"],
+            "Which repository should I create the issue in? (reply with owner/repo, on the same task)"
+        );
     }
 }
