@@ -1,0 +1,120 @@
+/*
+  app-menu — nasiko_ui NasikoPopupMenu (surface shared with app-context-menu).
+
+  Surface: INVERSE in light mode — sand/900 with constant-white ink and
+  fg-secondary as the highlight — and the elevated bg-surface in dark mode so
+  the menu reads one step lighter than the page. Padding s4, radius r8,
+  shadow-menu, min-width 10rem, max-height 220 → scrolls. Items: 32 high
+  (control/height/md), padding 0 s8, gap s8, radius r4, body/secondary 13/18,
+  icon 16; destructive items in fg-error; disabled at 50%. Divider: hairline
+  with s4 above and below.
+*/
+@scope (app-menu) {
+  :scope {
+    display: inline-block;
+  }
+}
+
+@scope (.app-menu-surface) {
+  :scope {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+    padding: var(--s-4);
+    min-width: 10rem;
+    max-width: min(20rem, calc(100vw - 2 * var(--s-8)));
+    max-height: 220px;
+    overflow-y: auto;
+    --menu-bg: light-dark(var(--sand-900), var(--bg-surface));
+    --menu-fg: light-dark(var(--fg-constant-white), var(--fg-primary));
+    --menu-hover: light-dark(var(--fg-secondary), var(--bg-surface-hover));
+    --menu-muted: light-dark(var(--sand-400), var(--fg-secondary));
+    background: var(--menu-bg);
+    color: var(--menu-fg);
+    border: var(--bw-1) solid light-dark(var(--sand-900), var(--border-primary));
+    border-radius: var(--r-8);
+    box-shadow: var(--shadow-menu);
+    z-index: var(--z-dropdown);
+    animation: menu-reveal var(--transition-fast);
+  }
+
+  :scope[hidden] { display: none; }
+
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    width: 100%;
+    min-height: var(--control-h-md);
+    padding: 0 var(--s-8);
+    border: 0;
+    border-radius: var(--r-4);
+    background: none;
+    color: inherit;
+    font-family: inherit;
+    font-size: var(--font-size-sm);
+    line-height: var(--font-body-sm-line);
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+
+    &:hover:not(:disabled),
+    &:focus-visible {
+      background: var(--menu-hover);
+      outline: none;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  .is-destructive {
+    color: var(--fg-error);
+    &:hover:not(:disabled), &:focus-visible { background: var(--bg-error); }
+  }
+
+  .menu-icon {
+    display: flex;
+    flex-shrink: 0;
+    & svg { width: var(--icon-xs); height: var(--icon-xs); }
+  }
+
+  .menu-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .menu-shortcut {
+    flex-shrink: 0;
+    margin-left: var(--s-12);
+    /* Caps on the inverse surface: keep them quiet. */
+    & kbd {
+      background: transparent;
+      border-color: var(--menu-muted);
+      color: var(--menu-muted);
+    }
+  }
+
+  .menu-divider {
+    height: var(--bw-1);
+    margin: var(--s-4) 0;
+    background: light-dark(var(--sand-700), var(--border-primary));
+  }
+
+  @keyframes menu-reveal {
+    from { opacity: 0; transform: translateY(calc(-1 * var(--s-4))); }
+  }
+
+  :scope[data-side="top"] { animation-name: menu-reveal-up; }
+  @keyframes menu-reveal-up {
+    from { opacity: 0; transform: translateY(var(--s-4)); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :scope { animation: none; }
+  }
+}

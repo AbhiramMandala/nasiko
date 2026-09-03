@@ -222,6 +222,35 @@
       "actionParam": true,
       "actionEvent": "page-change",
       "note": "Controlled: the Action must @Set the bound page; the component never changes `page` itself."
+    },
+    "app-popover": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "First child is the trigger; content goes through Slot(\"content\"). Non-modal, top-layer."
+    },
+    "app-hover-card": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "First child is the trigger; content goes through Slot(\"content\"). Hover-only \u2014 never the sole path to essential information."
+    },
+    "app-menu": {
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "menu-select",
+      "note": "The child is the trigger (an app-button); `items` is the JSON menu. The Action receives { id }."
+    },
+    "app-context-menu": {
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "menu-select",
+      "note": "Wraps its children; opens on right-click / long-press at the pointer."
+    },
+    "app-sheet": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "Body children; actions through Slot(\"footer\"). Modal <dialog> underneath, like app-modal."
     }
   },
   "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation.",

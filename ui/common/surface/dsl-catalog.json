@@ -1,9 +1,9 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "85582cd6f4c5",
+  "catalogVersion": "9df9d623cef4",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 43,
+  "componentCount": 48,
   "components": {
     "app-accordion": {
       "element": "app-accordion",
@@ -747,6 +747,55 @@
       "slots": [],
       "events": []
     },
+    "app-context-menu": {
+      "element": "app-context-menu",
+      "summary": "Right-click (or long-press) menu at the pointer position.",
+      "childrenParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "children",
+        "items",
+        "disabled",
+        "label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "items": {
+          "type": "json",
+          "description": "JSON array of `{ id, label, icon?, destructive?, disabled?, shortcut? }` or `{ divider: true }` — the `<app-menu>` format."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Right-click falls through to the browser."
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name of the `role=\"menu\"` surface."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "events": [
+        {
+          "name": "menu-select",
+          "description": "`{ id }` when an item is activated. Bubbles."
+        },
+        {
+          "name": "menu-toggle",
+          "description": "`{ open }` after every open/close. Bubbles."
+        }
+      ],
+      "actionEvent": "menu-select",
+      "note": "Wraps its children; opens on right-click / long-press at the pointer."
+    },
     "app-divider": {
       "element": "app-divider",
       "summary": "Rule / separator — a line between two blocks of content, optionally labelled.",
@@ -901,6 +950,73 @@
       },
       "slots": [],
       "events": []
+    },
+    "app-hover-card": {
+      "element": "app-hover-card",
+      "summary": "Non-modal card that opens when the pointer rests on its trigger.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "side",
+        "align",
+        "open-delay",
+        "close-delay",
+        "disabled"
+      ],
+      "attributes": {
+        "side": {
+          "type": "enum",
+          "values": [
+            "bottom",
+            "top",
+            "left",
+            "right"
+          ],
+          "default": "bottom",
+          "description": "`bottom` (default) | `top` | `left` | `right`"
+        },
+        "align": {
+          "type": "enum",
+          "values": [
+            "start",
+            "center",
+            "end"
+          ],
+          "default": "center",
+          "description": "`start` | `center` (default) | `end`"
+        },
+        "open-delay": {
+          "type": "number",
+          "default": 700,
+          "description": "ms before opening (default 700)."
+        },
+        "close-delay": {
+          "type": "number",
+          "default": 300,
+          "description": "ms of grace after leaving (default 300)."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Never opens."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        },
+        {
+          "name": "content",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [
+        {
+          "name": "hovercard-toggle",
+          "description": "`{ open }` after every open/close. Bubbles."
+        }
+      ],
+      "note": "First child is the trigger; content goes through Slot(\"content\"). Hover-only — never the sole path to essential information."
     },
     "app-input": {
       "element": "app-input",
@@ -1214,6 +1330,83 @@
       ],
       "note": "Selection is bound on the parent app-list (list-select carries id + index); the item itself takes no Action."
     },
+    "app-menu": {
+      "element": "app-menu",
+      "summary": "Anchored popup menu: a trigger that opens a list of actions.",
+      "childrenParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "children",
+        "items",
+        "open",
+        "side",
+        "align",
+        "disabled",
+        "label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "items": {
+          "type": "json",
+          "description": "JSON array of `{ id, label, icon?, destructive?, disabled?, shortcut? }` or `{ divider: true }`. `icon` is a key of `utils/icons.js`; `shortcut` is an `<app-kbd>` keys string like `⌘ K`."
+        },
+        "open": {
+          "type": "boolean",
+          "description": "Whether the menu is showing. Reflected."
+        },
+        "side": {
+          "type": "enum",
+          "values": [
+            "bottom",
+            "top",
+            "left",
+            "right"
+          ],
+          "default": "bottom",
+          "description": "`bottom` (default) | `top` | `left` | `right`"
+        },
+        "align": {
+          "type": "enum",
+          "values": [
+            "start",
+            "center",
+            "end"
+          ],
+          "default": "start",
+          "description": "`start` (default) | `center` | `end`"
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "The trigger does not open the menu."
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name of the `role=\"menu\"` surface, e.g. `Agent actions`."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "events": [
+        {
+          "name": "menu-select",
+          "description": "`{ id }` when an item is activated. Bubbles."
+        },
+        {
+          "name": "menu-toggle",
+          "description": "`{ open }` after every open/close. Bubbles."
+        }
+      ],
+      "actionEvent": "menu-select",
+      "note": "The child is the trigger (an app-button); `items` is the JSON menu. The Action receives { id }."
+    },
     "app-modal": {
       "element": "app-modal",
       "summary": "Accessible dialog modal with heading, body, footer slot, backdrop dismiss, and ESC/X close.",
@@ -1363,6 +1556,66 @@
       ],
       "actionEvent": "page-change",
       "note": "Controlled: the Action must @Set the bound page; the component never changes `page` itself."
+    },
+    "app-popover": {
+      "element": "app-popover",
+      "summary": "Anchored, non-modal overlay surface attached to a trigger.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "open",
+        "side",
+        "align",
+        "no-outside-dismiss"
+      ],
+      "attributes": {
+        "open": {
+          "type": "boolean",
+          "description": "Whether the surface is showing. Reflected."
+        },
+        "side": {
+          "type": "enum",
+          "values": [
+            "bottom",
+            "top",
+            "left",
+            "right"
+          ],
+          "default": "bottom",
+          "description": "`bottom` (default) | `top` | `left` | `right` — preferred side; flips when it does not fit."
+        },
+        "align": {
+          "type": "enum",
+          "values": [
+            "start",
+            "center",
+            "end"
+          ],
+          "default": "start",
+          "description": "`start` (default) | `center` | `end`"
+        },
+        "no-outside-dismiss": {
+          "type": "boolean",
+          "description": "Keep open on outside clicks (Escape still closes)."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        },
+        {
+          "name": "content",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [
+        {
+          "name": "popover-toggle",
+          "description": "`{ open }` after every open/close. Bubbles."
+        }
+      ],
+      "note": "First child is the trigger; content goes through Slot(\"content\"). Non-modal, top-layer."
     },
     "app-progress": {
       "element": "app-progress",
@@ -1724,6 +1977,58 @@
         }
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-sheet": {
+      "element": "app-sheet",
+      "summary": "Full-height side sheet that slides in over a dimmed backdrop.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "heading",
+        "side",
+        "open",
+        "no-backdrop-close"
+      ],
+      "attributes": {
+        "heading": {
+          "type": "string",
+          "description": "Title in the header."
+        },
+        "side": {
+          "type": "enum",
+          "values": [
+            "right",
+            "left"
+          ],
+          "default": "right",
+          "description": "`right` (default) | `left`"
+        },
+        "open": {
+          "type": "boolean",
+          "description": "Whether the sheet is showing. Reflected."
+        },
+        "no-backdrop-close": {
+          "type": "boolean",
+          "description": "Ignore clicks on the backdrop."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        },
+        {
+          "name": "footer",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [
+        {
+          "name": "sheet-close",
+          "description": "`{ result }` after the sheet has closed. Bubbles."
+        }
+      ],
+      "note": "Body children; actions through Slot(\"footer\"). Modal <dialog> underneath, like app-modal."
     },
     "app-skeleton": {
       "element": "app-skeleton",
