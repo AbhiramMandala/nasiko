@@ -36,20 +36,24 @@ export class AppBanner extends HTMLElement {
   #icon = null;
   #action = null;
 
-  connectedCallback() {
-    // Slots are captured on first connect: the action is a live element (its
-    // listeners must survive re-renders), the icon is markup we own.
-    if (this.#action === null) {
-      this.#action = this.querySelector('[data-slot="action"]');
-      const icon = this.querySelector('[data-slot="icon"]');
-      this.#icon = icon ? icon.innerHTML : '';
-    }
-    this.render();
+  connectedCallback() { this.render(); }
+
+  /** The action is a live element (its listeners survive re-renders); the icon is markup we own. */
+  #capture() {
+    if (this.#icon !== null) return;
+    this.#action = this.querySelector('[data-slot="action"]');
+    const icon = this.querySelector('[data-slot="icon"]');
+    this.#icon = icon ? icon.innerHTML : '';
   }
 
   attributeChangedCallback() { if (this.isConnected) this.render(); }
 
   render() {
+    // Captured lazily from render(), not connectedCallback: during upgrade the
+    // browser runs attributeChangedCallback (with isConnected already true)
+    // BEFORE connectedCallback, so the first render can happen before a
+    // connect-time capture — and would wipe the children it needed.
+    this.#capture();
     const type = this.getAttribute('type') === 'vertical' ? 'vertical' : 'horizontal';
     const title = this.getAttribute('title') ?? '';
     const content = this.getAttribute('content') ?? '';
@@ -76,7 +80,7 @@ export class AppBanner extends HTMLElement {
       </div>`;
 
     if (this.#action) this.querySelector('.action').appendChild(this.#action);
-    unsizeIcons(this.querySelector('.head'));
+    unsizeIcons(this);
     this.querySelector('.close')?.addEventListener('click', () => {
       const ev = new CustomEvent('banner-close', { bubbles: true, cancelable: true });
       if (this.dispatchEvent(ev)) this.remove();

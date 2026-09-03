@@ -35,17 +35,25 @@ export class AppField extends HTMLElement {
   #id = `app-field-${++uid}`;
   #control = null;
 
-  connectedCallback() {
-    // The control is a live element the page owns; it is moved, never cloned.
-    if (this.#control === null) {
-      this.#control = [...this.children].find((el) => !el.matches('.af-label, .af-help, .af-control')) ?? null;
-    }
-    this.render();
+  connectedCallback() { this.render(); }
+
+  #captured = false;
+
+  /** The control is a live element the page owns; it is moved, never cloned. */
+  #capture() {
+    if (this.#captured) return;
+    this.#captured = true;
+    this.#control = [...this.children].find((el) => !el.matches('.af-label, .af-help, .af-control')) ?? null;
   }
 
   attributeChangedCallback() { if (this.isConnected) this.render(); }
 
   render() {
+    // Captured lazily from render(), not connectedCallback: during upgrade the
+    // browser runs attributeChangedCallback (with isConnected already true)
+    // BEFORE connectedCallback, so the first render can happen before a
+    // connect-time capture — and would wipe the children it needed.
+    this.#capture();
     const label = this.getAttribute('label');
     const required = this.hasAttribute('required');
     const description = this.getAttribute('description');

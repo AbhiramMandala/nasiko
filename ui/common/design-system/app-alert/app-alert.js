@@ -48,14 +48,13 @@ export class AppAlert extends HTMLElement {
   #icon = null;
   #dismissing = false;
 
-  connectedCallback() {
-    // The custom icon is captured once. A re-render replaces innerHTML, so the
-    // slot has to be remembered rather than re-read.
-    if (this.#icon === null) {
-      const custom = this.querySelector('[data-slot="icon"]');
-      this.#icon = custom ? custom.innerHTML : '';
-    }
-    this.render();
+  connectedCallback() { this.render(); }
+
+  /** The custom icon is captured once; a re-render replaces innerHTML. */
+  #capture() {
+    if (this.#icon !== null) return;
+    const custom = this.querySelector('[data-slot="icon"]');
+    this.#icon = custom ? custom.innerHTML : '';
   }
 
   attributeChangedCallback() { if (this.isConnected) this.render(); }
@@ -77,6 +76,11 @@ export class AppAlert extends HTMLElement {
   }
 
   render() {
+    // Captured lazily from render(), not connectedCallback: during upgrade the
+    // browser runs attributeChangedCallback (with isConnected already true)
+    // BEFORE connectedCallback, so the first render can happen before a
+    // connect-time capture — and would wipe the children it needed.
+    this.#capture();
     const raw = this.getAttribute('variant');
     const variant = VARIANTS.includes(raw) ? raw : 'normal';
     const title = this.getAttribute('title') ?? '';

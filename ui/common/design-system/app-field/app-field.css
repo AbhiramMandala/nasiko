@@ -2,7 +2,7 @@
   app-field — nasiko_ui NasikoField.
 
   Label body/secondary 13/18 fg-primary with a red `*`; s8 label→control and
-  control→helper (input/*/layout/label-gap); helper body/tertiary 12/16 in
+  control→helper (the input label-gap); helper body/tertiary 12/16 in
   fg-secondary, fg-error when it carries the error. Disabled dims both to 50%.
 */
 @scope (app-field) {

@@ -185,6 +185,43 @@
       "status": "ready",
       "actionParam": true,
       "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-slider": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-toggle": {
+      "status": "ready",
+      "textParam": true,
+      "actionParam": true,
+      "actionEvent": "toggle-change"
+    },
+    "app-toggle-group": {
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "group-change",
+      "note": "Children are app-toggle with a `value`; the group reflects the selection in its own `value`."
+    },
+    "app-otp-input": {
+      "status": "ready",
+      "actionParam": true,
+      "actionEvent": "otp-complete",
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-tag-group": {
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "group-change",
+      "note": "Children are app-tag; mode=none is a plain layout row."
+    },
+    "app-pagination": {
+      "status": "ready",
+      "actionParam": true,
+      "actionEvent": "page-change",
+      "note": "Controlled: the Action must @Set the bound page; the component never changes `page` itself."
     }
   },
   "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation.",

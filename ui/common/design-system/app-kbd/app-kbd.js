@@ -20,14 +20,16 @@ export class AppKbd extends HTMLElement {
 
   #text = null;
 
-  connectedCallback() {
-    if (this.#text === null) this.#text = this.textContent.trim();
-    this.render();
-  }
+  connectedCallback() { this.render(); }
 
   attributeChangedCallback() { if (this.isConnected) this.render(); }
 
   render() {
+    // Captured lazily from render(), not connectedCallback: during upgrade the
+    // browser runs attributeChangedCallback (with isConnected already true)
+    // BEFORE connectedCallback, so the first render can happen before a
+    // connect-time capture — and would wipe the children it needed.
+    if (this.#text === null) this.#text = this.textContent.trim();
     const src = this.getAttribute('keys') ?? this.#text ?? '';
     const caps = src.split(/\s+/).filter(Boolean);
     this.innerHTML = caps.map((k) => `<kbd>${escHtml(k)}</kbd>`).join('');

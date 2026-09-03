@@ -36,10 +36,6 @@ export class AppListItem extends HTMLElement {
   #icon = null;
 
   connectedCallback() {
-    if (this.#icon === null) {
-      const svg = this.querySelector(':scope > svg');
-      this.#icon = svg ? svg.outerHTML : '';
-    }
     this.setAttribute('role', 'option');
     this.render();
   }
@@ -49,6 +45,14 @@ export class AppListItem extends HTMLElement {
   focusRow() { this.querySelector('.row')?.focus(); }
 
   render() {
+    // Captured lazily from render(), not connectedCallback: during upgrade the
+    // browser runs attributeChangedCallback (with isConnected already true)
+    // BEFORE connectedCallback, so the first render can happen before a
+    // connect-time capture — and would wipe the children it needed.
+    if (this.#icon === null) {
+      const svg = this.querySelector(':scope > svg');
+      this.#icon = svg ? svg.outerHTML : '';
+    }
     const refocus = this.contains(document.activeElement);
     const title = this.getAttribute('title') ?? '';
     const subtitle = this.getAttribute('subtitle');
