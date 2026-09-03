@@ -25,11 +25,12 @@
  * @prop {string} value - Get/set the code.
  * @prop {HTMLInputElement} input - The inner input.
  * @fires input - Bubbles from the inner input on every change.
- * @fires otp-complete - `{ value }` when the last slot is filled.
+ * @fires otp-input-complete - `{ value }` when the last slot is filled.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-otp-input.css', import.meta.url));
 import { escAttr, escHtml } from '../../utils/escape.js';
+import { emit } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppOtpInput extends HTMLElement {
@@ -61,7 +62,7 @@ export class AppOtpInput extends HTMLElement {
       if (cleaned !== this.input.value) this.input.value = cleaned;
       this.setAttribute('value', cleaned);
       if (cleaned.length === this.length) {
-        this.dispatchEvent(new CustomEvent('otp-complete', { bubbles: true, detail: { value: cleaned } }));
+        emit(this, 'otp-input-complete', { value: cleaned }, { legacy: 'otp-complete' });
       }
     });
     // Editing always happens at the end: pin the caret there on any attempt to

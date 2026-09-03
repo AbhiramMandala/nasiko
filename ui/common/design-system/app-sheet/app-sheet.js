@@ -20,14 +20,16 @@
  * @attr {boolean} no-backdrop-close - Ignore clicks on the backdrop.
  * @slot default - Body content.
  * @slot [data-slot="footer"] - Action row (Cancel / Save).
+ * @fires sheet-toggle - `{ open }` after the sheet opens or closes. Bubbles.
  * @fires sheet-close - `{ result }` after the sheet has closed. Bubbles.
- * @method show() / close(result?) — `open` is the reflected attribute/property, so the
- *   opener is `show()` (as on app-popover and app-menu), not `open()`.
+ * @method show() / hide(result?) — `open` is the reflected attribute/property, so the
+ *   opener is `show()` (as on every overlay), never `open()`. `close(result)` is an alias.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-sheet.css', import.meta.url));
 import { icons } from '../../utils/icons.js';
 import { escStyleValue } from '../../utils/escape.js';
+import { emit } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 let uid = 0;
@@ -84,7 +86,8 @@ export class AppSheet extends HTMLElement {
     dialog.addEventListener('cancel', (e) => { e.preventDefault(); this.close(null); });
     dialog.addEventListener('close', () => {
       this.removeAttribute('open');
-      this.dispatchEvent(new CustomEvent('sheet-close', { bubbles: true, detail: { result: this.#result } }));
+      emit(this, 'sheet-toggle', { open: false });
+      emit(this, 'sheet-close', { result: this.#result });
       this.#result = null;
     });
 
@@ -100,14 +103,14 @@ export class AppSheet extends HTMLElement {
 
   #sync() {
     const d = this.#dialog;
-    if (this.open && !d.open) d.showModal();
-    else if (!this.open && d.open) this.close(null);
+    if (this.open && !d.open) { d.showModal(); emit(this, 'sheet-toggle', { open: true }); }
+    else if (!this.open && d.open) this.hide(null);
   }
 
   show() { this.setAttribute('open', ''); }
 
   /** Close with a result; `sheet-close` fires after the exit transition. */
-  close(result = null) {
+  hide(result = null) {
     const d = this.#dialog;
     if (!d?.open) return;
     this.#result = result;
@@ -120,5 +123,8 @@ export class AppSheet extends HTMLElement {
     d.addEventListener('animationend', done, { once: true });
     setTimeout(done, 400);
   }
+
+  /** Alias of `hide(result)`. */
+  close(result = null) { this.hide(result); }
 }
 customElements.define('app-sheet', AppSheet);

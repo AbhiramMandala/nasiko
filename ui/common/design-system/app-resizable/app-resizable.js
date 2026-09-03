@@ -17,22 +17,24 @@
  * rather than guessing how freed space should be spread.
  *
  * @element app-resizable
- * @attr {string} direction - `horizontal` (default, panels side by side) | `vertical`
+ * @attr {string} orientation - `horizontal` (default, panels side by side) | `vertical`
+ * @attr {string} direction - (deprecated: use orientation)
  * @attr {string} sizes - Space-separated fractions to apply, e.g. `0.3 0.7`. Reflected
  *   after every change, so it doubles as the persistence format.
  * @attr {boolean} no-reset - Disables the double-click reset.
  * @slot default - The panels, in order.
- * @fires layout-change - `{ sizes: number[] }` after an applied change. Bubbles.
+ * @fires resizable-change - `{ sizes: number[] }` after an applied change. Bubbles.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-resizable.css', import.meta.url));
+import { readAttr, emit } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const STEP = 0.02;
 const EPS = 1e-6;
 
 export class AppResizable extends HTMLElement {
-  static get observedAttributes() { return ['direction', 'sizes', 'no-reset']; }
+  static get observedAttributes() { return ['orientation', 'sizes', 'no-reset', 'direction']; }
 
   /** Current fractions, one per panel. */
   #frac = [];
@@ -40,7 +42,7 @@ export class AppResizable extends HTMLElement {
   #observer = null;
   #drag = null;
 
-  get horizontal() { return this.getAttribute('direction') !== 'vertical'; }
+  get horizontal() { return readAttr(this, 'orientation', 'direction') !== 'vertical'; }
   get panels() { return [...this.children].filter((el) => !el.classList.contains('divider')); }
 
   connectedCallback() {
@@ -67,7 +69,7 @@ export class AppResizable extends HTMLElement {
       if (next && !this.#same(next, this.#frac)) { this.#frac = next; this.#apply(false); }
       return;
     }
-    if (name === 'direction') this.#apply(false);
+    if (name === 'orientation' || name === 'direction') this.#apply(false);
   }
 
   #same(a, b) { return a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < EPS); }
@@ -158,7 +160,7 @@ export class AppResizable extends HTMLElement {
     return true;
   }
 
-  #apply(emit = true) {
+  #apply(notify = true) {
     const panels = this.panels;
     if (this.#frac.length !== panels.length) this.#frac = this.#declared().def;
     panels.forEach((p, i) => p.style.setProperty('--panel-frac', String(this.#frac[i])));
@@ -171,7 +173,7 @@ export class AppResizable extends HTMLElement {
     });
     const sizes = this.#frac.map((x) => Math.round(x * 1e4) / 1e4);
     this.setAttribute('sizes', sizes.join(' '));
-    if (emit) this.dispatchEvent(new CustomEvent('layout-change', { bubbles: true, detail: { sizes } }));
+    if (notify) emit(this, 'resizable-change', { sizes }, { legacy: 'layout-change' });
   }
 
   #reset(i) {

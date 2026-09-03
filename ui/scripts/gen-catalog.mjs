@@ -216,6 +216,15 @@ function parseComponent(file) {
       excluded.push({ attribute: name, reason: 'takes a raw CSS length; a spec must not set dimensions' });
       continue;
     }
+    // A renamed attribute keeps its old name for one release (CONVENTIONS.md §1):
+    // observed so it stays reactive, documented so the drift check passes, but
+    // withheld from the catalog so a generated surface only ever learns the
+    // canonical name. `(deprecated: use heading)` names the replacement.
+    const dep = desc.match(/\(deprecated(?::\s*use\s+`?([\w-]+)`?)?\)/i);
+    if (dep) {
+      excluded.push({ attribute: name, reason: `deprecated alias${dep[1] ? ` of ${dep[1]}` : ''}; removed next release` });
+      continue;
+    }
     const spec = typeOf(name, dtype.trim(), desc);
     if (CONSTRAINED.has(name) && spec.type !== 'enum' && spec.type !== 'number') {
       throw new Error(

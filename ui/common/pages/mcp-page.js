@@ -26,7 +26,7 @@ import '../design-system/app-skeleton/app-skeleton.js';
 import '../design-system/app-empty-state/app-empty-state.js';
 import '../design-system/app-tabs/app-tabs.js';
 import '../features/app-module-nav.js';
-import '../design-system/auto-complete/auto-complete.js';
+import '../design-system/app-combobox/app-combobox.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-card/app-card.js';
@@ -142,7 +142,7 @@ class McpPage extends HTMLElement {
       ${this.#registerModalHtml()}
       ${this.#uploadModalHtml()}
       ${this.#connectModalHtml()}
-      <app-modal heading="Connector" id="detail-modal" hide-footer>
+      <app-modal heading="Connector" id="detail-modal" no-footer>
         <div id="detail-body"></div>
       </app-modal>
     `;
@@ -170,7 +170,7 @@ class McpPage extends HTMLElement {
     this.#wireConnectModal();
     // <app-tabs strip>: the counts are data-driven, so this page renders the
     // buttons and re-renders the strip whenever the catalog reloads.
-    this.querySelector('#catalog-tabs').addEventListener('tab-change', (e) => {
+    this.querySelector('#catalog-tabs').addEventListener('tabs-change', (e) => {
       this.#catalogTab = e.detail.key;
       // Dropped when it is the default, so the common URL stays clean.
       setSearchParams({ tab: e.detail.key === 'all' ? null : e.detail.key });
@@ -305,7 +305,7 @@ class McpPage extends HTMLElement {
     const connected = this.#catalogTab === 'connected';
     return `
       <app-empty-state
-        title="${connected ? 'Nothing connected yet' : 'Everything is connected'}"
+        heading="${connected ? 'Nothing connected yet' : 'Everything is connected'}"
         description="${connected
           ? 'Connect a server or toolkit and its tools become available to your agents.'
           : 'Every server and toolkit in this view is already connected.'}"
@@ -318,7 +318,7 @@ class McpPage extends HTMLElement {
   #catalogEmptyHtml() {
     const { icon, title, desc, cta } = CATALOG_SCOPES[this.#catalogScope].empty;
     return `
-      <app-empty-state title="${escAttr(title)}" description="${escAttr(desc)}"
+      <app-empty-state heading="${escAttr(title)}" description="${escAttr(desc)}"
         icon='${icons[icon]('', 40)}'>
         ${cta ? `
           <app-button variant="tertiary" id="empty-upload-btn">${icons.upload('', 14)} Upload MCP server</app-button>
@@ -351,7 +351,7 @@ class McpPage extends HTMLElement {
       <app-card data-id="${escAttr(s.connector_id)}" card-title="${escAttr(name)}"
         ${href ? `href="${escAttr(href)}"` : ''}
         tags="${escAttr(JSON.stringify(tags))}" max-visible-tags="3"${state}>
-        <span slot="leading" class="tk-logo" aria-hidden="true">${escHtml(name.charAt(0))}${s.logo_url
+        <span data-slot="leading" class="tk-logo" aria-hidden="true">${escHtml(name.charAt(0))}${s.logo_url
           ? `<img src="${escAttr(s.logo_url)}" alt="" loading="lazy" />` : ''}</span>
         ${isSettingUp || isFailed ? '' : this.#serviceActionHtml(s, name)}
       </app-card>`;
@@ -360,13 +360,13 @@ class McpPage extends HTMLElement {
   /** The card's header control, slotted into <app-card>'s actions slot. */
   #serviceActionHtml(s, name) {
     if (s.is_connected) {
-      return `<button slot="actions" class="tk-action is-connected act-disconnect" type="button"
+      return `<button data-slot="actions" class="tk-action is-connected act-disconnect" type="button"
                 title="Disconnect ${escAttr(name)}" aria-label="Disconnect ${escAttr(name)}">
           <span class="tk-rest">${icons.check('', 14)} Connected</span>
           <span class="tk-hover">${icons.x('', 14)} Disconnect</span>
         </button>`;
     }
-    return `<app-button slot="actions" class="act-connect" variant="icon" size="sm"
+    return `<app-button data-slot="actions" class="act-connect" variant="icon" size="sm"
               aria-label="Connect ${escAttr(name)}"
               data-tooltip="Connect ${escAttr(name)}">${icons.plus()}</app-button>`;
   }
@@ -555,7 +555,7 @@ class McpPage extends HTMLElement {
         <div class="agent-access-card">
           <div class="agent-picker">
             <label for="detail-agent-select">Agent</label>
-            <auto-complete id="detail-agent-select" placeholder="Search agents…" aria-label="Agent"></auto-complete>
+            <app-combobox id="detail-agent-select" placeholder="Search agents…" aria-label="Agent"></app-combobox>
           </div>
           <div id="detail-agent-access-body">
             <div class="agent-access-empty">${icons.network('', 28)}<p>Select an agent to manage its access to this connector</p></div>
@@ -584,7 +584,7 @@ class McpPage extends HTMLElement {
           value: a.id,
         }));
     };
-    agentPicker.addEventListener('option-selected', (e) => {
+    agentPicker.addEventListener('combobox-select', (e) => {
       this.#selectedAgentId = e.detail.value;
       this.#loadAgentAccessForConnector(id);
     });
@@ -819,11 +819,11 @@ class McpPage extends HTMLElement {
         <div id="upload-picker" class="upload-picker">
           <app-card data-method="zip" role="button" tabindex="0" card-title="Upload a zip"
             description="Upload a .zip archive containing your MCP server source code">
-            <span slot="leading" class="upload-method-icon">${icons.upload('', 22)}</span>
+            <span data-slot="leading" class="upload-method-icon">${icons.upload('', 22)}</span>
           </app-card>
           <app-card data-method="github" role="button" tabindex="0" card-title="Import from GitHub"
             description="Clone a GitHub repository containing your MCP server">
-            <span slot="leading" class="upload-method-icon">${icons.github('', 22)}</span>
+            <span data-slot="leading" class="upload-method-icon">${icons.github('', 22)}</span>
           </app-card>
         </div>
         <form id="upload-zip-form" class="modal-form" hidden>
@@ -870,7 +870,7 @@ class McpPage extends HTMLElement {
       zipForm.hidden = true;
       ghForm.hidden = true;
       footer.hidden = true;
-      modal.setAttribute('hide-footer', '');
+      modal.setAttribute('no-footer', '');
       err.hidden = true;
       modal.setAttribute('heading', 'Upload MCP server');
     };
@@ -882,7 +882,7 @@ class McpPage extends HTMLElement {
         zipForm.hidden = activeMethod !== 'zip';
         ghForm.hidden = activeMethod !== 'github';
         footer.hidden = false;
-        modal.removeAttribute('hide-footer');
+        modal.removeAttribute('no-footer');
         modal.setAttribute('heading', activeMethod === 'zip' ? 'Upload zip' : 'Import from GitHub');
       });
     });
@@ -1032,7 +1032,7 @@ class McpPage extends HTMLElement {
     this.querySelector('#upload-footer').hidden = true;
     this.querySelector('#upload-error').hidden = true;
     const modal = this.querySelector('#upload-modal');
-    modal.setAttribute('hide-footer', '');
+    modal.setAttribute('no-footer', '');
     modal.setAttribute('heading', 'Upload MCP server');
     modal.open();
   }

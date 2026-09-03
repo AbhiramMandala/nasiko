@@ -19,12 +19,13 @@
  * @attr {boolean} disabled - Never opens.
  * @slot default - The trigger (first child).
  * @slot [data-slot="content"] - The card content.
- * @fires hovercard-toggle - `{ open }` after every open/close. Bubbles.
+ * @fires hover-card-toggle - `{ open }` after every open/close. Bubbles.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-hover-card.css', import.meta.url));
 import { positionAnchored, followAnchor, supportsPopover } from '../../utils/anchor.js';
 import { escStyleValue } from '../../utils/escape.js';
+import { emit } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppHoverCard extends HTMLElement {
@@ -122,7 +123,7 @@ export class AppHoverCard extends HTMLElement {
     if (supportsPopover) this.#card.showPopover();
     this.#place();
     this.#unfollow = followAnchor(() => this.#place());
-    this.dispatchEvent(new CustomEvent('hovercard-toggle', { bubbles: true, detail: { open: true } }));
+    emit(this, 'hover-card-toggle', { open: true }, { legacy: 'hovercard-toggle' });
   }
 
   #hide() {
@@ -131,7 +132,7 @@ export class AppHoverCard extends HTMLElement {
     this.#unfollow?.(); this.#unfollow = null;
     if (supportsPopover && this.#card.matches(':popover-open')) this.#card.hidePopover();
     this.#card.hidden = true;
-    this.dispatchEvent(new CustomEvent('hovercard-toggle', { bubbles: true, detail: { open: false } }));
+    emit(this, 'hover-card-toggle', { open: false }, { legacy: 'hovercard-toggle' });
   }
 }
 customElements.define('app-hover-card', AppHoverCard);

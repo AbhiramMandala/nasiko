@@ -1,20 +1,28 @@
 /**
  * Anchored popup menu: a trigger that opens a list of actions.
  *
- * Ported from nasiko_ui `NasikoPopupMenu`. Where `<app-action-menu>` is the
- * compact "⋯" row menu with plain labels, this is the full menu: items carry
- * an icon, a destructive tone, a disabled state and a keyboard shortcut hint,
- * and groups are separated by dividers. It wears the Flutter menu's inverse
- * surface — dark in light mode, the elevated surface in dark mode — which is a
- * design decision, not a theme bug.
+ * The one menu. It is the former `<app-action-menu>` (the "⋯" row menu, whose
+ * light surface and item paint this keeps) merged with nasiko_ui's
+ * `NasikoPopupMenu` behaviours: items carry an icon, a destructive tone, a
+ * disabled state and a keyboard-shortcut hint; groups are separated by
+ * dividers; the surface is a top-layer popover placed by `utils/anchor.js`
+ * (flip + clamp, follows the anchor), so it paints above an open dialog and is
+ * never clipped by an `overflow: hidden` card — the two failures the old
+ * `position: absolute` dropdown had.
  *
- * WAI-ARIA menu-button pattern: the trigger has `aria-haspopup="menu"`, focus
+ * Two ways to give it a trigger:
+ *  - **Your element** as the first child — normally an `<app-button>`.
+ *  - **Nothing but an icon** (an inline `<svg>`, or no children at all): the menu
+ *    renders its own ghost icon button, `trigger-label` names it, and the
+ *    default glyph is the vertical ellipsis. This is the row-actions form.
+ *
+ * WAI-ARIA menu-button pattern: `aria-haspopup="menu"` on the trigger, focus
  * moves into the menu on open, ArrowUp/Down rove (wrapping), Home/End jump,
- * Enter/Space activate, Escape closes and returns focus to the trigger,
- * typing a letter jumps to the next item starting with it.
+ * a typed letter jumps to the next matching item, Enter/Space activate, Tab
+ * and Escape close, Escape and selection return focus to the trigger.
  *
- * `<app-context-menu>` renders the same items at a pointer position; both
- * import the item renderer from this module.
+ * `<app-context-menu>` renders the same items at the pointer position; it
+ * imports the item renderer and keyboard handler from this module.
  *
  * @element app-menu
  * @attr {string} items - JSON array of `{ id, label, icon?, destructive?, disabled?, shortcut? }`
@@ -26,16 +34,20 @@
  * @attr {string} width - CSS width for the menu. Default: content, min 10rem.
  * @attr {boolean} disabled - The trigger does not open the menu.
  * @attr {string} label - Accessible name of the `role="menu"` surface, e.g. `Agent actions`.
- * @slot default - The trigger element (first child).
+ * @attr {string} trigger-label - Accessible name of the built-in icon trigger
+ *   (default: `Actions`). Ignored when you supply your own trigger element.
+ * @attr {string} trigger-title - (deprecated: use trigger-label) The old name.
+ * @slot default - The trigger element (first child), or a bare `<svg>` for the built-in trigger.
  * @fires menu-select - `{ id }` when an item is activated. Bubbles.
  * @fires menu-toggle - `{ open }` after every open/close. Bubbles.
  * @method show() / hide() / toggle()
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-menu.css', import.meta.url));
-import { icons } from '../../utils/icons.js';
+import { icons, unsizeIcons } from '../../utils/icons.js';
 import { escAttr, escHtml, escStyleValue } from '../../utils/escape.js';
 import { positionAnchored, followAnchor, supportsPopover } from '../../utils/anchor.js';
+import { readAttr, emit, warnOnce } from '../../utils/deprecate.js';
 import '../app-kbd/app-kbd.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -89,16 +101,16 @@ export function menuKeydown(surface, e) {
 }
 
 export class AppMenu extends HTMLElement {
-  static get observedAttributes() { return ['items', 'open', 'side', 'align', 'width', 'disabled', 'label']; }
+  static get observedAttributes() {
+    return ['items', 'open', 'side', 'align', 'width', 'disabled', 'label', 'trigger-label', 'trigger-title'];
+  }
 
-  #trigger = null;
+  #trigger = null;      // the element that opens the menu (yours, or the built-in button)
+  #ownTrigger = false;  // true when the component rendered the trigger itself
   #surface = null;
   #built = false;
   #unfollow = null;
-  #onDocClick = (e) => {
-    if (this.contains(e.target)) return;
-    this.hide();
-  };
+  #onDocClick = (e) => { if (!this.contains(e.target)) this.hide(); };
   #onKey = (e) => {
     if (e.key === 'Escape') { e.stopPropagation(); this.hide(); this.#focusTrigger(); return; }
     if (e.key === 'Tab') { this.hide(); return; }
@@ -127,55 +139,88 @@ export class AppMenu extends HTMLElement {
     if (name === 'items') this.#renderItems();
     if (name === 'width') this.#applyWidth();
     if (name === 'label') this.#applyLabel();
+    if (name === 'trigger-label' || name === 'trigger-title') this.#applyTriggerLabel();
+    if (name === 'disabled') this.#focusable()?.toggleAttribute('disabled', this.hasAttribute('disabled') && this.#ownTrigger);
     if (this.open) this.#place();
   }
+
+  /** The element inside the trigger that actually takes focus and ARIA. */
+  #focusable() {
+    return this.#trigger?.matches('button, a, [tabindex]') ? this.#trigger
+      : (this.#trigger?.querySelector('button, a, [tabindex]') ?? this.#trigger);
+  }
+
+  #focusTrigger() { this.#focusable()?.focus?.(); }
 
   #applyLabel() {
     const l = this.getAttribute('label');
     l ? this.#surface.setAttribute('aria-label', l) : this.#surface.removeAttribute('aria-label');
   }
 
+  #applyTriggerLabel() {
+    if (!this.#ownTrigger) return;
+    const l = readAttr(this, 'trigger-label', 'trigger-title') || 'Actions';
+    this.#trigger.setAttribute('aria-label', l);
+    this.#trigger.setAttribute('title', l);
+  }
+
   #build() {
     if (this.#built) return;
     this.#built = true;
-    this.#trigger = this.firstElementChild;
 
+    // A trigger you supplied is the first element child that is not an svg.
+    // Otherwise the component renders its own ghost icon button around the
+    // svg you passed (or the default ⋯ glyph) — the row-actions form.
+    const supplied = [...this.children].find((el) => el.localName !== 'svg');
+    if (supplied) {
+      this.#trigger = supplied;
+    } else {
+      const glyph = this.querySelector(':scope > svg')?.outerHTML ?? icons.moreVertical('', 16);
+      this.replaceChildren();
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'menu-trigger';
+      btn.innerHTML = glyph;
+      this.append(btn);
+      unsizeIcons(btn);
+      this.#trigger = btn;
+      this.#ownTrigger = true;
+      if (this.hasAttribute('disabled')) btn.disabled = true;
+    }
+
+    // The surface stays inside the host: the Popover API lifts it to the top
+    // layer from here, and events keep bubbling through the host.
     const surface = document.createElement('div');
     surface.className = 'app-menu-surface';
     surface.setAttribute('role', 'menu');
     surface.hidden = true;
     if (supportsPopover) surface.popover = 'manual';
-    // Inside the host, not on <body>: the Popover API lifts it to the top layer
-    // from here, and events keep bubbling through the host (see app-popover).
     this.append(surface);
     this.#surface = surface;
     this.#renderItems();
     this.#applyWidth();
     this.#applyLabel();
+    this.#applyTriggerLabel();
 
     surface.addEventListener('click', (e) => {
       const item = e.target.closest('.menu-item');
       if (!item || item.disabled) return;
+      // The menu usually sits inside a clickable card; the raw click must not
+      // reach the card's handler and open it alongside the action.
       e.stopPropagation();
       this.hide();
       this.#focusTrigger();
-      this.dispatchEvent(new CustomEvent('menu-select', { bubbles: true, detail: { id: item.dataset.id } }));
+      emit(this, 'menu-select', { id: item.dataset.id }, { legacy: 'action-select' });
     });
 
-    if (this.#trigger) {
-      this.#trigger.addEventListener('click', (e) => { e.stopPropagation(); this.toggle(); });
-      // ArrowDown on the trigger opens (menu-button pattern).
-      this.#trigger.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowDown' && !this.open) { e.preventDefault(); this.show(); }
-      });
-      const focusable = this.#trigger.querySelector('button, a, [tabindex]') ?? this.#trigger;
-      focusable.setAttribute('aria-haspopup', 'menu');
-      focusable.setAttribute('aria-expanded', 'false');
-    }
-  }
-
-  #focusTrigger() {
-    (this.#trigger?.querySelector('button, a, [tabindex]') ?? this.#trigger)?.focus?.();
+    this.#trigger.addEventListener('click', (e) => { e.stopPropagation(); this.toggle(); });
+    // ArrowDown on the trigger opens (menu-button pattern).
+    this.#trigger.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' && !this.open) { e.preventDefault(); this.show(); }
+    });
+    const f = this.#focusable();
+    f?.setAttribute('aria-haspopup', 'menu');
+    f?.setAttribute('aria-expanded', 'false');
   }
 
   #renderItems() {
@@ -212,8 +257,8 @@ export class AppMenu extends HTMLElement {
       if (supportsPopover && s.matches(':popover-open')) s.hidePopover();
       s.hidden = true;
     }
-    (this.#trigger?.querySelector('button, a, [tabindex]') ?? this.#trigger)?.setAttribute?.('aria-expanded', String(open));
-    this.dispatchEvent(new CustomEvent('menu-toggle', { bubbles: true, detail: { open } }));
+    this.#focusable()?.setAttribute?.('aria-expanded', String(open));
+    emit(this, 'menu-toggle', { open });
   }
 
   #teardown() {
@@ -223,3 +268,16 @@ export class AppMenu extends HTMLElement {
   }
 }
 customElements.define('app-menu', AppMenu);
+
+/**
+ * Deprecated alias. `<app-action-menu>` IS `<app-menu>` now — same class, same
+ * markup (icon child, `items`), same light surface. It logs once and is removed
+ * next release. Not catalogued: a generated surface only learns `app-menu`.
+ */
+class AppActionMenuAlias extends AppMenu {
+  connectedCallback() {
+    warnOnce('app-action-menu', '<app-action-menu> is deprecated — use <app-menu>. Same attributes; `trigger-title` is now `trigger-label`, `action-select` is now `menu-select`.');
+    super.connectedCallback();
+  }
+}
+if (!customElements.get('app-action-menu')) customElements.define('app-action-menu', AppActionMenuAlias);

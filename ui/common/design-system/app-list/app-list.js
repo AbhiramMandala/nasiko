@@ -8,7 +8,7 @@
  * `selected` on the item you consider current — the list never mutates state
  * on its own (the same controlled-component rule as the Flutter side).
  *
- * `<app-list-item>` attributes: `title`, `subtitle`, `image`, `indent` (0–n),
+ * `<app-list-item>` attributes: `heading`, `description`, `value`, `image`, `indent` (0–n),
  * `selected`, `disabled`, `expandable`, `expanded`, `status-dot`, `badge`.
  * A leading inline `<svg>` child becomes the item's icon.
  *
@@ -44,7 +44,7 @@ export class AppList extends HTMLElement {
       items[((next % items.length) + items.length) % items.length].focusRow();
     });
 
-    this.addEventListener('item-select', (e) => {
+    this.addEventListener('list-item-select', (e) => {
       e.stopPropagation();
       const items = [...this.querySelectorAll(':scope > app-list-item')];
       this.dispatchEvent(new CustomEvent('list-select', {

@@ -15,7 +15,6 @@ const styles = await loadCss(new URL('./design-system-page.css', import.meta.url
 import { icons } from '../utils/icons.js';
 import { escAttr } from '/common/utils/escape.js';
 
-import '/common/design-system/app-action-menu/app-action-menu.js';
 import '/common/design-system/app-card/app-card.js';
 import '/common/design-system/app-chart/app-chart.js';
 import '/common/design-system/app-chatbox/app-chatbox.js';
@@ -43,7 +42,7 @@ import '/common/design-system/app-tabs/app-tabs.js';
 import '/common/design-system/app-tag/app-tag.js';
 import '/common/design-system/app-toolbar/app-toolbar.js';
 import '/common/design-system/app-tooltip/app-tooltip.js';
-import '/common/design-system/auto-complete/auto-complete.js';
+import '/common/design-system/app-combobox/app-combobox.js';
 import '/common/design-system/app-alert/app-alert.js';
 import '/common/design-system/app-banner/app-banner.js';
 import '/common/design-system/app-breadcrumb/app-breadcrumb.js';
@@ -71,15 +70,17 @@ import '/common/design-system/app-toggle-group/app-toggle-group.js';
 import '/common/design-system/app-toggle/app-toggle.js';
 import { confirmDialog } from '/common/design-system/app-modal/app-modal.js';
 import { toast } from '/common/utils/toast.js';
+import { register } from '/common/core/data-sources.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-/** `<auto-complete>` resolves its suggestions through `window[filter-function]`,
- *  so the demo has to publish one. Not a data function — no registry seam. */
-window.dsDemoSuggest = (q) =>
+/** `<app-combobox>` takes its suggestions from a registered data source
+ *  (`data-fn`) — the demo registers a page-local one, the same seam a real
+ *  page's service module uses. `replace` so a hot re-import does not throw. */
+register('dsDemoSuggest', (q) =>
   ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'gpt-4o']
     .filter((m) => m.toLowerCase().includes(q.toLowerCase()))
-    .map((m) => ({ label: m, value: m }));
+    .map((m) => ({ label: m, value: m, description: m.startsWith('gpt') ? 'OpenAI' : 'Anthropic' })), { replace: true });
 
 /**
  * `<app-table>` needs a fetcher. The design system has no data sources, so this
@@ -329,19 +330,12 @@ const SPECS = [
   },
   {
     group: 'Controls',
-    tag: 'app-action-menu',
-    blurb: 'Icon trigger + dropdown of actions. Fires action-select.',
-    demo: `<app-action-menu trigger-title="Options"
-  items='[{"id":"restart","label":"Restart"},{"id":"logs","label":"View logs"},{"id":"rm","label":"Delete"}]'>
-  ${icons.moreVertical()}
-</app-action-menu>`,
-  },
-  {
-    group: 'Controls',
-    tag: 'auto-complete',
-    blurb: 'Typeahead input. Suggestions come from window[filter-function].',
-    demo: `<auto-complete placeholder="Search models…" aria-label="Model"
-  filter-function="dsDemoSuggest"></auto-complete>`,
+    tag: 'app-combobox',
+    blurb: 'Typeahead (formerly auto-complete) on app-search\u2019s box. Suggestions come from a registered data source (`data-fn`), a `filterFn` property, or a static `options` list; fires combobox-select with the picked value. Free text stays.',
+    demo: `<app-row gap="md" wrap align="start">
+  <app-combobox placeholder="Search models…" aria-label="Model" data-fn="dsDemoSuggest"></app-combobox>
+  <app-combobox placeholder="Region" aria-label="Region" size="sm" options='["us-east-1","us-west-2","eu-central-1",{"label":"ap-south-1","value":"ap-south-1","description":"Mumbai"}]'></app-combobox>
+</app-row>`,
   },
 
   {
@@ -531,10 +525,10 @@ const SPECS = [
   <app-toggle pressed>Bold</app-toggle>
   <app-toggle>Italic</app-toggle>
   <app-toggle disabled>Underline</app-toggle>
-  <app-toggle-group mode="single" value="center" attached label="Alignment">
+  <app-toggle-group selection="single" value="center" attached label="Alignment">
     <app-toggle value="left">Left</app-toggle><app-toggle value="center">Center</app-toggle><app-toggle value="right">Right</app-toggle>
   </app-toggle-group>
-  <app-toggle-group mode="multiple" value="b i" size="sm" label="Style">
+  <app-toggle-group selection="multiple" value="b i" size="sm" label="Style">
     <app-toggle value="b"><b>B</b></app-toggle><app-toggle value="i"><i>I</i></app-toggle><app-toggle value="u">U</app-toggle>
   </app-toggle-group>
 </app-row>`,
@@ -552,8 +546,8 @@ const SPECS = [
   {
     group: 'Controls',
     tag: 'app-tag-group',
-    blurb: 'nasiko_ui NasikoChipGroup plus selection: `multiple` (default) or `single` makes the tags selectable and reflects the picks in `value`; `none` is a plain row; `scrollable` keeps one line.',
-    demo: `<app-tag-group mode="multiple" value="running" label="Status filter">
+    blurb: 'nasiko_ui NasikoChipGroup plus selection: `selection` multiple (default) or single makes the tags selectable and reflects the picks in `value`; none is a plain row; `scrollable` keeps one line.',
+    demo: `<app-tag-group selection="multiple" value="running" label="Status filter">
   <app-tag value="running">Running</app-tag>
   <app-tag value="stopped">Stopped</app-tag>
   <app-tag value="error">Error</app-tag>
@@ -563,13 +557,13 @@ const SPECS = [
   {
     group: 'Controls',
     tag: 'app-calendar',
-    blurb: 'nasiko_ui NasikoCalendar — Monday-first, always six rows, min/max, today marker; one tab stop with arrows / Home / End / PageUp / PageDown. app-date-field wraps it in a popover behind app-input\u2019s box; app-time-field is the HH : MM segment editor (12h adds AM/PM, `seconds` adds a segment).',
+    blurb: 'nasiko_ui NasikoCalendar — Monday-first, always six rows, min/max, today marker; one tab stop with arrows / Home / End / PageUp / PageDown. app-date-field wraps it in a popover behind app-input\u2019s box; app-time-field is the HH : MM segment editor (`format="12h"` adds AM/PM, `seconds` adds a segment).',
     demo: `<app-row gap="md" wrap align="start">
   <app-calendar value="2026-09-15" min="2026-09-03"></app-calendar>
   <app-stack gap="md">
     <app-date-field label="Start date" value="2026-09-15" hint="When the schedule begins."></app-date-field>
     <app-date-field label="End date" placeholder="Pick a date" size="sm"></app-date-field>
-    <app-time-field label="Run at" mode="12h" value="15:45"></app-time-field>
+    <app-time-field label="Run at" format="12h" value="15:45"></app-time-field>
     <app-time-field label="Cutoff" seconds value="23:59:30"></app-time-field>
   </app-stack>
 </app-row>`,
@@ -622,11 +616,13 @@ const SPECS = [
   {
     group: 'Overlays',
     tag: 'app-menu',
-    blurb: 'nasiko_ui NasikoPopupMenu — the full menu: icons, destructive tone, disabled, shortcut caps, dividers; inverse surface in light mode by design. Menu-button keyboard pattern end to end. app-context-menu renders the same items at the pointer on right-click / long-press.',
+    blurb: 'The one menu (formerly app-action-menu, merged with nasiko_ui NasikoPopupMenu): icons, destructive tone, disabled, shortcut caps, dividers. Give it your own trigger as the first child, or nothing — it renders the ⋯ icon button (`trigger-label` names it). Menu-button keyboard pattern end to end. app-context-menu renders the same items at the pointer on right-click / long-press.',
     demo: `<app-row gap="md" wrap align="center">
   <app-menu label="Agent actions" items='[{"id":"rename","label":"Rename","icon":"edit","shortcut":"⌘ R"},{"id":"dup","label":"Duplicate","icon":"copy"},{"divider":true},{"id":"del","label":"Delete","icon":"trash","destructive":true},{"id":"arch","label":"Archive","disabled":true}]'>
     <app-button variant="tertiary">Actions</app-button>
   </app-menu>
+  <app-menu label="Row actions" trigger-label="Options"
+    items='[{"id":"restart","label":"Restart"},{"id":"logs","label":"View logs"},{"id":"rm","label":"Delete","destructive":true}]'></app-menu>
   <app-context-menu label="Row actions" items='[{"id":"copy","label":"Copy","icon":"copy"},{"id":"open","label":"Open in new tab","icon":"externalLink"},{"divider":true},{"id":"del","label":"Delete","destructive":true}]'>
     <div class="demo-target">Right-click me</div>
   </app-context-menu>
@@ -645,7 +641,7 @@ const SPECS = [
 <app-sheet id="ds-demo-sheet" heading="Filter agents" width="400px">
   <app-stack gap="md">
     <app-input label="Name" placeholder="Search…"></app-input>
-    <app-tag-group mode="multiple" label="Status"><app-tag value="running">Running</app-tag><app-tag value="stopped">Stopped</app-tag></app-tag-group>
+    <app-tag-group selection="multiple" label="Status"><app-tag value="running">Running</app-tag><app-tag value="stopped">Stopped</app-tag></app-tag-group>
   </app-stack>
   <div data-slot="footer">
     <app-button variant="tertiary" size="md" data-demo="sheet-cancel">Cancel</app-button>
@@ -769,8 +765,8 @@ const SPECS = [
   <app-card name="stale-agent" version="0.9.0" status="failed"
     error-title="Agent failed" error-body="Container exited with an error."
     tags='[{"label":"a2a"}]'>
-    <app-button slot="footer" variant="tertiary" size="sm" href="/flows">View logs</app-button>
-    <app-button slot="footer" variant="primary" size="sm" href="/agents">Redeploy</app-button>
+    <app-button data-slot="footer" variant="tertiary" size="sm" href="/flows">View logs</app-button>
+    <app-button data-slot="footer" variant="primary" size="sm" href="/agents">Redeploy</app-button>
   </app-card>
   <app-card loading></app-card>
 </app-grid>`,
@@ -898,10 +894,10 @@ const SPECS = [
     tag: 'app-list',
     blurb: 'nasiko_ui NasikoList + NasikoListItem — a roving-focus listbox. Selection is the caller\u2019s: listen for list-select and set `selected`. Items take indent, image / icon, expandable + expanded, status-dot and badge.',
     demo: `<app-list label="Agents" style="max-width: 360px">
-  <app-list-item id-value="a" title="research-agent" subtitle="running · 3 replicas" selected status-dot badge="prod"></app-list-item>
-  <app-list-item id-value="b" title="billing-agent" expandable expanded></app-list-item>
-  <app-list-item id-value="c" title="invoice-worker" indent="1" badge="child"></app-list-item>
-  <app-list-item id-value="d" title="devops-agent" disabled></app-list-item>
+  <app-list-item value="a" heading="research-agent" description="running · 3 replicas" selected status-dot badge="prod"></app-list-item>
+  <app-list-item value="b" heading="billing-agent" expandable expanded></app-list-item>
+  <app-list-item value="c" heading="invoice-worker" indent="1" badge="child"></app-list-item>
+  <app-list-item value="d" heading="devops-agent" disabled></app-list-item>
 </app-list>`,
   },
   {
@@ -920,22 +916,22 @@ const SPECS = [
     tag: 'app-alert',
     blurb: 'nasiko_ui NasikoAlert — inline status callout in the same feedback tokens as app-badge and the toast. Five variants; `dismissible` collapses it in place and fires a cancelable alert-dismiss.',
     demo: `<app-stack gap="sm">
-  <app-alert title="Heads up" description="A neutral note." dismissible></app-alert>
-  <app-alert variant="info" title="New version" description="v2.3 is available."></app-alert>
-  <app-alert variant="success" title="Saved" description="Your changes are live."></app-alert>
-  <app-alert variant="warning" title="Certificate expiring" description="Renew before June 30." dismissible></app-alert>
-  <app-alert variant="destructive" title="Deploy failed" description="Container exited with code 137."></app-alert>
+  <app-alert heading="Heads up" description="A neutral note." dismissible></app-alert>
+  <app-alert variant="info" heading="New version" description="v2.3 is available."></app-alert>
+  <app-alert variant="success" heading="Saved" description="Your changes are live."></app-alert>
+  <app-alert variant="warning" heading="Certificate expiring" description="Renew before June 30." dismissible></app-alert>
+  <app-alert variant="destructive" heading="Deploy failed" description="Container exited with code 137."></app-alert>
 </app-stack>`,
   },
   {
     group: 'State & feedback',
     tag: 'app-banner',
-    blurb: 'nasiko_ui NasikoBanner — a page-level announcement built around one action, elevated. `horizontal` for wide slots, `vertical` for a 280px rail card. The action is a live element in [data-slot="action"].',
+    blurb: 'nasiko_ui NasikoBanner — a page-level announcement built around one action, elevated. `orientation` horizontal for wide slots, vertical for a 280px rail card. The action is a live element in [data-slot="action"].',
     demo: `<app-row gap="md" wrap align="start">
-  <app-banner title="Connect GitHub" content="Deploy agents straight from a repository." closable style="flex: 1 1 360px">
+  <app-banner heading="Connect GitHub" description="Deploy agents straight from a repository." dismissible style="flex: 1 1 360px">
     <app-button data-slot="action" size="md">Connect</app-button>
   </app-banner>
-  <app-banner type="vertical" title="Finish setup" content="Two steps left before your first deploy.">
+  <app-banner orientation="vertical" heading="Finish setup" description="Two steps left before your first deploy.">
     <app-button data-slot="action" size="sm" variant="secondary">Continue</app-button>
   </app-banner>
 </app-row>`,
@@ -959,7 +955,7 @@ const SPECS = [
     group: 'State & feedback',
     tag: 'app-empty-state',
     blurb: 'Zero-content placeholder. Default slot takes the action.',
-    demo: `<app-empty-state title="No agents yet"
+    demo: `<app-empty-state heading="No agents yet"
   description="Deploy your first agent to see it here."
   icon='${escAttr(icons.bot('', 32))}'>
   <app-button>Add agent</app-button>
@@ -1149,7 +1145,7 @@ class DesignSystemPage extends HTMLElement {
 
     // Controlled pager: the demo is the owner that moves the page.
     const pager = this.querySelector('[data-demo="pager"]');
-    pager?.addEventListener('page-change', (e) => pager.setAttribute('page', String(e.detail.page)));
+    pager?.addEventListener('pagination-change', (e) => pager.setAttribute('page', String(e.detail.page)));
 
     this.querySelector('[data-demo="loading"]')?.addEventListener('click', () => {
       document.dispatchEvent(new CustomEvent('loading-start', { bubbles: true }));

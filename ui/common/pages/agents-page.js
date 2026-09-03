@@ -53,7 +53,7 @@ class AgentsPage extends HTMLElement {
 
     // <app-tabs strip> owns the tablist semantics and the sliding indicator;
     // the tab set itself is data-driven, so this page renders the buttons.
-    this.querySelector("#category-tabs").addEventListener("tab-change", (e) => {
+    this.querySelector("#category-tabs").addEventListener("tabs-change", (e) => {
       this.#activeCategory = e.detail.key;
       storeCategory(e.detail.key);
       this.#renderFilter();
@@ -190,7 +190,7 @@ class AgentsPage extends HTMLElement {
       grid.innerHTML = `
         <div class="empty-wrap">
           <app-empty-state
-            title="No agents found"
+            heading="No agents found"
             description="Try adjusting your search or filter criteria."
             icon='${icons.layers("", 40)}'>
             <app-button variant="primary" href="/add-agent">Import agent</app-button>

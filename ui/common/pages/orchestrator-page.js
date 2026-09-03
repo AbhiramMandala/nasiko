@@ -255,7 +255,7 @@ class OrchestratorPage extends HTMLElement {
           <app-module-nav module="orchestrator"></app-module-nav>
           <div class="empty-wrap">
             <app-empty-state
-              title="No agents available"
+              heading="No agents available"
               description="Your orchestrator is ready, but there aren't any agents to run yet. Create a new agent or deploy one from the Artifact Registry to start building workflows."
               icon='${icons.layers('', 40)}'>
               <div class="empty-pills">
@@ -284,7 +284,7 @@ class OrchestratorPage extends HTMLElement {
             ${agent.description ? `description="${escAttr(agent.description)}"` : ''}
             href="${escAttr(href)}"
             aria-label="Chat with ${escAttr(displayName)}">
-            <span slot="actions" class="agent-card-go">${icons.arrowUpRight('', 14)}</span>
+            <span data-slot="actions" class="agent-card-go">${icons.arrowUpRight('', 14)}</span>
           </app-card>
         `;
       }).join('');

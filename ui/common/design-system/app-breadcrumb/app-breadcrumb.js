@@ -13,12 +13,13 @@
  *   Items without `href` render as buttons and fire `crumb-select`.
  * @attr {boolean} leading-icon - Prefixes the trail with a home glyph.
  * @attr {string} label - Accessible name of the `<nav>` (default: `Breadcrumb`).
- * @fires crumb-select - `{ id, label, index }` when an `href`-less item is clicked.
+ * @fires breadcrumb-select - `{ id, label, index }` when an `href`-less item is clicked.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-breadcrumb.css', import.meta.url));
 import { icons, unsizeIcons } from '../../utils/icons.js';
 import { escAttr, escHtml } from '../../utils/escape.js';
+import { emit } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppBreadcrumb extends HTMLElement {
@@ -68,10 +69,7 @@ export class AppBreadcrumb extends HTMLElement {
       btn.addEventListener('click', () => {
         const index = Number(btn.dataset.index);
         const item = items[index];
-        this.dispatchEvent(new CustomEvent('crumb-select', {
-          bubbles: true,
-          detail: { id: item.id ?? null, label: item.label, index },
-        }));
+        emit(this, 'breadcrumb-select', { id: item.id ?? null, label: item.label, index }, { legacy: 'crumb-select' });
       });
     }
   }

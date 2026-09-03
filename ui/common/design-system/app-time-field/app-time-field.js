@@ -18,7 +18,8 @@
  *
  * @element app-time-field
  * @attr {string} value - `HH:MM` or `HH:MM:SS`, 24-hour. Reflected on change.
- * @attr {string} mode - `24h` (default) | `12h` — adds the AM/PM segment.
+ * @attr {string} format - `24h` (default) | `12h` — adds the AM/PM segment.
+ * @attr {string} mode - (deprecated: use format)
  * @attr {boolean} seconds - Adds the seconds segment.
  * @attr {string} min - Earliest time, `HH:MM[:SS]`. A complete value below it snaps up.
  * @attr {string} max - Latest time, `HH:MM[:SS]`.
@@ -35,6 +36,7 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-time-field.css', import.meta.url));
 import { icons, unsizeIcons } from '../../utils/icons.js';
 import { escAttr, escHtml } from '../../utils/escape.js';
+import { readAttr } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 let uid = 0;
@@ -52,7 +54,7 @@ const fromSeconds = (n) => ({ h: Math.floor(n / 3600), m: Math.floor((n % 3600) 
 
 export class AppTimeField extends HTMLElement {
   static get observedAttributes() {
-    return ['value', 'mode', 'seconds', 'min', 'max', 'label', 'hint', 'state', 'required', 'disabled', 'name'];
+    return ['value', 'format', 'seconds', 'min', 'max', 'label', 'hint', 'state', 'required', 'disabled', 'name', 'mode'];
   }
 
   #id = `app-time-field-${++uid}`;
@@ -71,7 +73,7 @@ export class AppTimeField extends HTMLElement {
     this.render();
   }
 
-  get #is12h() { return this.getAttribute('mode') === '12h'; }
+  get #is12h() { return readAttr(this, 'format', 'mode') === '12h'; }
   get #hasSeconds() { return this.hasAttribute('seconds'); }
 
   /** Load the attribute into the segments (external value is the source of truth). */

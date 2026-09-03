@@ -2,10 +2,14 @@
  * One row of an `<app-list>`. See the list's header for the attribute set.
  *
  * @element app-list-item
- * @attr {string} title - Primary text. Truncates with an ellipsis.
- * @attr {string} subtitle - Secondary line under the title.
- * @attr {string} id-value - Identifier echoed in `item-select` (`id` itself is
+ * @attr {string} heading - Primary text. Truncates with an ellipsis.
+ * @attr {string} description - Secondary line under the heading.
+ * @attr {string} value - Identifier echoed in `list-item-select` (`id` itself is
  *   the DOM id and stays free for the page).
+ * @attr {string} title - (deprecated: use heading) Moved onto `heading` and removed
+ *   from the DOM so the browser shows no tooltip.
+ * @attr {string} subtitle - (deprecated: use description)
+ * @attr {string} id-value - (deprecated: use value)
  * @attr {string} image - Avatar image src (32px). Renders an `<app-avatar>`.
  * @attr {number} indent - Nesting level; each level indents by s24 (default 0).
  * @attr {boolean} selected - Brand-tinted row with the secondary border.
@@ -15,22 +19,23 @@
  * @attr {boolean} expanded - Chevron points down (open) rather than right.
  * @attr {boolean} status-dot - 8px success dot after the title.
  * @attr {string} badge - Small outlined label on the trailing edge.
- * @fires item-select - `{ id }` on click / Enter / Space. Bubbles; the list
+ * @fires list-item-select - `{ id }` on click / Enter / Space. Bubbles; the list
  *   re-emits it as `list-select` with the row index.
- * @fires item-toggle - `{ expanded }` from the disclosure chevron. Bubbles.
+ * @fires list-item-toggle - `{ expanded }` from the disclosure chevron. Bubbles.
  * @method focusRow() - Moves focus onto the row's button.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-list-item.css', import.meta.url));
 import { icons, unsizeIcons } from '../../utils/icons.js';
 import { escAttr, escHtml } from '../../utils/escape.js';
+import { readAttr, emit } from '../../utils/deprecate.js';
 import '../app-avatar/app-avatar.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppListItem extends HTMLElement {
   static get observedAttributes() {
-    return ['title', 'subtitle', 'id-value', 'image', 'indent', 'selected', 'disabled',
-            'expandable', 'expanded', 'status-dot', 'badge'];
+    return ['heading', 'description', 'value', 'image', 'indent', 'selected', 'disabled',
+            'expandable', 'expanded', 'status-dot', 'badge', 'title', 'subtitle', 'id-value'];
   }
 
   #icon = null;
@@ -54,8 +59,9 @@ export class AppListItem extends HTMLElement {
       this.#icon = svg ? svg.outerHTML : '';
     }
     const refocus = this.contains(document.activeElement);
-    const title = this.getAttribute('title') ?? '';
-    const subtitle = this.getAttribute('subtitle');
+    const title = readAttr(this, 'heading', 'title') ?? '';
+    if (this.hasAttribute('title')) { this.removeAttribute('title'); if (!this.hasAttribute('heading')) this.setAttribute('heading', title); }
+    const subtitle = readAttr(this, 'description', 'subtitle');
     const image = this.getAttribute('image');
     const indent = Math.max(0, Number(this.getAttribute('indent')) || 0);
     const selected = this.hasAttribute('selected');
@@ -88,9 +94,7 @@ export class AppListItem extends HTMLElement {
     const row = this.querySelector('.row');
     const select = () => {
       if (disabled) return;
-      this.dispatchEvent(new CustomEvent('item-select', {
-        bubbles: true, detail: { id: this.getAttribute('id-value') },
-      }));
+      emit(this, 'list-item-select', { id: readAttr(this, 'value', 'id-value') }, { legacy: 'item-select' });
     };
     row.addEventListener('click', select);
     row.addEventListener('keydown', (e) => {
@@ -109,7 +113,7 @@ export class AppListItem extends HTMLElement {
 
   #toggle() {
     const expanded = !this.hasAttribute('expanded');
-    this.dispatchEvent(new CustomEvent('item-toggle', { bubbles: true, detail: { expanded } }));
+    emit(this, 'list-item-toggle', { expanded }, { legacy: 'item-toggle' });
   }
 }
 customElements.define('app-list-item', AppListItem);

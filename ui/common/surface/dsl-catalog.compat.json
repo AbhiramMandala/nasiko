@@ -1,9 +1,9 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "8d313aebd1eb",
+  "catalogVersion": "02c0266739e9",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 52,
+  "componentCount": 53,
   "components": {
     "app-accordion": {
       "element": "app-accordion",
@@ -58,37 +58,12 @@
       ],
       "note": "Header text is the `label` attribute; the children are the body. Trailing header chips go through Slot(\"meta\")."
     },
-    "app-action-menu": {
-      "element": "app-action-menu",
-      "summary": "Icon button that opens a compact dropdown list of actions.",
-      "paramOrder": [
-        "trigger-title",
-        "items"
-      ],
-      "attributes": {
-        "trigger-title": {
-          "type": "string",
-          "description": "Tooltip text for the trigger button"
-        },
-        "items": {
-          "type": "json",
-          "description": "JSON array of `{ id, label }` action items"
-        }
-      },
-      "slots": [],
-      "events": [
-        {
-          "name": "action-select",
-          "description": "Item clicked; `detail: { id: string }` — bubbles"
-        }
-      ]
-    },
     "app-alert": {
       "element": "app-alert",
       "summary": "Inline callout with an icon, title and optional description.",
       "paramOrder": [
         "variant",
-        "title",
+        "heading",
         "description",
         "dismissible",
         "dismiss-label"
@@ -106,7 +81,7 @@
           "default": "normal",
           "description": "`normal` (default) | `info` | `success` | `warning` | `destructive`"
         },
-        "title": {
+        "heading": {
           "type": "string",
           "description": "Bold first line. Required for an alert to mean anything."
         },
@@ -237,14 +212,14 @@
       "childrenParam": true,
       "paramOrder": [
         "children",
-        "type",
-        "title",
-        "content",
+        "orientation",
+        "heading",
+        "description",
         "image",
-        "closable"
+        "dismissible"
       ],
       "attributes": {
-        "type": {
+        "orientation": {
           "type": "enum",
           "values": [
             "horizontal",
@@ -253,11 +228,11 @@
           "default": "horizontal",
           "description": "`horizontal` (default) | `vertical`"
         },
-        "title": {
+        "heading": {
           "type": "string",
           "description": "Heading text."
         },
-        "content": {
+        "description": {
           "type": "string",
           "description": "Body text under the heading."
         },
@@ -265,7 +240,7 @@
           "type": "string",
           "description": "src for a 24px leading image (a provider logo). Wins over the icon slot when both are present."
         },
-        "closable": {
+        "dismissible": {
           "type": "boolean",
           "description": "Appends a trailing × button (horizontal only, as in the Flutter component). Fires `banner-close`; the element removes itself unless the event is cancelled."
         }
@@ -320,11 +295,11 @@
       "slots": [],
       "events": [
         {
-          "name": "crumb-select",
+          "name": "breadcrumb-select",
           "description": "`{ id, label, index }` when an `href`-less item is clicked."
         }
       ],
-      "actionEvent": "crumb-select",
+      "actionEvent": "breadcrumb-select",
       "note": "Items with an href navigate on their own; the Action fires only for href-less items."
     },
     "app-button": {
@@ -558,19 +533,19 @@
       "slots": [
         {
           "name": "leading",
-          "attribute": "slot"
+          "attribute": "data-slot"
         },
         {
           "name": "actions",
-          "attribute": "slot"
+          "attribute": "data-slot"
         },
         {
           "name": "body",
-          "attribute": "slot"
+          "attribute": "data-slot"
         },
         {
           "name": "footer",
-          "attribute": "slot"
+          "attribute": "data-slot"
         }
       ],
       "events": []
@@ -795,6 +770,89 @@
       "slots": [],
       "events": []
     },
+    "app-combobox": {
+      "element": "app-combobox",
+      "summary": "Typeahead: a search box that suggests options as you type and reports the pick.",
+      "actionParam": true,
+      "paramOrder": [
+        "data-fn",
+        "options",
+        "placeholder",
+        "aria-label",
+        "size",
+        "disabled",
+        "min-chars",
+        "empty-text",
+        "name",
+        "value",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "aria-label"
+      ],
+      "attributes": {
+        "data-fn": {
+          "type": "dataSource",
+          "description": "Registered data-source name: `(query) => options`."
+        },
+        "options": {
+          "type": "json",
+          "description": "JSON array of `\"value\"` or `{ label, value, description }`, filtered client-side when there is no `data-fn` / `filterFn`."
+        },
+        "placeholder": {
+          "type": "string",
+          "default": "Search",
+          "description": "Input placeholder (default: `Search`)."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Accessible name of the input. Falls back to the placeholder."
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "description": "`md` (default, 36px) | `sm` (28px) — app-search's sizes."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "min-chars": {
+          "type": "number",
+          "default": 0,
+          "description": "Characters before suggestions are fetched (default 0)."
+        },
+        "empty-text": {
+          "type": "string",
+          "description": "Shown when nothing matches (default: `No results`)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner input for form submit."
+        },
+        "value": {
+          "type": "string",
+          "description": "Initial text."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "combobox-select",
+          "description": "`{ value, option }` when an option is picked. Bubbles."
+        },
+        {
+          "name": "input",
+          "description": "Native, bubbles from the inner input."
+        }
+      ],
+      "actionEvent": "combobox-select",
+      "note": "Suggestions come from `data-fn` (a registered read source, `(query) => options`) or a static `options` list. The Action receives { value, option }."
+    },
     "app-context-menu": {
       "element": "app-context-menu",
       "summary": "Right-click (or long-press) menu at the pointer position.",
@@ -970,11 +1028,11 @@
       "element": "app-empty-state",
       "summary": "Placeholder shown when a list or view has no content yet.",
       "paramOrder": [
-        "title",
+        "heading",
         "description"
       ],
       "attributes": {
-        "title": {
+        "heading": {
           "type": "string",
           "description": "Bold heading text"
         },
@@ -986,7 +1044,7 @@
       "slots": [
         {
           "name": "icon",
-          "attribute": "slot"
+          "attribute": "data-slot"
         },
         {
           "name": "default",
@@ -1141,7 +1199,7 @@
       ],
       "events": [
         {
-          "name": "hovercard-toggle",
+          "name": "hover-card-toggle",
           "description": "`{ open }` after every open/close. Bubbles."
         }
       ],
@@ -1387,9 +1445,9 @@
       "element": "app-list-item",
       "summary": "One row of an `<app-list>`.",
       "paramOrder": [
-        "title",
-        "subtitle",
-        "id-value",
+        "heading",
+        "description",
+        "value",
         "image",
         "indent",
         "selected",
@@ -1400,17 +1458,17 @@
         "badge"
       ],
       "attributes": {
-        "title": {
+        "heading": {
           "type": "string",
           "description": "Primary text. Truncates with an ellipsis."
         },
-        "subtitle": {
+        "description": {
           "type": "string",
-          "description": "Secondary line under the title."
+          "description": "Secondary line under the heading."
         },
-        "id-value": {
+        "value": {
           "type": "string",
-          "description": "Identifier echoed in `item-select` (`id` itself is the DOM id and stays free for the page)."
+          "description": "Identifier echoed in `list-item-select` (`id` itself is the DOM id and stays free for the page)."
         },
         "image": {
           "type": "string",
@@ -1449,15 +1507,15 @@
       "slots": [],
       "events": [
         {
-          "name": "item-select",
+          "name": "list-item-select",
           "description": "`{ id }` on click / Enter / Space. Bubbles; the list re-emits it as `list-select` with the row index."
         },
         {
-          "name": "item-toggle",
+          "name": "list-item-toggle",
           "description": "`{ expanded }` from the disclosure chevron. Bubbles."
         }
       ],
-      "note": "Selection is bound on the parent app-list (list-select carries id + index); the item itself takes no Action."
+      "note": "Selection is bound on the parent app-list (list-select carries id + index); the item itself takes no Action. Its identifier is `value`."
     },
     "app-menu": {
       "element": "app-menu",
@@ -1472,6 +1530,7 @@
         "align",
         "disabled",
         "label",
+        "trigger-label",
         "action"
       ],
       "requiresName": true,
@@ -1515,6 +1574,11 @@
         "label": {
           "type": "string",
           "description": "Accessible name of the `role=\"menu\"` surface, e.g. `Agent actions`."
+        },
+        "trigger-label": {
+          "type": "string",
+          "default": "Actions",
+          "description": "Accessible name of the built-in icon trigger (default: `Actions`). Ignored when you supply your own trigger element."
         }
       },
       "slots": [
@@ -1534,23 +1598,29 @@
         }
       ],
       "actionEvent": "menu-select",
-      "note": "The child is the trigger (an app-button); `items` is the JSON menu. The Action receives { id }."
+      "note": "Optional child is the trigger (an app-button); with no child the menu renders its own icon trigger named by `trigger-label`. `items` is the JSON menu; the Action receives { id }."
     },
     "app-modal": {
       "element": "app-modal",
       "summary": "Accessible dialog modal with heading, body, footer slot, backdrop dismiss, and ESC/X close.",
       "childrenParam": true,
+      "actionParam": true,
       "paramOrder": [
         "children",
         "heading",
-        "hide-footer"
+        "no-footer",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "heading"
       ],
       "attributes": {
         "heading": {
           "type": "string",
           "description": "Modal title shown in the header"
         },
-        "hide-footer": {
+        "no-footer": {
           "type": "boolean",
           "description": "Hides the footer container even when a footer slot exists"
         }
@@ -1565,7 +1635,17 @@
           "attribute": "data-slot"
         }
       ],
-      "events": []
+      "events": [
+        {
+          "name": "modal-toggle",
+          "description": "`{ open }` after the dialog opens or closes. Bubbles."
+        },
+        {
+          "name": "modal-close",
+          "description": "`{ result }` after the dialog closes (× button, backdrop, Escape, or `hide(result)`). Bubbles."
+        }
+      ],
+      "actionEvent": "modal-close"
     },
     "app-otp-input": {
       "element": "app-otp-input",
@@ -1628,11 +1708,11 @@
           "description": "Bubbles from the inner input on every change."
         },
         {
-          "name": "otp-complete",
+          "name": "otp-input-complete",
           "description": "`{ value }` when the last slot is filled."
         }
       ],
-      "actionEvent": "otp-complete",
+      "actionEvent": "otp-input-complete",
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-pagination": {
@@ -1679,12 +1759,12 @@
       "slots": [],
       "events": [
         {
-          "name": "page-change",
+          "name": "pagination-change",
           "description": "`{ page }` when the user picks a different page. Bubbles."
         }
       ],
-      "actionEvent": "page-change",
-      "note": "Controlled: the Action must @Set the bound page; the component never changes `page` itself."
+      "actionEvent": "pagination-change",
+      "note": "Controlled: the Action must @Set the bound page from { page }; the component never changes `page` itself."
     },
     "app-popover": {
       "element": "app-popover",
@@ -1855,12 +1935,12 @@
       "childrenParam": true,
       "paramOrder": [
         "children",
-        "direction",
+        "orientation",
         "sizes",
         "no-reset"
       ],
       "attributes": {
-        "direction": {
+        "orientation": {
           "type": "enum",
           "values": [
             "horizontal",
@@ -1885,7 +1965,7 @@
       ],
       "events": [
         {
-          "name": "layout-change",
+          "name": "resizable-change",
           "description": "`{ sizes: number[] }` after an applied change. Bubbles."
         }
       ],
@@ -2153,12 +2233,18 @@
       "element": "app-sheet",
       "summary": "Full-height side sheet that slides in over a dimmed backdrop.",
       "childrenParam": true,
+      "actionParam": true,
       "paramOrder": [
         "children",
         "heading",
         "side",
         "open",
-        "no-backdrop-close"
+        "no-backdrop-close",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "heading"
       ],
       "attributes": {
         "heading": {
@@ -2195,10 +2281,15 @@
       ],
       "events": [
         {
+          "name": "sheet-toggle",
+          "description": "`{ open }` after the sheet opens or closes. Bubbles."
+        },
+        {
           "name": "sheet-close",
           "description": "`{ result }` after the sheet has closed. Bubbles."
         }
       ],
+      "actionEvent": "sheet-close",
       "note": "Body children; actions through Slot(\"footer\"). Modal <dialog> underneath, like app-modal."
     },
     "app-skeleton": {
@@ -2578,6 +2669,61 @@
       "dataAsFetcher": true,
       "note": "Rows reach app-table as a fetcher on its `dataFn` property (app-table.js:24,113). Assigning the property avoids registering a synthetic source in the app-wide data-sources registry on every render pass — which never got unregistered and could collide with a real name."
     },
+    "app-tabs": {
+      "element": "app-tabs",
+      "summary": "Tab bar in two shapes: - **Panels** (default) — `[data-tab]` (or `[data-slot]`) children are the panels; the strip is generated from their `data-label` — or from the `tabs` attribute, which is how a generated surface names them — and the component owns which one shows.",
+      "childrenParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "children",
+        "strip",
+        "tabs",
+        "active",
+        "query-param",
+        "label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "strip": {
+          "type": "boolean",
+          "description": "Strip-only mode (see above)"
+        },
+        "tabs": {
+          "type": "json",
+          "description": "JSON array of `{ key, label }` naming the panels (panels mode). Each key matches a child's `data-tab` or `data-slot`. Optional: without it the strip reads each panel's `data-label`, falling back to the key."
+        },
+        "active": {
+          "type": "string",
+          "description": "Key of the active tab (panels mode). Reflected as the user switches."
+        },
+        "query-param": {
+          "type": "string",
+          "description": "URL param kept in sync with the active tab (panels mode)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name of the tablist, e.g. `Agent sections`."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "events": [
+        {
+          "name": "tabs-change",
+          "description": "Tab switched; `detail: { key: string }` — bubbles"
+        }
+      ],
+      "actionEvent": "tabs-change",
+      "note": "Panels are the children, each through Slot(\"<key>\"); `tabs` names and orders them. The Action receives { key }. `strip` mode and `query-param` are page concerns and should not be set from a surface."
+    },
     "app-tag": {
       "element": "app-tag",
       "summary": "Tag / chip — an interactive, content-bearing label.",
@@ -2650,7 +2796,7 @@
       "actionParam": true,
       "paramOrder": [
         "children",
-        "mode",
+        "selection",
         "value",
         "scrollable",
         "size",
@@ -2662,7 +2808,7 @@
         "label"
       ],
       "attributes": {
-        "mode": {
+        "selection": {
           "type": "enum",
           "values": [
             "multiple",
@@ -2702,11 +2848,11 @@
       ],
       "events": [
         {
-          "name": "group-change",
+          "name": "tag-group-change",
           "description": "`{ value: string[] }` after a selection change."
         }
       ],
-      "actionEvent": "group-change",
+      "actionEvent": "tag-group-change",
       "note": "Children are app-tag; mode=none is a plain layout row."
     },
     "app-textarea": {
@@ -2830,7 +2976,7 @@
       "actionParam": true,
       "paramOrder": [
         "value",
-        "mode",
+        "format",
         "seconds",
         "min",
         "max",
@@ -2851,7 +2997,7 @@
           "type": "string",
           "description": "`HH:MM` or `HH:MM:SS`, 24-hour. Reflected on change."
         },
-        "mode": {
+        "format": {
           "type": "string",
           "description": "`24h` (default) | `12h` — adds the AM/PM segment."
         },
@@ -2963,7 +3109,7 @@
       "actionParam": true,
       "paramOrder": [
         "children",
-        "mode",
+        "selection",
         "size",
         "value",
         "disabled",
@@ -2976,7 +3122,7 @@
         "label"
       ],
       "attributes": {
-        "mode": {
+        "selection": {
           "type": "enum",
           "values": [
             "single",
@@ -3020,11 +3166,11 @@
       ],
       "events": [
         {
-          "name": "group-change",
+          "name": "toggle-group-change",
           "description": "`{ value }` — a string in `single` mode, an array in `multiple`."
         }
       ],
-      "actionEvent": "group-change",
+      "actionEvent": "toggle-group-change",
       "note": "Children are app-toggle with a `value`; the group reflects the selection in its own `value`."
     },
     "app-toolbar": {
@@ -3086,9 +3232,7 @@
     "/your-agents"
   ],
   "blocked": {
-    "app-tabs": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) — an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism.",
     "app-loading-bar": "Zero attributes; driven by global document events, not composition.",
-    "auto-complete": "Needs a live filter callback through data-sources.js — not designed yet.",
     "app-command": "A modal command palette is page chrome, not dashboard content; `groups` is a JSON tree of commands the surface cannot meaningfully author."
   }
 }

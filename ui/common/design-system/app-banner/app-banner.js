@@ -9,14 +9,19 @@
  * title → content → action into a fixed 280px card for rails and sidebars.
  *
  * @element app-banner
- * @attr {string} type - `horizontal` (default) | `vertical`
- * @attr {string} title - Heading text.
- * @attr {string} content - Body text under the heading.
+ * @attr {string} orientation - `horizontal` (default) | `vertical`
+ * @attr {string} heading - Heading text.
+ * @attr {string} description - Body text under the heading.
+ * @attr {string} type - (deprecated: use orientation) The old name.
+ * @attr {string} title - (deprecated: use heading) The old name; moved onto `heading`
+ *   and removed from the DOM so the browser shows no tooltip.
+ * @attr {string} content - (deprecated: use description) The old name.
  * @attr {string} image - src for a 24px leading image (a provider logo). Wins
  *   over the icon slot when both are present.
- * @attr {boolean} closable - Appends a trailing × button (horizontal only, as in
+ * @attr {boolean} dismissible - Appends a trailing × button (horizontal only, as in
  *   the Flutter component). Fires `banner-close`; the element removes itself
  *   unless the event is cancelled.
+ * @attr {boolean} closable - (deprecated: use dismissible) The old name.
  * @slot [data-slot="icon"] - Leading inline `<svg>` when there is no `image`.
  * @slot [data-slot="action"] - The call to action — normally one `<app-button>`.
  * @fires banner-close - Cancelable. The element removes itself unless
@@ -26,11 +31,12 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-banner.css', import.meta.url));
 import { icons, unsizeIcons } from '../../utils/icons.js';
 import { escAttr, escHtml } from '../../utils/escape.js';
+import { readAttr, hasAttr, emit } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppBanner extends HTMLElement {
   static get observedAttributes() {
-    return ['type', 'title', 'content', 'image', 'closable'];
+    return ['orientation', 'heading', 'description', 'image', 'dismissible', 'type', 'title', 'content', 'closable'];
   }
 
   #icon = null;
@@ -54,11 +60,12 @@ export class AppBanner extends HTMLElement {
     // BEFORE connectedCallback, so the first render can happen before a
     // connect-time capture — and would wipe the children it needed.
     this.#capture();
-    const type = this.getAttribute('type') === 'vertical' ? 'vertical' : 'horizontal';
-    const title = this.getAttribute('title') ?? '';
-    const content = this.getAttribute('content') ?? '';
+    const type = readAttr(this, 'orientation', 'type') === 'vertical' ? 'vertical' : 'horizontal';
+    const title = readAttr(this, 'heading', 'title') ?? '';
+    if (this.hasAttribute('title')) { this.removeAttribute('title'); if (!this.hasAttribute('heading')) this.setAttribute('heading', title); }
+    const content = readAttr(this, 'description', 'content') ?? '';
     const image = this.getAttribute('image');
-    const closable = this.hasAttribute('closable') && type === 'horizontal';
+    const closable = hasAttr(this, 'dismissible', 'closable') && type === 'horizontal';
 
     const lead = image
       ? `<img class="lead" src="${escAttr(image)}" alt="" width="24" height="24">`
@@ -82,8 +89,7 @@ export class AppBanner extends HTMLElement {
     if (this.#action) this.querySelector('.action').appendChild(this.#action);
     unsizeIcons(this);
     this.querySelector('.close')?.addEventListener('click', () => {
-      const ev = new CustomEvent('banner-close', { bubbles: true, cancelable: true });
-      if (this.dispatchEvent(ev)) this.remove();
+      if (emit(this, 'banner-close', {}, { cancelable: true })) this.remove();
     });
   }
 }

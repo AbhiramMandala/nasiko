@@ -11,8 +11,9 @@
  * Home/End jump; Enter/Space toggle (the tag's own handler).
  *
  * @element app-tag-group
- * @attr {string} mode - `multiple` (default) | `single` | `none` — `none` is a
+ * @attr {string} selection - `multiple` (default) | `single` | `none` — `none` is a
  *   plain layout row with no selection behaviour (the Flutter default).
+ * @attr {string} mode - (deprecated: use selection)
  * @attr {string} value - Selected tag values, space-separated. Reflected as the
  *   user picks. Each tag's value is its `value` attribute, falling back to its text.
  * @attr {boolean} scrollable - One line, horizontal scroll, instead of wrapping.
@@ -20,19 +21,20 @@
  * @attr {string} label - Accessible name of the `role="group"`.
  * @slot default - `<app-tag>` children.
  * @prop {string[]} value - Selected values.
- * @fires group-change - `{ value: string[] }` after a selection change.
+ * @fires tag-group-change - `{ value: string[] }` after a selection change.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-tag-group.css', import.meta.url));
+import { readAttr, emit } from '../../utils/deprecate.js';
 import '../app-tag/app-tag.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppTagGroup extends HTMLElement {
-  static get observedAttributes() { return ['mode', 'value', 'scrollable', 'size', 'label']; }
+  static get observedAttributes() { return ['selection', 'value', 'scrollable', 'size', 'label', 'mode']; }
 
   #wired = false;
 
-  get mode() { const m = this.getAttribute('mode'); return m === 'single' || m === 'none' ? m : 'multiple'; }
+  get mode() { const m = readAttr(this, 'selection', 'mode'); return m === 'single' || m === 'none' ? m : 'multiple'; }
   get tags() { return [...this.querySelectorAll(':scope > app-tag')]; }
   #valueOf(tag) { return tag.getAttribute('value') ?? tag.textContent.trim(); }
 
@@ -55,7 +57,7 @@ export class AppTagGroup extends HTMLElement {
         if (e.detail.selected) for (const t of this.tags) if (t !== tag) t.removeAttribute('selected');
       }
       this.setAttribute('value', this.value.join(' '));
-      this.dispatchEvent(new CustomEvent('group-change', { bubbles: true, detail: { value: this.value } }));
+      emit(this, 'tag-group-change', { value: this.value }, { legacy: 'group-change' });
     });
 
     this.addEventListener('keydown', (e) => {

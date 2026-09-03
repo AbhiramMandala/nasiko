@@ -12,7 +12,9 @@
  *
  * @element app-alert
  * @attr {string} variant - `normal` (default) | `info` | `success` | `warning` | `destructive`
- * @attr {string} title - Bold first line. Required for an alert to mean anything.
+ * @attr {string} heading - Bold first line. Required for an alert to mean anything.
+ * @attr {string} title - (deprecated: use heading) The old name; moved onto `heading`
+ *   and removed from the DOM so the browser shows no tooltip.
  * @attr {string} description - Body text under the title.
  * @attr {boolean} dismissible - Appends a trailing × button. Clicking it collapses
  *   the alert in place and fires `alert-dismiss`; the element removes itself
@@ -28,6 +30,7 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-alert.css', import.meta.url));
 import { icons, unsizeIcons } from '../../utils/icons.js';
 import { escAttr, escHtml } from '../../utils/escape.js';
+import { readAttr, emit } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const VARIANTS = ['normal', 'info', 'success', 'warning', 'destructive'];
@@ -42,7 +45,7 @@ const DEFAULT_ICON = {
 
 export class AppAlert extends HTMLElement {
   static get observedAttributes() {
-    return ['variant', 'title', 'description', 'dismissible', 'dismiss-label'];
+    return ['variant', 'heading', 'title', 'description', 'dismissible', 'dismiss-label'];
   }
 
   #icon = null;
@@ -66,8 +69,7 @@ export class AppAlert extends HTMLElement {
     const finish = () => {
       if (finished) return;
       finished = true;
-      const ev = new CustomEvent('alert-dismiss', { bubbles: true, cancelable: true });
-      const keep = !this.dispatchEvent(ev);
+      const keep = !emit(this, 'alert-dismiss', {}, { cancelable: true });
       if (!keep) this.remove();
       else { this.classList.remove('is-leaving'); this.#dismissing = false; }
     };
@@ -89,7 +91,8 @@ export class AppAlert extends HTMLElement {
     this.#capture();
     const raw = this.getAttribute('variant');
     const variant = VARIANTS.includes(raw) ? raw : 'normal';
-    const title = this.getAttribute('title') ?? '';
+    const title = readAttr(this, 'heading', 'title') ?? '';
+    if (this.hasAttribute('title')) { this.removeAttribute('title'); if (!this.hasAttribute('heading')) this.setAttribute('heading', title); }
     const description = this.getAttribute('description');
     const dismissible = this.hasAttribute('dismissible');
     const dismissLabel = this.getAttribute('dismiss-label') || 'Dismiss';

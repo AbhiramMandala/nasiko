@@ -17,12 +17,13 @@
  * @attr {boolean} disabled
  * @attr {string} label - Accessible name of the `<nav>` (default: `Pagination`).
  * @prop {number} page - Get/set the current page.
- * @fires page-change - `{ page }` when the user picks a different page. Bubbles.
+ * @fires pagination-change - `{ page }` when the user picks a different page. Bubbles.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-pagination.css', import.meta.url));
 import { icons, unsizeIcons } from '../../utils/icons.js';
 import { escAttr } from '../../utils/escape.js';
+import { emit } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppPagination extends HTMLElement {
@@ -51,7 +52,7 @@ export class AppPagination extends HTMLElement {
 
   #go(page) {
     if (page < 1 || page > this.pageCount || page === this.page) return;
-    this.dispatchEvent(new CustomEvent('page-change', { bubbles: true, detail: { page } }));
+    emit(this, 'pagination-change', { page }, { legacy: 'page-change' });
   }
 
   render() {

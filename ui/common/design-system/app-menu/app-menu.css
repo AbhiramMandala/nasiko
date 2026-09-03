@@ -1,17 +1,56 @@
 /*
-  app-menu — nasiko_ui NasikoPopupMenu (surface shared with app-context-menu).
+  app-menu — the merged menu. Surface and item paint are the former
+  app-action-menu's (the codebase's own light dropdown): bg-surface fill,
+  border hairline, r8, shadow-md, s8 padding, min-width 10rem; items 8/12
+  padding, r4, body/secondary, hover + focus tint of the primary at 8% with a
+  2px inset focus outline. Added on top: icon 16, shortcut caps, destructive
+  items in fg-error with the error wash on hover, disabled at 50%, dividers
+  with s4 above and below, and a 220px scroll ceiling. Shared with
+  app-context-menu via the .app-menu-surface class.
 
-  Surface: INVERSE in light mode — sand/900 with constant-white ink and
-  fg-secondary as the highlight — and the elevated bg-surface in dark mode so
-  the menu reads one step lighter than the page. Padding s4, radius r8,
-  shadow-menu, min-width 10rem, max-height 220 → scrolls. Items: 32 high
-  (control/height/md), padding 0 s8, gap s8, radius r4, body/secondary 13/18,
-  icon 16; destructive items in fg-error; disabled at 50%. Divider: hairline
-  with s4 above and below.
+  The built-in trigger is the 32px ghost icon button (control/height/md).
 */
 @scope (app-menu) {
   :scope {
-    display: inline-block;
+    position: relative;
+    display: inline-flex;
+  }
+
+  .menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-h-md);
+    height: var(--control-h-md);
+    padding: 0;
+    border: var(--bw-1) solid transparent;
+    border-radius: var(--r-8);
+    background: transparent;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+
+    & svg { width: 18px; height: 18px; }
+
+    &:hover:not(:disabled) {
+      background: var(--bg-group);
+      color: var(--fg-primary);
+    }
+
+    &[aria-expanded="true"] {
+      background: var(--bg-group);
+      color: var(--fg-primary);
+    }
+
+    &:focus-visible {
+      outline: var(--bw-1) solid var(--fg-brand);
+      outline-offset: 2px;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
   }
 }
 
@@ -20,20 +59,16 @@
     position: fixed;
     inset: auto;
     margin: 0;
-    padding: var(--s-4);
+    padding: var(--s-8);
     min-width: 10rem;
     max-width: min(20rem, calc(100vw - 2 * var(--s-8)));
     max-height: 220px;
     overflow-y: auto;
-    --menu-bg: light-dark(var(--sand-900), var(--bg-surface));
-    --menu-fg: light-dark(var(--fg-constant-white), var(--fg-primary));
-    --menu-hover: light-dark(var(--fg-secondary), var(--bg-surface-hover));
-    --menu-muted: light-dark(var(--sand-400), var(--fg-secondary));
-    background: var(--menu-bg);
-    color: var(--menu-fg);
-    border: var(--bw-1) solid light-dark(var(--sand-900), var(--border-primary));
+    background: var(--color-bg-surface);
+    color: var(--color-text-main);
+    border: var(--bw-1) solid var(--color-border);
     border-radius: var(--r-8);
-    box-shadow: var(--shadow-menu);
+    box-shadow: var(--shadow-md);
     z-index: var(--z-dropdown);
     animation: menu-reveal var(--transition-fast);
   }
@@ -45,8 +80,7 @@
     align-items: center;
     gap: var(--s-8);
     width: 100%;
-    min-height: var(--control-h-md);
-    padding: 0 var(--s-8);
+    padding: var(--s-8) var(--s-12);
     border: 0;
     border-radius: var(--r-4);
     background: none;
@@ -58,10 +92,17 @@
     white-space: nowrap;
     cursor: pointer;
 
+    /* Keyboard focus paints the hover affordance plus the house focus ring —
+       the menu is arrow-key driven, so invisible focus would strand the user. */
     &:hover:not(:disabled),
     &:focus-visible {
-      background: var(--menu-hover);
-      outline: none;
+      background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+      color: var(--color-primary);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--color-primary);
+      outline-offset: -2px;
     }
 
     &:disabled {
@@ -72,7 +113,14 @@
 
   .is-destructive {
     color: var(--fg-error);
-    &:hover:not(:disabled), &:focus-visible { background: var(--bg-error); }
+
+    &:hover:not(:disabled),
+    &:focus-visible {
+      background: var(--bg-error);
+      color: var(--fg-error);
+    }
+
+    &:focus-visible { outline-color: var(--fg-error); }
   }
 
   .menu-icon {
@@ -91,18 +139,12 @@
   .menu-shortcut {
     flex-shrink: 0;
     margin-left: var(--s-12);
-    /* Caps on the inverse surface: keep them quiet. */
-    & kbd {
-      background: transparent;
-      border-color: var(--menu-muted);
-      color: var(--menu-muted);
-    }
   }
 
   .menu-divider {
     height: var(--bw-1);
     margin: var(--s-4) 0;
-    background: light-dark(var(--sand-700), var(--border-primary));
+    background: var(--color-border);
   }
 
   @keyframes menu-reveal {

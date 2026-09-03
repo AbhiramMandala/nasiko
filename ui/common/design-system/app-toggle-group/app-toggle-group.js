@@ -11,7 +11,8 @@
  * Design rule carried over: items in a group share one `size`, set here.
  *
  * @element app-toggle-group
- * @attr {string} mode - `single` (default) | `multiple`
+ * @attr {string} selection - `single` (default) | `multiple`
+ * @attr {string} mode - (deprecated: use selection)
  * @attr {string} size - `md` (default) | `sm` | `lg` — applied to every item.
  * @attr {string} value - In `single` mode, the `value` of the pressed item.
  *   Reflected as the user picks. In `multiple` mode, a space-separated list.
@@ -21,19 +22,20 @@
  * @attr {string} label - Accessible name of the `role="group"`.
  * @slot default - `<app-toggle value="…">` children.
  * @prop {string|string[]} value - Selected value (single) or values (multiple).
- * @fires group-change - `{ value }` — a string in `single` mode, an array in `multiple`.
+ * @fires toggle-group-change - `{ value }` — a string in `single` mode, an array in `multiple`.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-toggle-group.css', import.meta.url));
+import { readAttr, emit } from '../../utils/deprecate.js';
 import '../app-toggle/app-toggle.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppToggleGroup extends HTMLElement {
-  static get observedAttributes() { return ['mode', 'size', 'value', 'disabled', 'label']; }
+  static get observedAttributes() { return ['selection', 'size', 'value', 'disabled', 'label', 'mode']; }
 
   #wired = false;
 
-  get multiple() { return this.getAttribute('mode') === 'multiple'; }
+  get multiple() { return readAttr(this, 'selection', 'mode') === 'multiple'; }
   get items() { return [...this.querySelectorAll(':scope > app-toggle')]; }
 
   get value() {
@@ -63,7 +65,7 @@ export class AppToggleGroup extends HTMLElement {
       }
       this.setAttribute('value', this.multiple ? this.value.join(' ') : (this.value ?? ''));
       item.emitChange();
-      this.dispatchEvent(new CustomEvent('group-change', { bubbles: true, detail: { value: this.value } }));
+      emit(this, 'toggle-group-change', { value: this.value }, { legacy: 'group-change' });
     });
 
     this.addEventListener('keydown', (e) => {

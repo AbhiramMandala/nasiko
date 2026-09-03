@@ -61,7 +61,7 @@ class McpDetailPage extends HTMLElement {
     this.#initialized = true;
     this.#connectorId = new URLSearchParams(location.search).get('id');
     if (!this.#connectorId) {
-      this.innerHTML = `<app-empty-state title="No connector specified" icon='${icons.alertTriangle('', 40)}'></app-empty-state>`;
+      this.innerHTML = `<app-empty-state heading="No connector specified" icon='${icons.alertTriangle('', 40)}'></app-empty-state>`;
       return;
     }
     this.innerHTML = '<app-skeleton height="400px" style="max-width:900px;margin:0 auto;"></app-skeleton>';
@@ -76,7 +76,7 @@ class McpDetailPage extends HTMLElement {
       this.#connector = null;
     }
     if (!this.#connector?.name && !this.#connector?.display_name) {
-      this.innerHTML = `<app-empty-state title="Connector not found" description="It may have been deleted, or you no longer have access to it." icon='${icons.alertTriangle('', 40)}'></app-empty-state>`;
+      this.innerHTML = `<app-empty-state heading="Connector not found" description="It may have been deleted, or you no longer have access to it." icon='${icons.alertTriangle('', 40)}'></app-empty-state>`;
       return;
     }
     document.title = 'Nasiko - ' + (this.#connector.display_name || this.#connector.name);
@@ -150,7 +150,7 @@ class McpDetailPage extends HTMLElement {
 
   #wireTabs() {
     let logsLoaded = false;
-    this.querySelector('app-tabs').addEventListener('tab-change', (e) => {
+    this.querySelector('app-tabs').addEventListener('tabs-change', (e) => {
       if (e.detail.key === 'logs' && !logsLoaded) {
         logsLoaded = true;
         this.#loadLogs();

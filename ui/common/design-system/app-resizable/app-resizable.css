@@ -17,7 +17,7 @@
     min-height: 0;
   }
 
-  :scope[direction="vertical"] {
+  :scope[orientation="vertical"], :scope[direction="vertical"] {
     flex-direction: column;
     height: 100%;
   }
@@ -77,7 +77,7 @@
     box-shadow: 0 0 0 2px var(--bg-base), 0 0 0 3px var(--fg-brand);
   }
 
-  :scope[direction="vertical"] .divider {
+  :scope[orientation="vertical"], :scope[direction="vertical"] .divider {
     width: auto;
     height: 8px;
     margin: -3px 0;

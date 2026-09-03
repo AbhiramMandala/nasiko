@@ -252,11 +252,11 @@ function buildNode(node, catalog, deps = {}) {
 /**
  * Mark a child as belonging to a named slot.
  *
- * The attribute is not uniform across the design system — `app-card` and
- * `app-empty-state` read `slot="…"`, while `app-modal`, `app-toolbar` and
- * `app-select` read `data-slot="…"` — so it comes from the catalog per
- * component. A mismatch appends the child anyway and reports: a misplaced
- * footer button is a smaller failure than a missing one.
+ * Every component reads `data-slot="…"` now (CONVENTIONS.md §3), but the
+ * attribute still comes from the catalog per component rather than being
+ * assumed — the catalog is the contract, and the day one component differs
+ * again this keeps working. A mismatch appends the child anyway and reports:
+ * a misplaced footer button is a smaller failure than a missing one.
  */
 /** Boolean attributes arrive as true, "true" or "" depending on the source. */
 function isTruthy(v) {
