@@ -188,7 +188,7 @@ async fn hitl_pause_persists_request_and_emits_awaiting_human_event() {
     agent_mock.assert_async().await;
 
     let rows = sqlx::query(
-        "SELECT kind, origin, task_id, context_id, chat_session_id, owner_user_id, agent_id
+        "SELECT id, kind, origin, task_id, context_id, chat_session_id, owner_user_id, agent_id
          FROM hitl_requests WHERE agent_id = $1",
     )
     .bind(agent_id)
@@ -198,6 +198,39 @@ async fn hitl_pause_persists_request_and_emits_awaiting_human_event() {
 
     assert_eq!(rows.len(), 1, "expected exactly one hitl_requests row");
     let row = &rows[0];
+
+    // Frontend discovery: the same stream also carries a `"type":"hitl"` data part naming this
+    // exact row — the orchestrator's own version of "deliver pause metadata on the live stream,
+    // not via /pending polling" (matches direct chat's `build_hitl_stream_event`, plus the
+    // `agent` name direct chat never needs since the orchestrator can delegate to several agents).
+    let hitl_frame = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<serde_json::Value>(data).ok())
+        .find_map(|event| {
+            let parts = event
+                .pointer("/result/statusUpdate/status/message/parts")
+                .or_else(|| event.pointer("/statusUpdate/status/message/parts"))?;
+            parts
+                .as_array()?
+                .iter()
+                .find(|p| p.pointer("/data/type").and_then(|v| v.as_str()) == Some("hitl"))
+                .and_then(|p| p.get("data"))
+                .cloned()
+        })
+        .expect("expected a \"type\":\"hitl\" data part in the SSE body");
+    assert_eq!(hitl_frame["agent"], "hitl-test-agent");
+    assert_eq!(hitl_frame["kind"], "input_required");
+    assert_eq!(hitl_frame["task_id"], SUB_AGENT_TASK_ID);
+    assert_eq!(hitl_frame["context_id"], SUB_AGENT_CONTEXT_ID);
+    // The id on the wire must name the row that was actually, durably committed above — proving
+    // the frame is built from the real `hitl_store.create()` result, not minted or guessed.
+    assert_eq!(
+        hitl_frame["id"]
+            .as_str()
+            .and_then(|s| s.parse::<Uuid>().ok()),
+        Some(row.get::<Uuid, _>("id"))
+    );
     assert_eq!(row.get::<String, _>("kind"), "input_required");
     assert_eq!(row.get::<String, _>("origin"), "orchestrator");
     assert_eq!(

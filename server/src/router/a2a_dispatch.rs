@@ -681,21 +681,24 @@ pub(crate) async fn orchestrator_stream(
                             // Never report a fake success: if the pending question couldn't be
                             // recorded, the human will never see it, so the turn must fail loudly
                             // rather than silently close the stream as if it were fine.
-                            if let Err(e) = persisted {
-                                tracing::error!(error = %e, %agent, "failed to persist HITL pending question");
-                                let _ = sqlx::query(
-                                    "UPDATE flows SET status = 'failed', error_message = $2 WHERE flow_id = $1",
-                                )
-                                .bind(&flow_id_cleanup)
-                                .bind(&e)
-                                .execute(&db)
-                                .await;
-                                yield Ok(to_sse(a2a::status_event(a2a::failed(
-                                    &task_id, &context_id,
-                                    &format!("could not record pending question for {agent}: {e}"),
-                                ))));
-                                break;
-                            }
+                            let hitl_row = match persisted {
+                                Ok(row) => row,
+                                Err(e) => {
+                                    tracing::error!(error = %e, %agent, "failed to persist HITL pending question");
+                                    let _ = sqlx::query(
+                                        "UPDATE flows SET status = 'failed', error_message = $2 WHERE flow_id = $1",
+                                    )
+                                    .bind(&flow_id_cleanup)
+                                    .bind(&e)
+                                    .execute(&db)
+                                    .await;
+                                    yield Ok(to_sse(a2a::status_event(a2a::failed(
+                                        &task_id, &context_id,
+                                        &format!("could not record pending question for {agent}: {e}"),
+                                    ))));
+                                    break;
+                                }
+                            };
 
                             // Mirrors `persist_direct_chat_pause`'s convention — a paused flow is
                             // not a completed one. Guarded (`status = 'running'`) at the shared
@@ -717,6 +720,15 @@ pub(crate) async fn orchestrator_stream(
                                 "message": pause.message,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::awaiting_human(&task_id, &context_id, pause.kind, msg))));
+                            // Frontend discovery (matches direct chat's own convention, §"deliver
+                            // pause metadata on the live stream"): carries `hitl_row.id`, minted
+                            // and durably committed by `hitl_store.create()` above, so the id on
+                            // the wire always already exists in Postgres by the time a client can
+                            // observe it. `Some(&agent)` — unlike direct chat, which never sends
+                            // this because its one stream is always with the one agent the human
+                            // is already talking to, the orchestrator can delegate to any of
+                            // several agents, so the frontend needs to know which one is asking.
+                            yield Ok(build_hitl_stream_event(&task_id, &context_id, &hitl_row, Some(&agent)));
                             break;
                         }
                         OrchestratorEvent::Done { .. } => {
@@ -1079,7 +1091,7 @@ async fn agent_stream(
                 .await
                 {
                     Ok(row) => {
-                        yield Ok(build_hitl_stream_event(&task_id, &context_id, &row));
+                        yield Ok(build_hitl_stream_event(&task_id, &context_id, &row, None));
                     }
                     Err(error_event) => {
                         yield Ok(error_event);
@@ -1185,7 +1197,7 @@ async fn agent_stream(
             let hitl_event = pause_result
                 .as_ref()
                 .ok()
-                .map(|row| build_hitl_stream_event(&task_id, &context_id, row));
+                .map(|row| build_hitl_stream_event(&task_id, &context_id, row, None));
             let error_event = pause_result.err();
 
             let stream = async_stream::stream! {
@@ -1819,28 +1831,39 @@ pub(crate) async fn persist_direct_chat_pause(
     }
 }
 
-/// The frontend-facing HITL metadata frame — yielded on the SAME still-open Direct Chat SSE
-/// connection immediately after `persist_direct_chat_pause` returns `Ok`, i.e. after the
-/// `hitl_requests` row (and therefore its id) is durably committed. Follows the exact
-/// `agent_message`/`data_part`/`status_event` convention already used for the `trace_meta` and
-/// `usage_meta` synthetic frames in this file, rather than inventing a new SSE event type: any
-/// client already parsing those (via `handleDataParts` in `a2a-stream.js`) sees this the same way.
-/// This is a synthetic, Nasiko-originated frame layered onto the agent's own
+/// The frontend-facing HITL metadata frame — yielded on the SAME still-open SSE connection
+/// immediately after the `hitl_requests` row (and therefore its id) is durably committed. Follows
+/// the exact `agent_message`/`data_part`/`status_event` convention already used for the
+/// `trace_meta` and `usage_meta` synthetic frames in this file, rather than inventing a new SSE
+/// event type: any client already parsing those (via `handleDataParts` in `a2a-stream.js`) sees
+/// this the same way. This is a synthetic, Nasiko-originated frame layered onto the agent's own
 /// `input-required`/`auth-required` status event (already yielded earlier, unmodified) — it does
 /// not replace or alter that event.
+///
+/// `agent`: `None` for direct chat, which never needs it — there is exactly one agent in that
+/// conversation, already known to whoever is looking at the screen. `Some(name)` for the
+/// orchestrator, which can delegate to any of several agents in one conversation, so the frontend
+/// needs to know which one is actually asking before it can show the question sensibly.
 fn build_hitl_stream_event(
     task_id: &str,
     context_id: &str,
     row: &nasiko_hitl::HitlRequest,
+    agent: Option<&str>,
 ) -> Event {
-    let data = a2a::data_part(json!({
+    let mut payload = json!({
         "type": "hitl",
         "id": row.id,
         "kind": row.kind.as_str(),
         "task_id": row.task_id,
         "context_id": row.context_id,
         "question": row.question,
-    }));
+    });
+    if let Some(agent) = agent
+        && let Some(obj) = payload.as_object_mut()
+    {
+        obj.insert("agent".to_string(), json!(agent));
+    }
+    let data = a2a::data_part(payload);
     let msg = a2a::agent_message(context_id, task_id, data);
     to_sse(a2a::status_event(a2a::working_with_message(
         task_id, context_id, msg,
