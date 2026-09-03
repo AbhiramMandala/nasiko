@@ -1054,3 +1054,67 @@ async fn find_linked_direct_chat_row_finds_a_maf_origin_mirror() {
     assert_eq!(linked.id, mirror_id);
     assert_eq!(linked.origin, nasiko_hitl::HitlOrigin::Maf);
 }
+
+/// Same class of regression as `find_linked_direct_chat_row_finds_a_maf_origin_mirror`, for the
+/// `orchestrator` origin merged in later from `feature/orchestrator-hitl`: a sub-agent the
+/// orchestrator delegates to can map an MCP tool block onto its own pause exactly like a
+/// direct-chat agent can, so an `orchestrator`-origin row must be found as a mirror too.
+#[tokio::test]
+async fn find_linked_direct_chat_row_finds_an_orchestrator_origin_mirror() {
+    let db = TestDb::new().await;
+    let connector_id = Uuid::new_v4();
+
+    let mcp_row = repo::create_pending_tool_approval(
+        &db.pool,
+        db.new_tool_approval(
+            connector_id,
+            "GITHUB_CREATE_AN_ISSUE",
+            "ctx-orchestrator-link",
+        ),
+    )
+    .await
+    .expect("create pending tool_approval");
+
+    let chat_session_id = format!("orchestrator-chat-session-{}", Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, title) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(&chat_session_id)
+    .bind(db.owner_user_id)
+    .bind(db.agent_id)
+    .bind("repo-test-session")
+    .execute(&db.pool)
+    .await
+    .expect("seed chat_sessions row");
+
+    let mirror_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO hitl_requests
+            (kind, origin, agent_id, owner_user_id, task_id, context_id, chat_session_id,
+             question, status, expires_at)
+        VALUES
+            ('auth_required', 'orchestrator', $1, $2, 'orchestrator-task-1', 'orchestrator-ctx-1',
+             $3, $4, 'pending', now() + interval '7 days')
+        RETURNING id
+        "#,
+    )
+    .bind(db.agent_id)
+    .bind(db.owner_user_id)
+    .bind(&chat_session_id)
+    .bind(serde_json::json!({
+        "message": "Tool(s) require user approval for this agent.",
+        "metadata": {"hitl_request_id": mcp_row.id.to_string()},
+    }))
+    .fetch_one(&db.pool)
+    .await
+    .expect("seed orchestrator-origin mirror row");
+
+    let linked = repo::find_linked_direct_chat_row(&db.pool, mcp_row.id)
+        .await
+        .expect("find_linked_direct_chat_row must not error")
+        .expect(
+            "must find the orchestrator-origin mirror — this is the regression this test guards against",
+        );
+    assert_eq!(linked.id, mirror_id);
+    assert_eq!(linked.origin, nasiko_hitl::HitlOrigin::Orchestrator);
+}

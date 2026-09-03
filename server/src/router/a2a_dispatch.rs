@@ -238,23 +238,26 @@ pub async fn a2a_dispatch_handler(
 
 /// One orchestrator-routed turn. Grouped into a struct because the caller
 /// count crossed clippy's argument threshold, and these travel together.
-struct OrchestratorTurn<'a> {
+///
+/// `pub(crate)` (not module-private): also constructed by `crate::hitl`'s resume dispatcher to
+/// trigger a fresh orchestrator turn after a paused sub-agent call resumes (Step 7).
+pub(crate) struct OrchestratorTurn<'a> {
     /// The prompt actually sent downstream: history + `raw_text`.
-    query: &'a str,
+    pub(crate) query: &'a str,
     /// What the caller typed, before history enrichment — this is what gets
     /// persisted, so the next turn doesn't nest an already-glued blob.
-    raw_text: &'a str,
-    task_id: &'a str,
-    context_id: &'a str,
-    user_id: Uuid,
-    is_superuser: bool,
+    pub(crate) raw_text: &'a str,
+    pub(crate) task_id: &'a str,
+    pub(crate) context_id: &'a str,
+    pub(crate) user_id: Uuid,
+    pub(crate) is_superuser: bool,
     /// Caller persists its own turns (web UI) — the server must not also.
-    client_owns_transcript: bool,
+    pub(crate) client_owns_transcript: bool,
     /// File parts uploaded with the request (multipart upload path).
-    file_parts: Vec<nasiko_types::a2a::Part>,
+    pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
 }
 
-async fn orchestrator_stream(
+pub(crate) async fn orchestrator_stream(
     state: &AppState,
     turn: OrchestratorTurn<'_>,
 ) -> Result<Response, A2aDispatchError> {
@@ -464,6 +467,7 @@ async fn orchestrator_stream(
     let mut flow_rx = state.flow_events.subscribe(&flow_id).await;
     let flow_id_cleanup = flow_id.clone();
     let db = state.db.clone();
+    let hitl_store = state.hitl_store.clone();
     let usage_tracker = state.usage_tracker.clone();
     let genai_metrics = state.genai_metrics.clone();
     let orchestrator_model = state.config.openai_model.clone();
@@ -614,6 +618,119 @@ async fn orchestrator_stream(
                             ))));
                             content_started = true;
                         }
+                        OrchestratorEvent::AwaitingHuman { agent, agent_id, pause } => {
+                            // Close out the flow_steps row this pause interrupted instead of
+                            // leaving it at 'running' forever — only ToolResult (never sent on a
+                            // pause) closed it before. This event carries no turn/step_order (unlike
+                            // ToolCall/ToolResult), so matching by (flow_id, agent_name, running)
+                            // alone would be ambiguous if the same agent was called more than once
+                            // earlier in this flow and an earlier call's own close-out silently
+                            // failed (these UPDATEs are fire-and-forget) — that stale 'running' row
+                            // could then be the one this UPDATE hits instead of the current call's.
+                            // The subquery picks only the most recently inserted still-running row
+                            // for this agent (highest step_order), which is always the current call.
+                            let _ = sqlx::query(
+                                "UPDATE flow_steps SET status = 'awaiting_human', completed_at = now()
+                                 WHERE id = (
+                                     SELECT id FROM flow_steps
+                                      WHERE flow_id = $1 AND agent_name = $2 AND status = 'running'
+                                      ORDER BY step_order DESC
+                                      LIMIT 1
+                                 )",
+                            )
+                            .bind(&flow_id_cleanup)
+                            .bind(&agent)
+                            .execute(&db)
+                            .await;
+
+                            let hitl_kind = match pause.kind {
+                                a2a::AwaitingHumanKind::InputRequired => nasiko_hitl::HitlKind::InputRequired,
+                                a2a::AwaitingHumanKind::AuthRequired => nasiko_hitl::HitlKind::AuthRequired,
+                            };
+
+                            // hitl_requests.agent_id is a real FK to agents(id) — agent_id here is
+                            // always the sub-agent's own UUID string (AgentInfo::id, set from the
+                            // agents-table row this orchestrator discovered, never a display name).
+                            // Goes through the real `HitlStore` (not raw SQL) so a duplicate pause
+                            // for the same task_id is handled idempotently — `create()` catches the
+                            // uq_hitl_pending_per_task collision and returns the existing row
+                            // instead of erroring — and so `expires_at` gets a real TTL instead of
+                            // never expiring.
+                            let persisted = match Uuid::parse_str(&agent_id) {
+                                Ok(sub_agent_id) => {
+                                    let question = json!({
+                                        "message": pause.message,
+                                        "metadata": pause.metadata,
+                                    });
+                                    hitl_store
+                                        .create(nasiko_hitl::NewHitlRequest::orchestrator(
+                                            hitl_kind,
+                                            sub_agent_id,
+                                            user_id,
+                                            pause.task_id.clone(),
+                                            pause.context_id.clone(),
+                                            context_id.clone(),
+                                            question,
+                                        ))
+                                        .await
+                                        .map_err(|e| e.to_string())
+                                }
+                                Err(e) => Err(e.to_string()),
+                            };
+
+                            // Never report a fake success: if the pending question couldn't be
+                            // recorded, the human will never see it, so the turn must fail loudly
+                            // rather than silently close the stream as if it were fine.
+                            let hitl_row = match persisted {
+                                Ok(row) => row,
+                                Err(e) => {
+                                    tracing::error!(error = %e, %agent, "failed to persist HITL pending question");
+                                    let _ = sqlx::query(
+                                        "UPDATE flows SET status = 'failed', error_message = $2 WHERE flow_id = $1",
+                                    )
+                                    .bind(&flow_id_cleanup)
+                                    .bind(&e)
+                                    .execute(&db)
+                                    .await;
+                                    yield Ok(to_sse(a2a::status_event(a2a::failed(
+                                        &task_id, &context_id,
+                                        &format!("could not record pending question for {agent}: {e}"),
+                                    ))));
+                                    break;
+                                }
+                            };
+
+                            // Mirrors `persist_direct_chat_pause`'s convention — a paused flow is
+                            // not a completed one. Guarded (`status = 'running'`) at the shared
+                            // epilogue below so this stamp isn't immediately overwritten back to
+                            // 'completed'.
+                            let _ = sqlx::query("UPDATE flows SET status = 'paused' WHERE flow_id = $1")
+                                .bind(&flow_id_cleanup)
+                                .execute(&db)
+                                .await;
+
+                            // NOTE: no chat_messages checkpoint is written here yet — how a
+                            // resumed-turn checkpoint should be tagged in chat_messages is still
+                            // an open decision (tracker's "Open decision 3" / review finding S5);
+                            // writing one now would mean guessing a shape the resume dispatcher
+                            // (Step 7, not yet built) might not actually read.
+                            let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
+                                "type": "awaiting_human",
+                                "agent": agent,
+                                "message": pause.message,
+                            })));
+                            yield Ok(to_sse(a2a::status_event(a2a::awaiting_human(&task_id, &context_id, pause.kind, msg))));
+                            // Frontend discovery (matches direct chat's own convention, §"deliver
+                            // pause metadata on the live stream"): carries `hitl_row.id`, minted
+                            // and durably committed by `hitl_store.create()` above, so the id on
+                            // the wire always already exists in Postgres by the time a client can
+                            // observe it. `Some(&agent)` — unlike direct chat, which never sends
+                            // this because its one stream is always with the one agent the human
+                            // is already talking to, the orchestrator can delegate to any of
+                            // several agents, so the frontend needs to know which one is asking.
+                            yield Ok(build_hitl_stream_event(&hitl_store, &task_id, &context_id, &hitl_row, Some(&agent)).await);
+                            break;
+                        }
                         OrchestratorEvent::Done { .. } => {
                             if content_started {
                                 yield Ok(to_sse(a2a::artifact_event(a2a::text_chunk(
@@ -687,11 +804,15 @@ async fn orchestrator_stream(
             }
         }
 
+        // Guarded on `status = 'running'` so a pause (which already stamped 'paused'/'failed'
+        // above, before breaking the loop) isn't immediately overwritten back to 'completed' —
+        // Done/Error never change `flows.status` before reaching here, so this is a no-op change
+        // in behavior for either of those.
         let _ = sqlx::query(
             r#"UPDATE flows SET status = 'completed',
                duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
                completed_at = now()
-               WHERE flow_id = $1"#,
+               WHERE flow_id = $1 AND status = 'running'"#,
         )
         .bind(&flow_id_cleanup)
         .execute(&db)
@@ -970,7 +1091,7 @@ async fn agent_stream(
                 .await
                 {
                     Ok(row) => {
-                        yield Ok(build_hitl_stream_event(&hitl_store, &task_id, &context_id, &row).await);
+                        yield Ok(build_hitl_stream_event(&hitl_store, &task_id, &context_id, &row, None).await);
                     }
                     Err(error_event) => {
                         yield Ok(error_event);
@@ -1074,9 +1195,9 @@ async fn agent_stream(
             // that actually carries `hitl_requests.id` — is only ever queued once persistence
             // has returned `Ok`, never before.
             let hitl_event = match pause_result.as_ref() {
-                Ok(row) => {
-                    Some(build_hitl_stream_event(&hitl_store, &task_id, &context_id, row).await)
-                }
+                Ok(row) => Some(
+                    build_hitl_stream_event(&hitl_store, &task_id, &context_id, row, None).await,
+                ),
                 Err(_) => None,
             };
             let error_event = pause_result.err();
@@ -1614,13 +1735,12 @@ pub(crate) async fn persist_direct_chat_pause(
     }
 }
 
-/// The frontend-facing HITL metadata frame — yielded on the SAME still-open Direct Chat SSE
-/// connection immediately after `persist_direct_chat_pause` returns `Ok`, i.e. after the
-/// `hitl_requests` row (and therefore its id) is durably committed. Follows the exact
-/// `agent_message`/`data_part`/`status_event` convention already used for the `trace_meta` and
-/// `usage_meta` synthetic frames in this file, rather than inventing a new SSE event type: any
-/// client already parsing those (via `handleDataParts` in `a2a-stream.js`) sees this the same way.
-/// This is a synthetic, Nasiko-originated frame layered onto the agent's own
+/// The frontend-facing HITL metadata frame — yielded on the SAME still-open SSE connection
+/// immediately after the `hitl_requests` row (and therefore its id) is durably committed. Follows
+/// the exact `agent_message`/`data_part`/`status_event` convention already used for the
+/// `trace_meta` and `usage_meta` synthetic frames in this file, rather than inventing a new SSE
+/// event type: any client already parsing those (via `handleDataParts` in `a2a-stream.js`) sees
+/// this the same way. This is a synthetic, Nasiko-originated frame layered onto the agent's own
 /// `input-required`/`auth-required` status event (already yielded earlier, unmodified) — it does
 /// not replace or alter that event.
 ///
@@ -1631,21 +1751,33 @@ pub(crate) async fn persist_direct_chat_pause(
 /// generic placeholder. `task_id`/`context_id` in the frame are always the mirror's own
 /// (`row.task_id`/`row.context_id`), never the linked row's, since those are what ties this frame
 /// to the visible chat task.
+///
+/// `agent`: `None` for direct chat, which never needs it — there is exactly one agent in that
+/// conversation, already known to whoever is looking at the screen. `Some(name)` for the
+/// orchestrator, which can delegate to any of several agents in one conversation, so the frontend
+/// needs to know which one is actually asking before it can show the question sensibly.
 async fn build_hitl_stream_event(
     hitl_store: &std::sync::Arc<dyn nasiko_hitl::HitlStore>,
     task_id: &str,
     context_id: &str,
     row: &nasiko_hitl::HitlRequest,
+    agent: Option<&str>,
 ) -> Event {
     let display = nasiko_hitl::resolve_display_row(hitl_store.as_ref(), row).await;
-    let data = a2a::data_part(json!({
+    let mut payload = json!({
         "type": "hitl",
         "id": display.id,
         "kind": display.kind.as_str(),
         "task_id": row.task_id,
         "context_id": row.context_id,
         "question": display.question,
-    }));
+    });
+    if let Some(agent) = agent
+        && let Some(obj) = payload.as_object_mut()
+    {
+        obj.insert("agent".to_string(), json!(agent));
+    }
+    let data = a2a::data_part(payload);
     let msg = a2a::agent_message(context_id, task_id, data);
     to_sse(a2a::status_event(a2a::working_with_message(
         task_id, context_id, msg,

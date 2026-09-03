@@ -1,5 +1,7 @@
 //! Thin wrapper around the official `a2a` crate (a2a-lf) with nasiko-specific helpers.
 
+use serde::Serialize;
+
 pub use a2a::{
     Artifact, JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse, Message, Part, PartContent,
     Role, SendMessageConfiguration, SendMessageRequest, StreamResponse, Task,
@@ -132,6 +134,40 @@ pub fn auth_required(task_id: &str, context_id: &str, message: &str) -> TaskStat
         status: TaskStatus {
             state: TaskState::AuthRequired,
             message: Some(agent_message(context_id, task_id, text_part(message))),
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    }
+}
+
+/// Terminal-for-this-turn status: a sub-agent paused and needs a human before the
+/// conversation can continue. Mirrors `failed` (also terminal, also carries a message),
+/// but maps to `TaskState::InputRequired`/`AuthRequired` instead of `Failed` — the client
+/// must be able to tell "the agent needs input" apart from "the agent errored."
+///
+/// Distinct from `input_required`/`auth_required` above (from `feat/hitl-direct-chat`): those
+/// build their own `Message` from a plain `&str`, for `agent_proxy`'s direct-chat path. This one
+/// takes an already-built `Message` and a `kind`, for the orchestrator's `AwaitingHuman` event
+/// (`a2a_dispatch.rs`'s `orchestrator_stream`), which already has a `Message` assembled with a
+/// `data` part, not just plain text. Kept side by side rather than unified — each caller's
+/// `Message` shape differs enough that forcing one signature would lose information at one
+/// call site or the other.
+pub fn awaiting_human(
+    task_id: &str,
+    context_id: &str,
+    kind: AwaitingHumanKind,
+    msg: Message,
+) -> TaskStatusUpdateEvent {
+    let state = match kind {
+        AwaitingHumanKind::InputRequired => TaskState::InputRequired,
+        AwaitingHumanKind::AuthRequired => TaskState::AuthRequired,
+    };
+    TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state,
+            message: Some(msg),
             timestamp: Some(chrono::Utc::now()),
         },
         metadata: None,
@@ -298,6 +334,17 @@ pub fn extract_text(result: &serde_json::Value) -> Option<String> {
 
 // ─── SSE stream event classification ────────────────────────────────────────
 
+/// Which human-in-the-loop pause this is — mirrors `nasiko_hitl::HitlKind`'s two task-state
+/// variants (`input_required`, `auth_required`). Duplicated here rather than depended on: this
+/// crate has zero internal workspace dependencies, and `tool_approval` (hitl's third kind) never
+/// applies at this layer — it isn't an A2A task state at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AwaitingHumanKind {
+    InputRequired,
+    AuthRequired,
+}
+
 /// One semantic event decoded from an A2A SSE `data:` payload.
 ///
 /// A single payload can carry several (e.g. a working-status message with
@@ -318,6 +365,15 @@ pub enum SseEvent {
     Completed { snapshot_text: Option<String> },
     /// Terminal: the task failed or was canceled.
     Failed { reason: String },
+    /// Not terminal, but nothing can proceed without a human —
+    /// `TASK_STATE_INPUT_REQUIRED` / `TASK_STATE_AUTH_REQUIRED`. Deliberately its own variant,
+    /// never folded into `StatusText`: a caller that treated the agent's question as ordinary
+    /// progress narration would feed it back to an LLM as if it were the answer.
+    AwaitingHuman {
+        kind: AwaitingHumanKind,
+        message: String,
+        metadata: serde_json::Value,
+    },
 }
 
 /// Classify one A2A SSE `data:` JSON payload into semantic events.
@@ -361,6 +417,13 @@ pub fn classify_sse_event(event: &serde_json::Value) -> Vec<SseEvent> {
                     reason: failure_reason(task),
                 });
             }
+            SseTaskState::AwaitingHuman(kind) => {
+                out.push(SseEvent::AwaitingHuman {
+                    kind,
+                    message: awaiting_human_message(task),
+                    metadata: awaiting_human_metadata(task),
+                });
+            }
             SseTaskState::Working | SseTaskState::Other => {}
         }
         return out;
@@ -384,6 +447,13 @@ fn classify_status(update: &serde_json::Value, out: &mut Vec<SseEvent>) {
         SseTaskState::Completed => {
             out.push(SseEvent::Completed {
                 snapshot_text: None,
+            });
+        }
+        SseTaskState::AwaitingHuman(kind) => {
+            out.push(SseEvent::AwaitingHuman {
+                kind,
+                message: awaiting_human_message(update),
+                metadata: awaiting_human_metadata(update),
             });
         }
         SseTaskState::Working | SseTaskState::Other => {
@@ -430,6 +500,9 @@ enum SseTaskState {
     Completed,
     /// Failed or canceled — both end the task without a usable answer.
     Failed,
+    /// `TASK_STATE_INPUT_REQUIRED` / `TASK_STATE_AUTH_REQUIRED` — not terminal, but nothing can
+    /// proceed without a human.
+    AwaitingHuman(AwaitingHumanKind),
     /// Submitted, unknown, or absent.
     Other,
 }
@@ -443,6 +516,12 @@ fn task_state(v: &serde_json::Value) -> SseTaskState {
         "TASK_STATE_WORKING" | "working" => SseTaskState::Working,
         "TASK_STATE_COMPLETED" | "completed" => SseTaskState::Completed,
         "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "failed" | "canceled" => SseTaskState::Failed,
+        "TASK_STATE_INPUT_REQUIRED" | "input-required" => {
+            SseTaskState::AwaitingHuman(AwaitingHumanKind::InputRequired)
+        }
+        "TASK_STATE_AUTH_REQUIRED" | "auth-required" => {
+            SseTaskState::AwaitingHuman(AwaitingHumanKind::AuthRequired)
+        }
         _ => SseTaskState::Other,
     }
 }
@@ -452,6 +531,24 @@ fn failure_reason(v: &serde_json::Value) -> String {
         .and_then(|t| t.as_str())
         .unwrap_or("task failed")
         .to_string()
+}
+
+/// Mirrors `failure_reason` — the agent's own question/prompt text, first text part only (matches
+/// the reference agent's convention of one text part per pause message).
+fn awaiting_human_message(v: &serde_json::Value) -> String {
+    v.pointer("/status/message/parts/0/text")
+        .and_then(|t| t.as_str())
+        .unwrap_or("a human response is required")
+        .to_string()
+}
+
+/// The agent-supplied `metadata` object on the pause message (e.g. `expected_input`, `provider`,
+/// `auth_url` — see the External Agent Contract). `Value::Null` when absent; `Value::get` on
+/// `Null` returns `None` for any key, so callers can treat both cases identically.
+fn awaiting_human_metadata(v: &serde_json::Value) -> serde_json::Value {
+    v.pointer("/status/message/metadata")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
 }
 
 pub fn extract_text_from_response(response: &JsonRpcResponse) -> Option<String> {
@@ -917,6 +1014,89 @@ mod sse_event_tests {
             classify_sse_event(&ev),
             vec![SseEvent::Failed {
                 reason: "boom".into()
+            }]
+        );
+    }
+
+    // InputRequired/AuthRequired must classify to AwaitingHuman, never StatusText — the whole
+    // reason this variant exists is so a caller can't mistake the agent's question for ordinary
+    // progress narration.
+
+    #[test]
+    fn input_required_status_classifies_as_awaiting_human() {
+        let ev = json!({"result": {"statusUpdate": {"status": {
+            "state": "TASK_STATE_INPUT_REQUIRED",
+            "message": {
+                "parts": [{"text": "Which repository?"}],
+                "metadata": {"expected_input": "free_text"}
+            }
+        }}}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::InputRequired,
+                message: "Which repository?".into(),
+                metadata: json!({"expected_input": "free_text"}),
+            }]
+        );
+    }
+
+    #[test]
+    fn auth_required_status_classifies_as_awaiting_human_not_status_text() {
+        let ev = json!({"result": {"statusUpdate": {"status": {
+            "state": "TASK_STATE_AUTH_REQUIRED",
+            "message": {
+                "parts": [{"text": "Authorize GitHub access"}],
+                "metadata": {"provider": "github", "auth_url": "https://github.com/login/oauth"}
+            }
+        }}}});
+        let events = classify_sse_event(&ev);
+        assert_eq!(
+            events,
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::AuthRequired,
+                message: "Authorize GitHub access".into(),
+                metadata: json!({"provider": "github", "auth_url": "https://github.com/login/oauth"}),
+            }]
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, SseEvent::StatusText(_))),
+            "an auth-required pause must never also/instead classify as StatusText"
+        );
+    }
+
+    #[test]
+    fn input_required_task_snapshot_classifies_as_awaiting_human() {
+        // The "full task snapshot" wire shape (a2a-go-style single-object reply), not just the
+        // streamed statusUpdate shape — both must recognize the pause.
+        let ev = json!({"result": {"task": {
+            "status": {
+                "state": "TASK_STATE_INPUT_REQUIRED",
+                "message": {"parts": [{"text": "Which repository?"}]}
+            }
+        }}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::InputRequired,
+                message: "Which repository?".into(),
+                metadata: serde_json::Value::Null,
+            }]
+        );
+    }
+
+    #[test]
+    fn legacy_lowercase_input_required_state_classifies_as_awaiting_human() {
+        let ev = json!({"statusUpdate": {"status": {
+            "state": "input-required",
+            "message": {"parts": [{"text": "Which repository?"}]}
+        }}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::InputRequired,
+                message: "Which repository?".into(),
+                metadata: serde_json::Value::Null,
             }]
         );
     }

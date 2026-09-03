@@ -182,6 +182,50 @@ impl TestDb {
 
         created.id
     }
+
+    /// A resolved `origin = orchestrator` row, seeded and resolved via `HitlStore` — same
+    /// trait-based API as `direct_chat`/`maf`, since a resolved orchestrator row is delivered by
+    /// the same dispatcher (`oss/server/src/hitl/mod.rs::run`, which resumes it via a real A2A
+    /// task resume, same as `direct_chat`/`agent_proxy`).
+    async fn seed_resolved_orchestrator_row(&self) -> Uuid {
+        let chat_session_id = format!("chat-session-orchestrator-{}", Uuid::new_v4().simple());
+        sqlx::query(
+            "INSERT INTO chat_sessions (session_id, user_id, agent_id, title) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&chat_session_id)
+        .bind(self.owner_user_id)
+        .bind(self.agent_id)
+        .bind("origin-isolation-test-session")
+        .execute(&self.pool)
+        .await
+        .expect("seed chat_sessions row");
+
+        let store = PgHitlStore::new(self.pool.clone());
+        let created = store
+            .create(NewHitlRequest::orchestrator(
+                nasiko_hitl::HitlKind::InputRequired,
+                self.agent_id,
+                self.owner_user_id,
+                "task-orchestrator",
+                "ctx-orchestrator",
+                chat_session_id,
+                serde_json::json!({"message": "which sub-agent value should be used?"}),
+            ))
+            .await
+            .expect("create pending orchestrator row");
+
+        store
+            .resolve(
+                created.id,
+                serde_json::json!({"answer": "use the staging value"}),
+                self.owner_user_id,
+                HitlStatus::Resolved,
+            )
+            .await
+            .expect("resolve");
+
+        created.id
+    }
 }
 
 #[tokio::test]
@@ -283,6 +327,47 @@ async fn direct_chat_dispatcher_claims_a_resolved_maf_row() {
 
     // Isolation from MCP's dispatcher still holds — adding `maf` to the list must not also
     // accidentally widen it to `mcp_tool`.
+    let second = store.claim_for_resume(120).await.expect("claim_for_resume");
+    assert!(
+        second.is_none(),
+        "the mcp_tool row must still never be claimable by the direct-chat dispatcher: {second:?}"
+    );
+
+    let mcp_row_status: String =
+        sqlx::query_scalar("SELECT resume_status FROM hitl_requests WHERE id = $1")
+            .bind(mcp_row)
+            .fetch_one(&db.pool)
+            .await
+            .expect("fetch resume_status");
+    assert_eq!(mcp_row_status, "not_started");
+}
+
+/// Same class of regression as `direct_chat_dispatcher_claims_a_resolved_maf_row`, for the
+/// `orchestrator` origin merged in later from `feature/orchestrator-hitl`: that branch's own
+/// `claim_for_resume` had no origin scoping at all (it never needed to race a second dispatcher),
+/// so merging it alongside the origin-scoped dispatcher from `feat/hitl-mcp-impl` left
+/// `orchestrator` out of the allowlist — a resolved orchestrator-origin row would have been
+/// claimable by neither dispatcher, stuck at `resume_status = 'not_started'` forever.
+#[tokio::test]
+async fn direct_chat_dispatcher_claims_a_resolved_orchestrator_row() {
+    let db = TestDb::new().await;
+    let mcp_row = db.seed_resolved_mcp_tool_row().await;
+    let orchestrator_row = db.seed_resolved_orchestrator_row().await;
+
+    let store = PgHitlStore::new(db.pool.clone());
+    let claimed = store
+        .claim_for_resume(120)
+        .await
+        .expect("claim_for_resume")
+        .expect(
+            "must claim the orchestrator row — this is the regression this test guards against",
+        );
+    assert_eq!(
+        claimed.id, orchestrator_row,
+        "must claim the orchestrator row, never the mcp_tool one"
+    );
+    assert_eq!(claimed.origin, nasiko_hitl::HitlOrigin::Orchestrator);
+
     let second = store.claim_for_resume(120).await.expect("claim_for_resume");
     assert!(
         second.is_none(),
