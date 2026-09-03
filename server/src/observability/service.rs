@@ -1877,7 +1877,11 @@ impl ObservabilityService {
                 spend_usd: round6(*spend),
             })
             .collect();
-        let others_spend_usd = round6(per_agent.iter().skip(TOP_N).map(|(_, s)| s).sum());
+        // `Iterator::sum()` over zero remaining items yields `-0.0`, not
+        // `0.0` (confirmed empirically) — normalize before it hits the wire,
+        // since `-0.0` in JSON is numerically harmless but needlessly odd.
+        let others_sum: f64 = per_agent.iter().skip(TOP_N).map(|(_, s)| s).sum();
+        let others_spend_usd = round6(others_sum) + 0.0;
 
         Ok(FinopsDayDrilldown {
             date: date.to_string(),

@@ -509,11 +509,24 @@ impl TempoLokiProvider {
                 continue;
             }
             let cost = self.cost(model_used.as_deref(), input, output).await;
-            // Acting agent: first span's service_name (same resolution as
-            // `sessions_for_agent` uses for the session's owning agent).
+            // Acting agent: the service_name of the FIRST TOKEN-BEARING span,
+            // not the trace's first span overall. A trace's first span is
+            // typically the orchestrator's own root dispatch span (service
+            // "nasiko-cp"), which never carries `gen_ai.usage.*` — the real
+            // agent's LLM-call span is deeper in the tree. Using
+            // `spans.first()` blindly attributed every orchestrator-routed
+            // trace's spend to the orchestrator itself, not the downstream
+            // agent that actually did the work (caught via real-infra
+            // testing against a live orchestrator dispatch — a single-span
+            // mock trace can't surface this, since first-span and
+            // token-bearing-span are trivially the same thing there).
             let agent_name = trace
                 .spans
-                .first()
+                .iter()
+                .find(|s| {
+                    let (inp, out, _) = extract_token_attrs(&s.attributes);
+                    inp > 0 || out > 0
+                })
                 .map(|s| s.service_name.clone())
                 .filter(|n| !n.is_empty());
 
@@ -1380,6 +1393,86 @@ mod tests {
             .await
             .unwrap();
         assert!(buckets.is_empty(), "no traces in the (empty) search result");
+    }
+
+    /// Regression test for a real bug caught only against live infra (a
+    /// single-span mock trace can't reproduce it): an orchestrator-routed
+    /// trace's FIRST batch/span is the orchestrator's own root dispatch span
+    /// (no `gen_ai.usage.*`), with the real agent's token-bearing span
+    /// deeper in the tree, in a SEPARATE resource batch. `top_agent` must
+    /// resolve to the real agent, not the orchestrator.
+    #[tokio::test]
+    async fn spend_timeseries_attributes_spend_to_the_token_bearing_span_not_the_trace_root() {
+        let mut server = mockito::Server::new_async().await;
+        let ts = "1700000000000000000";
+        let _search = server
+            .mock("GET", "/api/search")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(search_response_with_n_traces(1).to_string())
+            .create_async()
+            .await;
+        let _trace = server
+            .mock("GET", mockito::Matcher::Regex(r"^/api/traces/.*$".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "batches": [
+                        {
+                            "resource": {"attributes": [
+                                {"key": "service.name", "value": {"stringValue": "nasiko-cp"}},
+                            ]},
+                            "scopeSpans": [{"spans": [{
+                                "spanId": "AAAAAAAAAAE=",
+                                "name": "a2a.dispatch",
+                                "kind": "SPAN_KIND_SERVER",
+                                "startTimeUnixNano": ts,
+                                "attributes": [
+                                    {"key": "gen_ai.operation.name", "value": {"stringValue": "invoke_agent"}},
+                                ],
+                            }]}],
+                        },
+                        {
+                            "resource": {"attributes": [
+                                {"key": "service.name", "value": {"stringValue": "real-downstream-agent"}},
+                            ]},
+                            "scopeSpans": [{"spans": [{
+                                "spanId": "AAAAAAAAAAI=",
+                                "parentSpanId": "AAAAAAAAAAE=",
+                                "name": "chat",
+                                "kind": "SPAN_KIND_INTERNAL",
+                                "startTimeUnixNano": ts,
+                                "attributes": [
+                                    {"key": "gen_ai.usage.input_tokens", "value": {"intValue": 500}},
+                                    {"key": "gen_ai.usage.output_tokens", "value": {"intValue": 200}},
+                                    {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4o-mini"}},
+                                ],
+                            }]}],
+                        },
+                    ],
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let provider = provider_against(&server.url());
+        let start = DateTime::<Utc>::from_timestamp(1_700_000_000 - 60, 0).unwrap();
+        let end = start + Duration::hours(2);
+        let buckets = provider
+            .spend_timeseries(None, None, start, end, TimeBucket::Hour)
+            .await
+            .unwrap();
+
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(
+            buckets[0].top_agent_name.as_deref(),
+            Some("real-downstream-agent"),
+            "must attribute to the token-bearing span's service, not the orchestrator root span"
+        );
+        assert!(buckets[0].spend_usd > 0.0);
     }
 
     /// Builds a minimal, valid OTLP JSON `/api/traces/{id}` response body with
