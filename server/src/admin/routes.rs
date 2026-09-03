@@ -113,6 +113,27 @@ async fn deploy(
         None => ContainerId::new(&req.name),
     };
 
+    // `--writable` is a durable property of a registered agent (persisted in the
+    // `agents` row by whichever on-ramp first set it), not a per-deploy flag.
+    // Source it from the catalog so an ad-hoc redeploy through this path — e.g. a
+    // UI "redeploy" that doesn't re-send the flag — can never silently detach a
+    // live volume and drop the agent's files. An explicit request flag still wins
+    // (so `nasiko deploy --writable` of an as-yet-unregistered image works too).
+    let (db_writable, db_writable_path) = match resolved_agent_id {
+        Some(agent_id) => sqlx::query_as::<_, (bool, Option<String>)>(
+            "SELECT writable, writable_path FROM agents WHERE id = $1",
+        )
+        .bind(agent_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or((false, None)),
+        None => (false, None),
+    };
+    let writable_path = req.writable_path.clone().or(db_writable_path);
+    let writable = req.writable || db_writable || writable_path.is_some();
+
     let ports = if req.ports.is_empty() {
         vec![crate::agents::DEFAULT_AGENT_PORT]
     } else {
@@ -137,10 +158,9 @@ async fn deploy(
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
-        // A path implies the mount — requiring both flags would make
-        // `--writable-path X` alone silently deploy without storage.
-        writable: req.writable || req.writable_path.is_some(),
-        writable_path: req.writable_path.clone(),
+        // Sourced from the catalog (see above) so redeploys keep the mount.
+        writable,
+        writable_path,
         owner_id,
     };
     // Only a name that already maps to a registered catalog agent has an
