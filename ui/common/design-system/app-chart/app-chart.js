@@ -669,14 +669,18 @@ export class AppChart extends HTMLElement {
     }
 
     // Placement, per the design: beside the point on the right when there is
-    // room, above it when there is not, below as the last resort near the top
-    // edge. The caret (::after) points back at the datum from whichever edge
-    // faces it.
+    // room, otherwise above — anchored to the topmost active element (a
+    // stacked column's top, not the average of its segments), and clamped
+    // inside the plot rather than ever flipping below it. Below was where the
+    // card escaped the plot box and later page sections painted over it. The
+    // caret (::after) points back at the datum, and hides when clamping has
+    // pulled the card off its anchor — a caret aimed at nothing is worse than
+    // none.
     tip.classList.add('is-visible');
     const w = tip.offsetWidth;
     const h = tip.offsetHeight;
     const GAP = 14;
-    tip.classList.remove('is-right', 'is-above', 'is-below');
+    tip.classList.remove('is-right', 'is-above', 'is-detached');
     if (model.caretX + GAP + w <= plot.clientWidth - 2) {
       tip.classList.add('is-right');
       tip.style.left = `${model.caretX + GAP}px`;
@@ -684,10 +688,14 @@ export class AppChart extends HTMLElement {
       // point sits near an edge.
       tip.style.top = `${Math.min(Math.max(model.caretY, h / 2 + 2), plot.clientHeight - h / 2 - 2)}px`;
     } else {
-      const below = model.caretY - h - GAP < 0;
-      tip.classList.add(below ? 'is-below' : 'is-above');
+      const anchorY = Math.min(model.caretY,
+        ...model.dataPoints.map((dp) => dp.element?.y ?? model.caretY));
+      const idealTop = anchorY - GAP + 2;
+      const top = Math.max(idealTop, h + 2);
+      tip.classList.add('is-above');
+      tip.classList.toggle('is-detached', top !== idealTop);
       tip.style.left = `${Math.min(Math.max(model.caretX, w / 2 + 2), plot.clientWidth - w / 2 - 2)}px`;
-      tip.style.top = `${below ? model.caretY + GAP : model.caretY - GAP + 2}px`;
+      tip.style.top = `${top}px`;
     }
   }
 
