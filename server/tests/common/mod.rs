@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use nasiko_config::Config;
 use nasiko_runtime::{
     ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, InstanceInfo,
-    Result as RuntimeResult, RuntimeState,
+    Result as RuntimeResult, RuntimeState, WorkspaceEntry, WorkspaceFile, WorkspaceRef,
 };
 use nasiko_server::state::AppState;
 use sqlx::PgPool;
@@ -46,6 +46,10 @@ pub struct FakeRuntime {
     /// When set, `deploy` fails instead of succeeding — lets a test exercise
     /// a genuine (post-build) deploy failure without a real runtime.
     fail_deploy: std::sync::atomic::AtomicBool,
+    /// Stands in for agents' persistent `/workspace`, keyed by
+    /// `{subpath}/{rel_path}` so a test can prove the server scoped a read to
+    /// the right agent rather than just echoing back what it asked for.
+    workspace: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
 }
 
 impl FakeRuntime {
@@ -53,6 +57,17 @@ impl FakeRuntime {
     #[allow(dead_code)]
     pub fn set_instances(&self, instances: Vec<InstanceInfo>) {
         *self.instances.lock().unwrap() = instances;
+    }
+
+    /// Put a file in an agent's fake persistent storage.
+    #[allow(dead_code)]
+    pub fn put_workspace_file(&self, workspace: &WorkspaceRef, rel_path: &str, body: &[u8]) {
+        // Key on the *scoped* subpath so a test can seed files under a specific
+        // user's `u/<token>` subtree, mirroring the real runtimes.
+        self.workspace.lock().unwrap().insert(
+            format!("{}/{rel_path}", workspace.scoped_subpath()),
+            body.to_vec(),
+        );
     }
 
     /// Make the next (and all subsequent) `deploy` calls fail instead of
@@ -138,6 +153,49 @@ impl ContainerRuntime for FakeRuntime {
     // hours-meter reconciler observes.
     async fn list_instances(&self) -> RuntimeResult<Vec<InstanceInfo>> {
         Ok(self.instances.lock().unwrap().clone())
+    }
+
+    // Explicit impls (not the trait defaults, which are "empty" and
+    // "unsupported") so a test can prove the server reached the runtime and
+    // scoped the read to one agent's subdirectory.
+    async fn list_workspace(&self, w: &WorkspaceRef) -> RuntimeResult<Vec<WorkspaceEntry>> {
+        let prefix = format!("{}/", w.scoped_subpath());
+        Ok(self
+            .workspace
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(key, body)| {
+                Some(WorkspaceEntry {
+                    path: key.strip_prefix(&prefix)?.to_owned(),
+                    size: body.len() as u64,
+                    mtime: 0,
+                })
+            })
+            .collect())
+    }
+
+    async fn read_workspace_file(
+        &self,
+        w: &WorkspaceRef,
+        rel_path: &str,
+    ) -> RuntimeResult<WorkspaceFile> {
+        let key = format!("{}/{rel_path}", w.scoped_subpath());
+        let body = self
+            .workspace
+            .lock()
+            .unwrap()
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| {
+                nasiko_runtime::RuntimeError::Internal(format!("no such file: {rel_path}"))
+            })?;
+        Ok(WorkspaceFile {
+            size: body.len() as u64,
+            stream: Box::pin(futures::stream::once(async move {
+                Ok(bytes::Bytes::from(body))
+            })),
+        })
     }
 }
 
@@ -282,6 +340,7 @@ impl TestServer {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn cleanup(&self) {
         // Terminate connections to the test DB before dropping it.
         sqlx::query(&format!(

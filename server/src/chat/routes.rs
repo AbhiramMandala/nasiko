@@ -1,5 +1,6 @@
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Multipart, Path, Query, State},
     http::{StatusCode, header},
     response::IntoResponse,
@@ -9,6 +10,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use nasiko_orchestrator::models::{ChatCompletionRequest, ChatMessage as LlmMessage};
 use nasiko_orchestrator::providers::{LLMProvider, ProviderError};
+use nasiko_runtime::{ContainerId, WorkspaceRef};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -782,52 +784,11 @@ async fn list_messages(
         None
     };
 
-    // Session-load HITL discovery (docs/HITL_STATUS.md): every HITL request tied to this
-    // session, pending or already resolved, rides along with the message page instead of
-    // requiring a separate `GET /api/hitl/pending` call. Scoped by BOTH `chat_session_id` and
-    // `owner_user_id` inside the query (`list_for_chat_session`) — the second is redundant with
-    // the `owns` check above in the ordinary case, but costs nothing and means a future refactor
-    // of that check can't silently turn this into a cross-user leak on its own. Reuses
-    // `router::hitl::to_response` verbatim so this can never drift from — or accidentally leak
-    // more than — the one HITL DTO the rest of the API already exposes (`resume_state` etc. stay
-    // excluded because `HitlRequest` itself isn't `Serialize`).
-    let hitl_rows = match state
-        .hitl_store
-        .list_for_chat_session(&session_id, user_id)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!(%e, session_id, "list_messages: hitl lookup failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-    // Each row goes through `resolve_display_row` before `to_response` — a no-op for the
-    // ordinary case, but substitutes the real row's id/kind/question when this row is a mirror
-    // of a real `mcp_tool` block (see that function's doc comment): otherwise the frontend would
-    // see the mirror's own generic question and could "resolve" an id that grants no real
-    // permission.
-    let mut hitl: Vec<serde_json::Value> = Vec::with_capacity(hitl_rows.len());
-    for row in &hitl_rows {
-        let display = nasiko_hitl::resolve_display_row(state.hitl_store.as_ref(), row).await;
-        hitl.push(crate::router::hitl::to_response(&display));
-    }
-
-    #[derive(serde::Serialize)]
-    struct MessagesResponse {
-        #[serde(flatten)]
-        page: CursorPage<ChatMessage>,
-        hitl: Vec<serde_json::Value>,
-    }
-
-    Json(MessagesResponse {
-        page: CursorPage {
-            data: rows,
-            has_more,
-            next_cursor: out_next_cursor,
-            prev_cursor: out_prev_cursor,
-        },
-        hitl,
+    Json(CursorPage {
+        data: rows,
+        has_more,
+        next_cursor: out_next_cursor,
+        prev_cursor: out_prev_cursor,
     })
     .into_response()
 }
@@ -891,7 +852,7 @@ async fn send_message(
     };
 
     let usage = body.usage.as_ref();
-    let msg = match sqlx::query_as::<_, ChatMessage>(
+    let mut msg = match sqlx::query_as::<_, ChatMessage>(
         r#"INSERT INTO chat_messages
                (session_id, role, content, file_parts, has_file_parts,
                 input_tokens, output_tokens, model, duration_ms, cost_usd,
@@ -959,7 +920,132 @@ async fn send_message(
         tracing::warn!(session_id, %e, "failed to touch session updated_at");
     }
 
+    // Platform-driven capture: attach the workspace files the agent referenced
+    // in this reply to the assistant message, downloadable via the fixed
+    // `/chat/files/{id}/download` route. Works for any agent with no cooperation.
+    // Best-effort - a failure here never fails the message. See
+    // docs/WORKSPACE_FILE_ACCESS_PLAN.md.
+    if msg.role == "assistant"
+        && let Some(parts) = capture_turn_files(&state, &session_id, msg.id, &msg.content).await
+    {
+        msg.has_file_parts = true;
+        msg.file_parts = Some(sqlx::types::Json(parts));
+    }
+
     (StatusCode::CREATED, Json(msg)).into_response()
+}
+
+/// Attach the workspace files the agent **named in its reply** to the assistant
+/// message, as session-scoped `chat_message_files`.
+///
+/// Platform-driven: the agent writes to `/workspace` however it likes and knows
+/// nothing about Nasiko. Attribution is by **what the reply references** - a
+/// workspace file whose name appears in the agent's response is the file this
+/// user asked about, whether the agent just wrote it ("saved `foo.py`") or is
+/// handing back an existing one ("Download `bar.py`"). This matches "give me
+/// *that* file" and, unlike write-time (mtime) attribution, is concurrency-safe:
+/// each user's reply names their own file, so overlapping turns don't
+/// cross-attribute.
+///
+/// This is a download **convenience, not a privacy boundary**: on a shared
+/// container the agent can already read (and list on request) every file in
+/// `/workspace`, so real per-user isolation needs a per-session container (see
+/// docs/WORKSPACE_FILE_ACCESS_PLAN.md). Downloads are still ACL'd to the session
+/// owner. Bytes stay in the PVC (`storage_uri` =
+/// `workspace://<owner>/<agent>/<relpath>`); `download_file` streams them,
+/// behind a contract Phase 2 can re-back with object storage unchanged.
+///
+/// Returns the `file_parts` array, or `None` when the agent isn't `--writable`
+/// or its reply named no existing workspace file.
+async fn capture_turn_files(
+    state: &AppState,
+    session_id: &str,
+    message_id: Uuid,
+    reply: &str,
+) -> Option<serde_json::Value> {
+    // The session's agent, and whether it can write at all.
+    let (agent_id, owner_id, writable): (Uuid, Uuid, bool) = sqlx::query_as(
+        "SELECT a.id, a.owner_id, a.writable \
+         FROM chat_sessions cs JOIN agents a ON a.id = cs.agent_id \
+         WHERE cs.session_id = $1 AND a.deleted_at IS NULL",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()??;
+    if !writable {
+        return None;
+    }
+
+    // List the whole agent workspace (scope = None); keep the files this reply
+    // actually references by name.
+    let ws = WorkspaceRef {
+        owner_id,
+        container_id: ContainerId::from_uuid(agent_id),
+        scope: None,
+    };
+    let entries = match state.runtime.list_workspace(&ws).await {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(session_id, %e, "capture: list_workspace failed");
+            return None;
+        }
+    };
+
+    let mut parts = Vec::new();
+    for entry in entries {
+        let name = entry
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&entry.path)
+            .to_owned();
+        // Only files the agent named in this reply — the ones the user asked
+        // about. A basename is distinctive enough that a plain substring match
+        // is both sufficient and concurrency-safe.
+        if !reply.contains(&name) {
+            continue;
+        }
+        let file_id = Uuid::new_v4();
+        let mime = mime_guess::from_path(&entry.path)
+            .first_or_octet_stream()
+            .to_string();
+        let storage_uri = format!("workspace://{owner_id}/{agent_id}/{}", entry.path);
+        if let Err(e) = sqlx::query(
+            "INSERT INTO chat_message_files \
+                 (id, message_id, session_id, filename, mime_type, size_bytes, storage_uri) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(file_id)
+        .bind(message_id)
+        .bind(session_id)
+        .bind(&name)
+        .bind(&mime)
+        .bind(entry.size as i64)
+        .bind(&storage_uri)
+        .execute(&state.db)
+        .await
+        {
+            tracing::warn!(session_id, %e, "capture: file insert failed");
+            continue;
+        }
+        parts.push(serde_json::json!({
+            "id": file_id, "name": name, "size": entry.size, "mime": mime,
+        }));
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+    let file_parts = serde_json::Value::Array(parts);
+    let _ = sqlx::query(
+        "UPDATE chat_messages SET file_parts = $1, has_file_parts = true WHERE id = $2",
+    )
+    .bind(sqlx::types::Json(&file_parts))
+    .bind(message_id)
+    .execute(&state.db)
+    .await;
+    Some(file_parts)
 }
 
 // ─── File upload ─────────────────────────────────────────────────────────────
@@ -1154,6 +1240,15 @@ async fn download_file(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
+    // Phase 1 captures keep their bytes in the agent's PVC; `storage_uri` encodes
+    // the reader-side location (`workspace://<owner>/<agent>/<relpath>`) and we
+    // stream them out. Uploads (and Phase 2 captures) live in object storage and
+    // redirect to a presigned URL. The route is identical either way, so the FE
+    // never learns where the bytes are.
+    if let Some(rest) = file.storage_uri.strip_prefix("workspace://") {
+        return stream_workspace_file(&state, &file, rest).await;
+    }
+
     match state
         .oci_storage
         .presigned_get_url(&file.storage_uri, 3600)
@@ -1161,6 +1256,50 @@ async fn download_file(
     {
         Ok(url) => (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, url)]).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// Stream a PVC-backed capture out of the agent's `/workspace` via the runtime's
+/// workspace reader. `rest` is `<owner>/<agent>/<relpath>` (the `storage_uri`
+/// minus its `workspace://` scheme). Bytes are streamed, never buffered, so a
+/// large file is constant-memory on the control plane.
+async fn stream_workspace_file(
+    state: &AppState,
+    file: &ChatMessageFile,
+    rest: &str,
+) -> axum::response::Response {
+    let mut segs = rest.splitn(3, '/');
+    let (Some(owner), Some(agent), Some(rel_path)) = (segs.next(), segs.next(), segs.next()) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let (Ok(owner_id), Ok(agent_id)) = (owner.parse::<Uuid>(), agent.parse::<Uuid>()) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let ws = WorkspaceRef {
+        owner_id,
+        container_id: ContainerId::from_uuid(agent_id),
+        scope: None,
+    };
+    match state.runtime.read_workspace_file(&ws, rel_path).await {
+        Ok(wf) => (
+            [
+                (header::CONTENT_TYPE, file.mime_type.clone()),
+                (header::CONTENT_LENGTH, wf.size.to_string()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!(
+                        "attachment; filename=\"{}\"",
+                        file.filename.replace('"', "")
+                    ),
+                ),
+            ],
+            Body::from_stream(wf.stream),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!(file_id = %file.id, %e, "workspace file stream failed");
+            StatusCode::NOT_FOUND.into_response()
+        }
     }
 }
 
