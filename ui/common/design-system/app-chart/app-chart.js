@@ -215,7 +215,11 @@ const plotBackground = {
     const { ctx } = chart;
     ctx.save();
     ctx.fillStyle = opts.color;
-    ctx.fillRect(0, 0, chart.width, chart.height);
+    ctx.beginPath();
+    // 8px corners (the --r-8 step): the ground is a surface card, and it takes
+    // the same radius every other card in the system does.
+    ctx.roundRect(0, 0, chart.width, chart.height, 8);
+    ctx.fill();
     ctx.restore();
   },
 };
