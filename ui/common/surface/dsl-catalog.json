@@ -1,9 +1,9 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "5c3cfee77b27",
+  "catalogVersion": "bc198977259e",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 27,
+  "componentCount": 37,
   "components": {
     "app-accordion": {
       "element": "app-accordion",
@@ -82,6 +82,61 @@
           "description": "Item clicked; `detail: { id: string }` — bubbles"
         }
       ]
+    },
+    "app-alert": {
+      "element": "app-alert",
+      "summary": "Inline callout with an icon, title and optional description.",
+      "paramOrder": [
+        "variant",
+        "title",
+        "description",
+        "dismissible",
+        "dismiss-label"
+      ],
+      "attributes": {
+        "variant": {
+          "type": "enum",
+          "values": [
+            "normal",
+            "info",
+            "success",
+            "warning",
+            "destructive"
+          ],
+          "default": "normal",
+          "description": "`normal` (default) | `info` | `success` | `warning` | `destructive`"
+        },
+        "title": {
+          "type": "string",
+          "description": "Bold first line. Required for an alert to mean anything."
+        },
+        "description": {
+          "type": "string",
+          "description": "Body text under the title."
+        },
+        "dismissible": {
+          "type": "boolean",
+          "description": "Appends a trailing × button. Clicking it collapses the alert in place and fires `alert-dismiss`; the element removes itself unless the event is cancelled."
+        },
+        "dismiss-label": {
+          "type": "string",
+          "default": "Dismiss",
+          "description": "Accessible name of the × button (default: `Dismiss`)."
+        }
+      },
+      "slots": [
+        {
+          "name": "icon",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [
+        {
+          "name": "alert-dismiss",
+          "description": "Cancelable. Fired after the collapse animation; the element removes itself unless `preventDefault()` is called."
+        }
+      ],
+      "note": "Inline status callout. Title/description are attributes; `variant` picks the feedback tone."
     },
     "app-avatar": {
       "element": "app-avatar",
@@ -175,6 +230,102 @@
       },
       "slots": [],
       "events": []
+    },
+    "app-banner": {
+      "element": "app-banner",
+      "summary": "Page-level announcement built around one action.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "type",
+        "title",
+        "content",
+        "image",
+        "closable"
+      ],
+      "attributes": {
+        "type": {
+          "type": "enum",
+          "values": [
+            "horizontal",
+            "vertical"
+          ],
+          "default": "horizontal",
+          "description": "`horizontal` (default) | `vertical`"
+        },
+        "title": {
+          "type": "string",
+          "description": "Heading text."
+        },
+        "content": {
+          "type": "string",
+          "description": "Body text under the heading."
+        },
+        "image": {
+          "type": "string",
+          "description": "src for a 24px leading image (a provider logo). Wins over the icon slot when both are present."
+        },
+        "closable": {
+          "type": "boolean",
+          "description": "Appends a trailing × button (horizontal only, as in the Flutter component). Fires `banner-close`; the element removes itself unless the event is cancelled."
+        }
+      },
+      "slots": [
+        {
+          "name": "icon",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "action",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [
+        {
+          "name": "banner-close",
+          "description": "Cancelable. The element removes itself unless `preventDefault()` is called."
+        }
+      ],
+      "note": "The child is the call to action (an app-button) and lands in the action slot; text is attributes."
+    },
+    "app-breadcrumb": {
+      "element": "app-breadcrumb",
+      "summary": "Navigation trail: `Home › Agents › research-agent`.",
+      "actionParam": true,
+      "paramOrder": [
+        "items",
+        "leading-icon",
+        "label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "items": {
+          "type": "json",
+          "description": "JSON array of `{ label, href?, id? }`, first to last. Items without `href` render as buttons and fire `crumb-select`."
+        },
+        "leading-icon": {
+          "type": "boolean",
+          "description": "Prefixes the trail with a home glyph."
+        },
+        "label": {
+          "type": "string",
+          "default": "Breadcrumb",
+          "description": "Accessible name of the `<nav>` (default: `Breadcrumb`)."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "crumb-select",
+          "description": "`{ id, label, index }` when an `href`-less item is clicked."
+        }
+      ],
+      "actionEvent": "crumb-select",
+      "note": "Items with an href navigate on their own; the Action fires only for href-less items."
     },
     "app-button": {
       "element": "app-button",
@@ -666,6 +817,49 @@
       ],
       "events": []
     },
+    "app-field": {
+      "element": "app-field",
+      "summary": "Label, description and error treatment for any form control.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "label",
+        "required",
+        "description",
+        "error",
+        "disabled"
+      ],
+      "attributes": {
+        "label": {
+          "type": "string",
+          "description": "Label text above the control."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Red `*` after the label."
+        },
+        "description": {
+          "type": "string",
+          "description": "Helper line under the control."
+        },
+        "error": {
+          "type": "string",
+          "description": "Error message; replaces the description and turns the line red. Also sets `state=\"error\"` on an `app-*` control in the slot."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Dims the label and helper (the control handles itself)."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "events": [],
+      "note": "Wraps one control child with label/description/error. Not for app-input/app-select/app-search, which carry their own."
+    },
     "app-grid": {
       "element": "app-grid",
       "summary": "CSS grid layout wrapper with configurable columns, gap, and padding.",
@@ -877,6 +1071,149 @@
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
+    "app-kbd": {
+      "element": "app-kbd",
+      "summary": "Keyboard shortcut rendered as a row of key caps.",
+      "textParam": true,
+      "paramOrder": [
+        "text",
+        "keys",
+        "size"
+      ],
+      "attributes": {
+        "keys": {
+          "type": "string",
+          "description": "Space-separated caps, e.g. `⌘ K`. Each token becomes one `<kbd>`. Alternatively write the caps as text content; the attribute wins."
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "default": "md",
+          "description": "`md` (default) | `sm`"
+        }
+      },
+      "slots": [],
+      "events": []
+    },
+    "app-list": {
+      "element": "app-list",
+      "summary": "Vertical list of `<app-list-item>`s with roving keyboard focus.",
+      "childrenParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "children",
+        "label",
+        "dense",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "label": {
+          "type": "string",
+          "description": "Accessible name for the `role=\"listbox\"`."
+        },
+        "dense": {
+          "type": "boolean",
+          "description": "Tighter vertical padding (s4 instead of s8)."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "events": [
+        {
+          "name": "list-select",
+          "description": "`{ id, index }` bubbled from an item's `item-select`."
+        }
+      ],
+      "actionEvent": "list-select",
+      "note": "Children are app-list-item; selection is the caller's — bind list-select and set `selected` on the current item."
+    },
+    "app-list-item": {
+      "element": "app-list-item",
+      "summary": "One row of an `<app-list>`.",
+      "paramOrder": [
+        "title",
+        "subtitle",
+        "id-value",
+        "image",
+        "indent",
+        "selected",
+        "disabled",
+        "expandable",
+        "expanded",
+        "status-dot",
+        "badge"
+      ],
+      "attributes": {
+        "title": {
+          "type": "string",
+          "description": "Primary text. Truncates with an ellipsis."
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "Secondary line under the title."
+        },
+        "id-value": {
+          "type": "string",
+          "description": "Identifier echoed in `item-select` (`id` itself is the DOM id and stays free for the page)."
+        },
+        "image": {
+          "type": "string",
+          "description": "Avatar image src (32px). Renders an `<app-avatar>`."
+        },
+        "indent": {
+          "type": "number",
+          "default": 0,
+          "description": "Nesting level; each level indents by s24 (default 0)."
+        },
+        "selected": {
+          "type": "boolean",
+          "description": "Brand-tinted row with the secondary border."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "expandable": {
+          "type": "boolean",
+          "description": "Shows the disclosure chevron; clicking it fires `item-toggle` instead of selecting."
+        },
+        "expanded": {
+          "type": "boolean",
+          "description": "Chevron points down (open) rather than right."
+        },
+        "status-dot": {
+          "type": "boolean",
+          "description": "8px success dot after the title."
+        },
+        "badge": {
+          "type": "string",
+          "description": "Small outlined label on the trailing edge."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "item-select",
+          "description": "`{ id }` on click / Enter / Space. Bubbles; the list re-emits it as `list-select` with the row index."
+        },
+        {
+          "name": "item-toggle",
+          "description": "`{ expanded }` from the disclosure chevron. Bubbles."
+        }
+      ],
+      "note": "Selection is bound on the parent app-list (list-select carries id + index); the item itself takes no Action."
+    },
     "app-modal": {
       "element": "app-modal",
       "summary": "Accessible dialog modal with heading, body, footer slot, backdrop dismiss, and ESC/X close.",
@@ -906,6 +1243,41 @@
           "attribute": "data-slot"
         }
       ],
+      "events": []
+    },
+    "app-progress": {
+      "element": "app-progress",
+      "summary": "Horizontal progress bar — determinate or indeterminate.",
+      "paramOrder": [
+        "value",
+        "size",
+        "label",
+        "show-value"
+      ],
+      "attributes": {
+        "value": {
+          "type": "number",
+          "description": "Percent complete, 0–100. Omit for indeterminate."
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm",
+            "lg"
+          ],
+          "description": "`md` (default, 6px) | `sm` (4px) | `lg` (8px)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name, e.g. `Upload progress`. Required for the bar to be announced meaningfully."
+        },
+        "show-value": {
+          "type": "boolean",
+          "description": "Prints the percentage to the right of the bar."
+        }
+      },
+      "slots": [],
       "events": []
     },
     "app-radio": {
@@ -1261,6 +1633,38 @@
       "slots": [],
       "events": []
     },
+    "app-spinner": {
+      "element": "app-spinner",
+      "summary": "Circular indeterminate spinner that waits before appearing.",
+      "paramOrder": [
+        "size",
+        "delay",
+        "label"
+      ],
+      "attributes": {
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm",
+            "lg"
+          ],
+          "description": "`md` (default, 24px) | `sm` (16px) | `lg` (32px)"
+        },
+        "delay": {
+          "type": "number",
+          "default": 300,
+          "description": "Milliseconds before the ring becomes visible (default 300). `0` shows immediately."
+        },
+        "label": {
+          "type": "string",
+          "default": "Loading",
+          "description": "Accessible name (default: `Loading`). Announced via `role=\"status\"`; the ring itself is aria-hidden."
+        }
+      },
+      "slots": [],
+      "events": []
+    },
     "app-stack": {
       "element": "app-stack",
       "summary": "Vertical flex stack with configurable gap and alignment.",
@@ -1575,6 +1979,121 @@
           "description": "Cancelable; the tag removes itself unless prevented."
         }
       ]
+    },
+    "app-textarea": {
+      "element": "app-textarea",
+      "summary": "Multi-line text input with the same label / hint / count / state contract as `<app-input>`.",
+      "actionParam": true,
+      "paramOrder": [
+        "state",
+        "label",
+        "hint",
+        "count",
+        "required",
+        "rows",
+        "max-rows",
+        "disabled",
+        "readonly",
+        "resizable",
+        "name",
+        "placeholder",
+        "value",
+        "maxlength",
+        "spellcheck",
+        "aria-label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label",
+        "aria-label"
+      ],
+      "attributes": {
+        "state": {
+          "type": "enum",
+          "values": [
+            "error",
+            "success",
+            "read-only",
+            "hover",
+            "focus"
+          ],
+          "description": "`error` | `success` | `read-only` | `hover` | `focus`. Omit for the default state."
+        },
+        "label": {
+          "type": "string",
+          "description": "Label above the box."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Helper line below the box. Turns red in `state=\"error\"`."
+        },
+        "count": {
+          "type": "string",
+          "description": "Right-aligned counter in the hint row, e.g. `120/500`. With `maxlength` set and no `count`, the counter is derived live."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Red `*` before the label."
+        },
+        "rows": {
+          "type": "number",
+          "default": 3,
+          "description": "Visible lines at rest (default 3)."
+        },
+        "max-rows": {
+          "type": "number",
+          "description": "Growth ceiling; beyond it the box scrolls. Omit for no ceiling."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "readonly": {
+          "type": "boolean",
+          "description": "Same paint as `state=\"read-only\"`."
+        },
+        "resizable": {
+          "type": "boolean",
+          "description": "Shows the native corner grip. Off by default — auto-grow covers the common case and a grip fights it."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner `<textarea>`."
+        },
+        "placeholder": {
+          "type": "string",
+          "description": "Forwarded to the inner `<textarea>`."
+        },
+        "value": {
+          "type": "string",
+          "description": "Forwarded to the inner `<textarea>`."
+        },
+        "maxlength": {
+          "type": "string",
+          "description": "Forwarded to the inner `<textarea>`."
+        },
+        "spellcheck": {
+          "type": "string",
+          "description": "Forwarded to the inner `<textarea>`."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner `<textarea>`."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "input",
+          "description": "Bubbles from the inner textarea."
+        },
+        {
+          "name": "change",
+          "description": "Bubbles from the inner textarea."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-toolbar": {
       "element": "app-toolbar",

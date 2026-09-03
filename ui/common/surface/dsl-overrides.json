@@ -139,6 +139,52 @@
     "auto-complete": {
       "status": "blocked",
       "reason": "Needs a live filter callback through data-sources.js \u2014 not designed yet."
+    },
+    "app-alert": {
+      "status": "ready",
+      "note": "Inline status callout. Title/description are attributes; `variant` picks the feedback tone."
+    },
+    "app-banner": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "The child is the call to action (an app-button) and lands in the action slot; text is attributes."
+    },
+    "app-spinner": {
+      "status": "ready"
+    },
+    "app-progress": {
+      "status": "ready"
+    },
+    "app-kbd": {
+      "status": "ready",
+      "textParam": true
+    },
+    "app-breadcrumb": {
+      "status": "ready",
+      "actionParam": true,
+      "actionEvent": "crumb-select",
+      "note": "Items with an href navigate on their own; the Action fires only for href-less items."
+    },
+    "app-list": {
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "list-select",
+      "note": "Children are app-list-item; selection is the caller's \u2014 bind list-select and set `selected` on the current item."
+    },
+    "app-list-item": {
+      "status": "ready",
+      "note": "Selection is bound on the parent app-list (list-select carries id + index); the item itself takes no Action."
+    },
+    "app-field": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "Wraps one control child with label/description/error. Not for app-input/app-select/app-search, which carry their own."
+    },
+    "app-textarea": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
     }
   },
   "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation.",
