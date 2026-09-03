@@ -48,11 +48,43 @@
  * Charts with two or more series always render a legend; a single series does
  * not, because the panel title already names it.
  *
+ * ## The TokenOps capabilities
+ *
+ * Three opt-ins added for the TokenOps panels, all inside the same five forms:
+ *
+ * - **Anomalies** (line): a dataset may carry `anomalies: [index | { index,
+ *   note }]`; each flagged point gets a status-red marker with a 2px surface
+ *   ring and an 8px alpha-gradient band falling from the point to the
+ *   baseline. A `note` ("DevOps Engineer spend 55M tokens") rides into the
+ *   tooltip for that index. Red here is the *status* palette, never a series
+ *   slot — an anomaly is a state, not an eighth series. Flagged cells also say
+ *   "(anomaly)" in the screen-reader table, so the signal is not colour-alone.
+ * - **Secondary axis** (line): a dataset may carry `axis: 'y2'` to bind to a
+ *   right-hand scale, formatted by `format-y2`. Use it reluctantly: two
+ *   y-scales invite reading a crossing that the arbitrary scale ratio
+ *   invented. Prefer two stacked charts or indexing to a common base when the
+ *   page allows; this exists because the TokenOps design pairs cost with token
+ *   volume on one panel.
+ * - **Segmented columns** (bar): `segmented` draws each stack segment as a
+ *   gapped pill — the "spend concentration" presentation. It implies `stacked`,
+ *   hides the y-axis (the shape and the reference line are the reading), and
+ *   pairs with `average-line`, a dashed mean-of-column-totals rule.
+ *
+ * Hovering a line plot also draws a crosshair at the active index — the
+ * tooltip says the values, the crosshair says where.
+ *
  * @element app-chart
  * @attr {string} type - `line` | `bar` | `donut` | `hbar` | `progress` (default `line`)
  * @attr {boolean} stacked - `bar` only: stack datasets instead of grouping them
+ * @attr {boolean} segmented - `bar` only: the concentration presentation — every
+ *   stack segment is a gapped, fully-rounded pill, the y-axis is hidden, and
+ *   `stacked` is implied. Pair with `average-line` for the reference rule.
+ * @attr {boolean} average-line - `bar` only: dashed horizontal rule at the mean
+ *   of the column totals, labelled "avg".
  * @attr {string} height - Plot height, any CSS length (default `200px`). Canvas forms only.
  * @attr {string} format - Value formatting: `number` (default) | `currency` | `percent` | `compact`
+ * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
+ *   `number` (default) | `currency` | `percent` | `compact`
  * @attr {string} currency - ISO code for `format="currency"` (default `USD`)
  * @attr {string} center-value - `donut` only: the figure drawn in the hole
  * @attr {string} center-label - `donut` only: the caption under it
@@ -61,7 +93,10 @@
  * @attr {boolean} loading - Shimmer placeholder instead of the plot
  * @attr {string} label - Accessible name for the plot. Falls back to the type.
  * @prop {object|Array} data - Canvas forms take Chart.js shape:
- *   `{ labels: string[], datasets: [{ label, data }] }`. Row forms take
+ *   `{ labels: string[], datasets: [{ label, data }] }`, where a dataset may
+ *   also carry `axis: 'y2'` (bind to the right-hand scale — line only) and
+ *   `anomalies: [index | { index, note }]` (status-red markers + falling
+ *   bands at those points; a note rides into the tooltip). Row forms take
  *   `[{ label, value, display, delta, trend }]`, where `value` is the magnitude
  *   (percent for `progress`), `display` an optional pre-formatted string, and
  *   `delta` the trailing change string, arrow included. `trend` colours that
@@ -112,8 +147,11 @@ function palette(el) {
     return getComputedStyle(probe).color;
   };
 
+  // body/tertiary (12/16) — the axis-label style the design specifies. Fixed
+  // rather than --font-size-xs, which is a clamp that dips below 12px at
+  // narrow widths.
   probe.style.fontFamily = 'var(--font-sans)';
-  probe.style.fontSize = 'var(--font-size-xs)';
+  probe.style.fontSize = 'var(--font-size-tertiary)';
   const cs = getComputedStyle(probe);
   const font = cs.fontFamily;
   const fontSize = parseFloat(cs.fontSize) || 12;
@@ -122,8 +160,18 @@ function palette(el) {
     series: Array.from({ length: SERIES_SLOTS }, (_, i) => color(`--viz-${i + 1}`)),
     other: color('--fg-secondary'),
     grid: color('--border-primary'),
-    tick: color('--fg-secondary'),
+    // chart/axis/label — the design's own token for tick and legend ink.
+    tick: color('--chart-axis-label'),
     surface: color('--bg-surface'),
+    // The plot rectangle's own fill: the panel around a chart may be tinted,
+    // the plot itself sits on base so the marks read against a clean ground.
+    base: color('--bg-base'),
+    // Status red, for anomaly marks. Deliberately NOT a --viz-* slot: an
+    // anomaly is a state, and status colours are never handed out as series.
+    error: color('--fg-error'),
+    // Primary ink, for the hover overpaint on pills — dark ink in light mode,
+    // light ink in dark, so "more contrast" holds in both themes.
+    ink: color('--fg-primary'),
     font,
     fontSize,
   };
@@ -155,12 +203,202 @@ const centreInHole = {
 /** Fixed-order slot assignment. Past the last slot everything is "Other". */
 const slot = (pal, i) => (i < SERIES_SLOTS ? pal.series[i] : pal.other);
 
+/** Paint the plot rectangle on --bg-base, whatever surface the panel sits on. */
+const plotBackground = {
+  id: 'appChartPlotBg',
+  beforeDraw(chart, _args, opts) {
+    const { ctx, chartArea } = chart;
+    if (!chartArea) return;
+    ctx.save();
+    ctx.fillStyle = opts.color;
+    ctx.fillRect(chartArea.left, chartArea.top, chartArea.width, chartArea.height);
+    ctx.restore();
+  },
+};
+
+/** `anomalies` entries may be bare indices or `{ index, note }`. One shape out. */
+function normAnomalies(ds) {
+  if (!Array.isArray(ds.anomalies)) return [];
+  return ds.anomalies
+    .map((a) => (typeof a === 'number' ? { index: a } : a))
+    .filter((a) => a && Number.isInteger(a.index));
+}
+
+/** Pixel positions of every anomaly-flagged point on visible datasets. */
+function anomalyPoints(chart) {
+  const out = [];
+  chart.data.datasets.forEach((ds, di) => {
+    const meta = chart.getDatasetMeta(di);
+    if (meta.hidden) return;
+    for (const { index } of normAnomalies(ds)) {
+      const el = meta.data?.[index];
+      if (el) out.push({ x: el.x, y: el.y });
+    }
+  });
+  return out;
+}
+
+/**
+ * Anomaly overlays: an 8px band *behind* the marks running from the flagged
+ * point DOWN to the baseline — never above it — fading as it falls, and a
+ * status-red dot with a 2px surface ring on the point itself. Band behind,
+ * dot in front: the band is context, the dot is the datum. Driven by
+ * `anomalies: [index | { index, note }]` on a dataset; the same flags are
+ * spelled out as "(anomaly)" in the sr-only table, so a screen reader gets
+ * the signal the colour carries, and a note travels into the tooltip.
+ */
+const anomalyOverlay = {
+  id: 'appChartAnomalies',
+  beforeDatasetsDraw(chart, _args, opts) {
+    const { ctx, chartArea } = chart;
+    for (const { x, y } of anomalyPoints(chart)) {
+      ctx.save();
+      // Gradient in alpha, not in hue: strongest at the datum, gone at the
+      // baseline, so the band points at its dot instead of striping the plot.
+      const g = ctx.createLinearGradient(0, y, 0, chartArea.bottom);
+      g.addColorStop(0, colorWithAlpha(opts.color, 0.28));
+      g.addColorStop(1, colorWithAlpha(opts.color, 0.03));
+      ctx.fillStyle = g;
+      ctx.fillRect(x - 4, y, 8, chartArea.bottom - y);
+      ctx.restore();
+    }
+  },
+  afterDatasetsDraw(chart, _args, opts) {
+    const { ctx } = chart;
+    for (const { x, y } of anomalyPoints(chart)) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = opts.color;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = opts.surface;
+      ctx.stroke();
+      ctx.restore();
+    }
+  },
+};
+
+/** `rgb(a, b, c)` (what the palette probe returns) with an alpha applied. */
+function colorWithAlpha(rgb, alpha) {
+  const m = rgb.match(/rgba?\(([^)]+)\)/);
+  if (!m) return rgb;
+  const [r, g, b] = m[1].split(',').map((v) => parseFloat(v));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * Hover crosshair for the line form: a 1px vertical rule at the active index.
+ * The tooltip already says the values; the rule says where on the axis they
+ * sit, which matters once the plot is wide and the eye has to travel.
+ */
+const hoverCrosshair = {
+  id: 'appChartCrosshair',
+  afterDatasetsDraw(chart, _args, opts) {
+    const active = chart.tooltip?.getActiveElements?.() || [];
+    if (!active.length) return;
+    const { ctx, chartArea } = chart;
+    ctx.save();
+    ctx.strokeStyle = opts.color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(active[0].element.x, chartArea.top);
+    ctx.lineTo(active[0].element.x, chartArea.bottom);
+    ctx.stroke();
+    ctx.restore();
+  },
+};
+
+/**
+ * The segmented form's own renderer. The native bars are made transparent and
+ * this draws the pills over their geometry: every segment a fully-rounded
+ * capsule, a 2px breathing gap between neighbours, and a floor of one full
+ * circle so a tiny "Other" share reads as a dot instead of vanishing (the
+ * design's floating dots; the honest number is one hover away).
+ *
+ * Chart.js's own borderRadius was not this: on stacked bars it squares inner
+ * corners however it is configured, and faking gaps with a surface-coloured
+ * border paints a visible casing the moment the plot background is not the
+ * surface colour. Owning the draw ends both fights.
+ *
+ * Hover: the active column's pills are overpainted with a translucent ink so
+ * they darken in place — contrast, not a box around the column.
+ */
+const pillBars = {
+  id: 'appChartPills',
+  afterDatasetsDraw(chart, _args, opts) {
+    const { ctx } = chart;
+    const active = new Set((chart.getActiveElements() || []).map((a) => a.index));
+    chart.data.datasets.forEach((ds, di) => {
+      const meta = chart.getDatasetMeta(di);
+      if (meta.hidden) return;
+      meta.data.forEach((el, i) => {
+        const top = Math.min(el.y, el.base);
+        const bottom = Math.max(el.y, el.base);
+        if (bottom - top <= 0) return;
+        const w = 8;
+        // 1px shaved off each end = the 2px gap between stacked neighbours.
+        const y0 = top + 1;
+        const h = Math.max(bottom - top - 2, w); // floor: a full circle
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(el.x - w / 2, y0, w, h, w / 2);
+        ctx.fillStyle = ds._slot;
+        ctx.fill();
+        if (active.has(i)) {
+          ctx.fillStyle = opts.hoverInk;
+          ctx.fill();
+        }
+        ctx.restore();
+      });
+    });
+  },
+};
+
+/**
+ * Dashed mean-of-column-totals rule for the segmented bar form. The mean is
+ * over ALL columns, quiet hours included — dropping the zeros would flatter
+ * every busy hour by raising the bar it is compared against.
+ */
+const averageLine = {
+  id: 'appChartAverage',
+  afterDatasetsDraw(chart, _args, opts) {
+    const { ctx, chartArea, scales } = chart;
+    const labels = chart.data.labels || [];
+    if (!labels.length || !scales.y) return;
+    const totals = labels.map((_, i) =>
+      chart.data.datasets.reduce(
+        (t, ds, di) => (chart.getDatasetMeta(di).hidden ? t : t + (Number(ds.data?.[i]) || 0)), 0));
+    const avg = totals.reduce((a, b) => a + b, 0) / totals.length;
+    const y = scales.y.getPixelForValue(avg);
+    if (y < chartArea.top || y > chartArea.bottom) return;
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = opts.color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(chartArea.left, y);
+    ctx.lineTo(chartArea.right, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = opts.color;
+    ctx.font = opts.font;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('avg', chartArea.left, y - 3);
+    ctx.restore();
+  },
+};
+
 /** @returns {(n: number) => string} */
-function formatter(el) {
-  const kind = el.getAttribute('format') || 'number';
+function formatter(el, attr = 'format') {
+  const kind = el.getAttribute(attr) || 'number';
   const currency = el.getAttribute('currency') || 'USD';
   if (kind === 'currency') {
-    const f = new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 0 });
+    // narrowSymbol: "$240", never the locale-dependent "US$240" — the panel
+    // header already says which ledger this is.
+    const f = new Intl.NumberFormat(undefined,
+      { style: 'currency', currency, currencyDisplay: 'narrowSymbol', maximumFractionDigits: 0 });
     return (n) => f.format(n);
   }
   if (kind === 'percent') return (n) => `${Math.round(n)}%`;
@@ -174,7 +412,8 @@ function formatter(el) {
 
 export class AppChart extends HTMLElement {
   static get observedAttributes() {
-    return ['type', 'stacked', 'height', 'format', 'currency', 'center-value',
+    return ['type', 'stacked', 'segmented', 'average-line', 'height', 'format',
+            'format-y2', 'currency', 'center-value',
             'center-label', 'legend', 'empty-text', 'loading', 'label'];
   }
 
@@ -263,9 +502,13 @@ export class AppChart extends HTMLElement {
     const type = this.#type();
     const pal = palette(this);
     const fmt = formatter(this);
+    const fmt2 = formatter(this, 'format-y2');
     const sets = this.#datasets();
     const labels = this.#data.labels || [];
     const showLegend = this.#showLegend(type, sets.length);
+    const hasY2 = type === 'line' && sets.some((s) => s.axis === 'y2');
+    const segmented = type === 'bar' && this.hasAttribute('segmented');
+    const hasAnomalies = sets.some((s) => Array.isArray(s.anomalies) && s.anomalies.length);
 
     const centerValue = this.getAttribute('center-value');
     const centerLabel = this.getAttribute('center-label');
@@ -280,15 +523,25 @@ export class AppChart extends HTMLElement {
             ${centerLabel ? `<span class="chart-center-label">${escHtml(centerLabel)}</span>` : ''}
           </div>` : ''}
       </div>
-      ${this.#dataTable(labels, sets, fmt)}`;
+      ${this.#dataTable(labels, sets, fmt, fmt2)}`;
 
     Chart.defaults.font.family = pal.font;
     Chart.defaults.font.size = pal.fontSize;
     Chart.defaults.color = pal.tick;
 
+    // Per-instance plugins, only the ones this render needs — an inert plugin
+    // still runs its hooks on every frame.
+    const plugins = [plotBackground];
+    if (type === 'donut') plugins.push(centreInHole);
+    if (type === 'line') plugins.push(hoverCrosshair);
+    if (type === 'line' && hasAnomalies) plugins.push(anomalyOverlay);
+    // avg rule before the pills, so the pills cross OVER the reference line.
+    if (type === 'bar' && this.hasAttribute('average-line')) plugins.push(averageLine);
+    if (segmented) plugins.push(pillBars);
+
     this.#chart = new Chart(this.querySelector('canvas'), {
       type: type === 'donut' ? 'doughnut' : type,
-      data: { labels, datasets: sets.map((s, i) => this.#dataset(type, s, i, pal)) },
+      data: { labels, datasets: sets.map((s, i) => this.#dataset(type, s, i, pal, segmented)) },
       options: {
         responsive: true,
         maintainAspectRatio: false,
@@ -301,18 +554,98 @@ export class AppChart extends HTMLElement {
             ? { position: type === 'donut' ? 'right' : 'bottom', align: 'start',
                 labels: { usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, padding: 12 } }
             : { display: false },
-          tooltip: {
-            backgroundColor: pal.tick, padding: 8, cornerRadius: 6, displayColors: true,
-            usePointStyle: true, boxWidth: 8, boxHeight: 8,
-            callbacks: {
-              label: (c) => `${c.dataset.label ? `${c.dataset.label}: ` : ''}${fmt(c.parsed.y ?? c.parsed)}`,
-            },
-          },
+          // The native canvas tooltip cannot do the design's card — bold date
+          // title, label left / value right, an anomaly note line — so it is
+          // disabled and an HTML card in the plot box renders instead. HTML
+          // also keeps the tooltip in real text: tokens, wrapping, zoom.
+          tooltip: { enabled: false, external: (ctx) => this.#htmlTooltip(ctx, { type, fmt, fmt2 }) },
+          appChartCrosshair: { color: pal.grid },
+          appChartAnomalies: { color: pal.error, surface: pal.surface },
+          appChartAverage: { color: pal.tick, font: `${pal.fontSize}px ${pal.font}` },
+          appChartPlotBg: { color: pal.base },
+          appChartPills: { hoverInk: colorWithAlpha(pal.ink, 0.22) },
         },
-        scales: type === 'donut' ? {} : this.#scales(pal, fmt),
+        scales: type === 'donut' ? {} : this.#scales(pal, fmt, fmt2, { hasY2, segmented }),
       },
-      plugins: type === 'donut' ? [centreInHole] : [],
+      plugins,
     });
+  }
+
+  /**
+   * The design's tooltip card, in HTML: bold title, one row per series with
+   * the label left and the value right (formatted on that dataset's own axis),
+   * a colour dot only where identity needs it (bar/donut — on a line the
+   * crosshair and the measure names already say which is which), and any
+   * anomaly note for the hovered index as a trailing line. Built with
+   * createElement/textContent throughout: labels and notes are data.
+   */
+  #htmlTooltip(ctx, { type, fmt, fmt2 }) {
+    const plot = this.querySelector('.chart-plot');
+    if (!plot) return;
+    let tip = plot.querySelector('.chart-tooltip');
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'chart-tooltip';
+      tip.setAttribute('aria-hidden', 'true'); // the sr table is the AT view
+      plot.appendChild(tip);
+    }
+    const model = ctx.tooltip;
+    if (!model || model.opacity === 0 || !model.dataPoints?.length) {
+      tip.classList.remove('is-visible');
+      return;
+    }
+
+    tip.replaceChildren();
+    const title = (model.title || []).join(' ');
+    if (title) {
+      const t = document.createElement('div');
+      t.className = 'chart-tooltip-title';
+      t.textContent = title;
+      tip.appendChild(t);
+    }
+    for (const dp of model.dataPoints) {
+      const row = document.createElement('div');
+      row.className = 'chart-tooltip-row';
+      if (type !== 'line') {
+        const dot = document.createElement('span');
+        dot.className = 'chart-tooltip-dot';
+        dot.style.background = dp.dataset._slot
+          || model.labelColors?.[dp.datasetIndex]?.backgroundColor
+          || dp.dataset.borderColor || '';
+        row.appendChild(dot);
+      }
+      const label = document.createElement('span');
+      label.className = 'chart-tooltip-label';
+      // A donut row names the slice; every other form names the series.
+      label.textContent = (type === 'donut' ? dp.label : dp.dataset.label) || 'Series';
+      const value = document.createElement('span');
+      value.className = 'chart-tooltip-value';
+      value.textContent = (dp.dataset.yAxisID === 'y2' ? fmt2 : fmt)(dp.parsed.y ?? dp.parsed);
+      row.append(label, value);
+      tip.appendChild(row);
+    }
+    if (type === 'line') {
+      const idx = model.dataPoints[0].dataIndex;
+      for (const ds of this.#datasets()) {
+        for (const a of normAnomalies(ds)) {
+          if (a.index === idx && a.note) {
+            const note = document.createElement('div');
+            note.className = 'chart-tooltip-note';
+            note.textContent = a.note;
+            tip.appendChild(note);
+          }
+        }
+      }
+    }
+
+    // Above the caret, clamped to the plot; below it when the top would clip.
+    tip.classList.add('is-visible');
+    const w = tip.offsetWidth;
+    const below = model.caretY - tip.offsetHeight - 14 < 0;
+    tip.classList.toggle('is-below', below);
+    const x = Math.min(Math.max(model.caretX, w / 2 + 2), plot.clientWidth - w / 2 - 2);
+    tip.style.left = `${x}px`;
+    tip.style.top = `${below ? model.caretY + 14 : model.caretY - 12}px`;
   }
 
   #showLegend(type, seriesCount) {
@@ -327,7 +660,7 @@ export class AppChart extends HTMLElement {
    * families is not decoration — it is the gap that keeps stacked segments and
    * adjacent bars from reading as one continuous mass.
    */
-  #dataset(type, s, i, pal) {
+  #dataset(type, s, i, pal, segmented = false) {
     const base = { ...s };
     if (type === 'donut') {
       return {
@@ -338,6 +671,21 @@ export class AppChart extends HTMLElement {
       };
     }
     if (type === 'bar') {
+      // Segmented: the concentration presentation. The native bars are drawn
+      // fully transparent and only supply geometry + hit areas — the pillBars
+      // plugin owns the paint (capsule radius, 2px gaps, hover contrast),
+      // because Chart.js squares the inner corners of stacked bars whatever
+      // borderRadius says, and a surface-coloured "gap" border reads as a
+      // casing once the plot background is base, not surface.
+      if (segmented) {
+        return {
+          ...base,
+          _slot: slot(pal, i),
+          backgroundColor: 'transparent',
+          borderWidth: 0,
+          barThickness: 8,
+        };
+      }
       return {
         ...base,
         backgroundColor: slot(pal, i),
@@ -349,9 +697,13 @@ export class AppChart extends HTMLElement {
     }
     return {
       ...base,
+      // Line only: a dataset may opt onto the right-hand scale.
+      ...(s.axis === 'y2' ? { yAxisID: 'y2' } : {}),
       borderColor: slot(pal, i),
       backgroundColor: slot(pal, i),
-      borderWidth: 2,
+      // 1px strokes per the design — every rule in the plot (series, grid,
+      // crosshair, avg) is a hairline.
+      borderWidth: 1,
       // Straight segments: a spline invents values between the points it was
       // given, which on a spend or latency series is a lie the reader cannot see.
       tension: 0,
@@ -362,48 +714,84 @@ export class AppChart extends HTMLElement {
     };
   }
 
-  #scales(pal, fmt) {
-    const stacked = this.hasAttribute('stacked');
-    return {
+  #scales(pal, fmt, fmt2, { hasY2 = false, segmented = false } = {}) {
+    // `segmented` implies stacking: the pills ARE the stack segments.
+    const stacked = this.hasAttribute('stacked') || segmented;
+    const scales = {
       x: {
         stacked,
         // Vertical rules add no information on a categorical or time axis and
         // compete with the marks for attention.
         grid: { display: false },
         border: { display: false },
-        ticks: { color: pal.tick },
+        // Segmented plots carry a dense categorical axis (24 hours): thin the
+        // ticks rather than rotate them — slanted labels read slower than a
+        // sparser run of upright ones.
+        ticks: { color: pal.tick, ...(segmented ? { maxRotation: 0, autoSkip: true, autoSkipPadding: 12 } : {}) },
       },
       y: {
         stacked,
         beginAtZero: true,
+        // Solid hairline grid — the dash Chart.js inherits from border.dash
+        // striped every gridline, and the design's rules are straight.
         grid: { color: pal.grid, drawTicks: false },
-        border: { display: false, dash: [4, 4] },
-        ticks: { color: pal.tick, padding: 8, callback: (v) => fmt(v) },
+        border: { display: false },
+        // The design's vertical rhythm: a 16px label line on each rule, 20px
+        // of air between — a 36px pitch, so the tick count comes from the
+        // plot's height instead of Chart.js's own guess.
+        // maxTicksLimit, not count: a hard count forces steps like $90 where
+        // the reading wants $100 — the limit keeps the design's pitch while
+        // Chart.js still lands on round values.
+        ticks: { color: pal.tick, padding: 8, callback: (v) => fmt(v),
+                 maxTicksLimit: this.#tickCount() },
+        // The concentration presentation hides the value axis: the reading is
+        // the shape of the day and the position against the avg rule, and per-
+        // column numbers stay one hover (or the sr table) away.
+        display: !segmented,
       },
     };
+    if (hasY2) {
+      scales.y2 = {
+        position: 'right',
+        beginAtZero: true,
+        // The left axis owns the horizontal grid; a second grid from a second
+        // scale would draw two unrelated rulings over one plot. Same tick
+        // count as the left axis, so both scales land on the same rules.
+        grid: { drawOnChartArea: false, drawTicks: false },
+        border: { display: false },
+        ticks: { color: pal.tick, padding: 8, callback: (v) => fmt2(v),
+                 maxTicksLimit: this.#tickCount() },
+      };
+    }
+    return scales;
+  }
+
+  /**
+   * How many y ticks a plot of this height carries, from the design's 36px
+   * rhythm (16px label line + 20px gap). Approximate by intent: the height
+   * attribute is the plot box, minus ~28px of x-axis labels below it.
+   */
+  #tickCount() {
+    const h = parseInt(this.getAttribute('height') || '200', 10) || 200;
+    return Math.min(8, Math.max(3, Math.round((h - 28) / 36) + 1));
   }
 
   /**
    * The screen-reader view of a canvas. `.sr-only` in styles/, so it costs no
    * layout; it is the "a table view exists" half of not encoding by colour alone.
-   *
-   * The `.sr-only` box is the wrapping div, not the table: `height: 1px` and
-   * `overflow: hidden` do nothing to a `display: table` box, which sizes to its
-   * rows — and an absolutely-positioned 1400px-tall table still counts toward
-   * the document's scrollable overflow, which is what gave a 31-day chart a page
-   * that scrolled a screen and a half past its own content.
    */
-  #dataTable(labels, sets, fmt) {
+  #dataTable(labels, sets, fmt, fmt2 = fmt) {
     const head = sets.map((s) => `<th scope="col">${escHtml(s.label || 'Series')}</th>`).join('');
     const body = labels.map((l, r) => `
       <tr><th scope="row">${escHtml(String(l))}</th>${
-        sets.map((s) => `<td>${escHtml(fmt(Number(s.data?.[r] ?? 0)))}</td>`).join('')
+        sets.map((s) => `<td>${escHtml((s.axis === 'y2' ? fmt2 : fmt)(Number(s.data?.[r] ?? 0)))}${
+          normAnomalies(s).some((a) => a.index === r) ? ' (anomaly)' : ''}</td>`).join('')
       }</tr>`).join('');
-    return `<div class="sr-only"><table>
+    return `<table class="sr-only">
         <caption>${escHtml(this.getAttribute('label') || 'Chart data')}</caption>
         <thead><tr><th scope="col">Label</th>${head}</tr></thead>
         <tbody>${body}</tbody>
-      </table></div>`;
+      </table>`;
   }
 
   // ── Row forms ─────────────────────────────────────────────────────────────
