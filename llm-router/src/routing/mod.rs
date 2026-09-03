@@ -148,10 +148,11 @@ pub async fn route_model(
         "route_model: LEVEL 1 (Pinned) skipped — agent not pinned"
     );
 
-    // Levels 2 & 3 apply only within a conversation. No `conv_id` (a direct-SDK agent not
-    // driven by the orchestrator) ⇒ the router never fires and behaviour is identical to
-    // before this layer — straight to the configured/default model.
-    if let Some(conv_id) = inputs.signals.conv_id.as_deref() {
+    // Levels 2 & 3 apply only within a conversation and only when the agent has an
+    // explicit llm_config (opt-in to routing). No `conv_id` or no llm_config ⇒ the
+    // router never fires and behaviour is identical to before this layer — straight to
+    // the configured/default model.
+    if inputs.has_llm_config && let Some(conv_id) = inputs.signals.conv_id.as_deref() {
         // Level 2 — cache hit: the sticky decision for this conversation+agent.
         tracing::debug!(
             target: "nasiko::llm_router::routing",
@@ -185,7 +186,8 @@ pub async fn route_model(
             "route_model: LEVEL 2 (CacheHit) miss — no sticky decision cached yet"
         );
 
-        // Level 3 — classify, but only at a boundary where re-selecting is safe.
+        // Level 3 — classify at a boundary where re-selecting is safe.
+        // (has_llm_config is already guarded by the outer block.)
         if inputs.signals.is_fireable_boundary()
             && let Some(query) = inputs.query
         {
