@@ -44,17 +44,30 @@
     line-height: var(--font-body-tertiary-line);
     pointer-events: none;
     opacity: 0;
-    transform: translate(-50%, -100%);
     transition: opacity 120ms ease;
   }
 
-  .chart-tooltip.is-below {
-    transform: translate(-50%, 0);
-  }
+  .chart-tooltip.is-above { transform: translate(-50%, -100%); }
+  .chart-tooltip.is-below { transform: translate(-50%, 0); }
+  .chart-tooltip.is-right { transform: translate(0, -50%); }
 
   .chart-tooltip.is-visible {
     opacity: 1;
   }
+
+  /* The caret: an 8px rotated square on whichever edge faces the datum. */
+  .chart-tooltip::after {
+    content: '';
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    background: var(--sand-900);
+    transform: rotate(45deg);
+  }
+
+  .chart-tooltip.is-above::after { bottom: -4px; left: calc(50% - 4px); }
+  .chart-tooltip.is-below::after { top: -4px; left: calc(50% - 4px); }
+  .chart-tooltip.is-right::after { left: -4px; top: calc(50% - 4px); }
 
   .chart-tooltip-title {
     font-weight: var(--fw-semibold);

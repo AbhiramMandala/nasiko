@@ -203,15 +203,19 @@ const centreInHole = {
 /** Fixed-order slot assignment. Past the last slot everything is "Other". */
 const slot = (pal, i) => (i < SERIES_SLOTS ? pal.series[i] : pal.other);
 
-/** Paint the plot rectangle on --bg-base, whatever surface the panel sits on. */
+/**
+ * Paint the whole canvas on --bg-base, whatever surface the panel sits on.
+ * The full canvas, not just the plot rectangle: the design's white ground
+ * runs under the tick labels and axis captions too, and a base-coloured plot
+ * inside surface-coloured margins read as a patch.
+ */
 const plotBackground = {
   id: 'appChartPlotBg',
   beforeDraw(chart, _args, opts) {
-    const { ctx, chartArea } = chart;
-    if (!chartArea) return;
+    const { ctx } = chart;
     ctx.save();
     ctx.fillStyle = opts.color;
-    ctx.fillRect(chartArea.left, chartArea.top, chartArea.width, chartArea.height);
+    ctx.fillRect(0, 0, chart.width, chart.height);
     ctx.restore();
   },
 };
@@ -638,14 +642,27 @@ export class AppChart extends HTMLElement {
       }
     }
 
-    // Above the caret, clamped to the plot; below it when the top would clip.
+    // Placement, per the design: beside the point on the right when there is
+    // room, above it when there is not, below as the last resort near the top
+    // edge. The caret (::after) points back at the datum from whichever edge
+    // faces it.
     tip.classList.add('is-visible');
     const w = tip.offsetWidth;
-    const below = model.caretY - tip.offsetHeight - 14 < 0;
-    tip.classList.toggle('is-below', below);
-    const x = Math.min(Math.max(model.caretX, w / 2 + 2), plot.clientWidth - w / 2 - 2);
-    tip.style.left = `${x}px`;
-    tip.style.top = `${below ? model.caretY + 14 : model.caretY - 12}px`;
+    const h = tip.offsetHeight;
+    const GAP = 14;
+    tip.classList.remove('is-right', 'is-above', 'is-below');
+    if (model.caretX + GAP + w <= plot.clientWidth - 2) {
+      tip.classList.add('is-right');
+      tip.style.left = `${model.caretX + GAP}px`;
+      // Vertically centred on the point, nudged back inside the plot when the
+      // point sits near an edge.
+      tip.style.top = `${Math.min(Math.max(model.caretY, h / 2 + 2), plot.clientHeight - h / 2 - 2)}px`;
+    } else {
+      const below = model.caretY - h - GAP < 0;
+      tip.classList.add(below ? 'is-below' : 'is-above');
+      tip.style.left = `${Math.min(Math.max(model.caretX, w / 2 + 2), plot.clientWidth - w / 2 - 2)}px`;
+      tip.style.top = `${below ? model.caretY + GAP : model.caretY - GAP + 2}px`;
+    }
   }
 
   #showLegend(type, seriesCount) {
@@ -767,13 +784,13 @@ export class AppChart extends HTMLElement {
   }
 
   /**
-   * How many y ticks a plot of this height carries, from the design's 36px
-   * rhythm (16px label line + 20px gap). Approximate by intent: the height
-   * attribute is the plot box, minus ~28px of x-axis labels below it.
+   * How many y ticks a plot of this height carries, from the design's 52px
+   * rhythm (a 16px label line + 36px of air). Approximate by intent: the
+   * height attribute is the plot box, minus ~28px of x-axis labels below it.
    */
   #tickCount() {
     const h = parseInt(this.getAttribute('height') || '200', 10) || 200;
-    return Math.min(8, Math.max(3, Math.round((h - 28) / 36) + 1));
+    return Math.min(8, Math.max(3, Math.round((h - 28) / 52) + 1));
   }
 
   /**
