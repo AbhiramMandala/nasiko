@@ -349,7 +349,7 @@ class ChatPage extends HTMLElement {
       }
 
       pendingRow.remove();
-      const { text: reply, traceId, usage, aborted } = await this.#readA2aStream(res, messagesEl);
+      const { text: reply, traceId, usage, aborted, contentEl } = await this.#readA2aStream(res, messagesEl);
       // An aborted stream returns normally (it is a cancellation, not a
       // failure), so this guard is what stops a half-received reply from being
       // written to the server as if the agent had finished saying it.
@@ -357,10 +357,10 @@ class ChatPage extends HTMLElement {
       const persisted = await this.#persistMessage(this.#sessionId, "assistant", reply, { traceId, usage });
       // Surface any files this turn produced on the just-streamed message. The
       // server captures the agent's `/workspace` writes onto the message and
-      // returns them here, session-scoped.
-      if (persisted?.file_parts?.length) {
-        const last = messagesEl.querySelector(".msg-row.is-assistant:last-child .stream-content, .msg-row.is-assistant:last-child .msg");
-        if (last) last.insertAdjacentHTML("beforeend", this.#filesHtml(persisted.file_parts));
+      // returns them here, session-scoped. Attach to this turn's own element so
+      // an interleaved second message can't steal the chips.
+      if (persisted?.file_parts?.length && contentEl?.isConnected) {
+        contentEl.insertAdjacentHTML("beforeend", this.#filesHtml(persisted.file_parts));
       }
       this.#updateRetryButtons(messagesEl);
     } catch (err) {
@@ -548,7 +548,10 @@ class ChatPage extends HTMLElement {
     `;
     streamArea.appendChild(actions);
 
-    return { text: fullText, traceId: out.traceId, usage: out.usage, aborted: out.aborted };
+    // Hand back the content element for this turn so the caller can attach file
+    // chips to *this* reply — not `:last-child`, which drifts to a newer row if
+    // the user sends another message while the persist is still awaiting.
+    return { text: fullText, traceId: out.traceId, usage: out.usage, aborted: out.aborted, contentEl };
   }
 
   // Opens the full Observability session view with this turn's trace
