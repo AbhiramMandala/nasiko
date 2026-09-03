@@ -10,7 +10,8 @@
  *
  * The surface is a top-layer `popover="manual"`, so it renders above an open
  * `<app-modal>` and is never clipped by an `overflow: hidden` ancestor — the
- * two things `position: absolute` menus get wrong.
+ * two things `position: absolute` menus get wrong. It stays in the host's
+ * subtree, so events from the content bubble through the host as usual.
  *
  * Not a menu: it has no item semantics. For a list of actions use
  * `<app-menu>`; for something that opens on hover use `<app-hover-card>`.
@@ -42,7 +43,7 @@ export class AppPopover extends HTMLElement {
   #unfollow = null;
   #onDocClick = (e) => {
     if (this.hasAttribute('no-outside-dismiss')) return;
-    if (this.contains(e.target) || this.#surface.contains(e.target)) return;
+    if (this.contains(e.target)) return;
     this.hide();
   };
   #onKey = (e) => {
@@ -66,7 +67,7 @@ export class AppPopover extends HTMLElement {
 
   disconnectedCallback() {
     this.#teardown();
-    this.#surface?.remove();
+    if (this.open) this.removeAttribute('open');
   }
 
   attributeChangedCallback(name) {
@@ -82,18 +83,19 @@ export class AppPopover extends HTMLElement {
     const content = this.querySelector(':scope > [data-slot="content"]');
     this.#trigger = [...this.children].find((el) => el !== content) ?? null;
 
-    // The surface lives on <body>, not inside the host: a top-layer popover
-    // must not be inside an ancestor that is itself display:none or inert,
-    // and keeping it out of the host keeps the host's layout to the trigger.
-    const surface = document.createElement('div');
-    surface.className = 'app-popover-surface';
+    // The surface is the content element itself, kept INSIDE the host. The
+    // Popover API promotes it to the top layer from wherever it sits in the
+    // tree, so nothing is gained by moving it to <body> — and a lot is lost:
+    // events from the content would stop bubbling through the host, and
+    // `host.querySelector` would stop finding it. (An ancestor that is
+    // display:none hides it too, which is the right behaviour.)
+    const surface = content ?? document.createElement('div');
+    surface.classList.add('app-popover-surface');
     surface.setAttribute('role', 'dialog');
     surface.hidden = true;
     if (supportsPopover) surface.popover = 'manual';
-    if (content) surface.append(...content.childNodes);
-    document.body.append(surface);
+    if (!content) this.append(surface);
     this.#surface = surface;
-    content?.remove();
     this.#applyWidth();
 
     this.#trigger?.addEventListener('click', (e) => { e.stopPropagation(); this.toggle(); });

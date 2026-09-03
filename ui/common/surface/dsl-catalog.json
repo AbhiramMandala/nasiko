@@ -1,9 +1,9 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "9df9d623cef4",
+  "catalogVersion": "8d313aebd1eb",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 48,
+  "componentCount": 52,
   "components": {
     "app-accordion": {
       "element": "app-accordion",
@@ -416,6 +416,54 @@
       "slots": [],
       "events": []
     },
+    "app-calendar": {
+      "element": "app-calendar",
+      "summary": "Month-grid calendar for picking a single date.",
+      "actionParam": true,
+      "paramOrder": [
+        "value",
+        "min",
+        "max",
+        "month",
+        "label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "value": {
+          "type": "string",
+          "description": "Selected date, `YYYY-MM-DD`. Reflected on pick."
+        },
+        "min": {
+          "type": "string",
+          "description": "Earliest selectable date, `YYYY-MM-DD`."
+        },
+        "max": {
+          "type": "string",
+          "description": "Latest selectable date, `YYYY-MM-DD`."
+        },
+        "month": {
+          "type": "string",
+          "description": "Month to display, `YYYY-MM`. Defaults to the selected date's month, else today's. Reflected as the user navigates."
+        },
+        "label": {
+          "type": "string",
+          "default": "Calendar",
+          "description": "Accessible name of the grid (default: `Calendar`)."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "`{ value }` after the user picks a day. Bubbles."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
     "app-card": {
       "element": "app-card",
       "summary": "`<app-card>` — THE card component.",
@@ -795,6 +843,87 @@
       ],
       "actionEvent": "menu-select",
       "note": "Wraps its children; opens on right-click / long-press at the pointer."
+    },
+    "app-date-field": {
+      "element": "app-date-field",
+      "summary": "Read-only date input that opens an `<app-calendar>` in a popover.",
+      "actionParam": true,
+      "paramOrder": [
+        "value",
+        "min",
+        "max",
+        "label",
+        "hint",
+        "placeholder",
+        "state",
+        "required",
+        "disabled",
+        "size",
+        "name",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "value": {
+          "type": "string",
+          "description": "Selected date, `YYYY-MM-DD`. Reflected on pick."
+        },
+        "min": {
+          "type": "string",
+          "description": "Earliest selectable date, `YYYY-MM-DD`."
+        },
+        "max": {
+          "type": "string",
+          "description": "Latest selectable date, `YYYY-MM-DD`."
+        },
+        "label": {
+          "type": "string",
+          "description": "Label above the box."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Helper line below the box. Turns red in `state=\"error\"`."
+        },
+        "placeholder": {
+          "type": "string",
+          "description": "Shown when empty (default: `Select date`)."
+        },
+        "state": {
+          "type": "string",
+          "description": "`error` — red border. Omit for default."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Red `*` before the label."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "description": "`md` (default, 32px) | `sm` (28px)"
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the hidden native input for form submit."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "`{ value }` after the user picks a day. Bubbles."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-divider": {
       "element": "app-divider",
@@ -1719,6 +1848,48 @@
         }
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
+    "app-resizable": {
+      "element": "app-resizable",
+      "summary": "Row or column of panels separated by draggable dividers.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "direction",
+        "sizes",
+        "no-reset"
+      ],
+      "attributes": {
+        "direction": {
+          "type": "enum",
+          "values": [
+            "horizontal",
+            "vertical"
+          ],
+          "description": "`horizontal` (default, panels side by side) | `vertical`"
+        },
+        "sizes": {
+          "type": "string",
+          "description": "Space-separated fractions to apply, e.g. `0.3 0.7`. Reflected after every change, so it doubles as the persistence format."
+        },
+        "no-reset": {
+          "type": "boolean",
+          "description": "Disables the double-click reset."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "events": [
+        {
+          "name": "layout-change",
+          "description": "`{ sizes: number[] }` after an applied change. Bubbles."
+        }
+      ],
+      "note": "Children are the panels; per-panel flex is data-flex on the child. Layout persists through `sizes`."
     },
     "app-row": {
       "element": "app-row",
@@ -2653,6 +2824,83 @@
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
+    "app-time-field": {
+      "element": "app-time-field",
+      "summary": "Inline time editor: `HH : MM` segments, optional seconds, optional AM/PM.",
+      "actionParam": true,
+      "paramOrder": [
+        "value",
+        "mode",
+        "seconds",
+        "min",
+        "max",
+        "label",
+        "hint",
+        "state",
+        "required",
+        "disabled",
+        "name",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "value": {
+          "type": "string",
+          "description": "`HH:MM` or `HH:MM:SS`, 24-hour. Reflected on change."
+        },
+        "mode": {
+          "type": "string",
+          "description": "`24h` (default) | `12h` — adds the AM/PM segment."
+        },
+        "seconds": {
+          "type": "boolean",
+          "description": "Adds the seconds segment."
+        },
+        "min": {
+          "type": "string",
+          "description": "Earliest time, `HH:MM[:SS]`. A complete value below it snaps up."
+        },
+        "max": {
+          "type": "string",
+          "description": "Latest time, `HH:MM[:SS]`."
+        },
+        "label": {
+          "type": "string",
+          "description": "Label above the box."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Helper line below the box."
+        },
+        "state": {
+          "type": "string",
+          "description": "`error` — red border. Omit for default."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Red `*` before the label."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to a hidden native input for form submit."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "`{ value }` when the segments form a complete time. Bubbles."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
     "app-toggle": {
       "element": "app-toggle",
       "summary": "Two-state (pressed / unpressed) button — \"Bold\" in a formatting toolbar.",
@@ -2840,6 +3088,7 @@
   "blocked": {
     "app-tabs": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) — an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism.",
     "app-loading-bar": "Zero attributes; driven by global document events, not composition.",
-    "auto-complete": "Needs a live filter callback through data-sources.js — not designed yet."
+    "auto-complete": "Needs a live filter callback through data-sources.js — not designed yet.",
+    "app-command": "A modal command palette is page chrome, not dashboard content; `groups` is a JSON tree of commands the surface cannot meaningfully author."
   }
 }

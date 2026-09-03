@@ -49,7 +49,6 @@ export class AppContextMenu extends HTMLElement {
 
   disconnectedCallback() {
     this.hide();
-    this.#surface?.remove();
   }
 
   attributeChangedCallback(name) {
@@ -72,7 +71,7 @@ export class AppContextMenu extends HTMLElement {
     surface.hidden = true;
     if (supportsPopover) surface.popover = 'manual';
     surface.innerHTML = renderMenuItems(parseMenuItems(this.getAttribute('items')));
-    document.body.append(surface);
+    this.append(surface); // inside the host — see app-popover for why
     this.#surface = surface;
     this.#applyLabel();
 

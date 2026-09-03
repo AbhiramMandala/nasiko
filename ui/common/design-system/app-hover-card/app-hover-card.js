@@ -42,8 +42,7 @@ export class AppHoverCard extends HTMLElement {
 
   disconnectedCallback() {
     this.#clearTimers();
-    this.#unfollow?.();
-    this.#card?.remove();
+    this.#hide();
   }
 
   attributeChangedCallback(name) {
@@ -59,13 +58,13 @@ export class AppHoverCard extends HTMLElement {
     const content = this.querySelector(':scope > [data-slot="content"]');
     this.#trigger = [...this.children].find((el) => el !== content) ?? this;
 
-    const card = document.createElement('div');
-    card.className = 'app-hover-card-surface';
+    // The card is the content element itself, kept inside the host (see
+    // app-popover for why): the Popover API lifts it to the top layer from here.
+    const card = content ?? document.createElement('div');
+    card.classList.add('app-hover-card-surface');
     card.hidden = true;
     if (supportsPopover) card.popover = 'manual';
-    if (content) card.append(...content.childNodes);
-    document.body.append(card);
-    content?.remove();
+    if (!content) this.append(card);
     this.#card = card;
     this.#applyWidth();
 

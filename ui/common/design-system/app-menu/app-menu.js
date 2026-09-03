@@ -96,7 +96,7 @@ export class AppMenu extends HTMLElement {
   #built = false;
   #unfollow = null;
   #onDocClick = (e) => {
-    if (this.contains(e.target) || this.#surface.contains(e.target)) return;
+    if (this.contains(e.target)) return;
     this.hide();
   };
   #onKey = (e) => {
@@ -118,7 +118,7 @@ export class AppMenu extends HTMLElement {
 
   disconnectedCallback() {
     this.#teardown();
-    this.#surface?.remove();
+    if (this.open) this.removeAttribute('open');
   }
 
   attributeChangedCallback(name) {
@@ -145,7 +145,9 @@ export class AppMenu extends HTMLElement {
     surface.setAttribute('role', 'menu');
     surface.hidden = true;
     if (supportsPopover) surface.popover = 'manual';
-    document.body.append(surface);
+    // Inside the host, not on <body>: the Popover API lifts it to the top layer
+    // from here, and events keep bubbling through the host (see app-popover).
+    this.append(surface);
     this.#surface = surface;
     this.#renderItems();
     this.#applyWidth();

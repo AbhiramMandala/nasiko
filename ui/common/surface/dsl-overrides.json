@@ -251,6 +251,30 @@
       "status": "ready",
       "childrenParam": true,
       "note": "Body children; actions through Slot(\"footer\"). Modal <dialog> underneath, like app-modal."
+    },
+    "app-calendar": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-date-field": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-time-field": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-command": {
+      "status": "blocked",
+      "reason": "A modal command palette is page chrome, not dashboard content; `groups` is a JSON tree of commands the surface cannot meaningfully author."
+    },
+    "app-resizable": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "Children are the panels; per-panel flex is data-flex on the child. Layout persists through `sizes`."
     }
   },
   "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation.",
