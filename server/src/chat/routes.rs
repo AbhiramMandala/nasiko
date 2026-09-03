@@ -953,27 +953,53 @@ async fn send_message(
     (StatusCode::CREATED, Json(msg)).into_response()
 }
 
+/// Strip anything from a captured filename that could break out of a quoted
+/// `Content-Disposition` value or produce an invalid header: quotes, backslashes,
+/// and control characters (a POSIX basename may contain a newline). Non-ASCII is
+/// left intact — HTTP header values permit obs-text.
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .filter(|&c| !c.is_control() && c != '"' && c != '\\')
+        .collect()
+}
+
 /// Whether `reply` references `name` as a filename **token**, not merely as a
 /// substring. `str::contains` over-captures: `a.py` would match inside
 /// `a.python`, and on a shared writable container that can cross-attribute a
 /// same-substring file to an unrelated turn. A match counts only when it is
 /// bounded on both sides by a non-filename character (whitespace, quotes,
 /// backticks, parens, path separators, sentence punctuation) — never glued to an
-/// alphanumeric, `_` or `-`, which would make it part of a longer name.
+/// alphanumeric, `_`, `-`, or a `.` that joins two name characters (so `report.md`
+/// is *not* captured inside `report.md.bak`, but a trailing sentence period in
+/// "saved `report.md`." still is).
 fn reply_references_file(reply: &str, name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
-    let breaks = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    // A `.` continues a filename only when it glues two name characters together
+    // (`a.py`, `.bak`); a `.` next to whitespace/start/end is sentence punctuation.
+    let alnum = |c: char| c.is_ascii_alphanumeric();
+    let name_char = |c: char| alnum(c) || c == '_' || c == '-';
     let mut from = 0;
     while let Some(rel) = reply[from..].find(name) {
         let start = from + rel;
         let end = start + name.len();
-        let before_ok = reply[..start]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !breaks(c));
-        let after_ok = reply[end..].chars().next().is_none_or(|c| !breaks(c));
+        let before = reply[..start].chars().next_back();
+        let before_ok = match before {
+            None => true,
+            Some(c) if name_char(c) => false,
+            // `foo.report.md` — the `.` before joins an alnum on its left.
+            Some('.') => !reply[..start - 1].chars().next_back().is_some_and(alnum),
+            Some(_) => true,
+        };
+        let mut after = reply[end..].chars();
+        let after_ok = match after.next() {
+            None => true,
+            Some(c) if name_char(c) => false,
+            // `report.md.bak` — the `.` after is followed by an alnum.
+            Some('.') => !after.next().is_some_and(alnum),
+            Some(_) => true,
+        };
         if before_ok && after_ok {
             return true;
         }
@@ -1029,7 +1055,6 @@ async fn capture_turn_files(
     let ws = WorkspaceRef {
         owner_id,
         container_id: ContainerId::from_uuid(agent_id),
-        scope: None,
     };
     let entries = match state.runtime.list_workspace(&ws).await {
         Ok(e) => e,
@@ -1328,7 +1353,6 @@ async fn stream_workspace_file(
     let ws = WorkspaceRef {
         owner_id,
         container_id: ContainerId::from_uuid(agent_id),
-        scope: None,
     };
     match state.runtime.read_workspace_file(&ws, rel_path).await {
         // No `Content-Length`: the size comes from an earlier `stat`, but the
@@ -1341,9 +1365,14 @@ async fn stream_workspace_file(
                 (header::CONTENT_TYPE, file.mime_type.clone()),
                 (
                     header::CONTENT_DISPOSITION,
+                    // Strip anything that could break out of the quoted filename or
+                    // produce an invalid header: quotes, backslashes, and control
+                    // characters (a workspace basename can legally contain a
+                    // newline). Not just `"` — an incomplete strip risks a broken
+                    // HeaderValue or, on lax clients, header confusion.
                     format!(
                         "attachment; filename=\"{}\"",
-                        file.filename.replace('"', "")
+                        sanitize_filename(&file.filename)
                     ),
                 ),
             ],
@@ -1452,5 +1481,15 @@ mod tests {
         ));
         assert!(!reply_references_file("no files here", "data.csv"));
         assert!(!reply_references_file("anything", ""));
+
+        // A dotted extension continuation must not cross-capture the shorter name.
+        assert!(!reply_references_file("wrote report.md.bak", "report.md"));
+        assert!(!reply_references_file("see my.report.md", "report.md"));
+        // ...but a trailing sentence period is still a boundary.
+        assert!(reply_references_file("Saved report.md.", "report.md"));
+        assert!(reply_references_file(
+            "Files: report.md, notes.txt",
+            "report.md"
+        ));
     }
 }

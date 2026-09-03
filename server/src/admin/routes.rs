@@ -120,15 +120,25 @@ async fn deploy(
     // live volume and drop the agent's files. An explicit request flag still wins
     // (so `nasiko deploy --writable` of an as-yet-unregistered image works too).
     let (db_writable, db_writable_path) = match resolved_agent_id {
-        Some(agent_id) => sqlx::query_as::<_, (bool, Option<String>)>(
+        Some(agent_id) => match sqlx::query_as::<_, (bool, Option<String>)>(
             "SELECT writable, writable_path FROM agents WHERE id = $1",
         )
         .bind(agent_id)
         .fetch_optional(&state.db)
         .await
-        .ok()
-        .flatten()
-        .unwrap_or((false, None)),
+        {
+            // A missing row is a genuinely ad-hoc image with no catalog record —
+            // `false` is correct there. A DB *error*, though, must NOT collapse to
+            // `false`: that would deploy a writable agent with no volume and then
+            // persist `writable=false`, the exact silent detach this block exists
+            // to prevent. Fail the deploy instead of guessing.
+            Ok(row) => row.unwrap_or((false, None)),
+            Err(e) => {
+                tracing::error!(%e, %agent_id, "deploy: could not read writable from catalog");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                    .into_response();
+            }
+        },
         None => (false, None),
     };
     let writable_path = req.writable_path.clone().or(db_writable_path);
