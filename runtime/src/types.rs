@@ -371,10 +371,11 @@ pub fn validate_workspace_relative_path(path: &str) -> std::result::Result<(), S
     Ok(())
 }
 
-/// Shell body (run as `sh -c <script> _ <scope_dir> <rel_path>`) that resolves
-/// the requested file, proves it stays inside `scope_dir` after every symlink
-/// is followed, and prints its size. `$1` is the scope directory, `$2` the
-/// caller's already-[`validate_workspace_relative_path`]d relative path.
+/// Shell body (run as `sh -c <script> _ <agent_dir> <rel_path>`) that resolves
+/// the requested file, proves it stays inside `agent_dir` (the agent's own
+/// subdirectory, the containment fence) after every symlink is followed, and
+/// prints its size. `$1` is that directory, `$2` the caller's
+/// already-[`validate_workspace_relative_path`]d relative path.
 ///
 /// The containment re-check has to live in the reader even though the server
 /// validated `rel_path`: the reader mounts the volume read-only, but the agent
@@ -424,7 +425,13 @@ pub const WORKSPACE_SETUP_SCRIPT: &str = "set -e; mkdir -p \"$1\"; \
 /// explicit path (the download path does not filter); it just isn't offered in
 /// the listing. Pruning (not merely filtering) also skips descending those
 /// trees, so a listing stays fast on a large HOME.
-pub const WORKSPACE_LIST_SCRIPT: &str = "[ -d \"$1\" ] || exit 0; find \"$1\" -name '.*' -prune -o -type f -exec stat -c '%Y %s %n' {} +";
+///
+/// The `stat` runs behind `sh -c '… 2>/dev/null || true'` so a file removed
+/// mid-walk (a coding agent churning temp files right as capture runs) is
+/// silently dropped from the listing instead of making the whole `find` exit
+/// non-zero — which the exec wrappers treat as a hard error, losing every chip.
+/// `find`'s *own* traversal errors (an unreadable subdir) still propagate.
+pub const WORKSPACE_LIST_SCRIPT: &str = "[ -d \"$1\" ] || exit 0; find \"$1\" -name '.*' -prune -o -type f -exec sh -c 'stat -c \"%Y %s %n\" \"$@\" 2>/dev/null || true' _ {} +";
 
 /// Identifies one agent's subdirectory of the shared agent-memory volume — the
 /// `{owner_id}/{container_id}` layout described on [`DeploymentSpec::writable`].
@@ -435,29 +442,14 @@ pub const WORKSPACE_LIST_SCRIPT: &str = "[ -d \"$1\" ] || exit 0; find \"$1\" -n
 pub struct WorkspaceRef {
     pub owner_id: uuid::Uuid,
     pub container_id: ContainerId,
-    /// Optional subtree *within* the agent's directory that a list/read is
-    /// confined to, e.g. `Some("u/9f3a…")` for one user's files. `None` scopes
-    /// to the whole agent directory (the owner/operator view). Always an
-    /// already-validated relative path (no `..`, no leading `/`); backends treat
-    /// it as the lexical fence a resolved file must stay inside.
-    pub scope: Option<String>,
 }
 
 impl WorkspaceRef {
     /// The agent's own subdirectory relative to the volume root
-    /// (`{owner_id}/{container_id}`). Must match whatever each backend mounts.
+    /// (`{owner_id}/{container_id}`) — the directory backends `find` in and the
+    /// fence they contain reads to. Must match whatever each backend mounts.
     pub fn subpath(&self) -> String {
         format!("{}/{}", self.owner_id, self.container_id.as_str())
-    }
-
-    /// The subtree a list/read is confined to, relative to the volume root:
-    /// [`subpath`](Self::subpath) plus the optional [`scope`](Self::scope). This
-    /// is the directory backends `find` in and the fence they contain reads to.
-    pub fn scoped_subpath(&self) -> String {
-        match &self.scope {
-            Some(s) => format!("{}/{}", self.subpath(), s),
-            None => self.subpath(),
-        }
     }
 }
 

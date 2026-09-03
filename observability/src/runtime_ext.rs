@@ -442,7 +442,6 @@ mod tests {
             .list_workspace(&WorkspaceRef {
                 owner_id: uuid::Uuid::nil(),
                 container_id: ContainerId::new("agent"),
-                scope: None,
             })
             .await
             .expect("list_workspace should succeed");
@@ -463,7 +462,6 @@ mod tests {
                 &WorkspaceRef {
                     owner_id: uuid::Uuid::nil(),
                     container_id: ContainerId::new("agent"),
-                    scope: None,
                 },
                 "marker-file",
             )

@@ -513,33 +513,8 @@ fn workspace_ref_subpath_matches_the_volume_layout() {
     let r = WorkspaceRef {
         owner_id: uuid::Uuid::from_u128(0x42),
         container_id: ContainerId::new("agent-1"),
-        scope: None,
     };
     // Must stay byte-identical to what the backends mount, or a read would
     // look in a directory nothing writes to.
     assert_eq!(r.subpath(), format!("{}/agent-1", r.owner_id));
-}
-
-#[test]
-fn workspace_ref_scoped_subpath_appends_the_scope() {
-    use nasiko_runtime::{ContainerId, WorkspaceRef};
-    let owner = uuid::Uuid::from_u128(0x42);
-    let base = WorkspaceRef {
-        owner_id: owner,
-        container_id: ContainerId::new("agent-1"),
-        scope: None,
-    };
-    // No scope → the whole agent directory (unchanged from `subpath`).
-    assert_eq!(base.scoped_subpath(), base.subpath());
-
-    let scoped = WorkspaceRef {
-        scope: Some("u/9f3ab8".to_owned()),
-        ..base.clone()
-    };
-    // Scoped → the agent directory plus the confined subtree, which is both the
-    // directory listed and the fence reads are contained to.
-    assert_eq!(
-        scoped.scoped_subpath(),
-        format!("{}/agent-1/u/9f3ab8", owner)
-    );
 }

@@ -891,11 +891,10 @@ async fn ensure_agent_memory_subdir(
     }
 }
 
-/// The init helper's argv: prepare the agent's subdirectory — create it, hand it
-/// to uid 65534, and set up the root-owned `u/` parent that holds per-user
-/// files. The body is [`crate::types::WORKSPACE_SETUP_SCRIPT`], shared with
-/// `KubeRuntime`'s writable initContainer so both backends lay the directory out
-/// identically.
+/// The init helper's argv: prepare the agent's subdirectory — create it and hand
+/// it to uid 65534. The body is [`crate::types::WORKSPACE_SETUP_SCRIPT`], shared
+/// with `KubeRuntime`'s writable initContainer so both backends lay the directory
+/// out identically.
 fn agent_memory_init_cmd(subdir: &str) -> Vec<String> {
     vec![
         "sh".to_owned(),
@@ -1850,7 +1849,7 @@ impl ContainerRuntime for DockerRuntime {
         workspace.container_id.validate()?;
         self.ensure_workspace_reader().await?;
 
-        let dir = format!("{WORKSPACE_READER_MOUNT}/{}", workspace.scoped_subpath());
+        let dir = format!("{WORKSPACE_READER_MOUNT}/{}", workspace.subpath());
         // An agent that has never written anything (or was never `--writable`)
         // has no subdirectory at all — an empty listing, not an error.
         let stdout = exec_capture(
@@ -1886,7 +1885,7 @@ impl ContainerRuntime for DockerRuntime {
         // resolves symlinks, and refuses anything that lands outside it. Both
         // the stat and the cat re-apply the check, so a symlink swapped in
         // between them still cannot escape (see `WORKSPACE_STAT_SCRIPT`).
-        let scope = format!("{WORKSPACE_READER_MOUNT}/{}", workspace.scoped_subpath());
+        let scope = format!("{WORKSPACE_READER_MOUNT}/{}", workspace.subpath());
 
         // Stat first: it proves the file exists and is a regular file (not a
         // directory or device), and yields the length before any bytes are

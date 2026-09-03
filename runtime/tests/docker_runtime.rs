@@ -545,7 +545,6 @@ async fn docker_runtime_reads_workspace_files_even_after_the_agent_is_gone() {
     let workspace = WorkspaceRef {
         owner_id,
         container_id: id.clone(),
-        scope: None,
     };
 
     let files = runtime
@@ -587,7 +586,6 @@ async fn docker_runtime_reads_workspace_files_even_after_the_agent_is_gone() {
         .list_workspace(&WorkspaceRef {
             owner_id,
             container_id: ContainerId::new("never-deployed"),
-            scope: None,
         })
         .await
         .expect("listing an unknown agent is empty, not an error");
@@ -649,7 +647,6 @@ async fn docker_runtime_workspace_read_refuses_symlink_escape() {
     let victim = WorkspaceRef {
         owner_id: victim_owner,
         container_id: victim_id.clone(),
-        scope: None,
     };
     let victim_secret_abs = format!("/data/{}/secret.txt", victim.subpath());
     let victim_dir_abs = format!("/data/{}", victim.subpath());
@@ -672,7 +669,6 @@ async fn docker_runtime_workspace_read_refuses_symlink_escape() {
     let attacker = WorkspaceRef {
         owner_id: attacker_owner,
         container_id: attacker_id.clone(),
-        scope: None,
     };
     let plant = docker_exec(
         "nasiko-agent-test-symlink-attacker",

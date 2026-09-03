@@ -64,10 +64,10 @@ impl FakeRuntime {
     pub fn put_workspace_file(&self, workspace: &WorkspaceRef, rel_path: &str, body: &[u8]) {
         // Key on the *scoped* subpath so a test can seed files under a specific
         // user's `u/<token>` subtree, mirroring the real runtimes.
-        self.workspace.lock().unwrap().insert(
-            format!("{}/{rel_path}", workspace.scoped_subpath()),
-            body.to_vec(),
-        );
+        self.workspace
+            .lock()
+            .unwrap()
+            .insert(format!("{}/{rel_path}", workspace.subpath()), body.to_vec());
     }
 
     /// Make the next (and all subsequent) `deploy` calls fail instead of
@@ -159,7 +159,7 @@ impl ContainerRuntime for FakeRuntime {
     // "unsupported") so a test can prove the server reached the runtime and
     // scoped the read to one agent's subdirectory.
     async fn list_workspace(&self, w: &WorkspaceRef) -> RuntimeResult<Vec<WorkspaceEntry>> {
-        let prefix = format!("{}/", w.scoped_subpath());
+        let prefix = format!("{}/", w.subpath());
         Ok(self
             .workspace
             .lock()
@@ -180,7 +180,7 @@ impl ContainerRuntime for FakeRuntime {
         w: &WorkspaceRef,
         rel_path: &str,
     ) -> RuntimeResult<WorkspaceFile> {
-        let key = format!("{}/{rel_path}", w.scoped_subpath());
+        let key = format!("{}/{rel_path}", w.subpath());
         let body = self
             .workspace
             .lock()
