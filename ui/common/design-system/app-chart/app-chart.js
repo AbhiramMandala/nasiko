@@ -553,6 +553,9 @@ export class AppChart extends HTMLElement {
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        // 16px of the card's own ground between its rounded edge and anything
+        // drawn — axis labels included. The --s-16 step, as a canvas number.
+        layout: { padding: 16 },
         // Chart.js animates on every re-render, and this element re-renders on
         // theme change — an animated repaint on a theme flip reads as a glitch.
         animation: { duration: 240 },
@@ -560,7 +563,8 @@ export class AppChart extends HTMLElement {
         plugins: {
           legend: showLegend
             ? { position: type === 'donut' ? 'right' : 'bottom', align: 'start',
-                labels: { usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, padding: 12 } }
+                // 28px between the series entries, per the design's legend row.
+                labels: { usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, padding: 28 } }
             : { display: false },
           // The native canvas tooltip cannot do the design's card — bold date
           // title, label left / value right, an anomaly note line — so it is
