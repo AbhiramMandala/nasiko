@@ -37,6 +37,16 @@
     text-underline-offset: 2px;
   }
 
+  /* A link whose href was stripped as unsafe (see markdown.js) — an agent's
+     hallucinated "download" link. Render it as plain text so it can't pose as a
+     working download beside the real file chip. */
+  a.md-dead-link {
+    color: inherit;
+    text-decoration: none;
+    cursor: default;
+    pointer-events: none;
+  }
+
   blockquote {
     margin: 0 0 var(--s-12);
     padding: var(--s-4) var(--s-16);

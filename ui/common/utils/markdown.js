@@ -65,10 +65,19 @@ const marked = new Marked({
 
 // LLM output is untrusted: force links to open in a new tab without a
 // window.opener reference. DOMPurify strips target/rel otherwise.
+//
+// A link whose href DOMPurify removed (an unknown/unsafe scheme) is dead — most
+// commonly an agent hallucinating a "download" link, e.g. opencode's
+// `[Download foo.md](sandbox:/workspace/foo.md)`. Left alone it renders as an
+// underlined, do-nothing link that masquerades as a real download next to the
+// actual file chip. Mark it so CSS renders it as plain text.
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-  if (node.tagName === 'A' && node.hasAttribute('href')) {
+  if (node.tagName !== 'A') return;
+  if (node.hasAttribute('href')) {
     node.setAttribute('target', '_blank');
     node.setAttribute('rel', 'noopener noreferrer');
+  } else {
+    node.classList.add('md-dead-link');
   }
 });
 
