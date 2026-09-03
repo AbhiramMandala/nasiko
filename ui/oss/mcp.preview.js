@@ -452,10 +452,11 @@ export default {
   ],
 
   scenarios: {
-    "rail-expanded": async (page) => {
-      await page.evaluate(() => document.querySelector("[data-rail-toggle]")?.click());
-      await new Promise((r) => setTimeout(r, 600));
-    },
+    // Rail expand is commented out in app-header — no toggle to click.
+    // "rail-expanded": async (page) => {
+    //   await page.evaluate(() => document.querySelector("[data-rail-toggle]")?.click());
+    //   await new Promise((r) => setTimeout(r, 600));
+    // },
     'register-open': async (page) => {
       await page.click('#register-btn');
       await page.waitForSelector('#register-modal dialog[open]');

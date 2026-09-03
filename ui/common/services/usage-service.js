@@ -21,6 +21,18 @@ const fetchTokenopsDashboard = async (startTime, endTime) => {
   return fetchApi(`/observability/finops/dashboard${params}`);
 };
 
+// Replica-hours per agent — GET /api/observability/finops/agent-hours.
+// `bucket` ("hour" | "day") is what turns the report into a time series; without
+// it the response carries totals only.
+const fetchAgentHours = async (startTime, endTime, bucket) => {
+  const q = new URLSearchParams();
+  if (startTime) q.set('start_time', startTime);
+  if (endTime) q.set('end_time', endTime);
+  if (bucket) q.set('bucket', bucket);
+  const params = q.size ? `?${q}` : '';
+  return fetchApi(`/observability/finops/agent-hours${params}`);
+};
+
 const fetchUsageHistory = async (days = 7) => {
   return fetchApi(`/usage/history?days=${days}`);
 };
@@ -49,6 +61,6 @@ const fetchUsageByModel = async (query, page, limit) => {
 };
 
 registerAll({
-  fetchUsageSummary, fetchTokenopsDashboard,
+  fetchUsageSummary, fetchTokenopsDashboard, fetchAgentHours,
   fetchUsageHistory, fetchUsageByAgent, fetchUsageByModel,
 }, { replace: true });

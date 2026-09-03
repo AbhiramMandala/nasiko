@@ -164,10 +164,11 @@ export default {
       await page.waitForSelector('.tab[data-key="finance"]');
       await page.waitForTimeout(400);
     },
-    "rail-expanded": async (page) => {
-      await page.waitForSelector(".card-name");
-      await page.click("[data-rail-toggle]");
-      await page.waitForTimeout(500);
-    },
+    // Rail expand is commented out in app-header — no toggle to click.
+    // "rail-expanded": async (page) => {
+    //   await page.waitForSelector(".card-name");
+    //   await page.click("[data-rail-toggle]");
+    //   await page.waitForTimeout(500);
+    // },
   },
 };
