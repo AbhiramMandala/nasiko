@@ -609,6 +609,32 @@ if (updating) {
   process.exit(0);
 }
 
+// `--json`: the whole finding set, machine-readable, on stdout — and ALWAYS
+// exit 0. The PR reviewer in .github/scripts/ consumes this as evidence, and
+// it needs the findings even (especially) on a run that would fail the gate,
+// so the exit code has to carry "did the tool run", not "is the tree clean".
+// Text mode below is unchanged and stays the thing humans and CI read.
+if (process.argv.includes('--json')) {
+  process.stdout.write(
+    JSON.stringify(
+      {
+        fileCount,
+        rules: rules.map((r) => ({
+          id: r.id,
+          why: r.why,
+          enforce: r.enforce ?? 'baseline',
+          baseline: baseline.counts?.[r.id] ?? 0,
+          count: findings.get(r.id).length,
+          findings: findings.get(r.id),
+        })),
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+  process.exit(0);
+}
+
 let failed = false;
 console.log(`ui-lint: ${fileCount} files, ${rules.length} rules\n`);
 
