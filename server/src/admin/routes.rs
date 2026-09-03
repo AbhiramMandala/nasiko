@@ -191,6 +191,13 @@ async fn deploy(
                         .await;
                 let image = spec.image.clone();
                 let owner_id = claims.user_uuid().ok();
+                // Persist the effective writable config so it survives on the
+                // agents row. Without this, a deploy that turned an agent
+                // writable here would leave `writable=false` in the catalog, and
+                // the next restart/update/rollback (which read the flag from the
+                // row, not the request) would silently redeploy with no volume.
+                let spec_writable = spec.writable;
+                let spec_writable_path = spec.writable_path.clone();
 
                 // Probe the agent's card and persist `transport_path` (plus
                 // description/skills/tags/capabilities) — the same probe the
@@ -214,11 +221,13 @@ async fn deploy(
                     // the catalog, so restart (which needs `image` to redeploy) works
                     // for agents deployed through this ad-hoc path too.
                     let _ = sqlx::query(
-                        "UPDATE agents SET url = COALESCE(NULLIF($1, ''), url), image = $2, status = 'running', updated_at = now() WHERE id = $3",
+                        "UPDATE agents SET url = COALESCE(NULLIF($1, ''), url), image = $2, status = 'running', writable = $4, writable_path = $5, updated_at = now() WHERE id = $3",
                     )
                     .bind(&endpoint)
                     .bind(&image)
                     .bind(agent_id)
+                    .bind(spec_writable)
+                    .bind(&spec_writable_path)
                     .execute(&db)
                     .await;
 
