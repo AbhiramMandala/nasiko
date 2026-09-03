@@ -28,3 +28,7 @@ nasiko-runtime = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 uuid = { workspace = true }
+# Only the RUN-1 forwarding guard for `read_workspace_file` needs to build a
+# byte stream; the decorator itself just hands the stream through.
+bytes = { workspace = true }
+futures-util = "0.3"

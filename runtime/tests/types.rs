@@ -486,3 +486,60 @@ fn writable_mount_path_defaults_to_workspace() {
     spec.writable_path = Some("/app/data".to_owned());
     assert_eq!(spec.writable_mount_path(), "/app/data");
 }
+
+#[test]
+fn workspace_relative_path_validation_rules() {
+    use nasiko_runtime::validate_workspace_relative_path as v;
+    // Accepted: anything that stays inside the agent's own directory.
+    assert!(v("add_numbers.py").is_ok());
+    assert!(v("sub/dir/file.py").is_ok());
+    assert!(v("a b/c-d_e.tar.gz").is_ok());
+    // Rejected: every shape that could escape it, plus the degenerate ones.
+    assert!(v("").is_err(), "empty");
+    assert!(v("/etc/passwd").is_err(), "absolute");
+    assert!(v("../x").is_err(), "traversal");
+    assert!(v("a/../../etc/passwd").is_err(), "nested traversal");
+    assert!(v("./x").is_err(), "single-dot segment");
+    assert!(v("a//b").is_err(), "empty segment");
+    assert!(v("a:b").is_err(), "colon");
+    assert!(v("a\\b").is_err(), "backslash");
+    assert!(v("a\nb").is_err(), "control char");
+    assert!(v(&"x".repeat(300)).is_err(), "over-long");
+}
+
+#[test]
+fn workspace_ref_subpath_matches_the_volume_layout() {
+    use nasiko_runtime::{ContainerId, WorkspaceRef};
+    let r = WorkspaceRef {
+        owner_id: uuid::Uuid::from_u128(0x42),
+        container_id: ContainerId::new("agent-1"),
+        scope: None,
+    };
+    // Must stay byte-identical to what the backends mount, or a read would
+    // look in a directory nothing writes to.
+    assert_eq!(r.subpath(), format!("{}/agent-1", r.owner_id));
+}
+
+#[test]
+fn workspace_ref_scoped_subpath_appends_the_scope() {
+    use nasiko_runtime::{ContainerId, WorkspaceRef};
+    let owner = uuid::Uuid::from_u128(0x42);
+    let base = WorkspaceRef {
+        owner_id: owner,
+        container_id: ContainerId::new("agent-1"),
+        scope: None,
+    };
+    // No scope → the whole agent directory (unchanged from `subpath`).
+    assert_eq!(base.scoped_subpath(), base.subpath());
+
+    let scoped = WorkspaceRef {
+        scope: Some("u/9f3ab8".to_owned()),
+        ..base.clone()
+    };
+    // Scoped → the agent directory plus the confined subtree, which is both the
+    // directory listed and the fence reads are contained to.
+    assert_eq!(
+        scoped.scoped_subpath(),
+        format!("{}/agent-1/u/9f3ab8", owner)
+    );
+}
