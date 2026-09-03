@@ -287,6 +287,21 @@ const anomalyOverlay = {
   },
 };
 
+/**
+ * The smallest "nice" tick step ≥ raw. The candidate list is wider than the
+ * classic 1/2/5 so a series whose max falls just past a step (8.1M across 3
+ * rows → 2.7M raw) lands on 3M rather than leaping to 5M and leaving the top
+ * half of its axis empty.
+ */
+function niceStep(raw) {
+  if (!Number.isFinite(raw) || raw <= 0) return 1;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 10]) {
+    if (m * mag >= raw) return m * mag;
+  }
+  return 10 * mag;
+}
+
 /** `rgb(a, b, c)` (what the palette probe returns) with an alpha applied. */
 function colorWithAlpha(rgb, alpha) {
   const m = rgb.match(/rgba?\(([^)]+)\)/);
@@ -780,12 +795,25 @@ export class AppChart extends HTMLElement {
         position: 'right',
         beginAtZero: true,
         // The left axis owns the horizontal grid; a second grid from a second
-        // scale would draw two unrelated rulings over one plot. Same tick
-        // count as the left axis, so both scales land on the same rules.
+        // scale would draw two unrelated rulings over one plot.
         grid: { drawOnChartArea: false, drawTicks: false },
         border: { display: false },
-        ticks: { color: pal.tick, padding: 8, callback: (v) => fmt2(v),
-                 maxTicksLimit: this.#tickCount() },
+        ticks: { color: pal.tick, padding: 8, callback: (v) => fmt2(v) },
+        // Two scales, one set of rules: rebuild y2's ticks on the SAME
+        // fractional positions as the left axis's gridlines, stretching y2's
+        // max to the next nice step so the values stay round. Left to its own
+        // devices Chart.js ticks each scale independently, and the right-hand
+        // labels float between the rules — the misalignment every dual-axis
+        // chart is born with.
+        afterBuildTicks: (scale) => {
+          const left = scale.chart.scales.y;
+          if (!left?.ticks?.length || left.ticks.length < 2) return;
+          const rows = left.ticks.length - 1;
+          const step = niceStep(scale.max / rows);
+          scale.min = 0;
+          scale.max = step * rows;
+          scale.ticks = Array.from({ length: rows + 1 }, (_, i) => ({ value: step * i }));
+        },
       };
     }
     return scales;
