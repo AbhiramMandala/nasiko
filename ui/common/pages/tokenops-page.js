@@ -117,14 +117,14 @@ const AGENT_COLUMNS = [
     render: (v, r) => `<span class="agent-name">${escHtml(v || r.agent_id)
     }${r.is_capped ? ' <app-badge variant="warning" title="High-volume agent — this number is a real but undercounted approximation">~approx</app-badge>' : ''}</span>`,
     csv: (r) => r.agent_name },
-  { key: 'total_cost', label: 'Spend', render: fmtMoney },
-  { key: 'total_tokens', label: 'Tokens', render: fmtTokens },
-  { key: 'completion_tokens', label: 'Output', render: (v) => (v == null ? '—' : fmtTokens(v)) },
-  { key: 'prompt_tokens', label: 'Input', render: (v) => (v == null ? '—' : fmtTokens(v)) },
-  { key: 'operations', label: 'Operations', render: fmtCount },
-  { key: 'avg_cost_per_operation', label: 'Avg cost/op', render: (v) => (v == null ? '—' : fmtCost(v)) },
-  { key: 'container_hours', label: 'Agent hours', render: (v) => (v == null ? '—' : fmtNum(v)) },
-  { key: 'avg_latency_ms', label: 'Avg latency', render: fmtLatency },
+  { key: 'total_cost', label: 'Spend', numeric: true, render: fmtMoney },
+  { key: 'total_tokens', label: 'Tokens', numeric: true, render: fmtTokens },
+  { key: 'completion_tokens', label: 'Output', numeric: true, render: (v) => (v == null ? '—' : fmtTokens(v)) },
+  { key: 'prompt_tokens', label: 'Input', numeric: true, render: (v) => (v == null ? '—' : fmtTokens(v)) },
+  { key: 'operations', label: 'Operations', numeric: true, render: fmtCount },
+  { key: 'avg_cost_per_operation', label: 'Avg cost/op', numeric: true, render: (v) => (v == null ? '—' : fmtCost(v)) },
+  { key: 'container_hours', label: 'Agent hours', numeric: true, render: (v) => (v == null ? '—' : fmtNum(v)) },
+  { key: 'avg_latency_ms', label: 'Avg latency', numeric: true, render: fmtLatency },
 ];
 
 /** Workflow rows carry no replica-hours or token-split columns — those are
@@ -134,10 +134,10 @@ const WORKFLOW_COLUMNS = [
   { key: 'workflow_name', label: 'Workflow',
     render: (v, r) => `<span class="agent-name">${escHtml(v || r.workflow_id)}</span>`,
     csv: (r) => r.workflow_name },
-  { key: 'total_cost', label: 'Spend', render: fmtMoney },
-  { key: 'total_tokens', label: 'Tokens', render: fmtTokens },
-  { key: 'operations', label: 'Operations', render: fmtCount },
-  { key: 'avg_latency_ms', label: 'Avg latency', render: fmtLatency },
+  { key: 'total_cost', label: 'Spend', numeric: true, render: fmtMoney },
+  { key: 'total_tokens', label: 'Tokens', numeric: true, render: fmtTokens },
+  { key: 'operations', label: 'Operations', numeric: true, render: fmtCount },
+  { key: 'avg_latency_ms', label: 'Avg latency', numeric: true, render: fmtLatency },
 ];
 
 /** `sort_by` value lists from the handoff doc, one label per value — there is
