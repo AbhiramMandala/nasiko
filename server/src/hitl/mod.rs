@@ -3,6 +3,8 @@
 //! `agents/build_worker.rs`: poll/notify, atomically claim one row, execute in a panic-isolated
 //! spawned task.
 
+pub mod continuation;
+
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -12,8 +14,10 @@ use nasiko_types::a2a::StreamDisposition;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::hitl::continuation::ContinuationGuard;
 use crate::router::a2a_dispatch::{
-    OrchestratorTurn, build_pause_question, orchestrator_stream, pause_kind, resolve_endpoint,
+    OrchestratorTurn, build_hitl_stream_data, build_pause_question, normalize_agent_event,
+    orchestrator_stream, pause_kind, resolve_endpoint,
 };
 use crate::state::AppState;
 
@@ -119,6 +123,13 @@ async fn deliver(state: AppState, row: HitlRequest) {
             .await;
         return;
     };
+
+    // Ties the continuation buffer's lifetime to this call frame — every return path below,
+    // success or failure, marks it terminal on drop (see `ContinuationGuard`'s own doc comment).
+    // Keyed by `row.id`, the exact id the frontend already holds (it's what it just POSTed to
+    // `/resolve`), so a reconnect through `POST /api/orchestrator/a2a`
+    // (`metadata.reconnect_after_hitl_id`) needs no new identifier to find it.
+    let continuation = ContinuationGuard::new(state.continuation_events.clone(), row.id);
 
     let agent_name: Option<String> = sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
         .bind(row.agent_id)
@@ -250,9 +261,17 @@ async fn deliver(state: AppState, row: HitlRequest) {
         .to_string();
 
     let outcome = if content_type.contains("text/event-stream") {
-        consume_sse_to_terminal(response).await
+        consume_sse_to_terminal(response, &task_id, &context_id, &continuation).await
     } else {
-        consume_json_to_terminal(response, &context_id, &task_id, &answer, &build_req).await
+        consume_json_to_terminal(
+            response,
+            &context_id,
+            &task_id,
+            &answer,
+            &build_req,
+            &continuation,
+        )
+        .await
     };
 
     let Some((disposition, last_data, reply_text)) = outcome else {
@@ -326,8 +345,29 @@ async fn deliver(state: AppState, row: HitlRequest) {
             )
             .with_chat_session_id(row.chat_session_id.clone()),
         };
-        if let Err(e) = state.hitl_store.create(new_row).await {
-            tracing::error!(id = %row.id, %e, "hitl dispatcher: failed to persist the follow-up pause");
+        match state.hitl_store.create(new_row).await {
+            Ok(created) => {
+                // The frontend discovers HITL #2 from the reconnected A2A stream itself, not by
+                // polling `/messages` — same synthetic-frame shape `build_hitl_stream_event`
+                // already layers onto a live turn's own SSE (§11.2), reused here via
+                // `build_hitl_stream_data` rather than duplicated. Reads `task_id`/`context_id`
+                // back off `created` (not the locals above, already moved into the constructor
+                // call) — same values either way, the row was built from them.
+                let created_task_id = created.task_id.clone().unwrap_or_default();
+                let created_context_id = created.context_id.clone().unwrap_or_default();
+                let data = build_hitl_stream_data(
+                    &state.hitl_store,
+                    &created_task_id,
+                    &created_context_id,
+                    &created,
+                    None,
+                )
+                .await;
+                continuation.push(data);
+            }
+            Err(e) => {
+                tracing::error!(id = %row.id, %e, "hitl dispatcher: failed to persist the follow-up pause");
+            }
         }
     }
 }
@@ -477,6 +517,9 @@ fn answer_text(row: &HitlRequest) -> String {
 /// `agent_stream`'s own "stream closed" == done assumption for well-behaved agents.
 async fn consume_sse_to_terminal(
     response: reqwest::Response,
+    task_id: &str,
+    context_id: &str,
+    continuation: &ContinuationGuard,
 ) -> Option<(StreamDisposition, Option<String>, Option<String>)> {
     let mut byte_stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -500,6 +543,10 @@ async fn consume_sse_to_terminal(
                 continue;
             }
             last_data = Some(data.to_string());
+            // The real agent event, verbatim — normalized to the exact same wire shape a live
+            // turn's own `agent_stream()` already emits, so a reconnecting client's existing SSE
+            // parser needs no reconnect-specific branch.
+            continuation.push(normalize_agent_event(data, task_id, context_id));
 
             if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
                 let result = event.get("result").unwrap_or(&event);
@@ -542,6 +589,7 @@ async fn consume_json_to_terminal(
     task_id: &str,
     answer: &str,
     build_req: impl Fn(&nasiko_types::a2a::JsonRpcRequest) -> reqwest::RequestBuilder,
+    continuation: &ContinuationGuard,
 ) -> Option<(StreamDisposition, Option<String>, Option<String>)> {
     let mut body: serde_json::Value = response.json().await.ok()?;
 
@@ -556,6 +604,9 @@ async fn consume_json_to_terminal(
     }
 
     let data = body.to_string();
+    // Single reply, not a chunked stream — one push covers the whole non-streaming path, same
+    // normalization as the streaming path above so a reconnect sees a consistent shape either way.
+    continuation.push(normalize_agent_event(&data, task_id, context_id));
     if body.get("error").is_some() {
         return Some((StreamDisposition::Failed, Some(data), None));
     }
@@ -701,8 +752,28 @@ async fn trigger_new_orchestrator_turn(
 
     match result {
         Ok(response) => {
+            // `orchestrator_stream`'s response body is the exact same SSE-framed byte stream a
+            // live browser connection would read (§4/A of the reconnect investigation) — capture
+            // each real `data:` payload into the continuation buffer instead of discarding it, so
+            // a reconnected `POST /api/orchestrator/a2a` sees the actual re-entered ReAct turn,
+            // not a synthesized summary of it. Already in the correct wire shape (this IS the
+            // live-turn generator), so no `normalize_agent_event` pass is needed here.
             let mut body = response.into_body().into_data_stream();
-            while body.next().await.is_some() {}
+            let mut buffer = String::new();
+            while let Some(chunk) = body.next().await {
+                let Ok(chunk) = chunk else { continue };
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(line_end) = buffer.find('\n') {
+                    let line = buffer[..line_end].trim_end_matches('\r').to_string();
+                    buffer = buffer[line_end + 1..].to_string();
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        let data = data.trim();
+                        if !data.is_empty() {
+                            state.continuation_events.append(row.id, data.to_string());
+                        }
+                    }
+                }
+            }
         }
         Err(e) => {
             // The resume itself already succeeded and was marked `resume_status = completed`
