@@ -7,8 +7,12 @@
 }
 
 @scope (app-chart) {
+  /* A flex column, so the plot box can grow to whatever height the host is
+     laid out at (a panel running to its floor) while `height` stays the floor
+     via min-height. In normal flow the host is exactly as tall as that floor. */
   :scope {
-    display: block;
+    display: flex;
+    flex-direction: column;
     width: 100%;
   }
 
@@ -17,6 +21,8 @@
   .chart-plot {
     position: relative;
     width: 100%;
+    flex: 1 1 auto;
+    min-height: 0; /* the inline min-height from `height` wins; this is the fallback */
   }
 
   .chart-plot canvas {
@@ -145,6 +151,7 @@
      forms have no fixed height and fall back to a padded line. */
   .chart-empty {
     display: flex;
+    flex: 1 1 auto;
     align-items: center;
     justify-content: center;
     min-height: 64px;
@@ -159,7 +166,8 @@
   }
 
   .chart-skeleton {
-    height: 200px;
+    flex: 1 1 auto;
+    min-height: 200px;
     border-radius: var(--r-8);
     background: var(--bg-track);
     animation: skel-pulse 1.5s ease-in-out infinite;

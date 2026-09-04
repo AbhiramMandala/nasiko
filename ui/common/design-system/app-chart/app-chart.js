@@ -77,6 +77,8 @@
  * @attr {string} type - `line` | `bar` | `donut` | `hbar` | `progress` (default `line`)
  * @attr {boolean} stacked - `bar` only: stack datasets instead of grouping them
  * @attr {string} height - Plot height, any CSS length (default `200px`). Canvas forms only.
+ *   A floor, not a fixed size: when the host is laid out taller (a flex panel
+ *   that runs to its floor), the plot, skeleton and empty state fill it.
  * @attr {string} format - Value formatting: `number` (default) | `currency` | `percent` | `compact`
  * @attr {string} currency - ISO code for `format="currency"` (default `USD`)
  * @attr {string} center-value - `donut` only: the figure drawn in the hole
@@ -513,7 +515,7 @@ export class AppChart extends HTMLElement {
     // Skeleton and empty state take the same box the plot would, on the same
     // ground, so a panel does not collapse and re-expand as data arrives — and
     // an empty chart still reads as a chart card, not a stray line of text.
-    const box = CANVAS_TYPES.has(this.#type()) ? `style="height:${escAttr(this.getAttribute('height') || '200px')}"` : '';
+    const box = CANVAS_TYPES.has(this.#type()) ? `style="min-height:${escAttr(this.getAttribute('height') || '200px')}"` : '';
 
     if (this.hasAttribute('loading')) {
       this.setAttribute('aria-busy', 'true');
@@ -550,7 +552,7 @@ export class AppChart extends HTMLElement {
     const height = this.getAttribute('height') || '200px';
 
     this.innerHTML = `
-      <div class="chart-plot" style="height:${escAttr(height)}">
+      <div class="chart-plot" style="min-height:${escAttr(height)}">
         <canvas role="img" aria-label="${escAttr(this.getAttribute('label') || `${type} chart`)}"></canvas>
         ${type === 'donut' && (centerValue || centerLabel) ? `
           <div class="chart-center" aria-hidden="true">
