@@ -423,9 +423,13 @@ function formatter(el, attr = 'format') {
   if (kind === 'currency') {
     // narrowSymbol: "$240", never the locale-dependent "US$240" — the panel
     // header already says which ledger this is.
-    const f = new Intl.NumberFormat(undefined,
+    const whole = new Intl.NumberFormat(undefined,
       { style: 'currency', currency, currencyDisplay: 'narrowSymbol', maximumFractionDigits: 0 });
-    return (n) => f.format(n);
+    // Below $10 the ticks step in cents; rounding them all to "$0" / "$1" drew a
+    // scale of duplicate labels on a near-zero series.
+    const cents = new Intl.NumberFormat(undefined,
+      { style: 'currency', currency, currencyDisplay: 'narrowSymbol', maximumFractionDigits: 2 });
+    return (n) => (Math.abs(n) < 10 && n !== Math.round(n) ? cents : whole).format(n);
   }
   if (kind === 'percent') return (n) => `${Math.round(n)}%`;
   if (kind === 'compact') {
@@ -506,15 +510,20 @@ export class AppChart extends HTMLElement {
   render() {
     this.#destroyChart();
 
+    // Skeleton and empty state take the same box the plot would, on the same
+    // ground, so a panel does not collapse and re-expand as data arrives — and
+    // an empty chart still reads as a chart card, not a stray line of text.
+    const box = CANVAS_TYPES.has(this.#type()) ? `style="height:${escAttr(this.getAttribute('height') || '200px')}"` : '';
+
     if (this.hasAttribute('loading')) {
       this.setAttribute('aria-busy', 'true');
-      this.innerHTML = '<div class="chart-skeleton"></div>';
+      this.innerHTML = `<div class="chart-skeleton" ${box}></div>`;
       return;
     }
     this.removeAttribute('aria-busy');
 
     if (this.#isEmpty()) {
-      this.innerHTML = `<p class="chart-empty">${escHtml(this.getAttribute('empty-text') || 'No data')}</p>`;
+      this.innerHTML = `<div class="chart-empty" ${box}><p>${escHtml(this.getAttribute('empty-text') || 'No data')}</p></div>`;
       return;
     }
 
@@ -576,7 +585,10 @@ export class AppChart extends HTMLElement {
         // Top is 24, not 16: the topmost tick label centres on the top
         // gridline, so half its 16px line overhangs the plot — 16 + 8 keeps a
         // true 16px of clear ground above the tallest ink.
-        layout: { padding: { top: 24, right: 16, bottom: 16, left: 16 } },
+        // Bottom is 0 when the legend is on: Chart.js pads the legend row with
+        // its own `labels.padding` (28, half of it above the row), which already
+        // clears the x-axis labels — adding 16 more read as a hole between them.
+        layout: { padding: { top: 24, right: 16, bottom: showLegend ? 0 : 16, left: 16 } },
         // Chart.js animates on every re-render, and this element re-renders on
         // theme change — an animated repaint on a theme flip reads as a glitch.
         animation: { duration: 240 },

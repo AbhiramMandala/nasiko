@@ -140,12 +140,22 @@
     color: var(--fg-secondary);
   }
 
+  /* The empty state is the plot's own box — same ground, same corners, the
+     height the plot would have had — with the message centred in it. The row
+     forms have no fixed height and fall back to a padded line. */
   .chart-empty {
-    margin: 0;
-    padding: var(--s-24) 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 64px;
+    padding: var(--s-16);
+    background: var(--bg-base);
+    border-radius: var(--r-8);
     text-align: center;
     font-size: var(--font-size-sm);
     color: var(--fg-secondary);
+
+    & p { margin: 0; }
   }
 
   .chart-skeleton {
