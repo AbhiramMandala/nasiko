@@ -1,42 +1,68 @@
 /**
  * TokenOps dashboard — FinOps: headline spend KPIs, two plots (spend over time ·
- * spend concentration) and per-agent attribution.
+ * spend concentration) and per-agent/per-workflow attribution.
  *
  * @element tokenops-page
- * @note Data sources (see /api/docs):
- *       `call('fetchTokenopsDashboard', start?, end?)`
- *         → GET /api/observability/finops/dashboard — `{ data: { summary,
- *           agents, token_usage } }`. Windowed and fleet-wide; the KPI strip and
- *           the attributions table come from here. Fetched twice per load: once
- *           for the window, once for the window immediately before it, which is
- *           what the delta chips compare against.
- *       `call('fetchUsageHistory', days)`
- *         → GET /api/usage/history — one row per day `{ date, request_count,
- *           total_tokens, total_cost_usd }`. The "Spend over time" series and
- *           the anomaly marks/caption. Caller-scoped (it reads `token_usage`,
- *           not Tempo), so it can be narrower than the fleet totals above.
- *       `call('fetchAgentHours', start, end, 'hour')`
- *         → GET /api/observability/finops/agent-hours — the hourly per-agent
- *           breakdown behind "Spend concentration". The response shape is
- *           normalised in `#hourlyRows()`; until the endpoint returns hourly
- *           buckets the panel draws an ILLUSTRATIVE distribution of the real
- *           per-agent totals and says so in its caption (see `#sampleHourly`).
+ * @note Data sources (see `tokensopsapis.md`, the backend handoff this page is
+ *       wired against — `/api/observability/finops/*`):
+ *       `call('fetchTokenopsDashboard', { range?, startTime?, endTime?, agentId?, model?, view? })`
+ *         → GET .../finops/dashboard — `{ data: { kpis, summary, agents,
+ *           attributions } }`. `kpis` (`total_spend`/`total_tokens`/
+ *           `cost_per_operation`/`avg_latency_ms`, each `{ current, previous,
+ *           change_pct }`) is the KPI strip — the backend computes the delta
+ *           itself now, so there is no second "fetch the previous window"
+ *           round trip any more. `attributions.rows` (view-aware) is the
+ *           table; `agents` stays agent-view-only, for the agent filter and
+ *           the concentration panel's day drill-down. A row's `is_capped`
+ *           gets a "~approx" badge — a real, undercounted-by-design number for
+ *           very high-volume agents, not a bug.
+ *       `call('fetchSpendTimeseries', { range?, startTime?, endTime?, agentId?, model? })`
+ *         → GET .../finops/spend-timeseries — `{ bucket, points: [{
+ *           bucket_start, spend_usd, operations }] }`. Dollar-only: the old
+ *           `%`/`$` toggle and the anomaly detector are both gone, because
+ *           neither exists against this endpoint (no anomaly service on the
+ *           backend at all yet — see the doc's point 7).
+ *       `call('fetchSpendCalendarDay', { date, agentId?, model? })`
+ *         → GET .../finops/spend-calendar/day — one CALENDAR DAY (not the
+ *           filter window): `{ hours: 24 x { hour, spend_usd },
+ *           avg_hourly_spend_usd, top_agents, others_spend_usd }`. This is a
+ *           day TOTAL curve, not a per-agent-per-hour breakdown, so the
+ *           "segmented" (stacked-by-agent) bar form this panel used to draw is
+ *           not something this endpoint can produce — it draws a single-series
+ *           bar with `average-line` (the dashed rule IS `avg_hourly_spend_usd`)
+ *           and the pre-computed top-4/others ranking as its legend, which is
+ *           exactly the "Operation agent / Operation agent / Others" shape the
+ *           doc describes. A day picker next to the panel title drives it,
+ *           independent of the KPI strip's month/range window.
  *
- *       The provider/model/server/org-unit filters are rendered disabled: no
- *       windowed dataset carries those dimensions (see `INERT_FILTERS`).
+ *       `fetchSpendCalendar` (the month heatmap) and `fetchFinopsAttributions`
+ *       (standalone, sortable/paginated table source) are registered in
+ *       usage-service.js and ready to use, but no panel calls them yet: there
+ *       is no month-heatmap UI in this screen, and the table still sorts
+ *       in-memory over the one dashboard payload rather than round-tripping a
+ *       sort click — see the header note on `fetchFinopsAttributions`.
  *
- *       Both plots are `<app-chart>`: the anomaly line (`anomalies`, `axis: 'y2'`,
- *       `format-y2`) and the segmented columns (`segmented`, `average-line`) —
- *       the two TokenOps forms the component grew for this page. The `%` / `$`
- *       scale switches the spend series between share-of-window and currency.
+ *       Provider/org-unit stay disabled (backend accepts the params, stubbed —
+ *       not wired to real filtering). Server has no dimension at all. Model IS
+ *       now a real windowed filter on every endpoint above, but there is no
+ *       documented endpoint yet to list which models exist, so it stays
+ *       disabled too rather than shipping a dropdown with no options — see
+ *       `INERT_FILTERS`.
+ *
+ *       A 400 from any of these (bad `range`, bad `view`, bad date, an
+ *       unresolvable `agent_id`) carries a human-readable plain-text body,
+ *       which `fetchApi` already turns into `err.message` — surfaced with
+ *       `toast.error()` rather than swallowed.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./tokenops-page.css', import.meta.url));
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { icons } from '/common/utils/icons.js';
+import { toast } from '/common/utils/toast.js';
+import { ApiError } from '../core/errors.js';
+import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-chart/app-chart.js';
-import '/common/design-system/app-checkbox/app-checkbox.js';
 import '/common/design-system/app-segmented-control/app-segmented-control.js';
 import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-table/app-table.js';
@@ -45,14 +71,6 @@ import { call } from '../core/data-sources.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const DAY_MS = 86_400_000;
-/** Cap on the `/usage/history` look-back, so an old month can't ask for years. */
-const MAX_HISTORY_DAYS = 400;
-/** `--viz-1…5` are the chart's fixed colour slots; the 6th series is "Other". */
-const CONCENTRATION_SLOTS = 4;
-
-/** Budget burn has no data source — see the KPI it fills in `#renderSummary`. */
-const DUMMY_BUDGET_BURN_PCT = 77;
-const DUMMY_BUDGET_BURN_DELTA_PCT = 6.1;
 
 const fmtTokens = (n) => {
   if (n == null) return '0';
@@ -75,29 +93,70 @@ const fmtLatencyShort = (ms) => (ms == null ? '—'
   : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`);
 const fmtCount = (n) => (n ?? 0).toLocaleString();
 
-/** `csv` is the export value for the column; the table renders `render`. */
-const COLUMNS = [
+/**
+ * Read the first present key off a row. The exact field spelling an
+ * attribution row uses is not pinned down by the handoff doc (it gives
+ * `sort_by` value names — `cost`, `tokens`, `avg_latency` — not a JSON
+ * example), so `#normalizeRow` below checks the short `sort_by`-style name
+ * first and falls back to the longer name `data.agents` has always used, once,
+ * at load time — everything downstream (columns, sort, CSV, the table's own
+ * click-to-sort headers) then reads one fixed, real property name, the same
+ * way `data.agents` rows have always worked.
+ */
+const pick = (r, ...keys) => {
+  for (const k of keys) if (r[k] != null) return r[k];
+  return undefined;
+};
+
+/** `csv` is the export value for the column; the table renders `render`. Keys
+ *  match `#normalizeRow`'s output exactly, so <app-table>'s own click-to-sort
+ *  headers (which read `row[col.key]` directly) work without going through
+ *  `pick()` a second time. */
+const AGENT_COLUMNS = [
   { key: 'agent_name', label: 'Agent',
-    render: (v, r) => `<span class="agent-name">${escHtml(v || r.agent_id)}</span>`,
+    render: (v, r) => `<span class="agent-name">${escHtml(v || r.agent_id)
+    }${r.is_capped ? ' <app-badge variant="warning" title="High-volume agent — this number is a real but undercounted approximation">~approx</app-badge>' : ''}</span>`,
     csv: (r) => r.agent_name },
   { key: 'total_cost', label: 'Spend', render: fmtMoney },
   { key: 'total_tokens', label: 'Tokens', render: fmtTokens },
-  { key: 'completion_tokens', label: 'Output', render: fmtTokens },
-  { key: 'prompt_tokens', label: 'Input', render: fmtTokens },
+  { key: 'completion_tokens', label: 'Output', render: (v) => (v == null ? '—' : fmtTokens(v)) },
+  { key: 'prompt_tokens', label: 'Input', render: (v) => (v == null ? '—' : fmtTokens(v)) },
   { key: 'operations', label: 'Operations', render: fmtCount },
-  { key: 'avg_cost_per_operation', label: 'Avg cost/op', render: fmtCost },
-  { key: 'container_hours', label: 'Agent hours', render: fmtNum },
+  { key: 'avg_cost_per_operation', label: 'Avg cost/op', render: (v) => (v == null ? '—' : fmtCost(v)) },
+  { key: 'container_hours', label: 'Agent hours', render: (v) => (v == null ? '—' : fmtNum(v)) },
   { key: 'avg_latency_ms', label: 'Avg latency', render: fmtLatency },
 ];
 
-const SORTS = [
-  { value: 'total_tokens', label: 'Most tokens' },
-  { value: 'total_cost', label: 'Highest spend' },
-  { value: 'completion_tokens', label: 'Most output tokens' },
-  { value: 'prompt_tokens', label: 'Most input tokens' },
-  { value: 'operations', label: 'Most operations' },
-  { value: 'avg_latency_ms', label: 'Slowest' },
-  { value: 'agent_name', label: 'Name' },
+/** Workflow rows carry no replica-hours or token-split columns — those are
+ *  agent-execution concepts `sort_by`'s workflow-view value list has no
+ *  equivalent for (`container_hours` only appears in the agent list). */
+const WORKFLOW_COLUMNS = [
+  { key: 'workflow_name', label: 'Workflow',
+    render: (v, r) => `<span class="agent-name">${escHtml(v || r.workflow_id)}</span>`,
+    csv: (r) => r.workflow_name },
+  { key: 'total_cost', label: 'Spend', render: fmtMoney },
+  { key: 'total_tokens', label: 'Tokens', render: fmtTokens },
+  { key: 'operations', label: 'Operations', render: fmtCount },
+  { key: 'avg_latency_ms', label: 'Avg latency', render: fmtLatency },
+];
+
+/** `sort_by` value lists from the handoff doc, one label per value — there is
+ *  no predefined label list on the backend, so this mapping is ours to own.
+ *  `field` matches the normalized row property, not the raw `sort_by` value. */
+const AGENT_SORTS = [
+  { value: 'cost', label: 'Highest spend', field: 'total_cost' },
+  { value: 'tokens', label: 'Most tokens', field: 'total_tokens' },
+  { value: 'operations', label: 'Most operations', field: 'operations' },
+  { value: 'avg_latency', label: 'Slowest', field: 'avg_latency_ms' },
+  { value: 'container_hours', label: 'Most agent hours', field: 'container_hours' },
+  { value: 'name', label: 'Name', field: 'agent_name' },
+];
+const WORKFLOW_SORTS = [
+  { value: 'cost', label: 'Highest spend', field: 'total_cost' },
+  { value: 'tokens', label: 'Most tokens', field: 'total_tokens' },
+  { value: 'operations', label: 'Most operations', field: 'operations' },
+  { value: 'avg_latency', label: 'Slowest', field: 'avg_latency_ms' },
+  { value: 'name', label: 'Name', field: 'workflow_name' },
 ];
 
 /** Fixed windows, relative to now. No selection here means the month select owns
@@ -108,56 +167,50 @@ const RANGES = [
   { value: '30d', label: '30d', days: 30 },
 ];
 
-/** The value scale the plot's series were drawn in. Rendered (it is part of the
- *  panel head the design draws, and of the height the panel keeps) but disabled
- *  while there is no plot to scale — the same treatment as `INERT_FILTERS`. */
-const UNITS = [{ value: '%', label: '%' }, { value: '$', label: '$' }];
-
 const ATTR_MODES = [
   { value: 'agent', label: 'Agent' },
-  { value: 'workflow', label: 'Workflow', disabled: true,
-    title: 'No per-workflow cost data yet' },
+  { value: 'workflow', label: 'Workflow' },
 ];
 
 /**
- * Filters with no windowed dataset behind them. They are rendered because the
- * screen is a fixed five-up filter bar, and disabled because the alternative is
- * a control that silently does nothing: `/usage/by-model` carries provider and
- * model but is all-time, so applying either to a month view would mix windows,
- * and neither "server" nor an org unit exists in the FinOps data at all.
+ * Filters with no windowed dataset behind them, per the backend handoff:
+ * Server has no dimension in the API at all; Provider/Org unit are accepted
+ * params but stubbed (§5 — "fine to build the UI... won't actually filter
+ * anything yet"); Model IS now a real per-request filter on every finops
+ * endpoint, but nothing documents a way to list which models exist, so a
+ * dropdown here would have no options to offer.
  */
 const INERT_FILTERS = [
   { id: 'server-select', label: 'Server',
-    why: 'No server dimension in the FinOps data yet.' },
+    why: 'No server dimension in the FinOps API.' },
   { id: 'provider-select', label: 'Provider',
-    why: 'Needs a windowed per-provider breakdown; /usage/by-model is all-time.' },
+    why: 'Backend accepts this param but it is stubbed — not wired to real filtering yet.' },
   { id: 'model-select', label: 'Model',
-    why: 'Needs a windowed per-model breakdown; /usage/by-model is all-time.' },
+    why: 'The FinOps endpoints filter by model now, but nothing lists which models exist to fill this dropdown.' },
   { id: 'org-select', label: 'Org unit',
-    why: 'Org units are an enterprise concept; no OSS data source.' },
+    why: 'Backend accepts this param but it is stubbed — not wired to real filtering yet.' },
 ];
 
 const sum = (ns) => ns.reduce((a, b) => a + b, 0);
 
-/** Percent change, or `null` when there is no comparable baseline. */
-function pctDelta(now, prev) {
-  if (!Number.isFinite(now) || !Number.isFinite(prev) || prev === 0) return null;
-  return ((now - prev) / prev) * 100;
-}
-
 /**
- * The movement chip for one KPI. `goodWhen` is the direction that is good news
- * — spend rising is bad, so it passes `'down'`. The arrow is the *direction*
- * and the tint is the *sentiment*, so a rising cost is an up arrow in an amber
- * chip. One glyph, rotated: `arrowUpRight` mirrored is the down-right arrow.
+ * The movement chip for one KPI, from the backend's own `change_pct` — no
+ * client-side current/previous division any more. `null` ("no previous data
+ * to compare") renders as a dash, never "0%": that was the doc's explicit
+ * requirement (§1), and it is also just honest — a dash and "unchanged" are
+ * different claims. `goodWhen` is the direction that is good news — spend
+ * rising is bad, so it passes `'down'`. The arrow is the *direction* and the
+ * tint is the *sentiment*, so a rising cost is an up arrow in an amber chip.
  */
-function deltaChip(change, goodWhen) {
-  if (change === null) return { delta: null, trend: 'neutral' };
-  const good = change > 0 ? goodWhen === 'up' : goodWhen === 'down';
+function deltaChip(changePct, goodWhen) {
+  if (changePct === null || changePct === undefined || !Number.isFinite(changePct)) {
+    return { delta: null, trend: 'neutral' };
+  }
+  const good = changePct > 0 ? goodWhen === 'up' : goodWhen === 'down';
   return {
-    delta: `${Math.abs(change).toFixed(1)}%`,
-    dir: change > 0 ? 'up' : change < 0 ? 'down' : 'flat',
-    trend: change === 0 ? 'neutral' : good ? 'up' : 'down',
+    delta: `${Math.abs(changePct).toFixed(1)}%`,
+    dir: changePct > 0 ? 'up' : changePct < 0 ? 'down' : 'flat',
+    trend: changePct === 0 ? 'neutral' : good ? 'up' : 'down',
   };
 }
 
@@ -188,8 +241,8 @@ function kpiHtml({ label, value, sub, delta, dir, trend }) {
     </div>`;
 }
 
-/** Five cells of the real geometry, so the strip does not resize on data. */
-const KPI_SKELETON = Array.from({ length: 5 }, () => `
+/** Four cells of the real geometry, so the strip does not resize on data. */
+const KPI_SKELETON = Array.from({ length: 4 }, () => `
   <div class="kpi">
     <div class="kpi-chip is-neutral"><span class="kpi-skel kpi-skel--chip"></span></div>
     <div class="kpi-text">
@@ -198,40 +251,40 @@ const KPI_SKELETON = Array.from({ length: 5 }, () => `
     </div>
   </div>`).join('');
 
-/** Operations-weighted mean latency; plain mean would let an idle agent dominate. */
-function weightedLatency(agents) {
-  const rows = agents.filter((a) => a.avg_latency_ms != null && a.operations > 0);
-  const ops = sum(rows.map((a) => a.operations));
-  return ops === 0 ? null : sum(rows.map((a) => a.avg_latency_ms * a.operations)) / ops;
+/** `YYYY-MM-DD` in local time — `toISOString()` would drift a day near
+ *  midnight in timezones ahead of UTC, which is exactly the case this feeds
+ *  (the day picker's default value). */
+function localDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 class TokenopsPage extends HTMLElement {
   #initialized = false;
   #agents = [];
   #summary = {};
-  #prevSummary = null;
-  #prevAgents = [];
-  #tokenUsage = {};
-  #prevTokenUsage = {};
-  #history = [];
-  /** Hourly per-agent rows for the window (normalised; see `#hourlyRows`). */
-  #agentHours = [];
-  /** True when the concentration plot is drawn from `#sampleHourly`, not data. */
-  #hourlyIsSample = false;
-  /** `$` (currency) or `%` (share of the window's spend) for the spend series. */
-  #unit = '$';
+  #kpis = null;
+  #attributions = [];
+  /** `agent` | `workflow` — which shape `#attributions` and the sort list are in. */
+  #attrView = 'agent';
+  /** `{ bucket: 'hour'|'day', points: [...] }` from `/finops/spend-timeseries`. */
+  #spend = { bucket: 'day', points: [] };
+  /** `/finops/spend-calendar/day` response for the selected `#day`, or `null`
+   *  while it has not loaded yet. */
+  #dayDrill = null;
+  /** The concentration panel's own selection — independent of the KPI strip's
+   *  month/range window (the endpoint takes a single `date`, not a range). */
+  #day = localDateStr(new Date());
   /** Window start/end as Dates — written by the month select and the range group. */
   #start = null;
   #end = null;
   #range = '30d';
-  #anomalies = true;
   #agentFilter = '';
-  #sort = 'total_tokens';
+  #sort = 'cost';
   /** The in-flight dashboard fetch — the table awaits it, so its own skeleton
    *  rows are the page's loading state. */
   #pending = null;
-  /** Bumped per load. Four requests fan out per window and a second window can
-   *  be picked mid-flight, so every one of them checks this before writing:
+  /** Bumped per load. Requests fan out per window and a second window can be
+   *  picked mid-flight, so every one of them checks this before writing:
    *  otherwise a slow August response overwrites the September numbers. */
   #loadId = 0;
 
@@ -264,28 +317,27 @@ class TokenopsPage extends HTMLElement {
         <section class="panel">
           <div class="panel-head">
             <h2 class="panel-title">Spend over time</h2>
-            <app-segmented-control id="unit-seg" size="sm" label="Value scale"></app-segmented-control>
           </div>
           <div class="panel-tools">
             <ul class="series-legend" id="spend-legend" aria-label="Series"></ul>
-            <app-checkbox id="anomaly-toggle" checked label="Anomalies"></app-checkbox>
           </div>
           <app-chart id="spend-plot" class="plot-slot" type="line" format="currency" format-y2="compact" height="300px"
             legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
-          <p class="anomaly-note" id="anomaly-note" hidden></p>
         </section>
 
         <section class="panel">
           <div class="panel-head">
             <h2 class="panel-title">Spend concentration</h2>
+            <input type="date" id="day-picker" class="day-picker" aria-label="Day"
+              value="${escAttr(this.#day)}" max="${escAttr(localDateStr(new Date()))}">
           </div>
           <div class="conc-body">
-            <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line legend="off" height="220px"
-              format="currency" label="Spend concentration by hour of day"
-              empty-text="No agent activity in this window" loading></app-chart>
+            <app-chart id="conc-plot" class="plot-slot" type="bar" average-line legend="off" height="220px"
+              format="currency" label="Spend by hour of day"
+              empty-text="No spend on this day" loading></app-chart>
             <ul class="conc-legend" id="conc-legend"></ul>
           </div>
-          <p class="anomaly-note" id="conc-note" hidden></p>
+          <p class="anomaly-note" id="conc-note"></p>
         </section>
       </div>
 
@@ -295,27 +347,26 @@ class TokenopsPage extends HTMLElement {
           <app-segmented-control id="attr-seg"
             size="sm" label="Attribute by"></app-segmented-control>
           <app-select id="sort-select" size="md" aria-label="Sort"
-            options='${JSON.stringify(SORTS)}'></app-select>
+            options='${JSON.stringify(AGENT_SORTS)}'></app-select>
         </div>
       </div>
       <app-table id="cost-table" pagination="none" search
-        search-placeholder="Search agents by name..."
-        empty-message="No agent activity in this period"></app-table>
+        search-placeholder="Search by name..."
+        empty-message="No activity in this period"></app-table>
     `;
 
     // Segment sets are data, not markup: assigned as properties so no JSON has
     // to be escaped into an attribute at a call site.
     this.#segment('#range-seg', RANGES.map((r) => ({ value: r.value, label: r.label })), this.#range);
-    this.#segment('#unit-seg', UNITS, this.#unit);
-    this.#segment('#attr-seg', ATTR_MODES, 'agent');
+    this.#segment('#attr-seg', ATTR_MODES, this.#attrView);
 
     const table = this.querySelector('#cost-table');
-    table.columns = COLUMNS;
+    table.columns = AGENT_COLUMNS;
     // Filtering and sorting are in-memory over the one dashboard payload, so
     // "fetching" a page is just awaiting the load that is already in flight.
     table.dataFn = async (query) => {
       await this.#pending;
-      return this.#visibleAgents(query);
+      return this.#visibleRows(query);
     };
 
     this.querySelector('#month-select').addEventListener('change', () => {
@@ -329,22 +380,35 @@ class TokenopsPage extends HTMLElement {
       this.#range = e.target.value;
       this.#load();
     });
-    this.querySelector('#anomaly-toggle').addEventListener('change', (e) => {
-      this.#anomalies = e.target.checked;
-      this.#renderSpend();
-    });
-    this.querySelector('#unit-seg').addEventListener('change', (e) => {
-      this.#unit = e.target.value || '$';
-      this.#renderSpend();
-    });
     this.querySelector('#agent-select').addEventListener('change', (e) => {
+      // `agent_id` is a real server-side param on every finops endpoint now,
+      // not just an in-memory row filter — so this reloads everything the
+      // window drives, same as a range change.
       this.#agentFilter = e.target.value;
-      table.refresh();
-      this.#renderConcentration();
+      this.#load();
+    });
+    this.querySelector('#attr-seg').addEventListener('change', (e) => {
+      this.#attrView = e.target.value || 'agent';
+      const isAgent = this.#attrView === 'agent';
+      table.columns = isAgent ? AGENT_COLUMNS : WORKFLOW_COLUMNS;
+      const sorts = isAgent ? AGENT_SORTS : WORKFLOW_SORTS;
+      const sortSelect = this.querySelector('#sort-select');
+      sortSelect.setAttribute('options', JSON.stringify(sorts));
+      this.#sort = 'cost';
+      sortSelect.value = this.#sort;
+      // The rows themselves are view-shaped server-side (`data.attributions`
+      // respects `view`), so this needs the dashboard re-fetched, not just a
+      // local re-render.
+      this.#load();
     });
     this.querySelector('#sort-select').addEventListener('change', (e) => {
       this.#sort = e.target.value;
       table.refresh();
+    });
+    this.querySelector('#day-picker').addEventListener('change', (e) => {
+      if (!e.target.value) return;
+      this.#day = e.target.value;
+      this.#loadDay(this.#loadId);
     });
     this.querySelector('#export-btn').addEventListener('click', () => this.#exportCsv());
 
@@ -386,26 +450,38 @@ class TokenopsPage extends HTMLElement {
     this.#end = end ? new Date(end) : new Date();
   }
 
+  /** Surface a 400's human-readable body (bad range/view/date/agent_id — the
+   *  doc's own wording, already in `err.message`) rather than swallow it. */
+  #reportError(err, what) {
+    console.error(`TokenOps ${what} fetch failed:`, err);
+    if (err instanceof ApiError && err.isClientError) {
+      toast.error(err.message || `${what} request was rejected`);
+    }
+  }
+
   async #load() {
     const id = ++this.#loadId;
     this.#resolveWindow();
     const start = this.#start.toISOString();
     const end = this.#end.toISOString();
-    // Equal-length window ending where this one starts — the delta baseline.
-    const span = this.#end.getTime() - this.#start.getTime();
-    const prevStart = new Date(this.#start.getTime() - span).toISOString();
+    const params = {
+      range: this.#range || undefined,
+      startTime: start,
+      endTime: end,
+      agentId: this.#agentFilter || undefined,
+      view: this.#attrView,
+    };
 
     // Assigned before the first await so the table's initial refresh — queued a
     // microtask after this element's markup was parsed — awaits this fetch
     // rather than seeing an empty agent list.
-    this.#pending = call('fetchTokenopsDashboard', start, end);
+    this.#pending = call('fetchTokenopsDashboard', params);
     const table = this.querySelector('#cost-table');
     table.refresh();
     const strip = this.querySelector('#kpi-strip');
     strip.setAttribute('aria-busy', 'true');
     strip.innerHTML = KPI_SKELETON;
     this.querySelector('#spend-plot').setAttribute('loading', '');
-    this.querySelector('#conc-plot').setAttribute('loading', '');
 
     let resp;
     try {
@@ -413,135 +489,83 @@ class TokenopsPage extends HTMLElement {
     } catch (e) {
       // The table surfaces the failure itself — its dataFn awaits the same
       // rejected promise.
-      console.error('TokenOps dashboard fetch failed:', e);
+      this.#reportError(e, 'dashboard');
       return;
     }
     if (id !== this.#loadId) return;
     const data = resp?.data ?? resp ?? {};
     this.#agents = data.agents || [];
     this.#summary = data.summary || {};
-    this.#tokenUsage = data.token_usage || {};
+    this.#kpis = data.kpis || null;
+    const rawRows = data.attributions?.rows ?? data.agents ?? [];
+    this.#attributions = rawRows.map((r) => this.#normalizeRow(r));
     this.#renderAgentOptions();
     table.refresh();
     this.#renderSummary();
-    this.#renderConcentration();
 
-    // Everything below only sharpens the page: the baseline behind the delta
-    // chips, the daily series, and the hourly breakdown. Each failure is
-    // absorbed where it happens so one bad call can't blank the page.
-    this.#loadBaseline(id, prevStart, start);
-    this.#loadHistory(id);
-    this.#loadAgentHours(id, start, end);
+    // "Spend over time" and the concentration day-drill each absorb their own
+    // failure — one bad call must not blank the whole page.
+    this.#loadSpend(id, params);
+    // The day picker is independent of the window, but the agent filter still
+    // applies to it — re-pull it on every load, not only when the day changes.
+    this.#loadDay(id);
   }
 
-  /**
-   * Hourly per-agent spend for the concentration plot. Absorbs its own failure:
-   * the panel then falls back to the illustrative distribution rather than a
-   * blank, and says so.
-   */
-  async #loadAgentHours(id, start, end) {
+  async #loadSpend(id, params) {
     try {
-      const resp = await call('fetchAgentHours', start, end, 'hour');
-      if (id !== this.#loadId) return;
-      this.#agentHours = this.#hourlyRows(resp);
-    } catch (e) {
-      console.error('TokenOps agent-hours fetch failed:', e);
-      this.#agentHours = [];
-    }
-    this.#renderConcentration();
-  }
-
-  /**
-   * Normalise the agent-hours response into `{ hour: 0–23, agent_id, cost }`.
-   * The endpoint's bucketed shape is not final (API integration follows this
-   * page), so this accepts the likely spellings and rejects anything without a
-   * timestamp — a row it cannot place in an hour is not a row.
-   */
-  #hourlyRows(resp) {
-    const rows = Array.isArray(resp) ? resp : Array.isArray(resp?.data) ? resp.data
-      : Array.isArray(resp?.data?.buckets) ? resp.data.buckets : [];
-    const out = [];
-    for (const r of rows) {
-      const stamp = r.bucket ?? r.hour ?? r.timestamp ?? r.time ?? r.start_time;
-      const t = typeof stamp === 'number' && stamp < 24 ? stamp : new Date(stamp).getHours();
-      if (!Number.isFinite(t)) continue;
-      out.push({
-        hour: t,
-        agent_id: r.agent_id ?? r.agent ?? r.agent_name ?? 'unknown',
-        cost: Number(r.total_cost ?? r.cost ?? r.cost_usd ?? r.total_cost_usd ?? 0) || 0,
-      });
-    }
-    return out;
-  }
-
-  async #loadBaseline(id, start, end) {
-    try {
-      const resp = await call('fetchTokenopsDashboard', start, end);
+      const resp = await call('fetchSpendTimeseries', params);
       if (id !== this.#loadId) return;
       const data = resp?.data ?? resp ?? {};
-      this.#prevSummary = data.summary || {};
-      this.#prevAgents = data.agents || [];
-      this.#prevTokenUsage = data.token_usage || {};
-      this.#renderSummary();
+      this.#spend = { bucket: data.bucket || 'day', points: Array.isArray(data.points) ? data.points : [] };
     } catch (e) {
-      console.error('TokenOps baseline fetch failed:', e);
-    }
-  }
-
-  async #loadHistory(id) {
-    const days = Math.min(MAX_HISTORY_DAYS,
-      Math.ceil((Date.now() - this.#start.getTime()) / DAY_MS) + 1);
-    try {
-      const resp = await call('fetchUsageHistory', days);
+      this.#reportError(e, 'spend-timeseries');
       if (id !== this.#loadId) return;
-      this.#history = Array.isArray(resp) ? resp : resp?.data ?? [];
-    } catch (e) {
-      console.error('TokenOps history fetch failed:', e);
-      this.#history = [];
+      this.#spend = { bucket: 'day', points: [] };
     }
     this.#renderSpend();
+  }
+
+  async #loadDay(id) {
+    const chart = this.querySelector('#conc-plot');
+    chart.setAttribute('loading', '');
+    try {
+      const resp = await call('fetchSpendCalendarDay', { date: this.#day, agentId: this.#agentFilter || undefined });
+      if (id !== this.#loadId) return;
+      this.#dayDrill = resp?.data ?? resp ?? null;
+    } catch (e) {
+      this.#reportError(e, 'spend-calendar/day');
+      if (id !== this.#loadId) return;
+      this.#dayDrill = null;
+    }
+    this.#renderConcentration();
   }
 
   // ── KPI strip ─────────────────────────────────────────────────────────────
 
   #renderSummary() {
     const s = this.#summary;
-    const prev = this.#prevSummary;
-    // `average_cost` IS cost-per-operation server-side (grand_cost / total_ops).
-    // Taken from the summary rather than divided here: agents deleted inside the
-    // window count toward the fleet figures but have no row, so the two differ.
-    const costPerOp = s.average_cost ?? 0;
-    const prevCostPerOp = prev?.average_cost ?? 0;
-    const latency = weightedLatency(this.#agents);
-    const prevLatency = weightedLatency(this.#prevAgents);
-
-    // A missing baseline (first load, or the previous window failed) yields no
-    // chip at all rather than a 0% one — "unchanged" is a claim, not a default.
-    const chip = (now, before, goodWhen) => (prev === null
-      ? { delta: null, trend: 'neutral' }
-      : deltaChip(pctDelta(now, before), goodWhen));
+    const k = this.#kpis || {};
+    // `average_cost` IS cost-per-operation server-side (grand_cost / total_ops)
+    // — the fallback for a `kpis`-less (old-shape) response.
+    const kpi = (name, fallbackCurrent) => k[name] ?? { current: fallbackCurrent, previous: null, change_pct: null };
+    const spend = kpi('total_spend', s.total_cost);
+    const tokens = kpi('total_tokens', undefined);
+    const costPerOp = kpi('cost_per_operation', s.average_cost ?? 0);
+    const latency = kpi('avg_latency_ms', undefined);
 
     const items = [
-      { label: 'Total AI spend', value: fmtMoney(s.total_cost),
+      { label: 'Total AI spend', value: fmtMoney(spend.current),
         sub: `${fmtCount(s.total_operations)} operations`,
-        ...chip(s.total_cost, prev?.total_cost, 'down') },
-      { label: 'Total tokens', value: fmtTokens(this.#tokenUsage.total_tokens),
+        ...deltaChip(spend.change_pct, 'down') },
+      { label: 'Total tokens', value: fmtTokens(tokens.current),
         sub: 'Across all agents',
-        ...chip(this.#tokenUsage.total_tokens, this.#prevTokenUsage?.total_tokens, 'down') },
-      // ponytail: dummy. No budget exists anywhere in the platform, so there is
-      // nothing to burn against — these are the design's placeholder figures,
-      // held so the strip is the five-up the screen specifies. Swap both for the
-      // real ratio (spend ÷ budget) once a budget is configurable; the `sub`
-      // says out loud that the number is not measured.
-      { label: 'Budget burn', value: `${DUMMY_BUDGET_BURN_PCT}%`,
-        sub: 'Placeholder — no budget configured',
-        ...deltaChip(-DUMMY_BUDGET_BURN_DELTA_PCT, 'down') },
-      { label: 'Cost / operation', value: fmtCostShort(costPerOp),
+        ...deltaChip(tokens.change_pct, 'down') },
+      { label: 'Cost / operation', value: fmtCostShort(costPerOp.current),
         sub: `${fmtNum(s.total_container_hours)} agent hours`,
-        ...chip(costPerOp, prevCostPerOp, 'down') },
-      { label: 'Avg latency', value: fmtLatencyShort(latency),
+        ...deltaChip(costPerOp.change_pct, 'down') },
+      { label: 'Avg latency', value: fmtLatencyShort(latency.current),
         sub: `${s.active_agents ?? 0} of ${s.total_agents ?? 0} agents active`,
-        ...chip(latency, prevLatency, 'down') },
+        ...deltaChip(latency.change_pct, 'down') },
     ];
 
     const strip = this.querySelector('#kpi-strip');
@@ -551,147 +575,71 @@ class TokenopsPage extends HTMLElement {
 
   // ── Spend over time ───────────────────────────────────────────────────────
 
-  /** `/usage/history` is a look-back from today; the window trims it. */
-  #historyInWindow() {
-    const from = this.#start.getTime();
-    const to = this.#end.getTime();
-    return this.#history
-      .filter((r) => {
-        const t = new Date(r.date).getTime();
-        return Number.isFinite(t) && t >= from && t < to;
-      })
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-  }
-
   /**
-   * Anomalous day indices over the window: >2σ above the mean — the standard
-   * first cut, and honest about being a threshold rather than a model. Returned
-   * with the stats so the caption and the plot say the same thing.
-   */
-  #anomalyIndices(rows) {
-    const costs = rows.map((r) => r.total_cost_usd ?? 0);
-    if (costs.length < 3) return { flagged: [], costs };
-    const mean = sum(costs) / costs.length;
-    const sd = Math.sqrt(sum(costs.map((c) => (c - mean) ** 2)) / costs.length);
-    const flagged = costs.map((c, i) => (sd > 0 && c > mean + 2 * sd ? i : -1)).filter((i) => i >= 0);
-    return { flagged, costs };
-  }
-
-  /**
-   * "Spend over time": one point per day of the window. Spend on the left axis
-   * (currency, or share of the window's spend when the scale is `%`), token
-   * volume on the right (`axis: 'y2'`, compact). Anomalies are the red marks
-   * on the spend series and the caption under the plot — same indices.
+   * "Spend over time": one point per bucket (`spend-timeseries` picks hour vs
+   * day for the window's length — see `#spend.bucket`). Spend on the left axis
+   * (currency), operation count on the right (`axis: 'y2'`, compact) — this
+   * endpoint has no token count, so Operations replaces the old Tokens series.
+   * Dollar-only: no `%` scale exists against it.
    */
   #renderSpend() {
     const chart = this.querySelector('#spend-plot');
-    const note = this.querySelector('#anomaly-note');
-    const rows = this.#historyInWindow();
-    const { flagged, costs } = this.#anomalyIndices(rows);
-    const total = sum(costs);
-    const percent = this.#unit === '%';
-    const fmtDay = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' });
+    const points = this.#spend.points;
+    const fmtLabel = this.#spend.bucket === 'hour'
+      ? new Intl.DateTimeFormat('en', { hour: 'numeric' })
+      : new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' });
 
     // The legend lives in the panel's tools row (design), not inside the plot
     // card — so app-chart's own legend is off and this row mirrors the dataset
     // order, which is what fixes each series' colour slot.
     const legend = this.querySelector('#spend-legend');
-    legend.innerHTML = [percent ? 'Share of spend' : 'Spend', 'Tokens'].map((name, i) => `
+    legend.innerHTML = ['Spend', 'Operations'].map((name, i) => `
       <li><span class="dot" style="--dot:var(--viz-${i + 1})"></span>${escHtml(name)}</li>`).join('');
 
-    chart.setAttribute('format', percent ? 'percent' : 'currency');
     chart.removeAttribute('loading');
-    chart.data = rows.length ? {
-      labels: rows.map((r) => fmtDay.format(new Date(r.date))),
+    chart.data = points.length ? {
+      labels: points.map((p) => fmtLabel.format(new Date(p.bucket_start))),
       datasets: [
-        {
-          label: percent ? 'Share of spend' : 'Spend',
-          data: costs.map((c) => (percent ? (total > 0 ? (c / total) * 100 : 0) : c)),
-          anomalies: this.#anomalies
-            ? flagged.map((i) => ({ index: i, note: `${fmtMoney(costs[i])} — above 2σ of the window mean` }))
-            : [],
-        },
-        { label: 'Tokens', axis: 'y2', data: rows.map((r) => r.total_tokens ?? 0) },
+        { label: 'Spend', data: points.map((p) => p.spend_usd ?? 0) },
+        { label: 'Operations', axis: 'y2', data: points.map((p) => p.operations ?? 0) },
       ],
     } : { labels: [], datasets: [] };
-
-    if (!this.#anomalies) { note.hidden = true; return; }
-    note.hidden = false;
-    if (costs.length < 3) { note.textContent = ''; return; }
-    note.textContent = flagged.length === 0
-      ? 'No days above 2σ of this window’s mean spend.'
-      : `${flagged.length} day${flagged.length > 1 ? 's' : ''} above 2σ: ${
-        flagged.map((i) => `${fmtDay.format(new Date(rows[i].date))} (${fmtMoney(costs[i])})`).join(', ')}`;
   }
 
   // ── Spend concentration ───────────────────────────────────────────────────
 
   /**
-   * Top spenders in the window: one colour slot each, the tail as "Others"
-   * (past five the pastel scale collides). The legend lists them with their
-   * window totals; the plot stacks their spend per hour of day.
+   * A single calendar day's hourly spend curve plus the pre-computed top-4
+   * agents / others ranking — both straight off `/finops/spend-calendar/day`,
+   * no client-side aggregation. `average-line` draws its dashed rule from the
+   * same 24 values this chart plots, which is exactly `avg_hourly_spend_usd`.
    */
-  #concentrationEntries() {
-    const shown = this.#agentFilter
-      ? this.#agents.filter((a) => a.agent_id === this.#agentFilter)
-      : this.#agents;
-    const ranked = [...shown].sort((a, b) => (b.total_cost ?? 0) - (a.total_cost ?? 0));
-    const top = ranked.slice(0, CONCENTRATION_SLOTS);
-    const rest = ranked.slice(CONCENTRATION_SLOTS);
-    return [
-      ...top.map((a, i) => ({ label: a.agent_name || a.agent_id, ids: [a.agent_id], cost: a.total_cost ?? 0, slot: `var(--viz-${i + 1})` })),
-      ...(rest.length ? [{ label: `Others (${rest.length})`, ids: rest.map((a) => a.agent_id), cost: sum(rest.map((a) => a.total_cost ?? 0)), slot: 'var(--fg-secondary)' }] : []),
-    ];
-  }
-
-  /**
-   * Stand-in for the hourly breakdown while `/finops/agent-hours` does not yet
-   * return hourly buckets: each agent's REAL window total spread over 24 hours
-   * on a working-day curve, so the plot shows the shape the design intends
-   * against true magnitudes. Deterministic — no randomness — and labelled as
-   * illustrative in the panel caption. Delete when the endpoint lands.
-   */
-  #sampleHourly(entries) {
-    const curve = [1, 1, 1, 1, 1, 2, 4, 8, 12, 14, 13, 11, 12, 13, 12, 10, 8, 7, 5, 3, 3, 3, 2, 2];
-    const weight = sum(curve);
-    return entries.map((e) => curve.map((w) => (e.cost * w) / weight));
-  }
-
   #renderConcentration() {
     const legend = this.querySelector('#conc-legend');
     const chart = this.querySelector('#conc-plot');
     const note = this.querySelector('#conc-note');
-    const entries = this.#concentrationEntries();
+    const day = this.#dayDrill;
+    const hours = day?.hours ?? [];
+    const topAgents = day?.top_agents ?? [];
 
+    const entries = [
+      ...topAgents.map((a, i) => ({ label: a.agent_name, cost: a.spend_usd ?? 0, slot: `var(--viz-${i + 1})` })),
+      ...(day?.others_spend_usd ? [{ label: 'Others', cost: day.others_spend_usd, slot: 'var(--fg-secondary)' }] : []),
+    ];
     legend.innerHTML = entries.map((e) => `
       <li><span class="dot" style="--dot:${e.slot}"></span>
         <span class="conc-name">${escHtml(e.label)}</span>
         <span class="conc-cost">${fmtMoney(e.cost)}</span></li>`).join('');
 
-    // Real hourly rows when the endpoint supplies them; the illustrative curve
-    // otherwise. Either way the series order matches the legend, so the colour
-    // slots line up.
-    let series;
-    if (this.#agentHours.length) {
-      this.#hourlyIsSample = false;
-      series = entries.map((e) => {
-        const byHour = new Array(24).fill(0);
-        for (const r of this.#agentHours) if (e.ids.includes(r.agent_id)) byHour[r.hour] += r.cost;
-        return byHour;
-      });
-    } else {
-      this.#hourlyIsSample = true;
-      series = this.#sampleHourly(entries);
-    }
-
-    const labels = Array.from({ length: 24 }, (_, h) => (h === 0 ? '12am' : h === 12 ? '12pm' : String(h % 12)));
+    const labels = hours.map((h) => (h.hour === 0 ? '12am' : h.hour === 12 ? '12pm' : String(h.hour % 12)));
     chart.removeAttribute('loading');
-    chart.data = entries.length && sum(entries.map((e) => e.cost)) > 0
-      ? { labels, datasets: entries.map((e, i) => ({ label: e.label, data: series[i] })) }
+    chart.data = hours.length && sum(hours.map((h) => h.spend_usd ?? 0)) > 0
+      ? { labels, datasets: [{ label: 'Spend', data: hours.map((h) => h.spend_usd ?? 0) }] }
       : { labels: [], datasets: [] };
 
-    note.hidden = !(this.#hourlyIsSample && entries.length);
-    note.textContent = 'Hourly distribution is illustrative until agent-hours returns hourly buckets; totals are real.';
+    note.textContent = day?.avg_hourly_spend_usd != null
+      ? `Averaging ${fmtMoney(day.avg_hourly_spend_usd)}/hour on ${this.#day}.`
+      : '';
   }
 
   // ── Attributions ──────────────────────────────────────────────────────────
@@ -700,7 +648,9 @@ class TokenopsPage extends HTMLElement {
    * Agent options for the filter. `''` is every agent rather than a `placeholder`
    * prompt, because a placeholder option is disabled — there would be no way
    * back to the unfiltered view. <app-select> reads `options` from the
-   * attribute, so this writes the attribute, not a property.
+   * attribute, so this writes the attribute, not a property. Always built from
+   * `data.agents` (agent-view, backward-compat) — the filter names an agent
+   * regardless of which attribution view the table is showing.
    */
   #renderAgentOptions() {
     const select = this.querySelector('#agent-select');
@@ -712,23 +662,59 @@ class TokenopsPage extends HTMLElement {
     if (this.#agentFilter) select.value = this.#agentFilter;
   }
 
-  #visibleAgents(query) {
+  /**
+   * One row from `data.attributions.rows` (or the `data.agents` fallback),
+   * mapped to a fixed shape so every column, the sort list, CSV export and
+   * <app-table>'s own click-to-sort headers can all read one real property
+   * name instead of guessing at the wire spelling — see the note on `pick()`.
+   */
+  #normalizeRow(r) {
+    if (this.#attrView === 'workflow') {
+      return {
+        workflow_id: pick(r, 'workflow_id', 'id'),
+        workflow_name: pick(r, 'workflow_name', 'name'),
+        total_cost: pick(r, 'total_cost', 'cost'),
+        total_tokens: pick(r, 'total_tokens', 'tokens'),
+        operations: pick(r, 'operations'),
+        avg_latency_ms: pick(r, 'avg_latency_ms', 'avg_latency'),
+      };
+    }
+    return {
+      agent_id: pick(r, 'agent_id', 'id'),
+      agent_name: pick(r, 'agent_name', 'name'),
+      total_cost: pick(r, 'total_cost', 'cost'),
+      total_tokens: pick(r, 'total_tokens', 'tokens'),
+      completion_tokens: pick(r, 'completion_tokens'),
+      prompt_tokens: pick(r, 'prompt_tokens'),
+      operations: pick(r, 'operations'),
+      avg_cost_per_operation: pick(r, 'avg_cost_per_operation'),
+      container_hours: pick(r, 'container_hours'),
+      avg_latency_ms: pick(r, 'avg_latency_ms', 'avg_latency'),
+      is_capped: !!r.is_capped,
+    };
+  }
+
+  #visibleRows(query) {
     const q = (query || '').trim().toLowerCase();
-    const rows = this.#agents.filter((a) => {
-      if (this.#agentFilter && a.agent_id !== this.#agentFilter) return false;
-      return !q || (a.agent_name || '').toLowerCase().includes(q);
+    const sorts = this.#attrView === 'agent' ? AGENT_SORTS : WORKFLOW_SORTS;
+    const nameField = this.#attrView === 'agent' ? 'agent_name' : 'workflow_name';
+    const rows = this.#attributions.filter((r) => {
+      const name = r[nameField] || '';
+      return !q || name.toLowerCase().includes(q);
     });
-    const key = this.#sort;
-    rows.sort((a, b) => (key === 'agent_name'
-      ? (a.agent_name || '').localeCompare(b.agent_name || '')
-      : (b[key] ?? 0) - (a[key] ?? 0)));
+    const spec = sorts.find((s) => s.value === this.#sort) ?? sorts[0];
+    rows.sort((a, b) => {
+      if (spec.field === nameField) return (a[nameField] || '').localeCompare(b[nameField] || '');
+      return (b[spec.field] ?? 0) - (a[spec.field] ?? 0);
+    });
     return rows;
   }
 
   #exportCsv() {
-    const header = COLUMNS.map((c) => c.label).join(',');
-    const lines = this.#visibleAgents('').map((a) => COLUMNS
-      .map((c) => (c.csv ? c.csv(a) : a[c.key] ?? ''))
+    const columns = this.#attrView === 'agent' ? AGENT_COLUMNS : WORKFLOW_COLUMNS;
+    const header = columns.map((c) => c.label).join(',');
+    const lines = this.#visibleRows('').map((r) => columns
+      .map((c) => (c.csv ? c.csv(r) : r[c.key] ?? ''))
       .map((v) => `"${String(v).replaceAll('"', '""')}"`).join(','));
     const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');

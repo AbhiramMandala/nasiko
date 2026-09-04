@@ -1,6 +1,6 @@
 /* TokenOps dashboard — NightOwl FinOps layout: a filter bar over a KPI strip,
    two sand chart panels (spend over time · spend concentration), and the
-   per-agent attribution table. */
+   per-agent/per-workflow attribution table. */
 
 /* Adopted sheets carry their own keyframes — same duplication as every other
    page sheet with a skeleton (agents-page.css, app-stat-row.css). */
@@ -21,7 +21,7 @@
      no columns to divide. `app-stat-row` is the hairline strip and stays that
      — the two shapes are different metrics rows, not one with a mode. */
   .kpi-strip {
-    /* Equal columns, not a packed flex row: the design distributes the five
+    /* Equal columns, not a packed flex row: the design distributes the
        metrics across the full width, and flex-wrap sized each one to its own
        content and left the remaining width empty on the right. `auto-fit` drops
        to four/three/two columns as the card narrows, so nothing is squeezed. */
@@ -162,6 +162,15 @@
     margin-bottom: var(--s-8);
   }
 
+  /* Independent of the KPI strip's month/range window — the day-drill
+     endpoint takes a single calendar date, not a range. Sized explicitly:
+     the global input rule is `width: 100%` and this sits in a flex row. */
+  .day-picker {
+    width: auto;
+    min-width: 150px;
+    flex-shrink: 0;
+  }
+
   .panel-title {
     font-size: var(--font-size-md);
     font-family: var(--font-sans);
@@ -178,9 +187,9 @@
     margin-bottom: var(--s-8);
   }
 
-  /* Series legend on the tools row, left of the Anomalies toggle: 8px dot in
-     the series' --viz slot, body/secondary label, 24px between entries. Same
-     dot rule the concentration legend uses. */
+  /* Series legend on the tools row: 8px dot in the series' --viz slot,
+     body/secondary label, 24px between entries. Same dot rule the
+     concentration legend uses. */
   .series-legend {
     display: flex;
     flex-wrap: wrap;
@@ -213,9 +222,8 @@
   #spend-plot { --plot-h: 332px; }
   #conc-plot  { --plot-h: 252px; }
 
-  /* Captions under the plots: the anomaly list (the same indices the plot
-     marks — selectable and readable to a screen reader) and the concentration
-     panel's "illustrative until the endpoint lands" line. */
+  /* Caption under the concentration plot: the day's average $/hour — the
+     same figure the dashed average-line rule draws, restated as text. */
   .anomaly-note {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
