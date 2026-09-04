@@ -167,25 +167,35 @@ pub fn account_scoped_agent_name(
     entry: &ClusterEntry,
     base_name: &str,
 ) -> Result<String> {
-    let username = match entry.username.as_deref().map(str::trim) {
-        Some(username) if !username.is_empty() => username.to_string(),
-        _ => {
-            let profile: Value = client.get_json("/users/me")?;
-            profile
-                .get("username")
-                .or_else(|| profile.get("data").and_then(|data| data.get("username")))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|username| !username.is_empty())
-                .map(str::to_string)
-                .context("Nasiko account profile is missing a username")?
-        }
-    };
+    // Access-key based connections may store the access identifier in the
+    // config's `username` field. The authenticated server profile is the
+    // authority for account-scoped agent names; config is only a compatibility
+    // fallback for older control planes without `/users/me`.
+    let profile: Option<Value> = client.get_json("/users/me").ok();
+    let username = authoritative_account_username(profile.as_ref(), entry.username.as_deref())
+        .context("Nasiko account profile is missing a username")?;
     let username = normalize_agent_name_part(&username);
     if username.is_empty() {
         bail!("Nasiko account username cannot be used in an agent name");
     }
     Ok(format!("{username}-{base_name}"))
+}
+
+fn authoritative_account_username(
+    profile: Option<&Value>,
+    configured_username: Option<&str>,
+) -> Option<String> {
+    profile
+        .and_then(|profile| {
+            profile
+                .get("username")
+                .or_else(|| profile.get("data").and_then(|data| data.get("username")))
+        })
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|username| !username.is_empty())
+        .or_else(|| configured_username.map(str::trim).filter(|username| !username.is_empty()))
+        .map(str::to_string)
 }
 
 fn normalize_agent_name_part(value: &str) -> String {
@@ -520,6 +530,21 @@ mod tests {
             "ankit-kumar-nath"
         );
         assert_eq!(normalize_agent_name_part("--Alice--"), "alice");
+    }
+
+    #[test]
+    fn authenticated_profile_username_wins_over_access_identifier() {
+        let profile = json!({"username": "ankit"});
+        assert_eq!(
+            authoritative_account_username(Some(&profile), Some("NASK_access_identifier")),
+            Some("ankit".into())
+        );
+
+        let enveloped = json!({"data": {"username": "alice"}});
+        assert_eq!(
+            authoritative_account_username(Some(&enveloped), Some("NASK_other")),
+            Some("alice".into())
+        );
     }
     use base64::Engine as _;
     use std::collections::HashMap;
