@@ -6,79 +6,12 @@
 
 use nasiko_hitl::HitlStatus;
 use nasiko_hitl::repo::{self, NewAuthRequired, NewSessionGrant, NewToolApproval, ResolveDecision};
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
-fn pg_admin_url() -> String {
-    std::env::var("TEST_PG_URL")
-        .unwrap_or_else(|_| "postgres://nasiko:nasiko@localhost:5432/nasiko_dev".into())
-}
-
-/// Fresh, migrated scratch database with one seed user and one seed agent —
-/// `hitl_requests.agent_id`/`owner_user_id` are `NOT NULL` foreign keys, so
-/// every test needs both to exist before it can insert a row.
-struct TestDb {
-    pool: PgPool,
-    agent_id: Uuid,
-    owner_user_id: Uuid,
-}
+mod common;
+use common::TestDb;
 
 impl TestDb {
-    async fn new() -> Self {
-        let pg_admin = pg_admin_url();
-        let db_name = format!("nasiko_hitl_test_{}", Uuid::new_v4().simple());
-
-        let admin = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&pg_admin)
-            .await
-            .expect("connect to postgres — is infra up? (set TEST_PG_URL to override; `just infra` starts it)");
-        sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
-            .execute(&admin)
-            .await
-            .expect("create scratch test database");
-
-        let base = pg_admin
-            .rsplit_once('/')
-            .map_or(pg_admin.as_str(), |(b, _)| b);
-        let db_url = format!("{base}/{db_name}");
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&db_url)
-            .await
-            .expect("connect to scratch test database");
-
-        sqlx::migrate!("../migrations")
-            .run(&pool)
-            .await
-            .expect("run oss/migrations against scratch database");
-
-        let owner_user_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, username, email) VALUES ($1, $2, $3)")
-            .bind(owner_user_id)
-            .bind(format!("hitl-test-{}", owner_user_id.simple()))
-            .bind(format!("hitl-test-{}@example.com", owner_user_id.simple()))
-            .execute(&pool)
-            .await
-            .expect("seed user");
-
-        let agent_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO agents (id, name, owner_id) VALUES ($1, $2, $3)")
-            .bind(agent_id)
-            .bind(format!("hitl-test-agent-{}", agent_id.simple()))
-            .bind(owner_user_id)
-            .execute(&pool)
-            .await
-            .expect("seed agent");
-
-        Self {
-            pool,
-            agent_id,
-            owner_user_id,
-        }
-    }
-
     fn new_auth_required(&self, connector_id: Uuid, context_id: &str) -> NewAuthRequired {
         NewAuthRequired {
             agent_id: self.agent_id,
@@ -120,7 +53,7 @@ impl TestDb {
 
 #[tokio::test]
 async fn create_pending_auth_required_persists_a_pending_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
 
     let created =
@@ -145,7 +78,7 @@ async fn create_pending_auth_required_persists_a_pending_row() {
 
 #[tokio::test]
 async fn repeated_calls_for_the_same_identity_are_idempotent() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
 
     let first =
@@ -176,7 +109,7 @@ async fn repeated_calls_for_the_same_identity_are_idempotent() {
 
 #[tokio::test]
 async fn different_context_id_creates_a_distinct_pending_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
 
     let ctx1 =
@@ -196,7 +129,7 @@ async fn different_context_id_creates_a_distinct_pending_row() {
 
 #[tokio::test]
 async fn different_connector_creates_a_distinct_pending_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let context_id = "ctx-shared";
 
     let a = repo::create_pending_auth_required(
@@ -222,7 +155,7 @@ async fn different_connector_creates_a_distinct_pending_row() {
 
 #[tokio::test]
 async fn list_pending_for_returns_only_the_owners_pending_rows() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let other_user_id = db.seed_user().await;
 
     let mine =
@@ -251,7 +184,7 @@ async fn list_pending_for_returns_only_the_owners_pending_rows() {
 
 #[tokio::test]
 async fn list_pending_for_excludes_resolved_rows() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let created = repo::create_pending_tool_approval(
         &db.pool,
         db.new_tool_approval(Uuid::new_v4(), "GITHUB_DELETE_REPO", "ctx-1"),
@@ -281,7 +214,7 @@ async fn list_pending_for_excludes_resolved_rows() {
 
 #[tokio::test]
 async fn authorize_hitl_action_denies_a_different_owner() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let other_user_id = db.seed_user().await;
     let request =
         repo::create_pending_auth_required(&db.pool, db.new_auth_required(Uuid::new_v4(), "ctx-1"))
@@ -294,7 +227,7 @@ async fn authorize_hitl_action_denies_a_different_owner() {
 
 #[tokio::test]
 async fn resolve_approve_transitions_tool_approval_to_resolved_with_audit_fields() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let created = repo::create_pending_tool_approval(
         &db.pool,
         db.new_tool_approval(Uuid::new_v4(), "GITHUB_DELETE_REPO", "ctx-1"),
@@ -324,7 +257,7 @@ async fn resolve_approve_transitions_tool_approval_to_resolved_with_audit_fields
 
 #[tokio::test]
 async fn resolve_reject_transitions_auth_required_to_rejected() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let created =
         repo::create_pending_auth_required(&db.pool, db.new_auth_required(Uuid::new_v4(), "ctx-1"))
             .await
@@ -346,7 +279,7 @@ async fn resolve_reject_transitions_auth_required_to_rejected() {
 
 #[tokio::test]
 async fn resolve_a_non_pending_row_returns_none_not_an_error() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let created = repo::create_pending_tool_approval(
         &db.pool,
         db.new_tool_approval(Uuid::new_v4(), "GITHUB_DELETE_REPO", "ctx-1"),
@@ -383,7 +316,7 @@ async fn resolve_a_non_pending_row_returns_none_not_an_error() {
 
 #[tokio::test]
 async fn resolve_unknown_id_returns_none() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let result = repo::resolve(
         &db.pool,
         Uuid::new_v4(),
@@ -398,7 +331,7 @@ async fn resolve_unknown_id_returns_none() {
 
 #[tokio::test]
 async fn concurrent_resolve_attempts_exactly_one_wins() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let created = repo::create_pending_tool_approval(
         &db.pool,
         db.new_tool_approval(Uuid::new_v4(), "GITHUB_DELETE_REPO", "ctx-1"),
@@ -475,7 +408,7 @@ impl TestDb {
 
 #[tokio::test]
 async fn claim_resolved_tool_approval_claims_an_approved_once_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
     db.resolved_tool_approval(
         connector_id,
@@ -507,7 +440,7 @@ async fn claim_resolved_tool_approval_claims_an_approved_once_row() {
 
 #[tokio::test]
 async fn claim_resolved_tool_approval_is_single_use() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
     db.resolved_tool_approval(
         connector_id,
@@ -548,7 +481,7 @@ async fn claim_resolved_tool_approval_is_single_use() {
 
 #[tokio::test]
 async fn claim_resolved_tool_approval_claims_a_rejected_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
     db.resolved_tool_approval(
         connector_id,
@@ -579,7 +512,7 @@ async fn claim_resolved_tool_approval_claims_a_rejected_row() {
 
 #[tokio::test]
 async fn claim_resolved_tool_approval_never_claims_a_session_scoped_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
     db.resolved_tool_approval(
         connector_id,
@@ -610,7 +543,7 @@ async fn claim_resolved_tool_approval_never_claims_a_session_scoped_row() {
 
 #[tokio::test]
 async fn claim_resolved_tool_approval_ignores_a_still_pending_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
     repo::create_pending_tool_approval(
         &db.pool,
@@ -638,7 +571,7 @@ async fn claim_resolved_tool_approval_ignores_a_still_pending_row() {
 
 #[tokio::test]
 async fn concurrent_claims_of_the_same_approval_exactly_one_wins() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
     db.resolved_tool_approval(
         connector_id,
@@ -683,7 +616,7 @@ async fn concurrent_claims_of_the_same_approval_exactly_one_wins() {
 
 #[tokio::test]
 async fn session_grant_is_visible_to_has_active_session_grant() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
     let resolved = db
         .resolved_tool_approval(
@@ -741,7 +674,7 @@ async fn session_grant_is_visible_to_has_active_session_grant() {
 
 #[tokio::test]
 async fn session_grant_does_not_match_a_different_tool_or_conversation() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
     repo::create_session_grant(
         &db.pool,
@@ -785,7 +718,7 @@ async fn session_grant_does_not_match_a_different_tool_or_conversation() {
 
 #[tokio::test]
 async fn expired_session_grant_is_not_active() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
 
     // Insert an already-expired grant directly — create_session_grant always
@@ -830,7 +763,7 @@ async fn expired_session_grant_is_not_active() {
 /// specifically to close that hole.
 #[tokio::test]
 async fn claim_resolved_tool_approval_never_claims_a_different_users_approval() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let other_user = db.seed_user().await;
     let connector_id = Uuid::new_v4();
 
@@ -881,7 +814,7 @@ async fn claim_resolved_tool_approval_never_claims_a_different_users_approval() 
 /// Same guarantee as the test above, for the reusable "approve for this session" grant path.
 #[tokio::test]
 async fn has_active_session_grant_never_matches_a_different_users_grant() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let other_user = db.seed_user().await;
     let connector_id = Uuid::new_v4();
 
@@ -937,7 +870,7 @@ async fn has_active_session_grant_never_matches_a_different_users_grant() {
 /// rather than relying on the one wired into the manual resolve handler.
 #[tokio::test]
 async fn resolve_pending_auth_required_for_connector_auto_resolves_a_linked_direct_chat_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
 
     let mcp_row = repo::create_pending_auth_required(
@@ -1005,7 +938,7 @@ async fn resolve_pending_auth_required_for_connector_auto_resolves_a_linked_dire
 /// manually resolve the mirror too.
 #[tokio::test]
 async fn find_linked_direct_chat_row_finds_a_maf_origin_mirror() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
 
     let mcp_row = repo::create_pending_tool_approval(
@@ -1061,7 +994,7 @@ async fn find_linked_direct_chat_row_finds_a_maf_origin_mirror() {
 /// direct-chat agent can, so an `orchestrator`-origin row must be found as a mirror too.
 #[tokio::test]
 async fn find_linked_direct_chat_row_finds_an_orchestrator_origin_mirror() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_test").await;
     let connector_id = Uuid::new_v4();
 
     let mcp_row = repo::create_pending_tool_approval(

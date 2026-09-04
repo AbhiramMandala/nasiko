@@ -8,82 +8,12 @@
 
 use nasiko_hitl::repo::{self, NewAuthRequired, ResolveDecision};
 use nasiko_hitl::{HitlStatus, HitlStore, NewHitlRequest, PgHitlStore};
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
-fn pg_admin_url() -> String {
-    std::env::var("TEST_PG_URL")
-        .unwrap_or_else(|_| "postgres://nasiko:nasiko@localhost:5432/nasiko_dev".into())
-}
-
-struct TestDb {
-    pool: PgPool,
-    agent_id: Uuid,
-    owner_user_id: Uuid,
-}
+mod common;
+use common::TestDb;
 
 impl TestDb {
-    async fn new() -> Self {
-        let pg_admin = pg_admin_url();
-        let db_name = format!(
-            "nasiko_hitl_origin_isolation_test_{}",
-            Uuid::new_v4().simple()
-        );
-
-        let admin = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&pg_admin)
-            .await
-            .expect("connect to postgres — is infra up? (set TEST_PG_URL to override; `just infra` starts it)");
-        sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
-            .execute(&admin)
-            .await
-            .expect("create scratch test database");
-
-        let base = pg_admin
-            .rsplit_once('/')
-            .map_or(pg_admin.as_str(), |(b, _)| b);
-        let db_url = format!("{base}/{db_name}");
-        let pool: PgPool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&db_url)
-            .await
-            .expect("connect to scratch test database");
-
-        sqlx::migrate!("../migrations")
-            .run(&pool)
-            .await
-            .expect("run oss/migrations against scratch database");
-
-        let owner_user_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, username, email) VALUES ($1, $2, $3)")
-            .bind(owner_user_id)
-            .bind(format!("origin-isolation-test-{}", owner_user_id.simple()))
-            .bind(format!(
-                "origin-isolation-test-{}@example.com",
-                owner_user_id.simple()
-            ))
-            .execute(&pool)
-            .await
-            .expect("seed user");
-
-        let agent_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO agents (id, name, owner_id) VALUES ($1, $2, $3)")
-            .bind(agent_id)
-            .bind(format!("origin-isolation-test-agent-{}", agent_id.simple()))
-            .bind(owner_user_id)
-            .execute(&pool)
-            .await
-            .expect("seed agent");
-
-        Self {
-            pool,
-            agent_id,
-            owner_user_id,
-        }
-    }
-
     /// A resolved `origin = mcp_tool` row, seeded and resolved via `nasiko_hitl::repo` — the
     /// plain-function API MCP's own dispatcher/gateway code calls.
     async fn seed_resolved_mcp_tool_row(&self) -> Uuid {
@@ -230,7 +160,7 @@ impl TestDb {
 
 #[tokio::test]
 async fn mcp_dispatcher_never_claims_a_direct_chat_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_origin_isolation_test").await;
     let mcp_row = db.seed_resolved_mcp_tool_row().await;
     let direct_chat_row = db.seed_resolved_direct_chat_row().await;
 
@@ -267,7 +197,7 @@ async fn mcp_dispatcher_never_claims_a_direct_chat_row() {
 
 #[tokio::test]
 async fn direct_chat_dispatcher_never_claims_an_mcp_tool_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_origin_isolation_test").await;
     let mcp_row = db.seed_resolved_mcp_tool_row().await;
     let direct_chat_row = db.seed_resolved_direct_chat_row().await;
 
@@ -309,7 +239,7 @@ async fn direct_chat_dispatcher_never_claims_an_mcp_tool_row() {
 /// `awaiting_human` even though the `hitl_requests` row itself shows `resolved`.
 #[tokio::test]
 async fn direct_chat_dispatcher_claims_a_resolved_maf_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_origin_isolation_test").await;
     let mcp_row = db.seed_resolved_mcp_tool_row().await;
     let maf_row = db.seed_resolved_maf_row().await;
 
@@ -350,7 +280,7 @@ async fn direct_chat_dispatcher_claims_a_resolved_maf_row() {
 /// claimable by neither dispatcher, stuck at `resume_status = 'not_started'` forever.
 #[tokio::test]
 async fn direct_chat_dispatcher_claims_a_resolved_orchestrator_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_origin_isolation_test").await;
     let mcp_row = db.seed_resolved_mcp_tool_row().await;
     let orchestrator_row = db.seed_resolved_orchestrator_row().await;
 

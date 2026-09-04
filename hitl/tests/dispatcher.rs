@@ -15,82 +15,12 @@ use nasiko_hitl::notifier::RuntimeResumeNotifier;
 use nasiko_hitl::repo::{self, NewAuthRequired, ResolveDecision};
 use nasiko_hitl::{HitlKind, HitlStatus, ResumeStatus};
 use nasiko_runtime::{ContainerId, ContainerRuntime, DeploymentSpec, SimulatedRuntime};
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
-fn pg_admin_url() -> String {
-    std::env::var("TEST_PG_URL")
-        .unwrap_or_else(|_| "postgres://nasiko:nasiko@localhost:5432/nasiko_dev".into())
-}
-
-/// Fresh, migrated scratch database with one seed user and one seed agent —
-/// mirrors `tests/repo.rs`'s own `TestDb` fixture (kept separate rather than
-/// shared, matching this crate's existing per-file convention).
-struct TestDb {
-    pool: PgPool,
-    agent_id: Uuid,
-    owner_user_id: Uuid,
-}
+mod common;
+use common::TestDb;
 
 impl TestDb {
-    async fn new() -> Self {
-        let pg_admin = pg_admin_url();
-        let db_name = format!("nasiko_hitl_dispatch_test_{}", Uuid::new_v4().simple());
-
-        let admin = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&pg_admin)
-            .await
-            .expect("connect to postgres — is infra up? (set TEST_PG_URL to override; `just infra` starts it)");
-        sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
-            .execute(&admin)
-            .await
-            .expect("create scratch test database");
-
-        let base = pg_admin
-            .rsplit_once('/')
-            .map_or(pg_admin.as_str(), |(b, _)| b);
-        let db_url = format!("{base}/{db_name}");
-        let pool = PgPoolOptions::new()
-            .max_connections(8)
-            .connect(&db_url)
-            .await
-            .expect("connect to scratch test database");
-
-        sqlx::migrate!("../migrations")
-            .run(&pool)
-            .await
-            .expect("run oss/migrations against scratch database");
-
-        let owner_user_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, username, email) VALUES ($1, $2, $3)")
-            .bind(owner_user_id)
-            .bind(format!("hitl-dispatch-test-{}", owner_user_id.simple()))
-            .bind(format!(
-                "hitl-dispatch-test-{}@example.com",
-                owner_user_id.simple()
-            ))
-            .execute(&pool)
-            .await
-            .expect("seed user");
-
-        let agent_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO agents (id, name, owner_id) VALUES ($1, $2, $3)")
-            .bind(agent_id)
-            .bind(format!("hitl-dispatch-test-agent-{}", agent_id.simple()))
-            .bind(owner_user_id)
-            .execute(&pool)
-            .await
-            .expect("seed agent");
-
-        Self {
-            pool,
-            agent_id,
-            owner_user_id,
-        }
-    }
-
     /// Create and immediately resolve (approve) a `tool_approval` row for
     /// this fixture's agent/owner — the dispatcher only ever acts on
     /// `status = 'resolved'` rows.
@@ -218,7 +148,7 @@ fn agent_spec(container_id: ContainerId) -> DeploymentSpec {
 
 #[tokio::test]
 async fn claim_for_resume_only_claims_resolved_not_started_rows() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_dispatch_test").await;
     let pending_id = repo::create_pending_tool_approval(
         &db.pool,
         repo::NewToolApproval {
@@ -257,7 +187,7 @@ async fn claim_for_resume_only_claims_resolved_not_started_rows() {
 
 #[tokio::test]
 async fn concurrent_claims_exactly_one_wins() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_dispatch_test").await;
     db.seed_resolved_tool_approval("ctx-1").await;
 
     let (a, b) = tokio::join!(
@@ -280,7 +210,7 @@ async fn concurrent_claims_exactly_one_wins() {
 
 #[tokio::test]
 async fn finish_resume_records_completed_outcome() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_dispatch_test").await;
     let id = db.seed_resolved_tool_approval("ctx-1").await;
     repo::claim_for_resume(&db.pool)
         .await
@@ -297,7 +227,7 @@ async fn finish_resume_records_completed_outcome() {
 
 #[tokio::test]
 async fn finish_resume_does_not_clobber_a_quarantined_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_dispatch_test").await;
     let id = db.seed_resolved_tool_approval("ctx-1").await;
     repo::claim_for_resume(&db.pool)
         .await
@@ -326,7 +256,7 @@ async fn finish_resume_does_not_clobber_a_quarantined_row() {
 
 #[tokio::test]
 async fn a_quarantined_row_is_never_reclaimed() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_dispatch_test").await;
     let id = db.seed_resolved_tool_approval("ctx-1").await;
     repo::claim_for_resume(&db.pool)
         .await
@@ -348,7 +278,7 @@ async fn a_quarantined_row_is_never_reclaimed() {
 
 #[tokio::test]
 async fn recover_stuck_resumes_ignores_unclaimed_rows() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_dispatch_test").await;
     db.seed_resolved_tool_approval("ctx-1").await;
 
     // Nothing has been claimed yet, so a 0-minute lease must still find
@@ -364,7 +294,7 @@ async fn recover_stuck_resumes_ignores_unclaimed_rows() {
 
 #[tokio::test]
 async fn resolved_row_is_delivered_exactly_once_end_to_end() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_dispatch_test").await;
     let request_id = db.seed_resolved_auth_required("ctx-e2e").await;
 
     let mut mock_server = mockito::Server::new_async().await;
@@ -429,7 +359,7 @@ async fn resolved_row_is_delivered_exactly_once_end_to_end() {
 
 #[tokio::test]
 async fn peer_error_response_is_retried_then_marked_failed() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_dispatch_test").await;
     let request_id = db.seed_resolved_tool_approval("ctx-peer-error").await;
 
     let mut mock_server = mockito::Server::new_async().await;
@@ -496,7 +426,7 @@ async fn peer_error_response_is_retried_then_marked_failed() {
 /// message ready for it.
 #[tokio::test]
 async fn rejected_tool_approval_row_is_claimed_and_delivered() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_dispatch_test").await;
     let request_id = db.seed_rejected_tool_approval("ctx-rejected").await;
 
     let mut mock_server = mockito::Server::new_async().await;
@@ -561,7 +491,7 @@ async fn rejected_tool_approval_row_is_claimed_and_delivered() {
 /// `resolve_context_id` would return it unchanged either way).
 #[tokio::test]
 async fn resolved_row_delivery_carries_a_traceparent_matching_its_context_id() {
-    let db = TestDb::new().await;
+    let db = TestDb::new("hitl_dispatch_test").await;
     let raw_trace_id = Uuid::new_v4().simple().to_string();
     let request_id = db.seed_resolved_tool_approval(&raw_trace_id).await;
 

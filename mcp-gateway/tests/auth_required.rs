@@ -13,148 +13,19 @@
 
 use std::collections::HashMap;
 
-use nasiko_mcp_gateway::config::McpConfig;
+use nasiko_mcp_gateway::OssConnectorAuthorizer;
 use nasiko_mcp_gateway::permissions::PermissionContext;
 use nasiko_mcp_gateway::protocol::handle_tools_call;
-use nasiko_mcp_gateway::provider::{ComposioProvider, GenericMcpProvider, Providers};
+use nasiko_mcp_gateway::provider::ComposioProvider;
 use nasiko_mcp_gateway::session::ResolvedSession;
 use nasiko_mcp_gateway::types::{
     ConnectorUnusable, MCPServerConfig, ServerType, UnusableConnector, codes,
 };
-use nasiko_mcp_gateway::{McpState, OssConnectorAuthorizer};
 use serde_json::json;
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
-fn pg_admin_url() -> String {
-    std::env::var("TEST_PG_URL")
-        .unwrap_or_else(|_| "postgres://nasiko:nasiko@localhost:5432/nasiko_dev".into())
-}
-
-struct TestDb {
-    state: McpState,
-    agent_id: Uuid,
-    owner_user_id: Uuid,
-}
-
-impl TestDb {
-    async fn new() -> Self {
-        let pg_admin = pg_admin_url();
-        let db_name = format!("nasiko_mcp_auth_required_test_{}", Uuid::new_v4().simple());
-
-        let admin = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&pg_admin)
-            .await
-            .expect("connect to postgres — is infra up? (set TEST_PG_URL to override; `just infra` starts it)");
-        sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
-            .execute(&admin)
-            .await
-            .expect("create scratch test database");
-
-        let base = pg_admin
-            .rsplit_once('/')
-            .map_or(pg_admin.as_str(), |(b, _)| b);
-        let db_url = format!("{base}/{db_name}");
-        let db: PgPool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect(&db_url)
-            .await
-            .expect("connect to scratch test database");
-
-        sqlx::migrate!("../migrations")
-            .run(&db)
-            .await
-            .expect("run oss/migrations against scratch database");
-
-        let owner_user_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, username, email) VALUES ($1, $2, $3)")
-            .bind(owner_user_id)
-            .bind(format!("mcp-auth-test-{}", owner_user_id.simple()))
-            .bind(format!(
-                "mcp-auth-test-{}@example.com",
-                owner_user_id.simple()
-            ))
-            .execute(&db)
-            .await
-            .expect("seed user");
-
-        let agent_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO agents (id, name, owner_id) VALUES ($1, $2, $3)")
-            .bind(agent_id)
-            .bind(format!("mcp-auth-test-agent-{}", agent_id.simple()))
-            .bind(owner_user_id)
-            .execute(&db)
-            .await
-            .expect("seed agent");
-
-        let state = McpState {
-            db,
-            redis: redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client"),
-            http_client: reqwest::Client::new(),
-            guarded_http_client: reqwest::Client::new(),
-            config: McpConfig {
-                composio_api_key: None,
-                composio_base_url: "http://localhost".to_string(),
-                composio_webhook_secret: None,
-                gateway_public_url: None,
-                oauth_redirect_base_url: None,
-                composio_callback_base_url: None,
-                session_ttl_seconds: 60,
-                perm_cache_ttl_seconds: 60,
-                manifest_ttl_seconds: 60,
-                toolcount_ttl_seconds: 3600,
-                oauth_state_signing_key: "test".to_string(),
-                description_model: "gpt-4o-mini".to_string(),
-            },
-            providers: Providers {
-                composio: None,
-                mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
-            },
-            authorizer: std::sync::Arc::new(OssConnectorAuthorizer),
-            endpoint_refresher: std::sync::Arc::new(
-                nasiko_mcp_gateway::endpoint_refresh::NoopEndpointRefresher,
-            ),
-            llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
-        };
-
-        Self {
-            state,
-            agent_id,
-            owner_user_id,
-        }
-    }
-
-    /// Seed a `chat_sessions` + `session_traces` row so `trace_id` resolves
-    /// to `session_id` (the A2A contextId) via `session::resolve_context_id`.
-    async fn seed_session_trace(&self, session_id: &str, trace_id: &str) {
-        sqlx::query(
-            "INSERT INTO chat_sessions (session_id, user_id, title) VALUES ($1, $2, 'test session')",
-        )
-        .bind(session_id)
-        .bind(self.owner_user_id)
-        .execute(&self.state.db)
-        .await
-        .expect("seed chat_sessions row");
-
-        sqlx::query("INSERT INTO session_traces (session_id, trace_id) VALUES ($1, $2)")
-            .bind(session_id)
-            .bind(trace_id)
-            .execute(&self.state.db)
-            .await
-            .expect("seed session_traces row");
-    }
-
-    fn perms(&self) -> PermissionContext {
-        PermissionContext {
-            agent_id: self.agent_id,
-            enabled_connectors: Default::default(),
-            rules: vec![],
-            hash: "h".into(),
-        }
-    }
-}
+mod common;
+use common::TestDb;
 
 /// A resolved session with an empty `servers` list and one connector
 /// recorded as unusable for `reason` — mirrors what a real
@@ -184,14 +55,18 @@ fn connector_tool_name(connector_id: Uuid, tool: &str) -> String {
 
 #[tokio::test]
 async fn auth_required_persists_hitl_row_and_returns_auth_required_code() {
-    let db = TestDb::new().await;
+    let db = TestDb::new(
+        "mcp_auth_required_test",
+        std::sync::Arc::new(OssConnectorAuthorizer),
+    )
+    .await;
     let connector_id = Uuid::new_v4();
     let trace_id = "0af7651916cd43dd8448eb211c80319c";
     let session_id = "ses_test_auth_required";
     db.seed_session_trace(session_id, trace_id).await;
 
     let resolved = unusable_session(connector_id, ConnectorUnusable::AuthRequired, "github");
-    let perms = db.perms();
+    let perms = db.perms(&[], vec![]);
     let tool = connector_tool_name(connector_id, "list_repos");
     let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
 
@@ -234,12 +109,16 @@ async fn auth_required_persists_hitl_row_and_returns_auth_required_code() {
 
 #[tokio::test]
 async fn auth_required_falls_back_to_raw_trace_id_when_no_session_trace_exists() {
-    let db = TestDb::new().await;
+    let db = TestDb::new(
+        "mcp_auth_required_test",
+        std::sync::Arc::new(OssConnectorAuthorizer),
+    )
+    .await;
     let connector_id = Uuid::new_v4();
     let trace_id = "1bf7651916cd43dd8448eb211c80319d";
 
     let resolved = unusable_session(connector_id, ConnectorUnusable::AuthRequired, "github");
-    let perms = db.perms();
+    let perms = db.perms(&[], vec![]);
     let tool = connector_tool_name(connector_id, "list_repos");
     let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
 
@@ -270,12 +149,16 @@ async fn auth_required_falls_back_to_raw_trace_id_when_no_session_trace_exists()
 
 #[tokio::test]
 async fn repeated_calls_for_the_same_connector_and_conversation_reuse_the_same_hitl_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new(
+        "mcp_auth_required_test",
+        std::sync::Arc::new(OssConnectorAuthorizer),
+    )
+    .await;
     let connector_id = Uuid::new_v4();
     let trace_id = "2cf7651916cd43dd8448eb211c80319e";
 
     let resolved = unusable_session(connector_id, ConnectorUnusable::AuthRequired, "github");
-    let perms = db.perms();
+    let perms = db.perms(&[], vec![]);
     let tool = connector_tool_name(connector_id, "list_repos");
     let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
 
@@ -308,12 +191,16 @@ async fn repeated_calls_for_the_same_connector_and_conversation_reuse_the_same_h
 
 #[tokio::test]
 async fn missing_credential_reason_never_persists_a_hitl_row() {
-    let db = TestDb::new().await;
+    let db = TestDb::new(
+        "mcp_auth_required_test",
+        std::sync::Arc::new(OssConnectorAuthorizer),
+    )
+    .await;
     let connector_id = Uuid::new_v4();
     let trace_id = "3df7651916cd43dd8448eb211c80319f";
 
     let resolved = unusable_session(connector_id, ConnectorUnusable::MissingCredential, "github");
-    let perms = db.perms();
+    let perms = db.perms(&[], vec![]);
     let tool = connector_tool_name(connector_id, "list_repos");
     let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
 
@@ -375,7 +262,11 @@ fn composio_session(url: &str, toolkit_to_connector: HashMap<String, Uuid>) -> R
 
 #[tokio::test]
 async fn composio_tool_call_failure_with_inactive_connection_triggers_auth_required() {
-    let db = TestDb::new().await;
+    let db = TestDb::new(
+        "mcp_auth_required_test",
+        std::sync::Arc::new(OssConnectorAuthorizer),
+    )
+    .await;
     let connector_id = Uuid::new_v4();
     let trace_id = "4ef7651916cd43dd8448eb211c80319g";
     let session_id = "ses_composio_auth_required";
@@ -476,7 +367,11 @@ async fn composio_tool_call_failure_with_inactive_connection_triggers_auth_requi
 
 #[tokio::test]
 async fn composio_tool_call_failure_with_active_connection_passes_through_unchanged() {
-    let db = TestDb::new().await;
+    let db = TestDb::new(
+        "mcp_auth_required_test",
+        std::sync::Arc::new(OssConnectorAuthorizer),
+    )
+    .await;
     let connector_id = Uuid::new_v4();
 
     sqlx::query(
