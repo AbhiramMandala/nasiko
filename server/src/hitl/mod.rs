@@ -187,12 +187,22 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // retry — same headers, same delegation token, different body. 300s, not the shared
     // client's 60s default: agent turns can be slow (mirrors `maf/executor.rs::post_a2a_request`,
     // the other call site that talks to an agent on a human's behalf).
+    //
+    // Forwards `traceparent` from `flow_ctx` — every other inter-agent call site
+    // (`agent_proxy.rs`, `a2a_dispatch.rs`) does the same. Without it, an agent whose own
+    // downstream tool calls key retry-approval matching off the request's trace id (MCP's
+    // `resolve_tool_approval_retry`, keyed by `traceparent`'s trace id) never sees the resumed
+    // call as a continuation of the original one that was just approved — every retry looks
+    // like a brand new, never-before-seen call, so a human approving a tool call for the
+    // orchestrator's sub-agent sees the exact same tool-approval prompt again on the very next
+    // step, forever.
     let build_req = |body: &nasiko_types::a2a::JsonRpcRequest| {
         let mut req = state
             .http_client
             .post(&endpoint)
             .timeout(Duration::from_secs(300))
-            .header("A2A-Version", "1.0");
+            .header("A2A-Version", "1.0")
+            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx));
         if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
             && let Ok(delegation_token) = nasiko_auth::jwt::mint_delegation_token(
                 &jwt_secret,
@@ -260,7 +270,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // Delivery succeeded — a response was received and classified — regardless of the agent's
     // own business outcome (§3.2: "peer confirmed receipt").
     let _ = state.hitl_store.mark_resume_completed(row.id).await;
-    record_resume_trail(&state, &row, &agent_name, disposition).await;
+    record_resume_trail(&state, &row, &agent_name, disposition, &flow_ctx).await;
 
     if disposition != StreamDisposition::Paused {
         if row.origin == HitlOrigin::Orchestrator {
@@ -573,6 +583,7 @@ async fn record_resume_trail(
     row: &HitlRequest,
     agent_name: &str,
     disposition: StreamDisposition,
+    flow_ctx: &FlowContext,
 ) {
     let flow_id = Uuid::new_v4().to_string();
 
@@ -589,6 +600,12 @@ async fn record_resume_trail(
     .execute(&state.db)
     .await;
 
+    // `flow_ctx.flow_id` — not the `flows` row's own `flow_id` above (a disconnected bookkeeping
+    // id in a different, dashed-UUID format that a real W3C trace id never takes) — because this
+    // must match the trace id actually forwarded in the `traceparent` header on the resume
+    // request. MCP's retry-approval matching (`resolve_tool_approval_retry`) reads that same
+    // trace id back out to resolve a stable session identity for the agent's own downstream tool
+    // calls; a mismatch here means that lookup can never succeed.
     if let Some(context_id) = &row.context_id {
         let _ = sqlx::query(
             "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
@@ -596,7 +613,7 @@ async fn record_resume_trail(
              ON CONFLICT (session_id, trace_id) DO NOTHING",
         )
         .bind(context_id)
-        .bind(&flow_id)
+        .bind(&flow_ctx.flow_id)
         .bind(row.agent_id)
         .bind(agent_name)
         .execute(&state.db)

@@ -542,11 +542,23 @@ fn awaiting_human_message(v: &serde_json::Value) -> String {
         .to_string()
 }
 
-/// The agent-supplied `metadata` object on the pause message (e.g. `expected_input`, `provider`,
-/// `auth_url` — see the External Agent Contract). `Value::Null` when absent; `Value::get` on
-/// `Null` returns `None` for any key, so callers can treat both cases identically.
+/// The agent-supplied `metadata` object on the pause (e.g. `expected_input`, `provider`,
+/// `auth_url`, `hitl_request_id` — see the External Agent Contract). `Value::Null` when absent;
+/// `Value::get` on `Null` returns `None` for any key, so callers can treat both cases identically.
+///
+/// Checks `status.message.metadata` first, then falls back to `v`'s own top-level `metadata`
+/// field (`v` is either a `TaskStatusUpdateEvent` or a full `Task`, both of which carry their own
+/// `metadata`) — mirrors `build_pause_question`'s identical fallback. The fallback is not a
+/// theoretical case: the Python a2a-sdk's `TaskUpdater.update_status(metadata=...)` attaches
+/// `metadata` to the `TaskStatusUpdateEvent` itself, not to the status message, so any agent using
+/// that (standard, documented) call shape — e.g. `archive`'s `_apply_outcome` — needs this
+/// fallback or its pause's `hitl_request_id` link is silently lost. Without it, a mirror row this
+/// agent creates via the orchestrator (which parses through this function, not
+/// `build_pause_question`) never links back to the real `mcp_tool` row, and the human sees both
+/// as separate, unlinked pending requests.
 fn awaiting_human_metadata(v: &serde_json::Value) -> serde_json::Value {
     v.pointer("/status/message/metadata")
+        .or_else(|| v.get("metadata"))
         .cloned()
         .unwrap_or(serde_json::Value::Null)
 }
@@ -1062,6 +1074,34 @@ mod sse_event_tests {
         assert!(
             !events.iter().any(|e| matches!(e, SseEvent::StatusText(_))),
             "an auth-required pause must never also/instead classify as StatusText"
+        );
+    }
+
+    // Regression: the Python a2a-sdk's `TaskUpdater.update_status(metadata=...)` attaches
+    // `metadata` to the `TaskStatusUpdateEvent` itself (a sibling of `status`), not to
+    // `status.message.metadata` — a real, live shape (`archive`'s `_apply_outcome`), not a
+    // hypothetical one. Losing this metadata silently drops the pause's `hitl_request_id`
+    // mirror link, so the orchestrator's own discovery surface shows two unlinked pending rows
+    // (the real `mcp_tool` row and an orphaned mirror) for what is really one event.
+    #[test]
+    fn auth_required_status_reads_metadata_from_the_sibling_status_update_field_too() {
+        let ev = json!({"result": {"statusUpdate": {
+            "metadata": {"auth_kind": "mcp_tool_approval", "hitl_request_id": "20c0fe2b-beb3-4b85-8430-030d7c964d1c"},
+            "status": {
+                "state": "TASK_STATE_AUTH_REQUIRED",
+                "message": {"parts": [{"text": "Tool(s) require user approval for this agent."}]}
+            }
+        }}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::AuthRequired,
+                message: "Tool(s) require user approval for this agent.".into(),
+                metadata: json!({
+                    "auth_kind": "mcp_tool_approval",
+                    "hitl_request_id": "20c0fe2b-beb3-4b85-8430-030d7c964d1c",
+                }),
+            }]
         );
     }
 
