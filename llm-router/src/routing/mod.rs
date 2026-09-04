@@ -152,7 +152,9 @@ pub async fn route_model(
     // explicit llm_config (opt-in to routing). No `conv_id` or no llm_config ⇒ the
     // router never fires and behaviour is identical to before this layer — straight to
     // the configured/default model.
-    if inputs.has_llm_config && let Some(conv_id) = inputs.signals.conv_id.as_deref() {
+    if inputs.has_llm_config
+        && let Some(conv_id) = inputs.signals.conv_id.as_deref()
+    {
         // Level 2 — cache hit: the sticky decision for this conversation+agent.
         tracing::debug!(
             target: "nasiko::llm_router::routing",
