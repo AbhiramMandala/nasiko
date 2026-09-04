@@ -76,15 +76,8 @@
  * @element app-chart
  * @attr {string} type - `line` | `bar` | `donut` | `hbar` | `progress` (default `line`)
  * @attr {boolean} stacked - `bar` only: stack datasets instead of grouping them
- * @attr {boolean} segmented - `bar` only: the concentration presentation — every
- *   stack segment is a gapped, fully-rounded pill, the y-axis is hidden, and
- *   `stacked` is implied. Pair with `average-line` for the reference rule.
- * @attr {boolean} average-line - `bar` only: dashed horizontal rule at the mean
- *   of the column totals, labelled "avg".
  * @attr {string} height - Plot height, any CSS length (default `200px`). Canvas forms only.
  * @attr {string} format - Value formatting: `number` (default) | `currency` | `percent` | `compact`
- * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
- *   `number` (default) | `currency` | `percent` | `compact`
  * @attr {string} currency - ISO code for `format="currency"` (default `USD`)
  * @attr {string} center-value - `donut` only: the figure drawn in the hole
  * @attr {string} center-label - `donut` only: the caption under it
@@ -92,6 +85,16 @@
  * @attr {string} empty-text - Shown when `data` is empty (default "No data")
  * @attr {boolean} loading - Shimmer placeholder instead of the plot
  * @attr {string} label - Accessible name for the plot. Falls back to the type.
+ *   (The three attributes below were added after the catalog first shipped and sit
+ *   last on purpose: the DSL passes attributes positionally in @attr order, so a
+ *   new one must append — see catalog-compat.mjs.)
+ * @attr {boolean} segmented - `bar` only: the concentration presentation — every
+ *   stack segment is a gapped, fully-rounded pill, the y-axis is hidden, and
+ *   `stacked` is implied. Pair with `average-line` for the reference rule.
+ * @attr {boolean} average-line - `bar` only: dashed horizontal rule at the mean
+ *   of the column totals, labelled "avg".
+ * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
+ *   `number` (default) | `currency` | `percent` | `compact`
  * @prop {object|Array} data - Canvas forms take Chart.js shape:
  *   `{ labels: string[], datasets: [{ label, data }] }`, where a dataset may
  *   also carry `axis: 'y2'` (bind to the right-hand scale — line only) and
@@ -840,6 +843,12 @@ export class AppChart extends HTMLElement {
   /**
    * The screen-reader view of a canvas. `.sr-only` in styles/, so it costs no
    * layout; it is the "a table view exists" half of not encoding by colour alone.
+   *
+   * The `.sr-only` box is the wrapping div, not the table: `height: 1px` and
+   * `overflow: hidden` do nothing to a `display: table` box, which sizes to its
+   * rows — and an absolutely-positioned 1400px-tall table still counts toward
+   * the document's scrollable overflow, which is what gave a 31-day chart a page
+   * that scrolled a screen and a half past its own content.
    */
   #dataTable(labels, sets, fmt, fmt2 = fmt) {
     const head = sets.map((s) => `<th scope="col">${escHtml(s.label || 'Series')}</th>`).join('');
@@ -848,11 +857,11 @@ export class AppChart extends HTMLElement {
         sets.map((s) => `<td>${escHtml((s.axis === 'y2' ? fmt2 : fmt)(Number(s.data?.[r] ?? 0)))}${
           normAnomalies(s).some((a) => a.index === r) ? ' (anomaly)' : ''}</td>`).join('')
       }</tr>`).join('');
-    return `<table class="sr-only">
+    return `<div class="sr-only"><table>
         <caption>${escHtml(this.getAttribute('label') || 'Chart data')}</caption>
         <thead><tr><th scope="col">Label</th>${head}</tr></thead>
         <tbody>${body}</tbody>
-      </table>`;
+      </table></div>`;
   }
 
   // ── Row forms ─────────────────────────────────────────────────────────────

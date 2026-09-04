@@ -1,6 +1,6 @@
 /**
- * TokenOps dashboard — FinOps: headline spend KPIs, two reserved plot panels
- * (spend over time · spend concentration) and per-agent attribution.
+ * TokenOps dashboard — FinOps: headline spend KPIs, two plots (spend over time ·
+ * spend concentration) and per-agent attribution.
  *
  * @element tokenops-page
  * @note Data sources (see /api/docs):
@@ -12,24 +12,30 @@
  *           what the delta chips compare against.
  *       `call('fetchUsageHistory', days)`
  *         → GET /api/usage/history — one row per day `{ date, request_count,
- *           total_tokens, total_cost_usd }`. Behind the anomaly caption. Caller-
- *           scoped (it reads `token_usage`, not Tempo), so it can be narrower
- *           than the fleet totals above.
+ *           total_tokens, total_cost_usd }`. The "Spend over time" series and
+ *           the anomaly marks/caption. Caller-scoped (it reads `token_usage`,
+ *           not Tempo), so it can be narrower than the fleet totals above.
+ *       `call('fetchAgentHours', start, end, 'hour')`
+ *         → GET /api/observability/finops/agent-hours — the hourly per-agent
+ *           breakdown behind "Spend concentration". The response shape is
+ *           normalised in `#hourlyRows()`; until the endpoint returns hourly
+ *           buckets the panel draws an ILLUSTRATIVE distribution of the real
+ *           per-agent totals and says so in its caption (see `#sampleHourly`).
  *
  *       The provider/model/server/org-unit filters are rendered disabled: no
  *       windowed dataset carries those dimensions (see `INERT_FILTERS`).
  *
- *       Both panels hold a reserved, empty plot box (`.plot-slot`): the charts
- *       were removed and the area they occupied is kept, so putting a plot back
- *       moves nothing below it. What went with them: the hourly `agent-hours`
- *       request (its only consumer was the stacked plot) and the live value
- *       scale (`#unit-seg`, now disabled — it scaled plot series).
+ *       Both plots are `<app-chart>`: the anomaly line (`anomalies`, `axis: 'y2'`,
+ *       `format-y2`) and the segmented columns (`segmented`, `average-line`) —
+ *       the two TokenOps forms the component grew for this page. The `%` / `$`
+ *       scale switches the spend series between share-of-window and currency.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./tokenops-page.css', import.meta.url));
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { icons } from '/common/utils/icons.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-chart/app-chart.js';
 import '/common/design-system/app-checkbox/app-checkbox.js';
 import '/common/design-system/app-segmented-control/app-segmented-control.js';
 import '/common/design-system/app-select/app-select.js';
@@ -208,6 +214,12 @@ class TokenopsPage extends HTMLElement {
   #tokenUsage = {};
   #prevTokenUsage = {};
   #history = [];
+  /** Hourly per-agent rows for the window (normalised; see `#hourlyRows`). */
+  #agentHours = [];
+  /** True when the concentration plot is drawn from `#sampleHourly`, not data. */
+  #hourlyIsSample = false;
+  /** `$` (currency) or `%` (share of the window's spend) for the spend series. */
+  #unit = '$';
   /** Window start/end as Dates — written by the month select and the range group. */
   #start = null;
   #end = null;
@@ -252,14 +264,13 @@ class TokenopsPage extends HTMLElement {
         <section class="panel">
           <div class="panel-head">
             <h2 class="panel-title">Spend over time</h2>
-            <app-segmented-control id="unit-seg" size="sm" label="Value scale"
-              disabled title="Value scale applies to the plot — no plot rendered yet"
-              ></app-segmented-control>
+            <app-segmented-control id="unit-seg" size="sm" label="Value scale"></app-segmented-control>
           </div>
           <div class="panel-tools">
             <app-checkbox id="anomaly-toggle" checked label="Anomalies"></app-checkbox>
           </div>
-          <div class="plot-slot" id="spend-plot"></div>
+          <app-chart id="spend-plot" class="plot-slot" type="line" format="currency" format-y2="compact" height="300px"
+            legend="on" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
           <p class="anomaly-note" id="anomaly-note" hidden></p>
         </section>
 
@@ -268,9 +279,12 @@ class TokenopsPage extends HTMLElement {
             <h2 class="panel-title">Spend concentration</h2>
           </div>
           <div class="conc-body">
-            <div class="plot-slot" id="conc-plot"></div>
+            <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line legend="off" height="220px"
+              format="currency" label="Spend concentration by hour of day"
+              empty-text="No agent activity in this window" loading></app-chart>
             <ul class="conc-legend" id="conc-legend"></ul>
           </div>
+          <p class="anomaly-note" id="conc-note" hidden></p>
         </section>
       </div>
 
@@ -291,7 +305,7 @@ class TokenopsPage extends HTMLElement {
     // Segment sets are data, not markup: assigned as properties so no JSON has
     // to be escaped into an attribute at a call site.
     this.#segment('#range-seg', RANGES.map((r) => ({ value: r.value, label: r.label })), this.#range);
-    this.#segment('#unit-seg', UNITS, '$');
+    this.#segment('#unit-seg', UNITS, this.#unit);
     this.#segment('#attr-seg', ATTR_MODES, 'agent');
 
     const table = this.querySelector('#cost-table');
@@ -316,7 +330,11 @@ class TokenopsPage extends HTMLElement {
     });
     this.querySelector('#anomaly-toggle').addEventListener('change', (e) => {
       this.#anomalies = e.target.checked;
-      this.#renderAnomalies();
+      this.#renderSpend();
+    });
+    this.querySelector('#unit-seg').addEventListener('change', (e) => {
+      this.#unit = e.target.value || '$';
+      this.#renderSpend();
     });
     this.querySelector('#agent-select').addEventListener('change', (e) => {
       this.#agentFilter = e.target.value;
@@ -385,6 +403,8 @@ class TokenopsPage extends HTMLElement {
     const strip = this.querySelector('#kpi-strip');
     strip.setAttribute('aria-busy', 'true');
     strip.innerHTML = KPI_SKELETON;
+    this.querySelector('#spend-plot').setAttribute('loading', '');
+    this.querySelector('#conc-plot').setAttribute('loading', '');
 
     let resp;
     try {
@@ -410,6 +430,47 @@ class TokenopsPage extends HTMLElement {
     // absorbed where it happens so one bad call can't blank the page.
     this.#loadBaseline(id, prevStart, start);
     this.#loadHistory(id);
+    this.#loadAgentHours(id, start, end);
+  }
+
+  /**
+   * Hourly per-agent spend for the concentration plot. Absorbs its own failure:
+   * the panel then falls back to the illustrative distribution rather than a
+   * blank, and says so.
+   */
+  async #loadAgentHours(id, start, end) {
+    try {
+      const resp = await call('fetchAgentHours', start, end, 'hour');
+      if (id !== this.#loadId) return;
+      this.#agentHours = this.#hourlyRows(resp);
+    } catch (e) {
+      console.error('TokenOps agent-hours fetch failed:', e);
+      this.#agentHours = [];
+    }
+    this.#renderConcentration();
+  }
+
+  /**
+   * Normalise the agent-hours response into `{ hour: 0–23, agent_id, cost }`.
+   * The endpoint's bucketed shape is not final (API integration follows this
+   * page), so this accepts the likely spellings and rejects anything without a
+   * timestamp — a row it cannot place in an hour is not a row.
+   */
+  #hourlyRows(resp) {
+    const rows = Array.isArray(resp) ? resp : Array.isArray(resp?.data) ? resp.data
+      : Array.isArray(resp?.data?.buckets) ? resp.data.buckets : [];
+    const out = [];
+    for (const r of rows) {
+      const stamp = r.bucket ?? r.hour ?? r.timestamp ?? r.time ?? r.start_time;
+      const t = typeof stamp === 'number' && stamp < 24 ? stamp : new Date(stamp).getHours();
+      if (!Number.isFinite(t)) continue;
+      out.push({
+        hour: t,
+        agent_id: r.agent_id ?? r.agent ?? r.agent_name ?? 'unknown',
+        cost: Number(r.total_cost ?? r.cost ?? r.cost_usd ?? r.total_cost_usd ?? 0) || 0,
+      });
+    }
+    return out;
   }
 
   async #loadBaseline(id, start, end) {
@@ -437,7 +498,7 @@ class TokenopsPage extends HTMLElement {
       console.error('TokenOps history fetch failed:', e);
       this.#history = [];
     }
-    this.#renderAnomalies();
+    this.#renderSpend();
   }
 
   // ── KPI strip ─────────────────────────────────────────────────────────────
@@ -502,59 +563,127 @@ class TokenopsPage extends HTMLElement {
   }
 
   /**
-   * Anomalous days, as a caption: the plot they would be marked on is gone (the
-   * panel holds its reserved box), and a caption is readable, selectable and
-   * needs no canvas either way. >2σ over the window mean — the standard first
-   * cut, and honest about being a threshold rather than a model.
+   * Anomalous day indices over the window: >2σ above the mean — the standard
+   * first cut, and honest about being a threshold rather than a model. Returned
+   * with the stats so the caption and the plot say the same thing.
    */
-  #renderAnomalies() {
-    const note = this.querySelector('#anomaly-note');
-    if (!this.#anomalies) { note.hidden = true; return; }
-    const rows = this.#historyInWindow();
+  #anomalyIndices(rows) {
     const costs = rows.map((r) => r.total_cost_usd ?? 0);
-    note.hidden = false;
-    if (costs.length < 3) {
-      return;
-    }
+    if (costs.length < 3) return { flagged: [], costs };
     const mean = sum(costs) / costs.length;
     const sd = Math.sqrt(sum(costs.map((c) => (c - mean) ** 2)) / costs.length);
+    const flagged = costs.map((c, i) => (sd > 0 && c > mean + 2 * sd ? i : -1)).filter((i) => i >= 0);
+    return { flagged, costs };
+  }
+
+  /**
+   * "Spend over time": one point per day of the window. Spend on the left axis
+   * (currency, or share of the window's spend when the scale is `%`), token
+   * volume on the right (`axis: 'y2'`, compact). Anomalies are the red marks
+   * on the spend series and the caption under the plot — same indices.
+   */
+  #renderSpend() {
+    const chart = this.querySelector('#spend-plot');
+    const note = this.querySelector('#anomaly-note');
+    const rows = this.#historyInWindow();
+    const { flagged, costs } = this.#anomalyIndices(rows);
+    const total = sum(costs);
+    const percent = this.#unit === '%';
     const fmtDay = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' });
-    const flagged = rows.filter((_, i) => sd > 0 && costs[i] > mean + 2 * sd);
+
+    chart.setAttribute('format', percent ? 'percent' : 'currency');
+    chart.removeAttribute('loading');
+    chart.data = rows.length ? {
+      labels: rows.map((r) => fmtDay.format(new Date(r.date))),
+      datasets: [
+        {
+          label: percent ? 'Share of spend' : 'Spend',
+          data: costs.map((c) => (percent ? (total > 0 ? (c / total) * 100 : 0) : c)),
+          anomalies: this.#anomalies
+            ? flagged.map((i) => ({ index: i, note: `${fmtMoney(costs[i])} — above 2σ of the window mean` }))
+            : [],
+        },
+        { label: 'Tokens', axis: 'y2', data: rows.map((r) => r.total_tokens ?? 0) },
+      ],
+    } : { labels: [], datasets: [] };
+
+    if (!this.#anomalies) { note.hidden = true; return; }
+    note.hidden = false;
+    if (costs.length < 3) { note.textContent = ''; return; }
     note.textContent = flagged.length === 0
       ? 'No days above 2σ of this window’s mean spend.'
       : `${flagged.length} day${flagged.length > 1 ? 's' : ''} above 2σ: ${
-        flagged.map((r) => `${fmtDay.format(new Date(r.date))} (${fmtMoney(r.total_cost_usd)})`)
-          .join(', ')}`;
+        flagged.map((i) => `${fmtDay.format(new Date(rows[i].date))} (${fmtMoney(costs[i])})`).join(', ')}`;
   }
 
   // ── Spend concentration ───────────────────────────────────────────────────
 
   /**
-   * Top spenders in the window, as the panel's list. The stacked hourly plot it
-   * used to caption is gone (the panel keeps that box reserved), so this reads
-   * from the dashboard payload the strip and the table already loaded — no
-   * hourly `agent-hours` request any more.
+   * Top spenders in the window: one colour slot each, the tail as "Others"
+   * (past five the pastel scale collides). The legend lists them with their
+   * window totals; the plot stacks their spend per hour of day.
    */
-  #renderConcentration() {
-    const legend = this.querySelector('#conc-legend');
+  #concentrationEntries() {
     const shown = this.#agentFilter
       ? this.#agents.filter((a) => a.agent_id === this.#agentFilter)
       : this.#agents;
-
-    // Top spenders get their own colour slot; the tail is one "Others" row,
-    // because past five the pastel scale starts colliding.
     const ranked = [...shown].sort((a, b) => (b.total_cost ?? 0) - (a.total_cost ?? 0));
     const top = ranked.slice(0, CONCENTRATION_SLOTS);
     const rest = ranked.slice(CONCENTRATION_SLOTS);
-
-    const entries = [
-      ...top.map((a, i) => ({ label: a.agent_name || a.agent_id, cost: a.total_cost, slot: `var(--viz-${i + 1})` })),
-      ...(rest.length ? [{ label: `Others (${rest.length})`, cost: sum(rest.map((a) => a.total_cost ?? 0)), slot: 'var(--fg-secondary)' }] : []),
+    return [
+      ...top.map((a, i) => ({ label: a.agent_name || a.agent_id, ids: [a.agent_id], cost: a.total_cost ?? 0, slot: `var(--viz-${i + 1})` })),
+      ...(rest.length ? [{ label: `Others (${rest.length})`, ids: rest.map((a) => a.agent_id), cost: sum(rest.map((a) => a.total_cost ?? 0)), slot: 'var(--fg-secondary)' }] : []),
     ];
+  }
+
+  /**
+   * Stand-in for the hourly breakdown while `/finops/agent-hours` does not yet
+   * return hourly buckets: each agent's REAL window total spread over 24 hours
+   * on a working-day curve, so the plot shows the shape the design intends
+   * against true magnitudes. Deterministic — no randomness — and labelled as
+   * illustrative in the panel caption. Delete when the endpoint lands.
+   */
+  #sampleHourly(entries) {
+    const curve = [1, 1, 1, 1, 1, 2, 4, 8, 12, 14, 13, 11, 12, 13, 12, 10, 8, 7, 5, 3, 3, 3, 2, 2];
+    const weight = sum(curve);
+    return entries.map((e) => curve.map((w) => (e.cost * w) / weight));
+  }
+
+  #renderConcentration() {
+    const legend = this.querySelector('#conc-legend');
+    const chart = this.querySelector('#conc-plot');
+    const note = this.querySelector('#conc-note');
+    const entries = this.#concentrationEntries();
+
     legend.innerHTML = entries.map((e) => `
       <li><span class="dot" style="--dot:${e.slot}"></span>
         <span class="conc-name">${escHtml(e.label)}</span>
         <span class="conc-cost">${fmtMoney(e.cost)}</span></li>`).join('');
+
+    // Real hourly rows when the endpoint supplies them; the illustrative curve
+    // otherwise. Either way the series order matches the legend, so the colour
+    // slots line up.
+    let series;
+    if (this.#agentHours.length) {
+      this.#hourlyIsSample = false;
+      series = entries.map((e) => {
+        const byHour = new Array(24).fill(0);
+        for (const r of this.#agentHours) if (e.ids.includes(r.agent_id)) byHour[r.hour] += r.cost;
+        return byHour;
+      });
+    } else {
+      this.#hourlyIsSample = true;
+      series = this.#sampleHourly(entries);
+    }
+
+    const labels = Array.from({ length: 24 }, (_, h) => (h === 0 ? '12am' : h === 12 ? '12pm' : String(h % 12)));
+    chart.removeAttribute('loading');
+    chart.data = entries.length && sum(entries.map((e) => e.cost)) > 0
+      ? { labels, datasets: entries.map((e, i) => ({ label: e.label, data: series[i] })) }
+      : { labels: [], datasets: [] };
+
+    note.hidden = !(this.#hourlyIsSample && entries.length);
+    note.textContent = 'Hourly distribution is illustrative until agent-hours returns hourly buckets; totals are real.';
   }
 
   // ── Attributions ──────────────────────────────────────────────────────────

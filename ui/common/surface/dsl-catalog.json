@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "5e8124598d7d",
+  "catalogVersion": "d3568b51c627",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 28,
@@ -391,7 +391,10 @@
         "legend",
         "empty-text",
         "loading",
-        "label"
+        "label",
+        "segmented",
+        "average-line",
+        "format-y2"
       ],
       "attributes": {
         "type": {
@@ -452,7 +455,26 @@
         },
         "label": {
           "type": "string",
-          "description": "Accessible name for the plot. Falls back to the type."
+          "description": "Accessible name for the plot. Falls back to the type. (The three attributes below were added after the catalog first shipped and sit last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
+        },
+        "segmented": {
+          "type": "boolean",
+          "description": "`bar` only: the concentration presentation — every stack segment is a gapped, fully-rounded pill, the y-axis is hidden, and `stacked` is implied. Pair with `average-line` for the reference rule."
+        },
+        "average-line": {
+          "type": "boolean",
+          "description": "`bar` only: dashed horizontal rule at the mean of the column totals, labelled \"avg\"."
+        },
+        "format-y2": {
+          "type": "enum",
+          "values": [
+            "number",
+            "currency",
+            "percent",
+            "compact"
+          ],
+          "default": "number",
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
         }
       },
       "slots": [],

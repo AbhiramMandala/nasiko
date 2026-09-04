@@ -1,8 +1,10 @@
-// TokenOps fixtures. Two endpoints back the page:
-//   GET /api/observability/finops/dashboard    FinopsDashboardResponse
-//   GET /api/usage/history                     Vec<DailyUsage>
-// (The hourly agent-hours fixture went with the stacked plot it fed — the
-// panels now reserve an empty plot box.)
+// TokenOps fixtures. Three endpoints back the page:
+//   GET /api/observability/finops/dashboard      FinopsDashboardResponse
+//   GET /api/usage/history                       Vec<DailyUsage>
+//   GET /api/observability/finops/agent-hours    hourly buckets (bucket=hour)
+// The agent-hours fixture is also the shape the page's `#hourlyRows()` reads
+// first — `{ data: { buckets: [{ bucket, agent_id, total_cost }] } }` — and so
+// doubles as the contract proposal for the API integration that follows.
 // (oss/server/src/observability/service.rs and oss/server/src/usage/routes.rs;
 // see /api/docs.) Every fixture function is self-contained — a preview fixture
 // runs without this module's scope, so it may not reach a shared helper.
@@ -80,6 +82,26 @@ export default {
           total_cost_usd: Math.round(cost * 100) / 100,
         };
       });
+    }],
+
+    // Hourly per-agent spend for "Spend concentration": one bucket per agent per
+    // hour of the window's last day, on a working-day curve per agent so the
+    // stacked pills have a shape. `bucket` is the ISO hour start.
+    [{ method: "GET", path: /^\/api\/observability\/finops\/agent-hours/ }, () => {
+      const curve = [1, 1, 1, 1, 1, 2, 4, 8, 12, 14, 13, 11, 12, 13, 12, 10, 8, 7, 5, 3, 3, 3, 2, 2];
+      const agents = [["a-003", 2034.56], ["a-001", 1247.83], ["a-002", 892.14], ["a-004", 436.29], ["a-005", 318.40], ["a-006", 96.12]];
+      const day = new Date(); day.setHours(0, 0, 0, 0);
+      const weight = curve.reduce((a, b) => a + b, 0);
+      const buckets = [];
+      agents.forEach(([agent_id, total], k) => {
+        curve.forEach((w, h) => {
+          // Shift each agent's peak a little so the columns are not one shape.
+          const shifted = curve[(h + k * 2) % 24];
+          const t = new Date(day); t.setHours(h);
+          buckets.push({ bucket: t.toISOString(), agent_id, total_cost: Math.round((total * shifted) / weight * 100) / 100 });
+        });
+      });
+      return { data: { bucket: "hour", buckets }, status_code: 200, message: "ok" };
     }],
   ],
 };

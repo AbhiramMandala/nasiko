@@ -381,7 +381,26 @@
         },
         "label": {
           "type": "string",
-          "description": "Accessible name for the plot. Falls back to the type."
+          "description": "Accessible name for the plot. Falls back to the type. (The three attributes below were added after the catalog first shipped and sit last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
+        },
+        "segmented": {
+          "type": "boolean",
+          "description": "`bar` only: the concentration presentation — every stack segment is a gapped, fully-rounded pill, the y-axis is hidden, and `stacked` is implied. Pair with `average-line` for the reference rule."
+        },
+        "average-line": {
+          "type": "boolean",
+          "description": "`bar` only: dashed horizontal rule at the mean of the column totals, labelled \"avg\"."
+        },
+        "format-y2": {
+          "type": "enum",
+          "values": [
+            "number",
+            "currency",
+            "percent",
+            "compact"
+          ],
+          "default": "number",
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
         }
       },
       "excludedFromCatalog": [

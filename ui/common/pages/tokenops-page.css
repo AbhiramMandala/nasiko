@@ -177,23 +177,23 @@
     margin-bottom: var(--s-8);
   }
 
-  /* Reserved plot area. The charts were removed and this box is what they
-     occupied — same plane (the page surface, not the panel's sand). The
-     per-panel value is the chart's own plot height (300 or 220) plus the
-     --s-12 inset it was drawn in, and it is now a floor: the slot grows to
-     fill whatever height the panel has left. */
+  /* The plots. <app-chart> paints its own ground (bg-base, 8px corners), so
+     the slot only reserves the height — the chart's plot height (300 / 220)
+     plus its 16px padding — and grows to fill whatever the panel has left, so
+     the two panels stay level. */
   .plot-slot {
+    display: block;
     min-height: var(--plot-h, 224px);
     flex: 1;
-    background: var(--color-bg-surface);
-    border-radius: var(--r-8);
+    min-width: 0;
   }
 
-  #spend-plot { --plot-h: 324px; }
-  #conc-plot  { --plot-h: 244px; }
+  #spend-plot { --plot-h: 332px; }
+  #conc-plot  { --plot-h: 252px; }
 
-  /* Anomalies are listed rather than drawn: <app-chart> has no annotation
-     layer, and a caption is selectable and readable to a screen reader. */
+  /* Captions under the plots: the anomaly list (the same indices the plot
+     marks — selectable and readable to a screen reader) and the concentration
+     panel's "illustrative until the endpoint lands" line. */
   .anomaly-note {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);

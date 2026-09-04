@@ -32,6 +32,7 @@ import '/common/design-system/app-loading-bar/app-loading-bar.js';
 import '/common/design-system/app-radio/app-radio.js';
 import '/common/design-system/app-row/app-row.js';
 import '/common/design-system/app-search/app-search.js';
+import '/common/design-system/app-segmented-control/app-segmented-control.js';
 import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/design-system/app-stack/app-stack.js';
@@ -460,6 +461,40 @@ const SPECS = [
     <app-radio name="ds-demo-runtime" value="k8s" label="Kubernetes"
       hint="Deployments plus KEDA autoscaling."></app-radio>
   </app-stack>
+</app-stack>`,
+  },
+  {
+    group: 'Controls',
+    tag: 'app-segmented-control',
+    blurb: 'One exclusive choice from a set — Status × Selection, in the one shape the spec draws: a bordered strip with hairline dividers and a brand-tinted selection. Native radios, so arrow keys, the single tab stop and the announced selection are the browser’s. Fill and focus ring are independent treatments: <code>state="focus"</code> rings an <em>unfilled</em> segment, the way the spec draws it.',
+    demo: `<app-stack gap="md" align="start">
+  <app-row gap="lg" wrap align="center">
+    <app-segmented-control label="Range" value="Week"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control label="Range hover" value="Week" state="hover"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control label="Range focus" value="Week" state="focus"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control label="Range disabled" value="Week" disabled
+      items='["Day","Week","Month"]'></app-segmented-control>
+  </app-row>
+  <app-row gap="lg" wrap align="center">
+    <app-segmented-control label="Nothing selected"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control label="One segment disabled" value="day"
+      items='[{"value":"day","label":"Day"},{"value":"week","label":"Week"},
+              {"value":"month","label":"Month","disabled":true,"title":"No monthly rollup yet"}]'></app-segmented-control>
+    <app-segmented-control label="Attribute by" value="Agent"
+      items='["Agent","Workflow"]'></app-segmented-control>
+  </app-row>
+  <app-row gap="lg" wrap align="center">
+    <app-segmented-control label="Focus, first selected" value="Day" state="focus"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control label="Focus, last selected" value="Month" state="focus"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control size="sm" label="Small 28" value="Week"
+      items='["Day","Week","Month"]'></app-segmented-control>
+  </app-row>
 </app-stack>`,
   },
   {
