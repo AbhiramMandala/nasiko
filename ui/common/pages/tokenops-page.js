@@ -267,10 +267,11 @@ class TokenopsPage extends HTMLElement {
             <app-segmented-control id="unit-seg" size="sm" label="Value scale"></app-segmented-control>
           </div>
           <div class="panel-tools">
+            <ul class="series-legend" id="spend-legend" aria-label="Series"></ul>
             <app-checkbox id="anomaly-toggle" checked label="Anomalies"></app-checkbox>
           </div>
           <app-chart id="spend-plot" class="plot-slot" type="line" format="currency" format-y2="compact" height="300px"
-            legend="on" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
+            legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
           <p class="anomaly-note" id="anomaly-note" hidden></p>
         </section>
 
@@ -590,6 +591,13 @@ class TokenopsPage extends HTMLElement {
     const total = sum(costs);
     const percent = this.#unit === '%';
     const fmtDay = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' });
+
+    // The legend lives in the panel's tools row (design), not inside the plot
+    // card — so app-chart's own legend is off and this row mirrors the dataset
+    // order, which is what fixes each series' colour slot.
+    const legend = this.querySelector('#spend-legend');
+    legend.innerHTML = [percent ? 'Share of spend' : 'Spend', 'Tokens'].map((name, i) => `
+      <li><span class="dot" style="--dot:var(--viz-${i + 1})"></span>${escHtml(name)}</li>`).join('');
 
     chart.setAttribute('format', percent ? 'percent' : 'currency');
     chart.removeAttribute('loading');

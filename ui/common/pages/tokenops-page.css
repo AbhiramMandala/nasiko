@@ -173,8 +173,30 @@
   .panel-tools {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: space-between;
+    gap: var(--s-16);
     margin-bottom: var(--s-8);
+  }
+
+  /* Series legend on the tools row, left of the Anomalies toggle: 8px dot in
+     the series' --viz slot, body/secondary label, 24px between entries. Same
+     dot rule the concentration legend uses. */
+  .series-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-8) var(--s-24);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+
+    li {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--s-8);
+    }
   }
 
   /* The plots. <app-chart> paints its own ground (bg-base, 8px corners), so
