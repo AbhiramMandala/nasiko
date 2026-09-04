@@ -46,6 +46,51 @@ function triggerEvent(def) {
 }
 
 /**
+ * `input` fires once per keystroke — real typing speed reaches the next one
+ * before `actions.js`'s own in-flight guard has cleared from the last, and
+ * that guard drops the repeat rather than queuing it (correct for it: a
+ * double-click on a mutation-firing button must not double-submit). For an
+ * `input`-triggered Action specifically, the fix is at the source instead —
+ * only fire once typing has actually paused, so there is no overlap to guard
+ * against in the first place. `click`/`change` fire on commit, not per
+ * keystroke, and are never debounced.
+ */
+function debounce(fn, waitMs) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), waitMs);
+  };
+}
+
+/**
+ * Strip any nested `{type:'element'}`/`{type:'action'}` value before a
+ * JSON-typed attribute is stringified. A model occasionally nests a real
+ * component or Action call inside plain data (a component call inside
+ * `AppCard`'s `tags` array, say) — materialize.js has no way to know that is
+ * wrong, since `tags` is just `type: "json"` to it, so this is the last place
+ * left to catch it before it reaches `JSON.stringify` as unusable garbage.
+ * Warns once per render pass rather than once per node, so one model mistake
+ * inside a 50-row `@Each` is one line in the console, not fifty.
+ */
+function sanitizeForJson(value, warned) {
+  if (Array.isArray(value)) return value.map((v) => sanitizeForJson(v, warned));
+  if (value && typeof value === 'object') {
+    if (value.type === 'element' || value.type === 'action') {
+      if (!warned.done) {
+        warned.done = true;
+        console.warn('[surface/render] a component or Action call was nested inside a plain-data JSON attribute; dropped to null');
+      }
+      return null;
+    }
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = sanitizeForJson(v, warned);
+    return out;
+  }
+  return value;
+}
+
+/**
  * @typedef {object} RenderDeps
  * @property {Document} [doc] Injected for tests; defaults to the real document.
  * @property {(action: object, el: Element, ev: Event) => void} [onAction] Called
@@ -68,7 +113,13 @@ function triggerEvent(def) {
 export function render(root, container, catalog, deps = {}) {
   container.replaceChildren();
   if (!root) return;
-  const el = renderNode(root, catalog, deps);
+  // One tracker for the whole tree, so a JSON-sanitize warning logs once per
+  // pass rather than once per node that has the mistake (an `@Each` row
+  // repeating the same bad shape fifty times is one console line, not fifty).
+  // `_toOpen` collects any element the catalog says needs an imperative
+  // `.open()` call (app-modal — there is no attribute for open/closed).
+  const toOpen = [];
+  const el = renderNode(root, catalog, { ...deps, _jsonWarned: { done: false }, _toOpen: toOpen });
   if (!el) return;
   // The append is outside renderNode's own try, so it needs its own: attaching
   // the root is where a connectedCallback finally runs for the whole tree.
@@ -81,7 +132,22 @@ export function render(root, container, catalog, deps = {}) {
       message: `<${root.tag}> threw on attach: ${err?.message ?? err}`,
       pointer: root.statementId,
     });
+    return;
   }
+  // Deferred one microtask, not called inline. `container.appendChild(el)`
+  // above connects the whole tree synchronously, and in isolation that is
+  // already enough — `connectedCallback` runs synchronously too. But a fast
+  // stream tears this whole subtree down and rebuilds it again many times a
+  // second (every coalesced chunk is a fresh `container.replaceChildren()`),
+  // and a native `<dialog>` mid-removal from a document is not guaranteed to
+  // have finished leaving the browser's own top-layer stack by the time a
+  // brand new one calls `showModal()` — observed directly: a modal present
+  // from a dashboard's very first (auto-opening) generation stayed silently
+  // unopened, while the identical element opened correctly once created by a
+  // single, settled user click. Every pass rebuilds the tree from nothing, so
+  // this is never the same element `.open()` was already called on; it must
+  // be called again every single pass the modal is present, not just once.
+  queueMicrotask(() => { for (const modalEl of toOpen) modalEl.open?.(); });
 }
 
 /**
@@ -123,6 +189,10 @@ function buildNode(node, catalog, deps = {}) {
   const routes = deps.routes ?? null;
   const def = catalog.components?.[node.tag];
   const report = (code, message) => deps.onDiagnostic?.({ source: 'render', code, message, pointer: node.statementId });
+  // A direct renderNode() call (tests, or a future caller) that skips render()
+  // still needs somewhere to track this — falls back to per-call, which just
+  // means it warns every time rather than once per tree.
+  const jsonWarned = deps._jsonWarned ?? { done: false };
 
   if (!def) {
     report('unknown_component_type', `"${node.tag}" is not in the catalog`);
@@ -132,11 +202,24 @@ function buildNode(node, catalog, deps = {}) {
   const el = doc.createElement(node.tag);
   const attrs = def.attributes || {};
 
+  if (def.needsOpenCall) deps._toOpen?.push(el);
+
   for (const [key, value] of Object.entries(node.props || {})) {
     if (value === null || value === undefined) continue;
     if (DENIED.has(key)) { report('denied_attribute', `"${key}" may not be set from a surface`); continue; }
     const spec = attrs[key];
     if (!spec) { report('unknown_attribute', `${node.tag} has no "${key}" attribute`); continue; }
+
+    // `app-action-menu`'s `items` is the one attribute in the catalog that can
+    // carry a per-item Action — the component itself only fires one
+    // `action-select` for the whole widget (`detail: {id}`), so nothing in the
+    // generic json-attribute path below can wire N different actions to N
+    // items. `itemActionsAttr` names which attribute this is, per component,
+    // so this stays catalog-driven rather than a hardcoded tag check.
+    if (def.itemActionsAttr === key) {
+      wireActionMenuItems(el, value, deps);
+      continue;
+    }
 
     if (spec.type === 'boolean') {
       // Presence is what a boolean attribute means. Writing `search="false"`
@@ -153,7 +236,7 @@ function buildNode(node, catalog, deps = {}) {
       continue;
     }
     if (spec.type === 'json') {
-      el.setAttribute(key, typeof value === 'string' ? value : JSON.stringify(value));
+      el.setAttribute(key, typeof value === 'string' ? value : JSON.stringify(sanitizeForJson(value, jsonWarned)));
       continue;
     }
     if (spec.type === 'route') {
@@ -210,7 +293,9 @@ function buildNode(node, catalog, deps = {}) {
   // Action means is the action runner's business; the spec never names a
   // handler and no on* attribute is ever written.
   if (node.action && node.action.type === 'action' && def.actionParam) {
-    el.addEventListener(triggerEvent(def), (ev) => deps.onAction?.(node.action, el, ev));
+    const evt = triggerEvent(def);
+    const fire = (nativeEvent) => deps.onAction?.(node.action, el, nativeEvent);
+    el.addEventListener(evt, evt === 'input' ? debounce(fire, 300) : fire);
   }
 
   // ── The accessibility floor ───────────────────────────────────────────
@@ -250,13 +335,42 @@ function buildNode(node, catalog, deps = {}) {
 }
 
 /**
+ * Wire `app-action-menu`'s `items` — an array of `{label, action}` (an
+ * explicit `id` is optional; the model is not taught to invent one, so a
+ * missing id is synthesized here). The component's own `items` attribute only
+ * understands `{id, label}`, and its own `action-select` event only ever
+ * carries the id back — so the per-item `Action` has to live somewhere else:
+ * a map built here, closed over the listener, keyed by the same id the
+ * cleaned attribute uses.
+ */
+function wireActionMenuItems(el, items, deps) {
+  const clean = [];
+  const actionsById = new Map();
+  let i = 0;
+  for (const item of Array.isArray(items) ? items : []) {
+    if (item && typeof item === 'object') {
+      const id = item.id != null ? String(item.id) : `item-${i}`;
+      const label = item.label != null ? String(item.label) : id;
+      clean.push({ id, label });
+      if (item.action && item.action.type === 'action') actionsById.set(id, item.action);
+    }
+    i++;
+  }
+  el.setAttribute('items', JSON.stringify(clean));
+  el.addEventListener('action-select', (e) => {
+    const action = actionsById.get(e.detail?.id);
+    if (action) deps.onAction?.(action, el, undefined);
+  });
+}
+
+/**
  * Mark a child as belonging to a named slot.
  *
- * Every component reads `data-slot="…"` now (CONVENTIONS.md §3), but the
- * attribute still comes from the catalog per component rather than being
- * assumed — the catalog is the contract, and the day one component differs
- * again this keeps working. A mismatch appends the child anyway and reports:
- * a misplaced footer button is a smaller failure than a missing one.
+ * The attribute is not uniform across the design system — `app-card` and
+ * `app-empty-state` read `slot="…"`, while `app-modal`, `app-toolbar` and
+ * `app-select` read `data-slot="…"` — so it comes from the catalog per
+ * component. A mismatch appends the child anyway and reports: a misplaced
+ * footer button is a smaller failure than a missing one.
  */
 /** Boolean attributes arrive as true, "true" or "" depending on the source. */
 function isTruthy(v) {

@@ -3,14 +3,6 @@
  *
  * Split from `data-functions.js` (Phase 3B) — usage summary, history,
  * by-agent/model breakdowns, and FinOps dashboard.
- *
- * The `/observability/finops/*` family below matches the backend handoff
- * (`tokensopsapis.md`): all five endpoints, `qs()` dropping any param that is
- * `undefined`/`null`/`''` so a caller can pass a whole options object without
- * hand-building a query string per call site. `provider`/`org_unit` are
- * accepted params on `dashboard` — the backend says they are stubbed (accepted,
- * not yet wired to real filtering) — so they are threaded through here for
- * forward-compat but no UI drives them yet.
  */
 
 import { fetchApi } from '/common/services/api.js';
@@ -20,70 +12,23 @@ const fetchUsageSummary = async () => {
   return fetchApi('/usage/summary');
 };
 
-const FINOPS_BASE = '/observability/finops';
-
-/** Drop empty params rather than send literal "undefined"/"null" query values. */
-function qs(params) {
+// TokenOps dashboard — GET /api/observability/finops/dashboard. The real
+// endpoint wraps its payload in `{data, status_code, message}` — a generic
+// envelope carrying no information the caller doesn't already have (the HTTP
+// status is already the HTTP status; `message` is boilerplate). Every other
+// data source registered for a generated surface is either flat
+// (fetchUsageSummary, fetchUsageHistory) or a paginated `{data, total}` where
+// `total` is real, needed metadata (fetchUsageByAgent, fetchUsageByModel) — so
+// this was the one source whose shape a generated surface had to remember was
+// different for no functional reason. Unwrapped here so `summary`/`agents`/
+// `token_usage` sit directly on the result, same as every other source.
+const fetchTokenopsDashboard = async (startTime, endTime) => {
   const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(params || {})) {
-    if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
-  }
-  return q.size ? `?${q}` : '';
-}
-
-// TokenOps dashboard — GET /api/observability/finops/dashboard
-// KPI strip + fleet summary + attribution rows in one payload. `range`
-// (`24h`|`7d`|`30d`) wins over `start_time`/`end_time` when both are sent —
-// callers pick one or the other, not both, but the backend's own precedence
-// is `range` first either way.
-const fetchTokenopsDashboard = async ({
-  range, startTime, endTime, agentId, model, view, provider, orgUnit,
-} = {}) => {
-  const params = qs({
-    range, start_time: startTime, end_time: endTime,
-    agent_id: agentId, model, view, provider, org_unit: orgUnit,
-  });
-  return fetchApi(`${FINOPS_BASE}/dashboard${params}`);
-};
-
-// "Spend over time" — GET /api/observability/finops/spend-timeseries.
-// Dollar-only (`points[].spend_usd`, `.operations`) — no percent-of-window
-// view exists against this endpoint.
-const fetchSpendTimeseries = async ({ range, startTime, endTime, agentId, model } = {}) => {
-  const params = qs({ range, start_time: startTime, end_time: endTime, agent_id: agentId, model });
-  return fetchApi(`${FINOPS_BASE}/spend-timeseries${params}`);
-};
-
-// Day-of-month heatmap — GET /api/observability/finops/spend-calendar.
-// `month` ("YYYY-MM") is required. Registered for forward-compat; no panel
-// consumes it yet (see tokenops-page.js header note).
-const fetchSpendCalendar = async ({ month, range, agentId, model } = {}) => {
-  const params = qs({ month, range, agent_id: agentId, model });
-  return fetchApi(`${FINOPS_BASE}/spend-calendar${params}`);
-};
-
-// Click-a-day hourly drill-down — GET /api/observability/finops/spend-calendar/day.
-// `date` ("YYYY-MM-DD") is required. Powers "Spend concentration": `hours`
-// is the real 24-point curve, `top_agents`/`others_spend_usd` are the
-// pre-computed legend — no client-side aggregation needed.
-const fetchSpendCalendarDay = async ({ date, agentId, model } = {}) => {
-  const params = qs({ date, agent_id: agentId, model });
-  return fetchApi(`${FINOPS_BASE}/spend-calendar/day${params}`);
-};
-
-// Standalone Attributions table source — GET /api/observability/finops/attributions.
-// Prefer this over `dashboard`'s embedded `data.attributions` once the table
-// grows real server-side sort/pagination (so a sort click does not re-fetch
-// the whole dashboard); registered now, not yet called — the table still
-// sorts in-memory over the one dashboard payload.
-const fetchFinopsAttributions = async ({
-  range, startTime, endTime, agentId, model, view, sortBy, sortDir, limit, offset,
-} = {}) => {
-  const params = qs({
-    range, start_time: startTime, end_time: endTime, agent_id: agentId, model, view,
-    sort_by: sortBy, sort_dir: sortDir, limit, offset,
-  });
-  return fetchApi(`${FINOPS_BASE}/attributions${params}`);
+  if (startTime) q.set('start_time', startTime);
+  if (endTime) q.set('end_time', endTime);
+  const params = q.size ? `?${q}` : '';
+  const res = await fetchApi(`/observability/finops/dashboard${params}`);
+  return res?.data ?? res;
 };
 
 const fetchUsageHistory = async (days = 7) => {
@@ -114,7 +59,6 @@ const fetchUsageByModel = async (query, page, limit) => {
 };
 
 registerAll({
-  fetchUsageSummary, fetchTokenopsDashboard, fetchSpendTimeseries,
-  fetchSpendCalendar, fetchSpendCalendarDay, fetchFinopsAttributions,
+  fetchUsageSummary, fetchTokenopsDashboard,
   fetchUsageHistory, fetchUsageByAgent, fetchUsageByModel,
 }, { replace: true });

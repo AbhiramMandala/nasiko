@@ -75,6 +75,7 @@ export function createStore() {
       return values.has(name) || declared.has(name);
     },
 
+
     set(name, value) {
       if (typeof name !== 'string' || !name) return false;
       const prev = this.get(name);

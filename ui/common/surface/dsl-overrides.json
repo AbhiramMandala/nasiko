@@ -27,7 +27,9 @@
     },
     "app-modal": {
       "status": "ready",
-      "childrenParam": true
+      "childrenParam": true,
+      "needsOpenCall": true,
+      "note": "There is no attribute for open/closed — the real component only becomes visible when its own .open() method is called (app-modal.js:101, showModal() on the internal <dialog>). Without needsOpenCall, a materialized $modalOpen ? AppModal(...) : null is a real element sitting in the DOM that nothing ever tells to actually show itself."
     },
     "app-accordion": {
       "status": "ready",
@@ -63,7 +65,9 @@
       "status": "ready"
     },
     "app-action-menu": {
-      "status": "ready"
+      "status": "ready",
+      "itemActionsAttr": "items",
+      "note": "The component fires one action-select for the whole widget (detail: {id}) — it has no per-item event of its own. itemActionsAttr names the one attribute a generated surface may put a per-item Action() on (an item may be {label, action} or, same as everywhere else, {id, label, action}); the renderer strips `action` before setting the real items attribute and dispatches by id from a map it keeps alongside."
     },
     "app-empty-state": {
       "status": "ready",
@@ -110,11 +114,6 @@
       "actionParam": true,
       "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
     },
-    "app-segmented-control": {
-      "status": "ready",
-      "actionParam": true,
-      "note": "A form control, same as app-select: its value plumbing is Action([@Set($var, …)]) on the trailing action slot. Segments come from the `items` attribute, so a generated surface can name them directly."
-    },
     "app-search": {
       "status": "ready",
       "actionParam": true,
@@ -147,5 +146,5 @@
     }
   },
   "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation.",
-  "$comment4": "dataProp names the JS property a dataParam is assigned to; dataAsFetcher wraps the rows in an async () => ({data, total}) first. actionEvent overrides the event an Action is bound to \u2014 the default is the component's own 'change'/'input' event when it declares one, else 'click'."
+  "$comment4": "dataProp names the JS property a dataParam is assigned to; dataAsFetcher wraps the rows in an async () => ({data, total}) first. actionEvent overrides the event an Action is bound to \u2014 the default is the component's own 'change'/'input' event when it declares one, else 'click'. itemActionsAttr names the one attribute (a JSON array) whose items may each carry their own Action() \u2014 for a component whose only native event covers the whole widget, not one action-param slot per item."
 }

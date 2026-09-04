@@ -1,7 +1,5 @@
 use serde::Serialize;
 
-use crate::a2a::PauseInfo;
-
 /// Events emitted during orchestration, streamed to the caller in real-time.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -42,6 +40,17 @@ pub enum OrchestratorEvent {
     /// The full reply still arrives as `ToolResult` when the call finishes.
     SubContent { agent: String, content: String },
 
+    /// A structured data part relayed as-is from a called agent that is
+    /// itself an orchestrator (e.g. weave's `agent_invoke`/`agent_result`
+    /// when it dispatches its own sub-agents). `data` is the nested agent's
+    /// original payload, including its own `type` field; `via_agent` records
+    /// which agent relayed it, for attribution only — every other field is
+    /// exactly what the nested agent sent.
+    SubData {
+        via_agent: String,
+        data: serde_json::Value,
+    },
+
     /// A chunk of the final response text.
     Content { content: String },
 
@@ -71,12 +80,4 @@ pub enum OrchestratorEvent {
 
     /// An error occurred during orchestration.
     Error { message: String },
-
-    /// A called agent needs a human before it can continue. Terminal for this turn — no further
-    /// event follows for this conversation until a human answers and a new turn is triggered.
-    AwaitingHuman {
-        agent: String,
-        agent_id: String,
-        pause: PauseInfo,
-    },
 }

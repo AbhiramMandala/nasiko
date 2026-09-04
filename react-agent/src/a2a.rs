@@ -25,31 +25,6 @@ pub struct A2aJsonRpcError {
     pub data: Option<serde_json::Value>,
 }
 
-/// Everything needed to resume the sub-agent's own paused task later. Captured here, server-side,
-/// from the live A2A response — never round-tripped through an LLM tool-call argument, since
-/// nothing guarantees an LLM will supply the right `task_id`/`context_id` on a later call.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct PauseInfo {
-    pub kind: nasiko_types::a2a::AwaitingHumanKind,
-    pub message: String,
-    /// The sub-agent's own A2A task id — not the caller's.
-    pub task_id: String,
-    /// The sub-agent's own A2A context id — may differ from the context id this call was sent
-    /// with (see `extract_task_and_context_id`).
-    pub context_id: String,
-    pub metadata: serde_json::Value,
-}
-
-/// The outcome of a completed `send_message_streaming[_dialect]` call. A pause is not an error —
-/// distinguishing it as its own outcome (rather than an `Err`, or a plain `String` a caller has to
-/// sniff) is what lets a caller act on it deliberately instead of accidentally treating a
-/// question as a finished answer.
-#[derive(Debug, Clone, PartialEq)]
-pub enum SendOutcome {
-    Text(String),
-    AwaitingHuman(PauseInfo),
-}
-
 /// Live event relayed from a streaming agent call (see
 /// [`A2aClient::send_message_streaming`]).
 #[derive(Debug, Clone, PartialEq)]
@@ -58,8 +33,11 @@ pub enum AgentStreamEvent {
     Status(String),
     /// A chunk of the agent's reply text as it generates.
     Content(String),
-    /// The agent needs a human before it can continue.
-    AwaitingHuman(PauseInfo),
+    /// A structured data part from the called agent's own stream (e.g. a
+    /// nested orchestrator's `agent_invoke`/`agent_result` for its own
+    /// sub-agents). Relayed as-is — depth is still bounded independently by
+    /// `FlowGuard::max_depth`, so this cannot grow unbounded.
+    Data(serde_json::Value),
 }
 
 /// A2A method-name / message-shape dialect.
@@ -209,18 +187,11 @@ impl A2aClient {
     ) -> Result<A2aResponse, A2aClientError> {
         self.send_message_with_headers(endpoint, message, context_id, &[], &[])
             .await
-            .map(|(_, response)| response)
     }
 
     /// Like [`send_message`], plus per-call headers layered on top of the
-    /// client-wide `extra_headers` (e.g. a delegation token scoped to the one
-    /// specific agent being called, which differs per call unlike `traceparent`).
-    ///
-    /// Returns the resolved `context_id` alongside the response — when the caller passes `None`,
-    /// this mints a fresh one and sends it as the real `contextId` on the wire, so a caller that
-    /// needs to know what conversation id the agent was actually talked under (e.g. to record a
-    /// pause the agent's own reply didn't echo an id for) must use this returned value, not the
-    /// `None` it originally passed in.
+    /// client-wide `extra_headers` (for headers that differ per call, unlike
+    /// the client-wide `traceparent`).
     pub async fn send_message_with_headers(
         &self,
         endpoint: &str,
@@ -228,7 +199,7 @@ impl A2aClient {
         context_id: Option<&str>,
         per_call_headers: &[(String, String)],
         extra_parts: &[serde_json::Value],
-    ) -> Result<(String, A2aResponse), A2aClientError> {
+    ) -> Result<A2aResponse, A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -241,7 +212,7 @@ impl A2aClient {
             "a2a send_message → forwarding to agent (trace_id in traceparent = flow/conversation id)"
         );
 
-        let result = match self
+        match self
             .send_message_dialect(
                 endpoint,
                 message,
@@ -268,8 +239,7 @@ impl A2aClient {
                 .await
             }
             other => other,
-        };
-        result.map(|response| (ctx, response))
+        }
     }
 
     async fn send_message_dialect(
@@ -347,7 +317,7 @@ impl A2aClient {
         progress: Option<tokio::sync::mpsc::Sender<AgentStreamEvent>>,
         per_call_headers: &[(String, String)],
         extra_parts: &[serde_json::Value],
-    ) -> Result<SendOutcome, A2aClientError> {
+    ) -> Result<String, A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -406,7 +376,7 @@ impl A2aClient {
         per_call_headers: &[(String, String)],
         dialect: Dialect,
         extra_parts: &[serde_json::Value],
-    ) -> Result<SendOutcome, A2aClientError> {
+    ) -> Result<String, A2aClientError> {
         use futures::StreamExt as _;
 
         let mut body = self.build_message_body(dialect, true, message, ctx, extra_parts);
@@ -463,43 +433,7 @@ impl A2aClient {
                     message: err.message.clone(),
                 });
             }
-            // A non-streaming reply can pause too (an agent that never opens an event stream
-            // is not exempt from the A2A task-lifecycle states) — classify it the same way as a
-            // streamed statusUpdate, not just the streaming branch below.
-            let value = a2a.result.clone().unwrap_or(serde_json::Value::Null);
-            for sse in nasiko_types::a2a::classify_sse_event(&value) {
-                if let nasiko_types::a2a::SseEvent::AwaitingHuman {
-                    kind,
-                    message,
-                    metadata,
-                } = sse
-                {
-                    let (task_id, context_id) = Self::extract_task_and_context_id(&value, ctx);
-                    let pause = PauseInfo {
-                        kind,
-                        message,
-                        task_id,
-                        context_id,
-                        metadata,
-                    };
-                    // Mirror the SSE branch below: relay live via `progress` before returning.
-                    // Without this, a sub-agent that pauses without ever opening an event stream
-                    // (mockito's default content-type, and plausibly many real agents) produces a
-                    // pause `run_stream_inner` correctly detects via the returned value, but never
-                    // announces on the orchestrator event stream — `run_stream_inner`'s call sites
-                    // deliberately don't send it themselves, on the assumption that this relay
-                    // already did. That assumption only held for the SSE branch until now.
-                    if let Some(ref tx) = progress {
-                        let _ = tx
-                            .send(AgentStreamEvent::AwaitingHuman(pause.clone()))
-                            .await;
-                    }
-                    return Ok(SendOutcome::AwaitingHuman(pause));
-                }
-            }
-            return Ok(SendOutcome::Text(
-                Self::extract_text(&a2a).unwrap_or_default(),
-            ));
+            return Ok(Self::extract_text(&a2a).unwrap_or_default());
         }
 
         let mut collected = String::new();
@@ -544,9 +478,11 @@ impl A2aClient {
                                 let _ = tx.send(AgentStreamEvent::Status(text)).await;
                             }
                         }
-                        // Structured data parts are another orchestrator's own
-                        // events — not relayed, to keep nesting bounded.
-                        SseEvent::StatusData(_) => {}
+                        SseEvent::StatusData(data) => {
+                            if let Some(ref tx) = progress {
+                                let _ = tx.send(AgentStreamEvent::Data(data)).await;
+                            }
+                        }
                         SseEvent::Completed { snapshot_text } => {
                             if collected.is_empty()
                                 && let Some(t) = snapshot_text
@@ -561,69 +497,12 @@ impl A2aClient {
                                 message: reason,
                             });
                         }
-                        SseEvent::AwaitingHuman {
-                            kind,
-                            message,
-                            metadata,
-                        } => {
-                            let (task_id, context_id) =
-                                Self::extract_task_and_context_id(&event, ctx);
-                            let pause = PauseInfo {
-                                kind,
-                                message,
-                                task_id,
-                                context_id,
-                                metadata,
-                            };
-                            if let Some(ref tx) = progress {
-                                let _ = tx
-                                    .send(AgentStreamEvent::AwaitingHuman(pause.clone()))
-                                    .await;
-                            }
-                            return Ok(SendOutcome::AwaitingHuman(pause));
-                        }
                     }
                 }
             }
         }
 
-        Ok(SendOutcome::Text(collected))
-    }
-
-    /// Recovers the sub-agent's own `taskId`/`contextId` from a raw SSE event payload — fields
-    /// `classify_sse_event` deliberately doesn't carry, since `SseEvent` is semantic content, not
-    /// protocol envelope. Covers the same wire shapes `classify_sse_event` understands
-    /// (JSONRPC-wrapped or bare `statusUpdate`; full `task` snapshot). `context_id` falls back to
-    /// the id this call was sent with — the agent is expected to preserve it, but if it doesn't
-    /// echo one back, the id we sent is still the correct conversation to resume against.
-    /// `task_id` has no such fallback: a task in a pause state necessarily already has one.
-    ///
-    /// `pub(crate)`: also used by `tool.rs`'s non-streaming fallback path, which hits the same
-    /// pause-detection requirement through a different A2A response shape (`A2aResponse`, not a
-    /// raw SSE event) but needs the identical id-recovery logic.
-    pub(crate) fn extract_task_and_context_id(
-        event: &serde_json::Value,
-        sent_context_id: &str,
-    ) -> (String, String) {
-        let result = event.get("result").unwrap_or(event);
-        let envelope = result
-            .get("statusUpdate")
-            .or_else(|| result.get("task"))
-            .unwrap_or(result);
-
-        let task_id = envelope
-            .get("taskId")
-            .or_else(|| envelope.get("id"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let context_id = envelope
-            .get("contextId")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| sent_context_id.to_string());
-
-        (task_id, context_id)
+        Ok(collected)
     }
 
     /// Extract text content from an A2A response (artifacts or status message).
@@ -813,127 +692,6 @@ mod tests {
         assert_eq!(
             A2aClient::extract_text_from_value(&result).as_deref(),
             Some("one\ntwo")
-        );
-    }
-
-    // A statusUpdate/task-in-progress pause must never resolve to SendOutcome::Text — that's the
-    // exact misclassification that lets a sub-agent's question get fed back to an LLM as if it
-    // were the answer.
-
-    #[test]
-    fn extract_task_and_context_id_reads_status_update_shape() {
-        let event = serde_json::json!({"result": {"statusUpdate": {
-            "taskId": "task-123",
-            "contextId": "ctx-456",
-            "status": {"state": "TASK_STATE_INPUT_REQUIRED"}
-        }}});
-        assert_eq!(
-            A2aClient::extract_task_and_context_id(&event, "sent-ctx"),
-            ("task-123".to_string(), "ctx-456".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_task_and_context_id_reads_full_task_snapshot_shape() {
-        let event = serde_json::json!({"result": {"task": {
-            "id": "task-789",
-            "contextId": "ctx-999",
-            "status": {"state": "TASK_STATE_AUTH_REQUIRED"}
-        }}});
-        assert_eq!(
-            A2aClient::extract_task_and_context_id(&event, "sent-ctx"),
-            ("task-789".to_string(), "ctx-999".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_task_and_context_id_falls_back_to_sent_context_id() {
-        // The agent doesn't echo a contextId — resuming against the id we sent is still the
-        // correct conversation, since the agent had no way to change what we already told it.
-        let event = serde_json::json!({"result": {"statusUpdate": {
-            "taskId": "task-123",
-            "status": {"state": "TASK_STATE_INPUT_REQUIRED"}
-        }}});
-        assert_eq!(
-            A2aClient::extract_task_and_context_id(&event, "sent-ctx"),
-            ("task-123".to_string(), "sent-ctx".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn streamed_input_required_yields_awaiting_human_never_text() {
-        let mut server = mockito::Server::new_async().await;
-        let sse_body = concat!(
-            "data: {\"result\":{\"statusUpdate\":{\"taskId\":\"task-123\",\"contextId\":\"ctx-456\",",
-            "\"status\":{\"state\":\"TASK_STATE_INPUT_REQUIRED\",\"message\":{\"parts\":",
-            "[{\"text\":\"Which repository?\"}],\"metadata\":{\"expected_input\":\"free_text\"}}}}}}\n\n",
-        );
-        let mock = server
-            .mock("POST", "/")
-            .with_status(200)
-            .with_header("content-type", "text/event-stream")
-            .with_body(sse_body)
-            .create_async()
-            .await;
-
-        let client = A2aClient::new();
-        let result = client
-            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[])
-            .await;
-
-        mock.assert_async().await;
-        assert_eq!(
-            result.unwrap(),
-            SendOutcome::AwaitingHuman(PauseInfo {
-                kind: nasiko_types::a2a::AwaitingHumanKind::InputRequired,
-                message: "Which repository?".into(),
-                task_id: "task-123".into(),
-                context_id: "ctx-456".into(),
-                metadata: serde_json::json!({"expected_input": "free_text"}),
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn non_streaming_input_required_reply_also_yields_awaiting_human() {
-        // An agent that never opens an event stream is not exempt from the same task-lifecycle
-        // states — the plain-JSON fallback path must classify a pause exactly like the SSE path.
-        let mut server = mockito::Server::new_async().await;
-        let body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": "1",
-            "result": {"task": {
-                "id": "task-321",
-                "contextId": "ctx-654",
-                "status": {
-                    "state": "TASK_STATE_INPUT_REQUIRED",
-                    "message": {"parts": [{"text": "Which repository?"}]}
-                }
-            }}
-        });
-        let mock = server
-            .mock("POST", "/")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(body.to_string())
-            .create_async()
-            .await;
-
-        let client = A2aClient::new();
-        let result = client
-            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[])
-            .await;
-
-        mock.assert_async().await;
-        assert_eq!(
-            result.unwrap(),
-            SendOutcome::AwaitingHuman(PauseInfo {
-                kind: nasiko_types::a2a::AwaitingHumanKind::InputRequired,
-                message: "Which repository?".into(),
-                task_id: "task-321".into(),
-                context_id: "ctx-654".into(),
-                metadata: serde_json::Value::Null,
-            })
         );
     }
 }
