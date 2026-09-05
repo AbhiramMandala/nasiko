@@ -181,8 +181,19 @@ pub fn authenticated_account_username(client: &Client, entry: &ClusterEntry) -> 
         .context("Nasiko account profile is missing a username")
 }
 
+/// The account's real email, for human-facing agent labels (`register_agent`'s
+/// `display_name`) — distinct from `authenticated_account_username`, whose
+/// slug feeds `name` and must stay filesystem/DNS-safe. Falls back to the
+/// configured username (not an email) only when the profile can't be reached,
+/// same compatibility path `authenticated_account_username` takes.
+pub fn authenticated_account_email(client: &Client, entry: &ClusterEntry) -> Result<String> {
+    let profile: Option<Value> = client.get_json("/users/me").ok();
+    authoritative_account_field(profile.as_ref(), "email", entry.username.as_deref())
+        .context("Nasiko account profile is missing an email")
+}
+
 pub fn account_scoped_agent_name_for_username(username: &str, base_name: &str) -> Result<String> {
-    let username = normalize_agent_name_part(&username);
+    let username = normalize_agent_name_part(username);
     if username.is_empty() {
         bail!("Nasiko account username cannot be used in an agent name");
     }
@@ -193,16 +204,31 @@ fn authoritative_account_username(
     profile: Option<&Value>,
     configured_username: Option<&str>,
 ) -> Option<String> {
+    authoritative_account_field(profile, "username", configured_username)
+}
+
+/// Reads `field` off the authenticated `/users/me` profile (flat or
+/// `{"data": {...}}`-enveloped), falling back to `configured_fallback` when the
+/// profile is unavailable or the field is blank.
+fn authoritative_account_field(
+    profile: Option<&Value>,
+    field: &str,
+    configured_fallback: Option<&str>,
+) -> Option<String> {
     profile
         .and_then(|profile| {
             profile
-                .get("username")
-                .or_else(|| profile.get("data").and_then(|data| data.get("username")))
+                .get(field)
+                .or_else(|| profile.get("data").and_then(|data| data.get(field)))
         })
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|username| !username.is_empty())
-        .or_else(|| configured_username.map(str::trim).filter(|username| !username.is_empty()))
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            configured_fallback
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
         .map(str::to_string)
 }
 

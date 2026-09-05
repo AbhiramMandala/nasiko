@@ -20,11 +20,12 @@ pub fn register_agent(agent: Agent) -> Result<Registration> {
         &username,
         spec.agent_name,
     )?;
+    let email = crate::commands::coding_agent_router::authenticated_account_email(&client, &entry)?;
     let created = client.post_json_allow_conflict(
         "/agents",
         &json!({
             "name": agent_name,
-            "display_name": format!("{} ({username})", spec.display_name),
+            "display_name": format!("{} ({email})", spec.display_name),
             "description": format!("Local {} sessions, reported by the Nasiko CLI", spec.display_name),
             "version": "1.0.0",
             "tags": ["local", "coding-agent"],
