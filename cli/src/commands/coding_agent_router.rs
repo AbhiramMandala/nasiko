@@ -167,13 +167,21 @@ pub fn account_scoped_agent_name(
     entry: &ClusterEntry,
     base_name: &str,
 ) -> Result<String> {
+    let username = authenticated_account_username(client, entry)?;
+    account_scoped_agent_name_for_username(&username, base_name)
+}
+
+pub fn authenticated_account_username(client: &Client, entry: &ClusterEntry) -> Result<String> {
     // Access-key based connections may store the access identifier in the
     // config's `username` field. The authenticated server profile is the
     // authority for account-scoped agent names; config is only a compatibility
     // fallback for older control planes without `/users/me`.
     let profile: Option<Value> = client.get_json("/users/me").ok();
-    let username = authoritative_account_username(profile.as_ref(), entry.username.as_deref())
-        .context("Nasiko account profile is missing a username")?;
+    authoritative_account_username(profile.as_ref(), entry.username.as_deref())
+        .context("Nasiko account profile is missing a username")
+}
+
+pub fn account_scoped_agent_name_for_username(username: &str, base_name: &str) -> Result<String> {
     let username = normalize_agent_name_part(&username);
     if username.is_empty() {
         bail!("Nasiko account username cannot be used in an agent name");

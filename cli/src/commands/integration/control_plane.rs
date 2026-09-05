@@ -14,16 +14,17 @@ pub fn register_agent(agent: Agent) -> Result<Registration> {
     let spec = agent.spec();
     let (_, entry) = crate::config::active_cluster()?;
     let client = crate::api::Client::from_cluster_entry(&entry);
-    let agent_name = crate::commands::coding_agent_router::account_scoped_agent_name(
-        &client,
-        &entry,
+    let username =
+        crate::commands::coding_agent_router::authenticated_account_username(&client, &entry)?;
+    let agent_name = crate::commands::coding_agent_router::account_scoped_agent_name_for_username(
+        &username,
         spec.agent_name,
     )?;
     let created = client.post_json_allow_conflict(
         "/agents",
         &json!({
             "name": agent_name,
-            "display_name": format!("{} ({})", spec.display_name, entry.username.as_deref().unwrap_or("user")),
+            "display_name": format!("{} ({username})", spec.display_name),
             "description": format!("Local {} sessions, reported by the Nasiko CLI", spec.display_name),
             "version": "1.0.0",
             "tags": ["local", "coding-agent"],
