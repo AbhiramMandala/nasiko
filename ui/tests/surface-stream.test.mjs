@@ -41,7 +41,12 @@ function sse(chunks) {
       controller.close();
     },
   });
-  return new Response(body, { status: 200 });
+  // Weave sends this, and the client now refuses a 200 without it — a body
+  // that is not an event stream is the wrong endpoint, not a dropped one.
+  return new Response(body, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
 }
 
 /**
@@ -586,4 +591,69 @@ test('a $state line goes back holding what the user set, not what the DSL declar
   await s.send('now change it');
   assert.ok(requests[1].body.context.currentSurface.includes('$view = "ops"'),
     requests[1].body.context.currentSurface);
+});
+
+test('a 200 that is not an event stream is named, not retried as a drop', async () => {
+  // The real shape: the control plane has no /api/weave/surface route, the
+  // request falls through to the SPA fallback, and index.html comes back with
+  // a 200. That used to read as a dropped connection — no frames, no terminal
+  // frame — so the resume loop spent two more requests on it and reported
+  // "the stream dropped", which points at the network rather than the router.
+  const { doc, container } = recorder();
+  const diagnostics = [];
+  const statuses = [];
+  let requests = 0;
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    onStatus: (x) => statuses.push(x.phase),
+    fetchImpl: async () => {
+      requests++;
+      return new Response('<!doctype html><title>Nasiko</title>', {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    },
+  });
+
+  const out = await s.send('spend last 14 days');
+
+  assert.equal(out.status, 'not_an_event_stream');
+  assert.equal(requests, 1, 'must not burn resume attempts proving it again');
+  const d = diagnostics.find((x) => x.code === 'not_an_event_stream');
+  assert.ok(d, JSON.stringify(diagnostics));
+  assert.match(d.message, /text\/html/);
+  assert.equal(diagnostics.some((x) => x.code === 'stream_resumed'), false);
+  assert.equal(diagnostics.some((x) => x.code === 'stream_interrupted'), false);
+  assert.ok(statuses.includes('failed'));
+});
+
+test('an error status reports the code and what the body said', async () => {
+  // The proxy answers `{error}` naming the actual problem. Reporting a bare
+  // "http_error" threw that away and left the status pill as the only evidence.
+  const { doc, container } = recorder();
+  const diagnostics = [];
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    fetchImpl: async () => new Response(
+      JSON.stringify({ error: 'weave generation is not configured on this deployment' }),
+      { status: 503, headers: { 'content-type': 'application/json' } },
+    ),
+  });
+
+  const out = await s.send('spend last 14 days');
+  assert.equal(out.status, 'http_error');
+  const d = diagnostics.find((x) => x.code === 'http_error');
+  assert.ok(d, JSON.stringify(diagnostics));
+  assert.match(d.message, /503/);
+  assert.match(d.message, /not configured on this deployment/);
 });

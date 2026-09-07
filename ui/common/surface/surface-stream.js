@@ -38,7 +38,6 @@ import { createStore } from './store.js';
 import { pruneUnreachable } from './gc.js';
 import { createQueryManager } from './queries.js';
 import { createActionRunner } from './actions.js';
-import { saveFocus, restoreFocus } from './focus.js';
 import { createSurfaceTelemetry } from './telemetry.js';
 
 /**
@@ -265,12 +264,6 @@ export function createSurfaceSession(options) {
     const out = walk();
     const diagnostics = [...out.diagnostics];
 
-    // render() clears and rebuilds `container` on every pass. `$event` is
-    // what makes typing genuinely trigger one of these mid-word — without
-    // saving and restoring focus around it, the input the user is typing
-    // into is destroyed and recreated every keystroke and loses focus after
-    // the first character. See focus.js.
-    const saved = saveFocus(container);
     render(out.root, container, catalog, {
       doc,
       onAction: (action, el, domEvent) => {
@@ -285,7 +278,6 @@ export function createSurfaceSession(options) {
       routes,
       onDiagnostic: (d) => diagnostics.push(d),
     });
-    restoreFocus(container, saved);
 
     // Once per settled pass, and only when the set changed — the same
     // diagnostics on every chunk is noise nobody reads.
@@ -306,25 +298,7 @@ export function createSurfaceSession(options) {
    * @returns {Promise<{status: string, surface: string, catalogVersion: string|null}>}
    */
   async function send(prompt, opts = {}) {
-    // Seeded with the previous turn's pruned surface, not emptied. A revision
-    // turn is told (agent.yaml rule 8 + Worked Example 5) to emit ONLY new or
-    // actually-changing statements — re-typing `root` and everything under it
-    // unchanged every turn is pure wasted output otherwise. But `materialize()`
-    // only ever looks anything up in `symbols`, which is built from exactly
-    // this turn's parsed buffer — a delta-only response with nothing seeded
-    // here means `root` itself is simply absent this turn, and the entire
-    // surface disappears. Seeding with `currentSurface` (pure DSL — gc.js's
-    // pruning never keeps prose) is what makes "the model only sends the
-    // diff" and "the screen keeps showing everything else" both true at
-    // once: new statements naturally override old ones by name (materialize.js
-    // builds symbols with later entries winning), so this is a real merge of
-    // old + new, not a full historical replay.
-    // `pruneUnreachable` joins with no trailing newline — without one here,
-    // the first incoming chunk (usually the prose sentence, e.g. "Got it,
-    // switching to a line chart for you.") would concatenate directly onto
-    // the seeded surface's last DSL line with nothing separating them,
-    // corrupting the parser's line-based statement boundary.
-    buffer = currentSurface ? `${currentSurface}\n` : '';
+    buffer = '';
     proseEmitted = 0;
     lastDiagnosticsKey = '';
     ended = false;
@@ -398,9 +372,59 @@ export function createSurfaceSession(options) {
       });
 
       if (!res.ok) {
+        // Say which status, and what the body said. The proxy answers a JSON
+        // `{error}` that names the actual problem — "weave generation is not
+        // configured on this deployment" for a missing token, "the generation
+        // service is unreachable" for a dead upstream. Reporting a bare
+        // `http_error` threw that away and left the status pill as the only
+        // evidence, which is a symptom with the cause already in hand.
+        //
+        // Bounded and best-effort: an error body is small, but this must not
+        // hang or throw on a server that sends something else.
+        let detail = '';
+        try {
+          const text = (await res.text()).slice(0, 300).trim();
+          if (text) {
+            try { detail = JSON.parse(text).error ?? text; } catch { detail = text; }
+          }
+        } catch { /* a body we cannot read is not worse than no body */ }
+        emitDiagnostics([{
+          source: 'stream',
+          code: 'http_error',
+          message: `${url} answered ${res.status}${detail ? ` — ${detail}` : ''}`,
+        }]);
         onStatus?.({ phase: 'failed', detail: `HTTP ${res.status}` });
         telemetry.end({ status: 'http_error', rendered: false });
         return { status: 'http_error', surface: currentSurface, catalogVersion: null };
+      }
+
+      // A 200 that is not an event stream is not a stream that dropped — it is
+      // something else answering. The shape that cost an evening: a control
+      // plane with no `/api/weave/surface` route falls the request through to
+      // the SPA fallback, which serves index.html with a 200. Read as a stream,
+      // that is indistinguishable from a dead connection — no frames, no
+      // terminal frame — so the resume loop below spends two more requests
+      // proving it again and then reports "the stream dropped", which sends you
+      // looking at the network instead of at the router.
+      //
+      // The answer was in the response headers the whole time.
+      const contentType = res.headers?.get?.('content-type') ?? '';
+      if (!contentType.includes('text/event-stream')) {
+        emitDiagnostics([{
+          source: 'stream',
+          code: 'not_an_event_stream',
+          message: `${url} answered ${res.status} with `
+            + `${contentType || 'no content-type'} — that is not the generator. `
+            + 'A control plane without the /api/weave/surface route serves the '
+            + 'page shell here instead.',
+        }]);
+        onStatus?.({ phase: 'failed', detail: 'not an event stream' });
+        telemetry.end({ status: 'not_an_event_stream', rendered: false });
+        return {
+          status: 'not_an_event_stream',
+          surface: currentSurface,
+          catalogVersion: null,
+        };
       }
 
       onStatus?.({ phase: attempt ? 'resuming' : 'streaming' });
