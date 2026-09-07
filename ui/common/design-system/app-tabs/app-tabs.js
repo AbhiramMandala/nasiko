@@ -1,10 +1,8 @@
 /**
  * Tab bar in two shapes:
  *
- * - **Panels** (default) — `[data-tab]` (or `[data-slot]`) children are the
- *   panels; the strip is generated from their `data-label` — or from the `tabs`
- *   attribute, which is how a generated surface names them — and the component
- *   owns which one shows.
+ * - **Panels** (default) — `[data-tab]` children are the panels; the strip is
+ *   generated from their `data-label` and the component owns which one shows.
  * - **Strip** (`<app-tabs strip>`) — the page renders its own
  *   `<button class="tab" data-key aria-selected>` children and owns the content
  *   below. For data-driven tab sets (catalog/status filters with live counts)
@@ -12,23 +10,14 @@
  *
  * @element app-tabs
  * @attr {boolean} strip - Strip-only mode (see above)
- * @attr {string} tabs - JSON array of `{ key, label }` naming the panels (panels mode).
- *   Each key matches a child's `data-tab` or `data-slot`. Optional: without it
- *   the strip reads each panel's `data-label`, falling back to the key.
- * @attr {string} active - Key of the active tab (panels mode). Reflected as the user switches.
+ * @attr {string} active - Key of the initially active tab (panels mode)
  * @attr {string} query-param - URL param kept in sync with the active tab (panels mode)
- * @attr {string} label - Accessible name of the tablist, e.g. `Agent sections`.
- * @slot default - The panels, each marked `data-tab="key"` or `data-slot="key"`.
- * @children *
- * @childattr {string} data-tab - The panel's key; matches a `tabs` entry. `data-slot` is the same thing.
- * @childattr {string} data-label - Strip label for the panel when `tabs` does not name it.
- * @fires tabs-change - Tab switched; `detail: { key: string }` — bubbles
+ * @fires tab-change - Tab switched; `detail: { key: string }` — bubbles
  */
 import { attachSlidingIndicator } from '../../utils/tab-indicator.js';
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-tabs.css', import.meta.url));
 import { setSearchParams } from '../../utils/url-policy.js';
-import { emit } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Arrow/Home/End roving focus across a tablist's tabs. */
@@ -55,16 +44,8 @@ export class AppTabs extends HTMLElement {
 
     if (!this.#initialized) {
       this.#initialized = true;
-      // A panel is a child with `data-tab`; `data-slot` is the same thing in the
-      // generated-surface vocabulary (Slot("overview") → data-slot="overview").
-      const panels = [...this.children].filter((el) => el.dataset.tab || el.dataset.slot);
+      const panels = [...this.children].filter((el) => el.dataset.tab);
       if (!panels.length) return;
-      for (const p of panels) if (!p.dataset.tab) p.dataset.tab = p.dataset.slot;
-      let named = [];
-      try { named = JSON.parse(this.getAttribute('tabs') || '[]'); } catch { console.warn('[app-tabs] invalid `tabs` JSON'); }
-      const labelFor = new Map((Array.isArray(named) ? named : []).filter((t) => t && t.key).map((t) => [String(t.key), String(t.label ?? t.key)]));
-      // `tabs` also orders the strip when it is given.
-      if (labelFor.size) panels.sort((a, b) => [...labelFor.keys()].indexOf(a.dataset.tab) - [...labelFor.keys()].indexOf(b.dataset.tab));
 
       const qp = this.getAttribute("query-param");
       const fromUrl = qp ? new URLSearchParams(location.search).get(qp) : null;
@@ -76,11 +57,10 @@ export class AppTabs extends HTMLElement {
       const strip = document.createElement("div");
       strip.className = "strip";
       strip.setAttribute("role", "tablist");
-      if (this.getAttribute("label")) strip.setAttribute("aria-label", this.getAttribute("label"));
 
       panels.forEach((panel) => {
         const key = panel.dataset.tab;
-        const label = labelFor.get(key) || panel.dataset.label || key;
+        const label = panel.dataset.label || key;
         const tabId = `tab-${uid}-${key}`;
         const panelId = `panel-${uid}-${key}`;
 
@@ -148,7 +128,6 @@ export class AppTabs extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
     this.setAttribute("role", "tablist");
-    if (this.getAttribute("label")) this.setAttribute("aria-label", this.getAttribute("label"));
     attachSlidingIndicator(this, ".tab", '[aria-selected="true"]');
     this.addEventListener("click", (e) => {
       const btn = e.target.closest(".tab");
@@ -158,7 +137,12 @@ export class AppTabs extends HTMLElement {
       this.querySelectorAll(".tab").forEach((b) =>
         b.setAttribute("aria-selected", String(b === btn)),
       );
-      emit(this, "tabs-change", { key: btn.dataset.key }, { legacy: "tab-change" });
+      this.dispatchEvent(
+        new CustomEvent("tab-change", {
+          detail: { key: btn.dataset.key },
+          bubbles: true,
+        }),
+      );
     });
     this.addEventListener("keydown", (e) => roveFocus(e, this));
   }
@@ -193,8 +177,9 @@ export class AppTabs extends HTMLElement {
       b.setAttribute("aria-selected", String(b.dataset.key === key));
     });
     this.#moveIndicator(key);
-    if (this.getAttribute("active") !== key) this.setAttribute("active", key);
-    emit(this, "tabs-change", { key }, { legacy: "tab-change" });
+    this.dispatchEvent(
+      new CustomEvent("tab-change", { detail: { key }, bubbles: true }),
+    );
     if (this.#qp) {
       // Through the policy layer, not history.replaceState directly: every URL
       // write goes past the utils/url-policy.js allowlist, and a `query-param`

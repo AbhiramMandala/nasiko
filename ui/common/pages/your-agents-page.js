@@ -84,7 +84,7 @@ class YourAgentsPage extends HTMLElement {
 
     // <app-tabs strip>: the counts are data-driven, so this page renders the
     // buttons and the component owns the tablist semantics and the indicator.
-    this.querySelector("#status-tabs").addEventListener("tabs-change", (e) => {
+    this.querySelector("#status-tabs").addEventListener("tab-change", (e) => {
       this.#statusFilter = e.detail.key;
       // Dropped when it is the default, so the common URL stays clean.
       setSearchParams({ tab: e.detail.key === "all" ? null : e.detail.key });
@@ -186,12 +186,12 @@ class YourAgentsPage extends HTMLElement {
       ? ""
       : isRunning
         ? `
-        <app-button data-slot="footer" variant="tertiary" size="sm" icon-only data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh()}</app-button>
-        <app-button data-slot="footer" variant="tertiary" size="sm" icon-only data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square()}</app-button>
-        <app-button data-slot="footer" variant="ghost-danger" size="sm" icon-only class="card-delete" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash()}</app-button>`
+        <app-button slot="footer" variant="tertiary" size="sm" icon-only data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh()}</app-button>
+        <app-button slot="footer" variant="tertiary" size="sm" icon-only data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square()}</app-button>
+        <app-button slot="footer" variant="ghost-danger" size="sm" icon-only class="card-delete" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash()}</app-button>`
         : `
-        <app-button data-slot="footer" variant="primary" size="sm" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play()} Deploy</app-button>
-        <app-button data-slot="footer" variant="ghost-danger" size="sm" icon-only class="card-delete" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash()}</app-button>`;
+        <app-button slot="footer" variant="primary" size="sm" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play()} Deploy</app-button>
+        <app-button slot="footer" variant="ghost-danger" size="sm" icon-only class="card-delete" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash()}</app-button>`;
 
     // `status` alone drives the card's status dot and its error/deploying
     // bodies — the page passes the state, the component paints it. The source
@@ -209,8 +209,8 @@ class YourAgentsPage extends HTMLElement {
       ${!isError && !isPending && a.description ? `description="${escAttr(a.description)}"` : ""}
       ${tags.length ? `tags="${escAttr(JSON.stringify(tags))}"` : ""}
     >
-      ${sourceLabel ? `<app-badge data-slot="actions" class="agent-card-source" variant="neutral">${escHtml(sourceLabel)}</app-badge>` : ""}
-      ${isError ? `<a data-slot="footer" data-action="view-logs" href="/flows?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
+      ${sourceLabel ? `<app-badge slot="actions" class="agent-card-source" variant="neutral">${escHtml(sourceLabel)}</app-badge>` : ""}
+      ${isError ? `<a slot="footer" data-action="view-logs" href="/flows?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
       ${footerButtonsHtml}
     </app-card>
   `;
@@ -343,7 +343,7 @@ class YourAgentsPage extends HTMLElement {
       grid.innerHTML = `
         <div class="empty-wrap">
           <app-empty-state
-            heading="No agents deployed"
+            title="No agents deployed"
             description="Deploy your first agent from the catalog or add a new one."
             icon='${icons.layers("", 40)}'>
             <app-button variant="primary" href="/agents">Browse agents</app-button>
@@ -357,7 +357,7 @@ class YourAgentsPage extends HTMLElement {
       grid.innerHTML = `
         <div class="empty-wrap">
           <app-empty-state
-            heading="No matching agents"
+            title="No matching agents"
             description="Try adjusting your search or filter criteria."
             icon='${icons.search("", 40)}'>
           </app-empty-state>

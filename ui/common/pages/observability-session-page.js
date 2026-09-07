@@ -233,7 +233,7 @@ class ObservabilitySessionPage extends HTMLElement {
   #renderTracesPlaceholder(title, description, icon) {
     this.querySelector('#traces-pane').innerHTML = `
       <h2 class="pane-title">Traces</h2>
-      <app-empty-state heading="${escHtml(title)}" description="${escHtml(description)}"
+      <app-empty-state title="${escHtml(title)}" description="${escHtml(description)}"
         icon='${icon}'></app-empty-state>
     `;
     this.#syncPanes();
@@ -442,7 +442,7 @@ class ObservabilitySessionPage extends HTMLElement {
     if (!messages.length) {
       this.#chatState = 'empty';
       pane.innerHTML = `${this.#chatPaneTitle()}
-        <app-empty-state heading="No transcript"
+        <app-empty-state title="No transcript"
           description="This session has no stored chat messages."
           icon='${icons.document()}'></app-empty-state>`;
       this.#syncPanes();

@@ -52,7 +52,7 @@ class BuildDetailPage extends HTMLElement {
     if (!this.#buildId) {
       this.innerHTML = `${this.#toolbar()}
         <app-empty-state
-          heading="No build selected"
+          title="No build selected"
           description="Open a build from the list to inspect it."
           icon='${icons.briefcase("", 40)}'></app-empty-state>`;
       return;
@@ -75,7 +75,7 @@ class BuildDetailPage extends HTMLElement {
     if (!build) {
       this.innerHTML = `${this.#toolbar()}
         <app-empty-state
-          heading="Build not found"
+          title="Build not found"
           description="This build may have been pruned or the ID is wrong."
           icon='${icons.faceFrown("", 40)}'></app-empty-state>`;
       return;

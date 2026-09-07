@@ -126,19 +126,6 @@ app-search:not(:defined) {
   border-radius: var(--r-8);
 }
 
-/* The segmented strip reserves its height and the border it will draw; its
-   width is the sum of its segments, which this file cannot know, so the
-   min-width is a two-segment floor. A long wrapping set (the days of a month)
-   under-reserves here on purpose — the page's own skeleton owns that block. */
-app-segmented-control:not(:defined) {
-  display: inline-block;
-  min-height: var(--control-h-md);
-  min-width: 120px;
-  background: var(--bg-base);
-  border: var(--bw-1) solid var(--border-primary);
-  border-radius: var(--r-8);
-}
-
 /* Checkbox, radio and switch are inline rows: a control plus its own label
    text, so the reserved box is a line, not a field. */
 app-checkbox:not(:defined),

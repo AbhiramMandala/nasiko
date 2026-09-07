@@ -26,7 +26,7 @@
   .field {
     display: flex;
     flex-direction: column;
-    gap: var(--s-8); /* input label-gap, and the hint gap, both 8 */
+    gap: var(--s-8); /* input/*/layout/label-gap, and the hint gap, both 8 */
   }
 
   .label-row {

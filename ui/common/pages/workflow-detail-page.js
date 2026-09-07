@@ -60,7 +60,7 @@ class WorkflowDetailPage extends HTMLElement {
       this.innerHTML = `
         <div class="col">
           <app-empty-state
-            heading="No workflow selected"
+            title="No workflow selected"
             description="Open one from the workflows library to review its steps and runs."
             icon='${icons.workflow('', 40)}'>
             <app-button variant="tertiary" href="/workflows">Browse workflows</app-button>
@@ -100,7 +100,7 @@ class WorkflowDetailPage extends HTMLElement {
       this.innerHTML = `
         <div class="col">
           <app-empty-state
-            heading="Workflow not found"
+            title="Workflow not found"
             description="It may have been deleted."
             icon='${icons.faceFrown('', 40)}'>
             <app-button variant="tertiary" size="sm" href="/workflows">Back to workflows</app-button>
@@ -210,7 +210,7 @@ class WorkflowDetailPage extends HTMLElement {
     if (!this.#executions.length) {
       list.innerHTML = `
         <app-empty-state
-          heading="No runs yet"
+          title="No runs yet"
           description="This workflow hasn't run yet. Hit Run to start the first execution."
         ></app-empty-state>`;
       return;

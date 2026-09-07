@@ -155,7 +155,7 @@ class WfStepEditor extends HTMLElement {
     const cards = this.#steps.length
       ? this.#steps.map((s, i) => this.#stepCard(s, i)).join('')
       : `<app-empty-state
-          heading="No steps yet"
+          title="No steps yet"
           description="Add the first step, then tell it what to do and which agent should run it."
         ></app-empty-state>`;
     this.innerHTML = `

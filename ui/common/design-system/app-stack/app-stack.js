@@ -6,8 +6,6 @@
  * @attr {string} align - Cross-axis alignment: `start` | `center` | `end` | `stretch` (default)
  * @attr {string} padding - Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`
  * @note Vertical flex stack. For horizontal use `<app-row>`.
- * @slot default - Any children; the container only lays them out.
- * @children *
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-stack.css', import.meta.url));

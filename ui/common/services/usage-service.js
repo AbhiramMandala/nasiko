@@ -12,23 +12,13 @@ const fetchUsageSummary = async () => {
   return fetchApi('/usage/summary');
 };
 
-// TokenOps dashboard — GET /api/observability/finops/dashboard. The real
-// endpoint wraps its payload in `{data, status_code, message}` — a generic
-// envelope carrying no information the caller doesn't already have (the HTTP
-// status is already the HTTP status; `message` is boilerplate). Every other
-// data source registered for a generated surface is either flat
-// (fetchUsageSummary, fetchUsageHistory) or a paginated `{data, total}` where
-// `total` is real, needed metadata (fetchUsageByAgent, fetchUsageByModel) — so
-// this was the one source whose shape a generated surface had to remember was
-// different for no functional reason. Unwrapped here so `summary`/`agents`/
-// `token_usage` sit directly on the result, same as every other source.
+// TokenOps dashboard — GET /api/observability/finops/dashboard
 const fetchTokenopsDashboard = async (startTime, endTime) => {
   const q = new URLSearchParams();
   if (startTime) q.set('start_time', startTime);
   if (endTime) q.set('end_time', endTime);
   const params = q.size ? `?${q}` : '';
-  const res = await fetchApi(`/observability/finops/dashboard${params}`);
-  return res?.data ?? res;
+  return fetchApi(`/observability/finops/dashboard${params}`);
 };
 
 const fetchUsageHistory = async (days = 7) => {

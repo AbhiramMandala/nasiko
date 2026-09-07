@@ -3,12 +3,9 @@
  *
  * @element app-modal
  * @attr {string} heading - Modal title shown in the header
- * @attr {boolean} no-footer - Hides the footer container even when a footer slot exists
- * @attr {boolean} hide-footer - (deprecated: use no-footer)
- * @method show() - Opens the modal (calls showModal on the internal dialog). `open()` is an alias.
- * @method hide(result?) - Closes the modal; `result` rides on `modal-close`. `close()` is an alias.
- * @fires modal-toggle - `{ open }` after the dialog opens or closes. Bubbles.
- * @fires modal-close - `{ result }` after the dialog closes (× button, backdrop, Escape, or `hide(result)`). Bubbles.
+ * @attr {boolean} hide-footer - Hides the footer container even when a footer slot exists
+ * @method open() - Opens the modal (calls showModal on the internal dialog)
+ * @method close() - Closes the modal
  * @slot default - Body content
  * @slot [data-slot="footer"] - Footer action row (flex-end, e.g. Cancel / Save buttons)
  * @note The internal <dialog> is a regular DOM child (no Shadow DOM). The `close` event fires
@@ -21,7 +18,6 @@ import { icons } from "../../utils/icons.js";
 import { escHtml } from "../../utils/escape.js";
 import "../app-button/app-button.js";
 import { loadCss } from '/common/utils/css.js';
-import { hasAttr, emit } from '../../utils/deprecate.js';
 const styles = await loadCss(new URL('./app-modal.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -40,7 +36,7 @@ export class AppModal extends HTMLElement {
   #titleId = `app-modal-title-${++uid}`;
 
   static get observedAttributes() {
-    return ["heading", "no-footer", "hide-footer"];
+    return ["heading", "hide-footer"];
   }
 
   attributeChangedCallback(name, oldValue, newValue) {
@@ -50,7 +46,7 @@ export class AppModal extends HTMLElement {
         titleEl.textContent = newValue || "";
       }
     }
-    if (name === "no-footer" || name === "hide-footer") this.#syncFooterVisibility();
+    if (name === "hide-footer") this.#syncFooterVisibility();
   }
 
   connectedCallback() {
@@ -93,41 +89,22 @@ export class AppModal extends HTMLElement {
       if (e.target === dialog) dialog.close();
     });
 
-    // The native `close` does not bubble; re-emit it as the component's own
-    // event so a page can listen on the host, carrying whatever `hide(result)`
-    // was given (null for ×, backdrop and Escape).
-    dialog.addEventListener("close", () => {
-      const result = this.#result;
-      this.#result = null;
-      emit(this, "modal-toggle", { open: false });
-      emit(this, "modal-close", { result });
-    });
-
     this.appendChild(dialog);
     this.#dialog = dialog;
     this.#syncFooterVisibility();
   }
 
-  #result = null;
-
   #syncFooterVisibility() {
     if (!this.#footer) return;
-    this.#footer.hidden = hasAttr(this, "no-footer", "hide-footer");
+    this.#footer.hidden = this.hasAttribute("hide-footer");
   }
 
-  show() {
-    if (!this.#dialog || this.#dialog.open) return;
-    this.#dialog.showModal();
-    emit(this, "modal-toggle", { open: true });
+  open() {
+    this.#dialog?.showModal();
   }
-  hide(result = null) {
-    if (!this.#dialog?.open) return;
-    this.#result = result;
-    this.#dialog.close();
+  close() {
+    this.#dialog?.close();
   }
-  /** Aliases kept for the existing call sites; `show()` / `hide()` are canonical (CONVENTIONS.md §5). */
-  open() { this.show(); }
-  close(result) { this.hide(result); }
 }
 if (!customElements.get("app-modal")) customElements.define("app-modal", AppModal);
 

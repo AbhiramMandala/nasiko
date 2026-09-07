@@ -27,7 +27,7 @@
  * It is applied imperatively rather than declared in CSS on purpose: a
  * non-`none` `view-transition-name` makes the element a stacking context *and*
  * a containing block for fixed-position descendants, and pages host
- * fixed-position UI (`app-tooltip`, `app-combobox`) that would then be
+ * fixed-position UI (`app-tooltip`, `auto-complete`) that would then be
  * positioned against the page instead of the viewport. Scoped to the
  * transition, that side effect never outlives the animation.
  */

@@ -20,10 +20,7 @@
  * @attr {string} search-placeholder - Placeholder for the search input.
  * @attr {string} detail - Present: clicking a row opens a detail modal.
  * @attr {string} empty-message - Body text when there are no rows and no query.
- * @prop {Array} columns - Optional column definitions; see below. A column
- *   may set `numeric: true` — right-aligns its header and cells and, while
- *   loading, draws a short right-aligned skeleton bar instead of a wide
- *   left-aligned one, so the loading state previews the real column shape.
+ * @prop {Array} columns - Optional column definitions; see below.
  * @prop {Function} dataFn - The fetcher, if not named via `data-fn`.
  * @fires loading-start - Before each fetch — bubbles.
  * @fires loading-end - After each fetch — bubbles.
@@ -39,7 +36,6 @@ import { escAttr, escHtml } from '../../utils/escape.js';
 import '../app-button/app-button.js';
 import '../app-input/app-input.js';
 import '../app-modal/app-modal.js';
-import '../app-skeleton/app-skeleton.js';
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-table.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -313,46 +309,28 @@ export class AppTable extends HTMLElement {
     }
   }
 
-  /**
-   * Show skeleton rows while data loads — gives the table a stable size hint,
-   * with each cell's placeholder shaped like the column it stands in rather
-   * than a generic bar repeated across the row: a label-less action column
-   * stays empty (there is nothing there to preview), a `numeric` column draws
-   * a short bar pinned to the same edge its real value will sit at, and every
-   * other column draws a wider, more text-like bar with natural row-to-row
-   * variation — so the skeleton reads as "this table, loading" rather than as
-   * unrelated grey noise. Built from `<app-skeleton>` (the shared shimmer
-   * primitive) instead of a bare unanimated div.
-   */
+  /** Show skeleton rows while data loads — gives the table a stable size hint. */
   #showSkeletons() {
     const thead = this.querySelector('.thead');
     const tbody = this.querySelector('.tbody');
     if (!thead || !tbody) return;
-    const cols = this.columns || Array.from({ length: 4 }, () => ({}));
     if (!this.#data.length) {
       this.#renderColgroup(this.columns);
       this.#renderHead(this.columns);
     }
-    // Two separate pools rather than one shared set of widths: a number is
-    // short regardless of which row it is in, while a name/label column's
-    // width is where the row-to-row variation belongs — mirroring how real
-    // data actually varies per column, not per row. Fixed pixel widths, not
-    // percentages: these columns have no declared `width` (no <colgroup>),
-    // so the table is auto-laid-out — a percentage on a skeleton bar would be
-    // resolving against a column width the browser has not settled on yet.
-    const TEXT_WIDTHS = ['150px', '96px', '128px', '80px', '168px', '112px', '92px', '140px'];
-    const NUMERIC_WIDTHS = ['42px', '58px', '48px', '66px', '38px', '52px', '60px', '46px'];
+    const colCount = this.columns ? this.columns.length : 4;
+    const widthSets = [
+      ['60%','80%','40%','70%'],
+      ['75%','55%','65%','50%'],
+      ['50%','90%','45%','80%'],
+      ['70%','60%','80%','55%'],
+      ['65%','75%','50%','70%'],
+    ];
     const skeletonRow = (i) => {
-      const cells = cols.map((col, j) => {
-        const plain = !String(col.label ?? col.key ?? '').trim();
-        if (plain) return '<td class="td is-plain"></td>';
-        const width = col.numeric
-          ? NUMERIC_WIDTHS[(i + j) % NUMERIC_WIDTHS.length]
-          : TEXT_WIDTHS[(i * 3 + j) % TEXT_WIDTHS.length];
-        const style = `display:block;width:${width}${col.numeric ? ';margin-inline-start:auto' : ''}`;
-        return `<td class="td${col.numeric ? ' is-numeric' : ''}">`
-          + `<app-skeleton height="0.85em" radius="sm" style="${style}"></app-skeleton></td>`;
-      }).join('');
+      const ws = widthSets[i % widthSets.length];
+      const cells = Array.from({ length: colCount }, (_, j) =>
+        `<td class="td"><div class="skel-bar" style="width:${ws[j % ws.length]}"></div></td>`
+      ).join('');
       return `<tr>${cells}</tr>`;
     };
     const rowCount = this.#paginate ? this.limit : Math.min(this.limit, 10);
@@ -416,8 +394,7 @@ export class AppTable extends HTMLElement {
         // `is-plain` mirrors the header marker for label-less (row-action)
         // columns, so CSS can pin the action cell and its header together.
         const plain = !String(col.label ?? col.key).trim() ? ' is-plain' : '';
-        const numeric = col.numeric ? ' is-numeric' : '';
-        return `<td class="td${col.wrap ? ' is-wrap' : ''}${plain}${numeric}">${cell}</td>`;
+        return `<td class="td${col.wrap ? ' is-wrap' : ''}${plain}">${cell}</td>`;
       }).join('')}</tr>
     `).join('');
   }
@@ -459,7 +436,7 @@ export class AppTable extends HTMLElement {
         action = asc ? `Sort by ${label} descending` : `Remove sorting on ${label}`;
       }
       return `
-        <th class="th${col.numeric ? ' is-numeric' : ''}"
+        <th class="th"
             data-field="${escAttr(field)}"
             tabindex="0"
             role="columnheader"

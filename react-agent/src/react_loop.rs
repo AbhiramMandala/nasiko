@@ -5,59 +5,16 @@ use rig::completion::message::{ToolCall, ToolFunction};
 use rig::completion::{AssistantContent, CompletionModel as _, Message, ToolDefinition};
 use rig::providers::openai;
 use rig::streaming::StreamingChoice;
-use rig::tool::{ToolDyn, ToolError, ToolSet, ToolSetError};
+use rig::tool::{ToolDyn, ToolSet};
 use tokio::sync::mpsc;
 
-use crate::a2a::{A2aClient, PauseInfo};
+use crate::a2a::A2aClient;
 use crate::context::{ContextConfig, ContextManager};
 use crate::error::OrchestratorError;
 use crate::events::OrchestratorEvent;
 use crate::guard::CallGuard;
 use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
-use crate::tool::{A2aTool, A2aToolError, DelegationContext};
-
-/// The outcome of one `toolset.call()`, with a real pause recovered from `rig`'s type-erased
-/// `Result<String, ToolSetError>` instead of being indistinguishable from an ordinary failure.
-/// Pure — no side effects, no channel sends — so every `toolset.call()` site (`Orchestrator::run()`
-/// and both of `run_stream_inner()`'s) can classify identically by calling the same function,
-/// rather than each independently deciding what counts as a pause.
-///
-/// Deliberately not `Success(String)`/`Failure(String)` variants carrying the `Ok`/`Err` payload:
-/// every call site already has its own existing, unchanged handling for the non-pause case
-/// (`match result { Ok(..) => .., Err(..) => .. }`, untouched by this classification) — a
-/// `NotAwaitingHuman` outcome that duplicated that payload would just be dead weight nothing
-/// reads, which is exactly what the compiler's `dead_code` lint caught on the first version of
-/// this enum.
-enum ToolOutcome {
-    AwaitingHuman {
-        agent: String,
-        agent_id: String,
-        pause: PauseInfo,
-    },
-    NotAwaitingHuman,
-}
-
-/// Recovers `A2aToolError::AwaitingHuman` through `rig-core`'s type erasure: `ToolSetError`
-/// wraps `ToolError::ToolCallError(Box<dyn std::error::Error + Send + Sync>)`, built by `rig`'s
-/// own blanket `ToolDyn` impl from the tool's real `A2aToolError`. `downcast_ref` recovers the
-/// concrete type from that box — proven against the actual pinned `rig-core` dependency in
-/// `tool.rs`'s `awaiting_human_survives_rig_toolset_erasure` test, not assumed here.
-fn classify_tool_result(result: &Result<String, ToolSetError>) -> ToolOutcome {
-    if let Err(ToolSetError::ToolCallError(ToolError::ToolCallError(boxed))) = result
-        && let Some(A2aToolError::AwaitingHuman {
-            agent,
-            agent_id,
-            pause,
-        }) = boxed.downcast_ref::<A2aToolError>()
-    {
-        return ToolOutcome::AwaitingHuman {
-            agent: agent.clone(),
-            agent_id: agent_id.clone(),
-            pause: pause.clone(),
-        };
-    }
-    ToolOutcome::NotAwaitingHuman
-}
+use crate::tool::A2aTool;
 
 /// Attribute one completion's total token cost evenly across the tool calls
 /// it produced — the API gives one usage figure per completion, not per tool
@@ -127,7 +84,6 @@ pub struct Orchestrator {
     a2a_client: Arc<A2aClient>,
     context: ContextManager,
     guard: Option<Arc<dyn CallGuard>>,
-    delegation: Option<DelegationContext>,
 }
 
 impl Orchestrator {
@@ -141,7 +97,6 @@ impl Orchestrator {
             a2a_client,
             context,
             guard: None,
-            delegation: None,
         }
     }
 
@@ -152,13 +107,6 @@ impl Orchestrator {
 
     pub fn with_guard(mut self, guard: Arc<dyn CallGuard>) -> Self {
         self.guard = Some(guard);
-        self
-    }
-
-    /// Attach the calling user's identity so every agent this orchestrator
-    /// invokes receives a per-agent MCP delegation token (see `A2aTool`).
-    pub fn with_delegation(mut self, delegation: DelegationContext) -> Self {
-        self.delegation = Some(delegation);
         self
     }
 
@@ -300,42 +248,6 @@ impl Orchestrator {
 
                     let result = toolset.call(name, args_str).await;
 
-                    // A pause is not a tool outcome to trace or reason over — stop the whole run
-                    // immediately, before it's recorded as just another failed/successful call.
-                    if let ToolOutcome::AwaitingHuman {
-                        agent,
-                        agent_id,
-                        pause,
-                    } = classify_tool_result(&result)
-                    {
-                        if let Some(g) = &self.guard {
-                            g.after_call(&agent_display, tokens_per_call).await;
-                        }
-                        // Preserve any earlier calls in this same batch that already completed
-                        // before this one paused — without this, they're silently discarded here,
-                        // since the push_tool_result call below (which normally records the whole
-                        // batch) is never reached once we return. `results_for_context.len()` is
-                        // exactly the count of `tool_calls` processed so far: every earlier
-                        // iteration either pushed a result/error/block entry or hit this same
-                        // pause check itself, so the slice lines up with what's actually recorded.
-                        if !results_for_context.is_empty() {
-                            let completed_names = tool_calls[..results_for_context.len()]
-                                .iter()
-                                .map(|tc| tc.function.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join("+");
-                            self.context.push_tool_result(
-                                &completed_names,
-                                &results_for_context.join("\n\n"),
-                            );
-                        }
-                        return Err(OrchestratorError::AwaitingHuman {
-                            agent,
-                            agent_id,
-                            pause: Box::new(pause),
-                        });
-                    }
-
                     let call_trace = ToolCallTrace {
                         tool_name: name.clone(),
                         arguments: tc.function.arguments.clone(),
@@ -435,7 +347,6 @@ impl Orchestrator {
         let registry = self.registry.clone();
         let agents_ctx = AgentCallContext {
             a2a_client: self.a2a_client.clone(),
-            delegation: self.delegation.clone(),
         };
         let mut context = self.context.clone();
         let guard = self.guard.clone();
@@ -490,8 +401,7 @@ impl Orchestrator {
         let mut defs = Vec::new();
 
         for agent in agents {
-            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone())
-                .with_delegation(self.delegation.clone());
+            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone());
             defs.push(ToolDyn::definition(&tool, String::new()).await);
             builder = builder.static_tool(tool);
         }
@@ -548,13 +458,10 @@ impl Orchestrator {
     }
 }
 
-/// Bundles the two things needed to actually reach an agent — the shared HTTP
-/// client and (optionally) the calling user's identity for per-agent MCP
-/// delegation tokens — so `run_stream_inner` doesn't need them as separate
-/// arguments.
+/// What's needed to actually reach an agent — the shared HTTP client. (Agents
+/// carry their own MCP gateway credential; no per-call user token exists.)
 struct AgentCallContext {
     a2a_client: Arc<A2aClient>,
-    delegation: Option<DelegationContext>,
 }
 
 /// Inner streaming implementation. Sends events to the channel as orchestration progresses.
@@ -619,10 +526,8 @@ async fn run_stream_inner(
     let mut builder = ToolSet::builder();
     let mut tool_defs = Vec::new();
     for agent in &agents {
-        // Streaming loop: keep BOTH features — delegation (per-agent MCP token,
-        // this branch) and live progress relay (main).
+        // Streaming loop: each agent call relays live progress into the stream.
         let tool = A2aTool::new(agent.clone(), agents_ctx.a2a_client.clone())
-            .with_delegation(agents_ctx.delegation.clone())
             .with_progress(tx.clone())
             .with_file_parts(file_parts.to_vec());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
@@ -811,39 +716,6 @@ async fn run_stream_inner(
                     let started = std::time::Instant::now();
                     let result = toolset.call(name, args_str).await;
                     let duration_ms = started.elapsed().as_millis() as u64;
-
-                    // A pause is not a tool outcome to relay as ToolResult or reason over — stop
-                    // this run immediately, before the LLM ever sees it as a completed call.
-                    //
-                    // Do NOT also send OrchestratorEvent::AwaitingHuman here: this A2aTool was
-                    // built `.with_progress(tx.clone())` (same `tx` this function itself uses),
-                    // so `call_streaming`'s own forwarder task already relayed the identical
-                    // event on this same channel, live, before `toolset.call()` even returned —
-                    // sending it again here would deliver it twice to a2a_dispatch.rs.
-                    if let ToolOutcome::AwaitingHuman { .. } = classify_tool_result(&result) {
-                        if let Some(g) = guard {
-                            g.after_call(&agent_display, tokens_per_call).await;
-                        }
-                        // Preserve any earlier calls in this same batch that already completed
-                        // before this one paused — without this, they're silently discarded here,
-                        // since the push_tool_result call below (which normally records the whole
-                        // batch) is never reached once we return. `results_for_context.len()` is
-                        // exactly the count of `tool_calls` processed so far: every earlier
-                        // iteration either pushed a result/error/block entry or hit this same
-                        // pause check itself, so the slice lines up with what's actually recorded.
-                        if !results_for_context.is_empty() {
-                            let completed_names = tool_calls[..results_for_context.len()]
-                                .iter()
-                                .map(|tc| tc.function.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join("+");
-                            context.push_tool_result(
-                                &completed_names,
-                                &results_for_context.join("\n\n"),
-                            );
-                        }
-                        return Ok(());
-                    }
 
                     match &result {
                         Ok(output) => {
@@ -1042,39 +914,6 @@ async fn run_stream_inner(
                     let result = toolset.call(name, args_str).await;
                     let duration_ms = started.elapsed().as_millis() as u64;
 
-                    // A pause is not a tool outcome to relay as ToolResult or reason over — stop
-                    // this run immediately, before the LLM ever sees it as a completed call.
-                    //
-                    // Do NOT also send OrchestratorEvent::AwaitingHuman here: this A2aTool was
-                    // built `.with_progress(tx.clone())` (same `tx` this function itself uses),
-                    // so `call_streaming`'s own forwarder task already relayed the identical
-                    // event on this same channel, live, before `toolset.call()` even returned —
-                    // sending it again here would deliver it twice to a2a_dispatch.rs.
-                    if let ToolOutcome::AwaitingHuman { .. } = classify_tool_result(&result) {
-                        if let Some(g) = guard {
-                            g.after_call(&agent_display, 0).await;
-                        }
-                        // Preserve any earlier calls in this same batch that already completed
-                        // before this one paused — without this, they're silently discarded here,
-                        // since the push_tool_result call below (which normally records the whole
-                        // batch) is never reached once we return. `results_for_context.len()` is
-                        // exactly the count of `tool_calls` processed so far: every earlier
-                        // iteration either pushed a result/error/block entry or hit this same
-                        // pause check itself, so the slice lines up with what's actually recorded.
-                        if !results_for_context.is_empty() {
-                            let completed_names = tool_calls[..results_for_context.len()]
-                                .iter()
-                                .map(|tc| tc.function.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join("+");
-                            context.push_tool_result(
-                                &completed_names,
-                                &results_for_context.join("\n\n"),
-                            );
-                        }
-                        return Ok(());
-                    }
-
                     match &result {
                         Ok(output) => {
                             if let Some(g) = guard {
@@ -1182,175 +1021,5 @@ mod tokens_per_tool_call_tests {
     #[test]
     fn single_tool_call_gets_the_full_amount() {
         assert_eq!(tokens_per_tool_call(Some(150), 1), 150);
-    }
-}
-
-#[cfg(test)]
-mod awaiting_human_tests {
-    use super::*;
-    use crate::a2a::A2aClient;
-    use crate::registry::{AgentInfo, RegistrySource};
-    use crate::tool::A2aToolError;
-
-    fn input_required_response_body() -> String {
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": "1",
-            "result": {"task": {
-                "id": "task-321",
-                "contextId": "ctx-654",
-                "status": {
-                    "state": "TASK_STATE_INPUT_REQUIRED",
-                    "message": {"parts": [{"text": "Which repository?"}]}
-                }
-            }}
-        })
-        .to_string()
-    }
-
-    /// Pure classification, exercised twice with identical input — the property that makes the
-    /// "both loops call the same function" claim actually checkable rather than asserted by
-    /// inspection: if this function's output ever depended on anything but its argument, the two
-    /// calls below could disagree.
-    #[test]
-    fn classify_tool_result_is_deterministic_and_recovers_awaiting_human_through_rig_erasure() {
-        // Built the same way `ToolSet::call()` really builds it (see
-        // tool::tests::awaiting_human_survives_rig_toolset_erasure for the full round trip
-        // through a real ToolSet; this test targets classify_tool_result directly).
-        let inner: Box<dyn std::error::Error + Send + Sync> =
-            Box::new(A2aToolError::AwaitingHuman {
-                agent: "test-agent".into(),
-                agent_id: "agent-under-test".into(),
-                pause: PauseInfo {
-                    kind: nasiko_types::a2a::AwaitingHumanKind::InputRequired,
-                    message: "Which repository?".into(),
-                    task_id: "task-321".into(),
-                    context_id: "ctx-654".into(),
-                    metadata: serde_json::Value::Null,
-                },
-            });
-        let result: Result<String, ToolSetError> =
-            Err(ToolSetError::ToolCallError(ToolError::ToolCallError(inner)));
-
-        for _ in 0..2 {
-            match classify_tool_result(&result) {
-                ToolOutcome::AwaitingHuman {
-                    agent, agent_id, ..
-                } => {
-                    assert_eq!(agent, "test-agent");
-                    assert_eq!(agent_id, "agent-under-test");
-                }
-                ToolOutcome::NotAwaitingHuman => panic!("expected AwaitingHuman"),
-            }
-        }
-    }
-
-    #[test]
-    fn classify_tool_result_leaves_ordinary_outcomes_alone() {
-        assert!(matches!(
-            classify_tool_result(&Ok("fine".to_string())),
-            ToolOutcome::NotAwaitingHuman
-        ));
-        assert!(matches!(
-            classify_tool_result(&Err(ToolSetError::ToolNotFoundError("x".into()))),
-            ToolOutcome::NotAwaitingHuman
-        ));
-    }
-
-    fn test_agent(endpoint: &str) -> AgentInfo {
-        AgentInfo {
-            id: "agent-under-test".into(),
-            name: "test-agent".into(),
-            description: "for tests".into(),
-            endpoint: endpoint.into(),
-            skills: vec![],
-        }
-    }
-
-    fn mock_tool_call_completion() -> String {
-        serde_json::json!({
-            "id": "chatcmpl-test",
-            "object": "chat.completion",
-            "created": 1,
-            "model": "gpt-4o-mini",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "call_agent_test_agent",
-                            "arguments": "{\"message\":\"hi\"}"
-                        }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }]
-        })
-        .to_string()
-    }
-
-    /// The real, end-to-end proof this whole step exists for: a full `Orchestrator::run()`
-    /// against a mocked LLM (one tool-call completion) and a mocked sub-agent (pauses) —
-    /// verifies the loop stops after exactly one LLM call, never asks the LLM what to do next
-    /// with the pause, and returns the pause faithfully.
-    #[tokio::test]
-    async fn run_stops_after_one_llm_call_when_the_tool_call_pauses() {
-        let mut llm_server = mockito::Server::new_async().await;
-        let llm_mock = llm_server
-            .mock("POST", "/chat/completions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(mock_tool_call_completion())
-            .expect(1)
-            .create_async()
-            .await;
-
-        let mut agent_server = mockito::Server::new_async().await;
-        let agent_mock = agent_server
-            .mock("POST", "/")
-            .with_status(200)
-            .with_body(input_required_response_body())
-            .expect(1)
-            .create_async()
-            .await;
-
-        let config = OrchestratorConfig {
-            base_url: Some(llm_server.url()),
-            api_key: Some("test-key".into()),
-            ..Default::default()
-        };
-        let mut orchestrator = Orchestrator::new(
-            config,
-            RegistrySource::Static(vec![test_agent(&agent_server.url())]),
-        )
-        .with_a2a_client(A2aClient::new());
-        // AgentRegistry::agents() only reads its cache — init() is what populates it, even for a
-        // Static source. Every real caller (e.g. a2a_dispatch.rs) calls this before run()/
-        // run_stream(); omitting it here isn't "a smaller test," it's testing a call sequence
-        // that doesn't happen in production and getting Err(NoAgents) for the wrong reason.
-        orchestrator
-            .init()
-            .await
-            .expect("registry init must succeed for a Static source");
-
-        let result = orchestrator.run("please help").await;
-
-        llm_mock.assert_async().await;
-        agent_mock.assert_async().await;
-        match result {
-            Err(OrchestratorError::AwaitingHuman {
-                agent,
-                agent_id,
-                pause,
-            }) => {
-                assert_eq!(agent, "test-agent");
-                assert_eq!(agent_id, "agent-under-test");
-                assert_eq!(pause.message, "Which repository?");
-            }
-            other => panic!("expected Err(AwaitingHuman), got {other:?}"),
-        }
     }
 }

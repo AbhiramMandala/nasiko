@@ -3,8 +3,8 @@
   row-detail panel, and numbered page navigation.
 
   Ported from features/smart-table.css onto the current token vocabulary
-  (--bg-, --fg-, --border- prefixes instead of the older --color- aliases).
-  Two rules here are load-bearing and easy to undo by accident:
+  (--bg-*/--fg-*/--border-* instead of the older --color-* aliases). Two rules
+  here are load-bearing and easy to undo by accident:
 
    1. `.td.is-plain` (a label-less action column) is position:sticky at the
       right edge. Every other cell is nowrap, so on a wide table the action
@@ -15,6 +15,11 @@
    2. The pinned cell repaints the row's hover fill, or a hovered row appears
       to stop short of the right edge.
 */
+@keyframes app-table-loading-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 0.85; }
+}
+
 @scope (app-table) {
   :scope { display: block; }
 
@@ -36,12 +41,13 @@
     border: var(--bw-1) solid var(--border-primary);
     border-radius: var(--r-8);
   }
-  /* The skeleton rows carry their own shimmer (<app-skeleton>) — this class is
-     now purely functional (no pointer interaction while loading), not another
-     layer of motion competing with it. */
   .scroll.is-loading {
+    animation: app-table-loading-pulse 1.4s ease-in-out infinite;
     pointer-events: none;
     cursor: wait;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .scroll.is-loading { animation: none; opacity: 0.6; }
   }
 
   .table {
@@ -70,13 +76,6 @@
     &:focus-visible { outline: 2px solid var(--fg-brand); outline-offset: -2px; }
   }
   .th-content { display: flex; align-items: center; gap: var(--s-8); }
-
-  /* `numeric: true` columns (see the JSDoc on `columns`): header and cells
-     both pin to the end edge, so the sort icon and the values below it line
-     up on the same side instead of the label sitting opposite its column. */
-  .th.is-numeric { text-align: right; }
-  .th.is-numeric .th-content { justify-content: flex-end; }
-  .td.is-numeric { text-align: right; }
 
   .sort-icon {
     flex-shrink: 0;
@@ -122,6 +121,12 @@
   .th.is-plain { background: var(--bg-subtle); }
   .td.is-plain { background: var(--bg-base); }
   .tbody tr:hover .td.is-plain { background: var(--bg-subtle); }
+
+  .skel-bar {
+    height: 0.75em;
+    background: var(--border-primary);
+    border-radius: var(--r-4);
+  }
 
   .empty {
     padding: var(--s-48) var(--s-16);

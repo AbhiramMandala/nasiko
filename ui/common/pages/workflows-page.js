@@ -11,7 +11,7 @@ import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { confirmDialog } from '/common/design-system/app-modal/app-modal.js';
 import { timeAgo, formatDisplay } from '/common/utils/date-utils.js';
-import '/common/design-system/app-menu/app-menu.js';
+import '/common/design-system/app-action-menu/app-action-menu.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-card/app-card.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
@@ -59,7 +59,7 @@ class WorkflowsPage extends HTMLElement {
 
     // No delegated click handler: <app-card href> navigates itself, on click and
     // on Enter, and leaves the action menu's own button alone.
-    this.querySelector('#wf-grid').addEventListener('menu-select', (e) => {
+    this.querySelector('#wf-grid').addEventListener('action-select', (e) => {
       const card = e.target.closest('app-card[data-id]');
       if (card) this.#onAction(e.detail.id, card.dataset.id);
     });
@@ -150,11 +150,11 @@ class WorkflowsPage extends HTMLElement {
         max-visible-tags="3"
         href="/workflow?id=${encodeURIComponent(wf.id)}"
         aria-label="Open ${escAttr(wf.name)}">
-        <app-menu data-slot="actions" align="end" trigger-label="Workflow actions" items='${MENU_ITEMS}'>
+        <app-action-menu slot="actions" trigger-title="Workflow actions" items='${MENU_ITEMS}'>
           ${icons.moreVertical('', 16)}
-        </app-menu>
-        ${agents.length ? `<span data-slot="footer" class="wf-agents">${escHtml(agents.join(' · '))}</span>` : ''}
-        <span data-slot="footer" class="wf-status ${status.cls}">
+        </app-action-menu>
+        ${agents.length ? `<span slot="footer" class="wf-agents">${escHtml(agents.join(' · '))}</span>` : ''}
+        <span slot="footer" class="wf-status ${status.cls}">
           <span class="wf-dot"></span>
           <span class="wf-status-text">${escHtml(status.text)}</span>
         </span>
@@ -169,7 +169,7 @@ class WorkflowsPage extends HTMLElement {
       grid.className = 'empty-wrap';
       grid.innerHTML = `
         <app-empty-state
-          heading="No workflows yet"
+          title="No workflows yet"
           description="Chain agents into a repeatable sequence. Describe what you want to automate and Nasiko drafts the steps for you."
           icon='${icons.workflow('', 40)}'>
           <div class="empty-pills">
