@@ -427,7 +427,13 @@ async fn auto_resolve_linked_direct_chat_row(
     resolved_by: Uuid,
     approved: bool,
 ) {
-    let linked = match nasiko_hitl::repo::find_linked_direct_chat_row(&state.db, mcp_row.id).await {
+    let linked = match nasiko_hitl::repo::find_linked_direct_chat_row(
+        &state.db,
+        mcp_row.id,
+        mcp_row.owner_user_id,
+    )
+    .await
+    {
         Ok(Some(row)) => row,
         Ok(None) => return,
         Err(e) => {

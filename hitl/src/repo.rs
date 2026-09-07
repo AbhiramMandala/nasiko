@@ -190,20 +190,35 @@ pub async fn get_by_id(db: &PgPool, id: Uuid) -> Result<Option<HitlRequest>> {
 /// action both grants the real permission (this row) and resumes the
 /// specific visible task/step the human is looking at (the mirrored row,
 /// through its own existing, unmodified dispatcher).
+///
+/// `owner_user_id` (always the *real mcp row's* owner, i.e. the caller who is authorized to act on
+/// it) is a required predicate, not an afterthought — a security fix, not a tidiness one.
+/// `question.metadata.hitl_request_id` is fully agent-controlled (`build_pause_question` forwards
+/// the agent's own status-message metadata verbatim, unvalidated), so without this filter a
+/// malicious or buggy agent could plant *any* other user's real `hitl_request_id` — even one from
+/// a completely unrelated event in the agent author's own history — into a victim's pause, and
+/// have that victim's resolve of their own unrelated row silently auto-resolve, alias-hijack, and
+/// resume the attacker-linked row instead: a forged approval plus (via
+/// `ContinuationRegistry::alias`, `router/hitl.rs`) a way to read the resumed execution's output
+/// under the *other* user's identity. Same root cause and same fix shape as
+/// `resolve_display_row`'s own `caller_owner_id` check (`store.rs`).
 pub async fn find_linked_direct_chat_row(
     db: &PgPool,
     mcp_row_id: Uuid,
+    owner_user_id: Uuid,
 ) -> Result<Option<HitlRequest>> {
     let row = sqlx::query_as::<_, HitlRequestRow>(
         r#"
         SELECT * FROM hitl_requests
          WHERE origin IN ('direct_chat', 'agent_proxy', 'maf', 'orchestrator')
            AND status = 'pending'
+           AND owner_user_id = $2
            AND question->'metadata'->>'hitl_request_id' = $1
          LIMIT 1
         "#,
     )
     .bind(mcp_row_id.to_string())
+    .bind(owner_user_id)
     .fetch_optional(db)
     .await?;
     row.map(HitlRequestRow::try_into_domain).transpose()
@@ -358,7 +373,11 @@ async fn resolve_linked_direct_chat_mirror(
     mcp_row_id: Uuid,
     resolved_by: Uuid,
 ) -> Result<()> {
-    let Some(linked) = find_linked_direct_chat_row(db, mcp_row_id).await? else {
+    // The caller (`resolve_pending_auth_required_for_connector`) already scoped `mcp_row_id`'s own
+    // `UPDATE ... WHERE owner_user_id = $1` to this same user, so `resolved_by` doubles as the real
+    // mcp row's owner here — see `find_linked_direct_chat_row`'s own doc comment for why this must
+    // never be skipped.
+    let Some(linked) = find_linked_direct_chat_row(db, mcp_row_id, resolved_by).await? else {
         return Ok(());
     };
     resolve(

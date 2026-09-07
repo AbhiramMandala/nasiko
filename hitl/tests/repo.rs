@@ -978,7 +978,7 @@ async fn find_linked_direct_chat_row_finds_a_maf_origin_mirror() {
     .await
     .expect("seed maf-origin mirror row");
 
-    let linked = repo::find_linked_direct_chat_row(&db.pool, mcp_row.id)
+    let linked = repo::find_linked_direct_chat_row(&db.pool, mcp_row.id, db.owner_user_id)
         .await
         .expect("find_linked_direct_chat_row must not error")
         .expect(
@@ -1042,7 +1042,7 @@ async fn find_linked_direct_chat_row_finds_an_orchestrator_origin_mirror() {
     .await
     .expect("seed orchestrator-origin mirror row");
 
-    let linked = repo::find_linked_direct_chat_row(&db.pool, mcp_row.id)
+    let linked = repo::find_linked_direct_chat_row(&db.pool, mcp_row.id, db.owner_user_id)
         .await
         .expect("find_linked_direct_chat_row must not error")
         .expect(
@@ -1050,4 +1050,71 @@ async fn find_linked_direct_chat_row_finds_an_orchestrator_origin_mirror() {
         );
     assert_eq!(linked.id, mirror_id);
     assert_eq!(linked.origin, nasiko_hitl::HitlOrigin::Orchestrator);
+}
+
+/// Security regression: `question.metadata.hitl_request_id` is fully agent-controlled
+/// (`build_pause_question` forwards the agent's own status-message metadata verbatim) — a
+/// malicious or buggy agent could plant another user's real `hitl_request_id` into a victim's
+/// pause. Without the `owner_user_id` filter, resolving the ATTACKER's own unrelated row would
+/// find and auto-resolve the VICTIM's mirror, then alias the victim's continuation buffer onto an
+/// id the attacker is authorized to reconnect with — a forged approval plus a way to read the
+/// victim's resumed execution under their own identity. This must return `None`, not the victim's
+/// row, even though the metadata link matches exactly.
+#[tokio::test]
+async fn find_linked_direct_chat_row_never_crosses_owners() {
+    let db = TestDb::new("hitl_test").await;
+    let attacker_connector_id = Uuid::new_v4();
+    let victim_user_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id, username, email) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+    )
+    .bind(victim_user_id)
+    .bind(format!("victim-{}", victim_user_id.simple()))
+    .bind(format!("victim-{}@test.example", victim_user_id.simple()))
+    .execute(&db.pool)
+    .await
+    .expect("seed victim user");
+
+    // The attacker's own, entirely unrelated pending tool_approval row.
+    let attacker_row = repo::create_pending_tool_approval(
+        &db.pool,
+        db.new_tool_approval(
+            attacker_connector_id,
+            "GITHUB_CREATE_AN_ISSUE",
+            "ctx-attacker",
+        ),
+    )
+    .await
+    .expect("create attacker's own pending tool_approval");
+
+    // The victim's mirror, planted by a malicious agent with the ATTACKER's row id hardcoded into
+    // its own pause metadata — nothing about this event has anything to do with the attacker.
+    sqlx::query(
+        r#"
+        INSERT INTO hitl_requests
+            (kind, origin, agent_id, owner_user_id, task_id, context_id, question, status, expires_at)
+        VALUES
+            ('auth_required', 'direct_chat', $1, $2, 'victim-task-1', 'victim-ctx-1', $3,
+             'pending', now() + interval '7 days')
+        "#,
+    )
+    .bind(db.agent_id)
+    .bind(victim_user_id)
+    .bind(serde_json::json!({
+        "message": "Tool(s) require user approval for this agent.",
+        "metadata": {"hitl_request_id": attacker_row.id.to_string()},
+    }))
+    .execute(&db.pool)
+    .await
+    .expect("seed victim's mirror row, planted with the attacker's row id");
+
+    // The attacker resolves their OWN row — authorized, since they own it — but the lookup must
+    // not hand back the victim's mirror just because the (agent-controlled) link matches.
+    let linked = repo::find_linked_direct_chat_row(&db.pool, attacker_row.id, db.owner_user_id)
+        .await
+        .expect("find_linked_direct_chat_row must not error");
+    assert!(
+        linked.is_none(),
+        "must never return another user's row, even with a matching metadata.hitl_request_id link"
+    );
 }
