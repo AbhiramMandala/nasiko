@@ -291,6 +291,28 @@ async fn reconnect_stream(
         ));
     }
 
+    // Still pending — nothing has been dispatched for delivery at all, so no buffer exists or
+    // ever will until a human resolves this row. `watch()` would otherwise conjure up a fresh,
+    // permanently-non-terminal buffer for it.
+    if row.status == nasiko_hitl::HitlStatus::Pending {
+        return Err(A2aDispatchError::InvalidRequest(
+            "this HITL request has not been resolved yet — nothing to reconnect to".into(),
+        ));
+    }
+
+    // An `mcp_tool` row only ever gets linked to a continuation buffer via
+    // `ContinuationRegistry::alias` (`router/hitl.rs::auto_resolve_linked_direct_chat_row`), which
+    // only runs when a direct_chat/agent_proxy/maf/orchestrator mirror actually exists — the
+    // dedicated `mcp_tool` resume dispatcher (`oss/hitl::dispatcher`) never touches
+    // `continuation_events` at all. A standalone, never-mirrored `mcp_tool` row's id would
+    // otherwise `watch()` the same kind of buffer nothing will ever terminate.
+    if row.origin == nasiko_hitl::HitlOrigin::McpTool && !state.continuation_events.exists(row.id) {
+        return Err(A2aDispatchError::InvalidRequest(
+            "this HITL request has no agent-visible continuation to reconnect to — poll GET /api/hitl/pending instead"
+                .into(),
+        ));
+    }
+
     let identity = nasiko_hitl::HitlIdentity {
         user_id,
         is_superuser,
@@ -1848,7 +1870,8 @@ pub(crate) async fn build_hitl_stream_data(
     row: &nasiko_hitl::HitlRequest,
     agent: Option<&str>,
 ) -> String {
-    let display = nasiko_hitl::resolve_display_row(hitl_store.as_ref(), row).await;
+    let display =
+        nasiko_hitl::resolve_display_row(hitl_store.as_ref(), row, row.owner_user_id).await;
     let mut payload = json!({
         "type": "hitl",
         "id": display.id,

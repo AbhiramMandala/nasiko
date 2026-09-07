@@ -139,17 +139,29 @@ pub trait HitlStore: Send + Sync {
 /// The agent links the two by putting `hitl_request_id: <the mcp row's id>` in its own pause
 /// metadata, which lands verbatim in the mirror's `question.metadata.hitl_request_id`
 /// (`build_pause_question` in `oss/types/src/a2a.rs` forwards the agent's status-message metadata
-/// through unmodified). This returns `row.clone()` unchanged unless ALL of the following hold:
-/// `row.origin` is `direct_chat`/`agent_proxy`/`maf`/`orchestrator`,
-/// `question.metadata.hitl_request_id` is present and parses as a `Uuid`, and that id resolves to
-/// a real row via `store.get()`. Any failure at any step — no link, a malformed id, a
-/// stale/nonexistent id, or a lookup error — falls back to the mirror as-is: a broken link must
-/// never turn into a broken or missing HITL prompt for the human.
+/// through unmodified) — **fully agent-controlled**, not something the platform itself ever
+/// writes. This returns `row.clone()` unchanged unless ALL of the following hold: `row.origin` is
+/// `direct_chat`/`agent_proxy`/`maf`/`orchestrator`, `question.metadata.hitl_request_id` is
+/// present and parses as a `Uuid`, that id resolves to a real row via `store.get()`, AND that
+/// row's `owner_user_id` matches `row`'s own (the mirror's owner is who this substitution is being
+/// computed for — see `caller_owner_id` below). Any failure at any step — no link, a malformed
+/// id, a stale/nonexistent id, a lookup error, or an owner mismatch — falls back to the mirror
+/// as-is: a broken (or hostile) link must never turn into a broken or missing HITL prompt for the
+/// human, and must never turn into *another user's* prompt either. Without the owner check, a
+/// buggy or malicious agent could point `hitl_request_id` at any other user's row and have that
+/// row's real `question` (which can carry tool arguments, connector names, auth URLs) substituted
+/// into this requester's view — every caller of this function already scopes `row` itself to the
+/// right owner (`list_for_chat_session`/`list_for_maf_execution`/the live stream's own row), so
+/// `caller_owner_id` is always `row.owner_user_id` in practice, never a value the caller invents.
 ///
 /// Only `id`/`kind`/`question` come from the linked row; every other field — crucially
 /// `task_id`/`context_id`/`chat_session_id` — stays the mirror's own, since those are what the
 /// frontend needs to correlate the prompt back to the visible chat task/session.
-pub async fn resolve_display_row(store: &dyn HitlStore, row: &HitlRequest) -> HitlRequest {
+pub async fn resolve_display_row(
+    store: &dyn HitlStore,
+    row: &HitlRequest,
+    caller_owner_id: Uuid,
+) -> HitlRequest {
     if !matches!(
         row.origin,
         HitlOrigin::DirectChat
@@ -169,7 +181,7 @@ pub async fn resolve_display_row(store: &dyn HitlStore, row: &HitlRequest) -> Hi
         return row.clone();
     };
     match store.get(linked_id).await {
-        Ok(Some(linked)) => HitlRequest {
+        Ok(Some(linked)) if linked.owner_user_id == caller_owner_id => HitlRequest {
             id: linked.id,
             kind: linked.kind,
             question: linked.question,
@@ -488,9 +500,16 @@ impl HitlStore for PgHitlStore {
         // `task_id` at all and are claimed by `oss/hitl`'s own dispatcher instead
         // (`nasiko_hitl::repo::claim_for_resume`, scoped the other way) — without this filter the
         // two dispatchers would race on the same rows and fail whichever they claimed by mistake.
+        //
+        // `status IN ('resolved', 'rejected')`, not just `'resolved'`: a `tool_approval`/
+        // `auth_required` REJECT auto-resolves this row's own mirror to `Rejected` too
+        // (`auto_resolve_linked_direct_chat_row`, `router/hitl.rs`) — it still needs to be
+        // delivered so the paused agent actually learns the decision (`answer_text` turns
+        // `auth_outcome: "denied"` into the resume message), not left hanging forever. Mirrors the
+        // identical widening already done on `oss/hitl::repo::claim_for_resume`.
         let row: Option<HitlRequestRow> = sqlx::query_as(
             "SELECT * FROM hitl_requests
-              WHERE status = 'resolved' AND resume_status = 'not_started'
+              WHERE status IN ('resolved', 'rejected') AND resume_status = 'not_started'
                 AND (resume_claimed_at IS NULL OR resume_claimed_at < $1)
                 AND origin IN ('direct_chat', 'agent_proxy', 'maf', 'orchestrator')
               ORDER BY resolved_at
@@ -737,7 +756,7 @@ mod resolve_display_row_tests {
         );
         let store = FakeStore::default();
 
-        let display = resolve_display_row(&store, &mirror).await;
+        let display = resolve_display_row(&store, &mirror, mirror.owner_user_id).await;
 
         assert_eq!(display.id, mirror.id);
         assert_eq!(display.kind, mirror.kind);
@@ -748,16 +767,12 @@ mod resolve_display_row_tests {
     }
 
     // (2) An MCP-linked mirror shows the real row's id/kind/question instead of its own, with
-    // the mirror's own task_id/context_id/chat_session_id preserved.
+    // the mirror's own task_id/context_id/chat_session_id preserved — when both rows share the
+    // same owner (the ordinary case: one human's agent mapped one real MCP event onto its own
+    // pause).
     #[tokio::test]
     async fn mcp_linked_mirror_shows_the_real_row() {
         let mcp_id = Uuid::new_v4();
-        let mcp_row = row(
-            mcp_id,
-            HitlOrigin::McpTool,
-            HitlKind::ToolApproval,
-            json!({ "message": "Approve creating a GitHub issue?" }),
-        );
         let mirror = row(
             Uuid::new_v4(),
             HitlOrigin::DirectChat,
@@ -767,10 +782,17 @@ mod resolve_display_row_tests {
                 "metadata": { "hitl_request_id": mcp_id.to_string() },
             }),
         );
+        let mut mcp_row = row(
+            mcp_id,
+            HitlOrigin::McpTool,
+            HitlKind::ToolApproval,
+            json!({ "message": "Approve creating a GitHub issue?" }),
+        );
+        mcp_row.owner_user_id = mirror.owner_user_id;
         let store = FakeStore::default();
         store.0.lock().unwrap().insert(mcp_id, mcp_row.clone());
 
-        let display = resolve_display_row(&store, &mirror).await;
+        let display = resolve_display_row(&store, &mirror, mirror.owner_user_id).await;
 
         assert_eq!(display.id, mcp_row.id);
         assert_eq!(display.kind, mcp_row.kind);
@@ -796,7 +818,7 @@ mod resolve_display_row_tests {
                 "metadata": { "hitl_request_id": Uuid::new_v4().to_string() },
             }),
         );
-        let display = resolve_display_row(&store, &missing_link).await;
+        let display = resolve_display_row(&store, &missing_link, missing_link.owner_user_id).await;
         assert_eq!(display.id, missing_link.id);
         assert_eq!(display.kind, missing_link.kind);
         assert_eq!(display.question, missing_link.question);
@@ -810,7 +832,8 @@ mod resolve_display_row_tests {
                 "metadata": { "hitl_request_id": "not-a-uuid" },
             }),
         );
-        let display = resolve_display_row(&store, &malformed_link).await;
+        let display =
+            resolve_display_row(&store, &malformed_link, malformed_link.owner_user_id).await;
         assert_eq!(display.id, malformed_link.id);
         assert_eq!(display.question, malformed_link.question);
 
@@ -821,8 +844,45 @@ mod resolve_display_row_tests {
             HitlKind::InputRequired,
             json!({ "message": "Plain pause, no MCP involved" }),
         );
-        let display = resolve_display_row(&store, &no_metadata).await;
+        let display = resolve_display_row(&store, &no_metadata, no_metadata.owner_user_id).await;
         assert_eq!(display.id, no_metadata.id);
+    }
+
+    // (3b) The security fix itself: a linked id that resolves to a REAL row owned by someone
+    // else must never substitute that row's identity/question into this requester's view — an
+    // agent-controlled `hitl_request_id` pointed at another user's row is exactly the scenario
+    // `caller_owner_id` exists to close off.
+    #[tokio::test]
+    async fn cross_user_link_does_not_leak_another_users_row() {
+        let mcp_id = Uuid::new_v4();
+        let mcp_row = row(
+            mcp_id,
+            HitlOrigin::McpTool,
+            HitlKind::ToolApproval,
+            json!({ "message": "Approve creating a GitHub issue in someone else's private repo?" }),
+        );
+        let mirror = row(
+            Uuid::new_v4(),
+            HitlOrigin::DirectChat,
+            HitlKind::AuthRequired,
+            json!({
+                "message": "Please authorize with GitHub",
+                "metadata": { "hitl_request_id": mcp_id.to_string() },
+            }),
+        );
+        // Deliberately NOT aligned — `mcp_row`'s own `owner_user_id` (from `row()`) is a
+        // different random user than `mirror`'s.
+        assert_ne!(mcp_row.owner_user_id, mirror.owner_user_id);
+        let store = FakeStore::default();
+        store.0.lock().unwrap().insert(mcp_id, mcp_row.clone());
+
+        let display = resolve_display_row(&store, &mirror, mirror.owner_user_id).await;
+
+        // Falls back to the mirror unchanged — never the other user's real question/id.
+        assert_eq!(display.id, mirror.id);
+        assert_eq!(display.question, mirror.question);
+        assert_ne!(display.id, mcp_row.id);
+        assert_ne!(display.question, mcp_row.question);
     }
 
     // origin=mcp_tool is never a mirror itself — it's the real row every mirror links back to.
@@ -850,7 +910,7 @@ mod resolve_display_row_tests {
             HitlKind::ToolApproval,
             json!({ "message": "needs approval", "metadata": { "hitl_request_id": other_id.to_string() } }),
         );
-        let display = resolve_display_row(&store, &mcp_row).await;
+        let display = resolve_display_row(&store, &mcp_row, mcp_row.owner_user_id).await;
         assert_eq!(display.id, mcp_row.id);
         assert_eq!(display.question, mcp_row.question);
     }
@@ -861,12 +921,6 @@ mod resolve_display_row_tests {
     #[tokio::test]
     async fn maf_linked_mirror_shows_the_real_row() {
         let mcp_id = Uuid::new_v4();
-        let mcp_row = row(
-            mcp_id,
-            HitlOrigin::McpTool,
-            HitlKind::ToolApproval,
-            json!({ "message": "Approve creating a GitHub issue?" }),
-        );
         let mirror = row(
             Uuid::new_v4(),
             HitlOrigin::Maf,
@@ -876,10 +930,17 @@ mod resolve_display_row_tests {
                 "metadata": { "hitl_request_id": mcp_id.to_string() },
             }),
         );
+        let mut mcp_row = row(
+            mcp_id,
+            HitlOrigin::McpTool,
+            HitlKind::ToolApproval,
+            json!({ "message": "Approve creating a GitHub issue?" }),
+        );
+        mcp_row.owner_user_id = mirror.owner_user_id;
         let store = FakeStore::default();
         store.0.lock().unwrap().insert(mcp_id, mcp_row.clone());
 
-        let display = resolve_display_row(&store, &mirror).await;
+        let display = resolve_display_row(&store, &mirror, mirror.owner_user_id).await;
 
         assert_eq!(display.id, mcp_row.id);
         assert_eq!(display.kind, mcp_row.kind);
@@ -896,12 +957,6 @@ mod resolve_display_row_tests {
     #[tokio::test]
     async fn orchestrator_linked_mirror_shows_the_real_row() {
         let mcp_id = Uuid::new_v4();
-        let mcp_row = row(
-            mcp_id,
-            HitlOrigin::McpTool,
-            HitlKind::ToolApproval,
-            json!({ "message": "Approve creating a GitHub issue?" }),
-        );
         let mirror = row(
             Uuid::new_v4(),
             HitlOrigin::Orchestrator,
@@ -911,10 +966,17 @@ mod resolve_display_row_tests {
                 "metadata": { "hitl_request_id": mcp_id.to_string() },
             }),
         );
+        let mut mcp_row = row(
+            mcp_id,
+            HitlOrigin::McpTool,
+            HitlKind::ToolApproval,
+            json!({ "message": "Approve creating a GitHub issue?" }),
+        );
+        mcp_row.owner_user_id = mirror.owner_user_id;
         let store = FakeStore::default();
         store.0.lock().unwrap().insert(mcp_id, mcp_row.clone());
 
-        let display = resolve_display_row(&store, &mirror).await;
+        let display = resolve_display_row(&store, &mirror, mirror.owner_user_id).await;
 
         assert_eq!(display.id, mcp_row.id);
         assert_eq!(display.kind, mcp_row.kind);

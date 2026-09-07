@@ -226,7 +226,8 @@ async fn hitl_rows_for_execution(
     // without this the frontend would only ever see the mirror's own generic placeholder.
     let mut hitl = Vec::with_capacity(rows.len());
     for row in &rows {
-        let display = nasiko_hitl::resolve_display_row(hitl_store.as_ref(), row).await;
+        let display =
+            nasiko_hitl::resolve_display_row(hitl_store.as_ref(), row, owner_user_id).await;
         hitl.push(crate::router::hitl::to_response(&display));
     }
     Ok(hitl)

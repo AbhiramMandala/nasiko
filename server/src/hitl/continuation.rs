@@ -105,6 +105,18 @@ impl ContinuationRegistry {
             .clone()
     }
 
+    /// Whether a buffer for `id` already exists — i.e. whether *something* (a `ContinuationGuard`
+    /// or an `alias`) has actually claimed this id for delivery. Unlike `watch`, this never creates
+    /// one: it's the caller's way to tell "in flight or already finished" (a buffer exists) apart
+    /// from "nothing has ever been dispatched for this id, and nothing ever will be until it is"
+    /// (no buffer, and `watch` would otherwise conjure one up that nothing ever terminates).
+    pub fn exists(&self, id: Uuid) -> bool {
+        self.buffers
+            .read()
+            .expect("continuation registry lock poisoned")
+            .contains_key(&id)
+    }
+
     /// Makes `alias` resolve to the exact same buffer as `target`. Needed for the MCP-mirror pause
     /// case: `resolve_display_row` (`oss/hitl/src/store.rs`) shows the frontend the *real*
     /// `mcp_tool` row's id, so that's the id a reconnect arrives with — but `deliver()` only ever
@@ -173,7 +185,11 @@ impl ContinuationRegistry {
         }
     }
 
-    /// Drops any buffer that reached `terminal` more than `ttl` ago. Spawned once at startup
+    /// Drops any buffer that reached `terminal` more than `ttl` ago, plus (defense-in-depth) any
+    /// buffer that's been sitting non-terminal for far longer than any real delivery should ever
+    /// take — `reconnect_stream`'s own checks (still-`pending`, unmirrored `mcp_tool`) close the
+    /// known ways to create one of these, but a buffer that somehow never gets marked terminal
+    /// would otherwise sit in the registry, and be watchable, forever. Spawned once at startup
     /// (`state.rs`) on a fixed interval, same shape as the build worker's own stuck-job sweep —
     /// this is what keeps total memory bounded across many executions, since an individual
     /// buffer's own size is already small by construction (one HITL resume's worth of events).
@@ -183,7 +199,9 @@ impl ContinuationRegistry {
             .write()
             .expect("continuation registry lock poisoned");
         buffers.retain(|_, buffer| {
-            !(buffer.terminal.load(Ordering::SeqCst) && buffer.created_at.elapsed() > ttl)
+            let terminal = buffer.terminal.load(Ordering::SeqCst);
+            let age = buffer.created_at.elapsed();
+            !((terminal && age > ttl) || (!terminal && age > STALE_NON_TERMINAL_TTL))
         });
     }
 }
@@ -226,6 +244,10 @@ impl Drop for ContinuationGuard {
 /// Generous on purpose: a human reading a final response and only then closing/reloading the tab
 /// should still find it there a few minutes later.
 const BUFFER_TTL: Duration = Duration::from_secs(10 * 60);
+/// Backstop only — no real `deliver()` call should ever take this long. Long enough that it never
+/// fires on a genuinely slow-but-live delivery, short enough that a bug reintroducing an
+/// un-terminated buffer still gets cleaned up rather than growing the registry forever.
+const STALE_NON_TERMINAL_TTL: Duration = Duration::from_secs(60 * 60);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Spawned once at server startup (`state.rs`), same shape as every other periodic sweep in this

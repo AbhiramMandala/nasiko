@@ -348,7 +348,7 @@ pub async fn agent_proxy(
         // a client disconnect mid-stream).
         let body = match persist_info {
             Some(ref info) => {
-                let mut tap = SseReplyTap::new(
+                let tap = SseReplyTap::new(
                     state.db.clone(),
                     state.hitl_store.clone(),
                     info.session_id.clone(),
@@ -356,19 +356,32 @@ pub async fn agent_proxy(
                     flow_ctx.flow_id.clone(),
                     claims.sub.parse::<Uuid>().ok(),
                 );
-                // `take_while` (not `inspect`) so a detected pause can actively end the relay
-                // instead of waiting for the agent's own connection to close — the actual fix
-                // for `nasiko chat -a` hanging forever on a pause (this proxy has no A2A-level
-                // concept of "done" otherwise, unlike `agent_stream()`). The predicate checks
-                // `is_paused()` from *before* this chunk's own `feed()` call, so the chunk that
-                // itself carries the pause event is still relayed — only the next one is cut.
-                Body::from_stream(stream.take_while(move |chunk_result| {
-                    let was_already_paused = tap.collector.is_paused();
-                    if let Ok(bytes) = chunk_result {
-                        tap.collector.feed(bytes);
-                    }
-                    futures::future::ready(!was_already_paused)
-                }))
+                // `stream::unfold`, not `take_while`: `take_while`'s predicate only runs when a
+                // NEW upstream chunk arrives, so an agent that emits the pausing event and then
+                // goes quiet — never sends anything further, never closes the connection
+                // (documented live behavior of some a2a-sdk agents) — would never re-evaluate the
+                // predicate, and the relay would hang forever: exactly the `nasiko chat -a` hang
+                // this change claims to fix, just moved one event later. `unfold` decides to stop
+                // right after the chunk that fed the pause is yielded, driven by the *client's*
+                // next read of the response body (via hyper/axum), not by another upstream poll —
+                // so ending the stream never depends on the agent sending or closing anything else.
+                let boxed: std::pin::Pin<
+                    Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>,
+                > = Box::pin(stream);
+                Body::from_stream(futures::stream::unfold(
+                    (boxed, tap, false),
+                    |(mut stream, mut tap, done)| async move {
+                        if done {
+                            return None;
+                        }
+                        let chunk_result = stream.next().await?;
+                        if let Ok(bytes) = &chunk_result {
+                            tap.collector.feed(bytes);
+                        }
+                        let now_done = tap.collector.is_paused();
+                        Some((chunk_result, (stream, tap, now_done)))
+                    },
+                ))
             }
             None => Body::from_stream(stream),
         };

@@ -76,6 +76,15 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
 }
 
 async fn deliver(state: AppState, row: HitlRequest) {
+    // Ties the continuation buffer's lifetime to this whole call frame, from the very first line —
+    // every return path below, including the early-return guards ahead of the task_id/context_id
+    // check, marks it terminal on drop (see `ContinuationGuard`'s own doc comment). A reconnect
+    // that finds a buffer for `row.id` still non-terminal, with none of these early returns having
+    // fired, cannot yet distinguish "still in flight" from "never dispatched at all" purely from
+    // the buffer's own existence — `reconnect_stream` rejects a still-`pending` row before ever
+    // calling `watch()`, so that ambiguity never actually reaches a client.
+    let continuation = ContinuationGuard::new(state.continuation_events.clone(), row.id);
+
     // `claim_for_resume` has no attempts cap of its own — a row only reaches this many attempts
     // by surviving past every prior attempt's own cap check without a clean completed/failed
     // outcome, i.e. the dispatcher process itself crashed mid-delivery on each one. A clean
@@ -123,13 +132,6 @@ async fn deliver(state: AppState, row: HitlRequest) {
             .await;
         return;
     };
-
-    // Ties the continuation buffer's lifetime to this call frame — every return path below,
-    // success or failure, marks it terminal on drop (see `ContinuationGuard`'s own doc comment).
-    // Keyed by `row.id`, the exact id the frontend already holds (it's what it just POSTed to
-    // `/resolve`), so a reconnect through `POST /api/orchestrator/a2a`
-    // (`metadata.reconnect_after_hitl_id`) needs no new identifier to find it.
-    let continuation = ContinuationGuard::new(state.continuation_events.clone(), row.id);
 
     let agent_name: Option<String> = sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
         .bind(row.agent_id)
@@ -478,14 +480,20 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 }
 
 /// The text sent back to the agent as the human's reply. `input_required` carries `answer`
-/// directly; `auth_required` has no free-text answer — only a "confirm" resolve ever reaches the
-/// dispatcher (a "start" resolve leaves the row `pending`, `router/hitl.rs::resolve`), so
-/// `auth_outcome` is always `"confirmed"` by this point. The literal reply is `"authorized"`, not
-/// a paraphrase — an agent's own `AuthRequired` pause message is free to tell the human to "reply
-/// authorized" (`docs/HITL_REFERENCE_AGENT.md`'s documented convention), and a deterministic agent
-/// may match that reply literally rather than semantically, so the platform must echo back exactly
-/// the word it told the human to send. The agent determines the real outcome from its own next
-/// response either way (§7's "intent ≠ success").
+/// directly; `auth_required` has no free-text answer. A genuine external-credential `auth_required`
+/// (`docs/HITL_REFERENCE_AGENT.md`'s "reply authorized" convention) only ever reaches this
+/// dispatcher via a "confirm" resolve (a "start" resolve leaves the row `pending`,
+/// `router/hitl.rs::resolve`) — there's no reject path for that kind, so its `auth_outcome` is
+/// always `"confirmed"`, and the literal reply must stay `"authorized"`, not a paraphrase: a
+/// deterministic agent may match that reply literally rather than semantically, so the platform
+/// echoes back exactly the word it told the human to send. But a `direct_chat`/`agent_proxy`/
+/// `maf`/`orchestrator` mirror of an MCP `tool_approval` (also `HitlKind::AuthRequired`, per
+/// `pause_kind()`'s mapping) CAN be rejected — `auto_resolve_linked_direct_chat_row`
+/// (`router/hitl.rs`) writes `auth_outcome: "denied"` for that case — and reaches this same
+/// dispatcher once `claim_for_resume` claims `rejected` rows too. Collapsing that into
+/// `"authorized"` would tell the agent the opposite of what happened, so `"denied"` is echoed back
+/// literally instead, on the same "echo the word, let the agent determine the real outcome from
+/// its own next response" principle (§7's "intent ≠ success").
 fn answer_text(row: &HitlRequest) -> String {
     let response = row.human_response.as_ref();
     if let Some(answer) = response
@@ -498,6 +506,7 @@ fn answer_text(row: &HitlRequest) -> String {
         .and_then(|r| r.get("auth_outcome"))
         .and_then(|v| v.as_str())
     {
+        Some("denied") => "denied".to_string(),
         Some(_) => "authorized".to_string(),
         None => String::new(),
     }
