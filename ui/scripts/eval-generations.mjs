@@ -76,8 +76,18 @@ export const CASES = [
   // already caught the failure it was written for — a generation that wrote
   // two AppCharts and left the row holding them unreferenced, which the
   // orphaned_statement diagnostic now names directly.
+  //
+  // Known-failing as of the current recording, and deliberately left that way:
+  // the generation wraps its chart in `AppCard([chartContainer], "Cost by
+  // Model")`, but app-card takes children through slots — its first positional
+  // is `name`. The whole subtree goes into a string attribute, the chart never
+  // reaches the page, and until `component_as_attribute` landed nothing said
+  // so. This is the composition failure the layout grammar work exists to fix,
+  // so this case is the measure of it: when the model learns which components
+  // nest and how, this passes and the annotation has to come off.
   { id: 'by-model-chart', prompt: 'Usage by model, with a chart',
-    expect: { minQueries: 1, tags: ['app-chart'] } },
+    expect: { minQueries: 1, tags: ['app-chart'] },
+    knownFailure: 'wraps the chart in AppCard, which has no children parameter — awaiting the composition grammar' },
   { id: 'kpis-only', prompt: 'Just the headline numbers, nothing else',
     expect: { minQueries: 1 } },
   { id: 'filter-days', prompt: 'History chart with buttons to switch between 7 and 30 days',

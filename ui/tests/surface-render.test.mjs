@@ -346,3 +346,40 @@ test('omitting columns leaves the responsive default in place', () => {
   // desktop shapes rather than interchangeable with omitting it.
   assert.equal(draw('root = AppGrid([])').el.attrs.columns, undefined);
 });
+
+// ── a component in a value slot ─────────────────────────────────────────────
+//
+// Measured, not imagined: this is what a recorded generation actually did.
+// `AppCard([chartContainer], "Cost Distribution by Model")` — app-card takes
+// children through slots, so its first positional is `name`, and the chart
+// went into the heading. Before this diagnostic the tree came back with
+// props.name set to an element node, children null, and no diagnostics at
+// all; the chart was gone from the page and nothing said so.
+
+test('a component handed to a string attribute is named, not stringified', () => {
+  const { el, diagnostics } = draw([
+    'chart = AppChart([], "bar")',
+    'root = AppCard([chart], "Cost Distribution by Model")',
+  ].join('\n'));
+  assert.equal(el.attrs.name, undefined, 'a node must never reach the attribute');
+  assert.ok(codes(diagnostics).includes('component_as_attribute'), codes(diagnostics).join(','));
+  const d = diagnostics.find((x) => x.code === 'component_as_attribute');
+  assert.match(d.message, /app-chart/, 'names what was put in the slot');
+  assert.match(d.message, /slots/, 'says how app-card actually takes children');
+});
+
+test('a bare component, not only a list of them, is caught', () => {
+  const { diagnostics } = draw([
+    'chart = AppChart([], "bar")',
+    'root = AppCard(chart)',
+  ].join('\n'));
+  assert.ok(codes(diagnostics).includes('component_as_attribute'), codes(diagnostics).join(','));
+});
+
+test('structured data still reaches a json attribute untouched', () => {
+  // The check is for nodes, not for structure — `json` attributes take arrays
+  // and objects by design, and narrowing that would be the cure being worse.
+  const { el, diagnostics } = draw('root = AppTable([{"a": 1}], ["a"])');
+  assert.ok(!codes(diagnostics).includes('component_as_attribute'), codes(diagnostics).join(','));
+  assert.ok(el, 'renders');
+});
