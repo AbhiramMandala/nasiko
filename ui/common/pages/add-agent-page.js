@@ -13,6 +13,7 @@ import { navigate as routerNavigate } from '../core/router.js';
 // module's tree. add-agent-page.css already had the `align-self: stretch` rule
 // for the mobile disclosure bar; nothing was mounting the element it styles.
 import '/common/features/app-module-nav.js';
+import '/common/features/writable-storage-field.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -91,6 +92,7 @@ class AddAgentPage extends HTMLElement {
             <span class="field-hint">Letters, digits, dots, underscores and hyphens; must start with
               a letter, digit or underscore. Pre-filled from the file name.</span>
           </div>
+          <writable-storage-field id="upload-storage"></writable-storage-field>
           <p class="form-error" id="upload-error" hidden></p>
         </div>
         <div data-slot="footer">
@@ -138,8 +140,8 @@ class AddAgentPage extends HTMLElement {
   #methodCard({ icon, id, title, req, desc, cta }) {
     return `
       <app-card name="${escAttr(title)}">
-        <span data-slot="leading">${icon}</span>
-        <div data-slot="body" class="method-body">
+        <span slot="leading">${icon}</span>
+        <div slot="body" class="method-body">
           <div class="method-card-req">${escHtml(req)}</div>
           <div class="method-card-desc">${escHtml(desc)}</div>
           <app-button class="method-btn" variant="primary" block id="${escAttr(id)}">${escHtml(cta)}</app-button>
@@ -166,7 +168,7 @@ class AddAgentPage extends HTMLElement {
     const setBusy = (busy) => {
       form.hidden = busy;
       progress.hidden = !busy;
-      modal.toggleAttribute('no-footer', busy);
+      modal.toggleAttribute('hide-footer', busy);
       if (busy) window.addEventListener('beforeunload', blockUnload);
       else window.removeEventListener('beforeunload', blockUnload);
     };
@@ -282,6 +284,14 @@ class AddAgentPage extends HTMLElement {
       const formData = new FormData();
       formData.append('name', name);
       formData.append('file', file);
+      // Persistent-storage opt-in. The server reads these as tri-state, so only
+      // send them once the user has actually touched the control.
+      const storageEl = this.querySelector('#upload-storage');
+      if (storageEl?.dirty) {
+        const { writable, writablePath } = storageEl.value;
+        formData.append('writable', String(writable));
+        if (writable && writablePath) formData.append('writable_path', writablePath);
+      }
 
       submitEl.disabled = true;
       try {

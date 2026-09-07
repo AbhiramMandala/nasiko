@@ -1,5 +1,6 @@
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Multipart, Path, Query, State},
     http::{StatusCode, header},
     response::IntoResponse,
@@ -9,6 +10,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use nasiko_orchestrator::models::{ChatCompletionRequest, ChatMessage as LlmMessage};
 use nasiko_orchestrator::providers::{LLMProvider, ProviderError};
+use nasiko_runtime::{ContainerId, WorkspaceRef};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -19,6 +21,12 @@ use super::models::*;
 
 const MAX_FILES_PER_UPLOAD: usize = 10;
 const MAX_FILE_BYTES: usize = 50 * 1024 * 1024; // 50 MB
+
+/// Upper bound on how long the per-turn workspace capture may hold the chat
+/// persist path. The reader is a long-lived singleton, so after its first start
+/// this is never approached; the cap only protects the cold-start / evicted-pod
+/// case from blocking a completed reply.
+const CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -782,53 +790,11 @@ async fn list_messages(
         None
     };
 
-    // Session-load HITL discovery (docs/HITL_STATUS.md): every HITL request tied to this
-    // session, pending or already resolved, rides along with the message page instead of
-    // requiring a separate `GET /api/hitl/pending` call. Scoped by BOTH `chat_session_id` and
-    // `owner_user_id` inside the query (`list_for_chat_session`) — the second is redundant with
-    // the `owns` check above in the ordinary case, but costs nothing and means a future refactor
-    // of that check can't silently turn this into a cross-user leak on its own. Reuses
-    // `router::hitl::to_response` verbatim so this can never drift from — or accidentally leak
-    // more than — the one HITL DTO the rest of the API already exposes (`resume_state` etc. stay
-    // excluded because `HitlRequest` itself isn't `Serialize`).
-    let hitl_rows = match state
-        .hitl_store
-        .list_for_chat_session(&session_id, user_id)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!(%e, session_id, "list_messages: hitl lookup failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-    // Each row goes through `resolve_display_row` before `to_response` — a no-op for the
-    // ordinary case, but substitutes the real row's id/kind/question when this row is a mirror
-    // of a real `mcp_tool` block (see that function's doc comment): otherwise the frontend would
-    // see the mirror's own generic question and could "resolve" an id that grants no real
-    // permission.
-    let mut hitl: Vec<serde_json::Value> = Vec::with_capacity(hitl_rows.len());
-    for row in &hitl_rows {
-        let display =
-            nasiko_hitl::resolve_display_row(state.hitl_store.as_ref(), row, user_id).await;
-        hitl.push(crate::router::hitl::to_response(&display));
-    }
-
-    #[derive(serde::Serialize)]
-    struct MessagesResponse {
-        #[serde(flatten)]
-        page: CursorPage<ChatMessage>,
-        hitl: Vec<serde_json::Value>,
-    }
-
-    Json(MessagesResponse {
-        page: CursorPage {
-            data: rows,
-            has_more,
-            next_cursor: out_next_cursor,
-            prev_cursor: out_prev_cursor,
-        },
-        hitl,
+    Json(CursorPage {
+        data: rows,
+        has_more,
+        next_cursor: out_next_cursor,
+        prev_cursor: out_prev_cursor,
     })
     .into_response()
 }
@@ -892,7 +858,7 @@ async fn send_message(
     };
 
     let usage = body.usage.as_ref();
-    let msg = match sqlx::query_as::<_, ChatMessage>(
+    let mut msg = match sqlx::query_as::<_, ChatMessage>(
         r#"INSERT INTO chat_messages
                (session_id, role, content, file_parts, has_file_parts,
                 input_tokens, output_tokens, model, duration_ms, cost_usd,
@@ -960,7 +926,201 @@ async fn send_message(
         tracing::warn!(session_id, %e, "failed to touch session updated_at");
     }
 
+    // Platform-driven capture: attach the workspace files the agent referenced
+    // in this reply to the assistant message, downloadable via the fixed
+    // `/chat/files/{id}/download` route. Works for any agent with no cooperation.
+    // Best-effort AND time-bounded - a failure or a slow/not-yet-ready workspace
+    // reader (the first turn after install can wait on a pod pull) must never
+    // stall the user seeing their completed answer. On timeout the message is
+    // returned without chips; the files are still on disk for a later turn. See
+    // docs/WORKSPACE_FILE_ACCESS_PLAN.md.
+    if msg.role == "assistant" {
+        let capture = tokio::time::timeout(
+            CAPTURE_TIMEOUT,
+            capture_turn_files(&state, &session_id, msg.id, &msg.content),
+        )
+        .await;
+        match capture {
+            Ok(Some(parts)) => {
+                msg.has_file_parts = true;
+                msg.file_parts = Some(sqlx::types::Json(parts));
+            }
+            Ok(None) => {}
+            Err(_) => tracing::warn!(session_id, "capture: workspace reader timed out, no chips"),
+        }
+    }
+
     (StatusCode::CREATED, Json(msg)).into_response()
+}
+
+/// Strip anything from a captured filename that could break out of a quoted
+/// `Content-Disposition` value or produce an invalid header: quotes, backslashes,
+/// and control characters (a POSIX basename may contain a newline). Non-ASCII is
+/// left intact — HTTP header values permit obs-text.
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .filter(|&c| !c.is_control() && c != '"' && c != '\\')
+        .collect()
+}
+
+/// Whether `reply` references `name` as a filename **token**, not merely as a
+/// substring. `str::contains` over-captures: `a.py` would match inside
+/// `a.python`, and on a shared writable container that can cross-attribute a
+/// same-substring file to an unrelated turn. A match counts only when it is
+/// bounded on both sides by a non-filename character (whitespace, quotes,
+/// backticks, parens, path separators, sentence punctuation) — never glued to an
+/// alphanumeric, `_`, `-`, or a `.` that joins two name characters (so `report.md`
+/// is *not* captured inside `report.md.bak`, but a trailing sentence period in
+/// "saved `report.md`." still is).
+fn reply_references_file(reply: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    // A `.` continues a filename only when it glues two name characters together
+    // (`a.py`, `.bak`); a `.` next to whitespace/start/end is sentence punctuation.
+    let alnum = |c: char| c.is_ascii_alphanumeric();
+    let name_char = |c: char| alnum(c) || c == '_' || c == '-';
+    let mut from = 0;
+    while let Some(rel) = reply[from..].find(name) {
+        let start = from + rel;
+        let end = start + name.len();
+        let before = reply[..start].chars().next_back();
+        let before_ok = match before {
+            None => true,
+            Some(c) if name_char(c) => false,
+            // `foo.report.md` — the `.` before joins an alnum on its left.
+            Some('.') => !reply[..start - 1].chars().next_back().is_some_and(alnum),
+            Some(_) => true,
+        };
+        let mut after = reply[end..].chars();
+        let after_ok = match after.next() {
+            None => true,
+            Some(c) if name_char(c) => false,
+            // `report.md.bak` — the `.` after is followed by an alnum.
+            Some('.') => !after.next().is_some_and(alnum),
+            Some(_) => true,
+        };
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
+/// Attach the workspace files the agent **named in its reply** to the assistant
+/// message, as session-scoped `chat_message_files`.
+///
+/// Platform-driven: the agent writes to `/workspace` however it likes and knows
+/// nothing about Nasiko. Attribution is by **what the reply references** - a
+/// workspace file whose name appears in the agent's response is the file this
+/// user asked about, whether the agent just wrote it ("saved `foo.py`") or is
+/// handing back an existing one ("Download `bar.py`"). This matches "give me
+/// *that* file" and, unlike write-time (mtime) attribution, is concurrency-safe:
+/// each user's reply names their own file, so overlapping turns don't
+/// cross-attribute.
+///
+/// This is a download **convenience, not a privacy boundary**: on a shared
+/// container the agent can already read (and list on request) every file in
+/// `/workspace`, so real per-user isolation needs a per-session container (see
+/// docs/WORKSPACE_FILE_ACCESS_PLAN.md). Downloads are still ACL'd to the session
+/// owner. Bytes stay in the PVC (`storage_uri` =
+/// `workspace://<owner>/<agent>/<relpath>`); `download_file` streams them,
+/// behind a contract Phase 2 can re-back with object storage unchanged.
+///
+/// Returns the `file_parts` array, or `None` when the agent isn't `--writable`
+/// or its reply named no existing workspace file.
+async fn capture_turn_files(
+    state: &AppState,
+    session_id: &str,
+    message_id: Uuid,
+    reply: &str,
+) -> Option<serde_json::Value> {
+    // The session's agent, and whether it can write at all.
+    let (agent_id, owner_id, writable): (Uuid, Uuid, bool) = sqlx::query_as(
+        "SELECT a.id, a.owner_id, a.writable \
+         FROM chat_sessions cs JOIN agents a ON a.id = cs.agent_id \
+         WHERE cs.session_id = $1 AND a.deleted_at IS NULL",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()??;
+    if !writable {
+        return None;
+    }
+
+    // List the whole agent workspace (scope = None); keep the files this reply
+    // actually references by name.
+    let ws = WorkspaceRef {
+        owner_id,
+        container_id: ContainerId::from_uuid(agent_id),
+    };
+    let entries = match state.runtime.list_workspace(&ws).await {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(session_id, %e, "capture: list_workspace failed");
+            return None;
+        }
+    };
+
+    let mut parts = Vec::new();
+    for entry in entries {
+        let name = entry
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&entry.path)
+            .to_owned();
+        // Only files the agent named in this reply — the ones the user asked
+        // about. A *token* match, not a bare substring: `a.py` must not be
+        // captured because the reply happened to contain `a.python`, which both
+        // over-captures and (on a shared writable container) risks handing one
+        // user a download link to a same-substring file another user's turn
+        // produced.
+        if !reply_references_file(reply, &name) {
+            continue;
+        }
+        let file_id = Uuid::new_v4();
+        let mime = mime_guess::from_path(&entry.path)
+            .first_or_octet_stream()
+            .to_string();
+        let storage_uri = format!("workspace://{owner_id}/{agent_id}/{}", entry.path);
+        if let Err(e) = sqlx::query(
+            "INSERT INTO chat_message_files \
+                 (id, message_id, session_id, filename, mime_type, size_bytes, storage_uri) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(file_id)
+        .bind(message_id)
+        .bind(session_id)
+        .bind(&name)
+        .bind(&mime)
+        .bind(entry.size as i64)
+        .bind(&storage_uri)
+        .execute(&state.db)
+        .await
+        {
+            tracing::warn!(session_id, %e, "capture: file insert failed");
+            continue;
+        }
+        parts.push(serde_json::json!({
+            "id": file_id, "name": name, "size": entry.size, "mime": mime,
+        }));
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+    let file_parts = serde_json::Value::Array(parts);
+    let _ = sqlx::query(
+        "UPDATE chat_messages SET file_parts = $1, has_file_parts = true WHERE id = $2",
+    )
+    .bind(sqlx::types::Json(&file_parts))
+    .bind(message_id)
+    .execute(&state.db)
+    .await;
+    Some(file_parts)
 }
 
 // ─── File upload ─────────────────────────────────────────────────────────────
@@ -1155,6 +1315,15 @@ async fn download_file(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
+    // Phase 1 captures keep their bytes in the agent's PVC; `storage_uri` encodes
+    // the reader-side location (`workspace://<owner>/<agent>/<relpath>`) and we
+    // stream them out. Uploads (and Phase 2 captures) live in object storage and
+    // redirect to a presigned URL. The route is identical either way, so the FE
+    // never learns where the bytes are.
+    if let Some(rest) = file.storage_uri.strip_prefix("workspace://") {
+        return stream_workspace_file(&state, &file, rest).await;
+    }
+
     match state
         .oci_storage
         .presigned_get_url(&file.storage_uri, 3600)
@@ -1162,6 +1331,58 @@ async fn download_file(
     {
         Ok(url) => (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, url)]).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// Stream a PVC-backed capture out of the agent's `/workspace` via the runtime's
+/// workspace reader. `rest` is `<owner>/<agent>/<relpath>` (the `storage_uri`
+/// minus its `workspace://` scheme). Bytes are streamed, never buffered, so a
+/// large file is constant-memory on the control plane.
+async fn stream_workspace_file(
+    state: &AppState,
+    file: &ChatMessageFile,
+    rest: &str,
+) -> axum::response::Response {
+    let mut segs = rest.splitn(3, '/');
+    let (Some(owner), Some(agent), Some(rel_path)) = (segs.next(), segs.next(), segs.next()) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let (Ok(owner_id), Ok(agent_id)) = (owner.parse::<Uuid>(), agent.parse::<Uuid>()) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let ws = WorkspaceRef {
+        owner_id,
+        container_id: ContainerId::from_uuid(agent_id),
+    };
+    match state.runtime.read_workspace_file(&ws, rel_path).await {
+        // No `Content-Length`: the size comes from an earlier `stat`, but the
+        // bytes come from a separate streaming `cat`, and the file may have been
+        // rewritten (or the reader's post-stat containment recheck may end the
+        // stream early) in between. A wrong length truncates or hangs the client;
+        // chunked transfer streams exactly what the reader yields.
+        Ok(wf) => (
+            [
+                (header::CONTENT_TYPE, file.mime_type.clone()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    // Strip anything that could break out of the quoted filename or
+                    // produce an invalid header: quotes, backslashes, and control
+                    // characters (a workspace basename can legally contain a
+                    // newline). Not just `"` — an incomplete strip risks a broken
+                    // HeaderValue or, on lax clients, header confusion.
+                    format!(
+                        "attachment; filename=\"{}\"",
+                        sanitize_filename(&file.filename)
+                    ),
+                ),
+            ],
+            Body::from_stream(wf.stream),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!(file_id = %file.id, %e, "workspace file stream failed");
+            StatusCode::NOT_FOUND.into_response()
+        }
     }
 }
 
@@ -1227,4 +1448,48 @@ async fn delete_file(
     }
 
     StatusCode::NO_CONTENT.into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reply_references_file;
+
+    #[test]
+    fn matches_a_named_file_but_not_a_substring_of_a_longer_token() {
+        // Named as a real token → captured.
+        assert!(reply_references_file(
+            "I saved `report.md` for you.",
+            "report.md"
+        ));
+        assert!(reply_references_file(
+            "Done. report.md is ready.",
+            "report.md"
+        ));
+        assert!(reply_references_file("See (output.txt).", "output.txt"));
+        assert!(reply_references_file("Saved to /tmp/a.py path.", "a.py"));
+
+        // The over-capture the token match exists to stop: `a.py` glued inside a
+        // longer alphanumeric run must NOT match.
+        assert!(!reply_references_file("the a.python value is 3", "a.py"));
+        assert!(!reply_references_file(
+            "my-file.txt was written",
+            "file.txt"
+        ));
+        assert!(!reply_references_file(
+            "results.json holds it",
+            "result.json"
+        ));
+        assert!(!reply_references_file("no files here", "data.csv"));
+        assert!(!reply_references_file("anything", ""));
+
+        // A dotted extension continuation must not cross-capture the shorter name.
+        assert!(!reply_references_file("wrote report.md.bak", "report.md"));
+        assert!(!reply_references_file("see my.report.md", "report.md"));
+        // ...but a trailing sentence period is still a boundary.
+        assert!(reply_references_file("Saved report.md.", "report.md"));
+        assert!(reply_references_file(
+            "Files: report.md, notes.txt",
+            "report.md"
+        ));
+    }
 }
