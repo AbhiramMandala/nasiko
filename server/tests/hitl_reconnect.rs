@@ -102,12 +102,10 @@ async fn mock_agent_handler(
                 .expect("StreamResponse must serialize")
         }
         MockResponse::Complete { text } => {
-            let mut event =
-                serde_json::to_value(nasiko_types::a2a::status_event(nasiko_types::a2a::completed(
-                    &task_id,
-                    &context_id,
-                )))
-                .expect("StreamResponse must serialize");
+            let mut event = serde_json::to_value(nasiko_types::a2a::status_event(
+                nasiko_types::a2a::completed(&task_id, &context_id),
+            ))
+            .expect("StreamResponse must serialize");
             // `completed()` on its own carries no message — inject one the same way
             // `hitl_stream_metadata.rs`'s fixture injects `metadata`, so the terminal event
             // itself carries the reply text `task_reply_text` (`agent_proxy.rs`) looks for.
@@ -174,7 +172,11 @@ async fn send_turn(
     .send()
     .await
     .expect("a2a turn request failed");
-    assert!(res.status().is_success(), "a2a turn returned {}", res.status());
+    assert!(
+        res.status().is_success(),
+        "a2a turn returned {}",
+        res.status()
+    );
     res.text().await.expect("read a2a stream body")
 }
 
@@ -212,7 +214,9 @@ fn extract_final_reply_text(raw: &str) -> Option<String> {
         let Ok(parsed) = serde_json::from_str::<Value>(data) else {
             continue;
         };
-        if parsed.pointer("/statusUpdate/status/state").and_then(|v| v.as_str())
+        if parsed
+            .pointer("/statusUpdate/status/state")
+            .and_then(|v| v.as_str())
             == Some("TASK_STATE_COMPLETED")
             && let Some(text) = parsed
                 .pointer("/statusUpdate/status/message/parts/0/text")
@@ -235,7 +239,12 @@ async fn resolve(server: &common::TestServer, user_id: Uuid, id: &str, answer: &
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 200, "resolve must succeed: {:?}", res.text().await);
+    assert_eq!(
+        res.status(),
+        200,
+        "resolve must succeed: {:?}",
+        res.text().await
+    );
 }
 
 async fn reconnect(server: &common::TestServer, user_id: Uuid, hitl_id: &str) -> String {
@@ -298,7 +307,10 @@ async fn reconnect_delivers_the_resumed_agents_real_reply_without_a_second_invoc
         "Book me a movie ticket",
     )
     .await;
-    let hitl_id = extract_hitl_frame(&initial)["id"].as_str().unwrap().to_string();
+    let hitl_id = extract_hitl_frame(&initial)["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     resolve(&server, user_id, &hitl_id, "Interstellar").await;
 
@@ -345,7 +357,10 @@ async fn reconnect_surfaces_a_sequential_hitl_from_the_continuation_stream() {
         "Book me a movie ticket",
     )
     .await;
-    let first_id = extract_hitl_frame(&initial)["id"].as_str().unwrap().to_string();
+    let first_id = extract_hitl_frame(&initial)["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     resolve(&server, user_id, &first_id, "Interstellar").await;
 
@@ -353,7 +368,10 @@ async fn reconnect_surfaces_a_sequential_hitl_from_the_continuation_stream() {
     let second_frame = extract_hitl_frame(&continuation);
     assert_eq!(second_frame["kind"], "auth_required");
     let second_id = second_frame["id"].as_str().unwrap().to_string();
-    assert_ne!(first_id, second_id, "the second pause must get its own row id");
+    assert_ne!(
+        first_id, second_id,
+        "the second pause must get its own row id"
+    );
 
     server.cleanup().await;
 }
@@ -390,7 +408,10 @@ async fn reconnect_after_resume_already_finished_still_replays_everything() {
         "Book me a movie ticket",
     )
     .await;
-    let hitl_id = extract_hitl_frame(&initial)["id"].as_str().unwrap().to_string();
+    let hitl_id = extract_hitl_frame(&initial)["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     resolve(&server, user_id, &hitl_id, "Interstellar").await;
 

@@ -451,6 +451,10 @@ async fn auto_resolve_linked_direct_chat_row(
         .await
     {
         Ok(_) => {
+            // The frontend reconnects using `mcp_row.id` (what `resolve_display_row` showed it),
+            // but `deliver()` only ever runs on `linked.id` — alias the two so either id finds the
+            // same continuation buffer (see `ContinuationRegistry::alias`'s own doc comment).
+            state.continuation_events.alias(mcp_row.id, linked.id);
             let _ = state.hitl_resume_tx.try_send(());
         }
         Err(e) => {

@@ -105,6 +105,23 @@ impl ContinuationRegistry {
             .clone()
     }
 
+    /// Makes `alias` resolve to the exact same buffer as `target`. Needed for the MCP-mirror pause
+    /// case: `resolve_display_row` (`oss/hitl/src/store.rs`) shows the frontend the *real*
+    /// `mcp_tool` row's id, so that's the id a reconnect arrives with — but `deliver()` only ever
+    /// runs (and keys its `ContinuationGuard`) on the *mirror* row's id, the one
+    /// `auto_resolve_linked_direct_chat_row` (`oss/server/src/router/hitl.rs`) actually resolves to
+    /// trigger the resume. Without this, a reconnect for the real row's id watches a buffer nothing
+    /// ever writes to or terminates. Call site sets this up before the dispatcher can possibly
+    /// finish delivering, so a reconnect racing ahead of `deliver()` still lands on the shared
+    /// buffer either way — `get_or_create` is what makes the two insertion orders equivalent.
+    pub fn alias(&self, alias: Uuid, target: Uuid) {
+        let buffer = self.get_or_create(target);
+        self.buffers
+            .write()
+            .expect("continuation registry lock poisoned")
+            .insert(alias, buffer);
+    }
+
     /// Append one real, already-normalized SSE `data:` payload for `id`'s resume. Infallible and
     /// non-blocking (a `Mutex` around a `Vec` push, no I/O) by design — this must never be able to
     /// affect `deliver()`'s own retry/completion logic.
