@@ -6,7 +6,8 @@
  *   `split()` finds the `name = expression` statements in a buffer, tracking
  *   bracket depth so a newline inside an array or object does not end one. It
  *   also reports the text that was *not* part of any statement. The model is
- *   told to wrap its DSL in two plain-English sentences (agent.yaml rule 14),
+ *   told to wrap its DSL in two plain-English sentences (agent.yaml's
+ *   two-sentence wrapper rule),
  *   so that prose is expected output, not noise — dropping it silently, which
  *   is what a splitter that only returns statements does, loses half of what
  *   the assistant said.

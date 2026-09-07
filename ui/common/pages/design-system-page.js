@@ -41,6 +41,7 @@ import '/common/design-system/app-switch/app-switch.js';
 import '/common/design-system/app-table/app-table.js';
 import '/common/design-system/app-tabs/app-tabs.js';
 import '/common/design-system/app-tag/app-tag.js';
+import '/common/design-system/app-text/app-text.js';
 import '/common/design-system/app-toolbar/app-toolbar.js';
 import '/common/design-system/app-tooltip/app-tooltip.js';
 import '/common/design-system/auto-complete/auto-complete.js';
@@ -513,6 +514,18 @@ const SPECS = [
   <app-avatar size="lg" filled label="Label" description="name@email.com"></app-avatar>
   <app-avatar size="lg" filled state="hover" label="Label" description="name@email.com"></app-avatar>
   <app-avatar size="lg" disabled label="Label" description="name@email.com"></app-avatar>
+</app-stack>`,
+  },
+  {
+    group: 'Data display',
+    tag: 'app-text',
+    blurb: 'The typography primitive \u2014 five roles, no new sizes. Every ramp is one the tokens already define: title is the same recipe as .title-page, caption is Figma\u2019s second body ramp, label is the uppercase eyebrow two stylesheets already declared separately. Heading level is fixed (title = h2, subtitle = h3) because a surface renders inside a page that owns the h1. No margins \u2014 spacing belongs to the stack that holds it.',
+    demo: `<app-stack gap="sm" align="start">
+  <app-text variant="label">This month</app-text>
+  <app-text variant="title">Cost overview</app-text>
+  <app-text variant="subtitle">By model</app-text>
+  <app-text>Spend is up 12% week over week, driven almost entirely by the long-context runs on Friday. The measure caps at 68ch so a paragraph stays readable at full dashboard width.</app-text>
+  <app-text variant="caption">Figures exclude cached reads.</app-text>
 </app-stack>`,
   },
   {

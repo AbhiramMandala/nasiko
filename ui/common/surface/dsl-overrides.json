@@ -63,6 +63,11 @@
       "status": "ready",
       "textParam": true
     },
+    "app-text": {
+      "status": "ready",
+      "textParam": true,
+      "reason": "The typography primitive. Nothing else in the vocabulary can put a heading above a group or a sentence beside a number, so without it every generated surface is a wall of boxes with no voice."
+    },
     "app-divider": {
       "status": "ready"
     },

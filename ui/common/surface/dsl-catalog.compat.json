@@ -1,9 +1,9 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "f9a764de3ef2",
+  "catalogVersion": "0c19af937a7f",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 27,
+  "componentCount": 28,
   "components": {
     "app-accordion": {
       "element": "app-accordion",
@@ -1583,6 +1583,31 @@
           "description": "Cancelable; the tag removes itself unless prevented."
         }
       ]
+    },
+    "app-text": {
+      "element": "app-text",
+      "summary": "Typography — a heading, a paragraph, a caption, an eyebrow label.",
+      "textParam": true,
+      "paramOrder": [
+        "text",
+        "variant"
+      ],
+      "attributes": {
+        "variant": {
+          "type": "enum",
+          "values": [
+            "body",
+            "title",
+            "subtitle",
+            "caption",
+            "label"
+          ],
+          "default": "body",
+          "description": "Role on the page: `body` (default) | `title` | `subtitle` | `caption` | `label`"
+        }
+      },
+      "slots": [],
+      "events": []
     },
     "app-toolbar": {
       "element": "app-toolbar",

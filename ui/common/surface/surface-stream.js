@@ -11,7 +11,8 @@
  * lines in a page:
  *
  *   **Prose is output, not noise.** The generator is told to wrap its DSL in
- *   two plain sentences (agent.yaml rule 14). Those lines are the assistant
+ *   two plain sentences (agent.yaml's two-sentence wrapper rule). Those lines
+ *   are the assistant
  *   talking and belong in the chat log. They also arrive character by character
  *   like everything else, so a line is only emitted once it is no longer the
  *   tail of the buffer — otherwise the user watches "Sure — buil" appear as a

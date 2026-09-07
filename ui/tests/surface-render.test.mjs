@@ -383,3 +383,19 @@ test('structured data still reaches a json attribute untouched', () => {
   assert.ok(!codes(diagnostics).includes('component_as_attribute'), codes(diagnostics).join(','));
   assert.ok(el, 'renders');
 });
+
+// ── app-text ────────────────────────────────────────────────────────────────
+
+test('AppText puts its text in the element, not in an attribute', () => {
+  const { el } = draw('root = AppText("Spend is up 12% week over week")');
+  assert.equal(el.tag, 'app-text');
+  assert.equal(el.textContent, 'Spend is up 12% week over week');
+  assert.deepEqual(el.attrs, {}, 'body is the default — nothing to write');
+});
+
+test('the role is the second positional, and it is a closed set', () => {
+  assert.equal(draw('root = AppText("Cost overview", "title")').el.attrs.variant, 'title');
+  const { el, diagnostics } = draw('root = AppText("Cost overview", "h1")');
+  assert.ok(codes(diagnostics).includes('enum_violation'), codes(diagnostics).join(','));
+  assert.equal(el.attrs.variant, 'body', 'falls back to the default rather than rendering unstyled');
+});

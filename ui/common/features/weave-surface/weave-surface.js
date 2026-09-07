@@ -77,6 +77,7 @@ import '/common/design-system/app-stat-row/app-stat-row.js';
 import '/common/design-system/app-switch/app-switch.js';
 import '/common/design-system/app-table/app-table.js';
 import '/common/design-system/app-tag/app-tag.js';
+import '/common/design-system/app-text/app-text.js';
 import '/common/design-system/app-toolbar/app-toolbar.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
