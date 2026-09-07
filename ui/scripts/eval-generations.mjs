@@ -117,15 +117,28 @@ export const CASES = [
 ];
 
 /**
- * Diagnostics that describe a mistake the runtime corrected.
+ * How seriously to take each diagnostic — read from the generated manifest, not
+ * hand-kept here.
  *
- * The surface renders properly, so failing the case would be reporting a
- * problem the user never has. They are still shown, because the mistake is
- * real and worth fixing upstream — but "the generator wrote something odd and
- * we handled it" is not the same event as "the dashboard is broken", and a
- * checker that conflates the two teaches people to ignore it.
+ * This was a three-entry literal, and two of the three were added *reactively*,
+ * after a new code turned a correct surface red. That is the wrong direction to
+ * fail in: it teaches people to ignore the checker. `gen-diagnostics.mjs` now
+ * requires a decision per code and `--check` refuses an unclassified one, so
+ * the next code cannot arrive fatal-by-omission.
+ *
+ *   fatal     the generation is wrong — something asked for is missing or wrong
+ *   advisory  the runtime corrected a real mistake; the surface is still right
+ *   runtime   a failed source, a dropped stream, a host gap. Says nothing about
+ *             the DSL, and should not appear offline at all — if one does, the
+ *             harness is what is broken, so it is printed under its own heading
+ *             rather than folded in with the model's mistakes.
  */
-const ADVISORY = new Set(['default_is_whole_response', 'excess_null_padding', 'non_route_value']);
+const SEVERITY = JSON.parse(
+  readFileSync(new URL('../common/surface/diagnostics.json', import.meta.url), 'utf8'),
+).diagnostics;
+
+/** Unknown means unclassified means fatal — the gate should have caught it. */
+const severityOf = (code) => SEVERITY[code]?.severity ?? 'fatal';
 
 /** Every source the scope allows. Anything else must not survive to the client. */
 export const ALLOWED_SOURCES = new Set([
@@ -192,24 +205,27 @@ export function check(kase, text) {
   const fail = [];
   /** Corrected, not broken — shown, never fatal. */
   const advisory = [];
+  const runtime = [];
   const e = kase.expect ?? {};
 
   if (e.noSurface) {
     if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 11)');
     if (!r.prose.join('').trim()) fail.push('answered with nothing at all');
-    return { fail, advisory, r };
+    return { fail, advisory, runtime, r };
   }
 
   if (!r.root) {
-    if (e.allowNoSurface) return { fail, advisory, r };
+    if (e.allowNoSurface) return { fail, advisory, runtime, r };
     fail.push('no root — nothing rendered');
   }
 
   // These are never acceptable, whatever the case asked for.
   for (const d of r.diagnostics) {
     const line = `diagnostic ${d.source}/${d.code}: ${d.message}`;
-    if (ADVISORY.has(d.code)) advisory.push(line);
-    else fail.push(line);
+    const severity = severityOf(d.code);
+    if (severity === 'fatal') fail.push(line);
+    else if (severity === 'runtime') runtime.push(line);
+    else advisory.push(line);
   }
   for (const name of r.unresolved) fail.push(`references "${name}", which is not defined`);
   for (const q of r.queries) {
@@ -233,7 +249,7 @@ export function check(kase, text) {
     if (!r.tags.includes(tag)) fail.push(`no <${tag}> anywhere in the tree`);
   }
 
-  return { fail, advisory, r };
+  return { fail, advisory, runtime, r };
 }
 
 /** Read one generation off the live endpoint, concatenating its dsl-chunks. */
@@ -351,7 +367,7 @@ for (const kase of cases) {
   }
   if (record) writeFileSync(path, text);
 
-  const { fail, advisory, r } = check(kase, text);
+  const { fail, advisory, runtime, r } = check(kase, text);
 
   if (kase.knownFailure) {
     if (fail.length) {
@@ -379,6 +395,9 @@ for (const kase of cases) {
     console.log(`✓ ${kase.id} — ${shape}`);
   }
   for (const a of advisory) console.log(`    corrected: ${a}`);
+  // Offline, nothing should reach the network or the stream. One of these
+  // means the harness, not the generation.
+  for (const t of runtime) console.log(`    runtime: ${t}`);
 }
 
 const known = cases.filter((c) => c.knownFailure).length;

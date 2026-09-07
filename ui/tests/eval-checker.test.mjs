@@ -12,6 +12,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { check, evaluateGeneration, CASES, ALLOWED_SOURCES } from '../scripts/eval-generations.mjs';
 
 const GOOD = `Sure — building that now.
@@ -150,4 +151,36 @@ Done.`;
 test('a genuine breakage is still fatal', () => {
   const { fail } = check(kase({}), 'root = AppStack([ghost], "md")\n');
   assert.ok(fail.length > 0);
+});
+
+test('the checker reads severity from the manifest, not from a literal', () => {
+  // The coupling this asserts is the point of the manifest. Before it, severity
+  // was a three-entry Set in eval-generations.mjs, and a new code moved the
+  // pass/fail line the moment it was added — twice, in the wrong direction, by
+  // making a correct surface look broken.
+  //
+  // Reclassifying a code in gen-diagnostics.mjs must change what the checker
+  // does. So: take a code the manifest calls advisory, plant it, and assert the
+  // checker files it as advisory rather than as a failure — and the same for a
+  // fatal one. If someone reintroduces a hardcoded list, one of these breaks.
+  const manifest = JSON.parse(
+    readFileSync(new URL('../common/surface/diagnostics.json', import.meta.url), 'utf8'),
+  ).diagnostics;
+
+  assert.equal(manifest.non_route_value.severity, 'advisory');
+  const wrongSlot = `Here.
+c = AppCard("Spend", null, null, null, null, null, null, null, null, null, null, null, null, false)
+root = AppStack([c], "md")
+Done.`;
+  const shifted = check(kase({}), wrongSlot);
+  assert.deepEqual(shifted.fail, [], shifted.fail.join(' / '));
+  assert.match(shifted.advisory.join(' '), /non_route_value/);
+
+  assert.equal(manifest.component_as_attribute.severity, 'fatal');
+  const swallowed = `Here.
+chart = AppChart([], "bar")
+root = AppCard([chart], "Cost by model")
+Done.`;
+  const lost = check(kase({}), swallowed);
+  assert.match(lost.fail.join(' '), /component_as_attribute/);
 });

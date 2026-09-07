@@ -193,6 +193,10 @@ class WeavePage extends HTMLElement {
       this.#diagnostics.push(key);
       const row = document.createElement('div');
       row.className = 'diag';
+      // Painted by severity, because "the chart is missing" and "the stream
+      // reconnected" arriving in the same amber were indistinguishable, and the
+      // one that matters is the one that got skimmed past.
+      if (d.severity) row.dataset.severity = d.severity;
       const code = document.createElement('span');
       code.className = 'diag__code';
       code.textContent = d.code ?? 'note';
