@@ -1,0 +1,58 @@
+/* Custom views — the shelf of saved generated screens. A title, a sort, and a
+   grid of cards. Nothing else: the interesting part of each view is behind it. */
+
+@scope (custom-views-page) {
+  /* Host box (display + padding): common/styles/page-layout.css — linked, so
+     it is in effect at first paint. */
+
+  .page-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-16);
+    margin-bottom: var(--s-24);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--s-16);
+  }
+
+  /* The empty state is the only child when there is nothing to list, so it
+     spans rather than sitting in a lone first column. */
+  .grid app-empty-state { grid-column: 1 / -1; }
+
+  /* The card IS the link — the whole plane is the target, so there is no
+     inner hit area to miss. */
+  .view-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-8);
+    padding: var(--s-16);
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-10);
+    background: var(--color-bg-surface);
+    text-decoration: none;
+    color: inherit;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  }
+
+  .view-card:hover {
+    border-color: var(--border-hover);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .view-card__title {
+    margin: 0;
+    font-size: var(--font-size-base);
+    font-weight: var(--fw-semibold);
+    color: var(--color-text-main);
+  }
+
+  .view-card__meta {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+}

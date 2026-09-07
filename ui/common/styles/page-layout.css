@@ -58,7 +58,9 @@ observability-session-page,
 resources-page,
 settings-page,
 tokenops-page,
-weave-page {
+weave-page,
+custom-views-page,
+generated-view-page {
   display: block;
   padding: var(--s-24) var(--s-32);
 }
@@ -203,7 +205,8 @@ login-page {
   mcp-page,
   observability-session-page,
   resources-page,
-  settings-page {
+  settings-page,
+  custom-views-page {
     padding: var(--card-content-pad);
   }
 
