@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "5c3cfee77b27",
+  "catalogVersion": "f9a764de3ef2",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 27,
@@ -679,7 +679,14 @@
       "attributes": {
         "columns": {
           "type": "number",
-          "description": "Column count (integer) or CSS grid-template value (e.g. `auto-fit`)"
+          "description": "Column count (integer) or CSS grid-template value (e.g. `auto-fit`)",
+          "templates": [
+            "1fr 1fr",
+            "2fr 1fr",
+            "1fr 2fr",
+            "3fr 2fr",
+            "2fr 3fr"
+          ]
         },
         "gap": {
           "type": "enum",
@@ -706,7 +713,8 @@
         }
       },
       "slots": [],
-      "events": []
+      "events": [],
+      "note": "columns takes an integer OR a grid-template string. app-grid.js:20 turns a positive integer into repeat(n, 1fr) and passes anything else through verbatim into style.setProperty('--grid-columns', …), which is the only way to express a ratio — app-row has no per-child sizing at all. The template form is a closed set rather than free text for two reasons: the value reaches a CSS custom property unfiltered and the DSL is written by a model, and a ratio carries meaning, so five named proportions are a vocabulary while arbitrary fr pairs are noise. Omitting columns entirely is the responsive option — the CSS default is repeat(auto-fill, minmax(300px, 1fr)) and setting columns replaces it, so both the integer and template forms are deliberate desktop shapes."
     },
     "app-input": {
       "element": "app-input",

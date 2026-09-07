@@ -98,6 +98,27 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     attributes[name] = spec;
   }
 
+  // ── Values a type alone cannot express ───────────────────────────────
+  // `app-grid.columns` is the case: `@attr {string|number}`, which typeOf()
+  // collapses to `number` because every other consumer wants one type. The
+  // string half is the only way to express a ratio in the whole vocabulary —
+  // app-row has no per-child sizing — and the model was never told it exists.
+  //
+  // Declared as a closed set rather than "a string is fine": the value lands in
+  // style.setProperty('--grid-columns', …) unfiltered, and a spec written by a
+  // model is not a place to accept free-form CSS. render.js enforces membership.
+  for (const [name, templates] of Object.entries(ov.attrTemplates || {})) {
+    if (!attributes[name]) {
+      problems.push(`${tag}: attrTemplates names "${name}", which is not an attribute it has.`);
+      continue;
+    }
+    if (!Array.isArray(templates) || !templates.length) {
+      problems.push(`${tag}.${name}: attrTemplates must be a non-empty array.`);
+      continue;
+    }
+    attributes[name] = { ...attributes[name], templates };
+  }
+
   // ── Accessible name ──────────────────────────────────────────────────
   // Where this component's name can come from, and whether it needs one.
   //

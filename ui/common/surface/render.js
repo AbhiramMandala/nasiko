@@ -152,6 +152,25 @@ function buildNode(node, catalog, deps = {}) {
       el.setAttribute(key, String(spec.default));
       continue;
     }
+    // A closed set of non-numeric values the attribute also accepts. Only
+    // `app-grid.columns` today: an integer means `repeat(n, 1fr)`, a template
+    // string is the one way to express a ratio anywhere in the vocabulary.
+    //
+    // Checked rather than passed through, because the value reaches
+    // `style.setProperty('--grid-columns', …)` unfiltered and this DSL is
+    // written by a model. An integer stays an integer; anything else has to be
+    // one of the named proportions. Dropped rather than defaulted — a grid with
+    // no template falls back to the responsive `auto-fill` default, which is a
+    // worse layout but never a broken one.
+    if (spec.templates?.length && !Number.isInteger(Number(value))) {
+      if (!spec.templates.includes(String(value))) {
+        report('template_not_allowed',
+          `"${value}" is not one of ${spec.templates.join(', ')} for ${node.tag}.${key}`);
+        continue;
+      }
+      el.setAttribute(key, String(value));
+      continue;
+    }
     if (spec.type === 'json') {
       el.setAttribute(key, typeof value === 'string' ? value : JSON.stringify(value));
       continue;

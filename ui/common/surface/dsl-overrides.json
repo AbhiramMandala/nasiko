@@ -12,7 +12,17 @@
     },
     "app-grid": {
       "status": "ready",
-      "childrenParam": true
+      "childrenParam": true,
+      "attrTemplates": {
+        "columns": [
+          "1fr 1fr",
+          "2fr 1fr",
+          "1fr 2fr",
+          "3fr 2fr",
+          "2fr 3fr"
+        ]
+      },
+      "note": "columns takes an integer OR a grid-template string. app-grid.js:20 turns a positive integer into repeat(n, 1fr) and passes anything else through verbatim into style.setProperty('--grid-columns', \u2026), which is the only way to express a ratio \u2014 app-row has no per-child sizing at all. The template form is a closed set rather than free text for two reasons: the value reaches a CSS custom property unfiltered and the DSL is written by a model, and a ratio carries meaning, so five named proportions are a vocabulary while arbitrary fr pairs are noise. Omitting columns entirely is the responsive option \u2014 the CSS default is repeat(auto-fill, minmax(300px, 1fr)) and setting columns replaces it, so both the integer and template forms are deliberate desktop shapes."
     },
     "app-table": {
       "status": "ready",

@@ -1,6 +1,7 @@
 Sure — building that now.
-root = AppStack([heading, table], "md")
-heading = AppCard(null, "Agent costs", null, null, "Top agents by total cost", null, null, null, null, null, null, null, null, false)
-agentRows = Query("fetchTokenopsDashboard", [], [], "data.agents")
-table = AppTable(agentRows, 20, "pages", false)
-Here's a table of agents ranked by cost with all their usage metrics — let me know if you'd like to filter, sort by a specific field, or add a chart breakdown!
+root = AppStack([titleRow, agentTable], "md")
+titleRow = AppRow([titleText], "md")
+titleText = AppStatCard("Agent Cost Breakdown", "", null, "neutral")
+agentDataQ = Query("fetchTokenopsDashboard", [], {agents: []})
+agentTable = AppTable(agentDataQ.agents, 20, "pages", false)
+Here's your agent cost breakdown table sorted by total cost — let me know if you'd like filters, a chart, or additional metrics added!

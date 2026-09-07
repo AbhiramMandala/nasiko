@@ -1,9 +1,9 @@
-Got it — building your AWS bill breakdown now.
+Sure — building that now.
 
 root = AppStack([header, billByService], "md")
 header = AppRow([title], "md")
-title = AppStatCard("AWS Services", null, null, "neutral")
+title = AppStatCard("AWS Bill by Service", null, null, "neutral")
 billByService = AppTable(serviceRows, 20, "pages", false)
 serviceRows = Query("fetchUsageByModel", ["", 1, 20], [], "data")
 
-Here's a table showing usage grouped by service with cost and token details — let me know if you'd like me to pivot it differently, add filters, or break it down another way!
+Here's a table showing usage by model — this is the closest match to your AWS bill request. The available data sources don't yet include a dedicated AWS billing breakdown by service, so this table shows cost and token usage grouped by model instead. Let me know if you'd like a different view, or if you'd like me to add filters, charts, or additional metrics!

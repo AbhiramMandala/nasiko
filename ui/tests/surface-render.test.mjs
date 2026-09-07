@@ -317,3 +317,32 @@ test('the diagnostic says which attributes would fix it', () => {
   const d = diagnostics.find((x) => x.code === 'missing_accessible_name');
   assert.match(d.message, /text or aria-label/);
 });
+
+// ── app-grid.columns: an integer or a named ratio, nothing else ───────────
+
+test('an integer column count still renders', () => {
+  assert.equal(draw('root = AppGrid([], 3)').el.attrs.columns, '3');
+});
+
+test('a named ratio renders — the only way to express proportion anywhere', () => {
+  // app-row has no per-child sizing, so AppGrid's template string is the whole
+  // mechanism. It worked all along; nothing ever told the model it existed,
+  // because @attr {string|number} is collapsed to `number` in the catalog.
+  assert.equal(draw('root = AppGrid([], "2fr 1fr")').el.attrs.columns, '2fr 1fr');
+});
+
+test('an unlisted template is refused rather than reaching the stylesheet', () => {
+  // app-grid.js puts this straight into style.setProperty('--grid-columns', ...)
+  // with no filtering, and the DSL is written by a model — so the set is closed
+  // rather than "a string is fine".
+  const { el, diagnostics } = draw('root = AppGrid([], "7fr 3fr")');
+  assert.equal(el.attrs.columns, undefined, 'must not reach the element');
+  assert.ok(codes(diagnostics).includes('template_not_allowed'), codes(diagnostics).join(','));
+});
+
+test('omitting columns leaves the responsive default in place', () => {
+  // The CSS default is repeat(auto-fill, minmax(300px, 1fr)); setting columns at
+  // all replaces it, so the integer and template forms are both deliberate
+  // desktop shapes rather than interchangeable with omitting it.
+  assert.equal(draw('root = AppGrid([])').el.attrs.columns, undefined);
+});
