@@ -279,6 +279,18 @@ async fn reconnect_stream(
             A2aDispatchError::InvalidRequest("no such HITL request to reconnect to".into())
         })?;
 
+    // `deliver_maf()` (`hitl/mod.rs`) hands off to the MAF worker over Redis and never touches
+    // `continuation_events` at all — a MAF-origin row here would otherwise `watch()` a buffer
+    // nothing ever appends to or terminates, hanging the connection forever with no error. Reject
+    // cleanly instead; MAF continuation isn't wired up yet (§13.2) — the poll-based discovery
+    // surfaces still apply.
+    if row.origin == nasiko_hitl::HitlOrigin::Maf {
+        return Err(A2aDispatchError::InvalidRequest(
+            "reconnect is not available for MAF-origin executions — poll GET /api/maf/execution/{id} instead"
+                .into(),
+        ));
+    }
+
     let identity = nasiko_hitl::HitlIdentity {
         user_id,
         is_superuser,
@@ -287,7 +299,11 @@ async fn reconnect_stream(
         |_| A2aDispatchError::Forbidden("not authorized to reconnect to this execution".into()),
     )?;
 
-    let events = state.continuation_events.watch(hitl_id);
+    // A real `mcp_tool` row's id is aliased onto its mirror's buffer by
+    // `auto_resolve_linked_direct_chat_row` (`router/hitl.rs`,
+    // `ContinuationRegistry::alias`) at resolve time, so `row.id` resolves to the right buffer
+    // either way — no separate lookup needed here.
+    let events = state.continuation_events.watch(row.id);
     let stream = async_stream::stream! {
         futures::pin_mut!(events);
         while let Some(data) = events.next().await {
