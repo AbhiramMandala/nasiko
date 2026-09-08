@@ -211,13 +211,16 @@
     width: 20px;
     height: 20px;
     padding: 0;
-    border: var(--bw-2) solid transparent;
+    border: none;
     border-radius: var(--r-4);
     /* Normal and selected share the same fill (--yellow-200) — the design
-       tells the two apart by text colour and the selected border only, not
-       by a colour swap. */
+       tells the two apart by text colour and the selected ring only, not by
+       a colour swap. --fg-brand (not --fg-brand-strong) is yellow/600 in
+       light mode — the same value as the selected ring below (#BB8F06) — so
+       "brand" text and the selected ring read as one colour, just used two
+       different ways. */
     background: var(--yellow-200);
-    color: var(--fg-brand-strong);
+    color: var(--fg-brand);
     font-size: var(--font-size-xs);
     font-variant-numeric: tabular-nums;
     line-height: 1;
@@ -225,12 +228,14 @@
 
     &:hover:not(:disabled) { background: var(--yellow-300); }
     &:focus-visible { outline: 2px solid var(--fg-brand); outline-offset: 1px; }
-    /* Selected: fg-primary (not the brand tint) plus a real yellow-600 ring —
-       the ring is what says "this one specifically", same fill as every
-       other in-range day. */
+    /* Selected: fg-primary (not the brand tint) plus a 1px yellow-600 ring,
+       held 2px clear of the 20x20 box — `outline` (not `border`) is what
+       gives the gap; a border sits flush against the box edge and has no
+       offset of its own. */
     &.is-selected {
       color: var(--fg-primary);
-      border-color: var(--yellow-600);
+      outline: var(--bw-1) solid var(--yellow-600);
+      outline-offset: 2px;
     }
     /* A future day is never a valid drill-down target — disabled, not hidden,
        so the grid's shape stays the month's shape all month. */
