@@ -25,10 +25,15 @@ fn admin_url() -> String {
         .unwrap_or_else(|_| "postgres://nasiko:nasiko@localhost:5432/nasiko_dev".to_string())
 }
 
-#[tokio::test]
-async fn claim_serializes_per_target_but_not_across_targets() {
+/// Provision an isolated, migrated database, hand its URL to `body`, and drop
+/// it afterwards even when `body` fails. Returns `None` when Postgres is
+/// unreachable, so the caller can skip rather than fail.
+async fn with_scratch_db<F, Fut>(label: &str, body: F) -> Option<Result<(), String>>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
     let admin_dsn = admin_url();
-
     let admin = match PgPoolOptions::new()
         .max_connections(1)
         .connect(&admin_dsn)
@@ -37,24 +42,20 @@ async fn claim_serializes_per_target_but_not_across_targets() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("SKIP: cannot reach Postgres at {admin_dsn}: {e}");
-            return;
+            return None;
         }
     };
-    let db_name = format!("nasiko_test_claim_{}", Uuid::new_v4().simple());
+    let db_name = format!("nasiko_test_{label}_{}", Uuid::new_v4().simple());
     sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
         .execute(&admin)
         .await
         .expect("create test database");
 
-    let db_url = {
-        let base = admin_dsn
-            .rsplit_once('/')
-            .map(|(b, _)| b)
-            .unwrap_or(&admin_dsn);
-        format!("{base}/{db_name}")
-    };
-
-    let result = run_checks(&db_url).await;
+    let base = admin_dsn
+        .rsplit_once('/')
+        .map(|(b, _)| b)
+        .unwrap_or(&admin_dsn);
+    let result = body(format!("{base}/{db_name}")).await;
 
     // Always drop the test DB, even on failure.
     let _ = sqlx::query(&format!(
@@ -63,7 +64,92 @@ async fn claim_serializes_per_target_but_not_across_targets() {
     .execute(&admin)
     .await;
 
+    Some(result)
+}
+
+#[tokio::test]
+async fn claim_serializes_per_target_but_not_across_targets() {
+    let Some(result) =
+        with_scratch_db("claim", |db_url| async move { run_checks(&db_url).await }).await
+    else {
+        return;
+    };
     result.expect("claim_next_job same-target checks");
+}
+
+/// The sequential test above cannot reach the case the advisory lock exists
+/// for: `NOT EXISTS` reads committed state, so a second replica claiming while
+/// the first has not yet committed passes it and takes a sibling of the same
+/// target — two builds resolving to one `image_tag`.
+///
+/// Firing concurrent `claim_next_job` calls does *not* reproduce that: they
+/// each open their own short transaction and in practice the first commits
+/// before the next one selects, so such a test passes with or without the lock
+/// and proves nothing. Instead this holds the target's lock the way an
+/// uncommitted peer claim would, and asserts the query declines to claim.
+///
+/// Two-sided on purpose: the same target must become claimable once the lock
+/// is released. Without that second half, a test whose lock key drifted from
+/// the query's would pass for the wrong reason — it would be observing a
+/// target nothing can ever claim.
+#[tokio::test]
+async fn a_target_locked_by_another_claimer_is_not_claimed() {
+    let Some(result) = with_scratch_db("lock", |db_url| async move {
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&db_url)
+            .await
+            .map_err(|e| format!("connect test db: {e}"))?;
+        sqlx::migrate!("../migrations")
+            .run(&pool)
+            .await
+            .map_err(|e| format!("run migrations: {e}"))?;
+
+        let owner = insert_user(&pool).await?;
+        let agent = insert_agent(&pool, owner).await?;
+        let job = queue_agent_job(&pool, agent, owner).await?;
+
+        // Stand in for a peer replica mid-claim: hold the target's lock in an
+        // open transaction. The key must match what the query computes, hence
+        // the same `'a:' || <uuid>` shape.
+        let mut peer = pool
+            .begin()
+            .await
+            .map_err(|e| format!("begin peer tx: {e}"))?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('a:' || $1::text))")
+            .bind(agent)
+            .execute(&mut *peer)
+            .await
+            .map_err(|e| format!("take peer lock: {e}"))?;
+
+        if let Some(claimed) = claim(&pool).await? {
+            return Err(format!(
+                "claimed {claimed} while a peer held the target's lock — the \
+                 cross-replica window is open"
+            ));
+        }
+        if status_of(&pool, job).await? != "pending" {
+            return Err("a job skipped for a held lock must stay pending".into());
+        }
+
+        // Peer finishes without claiming; the lock goes with its transaction.
+        peer.rollback()
+            .await
+            .map_err(|e| format!("rollback peer tx: {e}"))?;
+
+        let after = claim(&pool)
+            .await?
+            .ok_or("the job must be claimable once the peer's lock is released")?;
+        if after != job {
+            return Err(format!("expected {job}, got {after}"));
+        }
+        Ok(())
+    })
+    .await
+    else {
+        return;
+    };
+    result.expect("advisory-lock serialization");
 }
 
 async fn run_checks(db_url: &str) -> Result<(), String> {

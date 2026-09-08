@@ -222,11 +222,17 @@ the same image tag. Jobs belonging to *other* replicas cannot be vouched for and
 `claim_next_job` simultaneously — the second one skips the locked row and either claims a
 different pending job or returns `Ok(None)`.
 
-The same-target clause is a **weaker** guarantee than that, and the distinction matters: it reads
-committed state, so it fully serializes per target within one worker (claims there are sequential)
-but leaves a millisecond window across replicas, where a claim transaction that has not yet
-committed is invisible to another replica's subquery. Closing it needs `pg_advisory_xact_lock` on
-the target id or a partial unique index. Single-replica deployments are unaffected.
+The same-target rule needs a second mechanism, because `NOT EXISTS` reads committed state: two
+replicas could both pass it before either commits, each claiming a sibling of the same target. So
+the claim also takes a `pg_try_advisory_xact_lock` keyed on the target id (`'a:'`/`'c:'` prefixed so
+the agent and connector id spaces cannot collide). That serializes the read-then-write, and the
+loser's subquery then sees the winner's `in_progress` row.
+
+`try_` rather than the blocking form, so a contended target is filtered out and left `pending` for
+the next drain instead of holding the transaction open. Note the predicate is evaluated on every
+candidate row the scan considers, not only the one `LIMIT` returns, so a busy queue briefly holds a
+lock per candidate; they last until the claim transaction commits, but it does mean a concurrent
+replica can come up empty while work exists and take it on the next pass.
 
 The `recover_stuck_jobs` queries are safe to run concurrently: both replicas will attempt the
 same `UPDATE … WHERE status = 'in_progress' AND picked_at < threshold`. Postgres last-write-wins

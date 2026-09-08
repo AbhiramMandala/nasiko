@@ -238,12 +238,11 @@ async fn recover_stuck_jobs(db: &PgPool, in_flight: &[Uuid]) {
 /// `FOR UPDATE SKIP LOCKED` stops two claimers taking the *same* row, across
 /// this worker's slots and across replicas.
 ///
-/// The same-target clause below is a different guarantee, and a weaker one: it
-/// reads committed state, so it fully serializes per target within one worker
-/// (claims here are sequential) but leaves a millisecond window across replicas,
-/// where a claim transaction that has not yet committed is invisible to another
-/// replica's subquery. Closing that needs `pg_advisory_xact_lock` on the target
-/// id or a partial unique index; single-replica deployments are unaffected.
+/// The same-target clause below reads committed state, so on its own it would
+/// leave a window across replicas: a claim transaction that has not yet
+/// committed is invisible to another replica's subquery, so both could claim
+/// siblings of one target. The advisory lock closes that by serializing the
+/// read-then-write per target, which is why the two clauses are both needed.
 ///
 /// `pub` (not `pub(crate)`) so the same-target clause is directly testable from
 /// an integration test — same reasoning as [`infer_build_status`]. Takes the
@@ -272,6 +271,25 @@ pub async fn claim_next_job(db: &PgPool) -> anyhow::Result<Option<BuildJob>> {
     // agent is never blocked by an in-flight connector job (and vice versa)
     // without needing IS NOT NULL guards. Every row sets exactly one of the two
     // columns — enforced by `chk_build_jobs_one_target`.
+    //
+    // The advisory lock makes the same-target rule hold across replicas too.
+    // NOT EXISTS reads committed state, so two replicas can both pass it before
+    // either commits; taking a lock keyed on the target id serializes the
+    // read-then-write, and the loser's subquery then sees the winner's
+    // 'in_progress' row. `try_` (not the blocking form) keeps the existing
+    // semantics: a contended target yields false, the row is filtered out and
+    // stays 'pending' for the next drain, rather than holding the transaction
+    // open. The lock is released when this transaction ends, a moment later.
+    //
+    // Note the predicate runs on every candidate row the scan considers, not
+    // only the one LIMIT returns, so a busy queue briefly holds a lock per
+    // candidate. Harmless — they last until this transaction commits — but it
+    // means a concurrent replica can come up empty while work exists and pick
+    // it up on the next drain instead.
+    //
+    // The 'a:'/'c:' prefixes keep the two id spaces apart, so an agent and a
+    // connector that happened to share a UUID can't collide on one lock key.
+    // COALESCE picks whichever column is set — exactly one always is.
     let job = sqlx::query_as::<_, BuildJob>(
         "SELECT id, agent_id, connector_id, payload, attempt
          FROM build_jobs j
@@ -282,7 +300,10 @@ pub async fn claim_next_job(db: &PgPool) -> anyhow::Result<Option<BuildJob>> {
                    AND b.picked_at > now() - make_interval(mins => $1::int)
                    AND (b.agent_id = j.agent_id OR b.connector_id = j.connector_id)
                )
-         ORDER BY created_at
+           AND pg_try_advisory_xact_lock(
+                 hashtext(coalesce('a:' || j.agent_id::text, 'c:' || j.connector_id::text))
+               )
+         ORDER BY created_at, id
          FOR UPDATE SKIP LOCKED
          LIMIT 1",
     )
