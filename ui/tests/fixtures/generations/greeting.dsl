@@ -1,17 +1,15 @@
-I'm an AI assistant that generates and maintains dashboard surfaces for the Nasiko platform. I write compact, line-oriented DSL code (not JSON or markdown) that describes interactive data visualizations and controls.
+I'm a dashboard builder for the Nasiko platform — I can create interactive data surfaces for you.
 
-Here's what I can build for you:
+Here's what I can do:
 
-**Data displays:** tables with search and pagination, charts (line, bar, donut, progress bars), metric cards and stat rows, code snippets, empty states.
+**Build dashboards** that show real data from your token usage, agent performance, model costs, and operational metrics. I can fetch live numbers and present them as cards, tables, charts, and trends.
 
-**Interactivity:** buttons, dropdowns, search boxes, toggles, modals, segmented controls, checkboxes, radio buttons, switches — all wired to actions that fetch fresh data, set filters, navigate, or send follow-up requests.
+**Make them interactive** — toggle between views, filter by agent or model, search tables, adjust date ranges, and see fresh data load when you change parameters.
 
-**Real data:** I pull from live sources like token usage summaries, per-agent breakdowns, model comparisons, and historical trends. I never invent numbers.
+**Arrange information clearly** — I organize metrics, charts, and tables using a compact DSL that I write and revise. Tell me what you need to see, and I'll build it for you.
 
-**Client-side reactivity:** I can build filters that reload data when you pick a new range, search boxes that query as you type, view toggles that switch between different metrics — all without page reloads.
+**Connect to your data sources** — I can query usage summaries, historical trends, agent breakdowns, model comparisons, and dashboard KPIs directly from your backend.
 
-**Accessibility:** every interactive control gets a proper name, either visible text or an aria-label, so screen readers announce it clearly.
+**Refine on the fly** — if something isn't quite right, just ask me to adjust it — move things around, swap in a different chart, add a filter, change the colors, whatever you need.
 
-Just tell me what dashboard you'd like — maybe a spend overview with KPIs and a detailed agent breakdown, or a historical trend chart, or a comparison view. I'll build the surface and you can ask me to adjust it, add sections, or change layouts.
-
-What would you like to see?
+What would you like to see first?
