@@ -37,6 +37,7 @@ import { escHtml } from '/common/utils/escape.js';
 import { navigate } from '/common/core/router.js';
 import { createView, setViewSurface } from '/common/state/weave-views.js';
 import { createSurfaceSession } from '/common/surface/surface-stream.js';
+import { loadCatalog } from '/common/surface/catalog-load.js';
 import '/common/design-system/app-chatbox/app-chatbox.js';
 
 /**
@@ -92,7 +93,7 @@ class WeaveDock extends HTMLElement {
   #open = false;
   #busy = false;
   /** The generation session, built on first send and reused for follow-ups. */
-  #surfaceSession = null;
+  #sessionPromise = null;
   /** Prose the generator wrapped its DSL in, collected during the turn. */
   #said = [];
 
@@ -121,8 +122,10 @@ class WeaveDock extends HTMLElement {
     // The session holds query subscriptions and an open stream. A turn already
     // in flight still resolves — #respond and #paintThread both tolerate a
     // detached dock — but nothing new starts.
-    this.#surfaceSession?.dispose();
-    this.#surfaceSession = null;
+    // Through the promise, so a dock torn down while the catalog is still in
+    // flight still disposes the session that fetch is about to produce.
+    this.#sessionPromise?.then((session) => session.dispose()).catch(() => {});
+    this.#sessionPromise = null;
     document.documentElement.style.removeProperty('--app-dock-width');
   }
 
@@ -244,12 +247,23 @@ class WeaveDock extends HTMLElement {
    * context and the model revises rather than starting over.
    */
   #session() {
-    this.#surfaceSession ??= createSurfaceSession({
-      endpoint: '/weave/surface',
-      container: document.createElement('div'),
-      onMessage: (text) => { this.#said.push(text); },
-    });
-    return this.#surfaceSession;
+    // A promise, not the session: the catalog has to be fetched first, and two
+    // turns racing to build the session would otherwise each start their own
+    // and one would be thrown away mid-flight.
+    this.#sessionPromise ??= (async () => {
+      // Required, not optional. Without it `buildComponentIndex` throws on the
+      // first property read and every turn dies before the request is even
+      // built — which is exactly what happened, and it looked like Weave being
+      // unreachable rather than a missing argument.
+      const catalog = await loadCatalog();
+      return createSurfaceSession({
+        endpoint: '/weave/surface',
+        catalog,
+        container: document.createElement('div'),
+        onMessage: (text) => { this.#said.push(text); },
+      });
+    })();
+    return this.#sessionPromise;
   }
 
   /**
@@ -270,7 +284,7 @@ class WeaveDock extends HTMLElement {
 
     let out = null;
     try {
-      out = await this.#session().send(view.prompt);
+      out = await (await this.#session()).send(view.prompt);
     } catch (err) {
       out = { status: 'failed', surface: '', catalogVersion: null, error: err };
     }

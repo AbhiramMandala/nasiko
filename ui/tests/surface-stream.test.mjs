@@ -134,6 +134,22 @@ const TURN = [
   frame('end', { status: 'ok' }, 9),
 ];
 
+test('a session built without a catalog fails at construction, not at send', () => {
+  // The bug this exists for: the dock built a session with no catalog, every
+  // turn threw inside the request builder, the host caught it and told the user
+  // the generator was unreachable. A running server was blamed for a missing
+  // argument. Constructing must fail loudly and say what to pass.
+  assert.throws(
+    () => createSurfaceSession({ endpoint: '/weave/surface', container: {} }),
+    (err) => err instanceof TypeError && /requires a `catalog`/.test(err.message),
+  );
+  assert.throws(
+    () => createSurfaceSession({ endpoint: '/weave/surface', container: {}, catalog: {} }),
+    /requires a `catalog`/,
+    'an object that is not a catalog is no better than none',
+  );
+});
+
 test('a full turn renders the tree the DSL describes', async () => {
   const { s, container } = session(TURN);
   const out = await s.send('build me a spend dashboard');
@@ -746,4 +762,109 @@ test('typing into a filter box does not throw the caret away', async () => {
   assert.notEqual(after, before, 'the repaint really did rebuild the tree');
   assert.equal(doc.activeElement, after, 'and the caret followed it to the new node');
   assert.equal(after.focusCount, 1, 'focused once, not on a loop');
+});
+
+// ── show(): a saved surface, rendered without a turn ────────────────────────
+//
+// Reopening a stored view is not a generation. Before this there was no way in
+// that did not involve an SSE stream, so a saved dashboard had nowhere to go.
+
+test('a stored surface renders with no request at all', async () => {
+  const { doc, container } = recorder();
+  let requests = 0;
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    fetchImpl: async () => { requests++; return sse([]); },
+    routes: new Set(),
+  });
+
+  const out = s.show('root = AppStack([kpi], "md")\nkpi = AppStatCard("Total cost", "12.50")');
+  assert.equal(requests, 0, 'reopening a view must not call the generator');
+  assert.equal(container.children[0].tag, 'app-stack');
+  assert.equal(container.children[0].children[0].tag, 'app-stat-card');
+  assert.deepEqual(out.diagnostics, []);
+});
+
+test('show() runs the complete-only diagnostics on its single pass', async () => {
+  // Mid-stream an unreferenced statement is normal — the parent has not arrived
+  // yet. A stored surface has no "yet", so orphan reporting must fire on the
+  // first and only pass rather than waiting for an end frame that never comes.
+  const { doc, container } = recorder();
+  const diagnostics = [];
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    routes: new Set(),
+  });
+  s.show('root = AppStack([], "md")\nstray = AppBadge("nobody references me")');
+  assert.ok(diagnostics.some((d) => d.code === 'orphaned_statement'), diagnostics.map((d) => d.code).join(','));
+});
+
+test('a view saved against an older catalog says so', async () => {
+  // The case this check exists for. A stored surface can outlive the catalog it
+  // was generated against, and positional arguments may have been rebound
+  // underneath it — so the caller gets a diagnostic rather than a plausible
+  // dashboard whose columns have quietly shifted.
+  const { doc, container } = recorder();
+  const diagnostics = [];
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    routes: new Set(),
+  });
+  s.show('root = AppBadge("hi")', { catalogVersion: 'aaaaaaaaaaaa' });
+  const d = diagnostics.find((x) => x.code === 'catalog_version_mismatch');
+  assert.ok(d, diagnostics.map((x) => x.code).join(','));
+  assert.match(d.message, /aaaaaaaaaaaa/);
+});
+
+test('reopening one view after another leaves nothing of the first behind', async () => {
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface', catalog, container, doc,
+    schedule: (fn) => fn(), routes: new Set(),
+  });
+  s.show('root = AppStack([a, b], "md")\na = AppBadge("one")\nb = AppBadge("two")');
+  assert.equal(container.children[0].children.length, 2);
+  s.show('root = AppBadge("only")');
+  assert.equal(container.children.length, 1, 'the container holds one surface, not two');
+  assert.equal(container.children[0].tag, 'app-badge');
+  assert.equal(s.currentSurface, 'root = AppBadge("only")', 'and currentSurface is the one on screen');
+});
+
+test('a reopened surface is still live, not a screenshot', async () => {
+  // The reason show() reuses draw() rather than rendering once and stopping.
+  // A saved dashboard whose filters do nothing would be a picture of a
+  // dashboard, and the difference is invisible until someone clicks.
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface', catalog, container, doc,
+    schedule: (fn) => fn(), routes: new Set(),
+  });
+  s.show([
+    '$label = "before"',
+    'flip = Action([@Set($label, "after")])',
+    // action is the 12th positional (paramOrder ends 'aria-expanded', 'action')
+    'btn = AppButton($label, "primary", null, null, null, null, null, null, null, null, null, flip)',
+    'root = AppStack([btn], "md")',
+  ].join('\n'));
+
+  const button = container.children[0].children[0];
+  assert.equal(button.textContent, 'before');
+  button.listeners.click[0]({});
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(container.children[0].children[0].textContent, 'after',
+    'the Action ran and the surface repainted');
 });
