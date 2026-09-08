@@ -76,18 +76,15 @@ export const CASES = [
   // already caught the failure it was written for — a generation that wrote
   // two AppCharts and left the row holding them unreferenced, which the
   // orphaned_statement diagnostic now names directly.
-  //
-  // Known-failing as of the current recording, and deliberately left that way:
-  // the generation wraps its chart in `AppCard([chartContainer], "Cost by
-  // Model")`, but app-card takes children through slots — its first positional
-  // is `name`. The whole subtree goes into a string attribute, the chart never
-  // reaches the page, and until `component_as_attribute` landed nothing said
-  // so. This is the composition failure the layout grammar work exists to fix,
-  // so this case is the measure of it: when the model learns which components
-  // nest and how, this passes and the annotation has to come off.
+  // The composition case, and the one that has earned its keep. Every recording
+  // of this prompt through three catalogs tried to nest a chart inside a card
+  // and failed a different way — the chart into `name`, nineteen arguments at a
+  // fifteen-argument card, the card and the chart as unconnected statements
+  // with both orphaned. None of those was a model that could not compose; it
+  // was a model reaching for a shape the grammar had no room for. app-card
+  // leads with children now and this passes on the first recording after.
   { id: 'by-model-chart', prompt: 'Usage by model, with a chart',
-    expect: { minQueries: 1, tags: ['app-chart'] },
-    knownFailure: 'wraps the chart in AppCard, which has no children parameter — awaiting the composition grammar' },
+    expect: { minQueries: 1, tags: ['app-chart'] } },
   { id: 'kpis-only', prompt: 'Just the headline numbers, nothing else',
     expect: { minQueries: 1 } },
   { id: 'filter-days', prompt: 'History chart with buttons to switch between 7 and 30 days',
@@ -373,6 +370,12 @@ for (const kase of cases) {
     if (fail.length) {
       console.log(`~ ${kase.id} — known failure: ${kase.knownFailure}`);
       for (const f of fail) console.log(`    ${f}`);
+      // Printed here as well as below, because `continue` skips the tail. A
+      // known-failing case was the one place an advisory was collected and
+      // then thrown away — and it is the case most likely to be carrying a
+      // second, unrelated mistake nobody has looked at yet.
+      for (const a of advisory) console.log(`    corrected: ${a}`);
+      for (const t of runtime) console.log(`    runtime: ${t}`);
     } else {
       // A known failure that passes is a fix nobody wrote down. Failing here is
       // what stops the annotation outliving the problem and quietly hiding a

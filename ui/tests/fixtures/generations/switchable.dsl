@@ -8,7 +8,6 @@ showCost = Action([@Set($view, "cost")])
 showOps = Action([@Set($view, "ops")])
 summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0})
 kpiRow = AppRow([$view == "cost" ? costCard : opsCard], "md")
-costCard = AppStatCard("Total cost", @Round(summaryQ.total_cost_usd, 2), null, "up")
+costCard = AppStatCard("Total cost", summaryQ.total_cost_usd, null, "up")
 opsCard = AppStatCard("Total requests", summaryQ.request_count, null, "neutral")
-
-Here's your cost/ops toggle dashboard — switch between total spend and request count with those buttons. Let me know if you'd like to add a chart, history view, or drill-down by agent or model!
+Here's your cost and ops dashboard with toggle buttons — flip between total cost and request count. Let me know if you'd like to add more metrics, a breakdown by agent or model, or historical trends!

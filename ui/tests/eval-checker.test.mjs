@@ -168,8 +168,11 @@ test('the checker reads severity from the manifest, not from a literal', () => {
   ).diagnostics;
 
   assert.equal(manifest.non_route_value.severity, 'advisory');
+  // AppCard(children, name, status, description, tags, href, loading) — the
+  // boolean lands in `href`, which is a route slot. Sixteen positions is how
+  // this used to happen by accident; seven is why it now takes effort.
   const wrongSlot = `Here.
-c = AppCard("Spend", null, null, null, null, null, null, null, null, null, null, null, null, false)
+c = AppCard([], "Spend", null, null, null, false)
 root = AppStack([c], "md")
 Done.`;
   const shifted = check(kase({}), wrongSlot);
@@ -177,9 +180,12 @@ Done.`;
   assert.match(shifted.advisory.join(' '), /non_route_value/);
 
   assert.equal(manifest.component_as_attribute.severity, 'fatal');
+  // app-empty-state, not app-card: the card leads with children now, so that
+  // call is correct DSL. What is still a category error is a component handed
+  // to a component that has slots but no children parameter.
   const swallowed = `Here.
 chart = AppChart([], "bar")
-root = AppCard([chart], "Cost by model")
+root = AppEmptyState([chart], "No usage yet")
 Done.`;
   const lost = check(kase({}), swallowed);
   assert.match(lost.fail.join(' '), /component_as_attribute/);

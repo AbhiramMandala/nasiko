@@ -119,11 +119,17 @@ export function renderNode(node, catalog, deps = {}) {
  * Is this value a materialized component, or a list containing one?
  *
  * A model that calls a component with children it does not accept —
- * `AppCard([chart], "Cost by Model")`, where `app-card` takes children through
- * slots and its first positional is `name` — puts a whole element node into a
- * string slot. Nothing throws: `toText` flattens it, the attribute renders as
- * noise or empty, and the chart is simply absent from the page. That is the
- * hardest kind of failure to see, because the surface still looks plausible.
+ * `AppEmptyState([chart], "No usage yet")`, where the first positional is
+ * `title` — puts a whole element node into a string slot. Nothing throws:
+ * `toText` flattens it, the attribute renders as noise or empty, and the chart
+ * is simply absent from the page. That is the hardest kind of failure to see,
+ * because the surface still looks plausible.
+ *
+ * The example used to be `AppCard([chart], "Cost by Model")`, which is what
+ * three recorded generations actually wrote. That one is correct DSL now —
+ * app-card leads with children like every other container — but the diagnostic
+ * outlived its first case, because the category error is general and every
+ * component with slots and no children parameter can still meet it.
  */
 function isComponentValue(value) {
   if (Array.isArray(value)) return value.some(isComponentValue);

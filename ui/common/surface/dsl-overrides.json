@@ -96,9 +96,20 @@
     },
     "app-card": {
       "status": "ready",
-      "reason": "agent-id stays out: an internal record id the model cannot know, and as the first positional it shifted every AppCard() call. Route attributes are back in \u2014 render.js now checks each one against the live router and refuses anything unregistered.",
+      "childrenParam": true,
+      "reason": "The card is the one container in the vocabulary, and until now nothing could go inside it. app-card declares four slots \u2014 leading, actions, body, footer \u2014 and every one of them was unreachable from DSL: children are only bound when childrenParam is set, so AppCard([chart], \"Cost\") put the chart into `name`, Slot(\"body\", chart) had no children list to land in, and padding to a trailing position hit excess_arguments. Three recorded generations tried all three. Children lead here, as they do on app-modal, app-accordion and app-toolbar.",
+      "reason2": "The attribute list is cut to what a generated dashboard can mean. What is left out is agent-catalog chrome the model can only reach by accident \u2014 and it did: chat-href sat at position 13 and a boolean landed in it, which is what non_route_value has been reporting. card-title is an alias for name kept for the replaced card's call sites; the model has no legacy call sites. Sixteen positions was itself the defect.",
       "dslExcludeAttributes": [
-        "agent-id"
+        "agent-id",
+        "card-title",
+        "version",
+        "error-title",
+        "error-body",
+        "deploy-label",
+        "deploy-hint",
+        "max-visible-tags",
+        "details-href",
+        "chat-href"
       ]
     },
     "app-chart": {

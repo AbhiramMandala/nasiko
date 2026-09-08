@@ -1,9 +1,9 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "0c19af937a7f",
+  "catalogVersion": "edbbc1d51014",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 28,
+  "componentCount": 29,
   "components": {
     "app-accordion": {
       "element": "app-accordion",
@@ -268,21 +268,14 @@
     "app-card": {
       "element": "app-card",
       "summary": "`<app-card>` — THE card component.",
+      "childrenParam": true,
       "paramOrder": [
+        "children",
         "name",
-        "card-title",
-        "version",
         "status",
         "description",
         "tags",
         "href",
-        "error-title",
-        "error-body",
-        "deploy-label",
-        "deploy-hint",
-        "max-visible-tags",
-        "details-href",
-        "chat-href",
         "loading"
       ],
       "attributes": {
@@ -290,14 +283,6 @@
           "type": "string",
           "required": true,
           "description": "Display name (required). `card-title` is accepted as an alias, because `title` is a reserved global attribute and the replaced card used that spelling — kept so call sites did not all have to change."
-        },
-        "card-title": {
-          "type": "string",
-          "description": "Alias for `name`, kept for the replaced card's call sites."
-        },
-        "version": {
-          "type": "string",
-          "description": "Rendered after the name; a leading \"v\" is added if absent"
         },
         "status": {
           "type": "enum",
@@ -321,35 +306,6 @@
         "href": {
           "type": "route",
           "description": "Where the whole card navigates. Defaults to the details href."
-        },
-        "error-title": {
-          "type": "string",
-          "description": "Shown in place of the description when status is error/failed"
-        },
-        "error-body": {
-          "type": "string",
-          "description": "Supporting line for the error state"
-        },
-        "deploy-label": {
-          "type": "string",
-          "description": "Overrides the deploying headline (default \"Agent is being deployed...\")"
-        },
-        "deploy-hint": {
-          "type": "string",
-          "description": "Overrides the deploying hint line"
-        },
-        "max-visible-tags": {
-          "type": "number",
-          "default": 2,
-          "description": "Chips shown before the \"+N\" overflow chip (default 2)"
-        },
-        "details-href": {
-          "type": "route",
-          "description": "Overrides the default `/agent-card?id=…`"
-        },
-        "chat-href": {
-          "type": "route",
-          "description": "Overrides the default `/chat?agent_id=…&agent_name=…`"
         },
         "loading": {
           "type": "boolean",

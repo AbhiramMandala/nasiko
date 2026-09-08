@@ -349,31 +349,47 @@ test('omitting columns leaves the responsive default in place', () => {
 
 // ── a component in a value slot ─────────────────────────────────────────────
 //
-// Measured, not imagined: this is what a recorded generation actually did.
-// `AppCard([chartContainer], "Cost Distribution by Model")` — app-card takes
-// children through slots, so its first positional is `name`, and the chart
-// went into the heading. Before this diagnostic the tree came back with
-// props.name set to an element node, children null, and no diagnostics at
-// all; the chart was gone from the page and nothing said so.
+// Measured, not imagined. Three recorded generations tried to nest something
+// in an app-card, which had no children parameter: one wrote
+// `AppCard([chart], "Cost Distribution by Model")` and put the chart into
+// `name`, one padded nineteen arguments at a card that takes fifteen, and one
+// gave up and left the chart orphaned. app-card now leads with children, so
+// the first of those is correct DSL today — but the category error it exposed
+// is general, and app-empty-state still has a default slot and no children
+// parameter, so it stands in here.
 
 test('a component handed to a string attribute is named, not stringified', () => {
   const { el, diagnostics } = draw([
     'chart = AppChart([], "bar")',
-    'root = AppCard([chart], "Cost Distribution by Model")',
+    'root = AppEmptyState([chart], "No usage yet")',
   ].join('\n'));
-  assert.equal(el.attrs.name, undefined, 'a node must never reach the attribute');
+  assert.equal(el.attrs.title, undefined, 'a node must never reach the attribute');
   assert.ok(codes(diagnostics).includes('component_as_attribute'), codes(diagnostics).join(','));
   const d = diagnostics.find((x) => x.code === 'component_as_attribute');
   assert.match(d.message, /app-chart/, 'names what was put in the slot');
-  assert.match(d.message, /slots/, 'says how app-card actually takes children');
+  assert.match(d.message, /slots/, 'says how app-empty-state actually takes children');
 });
 
 test('a bare component, not only a list of them, is caught', () => {
   const { diagnostics } = draw([
     'chart = AppChart([], "bar")',
-    'root = AppCard(chart)',
+    'root = AppEmptyState(chart)',
   ].join('\n'));
   assert.ok(codes(diagnostics).includes('component_as_attribute'), codes(diagnostics).join(','));
+});
+
+test('and a card, which now leads with children, simply takes them', () => {
+  // The other half of the same change: what used to be silent content loss is
+  // the plain way to write a card. If this regresses, the diagnostic above
+  // starts firing on correct DSL.
+  const { el, diagnostics } = draw([
+    'chart = AppChart([], "bar")',
+    'root = AppCard([chart], "Cost distribution")',
+  ].join('\n'));
+  assert.equal(el.attrs.name, 'Cost distribution');
+  assert.equal(el.children.length, 1, 'the chart is inside the card');
+  assert.equal(el.children[0].tag, 'app-chart');
+  assert.deepEqual(codes(diagnostics), []);
 });
 
 test('structured data still reaches a json attribute untouched', () => {

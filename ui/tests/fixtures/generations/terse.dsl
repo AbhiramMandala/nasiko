@@ -1,14 +1,13 @@
 Sure — building that now.
-root = AppStack([header, kpis, table], "md")
-header = AppRow([title], "md")
-title = AppCard(null, "TokenOps Spend Dashboard")
-kpis = AppRow([costCard, opsCard, agentsCard], "md")
-costQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
-opsQ = Query("fetchUsageSummary", [], 0, "request_count")
-summaryQ = Query("fetchUsageSummary", [], {total_agents: 0})
-costCard = AppStatCard("Total Cost", costQ, null, "up")
-opsCard = AppStatCard("Requests", opsQ, null, "neutral")
-agentsCard = AppStatCard("Active Agents", summaryQ, null, "neutral")
-agentRows = Query("fetchUsageByAgent", ["", 1, 20], [], "data")
-table = AppTable(agentRows, 20, "pages", true)
-Here's your spend dashboard with top-level cost and operations KPIs plus an agent usage table — let me know if you'd like to add time-range filters, charts, or drill-down details!
+
+root = AppStack([header, kpiRow, agentTable], "md")
+header = AppText("TokenOps Spend Dashboard", "title")
+dashboardQ = Query("fetchTokenopsDashboard", [], {summary: {total_cost: 0, total_operations: 0, operations_last_24h: 0, average_cost: 0, active_agents: 0}, agents: []}, "data")
+kpiRow = AppRow([costCard, opsCard, activeCard, avgCard], "md")
+costCard = AppStatCard("Total cost", dashboardQ.summary.total_cost, null, "neutral")
+opsCard = AppStatCard("Operations", dashboardQ.summary.total_operations, null, "neutral")
+activeCard = AppStatCard("Active agents", dashboardQ.summary.active_agents, null, "neutral")
+avgCard = AppStatCard("Avg cost/op", dashboardQ.summary.average_cost, null, "neutral")
+agentTable = AppTable(dashboardQ.agents, 20, "pages", false)
+
+Here's your spend dashboard with top-line cost KPIs and a paginated agent usage table — let me know if you'd like to add charts, filters, or different metrics!

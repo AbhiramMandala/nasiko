@@ -1,11 +1,13 @@
 Sure — building that now.
+
 root = AppStack([rangeRow, chart], "md")
 $days = 7
 rangeRow = AppRow([sevenBtn, thirtyBtn], "sm")
-sevenBtn = AppButton("7 days", "primary", null, null, null, null, null, null, null, null, showSeven)
-thirtyBtn = AppButton("30 days", "secondary", null, null, null, null, null, null, null, null, showThirty)
+sevenBtn = AppButton("7 days", "secondary", null, null, null, null, null, null, null, null, showSeven)
+thirtyBtn = AppButton("30 days", "primary", null, null, null, null, null, null, null, null, showThirty)
 showSeven = Action([@Set($days, 7), @Run(historyQ)])
 showThirty = Action([@Set($days, 30), @Run(historyQ)])
 historyQ = Query("fetchUsageHistory", [$days], [])
-chart = AppChart({labels: historyQ.date, datasets: [{label: "Total Cost", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD")
-Here's your history chart with 7- and 30-day toggle buttons — the chart updates when you click either button. Let me know if you'd like to add more metrics or change the styling!
+chart = AppChart({labels: historyQ.date, datasets: [{label: "Cost", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD")
+
+Here's your history chart with 7 and 30-day toggle buttons — the chart updates when you switch between them. Let me know if you'd like to add more metrics or adjust the styling!

@@ -1,11 +1,14 @@
 Sure — building that now.
-root = AppStack([kpiRow, historyChart, agentTable], "md")
-summaryQ = Query("fetchUsageSummary", [], {request_count: 0, total_cost_usd: 0})
-costKpi = AppStatCard("Total cost", "$" + @Round(summaryQ.total_cost_usd, 2), null, "neutral")
-requestsKpi = AppStatCard("Requests", summaryQ.request_count, null, "neutral")
-kpiRow = AppRow([costKpi, requestsKpi], "md")
-historyQ = Query("fetchUsageHistory", [7], [])
-historyChart = AppChart({labels: historyQ.date, datasets: [{label: "Daily cost", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD")
-agentRowsQ = Query("fetchUsageByAgent", ["", 1, 10], [], "data")
-agentTable = AppTable(agentRowsQ, 10, "pages", false)
-Here's your cost overview with KPIs, a 7-day trend chart, and the top agents by spend — let me know if you'd like to adjust the timeframe or drill into specific agents!
+
+root = AppStack([header, kpis, chart, table], "md")
+dashboardQ = Query("fetchTokenopsDashboard", [], {summary: {total_cost: 0, total_operations: 0, operations_last_24h: 0, average_cost: 0, active_agents: 0}, agents: []})
+header = AppText("Cost overview", "title")
+kpis = AppRow([costCard, opsCard, activeCard], "md")
+costCard = AppStatCard("Total cost", dashboardQ.summary.total_cost, null, "neutral")
+opsCard = AppStatCard("Total operations", dashboardQ.summary.total_operations, null, "neutral")
+activeCard = AppStatCard("Active agents", dashboardQ.summary.active_agents, null, "neutral")
+chart = AppChart({labels: ["Cost per agent"], datasets: [{label: "Cost (USD)", data: [dashboardQ.summary.average_cost]}]}, "bar", false, "currency", "USD")
+agentRows = Query("fetchUsageByAgent", ["", 1, 20], [], "data")
+table = AppTable(agentRows, 20, "pages", true)
+
+Here's your cost dashboard with headline metrics, a chart showing average cost, and a breakdown by agent — let me know if you'd like to adjust the view or add more details!
