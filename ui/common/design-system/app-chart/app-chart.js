@@ -99,9 +99,13 @@
  *   `number` (default) | `currency` | `percent` | `compact`
  * @prop {object|Array} data - Canvas forms take Chart.js shape:
  *   `{ labels: string[], datasets: [{ label, data }] }`, where a dataset may
- *   also carry `axis: 'y2'` (bind to the right-hand scale — line only) and
+ *   also carry `axis: 'y2'` (bind to the right-hand scale — line only),
  *   `anomalies: [index | { index, note }]` (status-red markers + falling
- *   bands at those points; a note rides into the tooltip). Row forms take
+ *   bands at those points; a note rides into the tooltip), and `other: true`
+ *   (bar/line — force this dataset onto the grey "Other" slot instead of its
+ *   positional `--viz-N` colour; for a segmented bar's overflow bucket, which
+ *   must read as "everything else" regardless of which index it lands on).
+ *   Row forms take
  *   `[{ label, value, display, delta, trend }]`, where `value` is the magnitude
  *   (percent for `progress`), `display` an optional pre-formatted string, and
  *   `delta` the trailing change string, arrow included. `trend` colours that
@@ -206,7 +210,10 @@ const centreInHole = {
 };
 
 /** Fixed-order slot assignment. Past the last slot everything is "Other". */
-const slot = (pal, i) => (i < SERIES_SLOTS ? pal.series[i] : pal.other);
+// A dataset may force the grey "Other" slot regardless of its index
+// (`other: true`) — the segmented bar's overflow bucket needs that slot
+// at position 4 or 5, not position 8, so index alone cannot express it.
+const slot = (pal, i, forceOther) => (forceOther ? pal.other : i < SERIES_SLOTS ? pal.series[i] : pal.other);
 
 /**
  * Paint the whole canvas on --bg-base, whatever surface the panel sits on.
@@ -745,7 +752,7 @@ export class AppChart extends HTMLElement {
       if (segmented) {
         return {
           ...base,
-          _slot: slot(pal, i),
+          _slot: slot(pal, i, s.other),
           backgroundColor: 'transparent',
           borderWidth: 0,
           barThickness: 8,
@@ -753,7 +760,7 @@ export class AppChart extends HTMLElement {
       }
       return {
         ...base,
-        backgroundColor: slot(pal, i),
+        backgroundColor: slot(pal, i, s.other),
         borderColor: pal.surface,
         borderWidth: 2,
         borderRadius: 4,
@@ -764,8 +771,8 @@ export class AppChart extends HTMLElement {
       ...base,
       // Line only: a dataset may opt onto the right-hand scale.
       ...(s.axis === 'y2' ? { yAxisID: 'y2' } : {}),
-      borderColor: slot(pal, i),
-      backgroundColor: slot(pal, i),
+      borderColor: slot(pal, i, s.other),
+      backgroundColor: slot(pal, i, s.other),
       // 1px strokes per the design — every rule in the plot (series, grid,
       // crosshair, avg) is a hairline.
       borderWidth: 1,

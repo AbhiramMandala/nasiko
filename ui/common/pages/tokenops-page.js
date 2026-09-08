@@ -24,16 +24,19 @@
  *           backend at all yet — see the doc's point 7).
  *       `call('fetchSpendCalendarDay', { date, agentId?, model? })`
  *         → GET .../finops/spend-calendar/day — one CALENDAR DAY (not the
- *           filter window): `{ hours: 24 x { hour, spend_usd },
- *           avg_hourly_spend_usd, top_agents, others_spend_usd }`. This is a
- *           day TOTAL curve, not a per-agent-per-hour breakdown, so the
- *           "segmented" (stacked-by-agent) bar form this panel used to draw is
- *           not something this endpoint can produce — it draws a single-series
- *           bar with `average-line` (the dashed rule IS `avg_hourly_spend_usd`)
- *           and the pre-computed top-4/others ranking as its legend, which is
- *           exactly the "Operation agent / Operation agent / Others" shape the
- *           doc describes. A day picker next to the panel title drives it,
- *           independent of the KPI strip's month/range window.
+ *           filter window): `{ hours: 24 x { hour, spend_usd, top_agents,
+ *           others_spend_usd }, avg_hourly_spend_usd, top_agents,
+ *           others_spend_usd }`. Confirmed against a live capture: every hour
+ *           carries its OWN top_agents/others_spend_usd, a real per-hour
+ *           ranking — not only the day-wide one at the top level. This panel
+ *           draws the "segmented" (stacked-by-agent) bar form (`<app-chart
+ *           segmented average-line>`), one series per day-level top-4 agent
+ *           plus "Others", each read off its own hour's top_agents; the
+ *           dashed rule IS `avg_hourly_spend_usd`, and the legend is the
+ *           day-level top-4/others ranking, which is exactly the "Operation
+ *           agent / Operation agent / Others" shape the doc describes. A day
+ *           picker next to the panel title drives it, independent of the KPI
+ *           strip's month/range window.
  *
  *       `fetchSpendCalendar` (the month heatmap) and `fetchFinopsAttributions`
  *       (standalone, sortable/paginated table source) are registered in
@@ -332,7 +335,7 @@ class TokenopsPage extends HTMLElement {
               value="${escAttr(this.#day)}" max="${escAttr(localDateStr(new Date()))}">
           </div>
           <div class="conc-body">
-            <app-chart id="conc-plot" class="plot-slot" type="bar" average-line legend="off" height="220px"
+            <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line legend="off" height="220px"
               format="currency" label="Spend by hour of day"
               empty-text="No spend on this day" loading></app-chart>
             <ul class="conc-legend" id="conc-legend"></ul>
@@ -609,10 +612,20 @@ class TokenopsPage extends HTMLElement {
   // ── Spend concentration ───────────────────────────────────────────────────
 
   /**
-   * A single calendar day's hourly spend curve plus the pre-computed top-4
-   * agents / others ranking — both straight off `/finops/spend-calendar/day`,
-   * no client-side aggregation. `average-line` draws its dashed rule from the
-   * same 24 values this chart plots, which is exactly `avg_hourly_spend_usd`.
+   * A single calendar day's hourly spend curve, segmented by agent — straight
+   * off `/finops/spend-calendar/day`, no client-side aggregation beyond
+   * matching each hour's own `top_agents` entries against the day's top-4
+   * identities. `average-line` draws its dashed rule from the same 24 column
+   * totals this chart plots, which is exactly `avg_hourly_spend_usd`.
+   *
+   * The backend gives every hour its OWN `top_agents`/`others_spend_usd`
+   * (a real per-hour ranking, not just a day-wide one) — this used to draw a
+   * single flat bar because an earlier version of this method assumed the
+   * endpoint could only produce a day total. It can't produce more than a
+   * day-wide top-4 identity list, though, so the segments are fixed to those
+   * 4 agents (plus "Others") for all 24 hours; an hour where a fifth agent
+   * briefly outspent the day's #4 still folds into that hour's "Others" pill,
+   * same as it would in the day-level ranking.
    */
   #renderConcentration() {
     const legend = this.querySelector('#conc-legend');
@@ -620,7 +633,7 @@ class TokenopsPage extends HTMLElement {
     const note = this.querySelector('#conc-note');
     const day = this.#dayDrill;
     const hours = day?.hours ?? [];
-    const topAgents = day?.top_agents ?? [];
+    const topAgents = (day?.top_agents ?? []).slice(0, 4);
 
     const entries = [
       ...topAgents.map((a, i) => ({ label: a.agent_name, cost: a.spend_usd ?? 0, slot: `var(--viz-${i + 1})` })),
@@ -633,8 +646,29 @@ class TokenopsPage extends HTMLElement {
 
     const labels = hours.map((h) => (h.hour === 0 ? '12am' : h.hour === 12 ? '12pm' : String(h.hour % 12)));
     chart.removeAttribute('loading');
+    // Each of the day's top-4 agents becomes its own stacked series, read off
+    // that hour's own `top_agents` (0 when this hour's payload doesn't list
+    // them — they simply spent nothing that hour). "Others" is whatever is
+    // left of the hour's total after those four are subtracted, not the
+    // hour's own `others_spend_usd` verbatim — the two can disagree when an
+    // hour's top_agents membership differs from the day's fixed top-4, and
+    // the stack must sum to the bar's real height regardless.
+    const agentSeries = (a, i) => ({
+      label: a.agent_name,
+      other: false,
+      data: hours.map((h) => h.top_agents?.find((x) => x.agent_name === a.agent_name)?.spend_usd ?? 0),
+    });
+    const othersSeries = {
+      label: 'Others',
+      other: true,
+      data: hours.map((h) => {
+        const hourTotal = h.spend_usd ?? 0;
+        const matched = sum(topAgents.map((a) => h.top_agents?.find((x) => x.agent_name === a.agent_name)?.spend_usd ?? 0));
+        return Math.max(hourTotal - matched, 0);
+      }),
+    };
     chart.data = hours.length && sum(hours.map((h) => h.spend_usd ?? 0)) > 0
-      ? { labels, datasets: [{ label: 'Spend', data: hours.map((h) => h.spend_usd ?? 0) }] }
+      ? { labels, datasets: [...topAgents.map(agentSeries), othersSeries] }
       : { labels: [], datasets: [] };
 
     note.textContent = day?.avg_hourly_spend_usd != null
