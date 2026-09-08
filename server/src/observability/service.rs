@@ -9,11 +9,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono::{DateTime, Datelike, Duration, SecondsFormat, TimeZone, Utc};
 use futures::stream::{self, StreamExt};
 use nasiko_config::Config;
 use nasiko_observability::{
-    AgentFinOps, ObservabilityError, ObservabilityProvider, extract_token_attrs,
+    ObservabilityError, ObservabilityProvider, TimeBucket, extract_token_attrs,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -121,6 +121,98 @@ fn parse_iso_param(
 
 fn parse_iso_or_default(iso: Option<&str>, default_days_ago: i64) -> DateTime<Utc> {
     parse_iso(iso).unwrap_or_else(|| Utc::now() - Duration::days(default_days_ago))
+}
+
+/// Hours covered by a "24h" | "7d" | "30d" quick-range value, or `None` for
+/// anything else (unknown values are the caller's responsibility to reject).
+fn range_hours(range: &str) -> Option<i64> {
+    match range {
+        "24h" => Some(24),
+        "7d" => Some(24 * 7),
+        "30d" => Some(24 * 30),
+        _ => None,
+    }
+}
+
+fn bucket_label(bucket: TimeBucket) -> &'static str {
+    match bucket {
+        TimeBucket::Hour => "hour",
+        TimeBucket::Day => "day",
+    }
+}
+
+/// Resolves `(start, end, bucket)` for the time-series/heatmap endpoints.
+/// `range` (24h/7d/30d), when present, wins over `start_time`/`end_time` —
+/// same precedence as the quick-select UI. `end_time` still overrides "now"
+/// when both are given (matches the month-picker semantics elsewhere in this
+/// module). Hour granularity for 24h, day granularity otherwise.
+fn resolve_window(
+    start_time: Option<&str>,
+    end_time: Option<&str>,
+    range: Option<&str>,
+) -> Result<(DateTime<Utc>, DateTime<Utc>, TimeBucket), ObservabilityError> {
+    let end = end_time
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+
+    if let Some(r) = range {
+        let hours = range_hours(r)
+            .ok_or_else(|| ObservabilityError::BadRequest(format!("invalid range '{r}'")))?;
+        let bucket = if r == "24h" {
+            TimeBucket::Hour
+        } else {
+            TimeBucket::Day
+        };
+        return Ok((end - Duration::hours(hours), end, bucket));
+    }
+
+    let start = parse_iso_or_default(start_time, 30);
+    Ok((start, end, TimeBucket::Day))
+}
+
+fn sort_agent_rows(rows: &mut [AgentFinopsRow], sort_by: Option<&str>, desc: bool) {
+    match sort_by.unwrap_or("cost") {
+        "tokens" => rows.sort_by_key(|a| a.total_tokens),
+        "operations" => rows.sort_by_key(|a| a.operations),
+        "avg_latency" => rows.sort_by(|a, b| {
+            a.avg_latency_ms
+                .unwrap_or(0.0)
+                .total_cmp(&b.avg_latency_ms.unwrap_or(0.0))
+        }),
+        "container_hours" => rows.sort_by(|a, b| a.container_hours.total_cmp(&b.container_hours)),
+        "name" => rows.sort_by(|a, b| a.agent_name.cmp(&b.agent_name)),
+        _ => rows.sort_by(|a, b| a.total_cost.total_cmp(&b.total_cost)),
+    }
+    if desc {
+        rows.reverse();
+    }
+}
+
+fn sort_workflow_rows(rows: &mut [WorkflowFinopsRow], sort_by: Option<&str>, desc: bool) {
+    match sort_by.unwrap_or("cost") {
+        "tokens" => rows.sort_by_key(|a| a.total_tokens),
+        "operations" => rows.sort_by_key(|a| a.executions),
+        "avg_latency" => rows.sort_by(|a, b| {
+            a.avg_latency_ms
+                .unwrap_or(0.0)
+                .total_cmp(&b.avg_latency_ms.unwrap_or(0.0))
+        }),
+        "name" => rows.sort_by(|a, b| a.workflow_name.cmp(&b.workflow_name)),
+        _ => rows.sort_by(|a, b| a.total_cost.total_cmp(&b.total_cost)),
+    }
+    if desc {
+        rows.reverse();
+    }
+}
+
+fn paginate<T>(rows: Vec<T>, limit: Option<i64>, offset: Option<i64>) -> Vec<T> {
+    let offset = offset.unwrap_or(0).max(0) as usize;
+    let rows: Vec<T> = rows.into_iter().skip(offset).collect();
+    match limit {
+        Some(l) if l >= 0 => rows.into_iter().take(l as usize).collect(),
+        _ => rows,
+    }
 }
 
 fn encode_span_id(span_id: &str) -> String {
@@ -513,6 +605,8 @@ pub struct SpanDetail {
 #[derive(Serialize, ToSchema)]
 pub struct AgentStatsResponse {
     pub data: AgentStatsData,
+    pub status_code: u16,
+    pub message: String,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -545,6 +639,8 @@ pub struct FinopsDashboardData {
     pub summary: FinopsSummary,
     pub agents: Vec<AgentFinopsRow>,
     pub token_usage: FinopsTokenUsage,
+    pub kpis: FinopsKpis,
+    pub attributions: FinopsAttributions,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -560,12 +656,16 @@ pub struct FinopsSummary {
     pub total_container_hours: f64,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, Clone, ToSchema)]
 pub struct AgentFinopsRow {
     pub agent_id: String,
     pub agent_name: String,
     pub total_cost: f64,
     pub operations: usize,
+
+    /// True when `operations` was capped by the token-aggregation trace
+    /// limit — the token/cost fields below undercount the real total.
+    pub is_capped: bool,
     pub avg_cost_per_operation: f64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -592,6 +692,164 @@ pub struct FinopsTokenUsage {
     pub avg_tokens_per_operation: u64,
 }
 
+// ─── KPI %-change ──────────────────────────────────────────────────────────────
+
+#[derive(Serialize, ToSchema)]
+pub struct KpiValue {
+    pub current: f64,
+    pub previous: f64,
+    /// `(current - previous) / previous * 100`, rounded to 2dp. `None` when
+    /// `previous == 0` — an undefined percentage, not a fabricated 0 or ∞.
+    pub change_pct: Option<f64>,
+}
+
+impl KpiValue {
+    fn new(current: f64, previous: f64) -> Self {
+        let change_pct = if previous == 0.0 {
+            None
+        } else {
+            Some(((current - previous) / previous * 100.0 * 100.0).round() / 100.0)
+        };
+        Self {
+            current,
+            previous,
+            change_pct,
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct FinopsKpis {
+    pub total_spend: KpiValue,
+    pub total_tokens: KpiValue,
+    pub cost_per_operation: KpiValue,
+    pub avg_latency_ms: KpiValue,
+}
+
+// ─── Spend over time ────────────────────────────────────────────────────────────
+
+#[derive(Serialize, ToSchema)]
+pub struct SpendTimeseriesPoint {
+    /// Bucket start, RFC3339.
+    pub bucket_start: String,
+    pub spend_usd: f64,
+    pub operations: usize,
+    /// Highest-spend agent in this bucket, for the hover breakdown.
+    pub top_agent_name: Option<String>,
+    pub top_agent_spend_usd: Option<f64>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct FinopsSpendTimeseriesResponse {
+    pub data: FinopsSpendTimeseries,
+    pub status_code: u16,
+    pub message: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct FinopsSpendTimeseries {
+    /// "hour" | "day"
+    pub bucket: String,
+    pub points: Vec<SpendTimeseriesPoint>,
+}
+
+// ─── Spend concentration ────────────────────────────────────────────────────────
+
+#[derive(Serialize, ToSchema)]
+pub struct SpendCalendarDay {
+    pub date: String,
+    pub spend_usd: f64,
+    pub operations: usize,
+    /// 0.0-1.0, `spend_usd` relative to the month's max — lets the frontend
+    /// shade heatmap intensity without a second pass.
+    pub intensity: f64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct FinopsSpendCalendarResponse {
+    pub data: FinopsSpendCalendar,
+    pub status_code: u16,
+    pub message: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct FinopsSpendCalendar {
+    pub days: Vec<SpendCalendarDay>,
+    /// Dates that fall inside the caller's active 24h/7d/30d range, so the
+    /// frontend can pre-highlight matching blocks without recomputing dates.
+    pub highlighted_dates: Vec<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct SpendHourPoint {
+    /// 0-23, UTC.
+    pub hour: u8,
+    pub spend_usd: f64,
+    /// Per-agent breakdown for this hour: top-N agents by daily spend,
+    /// with the rest rolled into `others_spend_usd`.
+    pub top_agents: Vec<AgentSpendSlice>,
+    pub others_spend_usd: f64,
+}
+
+#[derive(Serialize, Clone, ToSchema)]
+pub struct AgentSpendSlice {
+    pub agent_name: String,
+    pub spend_usd: f64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct FinopsDayDrilldownResponse {
+    pub data: FinopsDayDrilldown,
+    pub status_code: u16,
+    pub message: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct FinopsDayDrilldown {
+    pub date: String,
+    /// 24 entries, 12am-12am UTC.
+    pub hours: Vec<SpendHourPoint>,
+    pub avg_hourly_spend_usd: f64,
+    /// Top-N agents by total spend that day; the remainder is rolled into `others_spend_usd`.
+    pub top_agents: Vec<AgentSpendSlice>,
+    pub others_spend_usd: f64,
+}
+
+// ─── Attributions (Agent / Workflow) ────────────────────────────────────────────
+
+#[derive(Serialize, ToSchema)]
+pub struct WorkflowFinopsRow {
+    pub maf_id: String,
+    pub workflow_name: String,
+    pub total_cost: f64,
+    pub executions: usize,
+    pub avg_cost_per_execution: f64,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    /// Prompt tokens served from provider cache (OpenAI cached / Anthropic cache read).
+    pub cache_read_tokens: u64,
+    /// Prompt tokens written to provider cache (Anthropic cache creation).
+    pub cache_creation_tokens: u64,
+    pub total_tokens: u64,
+    pub avg_latency_ms: Option<f64>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct FinopsAttributionsResponse {
+    pub data: FinopsAttributions,
+    pub status_code: u16,
+    pub message: String,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(tag = "view")]
+pub enum FinopsAttributions {
+    #[serde(rename = "agent")]
+    Agent { rows: Vec<AgentFinopsRow> },
+    #[serde(rename = "workflow")]
+    Workflow { rows: Vec<WorkflowFinopsRow> },
+}
+
 // finops/insights
 
 #[derive(Deserialize, ToSchema)]
@@ -603,7 +861,14 @@ pub struct InsightsRequest {
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct InsightsResponse {
+pub struct InsightsResponseEnvelope {
+    pub data: InsightsData,
+    pub status_code: u16,
+    pub message: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct InsightsData {
     pub insights: Vec<String>,
 }
 
@@ -1195,38 +1460,65 @@ impl ObservabilityService {
         start_time: Option<&str>,
     ) -> Result<AgentStatsResponse, ObservabilityError> {
         let start = parse_iso_or_default(start_time, 1);
-        let stats = self
-            .provider
-            .agent_stats(agent_id, start, Utc::now())
-            .await?;
+        let end = Utc::now();
+
+        #[derive(sqlx::FromRow)]
+        struct StatsRow {
+            trace_count: i64,
+            total_cost: f64,
+            prompt_cost: f64,
+            completion_cost: f64,
+            p50: Option<f64>,
+            p99: Option<f64>,
+        }
+
+        let row: StatsRow = sqlx::query_as(
+            r#"SELECT COUNT(*)::BIGINT AS trace_count,
+                      COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
+                      COALESCE(SUM(prompt_cost_usd), 0)::FLOAT8 AS prompt_cost,
+                      COALESCE(SUM(completion_cost_usd), 0)::FLOAT8 AS completion_cost,
+                      percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50,
+                      percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99
+               FROM trace_usage
+               WHERE agent_name = $1 AND started_at >= $2 AND started_at < $3"#,
+        )
+        .bind(agent_id)
+        .bind(start)
+        .bind(end)
+        .fetch_one(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
         Ok(AgentStatsResponse {
             data: AgentStatsData {
                 project: AgentProjectStats {
-                    id: stats.agent_id,
-                    trace_count: stats.trace_count,
+                    id: agent_id.to_string(),
+                    trace_count: row.trace_count as usize,
                     cost_summary: NestedCostSummary {
                         total: CostOnly {
-                            cost: stats.cost.total_usd,
+                            cost: row.total_cost,
                         },
                         prompt: CostOnly {
-                            cost: stats.cost.prompt_usd,
+                            cost: row.prompt_cost,
                         },
                         completion: CostOnly {
-                            cost: stats.cost.completion_usd,
+                            cost: row.completion_cost,
                         },
                     },
-                    latency_ms_p50: stats.latency_ms_p50,
-                    latency_ms_p99: stats.latency_ms_p99,
+                    latency_ms_p50: row.p50,
+                    latency_ms_p99: row.p99,
                     span_annotation_names: vec![],
                     document_evaluation_names: vec![],
                 },
             },
+            status_code: 200,
+            message: "Agent stats retrieved successfully".into(),
         })
     }
 
     // ── 6. finops/dashboard ───────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn get_finops_dashboard(
         &self,
         _user_id: &str,
@@ -1235,15 +1527,24 @@ impl ObservabilityService {
         _team_id: Option<&str>,
         start_time: Option<&str>,
         end_time: Option<&str>,
+        agent_name: Option<&str>,
+        model: Option<&str>,
+        provider: Option<&str>,
+        // User UUIDs to scope results to (EE org-unit filter). `None` = no filter.
+        user_ids: Option<&[uuid::Uuid]>,
+        view: &str,
     ) -> Result<FinopsDashboardResponse, ObservabilityError> {
-        let agents = self.get_agent_names().await?;
+        let all_agents = self.get_agent_names().await?;
+        let agents: Vec<_> = match agent_name {
+            Some(name) => all_agents
+                .into_iter()
+                .filter(|(_, n, _, _)| n == name)
+                .collect(),
+            None => all_agents,
+        };
         let total_agents = agents.len();
 
         let start = parse_iso_or_default(start_time, 30);
-        // `now` is the window end, so a bounded request (the TokenOps month
-        // picker) reports that month and not month-start-through-today.
-        // `last_24h` stays anchored to the real clock: "operations in the last
-        // 24 hours" is about right now, not about the tail of a past window.
         let real_now = Utc::now();
         let now = end_time
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
@@ -1251,10 +1552,11 @@ impl ObservabilityService {
             .unwrap_or(real_now);
         let last_24h = real_now - Duration::hours(24);
 
-        // Container-hours for the same window, one batched query. Includes
-        // agents that have since been deleted, so the summary total stays
-        // honest even when the per-agent rows below can't show them.
-        // Fail-soft, matching the per-agent finops calls.
+        let window_len = now - start;
+        let prev_end = start;
+        let prev_start = start - window_len;
+
+        // Container-hours — unchanged, already Postgres-backed.
         let hours_rows = hours_meter::windowed_agent_hours(&self.db, start, now, None)
             .await
             .unwrap_or_else(|e| {
@@ -1269,6 +1571,118 @@ impl ObservabilityService {
             return Ok(empty_finops_response(total_container_hours));
         }
 
+        // ── Postgres-backed aggregation from trace_usage ─────────────────────
+        // Three SQL queries replace the ~5,000 Tempo HTTP calls.
+
+        #[derive(sqlx::FromRow)]
+        struct TraceUsageAgg {
+            agent_name: String,
+            operations: i64,
+            input_tokens: i64,
+            output_tokens: i64,
+            cache_read_tokens: i64,
+            cache_creation_tokens: i64,
+            total_cost: f64,
+            p50_latency: Option<f64>,
+        }
+
+        let agent_filter: Option<&str> = agent_name;
+        let model_filter: Option<&str> = model;
+        let provider_filter: Option<&str> = provider;
+        // Empty slice means "no filter" — sqlx binds it as an empty array,
+        // and `= ANY('{}'::uuid[])` matches nothing, so we use a NULL flag.
+        let has_user_filter = user_ids.is_some_and(|ids| !ids.is_empty());
+        let user_id_list: Vec<uuid::Uuid> = user_ids
+            .filter(|ids| !ids.is_empty())
+            .map(|ids| ids.to_vec())
+            .unwrap_or_default();
+
+        // Shared WHERE fragment: agent, model, provider, user_id filters.
+        // $1/$2 = time window, $3 = agent, $4 = model, $5 = provider,
+        // $6 = has_user_filter (bool), $7 = user_id_list (uuid[]).
+        const TRACE_USAGE_AGG_QUERY: &str = r#"SELECT agent_name,
+                      COUNT(*)::BIGINT AS operations,
+                      COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
+                      COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
+                      COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
+                      COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
+                      COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
+                      percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50_latency
+               FROM trace_usage
+               WHERE started_at >= $1 AND started_at < $2
+                 AND ($3::TEXT IS NULL OR agent_name = $3)
+                 AND ($4::TEXT IS NULL OR model = $4)
+                 AND ($5::TEXT IS NULL OR provider = $5)
+                 AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
+               GROUP BY agent_name"#;
+
+        // 1. Current window
+        let current_rows: Vec<TraceUsageAgg> = sqlx::query_as(TRACE_USAGE_AGG_QUERY)
+            .bind(start)
+            .bind(now)
+            .bind(agent_filter)
+            .bind(model_filter)
+            .bind(provider_filter)
+            .bind(has_user_filter)
+            .bind(&user_id_list)
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        // 2. Previous window (for KPI %-change)
+        let prev_rows: Vec<TraceUsageAgg> = sqlx::query_as(TRACE_USAGE_AGG_QUERY)
+            .bind(prev_start)
+            .bind(prev_end)
+            .bind(agent_filter)
+            .bind(model_filter)
+            .bind(provider_filter)
+            .bind(has_user_filter)
+            .bind(&user_id_list)
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        // 3. 24h operation count
+        #[derive(sqlx::FromRow)]
+        struct OpsCount {
+            agent_name: String,
+            cnt: i64,
+        }
+        let ops_24h_rows: Vec<OpsCount> = sqlx::query_as(
+            r#"SELECT agent_name, COUNT(*)::BIGINT AS cnt
+               FROM trace_usage
+               WHERE started_at >= $1
+                 AND ($2::TEXT IS NULL OR agent_name = $2)
+                 AND ($3::TEXT IS NULL OR model = $3)
+                 AND ($4::TEXT IS NULL OR provider = $4)
+                 AND (NOT $5::BOOL OR user_id = ANY($6::UUID[]))
+               GROUP BY agent_name"#,
+        )
+        .bind(last_24h)
+        .bind(agent_filter)
+        .bind(model_filter)
+        .bind(provider_filter)
+        .bind(has_user_filter)
+        .bind(&user_id_list)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        // Index lookups for joining.
+        let current_by_name: HashMap<&str, &TraceUsageAgg> = current_rows
+            .iter()
+            .map(|r| (r.agent_name.as_str(), r))
+            .collect();
+        let prev_by_name: HashMap<&str, &TraceUsageAgg> = prev_rows
+            .iter()
+            .map(|r| (r.agent_name.as_str(), r))
+            .collect();
+        let ops24h_by_name: HashMap<&str, i64> = ops_24h_rows
+            .iter()
+            .map(|r| (r.agent_name.as_str(), r.cnt))
+            .collect();
+
+        // Build per-agent rows, joined with agents table for UUID/display_name/version.
         let mut agent_rows: Vec<AgentFinopsRow> = Vec::new();
         let mut grand_input = 0u64;
         let mut grand_output = 0u64;
@@ -1278,53 +1692,68 @@ impl ObservabilityService {
         let mut total_ops = 0usize;
         let mut total_ops_24h = 0usize;
         let mut active = 0usize;
+        let mut prev_grand_cost = 0f64;
+        let mut prev_grand_total_tokens = 0u64;
+        let mut prev_total_ops = 0usize;
+        let mut prev_latency_samples: Vec<f64> = Vec::new();
+        let mut latency_samples: Vec<f64> = Vec::new();
 
-        for (agent_uuid, agent_name, display_name, version) in &agents {
-            let finops = self
-                .provider
-                .agent_finops(agent_name, start, now)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!(agent_name, error = %e, "finops aggregation failed");
-                    empty_agent_finops(agent_name)
-                });
-            let ops_24h = self
-                .provider
-                .count_user_traces(agent_name, last_24h, now)
-                .await
-                .unwrap_or(0);
+        for (agent_uuid, name, display_name, version) in &agents {
+            let cur = current_by_name.get(name.as_str());
+            let prev = prev_by_name.get(name.as_str());
+            let ops_24h = ops24h_by_name.get(name.as_str()).copied().unwrap_or(0) as usize;
 
-            if finops.operations > 0 {
+            let operations = cur.map(|c| c.operations as usize).unwrap_or(0);
+            let input = cur.map(|c| c.input_tokens as u64).unwrap_or(0);
+            let output = cur.map(|c| c.output_tokens as u64).unwrap_or(0);
+            let cache_read = cur.map(|c| c.cache_read_tokens as u64).unwrap_or(0);
+            let cache_creation = cur.map(|c| c.cache_creation_tokens as u64).unwrap_or(0);
+            let cost = cur.map(|c| c.total_cost).unwrap_or(0.0);
+            let p50 = cur.and_then(|c| c.p50_latency);
+
+            if operations > 0 {
                 active += 1;
             }
-
-            let avg_cost = if finops.operations > 0 {
-                round6(finops.cost.total_usd / finops.operations as f64)
+            let avg_cost = if operations > 0 {
+                round6(cost / operations as f64)
             } else {
                 0.0
             };
 
-            grand_input += finops.input_tokens;
-            grand_output += finops.output_tokens;
-            grand_cache_read += finops.cache_read_tokens;
-            grand_cache_creation += finops.cache_creation_tokens;
-            grand_cost += finops.cost.total_usd;
-            total_ops += finops.operations;
+            grand_input += input;
+            grand_output += output;
+            grand_cache_read += cache_read;
+            grand_cache_creation += cache_creation;
+            grand_cost += cost;
+            total_ops += operations;
             total_ops_24h += ops_24h;
+            if let Some(l) = p50 {
+                latency_samples.push(l);
+            }
+
+            if let Some(p) = prev {
+                prev_grand_cost += p.total_cost;
+                prev_grand_total_tokens += (p.input_tokens + p.output_tokens) as u64;
+                prev_total_ops += p.operations as usize;
+                if let Some(l) = p.p50_latency {
+                    prev_latency_samples.push(l);
+                }
+            }
 
             agent_rows.push(AgentFinopsRow {
                 agent_id: agent_uuid.to_string(),
                 agent_name: display_name.clone(),
-                total_cost: finops.cost.total_usd,
-                operations: finops.operations,
+                total_cost: cost,
+                operations,
+                is_capped: false,
                 avg_cost_per_operation: avg_cost,
-                prompt_tokens: finops.input_tokens,
-                completion_tokens: finops.output_tokens,
-                cache_read_tokens: finops.cache_read_tokens,
-                cache_creation_tokens: finops.cache_creation_tokens,
-                total_tokens: finops.input_tokens + finops.output_tokens,
-                avg_latency_ms: finops.latency_ms_p50,
-                version: Some(version.to_string()),
+                prompt_tokens: input,
+                completion_tokens: output,
+                cache_read_tokens: cache_read,
+                cache_creation_tokens: cache_creation,
+                total_tokens: input + output,
+                avg_latency_ms: p50,
+                version: Some(version.clone()),
                 container_hours: round6(hours_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
             });
         }
@@ -1339,6 +1768,43 @@ impl ObservabilityService {
             grand_total_tokens / total_ops as u64
         } else {
             0
+        };
+
+        let avg_latency = |samples: &[f64]| -> f64 {
+            if samples.is_empty() {
+                0.0
+            } else {
+                samples.iter().sum::<f64>() / samples.len() as f64
+            }
+        };
+        let prev_avg_cost = if prev_total_ops > 0 {
+            prev_grand_cost / prev_total_ops as f64
+        } else {
+            0.0
+        };
+        let kpis = FinopsKpis {
+            total_spend: KpiValue::new(round6(grand_cost), round6(prev_grand_cost)),
+            total_tokens: KpiValue::new(grand_total_tokens as f64, prev_grand_total_tokens as f64),
+            cost_per_operation: KpiValue::new(avg_cost, round6(prev_avg_cost)),
+            avg_latency_ms: KpiValue::new(
+                avg_latency(&latency_samples),
+                avg_latency(&prev_latency_samples),
+            ),
+        };
+
+        let attributions = if view == "workflow" {
+            let rows = self
+                .get_workflow_finops_rows(start, now, agent_name)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "workflow finops aggregation failed");
+                    vec![]
+                });
+            FinopsAttributions::Workflow { rows }
+        } else {
+            FinopsAttributions::Agent {
+                rows: agent_rows.clone(),
+            }
         };
 
         Ok(FinopsDashboardResponse {
@@ -1361,10 +1827,502 @@ impl ObservabilityService {
                     cache_creation_tokens: grand_cache_creation,
                     avg_tokens_per_operation: avg_tpo,
                 },
+                kpis,
+                attributions,
             },
             status_code: 200,
             message: "FinOps dashboard data retrieved successfully".into(),
         })
+    }
+
+    // ── 6b. finops/spend-timeseries ───────────────────────────────────────────
+
+    pub async fn get_finops_spend_timeseries(
+        &self,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+        range: Option<&str>,
+        agent_name: Option<&str>,
+        model: Option<&str>,
+        provider: Option<&str>,
+    ) -> Result<FinopsSpendTimeseriesResponse, ObservabilityError> {
+        let (start, end, bucket) = resolve_window(start_time, end_time, range)?;
+        let trunc = match bucket {
+            TimeBucket::Hour => "hour",
+            TimeBucket::Day => "day",
+        };
+
+        #[derive(sqlx::FromRow)]
+        struct BucketRow {
+            bucket_start: DateTime<Utc>,
+            spend_usd: f64,
+            operations: i64,
+            top_agent_name: Option<String>,
+            top_agent_spend_usd: Option<f64>,
+        }
+
+        // CTE: per-(bucket, agent) aggregation, then pick the top-spender per bucket.
+        let query = format!(
+            r#"WITH buckets AS (
+                   SELECT date_trunc('{trunc}', started_at) AS bucket_start,
+                          agent_name,
+                          SUM(cost_usd) AS agent_spend,
+                          COUNT(*)::BIGINT AS ops
+                   FROM trace_usage
+                   WHERE started_at >= $1 AND started_at < $2
+                     AND ($3::TEXT IS NULL OR agent_name = $3)
+                     AND ($4::TEXT IS NULL OR model = $4)
+                     AND ($5::TEXT IS NULL OR provider = $5)
+                   GROUP BY bucket_start, agent_name
+               ),
+               ranked AS (
+                   SELECT *, ROW_NUMBER() OVER (PARTITION BY bucket_start ORDER BY agent_spend DESC) AS rn
+                   FROM buckets
+               )
+               SELECT bucket_start,
+                      SUM(agent_spend)::FLOAT8 AS spend_usd,
+                      SUM(ops)::BIGINT AS operations,
+                      MAX(CASE WHEN rn = 1 THEN agent_name END) AS top_agent_name,
+                      MAX(CASE WHEN rn = 1 THEN agent_spend END)::FLOAT8 AS top_agent_spend_usd
+               FROM ranked
+               GROUP BY bucket_start
+               ORDER BY bucket_start"#
+        );
+
+        let rows: Vec<BucketRow> = sqlx::query_as(&query)
+            .bind(start)
+            .bind(end)
+            .bind(agent_name)
+            .bind(model)
+            .bind(provider)
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        Ok(FinopsSpendTimeseriesResponse {
+            data: FinopsSpendTimeseries {
+                bucket: bucket_label(bucket).to_string(),
+                points: rows
+                    .into_iter()
+                    .map(|r| SpendTimeseriesPoint {
+                        bucket_start: fmt_ts(r.bucket_start),
+                        spend_usd: round6(r.spend_usd),
+                        operations: r.operations as usize,
+                        top_agent_name: r.top_agent_name,
+                        top_agent_spend_usd: r.top_agent_spend_usd.map(round6),
+                    })
+                    .collect(),
+            },
+            status_code: 200,
+            message: "Spend timeseries retrieved successfully".into(),
+        })
+    }
+
+    // ── 6c. finops/spend-calendar ─────────────────────────────────────────────
+
+    pub async fn get_finops_spend_calendar(
+        &self,
+        month: &str,
+        range: Option<&str>,
+        agent_name: Option<&str>,
+        model: Option<&str>,
+        provider: Option<&str>,
+    ) -> Result<FinopsSpendCalendarResponse, ObservabilityError> {
+        let month_start = chrono::NaiveDateTime::parse_from_str(
+            &format!("{month}-01 00:00:00"),
+            "%Y-%m-%d %H:%M:%S",
+        )
+        .map(|d| d.and_utc())
+        .map_err(|_| ObservabilityError::BadRequest(format!("invalid month '{month}'")))?;
+        let next_month = if month_start.month() == 12 {
+            Utc.with_ymd_and_hms(month_start.year() + 1, 1, 1, 0, 0, 0)
+        } else {
+            Utc.with_ymd_and_hms(month_start.year(), month_start.month() + 1, 1, 0, 0, 0)
+        }
+        .single()
+        .ok_or_else(|| ObservabilityError::Internal("month arithmetic failed".into()))?;
+
+        #[derive(sqlx::FromRow)]
+        struct DayRow {
+            date: chrono::NaiveDate,
+            spend_usd: f64,
+            operations: i64,
+        }
+
+        let rows: Vec<DayRow> = sqlx::query_as(
+            r#"SELECT DATE(started_at) AS date,
+                      COALESCE(SUM(cost_usd), 0)::FLOAT8 AS spend_usd,
+                      COUNT(*)::BIGINT AS operations
+               FROM trace_usage
+               WHERE started_at >= $1 AND started_at < $2
+                 AND ($3::TEXT IS NULL OR agent_name = $3)
+                 AND ($4::TEXT IS NULL OR model = $4)
+                 AND ($5::TEXT IS NULL OR provider = $5)
+               GROUP BY DATE(started_at)
+               ORDER BY date"#,
+        )
+        .bind(month_start)
+        .bind(next_month)
+        .bind(agent_name)
+        .bind(model)
+        .bind(provider)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        let max_spend = rows.iter().map(|r| r.spend_usd).fold(0.0_f64, f64::max);
+        let mut days: Vec<SpendCalendarDay> = rows
+            .into_iter()
+            .map(|r| {
+                let date_str = r.date.format("%Y-%m-%d").to_string();
+                SpendCalendarDay {
+                    intensity: if max_spend > 0.0 {
+                        r.spend_usd / max_spend
+                    } else {
+                        0.0
+                    },
+                    date: date_str,
+                    spend_usd: round6(r.spend_usd),
+                    operations: r.operations as usize,
+                }
+            })
+            .collect();
+        days.sort_by(|a, b| a.date.cmp(&b.date));
+
+        let highlighted_dates = range
+            .and_then(range_hours)
+            .map(|hours| {
+                let range_start = Utc::now() - Duration::hours(hours);
+                let cutoff = range_start.format("%Y-%m-%d").to_string();
+                days.iter()
+                    .filter(|d| d.date >= cutoff)
+                    .map(|d| d.date.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(FinopsSpendCalendarResponse {
+            data: FinopsSpendCalendar {
+                days,
+                highlighted_dates,
+            },
+            status_code: 200,
+            message: "Spend calendar retrieved successfully".into(),
+        })
+    }
+
+    // ── 6d. finops/spend-calendar/day ─────────────────────────────────────────
+
+    pub async fn get_finops_spend_calendar_day(
+        &self,
+        date: &str,
+        agent_name: Option<&str>,
+        model: Option<&str>,
+        provider: Option<&str>,
+    ) -> Result<FinopsDayDrilldownResponse, ObservabilityError> {
+        let day_start =
+            chrono::NaiveDateTime::parse_from_str(&format!("{date} 00:00:00"), "%Y-%m-%d %H:%M:%S")
+                .map(|d| d.and_utc())
+                .map_err(|_| ObservabilityError::BadRequest(format!("invalid date '{date}'")))?;
+        let day_end = day_start + Duration::days(1);
+
+        #[derive(sqlx::FromRow)]
+        struct HourAgentRow {
+            hour: i32,
+            agent_name: String,
+            spend_usd: f64,
+        }
+
+        let rows: Vec<HourAgentRow> = sqlx::query_as(
+            r#"SELECT EXTRACT(HOUR FROM started_at)::INT AS hour,
+                      agent_name,
+                      COALESCE(SUM(cost_usd), 0)::FLOAT8 AS spend_usd
+               FROM trace_usage
+               WHERE started_at >= $1 AND started_at < $2
+                 AND ($3::TEXT IS NULL OR agent_name = $3)
+                 AND ($4::TEXT IS NULL OR model = $4)
+                 AND ($5::TEXT IS NULL OR provider = $5)
+               GROUP BY hour, agent_name
+               ORDER BY hour"#,
+        )
+        .bind(day_start)
+        .bind(day_end)
+        .bind(agent_name)
+        .bind(model)
+        .bind(provider)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        // Resolve display names from the agents table.
+        let all_agents = self.get_agent_names().await.unwrap_or_default();
+        let display_by_name: HashMap<&str, &str> = all_agents
+            .iter()
+            .map(|(_, name, display, _)| (name.as_str(), display.as_str()))
+            .collect();
+
+        let resolve = |name: &str| -> String {
+            display_by_name
+                .get(name)
+                .unwrap_or(&name)
+                .to_string()
+        };
+
+        // Day-level per-agent totals → determine the top-N agents for the day.
+        // The same top-N names are used in every hourly breakdown so the
+        // stacked bar chart has consistent colors/ordering across hours.
+        let mut day_agent_spend: HashMap<&str, f64> = HashMap::new();
+        for r in &rows {
+            *day_agent_spend.entry(r.agent_name.as_str()).or_insert(0.0) += r.spend_usd;
+        }
+        let mut day_per_agent: Vec<(&str, f64)> = day_agent_spend.into_iter().collect();
+        day_per_agent.retain(|(_, spend)| *spend > 0.0);
+        day_per_agent.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+        const TOP_N: usize = 4;
+        let top_names: Vec<&str> = day_per_agent.iter().take(TOP_N).map(|(n, _)| *n).collect();
+
+        // Per-hour breakdown: group by (hour, agent), then split into top-N + others.
+        let mut hour_agent: Vec<HashMap<&str, f64>> = (0..24).map(|_| HashMap::new()).collect();
+        for r in &rows {
+            let h = r.hour as usize;
+            if h < 24 {
+                *hour_agent[h].entry(r.agent_name.as_str()).or_insert(0.0) += r.spend_usd;
+            }
+        }
+
+        let hours: Vec<SpendHourPoint> = (0..24u8)
+            .map(|h| {
+                let agents = &hour_agent[h as usize];
+                let total: f64 = agents.values().sum();
+                let ha: Vec<AgentSpendSlice> = top_names
+                    .iter()
+                    .filter_map(|name| {
+                        agents
+                            .get(name)
+                            .filter(|s| **s > 0.0)
+                            .map(|s| AgentSpendSlice {
+                                agent_name: resolve(name),
+                                spend_usd: round6(*s),
+                            })
+                    })
+                    .collect();
+                let top_sum: f64 = top_names.iter().filter_map(|n| agents.get(n)).sum();
+                SpendHourPoint {
+                    hour: h,
+                    spend_usd: round6(total),
+                    top_agents: ha,
+                    others_spend_usd: round6((total - top_sum).max(0.0) + 0.0),
+                }
+            })
+            .collect();
+
+        let avg = hours.iter().map(|h| h.spend_usd).sum::<f64>() / 24.0;
+
+        // Day-level top agents summary.
+        let top_agents: Vec<AgentSpendSlice> = day_per_agent
+            .iter()
+            .take(TOP_N)
+            .map(|(name, spend)| AgentSpendSlice {
+                agent_name: resolve(name),
+                spend_usd: round6(*spend),
+            })
+            .collect();
+        let others_sum: f64 = day_per_agent.iter().skip(TOP_N).map(|(_, s)| s).sum();
+        let others_spend_usd = round6(others_sum) + 0.0;
+
+        Ok(FinopsDayDrilldownResponse {
+            data: FinopsDayDrilldown {
+                date: date.to_string(),
+                hours,
+                avg_hourly_spend_usd: round6(avg),
+                top_agents,
+                others_spend_usd,
+            },
+            status_code: 200,
+            message: "Day drilldown retrieved successfully".into(),
+        })
+    }
+
+    // ── 6e. finops/attributions ───────────────────────────────────────────────
+
+    /// Single Postgres GROUP BY, no Tempo calls — MAF already persists
+    /// per-step cost/tokens (see `oss/orchestrator/src/maf`), so workflow
+    /// attribution is naturally fast without any live trace aggregation.
+    async fn get_workflow_finops_rows(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        agent_name: Option<&str>,
+    ) -> Result<Vec<WorkflowFinopsRow>, ObservabilityError> {
+        #[derive(sqlx::FromRow)]
+        struct ExecRow {
+            maf_id: Option<uuid::Uuid>,
+            workflow_name: Option<String>,
+            cost_usd: f64,
+            duration_ms: Option<i64>,
+            step_results: Option<serde_json::Value>,
+        }
+
+        let rows: Vec<ExecRow> = sqlx::query_as(
+            r#"SELECT e.maf_id, m.name AS workflow_name, e.cost_usd, e.duration_ms, e.step_results
+               FROM maf_executions e
+               LEFT JOIN mafs m ON m.id = e.maf_id
+               WHERE e.status = 'success'
+                 AND e.started_at >= $1 AND e.started_at < $2
+                 AND (
+                     $3::text IS NULL
+                     OR EXISTS (
+                         SELECT 1 FROM jsonb_array_elements(e.step_results) elem
+                         WHERE elem->>'agent_name' = $3
+                     )
+                 )"#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(agent_name)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        #[derive(Default)]
+        struct Acc {
+            name: String,
+            executions: usize,
+            cost: f64,
+            input_tokens: u64,
+            output_tokens: u64,
+            cache_read_tokens: u64,
+            cache_creation_tokens: u64,
+            latencies: Vec<f64>,
+        }
+
+        let get_step_i64 = |step: &serde_json::Value, key: &str| -> u64 {
+            step.get(key)
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                .max(0) as u64
+        };
+
+        let mut by_workflow: HashMap<String, Acc> = HashMap::new();
+        for row in rows {
+            let Some(maf_id) = row.maf_id else { continue };
+            let key = maf_id.to_string();
+            let (mut input, mut output, mut cr, mut cc) = (0u64, 0u64, 0u64, 0u64);
+            if let Some(steps) = row.step_results.as_ref().and_then(|v| v.as_array()) {
+                for step in steps {
+                    input += get_step_i64(step, "input_tokens");
+                    output += get_step_i64(step, "output_tokens");
+                    cr += get_step_i64(step, "cache_read_tokens");
+                    cc += get_step_i64(step, "cache_creation_tokens");
+                }
+            }
+            let acc = by_workflow.entry(key).or_insert_with(|| Acc {
+                name: row
+                    .workflow_name
+                    .clone()
+                    .unwrap_or_else(|| "(deleted workflow)".to_string()),
+                ..Default::default()
+            });
+            acc.executions += 1;
+            acc.cost += row.cost_usd;
+            acc.input_tokens += input;
+            acc.output_tokens += output;
+            acc.cache_read_tokens += cr;
+            acc.cache_creation_tokens += cc;
+            if let Some(d) = row.duration_ms {
+                acc.latencies.push(d as f64);
+            }
+        }
+
+        let mut out: Vec<WorkflowFinopsRow> = by_workflow
+            .into_iter()
+            .map(|(maf_id, acc)| {
+                let avg_cost = if acc.executions > 0 {
+                    round6(acc.cost / acc.executions as f64)
+                } else {
+                    0.0
+                };
+                let avg_latency = if acc.latencies.is_empty() {
+                    None
+                } else {
+                    Some(acc.latencies.iter().sum::<f64>() / acc.latencies.len() as f64)
+                };
+                WorkflowFinopsRow {
+                    maf_id,
+                    workflow_name: acc.name,
+                    total_cost: round6(acc.cost),
+                    executions: acc.executions,
+                    avg_cost_per_execution: avg_cost,
+                    prompt_tokens: acc.input_tokens,
+                    completion_tokens: acc.output_tokens,
+                    cache_read_tokens: acc.cache_read_tokens,
+                    cache_creation_tokens: acc.cache_creation_tokens,
+                    total_tokens: acc.input_tokens + acc.output_tokens,
+                    avg_latency_ms: avg_latency,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| b.total_cost.total_cmp(&a.total_cost));
+        Ok(out)
+    }
+
+    /// Standalone attributions endpoint — same per-view row sources as
+    /// `get_finops_dashboard`'s `attributions` field, but with server-side
+    /// sort/pagination so a table sort/page click doesn't re-run the
+    /// KPI/timeseries work.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn get_finops_attributions(
+        &self,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+        agent_name: Option<&str>,
+        model: Option<&str>,
+        provider: Option<&str>,
+        view: &str,
+        sort_by: Option<&str>,
+        sort_dir: Option<&str>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<FinopsAttributionsResponse, ObservabilityError> {
+        let start = parse_iso_or_default(start_time, 30);
+        let end = end_time
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(Utc::now);
+
+        let desc = sort_dir.map(|d| d != "asc").unwrap_or(true);
+
+        if view == "workflow" {
+            let mut rows = self
+                .get_workflow_finops_rows(start, end, agent_name)
+                .await?;
+            sort_workflow_rows(&mut rows, sort_by, desc);
+            Ok(FinopsAttributionsResponse {
+                data: FinopsAttributions::Workflow {
+                    rows: paginate(rows, limit, offset),
+                },
+                status_code: 200,
+                message: "Attributions retrieved successfully".into(),
+            })
+        } else {
+            let dashboard = self
+                .get_finops_dashboard(
+                    "", None, None, None, start_time, end_time, agent_name, model, provider, None,
+                    "agent",
+                )
+                .await?;
+            let mut rows = dashboard.data.agents;
+            sort_agent_rows(&mut rows, sort_by, desc);
+            Ok(FinopsAttributionsResponse {
+                data: FinopsAttributions::Agent {
+                    rows: paginate(rows, limit, offset),
+                },
+                status_code: 200,
+                message: "Attributions retrieved successfully".into(),
+            })
+        }
     }
 
     // ── 7. finops/insights ────────────────────────────────────────────────────
@@ -1372,7 +2330,7 @@ impl ObservabilityService {
     pub async fn get_finops_insights(
         &self,
         payload: &InsightsRequest,
-    ) -> Result<InsightsResponse, ObservabilityError> {
+    ) -> Result<InsightsResponseEnvelope, ObservabilityError> {
         let base_url = self
             .config
             .openai_base_url
@@ -1433,7 +2391,11 @@ Data: {}"#,
             .take(3)
             .collect();
 
-        Ok(InsightsResponse { insights })
+        Ok(InsightsResponseEnvelope {
+            data: InsightsData { insights },
+            status_code: 200,
+            message: "Insights generated successfully".into(),
+        })
     }
 
     // ── 8. finops/agent-hours ─────────────────────────────────────────────────
@@ -1597,20 +2559,6 @@ fn empty_agent_hours_response(
 
 // ─── Mapping helpers ──────────────────────────────────────────────────────────
 
-fn empty_agent_finops(agent_id: &str) -> AgentFinOps {
-    AgentFinOps {
-        agent_id: agent_id.to_string(),
-        operations: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
-        model_used: None,
-        latency_ms_p50: None,
-        cost: Default::default(),
-    }
-}
-
 /// `total_container_hours` is threaded in rather than zeroed: a deployment
 /// whose agents were all hard-deleted still has billable session history.
 fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse {
@@ -1634,8 +2582,316 @@ fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse 
                 cache_creation_tokens: 0,
                 avg_tokens_per_operation: 0,
             },
+            kpis: FinopsKpis {
+                total_spend: KpiValue::new(0.0, 0.0),
+                total_tokens: KpiValue::new(0.0, 0.0),
+                cost_per_operation: KpiValue::new(0.0, 0.0),
+                avg_latency_ms: KpiValue::new(0.0, 0.0),
+            },
+            attributions: FinopsAttributions::Agent { rows: vec![] },
         },
         status_code: 200,
         message: "FinOps dashboard data retrieved successfully".into(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── KpiValue::new ────────────────────────────────────────────────────────
+
+    #[test]
+    fn kpi_value_change_pct_is_none_when_previous_is_zero() {
+        let kpi = KpiValue::new(500.0, 0.0);
+        assert_eq!(kpi.current, 500.0);
+        assert_eq!(kpi.previous, 0.0);
+        assert_eq!(
+            kpi.change_pct, None,
+            "0 -> N is an undefined %, not +inf or 0"
+        );
+    }
+
+    #[test]
+    fn kpi_value_change_pct_is_none_when_both_are_zero() {
+        let kpi = KpiValue::new(0.0, 0.0);
+        assert_eq!(kpi.change_pct, None);
+    }
+
+    #[test]
+    fn kpi_value_change_pct_positive_increase() {
+        let kpi = KpiValue::new(150.0, 100.0);
+        assert_eq!(kpi.change_pct, Some(50.0));
+    }
+
+    #[test]
+    fn kpi_value_change_pct_negative_decrease() {
+        let kpi = KpiValue::new(50.0, 100.0);
+        assert_eq!(kpi.change_pct, Some(-50.0));
+    }
+
+    #[test]
+    fn kpi_value_change_pct_no_change_is_exactly_zero_not_none() {
+        let kpi = KpiValue::new(100.0, 100.0);
+        assert_eq!(
+            kpi.change_pct,
+            Some(0.0),
+            "unchanged-but-nonzero must be Some(0.0), distinct from the undefined-previous None case"
+        );
+    }
+
+    #[test]
+    fn kpi_value_change_pct_rounds_to_two_decimal_places() {
+        // 1/3 * 100 = 33.333...% -> must round to 33.33, not truncate or
+        // carry extra float noise into the serialized response.
+        let kpi = KpiValue::new(4.0, 3.0);
+        assert_eq!(kpi.change_pct, Some(33.33));
+    }
+
+    #[test]
+    fn kpi_value_change_pct_handles_a_full_wipeout_to_zero() {
+        let kpi = KpiValue::new(0.0, 100.0);
+        assert_eq!(kpi.change_pct, Some(-100.0));
+    }
+
+    // ── range_hours / bucket_label / resolve_window ─────────────────────────
+
+    #[test]
+    fn range_hours_known_values() {
+        assert_eq!(range_hours("24h"), Some(24));
+        assert_eq!(range_hours("7d"), Some(168));
+        assert_eq!(range_hours("30d"), Some(720));
+    }
+
+    #[test]
+    fn range_hours_rejects_unknown_values() {
+        assert_eq!(range_hours("1h"), None);
+        assert_eq!(range_hours(""), None);
+        assert_eq!(range_hours("7D"), None, "case-sensitive, not normalized");
+    }
+
+    #[test]
+    fn bucket_label_matches_enum_variant() {
+        assert_eq!(bucket_label(TimeBucket::Hour), "hour");
+        assert_eq!(bucket_label(TimeBucket::Day), "day");
+    }
+
+    #[test]
+    fn resolve_window_24h_range_uses_hour_bucket() {
+        let (start, end, bucket) = resolve_window(None, None, Some("24h")).unwrap();
+        assert_eq!(bucket, TimeBucket::Hour);
+        assert_eq!((end - start).num_hours(), 24);
+    }
+
+    #[test]
+    fn resolve_window_7d_and_30d_range_use_day_bucket() {
+        let (start7, end7, bucket7) = resolve_window(None, None, Some("7d")).unwrap();
+        assert_eq!(bucket7, TimeBucket::Day);
+        assert_eq!((end7 - start7).num_hours(), 168);
+
+        let (start30, end30, bucket30) = resolve_window(None, None, Some("30d")).unwrap();
+        assert_eq!(bucket30, TimeBucket::Day);
+        assert_eq!((end30 - start30).num_hours(), 720);
+    }
+
+    #[test]
+    fn resolve_window_range_wins_over_start_time_when_both_given() {
+        // A stale/irrelevant start_time must be ignored once `range` is set —
+        // this is the documented precedence, not an arbitrary choice.
+        let stale_start = "2000-01-01T00:00:00Z";
+        let (start, end, _) = resolve_window(Some(stale_start), None, Some("24h")).unwrap();
+        assert_eq!((end - start).num_hours(), 24);
+        assert!(start.to_rfc3339() != stale_start);
+    }
+
+    #[test]
+    fn resolve_window_rejects_an_invalid_range() {
+        let err = resolve_window(None, None, Some("bogus")).unwrap_err();
+        assert!(matches!(err, ObservabilityError::BadRequest(_)));
+    }
+
+    #[test]
+    fn resolve_window_no_range_falls_back_to_30_day_default_with_day_bucket() {
+        let (start, end, bucket) = resolve_window(None, None, None).unwrap();
+        assert_eq!(bucket, TimeBucket::Day);
+        // parse_iso_or_default(None, 30) — allow a little slack for wall-clock
+        // drift between `Utc::now()` calls in the test and in the function.
+        let hours = (end - start).num_hours();
+        assert!(
+            (719..=721).contains(&hours),
+            "expected ~30 days, got {hours}h"
+        );
+    }
+
+    #[test]
+    fn resolve_window_end_time_override_is_respected() {
+        let end_time = "2024-06-15T12:00:00Z";
+        let (_, end, _) = resolve_window(None, Some(end_time), Some("24h")).unwrap();
+        assert_eq!(end.to_rfc3339(), "2024-06-15T12:00:00+00:00");
+    }
+
+    // ── sort_agent_rows / sort_workflow_rows / paginate ─────────────────────
+
+    fn agent_row(
+        name: &str,
+        cost: f64,
+        tokens: u64,
+        ops: usize,
+        latency: Option<f64>,
+    ) -> AgentFinopsRow {
+        AgentFinopsRow {
+            agent_id: format!("id-{name}"),
+            agent_name: name.to_string(),
+            total_cost: cost,
+            operations: ops,
+            is_capped: false,
+            avg_cost_per_operation: 0.0,
+            prompt_tokens: tokens / 2,
+            completion_tokens: tokens - tokens / 2,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            total_tokens: tokens,
+            avg_latency_ms: latency,
+            version: None,
+            container_hours: 0.0,
+        }
+    }
+
+    fn workflow_row(name: &str, cost: f64, tokens: u64, executions: usize) -> WorkflowFinopsRow {
+        WorkflowFinopsRow {
+            maf_id: format!("maf-{name}"),
+            workflow_name: name.to_string(),
+            total_cost: cost,
+            executions,
+            avg_cost_per_execution: 0.0,
+            prompt_tokens: tokens / 2,
+            completion_tokens: tokens - tokens / 2,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            total_tokens: tokens,
+            avg_latency_ms: None,
+        }
+    }
+
+    #[test]
+    fn sort_agent_rows_default_is_cost_descending() {
+        let mut rows = vec![
+            agent_row("cheap", 1.0, 100, 1, Some(10.0)),
+            agent_row("expensive", 100.0, 100, 1, Some(10.0)),
+            agent_row("mid", 50.0, 100, 1, Some(10.0)),
+        ];
+        sort_agent_rows(&mut rows, None, true);
+        let names: Vec<_> = rows.iter().map(|r| r.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["expensive", "mid", "cheap"]);
+    }
+
+    #[test]
+    fn sort_agent_rows_ascending_flips_the_default() {
+        let mut rows = vec![
+            agent_row("cheap", 1.0, 100, 1, None),
+            agent_row("expensive", 100.0, 100, 1, None),
+        ];
+        sort_agent_rows(&mut rows, None, false);
+        let names: Vec<_> = rows.iter().map(|r| r.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["cheap", "expensive"]);
+    }
+
+    #[test]
+    fn sort_agent_rows_by_tokens_operations_latency_hours_and_name() {
+        let mut by_tokens = vec![
+            agent_row("a", 0.0, 500, 1, None),
+            agent_row("b", 0.0, 10, 1, None),
+        ];
+        sort_agent_rows(&mut by_tokens, Some("tokens"), true);
+        assert_eq!(by_tokens[0].agent_name, "a");
+
+        let mut by_ops = vec![
+            agent_row("few-ops", 0.0, 0, 1, None),
+            agent_row("many-ops", 0.0, 0, 99, None),
+        ];
+        sort_agent_rows(&mut by_ops, Some("operations"), true);
+        assert_eq!(by_ops[0].agent_name, "many-ops");
+
+        let mut by_latency = vec![
+            agent_row("slow", 0.0, 0, 0, Some(900.0)),
+            agent_row("fast", 0.0, 0, 0, Some(10.0)),
+            agent_row("unknown-latency", 0.0, 0, 0, None),
+        ];
+        sort_agent_rows(&mut by_latency, Some("avg_latency"), true);
+        assert_eq!(
+            by_latency[0].agent_name, "slow",
+            "None latency must sort as if it were 0, landing last in descending order"
+        );
+
+        let mut by_name = vec![
+            agent_row("zeta", 0.0, 0, 0, None),
+            agent_row("alpha", 0.0, 0, 0, None),
+        ];
+        sort_agent_rows(&mut by_name, Some("name"), false);
+        assert_eq!(
+            by_name
+                .iter()
+                .map(|r| r.agent_name.clone())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+
+        let mut unknown_key = vec![
+            agent_row("cheap", 1.0, 0, 0, None),
+            agent_row("pricey", 9.0, 0, 0, None),
+        ];
+        sort_agent_rows(&mut unknown_key, Some("not-a-real-column"), true);
+        assert_eq!(
+            unknown_key[0].agent_name, "pricey",
+            "an unrecognized sort_by must fall back to cost, not panic or no-op"
+        );
+    }
+
+    #[test]
+    fn sort_workflow_rows_default_and_by_name() {
+        let mut rows = vec![
+            workflow_row("cheap-flow", 1.0, 0, 0),
+            workflow_row("pricey-flow", 50.0, 0, 0),
+        ];
+        sort_workflow_rows(&mut rows, None, true);
+        assert_eq!(rows[0].workflow_name, "pricey-flow");
+
+        let mut by_name = vec![
+            workflow_row("zeta", 0.0, 0, 0),
+            workflow_row("alpha", 0.0, 0, 0),
+        ];
+        sort_workflow_rows(&mut by_name, Some("name"), false);
+        assert_eq!(by_name[0].workflow_name, "alpha");
+    }
+
+    #[test]
+    fn paginate_applies_offset_then_limit() {
+        let rows: Vec<i32> = (0..10).collect();
+        assert_eq!(paginate(rows.clone(), Some(3), Some(2)), vec![2, 3, 4]);
+        assert_eq!(paginate(rows.clone(), None, None), rows);
+        assert_eq!(
+            paginate(rows.clone(), Some(100), Some(0)),
+            rows,
+            "limit beyond len returns everything"
+        );
+        assert_eq!(
+            paginate(rows.clone(), Some(3), Some(50)),
+            Vec::<i32>::new(),
+            "offset beyond len returns empty, not a panic"
+        );
+        assert_eq!(
+            paginate(rows.clone(), Some(-1), Some(0)),
+            rows,
+            "a negative limit is treated as unset, not zero-truncated"
+        );
+        assert_eq!(
+            paginate(rows, Some(0), Some(0)),
+            Vec::<i32>::new(),
+            "limit 0 truly means zero rows"
+        );
     }
 }

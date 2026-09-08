@@ -54,6 +54,12 @@ pub struct StepResult {
     /// Agent-call output tokens for this step. Same scope note as `input_tokens`.
     #[serde(default)]
     pub output_tokens: i64,
+    /// Prompt tokens served from provider cache (OpenAI cached / Anthropic cache read).
+    #[serde(default)]
+    pub cache_read_tokens: i64,
+    /// Prompt tokens written to provider cache (Anthropic cache creation).
+    #[serde(default)]
+    pub cache_creation_tokens: i64,
     /// Model used for this step's agent call, when known.
     #[serde(default)]
     pub model_used: Option<String>,

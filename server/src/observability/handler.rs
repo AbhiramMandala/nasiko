@@ -1,7 +1,7 @@
 use crate::auth::Claims;
 use crate::state::AppState;
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -13,6 +13,12 @@ use tracing::instrument;
 use utoipa::IntoParams;
 
 use super::service::{InsightsRequest, ObservabilityService};
+
+/// Request extension injected by EE middleware to scope FinOps queries to a
+/// set of user UUIDs (org-unit filter). OSS handlers check for this extension
+/// and pass it through to the service layer; if absent, no user filtering.
+#[derive(Clone, Debug)]
+pub struct FinopsUserScope(pub Vec<uuid::Uuid>);
 
 // ─── Error mapping ────────────────────────────────────────────────────────────
 
@@ -95,15 +101,12 @@ pub struct FinopsFilterParams {
     pub agent_id: Option<String>,
     /// Exact model id, matched against span model attributes.
     pub model: Option<String>,
-    /// STUB — accepted, not applied to any query. Reserved for a future
-    /// model_pricing-join-derived provider filter. Never read: existing only
-    /// so the query string round-trips without a 400 from an unknown param,
-    /// and so the frontend's filter contract is stable before the real
-    /// filtering logic lands.
-    #[allow(dead_code)]
+    /// Provider name filter (e.g. "openai", "anthropic"), matched against
+    /// the `provider` column in `trace_usage` (derived from `model_pricing`).
     pub provider: Option<String>,
-    /// STUB — accepted, not applied. Reserved for org-hierarchy work. Same
-    /// accepted-but-unread rationale as `provider` above.
+    /// Org-unit filter — resolved to user_ids by the EE auth layer. OSS
+    /// accepts the param but ignores it (no org hierarchy). EE reads it in
+    /// the handler and passes user_ids to the service.
     #[allow(dead_code)]
     pub org_unit: Option<String>,
     /// "agent" | "workflow" — which attribution source powers the response's
@@ -117,6 +120,7 @@ pub struct FinopsDayDrilldownParams {
     pub date: String,
     pub agent_id: Option<String>,
     pub model: Option<String>,
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -126,6 +130,7 @@ pub struct FinopsSpendCalendarParams {
     pub range: Option<String>,
     pub agent_id: Option<String>,
     pub model: Option<String>,
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -135,6 +140,7 @@ pub struct FinopsAttributionsParams {
     pub range: Option<String>,
     pub agent_id: Option<String>,
     pub model: Option<String>,
+    pub provider: Option<String>,
     pub view: Option<String>,
     /// "cost" | "tokens" | "operations" | "avg_latency" | "container_hours" | "name"
     pub sort_by: Option<String>,
@@ -384,10 +390,11 @@ pub async fn get_agent_stats(
         (status = 401, description = "Missing or invalid session"),
     ),
 )]
-#[instrument(skip(state))]
+#[instrument(skip(state, user_scope))]
 pub async fn get_finops_dashboard(
     State(state): State<AppState>,
     claims: Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
     Query(params): Query<FinopsFilterParams>,
 ) -> Response {
     if let Err(r) = validate_range(params.range.as_deref()) {
@@ -408,16 +415,19 @@ pub async fn get_finops_dashboard(
             Err(r) => return r,
         };
 
+    let user_ids = user_scope.map(|Extension(s)| s.0);
     match svc(&state)
         .get_finops_dashboard(
             &claims.sub,
-            None, // role gating handled by the EE observability provider, not the identity
+            None,
             None,
             None,
             start_time.as_deref(),
             end_time.as_deref(),
             agent_name.as_deref(),
             params.model.as_deref(),
+            params.provider.as_deref(),
+            user_ids.as_deref(),
             view,
         )
         .await
@@ -472,7 +482,7 @@ fn resolve_range_params(
     tag = "observability",
     params(FinopsFilterParams),
     responses(
-        (status = 200, description = "Spend time series", body = crate::observability::service::FinopsSpendTimeseries),
+        (status = 200, description = "Spend time series", body = crate::observability::service::FinopsSpendTimeseriesResponse),
         (status = 400, description = "Malformed filter"),
     ),
 )]
@@ -496,6 +506,7 @@ pub async fn get_finops_spend_timeseries(
             params.range.as_deref(),
             agent_name.as_deref(),
             params.model.as_deref(),
+            params.provider.as_deref(),
         )
         .await
     {
@@ -513,7 +524,7 @@ pub async fn get_finops_spend_timeseries(
     tag = "observability",
     params(FinopsSpendCalendarParams),
     responses(
-        (status = 200, description = "Spend calendar", body = crate::observability::service::FinopsSpendCalendar),
+        (status = 200, description = "Spend calendar", body = crate::observability::service::FinopsSpendCalendarResponse),
         (status = 400, description = "Malformed month/filter"),
     ),
 )]
@@ -536,6 +547,7 @@ pub async fn get_finops_spend_calendar(
             params.range.as_deref(),
             agent_name.as_deref(),
             params.model.as_deref(),
+            params.provider.as_deref(),
         )
         .await
     {
@@ -553,7 +565,7 @@ pub async fn get_finops_spend_calendar(
     tag = "observability",
     params(FinopsDayDrilldownParams),
     responses(
-        (status = 200, description = "Hourly spend for one day", body = crate::observability::service::FinopsDayDrilldown),
+        (status = 200, description = "Hourly spend for one day", body = crate::observability::service::FinopsDayDrilldownResponse),
         (status = 400, description = "Malformed date/filter"),
     ),
 )]
@@ -568,7 +580,12 @@ pub async fn get_finops_spend_calendar_day(
         Err(r) => return r,
     };
     match svc(&state)
-        .get_finops_spend_calendar_day(&params.date, agent_name.as_deref(), params.model.as_deref())
+        .get_finops_spend_calendar_day(
+            &params.date,
+            agent_name.as_deref(),
+            params.model.as_deref(),
+            params.provider.as_deref(),
+        )
         .await
     {
         Ok(resp) => Json(resp).into_response(),
@@ -587,7 +604,7 @@ pub async fn get_finops_spend_calendar_day(
     tag = "observability",
     params(FinopsAttributionsParams),
     responses(
-        (status = 200, description = "Attribution rows", body = crate::observability::service::FinopsAttributions),
+        (status = 200, description = "Attribution rows", body = crate::observability::service::FinopsAttributionsResponse),
         (status = 400, description = "Malformed filter"),
     ),
 )]
@@ -619,6 +636,7 @@ pub async fn get_finops_attributions(
             end_time.as_deref(),
             agent_name.as_deref(),
             params.model.as_deref(),
+            params.provider.as_deref(),
             view,
             params.sort_by.as_deref(),
             params.sort_dir.as_deref(),
@@ -641,7 +659,7 @@ pub async fn get_finops_attributions(
     tag = "observability",
     request_body = crate::observability::service::InsightsRequest,
     responses(
-        (status = 200, description = "Up to 3 insight bullet points", body = crate::observability::service::InsightsResponse),
+        (status = 200, description = "Up to 3 insight bullet points", body = crate::observability::service::InsightsResponseEnvelope),
         (status = 500, description = "LLM call failed"),
     ),
 )]
