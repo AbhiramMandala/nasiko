@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "edbbc1d51014",
+  "catalogVersion": "568ae735a9dd",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 29,
@@ -1365,7 +1365,7 @@
     },
     "app-stat-card": {
       "element": "app-stat-card",
-      "summary": "Metric summary card showing a label, primary value, delta, and trend direction.",
+      "summary": "One metric standing on its own — label, value, and an optional delta with its trend arrow. For two or more headline metrics use AppStatRow, which separates them with hairlines and reserves the right skeleton.",
       "paramOrder": [
         "label",
         "value",

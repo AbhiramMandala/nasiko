@@ -1,15 +1,17 @@
-I'm your TokenOps dashboard builder for the Nasiko platform. I can create interactive, real-time monitoring surfaces for you — think cost tracking, usage analytics, agent performance, token consumption, and operational metrics.
+I'm an AI assistant that generates and maintains dashboard surfaces for the Nasiko platform. I write compact, line-oriented DSL code (not JSON or markdown) that describes interactive data visualizations and controls.
 
-Here's what I can do:
+Here's what I can build for you:
 
-**Build dashboards** — I write a compact DSL that renders as a live dashboard. You describe what you want to see (e.g., "show me total spend and cost by agent"), and I generate the surface with the right components, real data fetches, and layout.
+**Data displays:** tables with search and pagination, charts (line, bar, donut, progress bars), metric cards and stat rows, code snippets, empty states.
 
-**Fetch real data** — I can pull from available sources like `fetchTokenopsDashboard` (agent costs and tokens), `fetchUsageSummary` (overall KPIs), `fetchUsageHistory` (trends over days), and usage breakdowns by agent or model. No made-up numbers — only what's actually in your system.
+**Interactivity:** buttons, dropdowns, search boxes, toggles, modals, segmented controls, checkboxes, radio buttons, switches — all wired to actions that fetch fresh data, set filters, navigate, or send follow-up requests.
 
-**Make it interactive** — I can add filters (time ranges, search), toggles, buttons that refresh data, and state variables that let you switch between views without a page reload.
+**Real data:** I pull from live sources like token usage summaries, per-agent breakdowns, model comparisons, and historical trends. I never invent numbers.
 
-**Revise on the fly** — If you don't like the layout, want different metrics, need a chart instead of a table, or want to add/remove components, just say so and I'll update it. I only rewrite what needs changing.
+**Client-side reactivity:** I can build filters that reload data when you pick a new range, search boxes that query as you type, view toggles that switch between different metrics — all without page reloads.
 
-**What I won't do** — I can't create mutations yet (no write operations available), and I never invent data or use data sources that don't exist in your system.
+**Accessibility:** every interactive control gets a proper name, either visible text or an aria-label, so screen readers announce it clearly.
 
-What would you like to see first? A cost dashboard? Agent performance breakdown? Token usage trends? Or something else?
+Just tell me what dashboard you'd like — maybe a spend overview with KPIs and a detailed agent breakdown, or a historical trend chart, or a comparison view. I'll build the surface and you can ask me to adjust it, add sections, or change layouts.
+
+What would you like to see?

@@ -50,7 +50,9 @@
       "note": "Only useful with Slot() \u2014 its content is entirely start/end slotted."
     },
     "app-stat-card": {
-      "status": "ready"
+      "status": "ready",
+      "dslSummary": "One metric standing on its own \u2014 label, value, and an optional delta with its trend arrow. For two or more headline metrics use AppStatRow, which separates them with hairlines and reserves the right skeleton.",
+      "reason": "The summary is the strongest place to say which of the two stat components to reach for, because it is read at the moment the model is choosing. Seventeen recorded AppStatCard calls across eleven fixtures and not one AppStatRow: the strip lost to a hand-built row of cards every time, and the design system calls it \"the one stat strip\". delta and trend stay \u2014 the DSL has real arithmetic (materialize.js:305), so a delta is @Last(rows.x) - @First(rows.x) and a trend is the sign of it. They were never once filled, but that is the prompt's failure to teach the computation, not a missing capability, and withholding them would remove a real one."
     },
     "app-stat-row": {
       "status": "ready"

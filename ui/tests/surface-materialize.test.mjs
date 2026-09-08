@@ -122,8 +122,13 @@ test('an unknown component is dropped with a diagnostic', () => {
 // ── positional mapping ──────────────────────────────────────────────────────
 
 test('arguments map positionally onto the catalog paramOrder', () => {
-  const out = run('root = AppStatCard("Total cost", "12", null, "up")');
-  assert.deepEqual(out.root.props, { label: 'Total cost', value: '12', delta: null, trend: 'up' });
+  // AppGrid rather than AppStatCard: four parameters, a mix of types, and a
+  // signature that is not about to be trimmed. The point is the mapping, and a
+  // test that has to be rewritten every time a component's DSL surface changes
+  // is testing the component instead.
+  const out = run('root = AppGrid([], "2fr 1fr", "md", "lg")');
+  assert.deepEqual(out.root.props, { columns: '2fr 1fr', gap: 'md', padding: 'lg' });
+  assert.deepEqual(out.root.children, [], 'children lead, and land in children rather than props');
 });
 
 test('children, data, text and action land in their own slots, not in props', () => {
@@ -234,18 +239,20 @@ root = AppChart(@Each(rows, "r", r.cost), "line")`);
 // ── the whole worked example ────────────────────────────────────────────────
 
 test('Worked Example 1 materializes into the tree it describes', () => {
-  const out = run(`root = AppStack([kpis], "md")
-kpis = AppRow([kpiCost, kpiCount], "md")
+  const out = run(`root = AppStack([heading, kpis], "md")
+heading = AppText("Usage summary", "title")
 totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 requestCountQ = Query("fetchUsageSummary", [], 0, "request_count")
-kpiCost = AppStatCard("Total cost", totalCostQ, null, "up")
-kpiCount = AppStatCard("Requests", requestCountQ, null, "neutral")`,
+kpis = AppStatRow([{label: "Total cost", value: totalCostQ, sub: "all time"}, {label: "Requests", value: requestCountQ}])`,
   { queryResults: new Map([['totalCostQ', 12.5], ['requestCountQ', 342]]) });
 
-  assert.equal(tree(out.root), 'app-stack\n  app-row\n    app-stat-card\n    app-stat-card\n');
-  const [cost, count] = out.root.children[0].children;
-  assert.deepEqual([cost.props.value, cost.props.trend], [12.5, 'up']);
-  assert.deepEqual([count.props.value, count.props.trend], [342, 'neutral']);
+  assert.equal(tree(out.root), 'app-stack\n  app-text\n  app-stat-row\n');
+  // Query references resolve inside a json literal, which is what makes the
+  // one-statement strip usable for live figures rather than only for constants.
+  assert.deepEqual(out.root.children[1].props.items, [
+    { label: 'Total cost', value: 12.5, sub: 'all time' },
+    { label: 'Requests', value: 342 },
+  ]);
   assert.equal(out.queries.length, 2);
   assert.deepEqual(out.diagnostics, []);
 });
@@ -269,6 +276,27 @@ test('a default that is the whole response is caught at the Query, not at the ta
   const d = out.diagnostics.find((x) => x.code === 'default_is_whole_response');
   assert.ok(d, 'the diagnostic has to name the Query, or nobody finds it');
   assert.match(d.message, /"data" path/);
+});
+
+test('a default that walked half the path is caught at the same place', () => {
+  // Recorded, not imagined: `{agents: []}` under a "data.agents" path. The model
+  // walked `data` and stopped. The head-only test missed it because the default
+  // has no "data" key, so it surfaced two hops later as `data_not_rows` — a
+  // diagnostic pointing at the table, which is not the line that is wrong.
+  const out = run('q = Query("fetchTokenopsDashboard", [], {agents: []}, "data.agents")\nroot = AppTable(q)');
+  const d = out.diagnostics.find((x) => x.code === 'default_is_whole_response');
+  assert.ok(d, 'a half-walked default is the same mistake as an unwalked one');
+  assert.match(d.message, /stops at "data"/, d?.message);
+  assert.deepEqual(out.root.data, [], 'and it is repaired to the rows the table wanted');
+  assert.equal(out.diagnostics.some((x) => x.code === 'data_not_rows'), false,
+    'the table no longer takes the blame for the Query line');
+});
+
+test('a deeper path than the default knows about is left alone', () => {
+  // No segment of "meta.page.size" is a key here, so this default is simply a
+  // value of its own shape — repairing it would be inventing a mistake.
+  const out = run('q = Query("fetchUsageByModel", ["", 1, 50], {rows: []}, "meta.page.size")\nroot = AppTable(q)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'default_is_whole_response'), false);
 });
 
 test('a correctly shaped default is silent', () => {

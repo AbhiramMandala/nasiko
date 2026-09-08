@@ -84,9 +84,9 @@ test('numbers and strings are written as text', () => {
 });
 
 test('a null prop is omitted rather than written as "null"', () => {
-  const { el } = draw('root = AppStatCard("Total", "12", null, "up")');
-  assert.equal(el.hasAttribute('delta'), false);
-  assert.equal(el.attrs.trend, 'up');
+  const { el } = draw('root = AppGrid([], null, "md")');
+  assert.equal(el.hasAttribute('columns'), false);
+  assert.equal(el.attrs.gap, 'md');
 });
 
 test('style and class can never be set from a surface', () => {
@@ -208,17 +208,21 @@ test('a component missing from the catalog is skipped, siblings survive', () => 
 });
 
 test('Worked Example 1 renders the whole tree with its real values', () => {
-  const { el, diagnostics } = draw(`root = AppStack([kpis], "md")
-kpis = AppRow([kpiCost, kpiCount], "md")
+  const { el, diagnostics } = draw(`root = AppStack([heading, kpis], "md")
+heading = AppText("Usage summary", "title")
 totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 requestCountQ = Query("fetchUsageSummary", [], 0, "request_count")
-kpiCost = AppStatCard("Total cost", totalCostQ, null, "up")
-kpiCount = AppStatCard("Requests", requestCountQ, null, "neutral")`,
+kpis = AppStatRow([{label: "Total cost", value: totalCostQ, sub: "all time"}, {label: "Requests", value: requestCountQ}])`,
   { ctx: { queryResults: new Map([['totalCostQ', 12.5], ['requestCountQ', 342]]) } });
 
-  const [cost, count] = el.children[0].children;
-  assert.deepEqual([cost.attrs.label, cost.attrs.value, cost.attrs.trend], ['Total cost', '12.5', 'up']);
-  assert.deepEqual([count.attrs.label, count.attrs.value], ['Requests', '342']);
+  const [heading, kpis] = el.children;
+  assert.equal(heading.attrs.variant, 'title');
+  assert.equal(heading.textContent, 'Usage summary');
+  // A json attribute is serialised, not spread — the strip parses it itself.
+  assert.deepEqual(JSON.parse(kpis.attrs.items), [
+    { label: 'Total cost', value: 12.5, sub: 'all time' },
+    { label: 'Requests', value: 342 },
+  ]);
   assert.deepEqual(diagnostics, []);
 });
 

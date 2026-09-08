@@ -18,8 +18,8 @@ import { check, evaluateGeneration, CASES, ALLOWED_SOURCES } from '../scripts/ev
 const GOOD = `Sure — building that now.
 totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 requestsQ = Query("fetchUsageSummary", [], 0, "request_count")
-costCard = AppStatCard("Total cost", totalCostQ, null, "up")
-reqCard = AppStatCard("Requests", requestsQ, null, "up")
+costCard = AppStatCard("Total cost", totalCostQ)
+reqCard = AppStatCard("Requests", requestsQ)
 root = AppStack([costCard, reqCard], "md")
 There you go — let me know if you want anything changed.`;
 
@@ -45,7 +45,7 @@ test('a source outside the scope is caught', () => {
 });
 
 test('a component that does not exist is caught', () => {
-  const dsl = GOOD.replace('costCard = AppStatCard("Total cost", totalCostQ, null, "up")',
+  const dsl = GOOD.replace('costCard = AppStatCard("Total cost", totalCostQ)',
                            'costCard = AppSparklineDeluxe("Total cost", totalCostQ)');
   const { fail } = check(kase({}), dsl);
   assert.ok(fail.length > 0, 'an invented component must not pass');
@@ -58,7 +58,7 @@ test('a generation with no root is caught', () => {
 
 test('a dashboard with no data at all is caught', () => {
   const dsl = `Here you go.
-costCard = AppStatCard("Total cost", "0", null, "up")
+costCard = AppStatCard("Total cost", "0")
 root = AppStack([costCard], "md")
 Done.`;
   const { fail } = check(kase({ minQueries: 1 }), dsl);
@@ -111,7 +111,7 @@ $view = "cost"
 costQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 showOps = Action([@Set($view, "ops")])
 btn = AppButton("Ops", "primary", "md", false, null, false, false, "button", null, null, null, showOps)
-card = AppStatCard("Cost", costQ, null, "up")
+card = AppStatCard("Cost", costQ)
 root = AppStack([btn, card], "md")
 Done.`;
   const { fail } = check(kase({ minQueries: 1, minActions: 1, minStates: 1 }), dsl);

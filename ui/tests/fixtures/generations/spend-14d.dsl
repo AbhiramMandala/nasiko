@@ -1,10 +1,7 @@
 Sure — building that now.
-
-root = AppStack([title, chartsGrid], "md")
-title = AppText("Usage over the last 14 days", "title")
+root = AppStack([heading, historyChart, historyTable], "md")
+heading = AppText("Usage over the last 14 days", "title")
 historyRows = Query("fetchUsageHistory", [14], [])
-chartsGrid = AppGrid([costChart, requestChart], "1fr 1fr", "md")
-costChart = AppChart({labels: historyRows.date, datasets: [{label: "Cost", data: historyRows.total_cost_usd}]}, "line", false, "currency", "USD")
-requestChart = AppChart({labels: historyRows.date, datasets: [{label: "Requests", data: historyRows.request_count}]}, "line", false, "number")
-
-Here's a 14-day trend view with spend and request volume side by side — let me know if you'd like to adjust the layout, add a summary row, or drill into different metrics!
+historyChart = AppChart({labels: historyRows.date, datasets: [{label: "Cost (USD)", data: historyRows.total_cost_usd}, {label: "Requests", data: historyRows.request_count}]}, "line", false, "currency", "USD")
+historyTable = AppTable(historyRows, 14, "pages", false)
+Here's your 14-day spend and request volume — a chart showing both metrics side by side plus the full table below for details. Let me know if you'd like to adjust the view or add anything else!

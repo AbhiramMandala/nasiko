@@ -119,6 +119,27 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     attributes[name] = { ...attributes[name], templates };
   }
 
+  // ── Summary vs. what the DSL can actually see ────────────────────────
+  // A component's summary is written for the design system, where every
+  // attribute exists. Withhold one and the summary can start describing a
+  // parameter the model has no way to pass — app-stat-card reads "showing a
+  // label, primary value, delta, and trend direction" while delta and trend
+  // are held back, which sends the model looking for arguments that are not
+  // in the signature.
+  //
+  // Not rewritten automatically: string surgery on prose is how a generator
+  // starts producing sentences nobody wrote. Declared instead, and the check
+  // below makes forgetting it fail rather than ship quietly.
+  const summary = ov.dslSummary || def.summary;
+  for (const name of ov.dslExcludeAttributes || []) {
+    if (!ov.dslSummary && new RegExp(`\\b${name.replace(/[-/]/g, '.')}\\b`, 'i').test(def.summary)) {
+      problems.push(
+        `${tag}: "${name}" is withheld from the DSL but the summary still describes it. `
+        + 'Add a dslSummary to the override saying what the model can actually use.',
+      );
+    }
+  }
+
   // ── Accessible name ──────────────────────────────────────────────────
   // Where this component's name can come from, and whether it needs one.
   //
@@ -173,7 +194,7 @@ for (const [tag, def] of Object.entries(catalog.components)) {
 
   components[tag] = {
     element: def.element ?? tag,
-    summary: def.summary,
+    summary,
     ...(ov.childrenParam && { childrenParam: true }),
     ...(ov.dataParam && { dataParam: true }),
     ...(ov.textParam && { textParam: true }),

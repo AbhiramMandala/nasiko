@@ -1,23 +1,21 @@
 Sure — building that now.
 
-root = AppStack([header, controlRow, summaryCards, agentTable], "md")
+root = AppStack([heading, controls, kpis, agentTable], "md")
+heading = AppText("Cost dashboard", "title")
 $days = 7
-$searchQuery = ""
-header = AppText("Cost Dashboard", "title")
-controlRow = AppRow([daysControl, searchBox], "md")
-daysControl = AppRow([sevenDaysBtn, thirtyDaysBtn], "sm")
-sevenDaysBtn = AppButton("7 days", $days == 7 ? "primary" : "secondary", null, null, null, null, null, null, null, null, selectSevenDays)
-thirtyDaysBtn = AppButton("30 days", $days == 7 ? "secondary" : "primary", null, null, null, null, null, null, null, null, selectThirtyDays)
-selectSevenDays = Action([@Set($days, 7), @Run(dashboardQ)])
-selectThirtyDays = Action([@Set($days, 30), @Run(dashboardQ)])
-searchBox = AppSearch("md", null, false, false, "Search agents...", $searchQuery, null, null, null, null, null, updateSearch)
-updateSearch = Action([@Set($searchQuery, $event), @Run(agentTableQ)])
-dashboardQ = Query("fetchTokenopsDashboard", [], {summary: {total_cost: 0, total_operations: 0, operations_last_24h: 0, average_cost: 0, active_agents: 0, total_agents: 0, total_container_hours: 0}, agents: []}, "data")
-summaryCards = AppRow([costCard, opsCard, agentsCard], "md")
-costCard = AppStatCard("Total cost", dashboardQ.summary.total_cost, null, "neutral")
-opsCard = AppStatCard("Operations", dashboardQ.summary.total_operations, null, "neutral")
-agentsCard = AppStatCard("Active agents", dashboardQ.summary.active_agents, null, "neutral")
-agentTableQ = Query("fetchUsageByAgent", [$searchQuery, 1, 50], [], "data")
-agentTable = AppTable(agentTableQ, 50, "pages", true)
+$agentQuery = ""
+controls = AppRow([rangeRow, searchBox], "md", "center", "between")
+rangeRow = AppRow([sevenBtn, thirtyBtn], "sm")
+sevenBtn = AppButton("7 days", "secondary", null, null, null, null, null, null, null, null, showSeven)
+thirtyBtn = AppButton("30 days", "primary", null, null, null, null, null, null, null, null, showThirty)
+showSeven = Action([@Set($days, 7), @Run(summaryQ), @Run(historyQ)])
+showThirty = Action([@Set($days, 30), @Run(summaryQ), @Run(historyQ)])
+searchBox = AppSearch("md", null, false, false, "Search agents...", $agentQuery, null, null, null, null, null, runSearch)
+runSearch = Action([@Set($agentQuery, $event), @Run(agentRowsQ)])
+summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0, total_tokens: 0}, null)
+historyQ = Query("fetchUsageHistory", [$days], [])
+kpis = AppStatRow([{label: "Total cost", value: summaryQ.total_cost_usd, sub: "USD"}, {label: "Requests", value: summaryQ.request_count}, {label: "Total tokens", value: summaryQ.total_tokens}])
+agentRowsQ = Query("fetchUsageByAgent", [$agentQuery, 1, 50], [], "data")
+agentTable = AppTable(agentRowsQ, 50, "pages", true)
 
-Here's your cost dashboard with a 7/30-day window toggle, search for agents, and KPI cards showing total cost, operations, and active agents — let me know if you'd like to adjust the layout, add more metrics, or change the time window defaults!
+Here's your cost dashboard with summary KPIs at the top, a time-window toggle, agent search, and a paginated table showing per-agent usage — let me know if you'd like to add a chart, adjust the layout, or change any of the metrics!

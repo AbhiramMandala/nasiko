@@ -89,7 +89,7 @@ const DSL = [
   'Sure — building that now.\n',
   'root = AppStack([kpis], "md")\n',
   'kpis = AppRow([kpiCost], "md")\n',
-  'kpiCost = AppStatCard("Total cost", "12.50", null, "up")\n',
+  'kpiCost = AppStatCard("Total cost", "12.50", "+3.20", 12.50 > 9.30 ? "up" : "neutral")\n',
   "Here's your spend dashboard — let me know if you'd like anything adjusted!",
 ];
 const TURN = [
@@ -105,7 +105,14 @@ test('a full turn renders the tree the DSL describes', async () => {
   const stack = container.children[0];
   assert.equal(stack.tag, 'app-stack');
   const card = stack.children[0].children[0];
-  assert.deepEqual([card.attrs.label, card.attrs.value, card.attrs.trend], ['Total cost', '12.50', 'up']);
+  // The delta and its arrow are COMPUTED, which is the only honest way to show
+  // either. A generation that hardcodes "up" is asserting a direction nothing
+  // measured, and this fixture is the shape the prompt teaches instead.
+  // The arrow is derived from a comparison rather than stated. A generation
+  // that hardcodes "up" is asserting a direction nothing measured, and this
+  // fixture is the shape the prompt teaches instead.
+  assert.deepEqual([card.attrs.label, card.attrs.value, card.attrs.delta, card.attrs.trend],
+    ['Total cost', '12.50', '+3.20', 'up']);
 });
 
 test('both prose sentences reach the chat log, and no DSL line does', async () => {
