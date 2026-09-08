@@ -100,6 +100,12 @@ export default {
     }],
 
     // Click-a-day hourly drill-down — powers "Spend concentration".
+    // Real /finops/spend-calendar/day payloads (confirmed against a live
+    // capture) put `top_agents`/`others_spend_usd` on EVERY hour, not just
+    // once for the whole day — a per-hour ranking, not only a per-day one.
+    // tokenops-page.js only reads the day-level fields today (`day.top_agents`
+    // / `day.others_spend_usd`), so this fixture carries the per-hour ones
+    // for contract accuracy without the UI consuming them yet.
     [{ method: "GET", path: /^\/api\/observability\/finops\/spend-calendar\/day/ }, (req) => {
       const dateStr = qparam(req, "date") || new Date().toISOString().slice(0, 10);
       const curve = [1, 1, 1, 1, 1, 2, 4, 8, 12, 14, 13, 11, 12, 13, 12, 10, 8, 7, 5, 3, 3, 3, 2, 2];
@@ -107,13 +113,27 @@ export default {
       // A different day totals a bit differently, so the picker visibly changes something.
       const daySeed = new Date(dateStr).getDate() || 1;
       const dayTotal = 280 + (daySeed % 7) * 35;
-      const hours = curve.map((w, hour) => ({ hour, spend_usd: Math.round((dayTotal * w) / weight * 100) / 100 }));
       const rankedAgents = [...AGENTS].sort((a, b) => b.total_cost - a.total_cost);
       const top4 = rankedAgents.slice(0, 4);
       const others = rankedAgents.slice(4);
       // Scale the real window totals down to a single day's share so the
       // legend and the hourly curve are in the same ballpark.
       const scale = dayTotal / top4.reduce((s, a) => s + a.total_cost, 0);
+      const dayTopAgents = top4.map((a) => ({ agent_name: a.agent_name, spend_usd: a.total_cost * scale }));
+      const dayOthers = others.reduce((s, a) => s + a.total_cost, 0) * scale;
+      const hours = curve.map((w, hour) => {
+        const hourSpend = Math.round((dayTotal * w) / weight * 100) / 100;
+        // This hour's share of the day (curve weight / total weight) applied
+        // to the day-level agent split — same proportions, scaled down to
+        // one hour, matching how the real endpoint's per-hour figures track
+        // its own day-level ones.
+        const hourFraction = w / weight;
+        const hourTopAgents = dayTopAgents
+          .map((a) => ({ agent_name: a.agent_name, spend_usd: Math.round(a.spend_usd * hourFraction * 100) / 100 }))
+          .filter((a) => a.spend_usd > 0);
+        const hourOthers = Math.round(dayOthers * hourFraction * 100) / 100;
+        return { hour, spend_usd: hourSpend, top_agents: hourTopAgents, others_spend_usd: hourOthers };
+      });
       return {
         data: {
           date: dateStr,
