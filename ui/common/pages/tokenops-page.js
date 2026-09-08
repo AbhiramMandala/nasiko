@@ -63,7 +63,6 @@ import { ApiError } from '../core/errors.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-chart/app-chart.js';
-import '/common/design-system/app-input/app-input.js';
 import '/common/design-system/app-segmented-control/app-segmented-control.js';
 import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-table/app-table.js';
@@ -89,11 +88,9 @@ const fmtMoney = (n) => (Math.abs(n ?? 0) >= 100
   : `$${(n ?? 0).toFixed(2)}`);
 const fmtNum = (n) => (n ?? 0).toFixed(1);
 const fmtLatency = (ms) => (ms == null ? '—' : `${(ms / 1000).toFixed(1)}s`);
-/** Sub-second latencies read better in ms — the KPI figure, not the table cell.
- *  Missing reads as `0ms`, not a dash: the strip shows zeros so four metrics of
- *  an empty window agree with each other (the table cell keeps its dash). */
-const fmtLatencyShort = (ms) => ((ms ?? 0) < 1000
-  ? `${Math.round(ms ?? 0)}ms` : `${(ms / 1000).toFixed(1)}s`);
+/** Sub-second latencies read better in ms — the KPI figure, not the table cell. */
+const fmtLatencyShort = (ms) => (ms == null ? '—'
+  : ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`);
 const fmtCount = (n) => (n ?? 0).toLocaleString();
 
 /**
@@ -120,14 +117,14 @@ const AGENT_COLUMNS = [
     render: (v, r) => `<span class="agent-name">${escHtml(v || r.agent_id)
     }${r.is_capped ? ' <app-badge variant="warning" title="High-volume agent — this number is a real but undercounted approximation">~approx</app-badge>' : ''}</span>`,
     csv: (r) => r.agent_name },
-  { key: 'total_cost', label: 'Spend', render: fmtMoney },
-  { key: 'total_tokens', label: 'Tokens', render: fmtTokens },
-  { key: 'completion_tokens', label: 'Output', render: (v) => (v == null ? '—' : fmtTokens(v)) },
-  { key: 'prompt_tokens', label: 'Input', render: (v) => (v == null ? '—' : fmtTokens(v)) },
-  { key: 'operations', label: 'Operations', render: fmtCount },
-  { key: 'avg_cost_per_operation', label: 'Avg cost/op', render: (v) => (v == null ? '—' : fmtCost(v)) },
-  { key: 'container_hours', label: 'Agent hours', render: (v) => (v == null ? '—' : fmtNum(v)) },
-  { key: 'avg_latency_ms', label: 'Avg latency', render: fmtLatency },
+  { key: 'total_cost', label: 'Spend', numeric: true, render: fmtMoney },
+  { key: 'total_tokens', label: 'Tokens', numeric: true, render: fmtTokens },
+  { key: 'completion_tokens', label: 'Output', numeric: true, render: (v) => (v == null ? '—' : fmtTokens(v)) },
+  { key: 'prompt_tokens', label: 'Input', numeric: true, render: (v) => (v == null ? '—' : fmtTokens(v)) },
+  { key: 'operations', label: 'Operations', numeric: true, render: fmtCount },
+  { key: 'avg_cost_per_operation', label: 'Avg cost/op', numeric: true, render: (v) => (v == null ? '—' : fmtCost(v)) },
+  { key: 'container_hours', label: 'Agent hours', numeric: true, render: (v) => (v == null ? '—' : fmtNum(v)) },
+  { key: 'avg_latency_ms', label: 'Avg latency', numeric: true, render: fmtLatency },
 ];
 
 /** Workflow rows carry no replica-hours or token-split columns — those are
@@ -137,10 +134,10 @@ const WORKFLOW_COLUMNS = [
   { key: 'workflow_name', label: 'Workflow',
     render: (v, r) => `<span class="agent-name">${escHtml(v || r.workflow_id)}</span>`,
     csv: (r) => r.workflow_name },
-  { key: 'total_cost', label: 'Spend', render: fmtMoney },
-  { key: 'total_tokens', label: 'Tokens', render: fmtTokens },
-  { key: 'operations', label: 'Operations', render: fmtCount },
-  { key: 'avg_latency_ms', label: 'Avg latency', render: fmtLatency },
+  { key: 'total_cost', label: 'Spend', numeric: true, render: fmtMoney },
+  { key: 'total_tokens', label: 'Tokens', numeric: true, render: fmtTokens },
+  { key: 'operations', label: 'Operations', numeric: true, render: fmtCount },
+  { key: 'avg_latency_ms', label: 'Avg latency', numeric: true, render: fmtLatency },
 ];
 
 /** `sort_by` value lists from the handoff doc, one label per value — there is
@@ -231,10 +228,11 @@ function deltaChip(changePct, goodWhen) {
 function kpiHtml({ label, value, sub, delta, dir, trend }) {
   return `
     <div class="kpi"${sub ? ` title="${escAttr(sub)}"` : ''}>
-      <div class="kpi-chip is-${trend} dir-${dir ?? 'none'}${delta == null ? ' is-empty' : ''}">
-        ${delta == null
+      <div class="kpi-chip is-${trend} dir-${dir ?? 'none'}">
+        ${delta === null
           ? '<span class="kpi-none" aria-hidden="true">—</span>'
-          : `${icons.arrowUpRight('kpi-arrow', 14)}<span class="kpi-delta">${escHtml(delta)}</span>`}
+          : icons.arrowUpRight('kpi-arrow', 14)}
+        <span class="kpi-delta">${escHtml(delta ?? '')}</span>
       </div>
       <div class="kpi-text">
         <div class="kpi-value">${escHtml(value == null || value === '' ? '—' : String(value))}</div>
@@ -330,8 +328,8 @@ class TokenopsPage extends HTMLElement {
         <section class="panel">
           <div class="panel-head">
             <h2 class="panel-title">Spend concentration</h2>
-            <app-input type="date" id="day-picker" class="day-picker" aria-label="Day"
-              value="${escAttr(this.#day)}" max="${escAttr(localDateStr(new Date()))}"></app-input>
+            <input type="date" id="day-picker" class="day-picker" aria-label="Day"
+              value="${escAttr(this.#day)}" max="${escAttr(localDateStr(new Date()))}">
           </div>
           <div class="conc-body">
             <app-chart id="conc-plot" class="plot-slot" type="bar" average-line legend="off" height="220px"

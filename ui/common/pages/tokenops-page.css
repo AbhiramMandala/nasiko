@@ -176,7 +176,7 @@
 
   /* Independent of the KPI strip's month/range window — the day-drill
      endpoint takes a single calendar date, not a range. Sized explicitly:
-     <app-input> is display:block and this sits in a flex row. */
+     the global input rule is `width: 100%` and this sits in a flex row. */
   .day-picker {
     width: auto;
     min-width: 150px;
@@ -321,17 +321,14 @@
     gap: var(--s-12);
   }
 
-  /* <app-table> owns the frame, header band and rows. Columns 2–9 are numeric;
-     app-table has no per-column alignment, so this is positional and tracks
-     COLUMNS in tokenops-page.js. */
+  /* <app-table> owns the frame, header band and rows. Alignment itself comes
+     free from `numeric: true` on the AGENT_COLUMNS/WORKFLOW_COLUMNS entries in
+     tokenops-page.js (a real column property, not a position to keep in sync
+     by hand) — this page only adds its own typographic choice on top: figures
+     read as figures, in mono with tabular digits. */
   app-table { margin-bottom: var(--s-32); }
 
-  app-table .th:nth-child(n+2):nth-child(-n+9) .th-content {
-    justify-content: flex-end;
-  }
-
-  app-table .td:nth-child(n+2):nth-child(-n+9) {
-    text-align: right;
+  app-table .td.is-numeric {
     font-family: var(--font-mono);
     font-size: 13px;
     font-variant-numeric: tabular-nums;
