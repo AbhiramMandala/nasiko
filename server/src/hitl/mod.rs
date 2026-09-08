@@ -193,69 +193,6 @@ async fn deliver(state: AppState, row: HitlRequest) {
         return;
     }
 
-    // Register this resume as a live flow in the MCP-gateway sense (Postgres `flows` +
-    // `flow_participants`) — a completely separate bookkeeping system from the FlowGuard
-    // cascade-limit check just above, which never touches these tables. Without this, the
-    // resumed agent's own MCP tool calls (e.g. retrying the exact call a human just approved)
-    // 403 with "traceparent does not resolve to a live flow": `flow_ctx` is a brand-new root
-    // flow that no dispatch path had ever registered here (confirmed live — HITL_PR342-style
-    // regression). Mirrors every other dispatch site's flows insert (`agent_proxy.rs`,
-    // `a2a_dispatch.rs`, `maf/executor.rs::register_flow`).
-    //
-    // `metadata.context_id` carries `row.context_id` (the agent's OWN, private A2A context —
-    // never a `chat_sessions` row) purely for observability/debugging, mirroring
-    // `agent_proxy.rs`'s convention of stamping the sticky key onto `flows.metadata`. It is NOT
-    // what makes retry-matching work — that's `session_traces` below, and `session_traces.session_id`
-    // has a hard FK to `chat_sessions(session_id)` (`0004_observability.sql`), which `context_id`
-    // can never satisfy. `nasiko_mcp_gateway::session::resolve_context_id` resolves a tools/call's
-    // session by looking up `session_traces` for the CALLING trace_id, falling back to the trace_id
-    // itself only when no row exists. Every resume mints a brand-new `flow_ctx.flow_id`, so without
-    // a session_traces row mapping it to something STABLE, `resolve_tool_approval_retry`'s
-    // once/session-scope grant lookup keys on a trace_id that's different on every single resume,
-    // never matching the original ask's own resolved context — every resumed retry of a tool the
-    // human just approved gets asked again, forever (confirmed live: approving the same
-    // tool_approval repeatedly, every retry still comes back `ask_required`, and the earlier
-    // `session_id = context_id` version of this INSERT was silently failing its FK check on every
-    // single call — `context_id` is never a real chat session, so it never once succeeded).
-    // `row.chat_session_id` is the real, existing `chat_sessions` row every mirror in this chain
-    // carries forward (`NewHitlRequest::orchestrator`/`persist_direct_chat_pause`) — mapping every
-    // resume's fresh flow_id to THAT is what actually lets retries resolve to the SAME session the
-    // original ask did. Skipped when absent (direct_chat/agent_proxy rows aren't guaranteed one):
-    // no stable id to map to, so falling back to today's re-ask behavior is the only honest option.
-    let _ = sqlx::query(
-        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, $3, $4, $5, 'running', $6)
-           ON CONFLICT (flow_id) DO UPDATE
-              SET status = 'running', completed_at = NULL"#,
-    )
-    .bind(&flow_ctx.flow_id)
-    .bind(row.owner_user_id)
-    .bind(row.agent_id)
-    .bind(&agent_name)
-    .bind("HITL resume")
-    .bind(serde_json::json!({ "context_id": context_id }))
-    .execute(&state.db)
-    .await;
-    crate::flows::record_participant(&state.db, &flow_ctx.flow_id, row.agent_id).await;
-    if let Some(chat_session_id) = row.chat_session_id.as_deref()
-        && let Err(e) = sqlx::query(
-            "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (session_id, trace_id) DO NOTHING",
-        )
-        .bind(chat_session_id)
-        .bind(&flow_ctx.flow_id)
-        .bind(row.agent_id)
-        .bind(&agent_name)
-        .execute(&state.db)
-        .await
-    {
-        tracing::warn!(
-            error = %e, %chat_session_id, flow_id = %flow_ctx.flow_id,
-            "hitl resume: session_traces record failed — tool-approval retry matching for this resume may re-ask"
-        );
-    }
-
     let answer = answer_text(&row);
     let req_body = nasiko_types::a2a::build_stream_request_for_task(&answer, &context_id, &task_id);
 
@@ -551,37 +488,8 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 /// `"authorized"` would tell the agent the opposite of what happened, so `"denied"` is echoed back
 /// literally instead, on the same "echo the word, let the agent determine the real outcome from
 /// its own next response" principle (§7's "intent ≠ success").
-/// Selectable-options extension (additive to `input_required`, `router/hitl.rs::
-/// resolve_structured_answer`): a multi-select `human_response.answer` is a JSON array of the
-/// selected option labels, never a plain string — this branch is unreachable for any row that
-/// predates the feature or whose question was never structured, since `resolve()` only ever writes
-/// an array under `answer` for a `question.multi_select = true` row. Flattened as one label per
-/// line rather than comma-joined, since a label itself may contain a comma (§11 of the request) —
-/// a newline can't collide with option text the same way, and this keeps the agent's continuation
-/// a single plain-text message, exactly like every other resume, with no new wire structure.
-/// `custom_answer` (multi-select's "Something else" text) is appended as its own trailing line when
-/// present, so a custom-only answer (zero predefined selections) degrades to a single-line
-/// message — indistinguishable from a plain single-select or free-text answer to the agent, which
-/// is a deliberate, not incidental, property: no agent has to special-case "was this multi-select."
 fn answer_text(row: &HitlRequest) -> String {
     let response = row.human_response.as_ref();
-    if let Some(items) = response
-        .and_then(|r| r.get("answer"))
-        .and_then(|v| v.as_array())
-    {
-        let mut lines: Vec<String> = items
-            .iter()
-            .filter_map(|v| v.as_str())
-            .map(str::to_string)
-            .collect();
-        if let Some(custom) = response
-            .and_then(|r| r.get("custom_answer"))
-            .and_then(|v| v.as_str())
-        {
-            lines.push(custom.to_string());
-        }
-        return lines.join("\n");
-    }
     if let Some(answer) = response
         .and_then(|r| r.get("answer"))
         .and_then(|v| v.as_str())
@@ -813,28 +721,8 @@ async fn trigger_new_orchestrator_turn(
         None => format!("The {agent_name} agent has completed the requested step."),
     };
 
-    // The orchestrator's own system prompt (`react_loop.rs`) reads every turn as "analyze the
-    // user's request, determine which agent can help" — reasonable for a real user message, but
-    // `continuation` above is not one: it's a delegated agent's own reply to a call the
-    // orchestrator already made, being fed back in because a paused sub-agent call has no way to
-    // resume the ORIGINAL in-progress ReAct turn's own tool-call state (§Step 7's known
-    // limitation — ContextManager/SessionHistory only carry flat user/assistant text, not an
-    // interrupted tool-call transcript). Read as a plain "user" turn, the model has no signal
-    // that it's the OUTCOME of an action it already took rather than a new one to take — and
-    // confirmed live, it can and does call the same agent again for the same completed action
-    // (e.g. "created the issue" read as "please create the issue"). This instruction is reasoning
-    // input only, not shown to the human: `raw_text` below (what actually gets persisted to
-    // `chat_messages`) stays the plain `continuation` text, unchanged.
-    let reasoning_query = format!(
-        "{continuation}\n\n\
-         (System note: this is the result of an action you already delegated, not a new request \
-         from the user. If it fully answers the original request, respond to the user with the \
-         result now as plain text — do not call {agent_name}, or any other agent, again for the \
-         same action.)"
-    );
-
     let history = nasiko_orchestrator::SessionHistory::fetch(&chat_session_id, &state.db, 20).await;
-    let query = history.with_current_query(&reasoning_query);
+    let query = history.with_current_query(&continuation);
     let new_task_id = Uuid::new_v4().to_string();
 
     // Never assume the original turn's privilege level — apply the resumed user's real, current
@@ -945,115 +833,4 @@ async fn persist_resume_reply(
     .bind(&text)
     .execute(&state.db)
     .await;
-}
-
-#[cfg(test)]
-mod answer_text_tests {
-    use super::*;
-    use nasiko_hitl::{HitlKind, HitlOrigin, HitlStatus, ResumeStatus};
-
-    fn row_with_response(human_response: Option<serde_json::Value>) -> HitlRequest {
-        let now = chrono::Utc::now();
-        HitlRequest {
-            id: Uuid::new_v4(),
-            kind: HitlKind::InputRequired,
-            origin: HitlOrigin::DirectChat,
-            status: HitlStatus::Resolved,
-            resume_status: ResumeStatus::NotStarted,
-            agent_id: Uuid::new_v4(),
-            owner_user_id: Uuid::new_v4(),
-            resolved_by: None,
-            task_id: Some("task-1".into()),
-            context_id: Some("ctx-1".into()),
-            chat_session_id: None,
-            maf_execution_id: None,
-            maf_step_index: None,
-            connector_id: None,
-            tool_name: None,
-            arguments_hash: None,
-            consumed_at: None,
-            question: serde_json::Value::Null,
-            human_response,
-            resume_state: serde_json::Value::Null,
-            resume_claimed_at: None,
-            resume_dispatch_attempts: 0,
-            resume_last_error: None,
-            created_at: now,
-            updated_at: now,
-            expires_at: None,
-            resolved_at: None,
-        }
-    }
-
-    #[test]
-    fn plain_string_answer_is_unchanged() {
-        let row = row_with_response(Some(serde_json::json!({ "answer": "production" })));
-        assert_eq!(answer_text(&row), "production");
-    }
-
-    #[test]
-    fn single_select_predefined_answer_is_the_label_verbatim() {
-        let row = row_with_response(Some(serde_json::json!({ "answer": "Summary" })));
-        assert_eq!(answer_text(&row), "Summary");
-    }
-
-    #[test]
-    fn single_select_custom_answer_is_the_raw_text_verbatim() {
-        let row = row_with_response(Some(
-            serde_json::json!({ "answer": "Give me a concise executive summary" }),
-        ));
-        assert_eq!(answer_text(&row), "Give me a concise executive summary");
-    }
-
-    #[test]
-    fn multi_select_answers_join_by_newline_not_comma() {
-        // The whole point of not comma-joining: a label containing a comma must round-trip
-        // unambiguously.
-        let row = row_with_response(Some(serde_json::json!({
-            "answer": ["Introduction, architecture and design", "Security, privacy and compliance"]
-        })));
-        assert_eq!(
-            answer_text(&row),
-            "Introduction, architecture and design\nSecurity, privacy and compliance"
-        );
-    }
-
-    #[test]
-    fn multi_select_with_custom_answer_appends_it_as_a_trailing_line() {
-        let row = row_with_response(Some(serde_json::json!({
-            "answer": ["Introduction", "Security"],
-            "custom_answer": "Also include deployment risks",
-        })));
-        assert_eq!(
-            answer_text(&row),
-            "Introduction\nSecurity\nAlso include deployment risks"
-        );
-    }
-
-    #[test]
-    fn multi_select_with_only_custom_answer_is_a_single_line() {
-        let row = row_with_response(Some(serde_json::json!({
-            "answer": [],
-            "custom_answer": "Only discuss security implications",
-        })));
-        assert_eq!(answer_text(&row), "Only discuss security implications");
-    }
-
-    #[test]
-    fn auth_outcome_confirmed_is_unchanged() {
-        let row = row_with_response(Some(serde_json::json!({ "auth_outcome": "confirmed" })));
-        assert_eq!(answer_text(&row), "authorized");
-    }
-
-    #[test]
-    fn auth_outcome_denied_is_unchanged() {
-        let row = row_with_response(Some(serde_json::json!({ "auth_outcome": "denied" })));
-        assert_eq!(answer_text(&row), "denied");
-    }
-
-    #[test]
-    fn no_human_response_is_empty_string() {
-        let row = row_with_response(None);
-        assert_eq!(answer_text(&row), "");
-    }
 }
