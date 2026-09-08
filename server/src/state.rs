@@ -221,26 +221,6 @@ impl AppState {
             ));
         }
 
-        // Trace-usage materializer: reads recent traces from Tempo, extracts
-        // FinOps metrics, and upserts into trace_usage so dashboard queries
-        // hit Postgres instead of Tempo. 0 disables.
-        if state.config.observability_enabled && state.config.trace_usage_sync_secs > 0 {
-            let session_resolver: std::sync::Arc<dyn nasiko_observability::SessionIdResolver> =
-                std::sync::Arc::new(
-                    crate::observability::session_resolver::PgSessionIdResolver::new(
-                        state.db.clone(),
-                    ),
-                );
-            tokio::spawn(crate::observability::trace_materializer::run(
-                state.db.clone(),
-                state.observability.clone(),
-                session_resolver,
-                std::time::Duration::from_secs(state.config.trace_usage_sync_secs),
-                std::time::Duration::from_secs(state.config.trace_usage_overlap_secs),
-                state.config.trace_usage_batch_size,
-            ));
-        }
-
         state
     }
 

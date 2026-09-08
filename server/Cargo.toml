@@ -15,7 +15,6 @@ dotenvy.workspace = true
 nasiko-agent-proxy.workspace = true
 nasiko-auth.workspace = true
 nasiko-flow.workspace = true
-nasiko-hitl.workspace = true
 nasiko-mcp-gateway.workspace = true
 nasiko-secrets.workspace = true
 nasiko-github = { workspace = true }

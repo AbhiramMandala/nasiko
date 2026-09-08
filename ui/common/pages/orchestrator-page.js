@@ -3,8 +3,6 @@ import { isAbort, userMessage } from '/common/core/errors.js';
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom, scrollerFor, stickToBottom } from '/common/utils/a2a-stream.js';
-import { reconnectAfterHitl } from '/common/services/hitl.js';
-import '/common/features/hitl-card.js';
 import { usageChipsHtml } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
 import { registerAll } from '/common/core/data-sources.js';
@@ -30,12 +28,6 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 class OrchestratorPage extends HTMLElement {
   #initialized = false;
   #sessionId = null;
-
-  /** The waiting human-in-the-loop card, when a delegated call paused. */
-  #hitlCard = null;
-
-  /** Serializes reconnects so two answered decisions append in order. */
-  #resumeTail = Promise.resolve();
 
   /**
    * Aborted on disconnect. Before this existed, navigating away mid-response
@@ -107,11 +99,6 @@ class OrchestratorPage extends HTMLElement {
         }
       }
     });
-
-    // The card resolves its own row; the page owns what happens next. A
-    // withdrawn request triggers no resume, so there is nothing to reconnect to.
-    this.addEventListener('hitl-resolved', (e) => this.#resume(e.detail.id));
-    this.addEventListener('hitl-canceled', () => this.#syncComposer());
 
     chatbox.addEventListener('chatbox-submit', async (e) => {
       const { value: content, files } = e.detail;
@@ -200,61 +187,7 @@ class OrchestratorPage extends HTMLElement {
           this.#appendMsg(messagesEl, 'assistant', `Error: ${userMessage(err)}`);
         }
       } finally {
-        this.#syncComposer();
-      }
-    });
-  }
-
-  /**
-   * Mount the waiting card at the end of `container`.
-   *
-   * Unlike direct chat, an orchestrator frame names the sub-agent that is
-   * asking — the orchestrator can delegate to several agents in one turn, so
-   * "who wants this" is real information here (§13.3).
-   */
-  #mountHitl(container, rows) {
-    const list = Array.isArray(rows) ? rows : [rows];
-    const card = document.createElement('hitl-card');
-    card.actor = list[0]?.agent || 'Orchestrator';
-    card.rows = list;
-    container.appendChild(card);
-    this.#hitlCard = card;
-    return card;
-  }
-
-  /**
-   * Close the composer while the card is waiting, and say why — every pause
-   * kind is answered in the card, so typing here could only start a new turn.
-   */
-  #syncComposer({ streaming = false } = {}) {
-    const chatbox = this.querySelector('#chatbox');
-    if (!chatbox) return;
-    const card = this.#hitlCard;
-    chatbox.setAttribute('placeholder', card?.composerHint || 'Describe the task you want to execute');
-    chatbox.setLoading(streaming || Boolean(card?.blocksComposer));
-  }
-
-  /**
-   * Attach to what the resume actually produced.
-   *
-   * For an orchestrator pause this is worth more than it is anywhere else: the
-   * sub-agent's resume feeds the orchestrator's own reasoning loop back into
-   * the turn, and reconnecting streams those real events — every tool call and
-   * incremental reply — rather than a summary. It ends in either the final
-   * answer or the next pause in the chain, which mounts its own card the same
-   * way the first one did.
-   */
-  #resume(id) {
-    const messagesEl = this.querySelector('#messages');
-    this.#resumeTail = this.#resumeTail.then(async () => {
-      this.#syncComposer({ streaming: true });
-      try {
-        const res = await reconnectAfterHitl(id, { signal: this.#abort.signal });
-        await this.#readStream(res, messagesEl);
-      } catch (err) {
-        if (!isAbort(err)) this.#appendMsg(messagesEl, 'assistant', `Error: ${userMessage(err)}`);
-      } finally {
-        this.#syncComposer();
+        chatbox.setLoading(false);
       }
     });
   }
@@ -415,16 +348,6 @@ class OrchestratorPage extends HTMLElement {
         showContent(`<span style="color:var(--color-error)">${escHtml(message)}</span>`);
       },
     });
-
-    // Paused for a human: the stream closing with no reply is the expected
-    // shape, not a failure, so the outcome is the card and nothing is rendered
-    // as if the orchestrator had answered.
-    if (out.hitl) {
-      stepsEl.awaitInput();
-      typingEl.remove();
-      this.#mountHitl(streamArea, out.hitl);
-      return { text: '', traceId: out.traceId, usage: out.usage, paused: true };
-    }
 
     stepsEl.finish();
     typingEl.remove();

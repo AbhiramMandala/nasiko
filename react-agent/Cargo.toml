@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 # LLM orchestration
-rig-core = { workspace = true }
+rig-core = { version = "0.11", default-features = false, features = ["derive"] }
 
 # Async & streaming
 tokio = { workspace = true }

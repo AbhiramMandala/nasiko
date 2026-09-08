@@ -36,17 +36,6 @@ const GRANT_TYPES = [
   { key: 'agent', label: 'Agent', eeOnly: false },
 ];
 
-/**
- * A tool's configured stance, defaulting to `allow`.
- *
- * With no matching rule the gateway allows the call, so an unset tool really is
- * `allow` — and normalising here is what stops a round-trip from downgrading
- * `ask` to `allow`: every click re-saves the connector's whole rule set, so any
- * stance this function does not preserve is silently erased from the others.
- */
-const STANCES = new Set(['allow', 'ask', 'block']);
-const stanceOf = (tool) => (STANCES.has(tool?.stance) ? tool.stance : 'allow');
-
 class AgentCardPage extends HTMLElement {
   #initialized = false;
   #agent = null;
@@ -1200,9 +1189,7 @@ class AgentCardPage extends HTMLElement {
         <div class="acp-panel" data-tab="configure" data-label="Configure">
           <section class="acp-section">
             <h2 class="acp-section-title">MCP</h2>
-            <p class="acp-section-sub">MCP servers this agent may use. Set each tool to allow, ask
-              or block. <strong>Ask</strong> pauses the agent mid-task and asks you to approve
-              that call before it runs.</p>
+            <p class="acp-section-sub">MCP servers this agent may use. Allow or block each tool individually.</p>
             <div id="acp-mcp-list"><app-skeleton height="160px"></app-skeleton></div>
           </section>
           <section class="acp-section">
@@ -1254,13 +1241,10 @@ class AgentCardPage extends HTMLElement {
   #connectorCardHtml(c) {
     const name = c.display_name || c.name || 'Connector';
     const tools = this.#connectorTools.get(c.connector_id) || [];
-    const asks = tools.filter((t) => stanceOf(t) === 'ask').length;
-    const allowed = tools.filter((t) => stanceOf(t) === 'allow').length;
+    const allowed = tools.filter((t) => t.stance !== 'block').length;
     const summary = c.enabled === false
       ? 'Disabled'
-      : !tools.length ? 'No tools synced yet'
-      : asks ? `${allowed} of ${tools.length} tools allowed · ${asks} ask first`
-      : `${allowed} of ${tools.length} tools allowed`;
+      : tools.length ? `${allowed} of ${tools.length} tools allowed` : 'No tools synced yet';
     const open = this.#openConnectors.has(c.connector_id);
     const logo = c.logo_url
       ? `<img class="acp-mcp-logo" src="${escAttr(c.logo_url)}" alt="" />`
@@ -1296,11 +1280,10 @@ class AgentCardPage extends HTMLElement {
         ${note}
         ${tools.map((t, i) => {
           const group = `stance-${c.connector_id}-${i}`;
-          const current = stanceOf(t);
-          const opt = (stance, label, title) => `
-            <label title="${escAttr(title)}">
+          const opt = (stance, label, on) => `
+            <label>
               <input type="radio" name="${escAttr(group)}" value="${stance}"
-                data-tool-index="${i}" ${current === stance ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+                data-tool-index="${i}" ${on ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
               ${label}
             </label>`;
           return `
@@ -1308,9 +1291,8 @@ class AgentCardPage extends HTMLElement {
             <span class="acp-mcp-tool-name">${escHtml(t.name)}</span>
             <span class="acp-mcp-tool-desc">${escHtml(t.description || '')}</span>
             <fieldset class="seg-ctrl acp-stance" aria-label="Tool access for ${escAttr(t.name)}">
-              ${opt('allow', 'Allow', 'Runs without asking')}
-              ${opt('ask', 'Ask', 'Pauses and asks you to approve each call')}
-              ${opt('block', 'Block', 'Never runs')}
+              ${opt('allow', 'Allow', t.stance !== 'block')}
+              ${opt('block', 'Block', t.stance === 'block')}
             </fieldset>
           </div>`;
         }).join('')}
@@ -1359,7 +1341,7 @@ class AgentCardPage extends HTMLElement {
       const rules = tools.map((t) => ({
         connector_id: connectorId,
         tool_pattern: t.name,
-        stance: stanceOf(t),
+        stance: t.stance === 'block' ? 'block' : 'allow',
       }));
       await call('saveAgentMcpToolRules', this.#agent.id, rules);
     } catch (e) {

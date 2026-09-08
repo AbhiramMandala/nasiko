@@ -205,7 +205,7 @@ export default {
     })],
     [{ method: "GET", path: /^\/api\/mcp\/agents\/[^/]+\/connectors\/mc-github\/tools$/ }, mcpEnvelope({
       tools: [
-        { name: "create_issue", description: "Open a new issue in a repository.", stance: "ask", last_synced_at: null },
+        { name: "create_issue", description: "Open a new issue in a repository.", stance: "allow", last_synced_at: null },
         { name: "merge_pull_request", description: "Merge an open pull request.", stance: "block", last_synced_at: null },
         { name: "list_repos", description: "List repositories visible to the connected account.", stance: "allow", last_synced_at: null },
       ],
@@ -223,7 +223,6 @@ export default {
     })],
     [{ method: "GET", path: /^\/api\/mcp\/agents\/[^/]+\/tools$/ }, mcpEnvelope({
       rules: [
-        { connector_id: "mc-github", tool_pattern: "create_issue", stance: "ask" },
         { connector_id: "mc-github", tool_pattern: "merge_pull_request", stance: "block" },
       ],
     })],
@@ -294,7 +293,7 @@ export default {
     // non-manager — MCP cards present, owner-only LLM router section absent.
     "viewer-configure": async (page) => {
       await gotoAgent(page, 'a-viewer');
-      await page.click('[data-key="configure"]');
+      await page.click('[data-tab="configure"]');
       await page.waitForSelector('.acp-mcp-card', { timeout: 5000 });
       if (await page.$('agent-llm-config')) throw new Error('LLM router shown to non-manager');
     },
@@ -324,7 +323,7 @@ export default {
     },
     "owner-configure": async (page) => {
       await gotoAgent(page, 'a-001');
-      await page.click('[data-key="configure"]');
+      await page.click('[data-tab="configure"]');
       await page.waitForSelector('.acp-mcp-card', { timeout: 5000 });
       // Expand the first (enabled) and second (disabled) connectors.
       const toggles = await page.$$('.acp-mcp-toggle-open');

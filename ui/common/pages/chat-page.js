@@ -5,8 +5,6 @@ import "../features/agent-steps.js";
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
-import { pendingRows, reconnectAfterHitl } from '/common/services/hitl.js';
-import '/common/features/hitl-card.js';
 import { usageChipsHtml, usageFromMessage } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
 import { registerAll } from '/common/core/data-sources.js';
@@ -32,16 +30,6 @@ class ChatPage extends HTMLElement {
   #lastUserContent = null;
   #sampleQueries = [];
   #sending = false;
-
-  /** The waiting human-in-the-loop card, when this turn paused for a decision. */
-  #hitlCard = null;
-
-  /**
-   * Serializes reconnects. Two decisions answered back to back each replay their
-   * own resume, and both write into the same transcript — chained rather than
-   * raced so they append in the order they were answered.
-   */
-  #resumeTail = Promise.resolve();
 
   /**
    * Aborted on disconnect — see orchestrator-page for the same reasoning: an
@@ -83,7 +71,6 @@ class ChatPage extends HTMLElement {
     this.#sessionId = params.get("session_id") || null;
     this.#contextId = params.get("context_id");
     this.#agentLabel = params.get("agent_name") || "Agent";
-    this.#hitlCard = null;
 
     if (this.#agentId) document.title = `Nasiko — Chat with ${this.#agentLabel}`;
 
@@ -250,12 +237,6 @@ class ChatPage extends HTMLElement {
       }
       this.#sendMessage(content);
     });
-
-    // The card resolves the row itself; what the page owns is what happens
-    // next. Cancelling triggers no resume at all — the request is withdrawn,
-    // so there is nothing to reconnect to and the composer simply frees up.
-    this.addEventListener("hitl-resolved", (e) => this.#resume(e.detail.id));
-    this.addEventListener("hitl-canceled", () => this.#syncComposer());
   }
 
   async #sendMessage(content) {
@@ -368,10 +349,7 @@ class ChatPage extends HTMLElement {
       }
 
       pendingRow.remove();
-      const { text: reply, traceId, usage, aborted, paused, contentEl } = await this.#readA2aStream(res, messagesEl);
-      // Paused, not finished: there is no reply to store yet, and the resumed
-      // one is persisted by #resume when it arrives.
-      if (paused) return;
+      const { text: reply, traceId, usage, aborted, contentEl } = await this.#readA2aStream(res, messagesEl);
       // An aborted stream returns normally (it is a cancellation, not a
       // failure), so this guard is what stops a half-received reply from being
       // written to the server as if the agent had finished saying it.
@@ -395,69 +373,8 @@ class ChatPage extends HTMLElement {
       this.#updateRetryButtons(messagesEl);
     } finally {
       this.#sending = false;
-      this.#syncComposer();
+      chatInput.setLoading(false);
     }
-  }
-
-  /**
-   * Mount the waiting card at the end of `container`.
-   *
-   * `rows` is one stream frame, or every pending row for the session on load —
-   * the card pages through them so only one decision is on screen at a time.
-   */
-  #mountHitl(container, rows) {
-    const list = Array.isArray(rows) ? rows : [rows];
-    const card = document.createElement("hitl-card");
-    // A direct-chat frame carries no `agent` field — there is exactly one agent
-    // in the conversation and the page already knows its name (§11.2).
-    card.actor = list[0]?.agent || this.#agentLabel;
-    card.rows = list;
-    container.appendChild(card);
-    this.#hitlCard = card;
-    return card;
-  }
-
-  /**
-   * Close the composer while the card is waiting, and say why.
-   *
-   * Every pause kind is answered in the card — buttons for an approval, the
-   * card's own field for a question — so a live composer beside it would only
-   * offer a way to start a second turn while the agent is still paused.
-   */
-  #syncComposer({ streaming = false } = {}) {
-    const chatInput = this.querySelector("#chat-input");
-    if (!chatInput) return;
-    const card = this.#hitlCard;
-    chatInput.setAttribute("placeholder", card?.composerHint || "Type a message...");
-    chatInput.setLoading(streaming || Boolean(card?.blocksComposer));
-  }
-
-  /**
-   * Attach to what the resume actually produced.
-   *
-   * Resolving only records the decision — delivery to the paused agent is
-   * asynchronous and tied to no browser connection — so reconnecting is the
-   * only way to see the resumed events, and it ends in either the reply or the
-   * next pause in the chain. Reading it back through #readA2aStream is what
-   * makes a chain of pauses work without any extra code: a resumed stream that
-   * pauses again mounts the next card the same way the first one did.
-   */
-  #resume(id) {
-    const messagesEl = this.querySelector("#messages");
-    this.#resumeTail = this.#resumeTail.then(async () => {
-      this.#syncComposer({ streaming: true });
-      try {
-        const res = await reconnectAfterHitl(id, { signal: this.#abort.signal });
-        const { text, traceId, usage, aborted, paused } = await this.#readA2aStream(res, messagesEl);
-        if (aborted || paused || !text) return;
-        this.#persistMessage(this.#sessionId, "assistant", text, { traceId, usage });
-        this.#updateRetryButtons(messagesEl);
-      } catch (err) {
-        if (!isAbort(err)) this.#appendMsg(messagesEl, "assistant", `Error: ${userMessage(err)}`);
-      } finally {
-        this.#syncComposer();
-      }
-    });
   }
 
   async #loadMessages(messagesEl) {
@@ -481,18 +398,6 @@ class ChatPage extends HTMLElement {
         }
         this.#updateRetryButtons(messagesEl);
       }
-      // A pause outlives the connection it arrived on, so the live SSE frame
-      // alone would lose it on a reload. The session's own `hitl` array is the
-      // surface that puts it back (§4.1).
-      const waiting = pendingRows(result.hitl);
-      if (waiting.length) {
-        const row = document.createElement('div');
-        row.className = 'msg-row is-assistant';
-        messagesEl.appendChild(row);
-        this.#mountHitl(row, waiting);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-      this.#syncComposer();
     } catch { messagesEl.innerHTML = ''; }
   }
 
@@ -616,16 +521,6 @@ class ChatPage extends HTMLElement {
         showContent(`<span style="color:var(--color-error)">${escHtml(message)}</span>`);
       },
     });
-
-    // Paused for a human. The stream closing with no reply is the expected
-    // shape here, not a failure, so the turn's outcome is the card — and
-    // nothing is written to the transcript as if the agent had answered.
-    if (out.hitl) {
-      stepsEl.awaitInput();
-      typingEl.remove();
-      this.#mountHitl(streamArea, out.hitl);
-      return { text: "", traceId: out.traceId, usage: out.usage, aborted: out.aborted, paused: true };
-    }
 
     // Finalize
     stepsEl.finish();
