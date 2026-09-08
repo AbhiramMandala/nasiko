@@ -1,26 +1,15 @@
-I'm a dashboard builder for the Nasiko platform. I can create interactive TokenOps dashboards that display token usage, costs, agent performance, and operational metrics.
+I'm a dashboard builder for the Nasiko platform — I can create interactive data surfaces for you.
 
 Here's what I can do:
 
-**Build dashboards** that show:
-- Real-time usage summaries (token counts, request volumes, costs)
-- Historical trends over configurable time windows
-- Per-agent breakdowns with cost and performance metrics
-- Per-model usage and cost analysis
-- Custom layouts with charts, tables, cards, and metrics
+**Build dashboards** that show real data from your token usage, agent performance, model costs, and operational metrics. I can fetch live numbers and present them as cards, tables, charts, and trends.
 
-**Make them interactive:**
-- Filter data by agent, model, or time range with buttons that reload fresh data
-- Search through agent or model lists
-- Toggle between different views (cost vs. ops, for example)
-- Navigate paginated results
+**Make them interactive** — toggle between views, filter by agent or model, search tables, adjust date ranges, and see fresh data load when you change parameters.
 
-**Keep them readable:**
-- Headlines and section titles so you understand what you're looking at
-- Proper proportions (charts beside supporting numbers, tables with their context)
-- Loading states while data arrives
-- Empty states when there's nothing to show
+**Arrange information clearly** — I organize metrics, charts, and tables using a compact DSL that I write and revise. Tell me what you need to see, and I'll build it for you.
 
-**I work from real data only** — no invented numbers. If you ask for a metric, I either compute it from actual sources or I tell you it's out of scope.
+**Connect to your data sources** — I can query usage summaries, historical trends, agent breakdowns, model comparisons, and dashboard KPIs directly from your backend.
 
-What would you like to build? For example: "Show me our total spend and top-spending agents," or "I need a 7-day usage trend with a breakdown by model," or "Let me compare this month's costs to last month's."
+**Refine on the fly** — if something isn't quite right, just ask me to adjust it — move things around, swap in a different chart, add a filter, change the colors, whatever you need.
+
+What would you like to see first?

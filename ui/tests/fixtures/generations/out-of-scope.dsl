@@ -1,5 +1,11 @@
-I don't have a data source for AWS billing by service in scope. The available sources return TokenOps agent usage (costs, tokens, latency) and token consumption summaries, but nothing about AWS infrastructure billing or service breakdowns.
+I appreciate the request, but I need to let you know that the data sources available to me are limited to TokenOps usage metrics — agent costs, token consumption, latency, and operational data. There's no AWS billing data source connected yet in the Nasiko platform.
 
-To build an AWS bill dashboard, I'd need a real data source that fetches that information — something like `fetchAwsBillByService()` or similar. Right now, I can only show you agent token costs, usage history, and per-model/per-agent breakdowns.
+The available sources track:
+- **Agent-level costs** (from `fetchTokenopsDashboard`)
+- **Overall usage summary** (from `fetchUsageSummary`)
+- **Historical usage** (from `fetchUsageHistory`)
+- **Usage by agent and model** (from `fetchUsageByAgent`, `fetchUsageByModel`)
 
-Would you like me to build a TokenOps cost dashboard instead, showing agent spending and usage metrics? Or if you have access to an AWS billing integration source, let me know its name and I can wire it up.
+If you'd like, I can build you a **TokenOps cost dashboard** showing spend by agent or model instead, which would give you visibility into your agent infrastructure costs. Or if AWS billing data becomes available as a data source, I can create that breakdown for you then.
+
+Which would be more helpful right now?

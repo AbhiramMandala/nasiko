@@ -1,22 +1,19 @@
 Sure — building that now.
-root = AppStack([heading, controls, costCards, agentTable], "md")
-heading = AppText("Cost dashboard", "title")
-$days = 7
-$searchQuery = ""
-controls = AppRow([rangeControls, searchBox], "md")
-rangeControls = AppRow([sevenBtn, thirtyBtn, ninetyBtn], "sm")
-sevenBtn = AppButton("7 days", $days == 7 ? "primary" : "secondary", null, null, null, null, null, null, null, null, setSeven)
-thirtyBtn = AppButton("30 days", $days == 30 ? "primary" : "secondary", null, null, null, null, null, null, null, null, setThirty)
-ninetyBtn = AppButton("90 days", $days == 90 ? "primary" : "secondary", null, null, null, null, null, null, null, null, setNinety)
-setSeven = Action([@Set($days, 7), @Run(summaryQ), @Run(historyQ), @Run(agentQ)])
-setThirty = Action([@Set($days, 30), @Run(summaryQ), @Run(historyQ), @Run(agentQ)])
-setNinety = Action([@Set($days, 90), @Run(summaryQ), @Run(historyQ), @Run(agentQ)])
-searchBox = AppSearch("md", null, false, false, "Search agents...", $searchQuery, null, null, null, null, null, runSearch)
-runSearch = Action([@Set($searchQuery, $event), @Run(agentQ)])
-summaryQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
-historyQ = Query("fetchUsageHistory", [$days], [])
-costCards = AppStatCard("Total cost", summaryQ, null, "neutral")
-agentQ = Query("fetchUsageByAgent", [$searchQuery, 1, 50], [], "data")
-agentTable = AppTable(agentQ, 50, "pages", false)
 
-Here's your cost dashboard with a 7/30/90-day window switcher, search filter for agents, and a cost summary with a detailed agent breakdown table — let me know if you'd like to adjust the layout or add more metrics!
+root = AppStack([header, controlRow, statsSection, agentTable], "md")
+header = AppText("Cost dashboard", "title")
+$dateWindow = 7
+$searchQuery = ""
+controlRow = AppRow([searchBox, sevenDayBtn, thirtyDayBtn], "md")
+searchBox = AppSearch("md", null, false, false, "Search agents...", $searchQuery, null, null, null, null, null, updateSearch)
+updateSearch = Action([@Set($searchQuery, $event), @Run(agentData)])
+sevenDayBtn = AppButton("7 days", $dateWindow == 7 ? "primary" : "secondary", null, null, null, null, null, null, null, null, selectSeven)
+thirtyDayBtn = AppButton("30 days", $dateWindow == 30 ? "primary" : "secondary", null, null, null, null, null, null, null, null, selectThirty)
+selectSeven = Action([@Set($dateWindow, 7), @Run(dashboardData)])
+selectThirty = Action([@Set($dateWindow, 30), @Run(dashboardData)])
+dashboardData = Query("fetchTokenopsDashboard", null, {summary: {total_cost: 0, total_operations: 0, operations_last_24h: 0, average_cost: 0, active_agents: 0, total_agents: 0, total_container_hours: 0}, agents: [], token_usage: {}})
+statsSection = AppStatRow([{label: "Total cost", value: "$" + @Round(dashboardData.summary.total_cost, 2), sub: "all time"}, {label: "Total operations", value: dashboardData.summary.total_operations}, {label: "Last 24h ops", value: dashboardData.summary.operations_last_24h}, {label: "Active agents", value: dashboardData.summary.active_agents}])
+agentData = Query("fetchUsageByAgent", [$searchQuery, 1, 50], [], "data")
+agentTable = AppTable(agentData, 50, "pages", true)
+
+Here's your cost dashboard with time-window buttons, agent search, KPI stats, and a paginated table — let me know if you'd like to adjust the metrics, add a chart, or refine the layout!
