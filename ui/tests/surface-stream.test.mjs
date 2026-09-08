@@ -27,6 +27,42 @@ function recorder() {
   return { doc: { createElement: make }, container: make('div') };
 }
 
+/**
+ * The same recorder, plus the four things focus.js asks of a document.
+ *
+ * Separate rather than folded into `recorder()` because every other test in
+ * this file asserts on a tree that has no notion of who is focused, and a
+ * recorder that grows a `doc.activeElement` invites those tests to start
+ * depending on it by accident.
+ */
+function focusRecorder() {
+  const doc = { activeElement: null };
+  const make = (tag) => {
+    const node = {
+      tag,
+      tagName: tag.toUpperCase(),
+      attrs: {},
+      children: [],
+      listeners: {},
+      parentElement: null,
+      focusCount: 0,
+      setAttribute(k, v) { this.attrs[k] = v; },
+      hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
+      appendChild(c) { c.parentElement = node; node.children.push(c); return c; },
+      addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
+      replaceChildren() {
+        for (const c of node.children) c.parentElement = null;
+        node.children.length = 0;
+      },
+      contains(other) { for (let n = other; n; n = n.parentElement) if (n === node) return true; return false; },
+      focus() { node.focusCount++; doc.activeElement = node; },
+    };
+    return node;
+  };
+  doc.createElement = make;
+  return { doc, container: make('div') };
+}
+
 const frame = (event, obj, id) => `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(obj)}\n\n`;
 
 /** A Response whose body emits `chunks`, one per tick. */
@@ -663,4 +699,51 @@ test('an error status reports the code and what the body said', async () => {
   assert.ok(d, JSON.stringify(diagnostics));
   assert.match(d.message, /503/);
   assert.match(d.message, /not configured on this deployment/);
+});
+
+// ── the caret across a $state write ─────────────────────────────────────────
+
+test('typing into a filter box does not throw the caret away', async () => {
+  // The bug this exists for: store.subscribe(() => paint()) means a @Set is a
+  // repaint, render() is replaceChildren(), and the input being typed into is
+  // destroyed by its own keystroke. One character landed and the next went
+  // nowhere. Driven end to end rather than through focus.js directly, because
+  // the failure was never in either half — it was that nothing joined them.
+  const { doc, container } = focusRecorder();
+  const dsl = [
+    '$q = ""\n',
+    'setQ = Action([@Set($q, $event)])\n',
+    'box = AppSearch(null, null, null, null, null, null, null, null, null, null, "Filter agents", setQ)\n',
+    'root = AppStack([box], "md")\n',
+  ];
+  const chunks = [
+    frame('surface', { specVersion: '1.0', catalogVersion: catalog.catalogVersion, surfaceId: 's1' }, 1),
+    ...dsl.map((t, i) => frame('dsl-chunk', { text: t }, i + 2)),
+    frame('end', { status: 'ok' }, 9),
+  ];
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    fetchImpl: async () => sse(chunks),
+    routes: new Set(),
+  });
+  await s.send('a dashboard with a filter');
+
+  const before = container.children[0].children[0];
+  assert.equal(before.tag, 'app-search');
+
+  // The user clicks into it and types one character.
+  doc.activeElement = before;
+  const fire = before.listeners.input?.[0] ?? before.listeners.change?.[0];
+  assert.ok(fire, 'the search must carry its action listener, or there is no bug to fix');
+  fire({ target: { value: 'a' }, detail: 'a' });
+  await new Promise((r) => setTimeout(r, 0));
+
+  const after = container.children[0].children[0];
+  assert.notEqual(after, before, 'the repaint really did rebuild the tree');
+  assert.equal(doc.activeElement, after, 'and the caret followed it to the new node');
+  assert.equal(after.focusCount, 1, 'focused once, not on a loop');
 });

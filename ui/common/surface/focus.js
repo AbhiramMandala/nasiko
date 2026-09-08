@@ -1,99 +1,111 @@
 /**
- * Focus and cursor-position preservation across a full clear-and-rebuild
- * render.
+ * Keep the caret where the user left it across a full rebuild.
  *
- * render.js's `render()` does `container.replaceChildren()` on every pass —
- * deliberate, no reconciler (see render.js's own module docstring). That is
- * invisible right up until something the user is actively typing into gets
- * destroyed and recreated mid-keystroke: the new element is never the same
- * node the browser had focused, so every render after the first character
- * silently drops focus back to `<body>`. `$event` (materialize.js/actions.js)
- * is what makes a real re-render actually fire from typing at all, so this is
- * the other half of making live input usable — a bounded fix for this one
- * symptom, not a reconciler.
+ * The renderer has no reconciler on purpose: every paint is
+ * `container.replaceChildren()` and a fresh tree (render.js:69). That is the
+ * right trade at one dashboard's size — a diffing layer's bugs all look like
+ * "the screen is subtly wrong" rather than "the screen is missing" — but it
+ * has one consequence the user feels directly. `store.subscribe(() => paint())`
+ * means every `$state` write repaints, so an input wired to
+ * `Action([@Set($q, $event)])` is destroyed and recreated on its own keystroke:
+ * exactly one character lands, focus drops to <body>, and the next keystroke
+ * goes nowhere. A filter box that takes one letter is not a filter box.
  *
- * Every design-system component is light DOM (`ui-lint`'s
- * `no-attach-shadow` is a hard 0), so `document.activeElement` for a form
- * control's inner native input is that input itself, not a shadow host —
- * this needs no shadow-piercing.
- *
- * The path is structural (child index at each level from the container down
- * to the focused element), because nothing else survives a full rebuild: no
- * stable id, no object identity, nothing but position in the tree — and a
- * generated surface's shape does not change between one keystroke and the
- * next, so position is a reliable enough key for this one render.
+ * This is the bounded mitigation, not the reconciler: capture where the caret
+ * is before the rebuild, put it back after. Nothing else about the tree is
+ * preserved or compared.
  *
  * @module common/surface/focus
  */
 
 /**
- * Child-index path from `root` down to `el`.
- * @param {Element} root
- * @param {Element|null} el
- * @returns {number[]|null} null if `el` is not inside `root`, or is `root` itself.
+ * Where the caret is, as a path the next tree can be asked for.
+ *
+ * A bare index path is what this obviously wants to be, and it is not enough.
+ * If the tree reshapes between paints — a `$view` toggle swapping a table for a
+ * chart — index 3 still resolves, to something else entirely, and the caret
+ * lands in a different control while the user is mid-word. So each step
+ * carries its tag as well, and a mismatch anywhere abandons the restore.
+ *
+ * Refusing is the safe failure. Focus was already going to be lost; putting it
+ * somewhere wrong is worse than leaving it lost, because the user's next
+ * keystrokes go into a field they did not choose.
+ *
+ * `statementId` is deliberately not used as the key. It is undefined for
+ * everything an `@Each` produces — the rows of a generated list are exactly
+ * where a repeated input shows up — so it identifies some elements and not
+ * others, which is the worst property an identity can have.
+ *
+ * @param {Element} container
+ * @param {Document} doc
+ * @returns {{path: {i: number, tag: string}[], start: number|null, end: number|null, dir: string|null}|null}
  */
-export function capturePathTo(root, el) {
-  if (!el || el === root || !root.contains(el)) return null;
+export function captureFocus(container, doc) {
+  const active = doc?.activeElement;
+  if (!active || active === container || !container?.contains?.(active)) return null;
+
   const path = [];
-  for (let node = el; node && node !== root; node = node.parentElement) {
+  for (let node = active; node && node !== container; node = node.parentElement) {
     const parent = node.parentElement;
-    if (!parent) return null;
-    path.unshift(Array.prototype.indexOf.call(parent.children, node));
+    if (!parent) return null; // detached mid-walk; nothing to restore to
+    path.unshift({ i: [...parent.children].indexOf(node), tag: node.tagName });
   }
-  return path;
-}
+  if (!path.length) return null;
 
-/**
- * The element `path` resolves to under `root`, or null if the new tree has
- * nothing at that position (a revision turn changed the shape).
- * @param {Element} root
- * @param {number[]|null} path
- * @returns {Element|null}
- */
-export function resolvePath(root, path) {
-  if (!path) return null;
-  let node = root;
-  for (const index of path) {
-    node = node?.children?.[index];
-    if (!node) return null;
-  }
-  return node;
-}
-
-/**
- * Call before `render()` clears `container`.
- * @param {Element} container
- * @returns {{path: number[], selectionStart: number|null, selectionEnd: number|null}|null}
- */
-export function saveFocus(container) {
-  const active = typeof document !== 'undefined' ? document.activeElement : null;
-  const path = capturePathTo(container, active);
-  if (!path) return null;
-  const hasSelection = 'selectionStart' in active;
-  return {
-    path,
-    selectionStart: hasSelection ? active.selectionStart : null,
-    selectionEnd: hasSelection ? active.selectionEnd : null,
-  };
-}
-
-/**
- * Call after `render()` rebuilds `container`, with whatever `saveFocus`
- * returned beforehand (including `null` — a no-op, nothing was focused).
- * @param {Element} container
- * @param {ReturnType<saveFocus>} saved
- */
-export function restoreFocus(container, saved) {
-  if (!saved) return;
-  const el = resolvePath(container, saved.path);
-  if (!el || typeof el.focus !== 'function') return;
-  el.focus();
-  if (saved.selectionStart === null || typeof el.setSelectionRange !== 'function') return;
+  // Only text-ish controls have a selection. Reading these off anything else
+  // throws in some browsers, so it is a capability test, not a tag list —
+  // a design-system control that starts wrapping <textarea> gets this for free.
+  let start = null;
+  let end = null;
+  let dir = null;
   try {
-    el.setSelectionRange(saved.selectionStart, saved.selectionEnd ?? saved.selectionStart);
-  } catch {
-    // Not every focusable, selection-capable-looking element accepts a range
-    // (e.g. an <input type="email">) — losing the cursor position is fine,
-    // losing the focus itself would not be.
+    if (typeof active.selectionStart === 'number') {
+      start = active.selectionStart;
+      end = active.selectionEnd;
+      dir = active.selectionDirection;
+    }
+  } catch { /* an input type that has no selection to report */ }
+
+  return { path, start, end, dir };
+}
+
+/**
+ * Put the caret back, or leave it alone.
+ *
+ * Called after the rebuild, with whatever `captureFocus` returned before it.
+ * Every step is checked; the first surprise ends the attempt.
+ *
+ * @param {Element} container
+ * @param {ReturnType<typeof captureFocus>} snapshot
+ * @returns {boolean} whether focus was restored — for tests, and for a caller
+ *   that wants to know the tree reshaped under someone's hands
+ */
+export function restoreFocus(container, snapshot) {
+  if (!snapshot || !container) return false;
+
+  let node = container;
+  for (const step of snapshot.path) {
+    const next = node.children?.[step.i];
+    // The tag check is the whole point: a resolved index proves only that
+    // something is there, not that it is the same something.
+    if (!next || next.tagName !== step.tag) return false;
+    node = next;
   }
+  if (typeof node.focus !== 'function') return false;
+
+  // preventScroll, because a repaint is not a navigation. Without it a filter
+  // box below the fold drags the page to itself on every keystroke.
+  node.focus({ preventScroll: true });
+
+  if (snapshot.start !== null && typeof node.setSelectionRange === 'function') {
+    // Clamped: the value can be shorter than it was, and a saved offset past
+    // the end throws in some browsers rather than saturating.
+    const max = typeof node.value === 'string' ? node.value.length : snapshot.end;
+    const start = Math.min(snapshot.start, max);
+    const end = Math.min(snapshot.end ?? snapshot.start, max);
+    try {
+      node.setSelectionRange(start, end, snapshot.dir || 'none');
+    } catch { /* a control that reports a selection but will not take one */ }
+  }
+  return true;
 }

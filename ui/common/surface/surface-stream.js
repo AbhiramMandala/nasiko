@@ -35,6 +35,7 @@ import { router } from '../core/router.js';
 import { parseBuffer } from './parser.js';
 import { materialize, buildComponentIndex } from './materialize.js';
 import { render } from './render.js';
+import { captureFocus, restoreFocus } from './focus.js';
 import { createStore } from './store.js';
 import { pruneUnreachable } from './gc.js';
 import { createQueryManager } from './queries.js';
@@ -122,7 +123,12 @@ export function createSurfaceSession(options) {
     onTurn,
     fetchImpl = globalThis.fetch?.bind(globalThis),
     schedule = (fn) => (globalThis.requestAnimationFrame ?? ((f) => setTimeout(f, 0)))(fn),
-    doc,
+    // Resolved here rather than left undefined for render.js to fall back on.
+    // The fallback made this field look optional while `activeElement` needs a
+    // real one: captureFocus would have taken undefined and returned null on
+    // every paint, so the caret fix would have been dead in production and
+    // green in every test that injects a recorder.
+    doc = globalThis.document,
   } = options;
 
   const index = buildComponentIndex(catalog);
@@ -265,6 +271,14 @@ export function createSurfaceSession(options) {
     const out = walk();
     const diagnostics = [...out.diagnostics];
 
+    // Every paint replaces the whole tree, including whatever the user is
+    // typing into — and a `$state` write is itself a paint, so a filter box
+    // wired to @Set($q, $event) destroys itself on its own keystroke. Captured
+    // here rather than inside render.js: that module is a pure tree-to-DOM
+    // function, testable without a document, and `activeElement` is not its
+    // business. See focus.js for why the restore refuses rather than guesses.
+    const focused = captureFocus(container, doc);
+
     render(out.root, container, catalog, {
       doc,
       onAction: (action, el, domEvent) => {
@@ -279,6 +293,8 @@ export function createSurfaceSession(options) {
       routes,
       onDiagnostic: (d) => diagnostics.push(d),
     });
+
+    restoreFocus(container, focused);
 
     // Once per settled pass, and only when the set changed — the same
     // diagnostics on every chunk is noise nobody reads.
