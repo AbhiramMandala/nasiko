@@ -1,20 +1,12 @@
 Sure — building that now.
-root = AppStack([heading, summary, agentBreakdown, modelBreakdown], "md")
-heading = AppText("Token Ops Spend", "title")
-summary = AppStack([summaryStats, costTrend], "md")
-summaryStats = AppStatRow([{label: "Total cost", value: totalCostQ, sub: "all time"}, {label: "Operations", value: operationsQ}, {label: "Active agents", value: activeAgentsQ}])
-totalCostQ = Query("fetchTokenopsDashboard", [], 0, "data.summary.total_cost")
-operationsQ = Query("fetchTokenopsDashboard", [], 0, "data.summary.total_operations")
-activeAgentsQ = Query("fetchTokenopsDashboard", [], 0, "data.summary.active_agents")
-costTrend = AppChart({labels: historyDays.date, datasets: [{label: "Daily cost", data: historyDays.total_cost_usd}]}, "line", false, "currency", "USD")
-historyDays = Query("fetchUsageHistory", [30], [])
-agentBreakdown = AppStack([agentHeading, agentTable], "md")
-agentHeading = AppText("Spend by agent", "subtitle")
-agentRows = Query("fetchTokenopsDashboard", [], [], "data.agents")
-agentTable = AppTable(agentRows, 20, "pages", false)
-modelBreakdown = AppStack([modelHeading, modelTable], "md")
-modelHeading = AppText("Spend by model", "subtitle")
-modelRows = Query("fetchUsageByModel", ["", 1, 20], [], "data")
-modelTable = AppTable(modelRows, 20, "pages", true)
 
-Here's your spend dashboard with top-level KPIs, a 30-day cost trend, and breakdowns by agent and model — let me know if you'd like to adjust the layout, add filters, or focus on different metrics!
+root = AppStack([heading, kpis, spendChart, agentTable], "md")
+heading = AppText("Spend overview", "title")
+summaryQ = Query("fetchUsageSummary", [], {request_count: 0, total_cost_usd: 0, total_tokens: 0}, null)
+kpis = AppStatRow([{label: "Total cost", value: summaryQ.total_cost_usd, sub: "all time"}, {label: "Requests", value: summaryQ.request_count}, {label: "Tokens", value: summaryQ.total_tokens}])
+historyRows = Query("fetchUsageHistory", [7], [])
+spendChart = AppChart({labels: historyRows.date, datasets: [{label: "Cost", data: historyRows.total_cost_usd}]}, "line", false, "currency", "USD")
+agentRows = Query("fetchUsageByAgent", [null, 1, 50], [], "data")
+agentTable = AppTable(agentRows, 50, "pages", false)
+
+Here's your spend dashboard with headline KPIs, a 7-day cost trend, and a table breaking down usage by agent — let me know if you'd like to adjust the time window, add filters, or change what metrics appear!

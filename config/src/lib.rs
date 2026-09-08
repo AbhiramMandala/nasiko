@@ -88,6 +88,10 @@ pub struct Config {
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
     pub flow_timeout_secs: i32,
+    /// How long a HITL pause (`hitl_requests`) stays answerable before the dispatcher's poll
+    /// loop expires it. `oss/hitl`'s own store applies this at row-creation time — see
+    /// `PgHitlStore::with_ttl_days`.
+    pub hitl_request_ttl_days: i64,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
@@ -326,6 +330,7 @@ impl Config {
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
+            hitl_request_ttl_days: env_parse("HITL_REQUEST_TTL_DAYS", 7),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")

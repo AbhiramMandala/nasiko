@@ -131,6 +131,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         flow_max_fan_out: 20,
         flow_max_tokens: 1_000_000,
         flow_timeout_secs: 120,
+        hitl_request_ttl_days: 7,
         github_client_id: None,
         github_client_secret: None,
         router_shortlist_threshold: 15,
