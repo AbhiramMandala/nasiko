@@ -1,6 +1,8 @@
-Sure — building that now.
-root = AppStack([heading, agentTable], "md")
+Sure — building a cost breakdown table for you now.
+
+root = AppStack([heading, agentCostTable], "md")
 heading = AppText("Agent costs", "title")
-agentRows = Query("fetchTokenopsDashboard", [], [], "data.agents")
-agentTable = AppTable(agentRows, 20, "pages", false)
-Here's a table showing all your agents sorted by cost, with token and operational metrics — let me know if you'd like to filter, chart, or add more detail!
+agentCostQ = Query("fetchTokenopsDashboard", [], {agents: []}, "data.agents")
+agentCostTable = AppTable(agentCostQ, 20, "pages", false)
+
+Here's a table showing which agents cost the most, sorted by total cost — let me know if you'd like to add filters, a chart view, or drill into specific agents!

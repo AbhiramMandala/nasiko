@@ -1,10 +1,10 @@
 Sure — building that now.
 
-root = AppStack([heading, summary, agentBreakdown], "md")
+root = AppStack([heading, summaryRow, agentTable], "md")
 heading = AppText("Cost overview", "title")
-summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0, avg_latency_ms: null})
-summary = AppStatRow([{label: "Total cost", value: "$" + @Round(summaryQ.total_cost_usd, 2), sub: "all time"}, {label: "Requests", value: @Count(summaryQ.request_count ? [summaryQ.request_count] : [])}])
-agentDataQ = Query("fetchTokenopsDashboard", [], {agents: []}, "data.agents")
-agentBreakdown = AppTable(agentDataQ, 20, "pages", false)
+summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0, total_tokens: 0})
+summaryRow = AppStatRow([{label: "Total cost", value: summaryQ.total_cost_usd, sub: "all time"}, {label: "Requests", value: summaryQ.request_count}, {label: "Tokens", value: summaryQ.total_tokens}])
+agentCostQ = Query("fetchUsageByAgent", [null, 1, 50], [], "data")
+agentTable = AppTable(agentCostQ, 50, "pages", true)
 
-Here's your cost overview with the total spend, request count, and a breakdown by agent — let me know if you'd like to see trends over time, filter by a specific period, or drill into any agent's details!
+Here's your cost dashboard with headline metrics and a breakdown by agent — let me know if you'd like to see trends, a different time window, or anything else adjusted!
