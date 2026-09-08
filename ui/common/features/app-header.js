@@ -34,6 +34,9 @@ import { scanTooltips } from '/common/design-system/app-tooltip/app-tooltip.js';
    users who already toggled the old rail open — a stored `true` under the previous
    key would have kept them expanded forever. Toggling still persists per user. */
 const RAIL_KEY = "app-rail-expanded-v2";
+/* Nothing writes this any more; clear a value left by the old toggle so the
+   pre-paint snippet in each page head stops reserving the expanded width. */
+try { localStorage.removeItem(RAIL_KEY); } catch { /* private mode */ }
 
 /* Detail pages have no nav item of their own — and they hide the module nav
    too, so the rail item for their module is the only selection the user gets.
@@ -421,7 +424,14 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppHeader extends HTMLElement {
-  #expanded = localStorage.getItem(RAIL_KEY) === "true";
+  /* The rail is collapsed, full stop — the expand toggle is commented out
+     below (button markup, click branch, ⌘B). Restore all four together if the
+     expanded rail comes back; everything that renders it (.is-expanded CSS,
+     #applyExpanded, #syncRailTooltips) is left intact and simply unreached.
+     ponytail: the stored flag is dropped rather than honoured, so the
+     pre-paint snippet in every page head stops widening the gutter for users
+     who had toggled it open. */
+  #expanded = false;
   #mobileOpen = false;
   #toggleTimer = 0;
 
@@ -429,11 +439,11 @@ export class AppHeader extends HTMLElement {
     // ⌘B is the conventional sidebar toggle and the browser does not bind it.
     // Additive only — the topbar button is unchanged and remains the discoverable
     // way in; this is the shortcut people expect to already work.
-    if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "B")) {
-      e.preventDefault();
-      this.#toggleRail();
-      return;
-    }
+    // if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "B")) {
+    //   e.preventDefault();
+    //   this.#toggleRail();
+    //   return;
+    // }
     const isShortcut =
       ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "f")) || e.key === "\\";
     if (isShortcut) {
@@ -492,10 +502,10 @@ export class AppHeader extends HTMLElement {
   };
 
   #handleClick = (e) => {
-    if (e.target.closest("[data-rail-toggle]")) {
-      this.#toggleRail();
-      return;
-    }
+    // if (e.target.closest("[data-rail-toggle]")) {
+    //   this.#toggleRail();
+    //   return;
+    // }
     if (e.target.closest("[data-mobile-menu]")) {
       this.#mobileOpen = !this.#mobileOpen;
       this.classList.toggle("mobile-open", this.#mobileOpen);
@@ -514,12 +524,13 @@ export class AppHeader extends HTMLElement {
     }
   };
 
-  /** The button and ⌘B are the same action, so they share one path. */
-  #toggleRail() {
-    this.#expanded = !this.#expanded;
-    localStorage.setItem(RAIL_KEY, this.#expanded);
-    this.#applyExpanded({ animate: true });
-  }
+  /** The button and ⌘B are the same action, so they share one path.
+   *  Unreached while the toggle is commented out — see #expanded. */
+  // #toggleRail() {
+  //   this.#expanded = !this.#expanded;
+  //   localStorage.setItem(RAIL_KEY, this.#expanded);
+  //   this.#applyExpanded({ animate: true });
+  // }
 
   /**
    * Up and Down walk the rail, Home/End jump to its ends — the same axis the
@@ -775,10 +786,10 @@ export class AppHeader extends HTMLElement {
         ${window.nasikoChrome?.workspaceSwitcher
           ? `<workspace-switcher></workspace-switcher>`
           : `<span class="identity-chip" title="${escHtml(currentUser || "Nasiko")}">${escHtml(this.#initials())}</span>`}
-        <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button"
-          aria-expanded="${this.#expanded}">
-          ${icons.panelLeft("", 16, 1)}
-        </button>
+        <!-- <button class="chrome-btn" data-rail-toggle aria-label="Toggle sidebar" type="button"
+          aria-expanded="\${this.#expanded}">
+          \${icons.panelLeft("", 16, 1)}
+        </button> -->
         <div class="nav-cluster">
           <button class="chrome-btn" data-nav-back aria-label="Back" type="button">${icons.chevronLeft("", 16, 1)}</button>
           <button class="chrome-btn" data-nav-fwd aria-label="Forward" type="button">${icons.chevronRight("", 16, 1)}</button>

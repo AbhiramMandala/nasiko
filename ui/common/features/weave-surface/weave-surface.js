@@ -55,7 +55,7 @@ import { createSurfaceSession } from '/common/surface/surface-stream.js';
  * attributes that go nowhere. This is that place — the one seam between the
  * runtime and the rest of the app already promises to own "a vocabulary."
  */
-import '/common/design-system/app-action-menu/app-action-menu.js';
+import '/common/design-system/app-menu/app-menu.js';
 import '/common/design-system/app-avatar/app-avatar.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';

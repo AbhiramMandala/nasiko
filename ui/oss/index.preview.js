@@ -201,22 +201,24 @@ export default {
       await page.waitForTimeout(300);
     },
     // Labeled sidebar after clicking the topbar rail toggle.
-    "rail-expanded": async (page) => {
-      await page.click("[data-rail-toggle]");
-      await page.waitForTimeout(500);
-    },
+    // Rail expand is commented out in app-header — no toggle to click.
+    // "rail-expanded": async (page) => {
+    //   await page.click("[data-rail-toggle]");
+    //   await page.waitForTimeout(500);
+    // },
     "user-menu-open": async (page) => {
       await page.click("[data-user-toggle]");
       await page.waitForSelector(".user-dropdown.is-visible");
     },
     // Clicks the identity ROW (its centre lands on the name, not the avatar) —
     // fails if the trigger ever shrinks back to the 32px avatar.
-    "rail-expanded-user-menu": async (page) => {
-      await page.click("[data-rail-toggle]");
-      await page.waitForTimeout(500);
-      await page.click(".rail-identity");
-      await page.waitForSelector(".user-dropdown.is-visible");
-    },
+    // Rail expand is commented out in app-header — no toggle to click.
+    // "rail-expanded-user-menu": async (page) => {
+    //   await page.click("[data-rail-toggle]");
+    //   await page.waitForTimeout(500);
+    //   await page.click(".rail-identity");
+    //   await page.waitForSelector(".user-dropdown.is-visible");
+    // },
     // The timeline's full vocabulary in one shot, driven directly through
     // onEvent() so it doesn't depend on stream timing: an agent whose tools
     // arrive as STRUCTURED data parts (nested rows with JSON input/output),

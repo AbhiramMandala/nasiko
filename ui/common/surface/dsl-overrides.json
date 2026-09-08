@@ -37,7 +37,9 @@
     },
     "app-modal": {
       "status": "ready",
-      "childrenParam": true
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "modal-close"
     },
     "app-accordion": {
       "status": "ready",
@@ -79,9 +81,6 @@
     "app-code-snippet": {
       "status": "ready"
     },
-    "app-action-menu": {
-      "status": "ready"
-    },
     "app-empty-state": {
       "status": "ready",
       "reason": "icon is withheld automatically now \u2014 it carries (markup) in its @attr line, so gen-catalog flags it and gen-dsl-catalog drops it. Listed here previously by hand, which is exactly the list that stops matching the code."
@@ -121,8 +120,11 @@
       "dataProp": "data"
     },
     "app-tabs": {
-      "status": "blocked",
-      "reason": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) \u2014 an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism."
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "tabs-change",
+      "note": "Panels are the children, each through Slot(\"<key>\"); `tabs` names and orders them. The Action receives { key }. `strip` mode and `query-param` are page concerns and should not be set from a surface."
     },
     "app-loading-bar": {
       "status": "blocked",
@@ -169,9 +171,149 @@
       "actionParam": true,
       "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
     },
-    "auto-complete": {
+    "app-alert": {
+      "status": "ready",
+      "note": "Inline status callout. Title/description are attributes; `variant` picks the feedback tone."
+    },
+    "app-banner": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "The child is the call to action (an app-button) and lands in the action slot; text is attributes."
+    },
+    "app-spinner": {
+      "status": "ready"
+    },
+    "app-progress": {
+      "status": "ready"
+    },
+    "app-kbd": {
+      "status": "ready",
+      "textParam": true
+    },
+    "app-breadcrumb": {
+      "status": "ready",
+      "actionParam": true,
+      "actionEvent": "breadcrumb-select",
+      "note": "Items with an href navigate on their own; the Action fires only for href-less items."
+    },
+    "app-list": {
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "list-select",
+      "note": "Children are app-list-item; selection is the caller's \u2014 bind list-select and set `selected` on the current item."
+    },
+    "app-list-item": {
+      "status": "ready",
+      "note": "Selection is bound on the parent app-list (list-select carries id + index); the item itself takes no Action. Its identifier is `value`."
+    },
+    "app-field": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "Wraps one control child with label/description/error. Not for app-input/app-select/app-search, which carry their own."
+    },
+    "app-textarea": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-slider": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-toggle": {
+      "status": "ready",
+      "textParam": true,
+      "actionParam": true,
+      "actionEvent": "toggle-change"
+    },
+    "app-toggle-group": {
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "toggle-group-change",
+      "note": "Children are app-toggle with a `value`; the group reflects the selection in its own `value`."
+    },
+    "app-otp-input": {
+      "status": "ready",
+      "actionParam": true,
+      "actionEvent": "otp-input-complete",
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-tag-group": {
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "tag-group-change",
+      "note": "Children are app-tag; mode=none is a plain layout row."
+    },
+    "app-pagination": {
+      "status": "ready",
+      "actionParam": true,
+      "actionEvent": "pagination-change",
+      "note": "Controlled: the Action must @Set the bound page from { page }; the component never changes `page` itself."
+    },
+    "app-popover": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "First child is the trigger; content goes through Slot(\"content\"). Non-modal, top-layer."
+    },
+    "app-hover-card": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "First child is the trigger; content goes through Slot(\"content\"). Hover-only \u2014 never the sole path to essential information."
+    },
+    "app-menu": {
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "menu-select",
+      "note": "Optional child is the trigger (an app-button); with no child the menu renders its own icon trigger named by `trigger-label`. `items` is the JSON menu; the Action receives { id }."
+    },
+    "app-context-menu": {
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "menu-select",
+      "note": "Wraps its children; opens on right-click / long-press at the pointer."
+    },
+    "app-sheet": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "Body children; actions through Slot(\"footer\"). Modal <dialog> underneath, like app-modal.",
+      "actionParam": true,
+      "actionEvent": "sheet-close"
+    },
+    "app-calendar": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-date-field": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-time-field": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-command": {
       "status": "blocked",
-      "reason": "Needs a live filter callback through data-sources.js \u2014 not designed yet."
+      "reason": "A modal command palette is page chrome, not dashboard content; `groups` is a JSON tree of commands the surface cannot meaningfully author."
+    },
+    "app-resizable": {
+      "status": "ready",
+      "childrenParam": true,
+      "note": "Children are the panels; per-panel flex is data-flex on the child. Layout persists through `sizes`."
+    },
+    "app-combobox": {
+      "status": "ready",
+      "actionParam": true,
+      "actionEvent": "combobox-select",
+      "note": "Suggestions come from `data-fn` (a registered read source, `(query) => options`) or a static `options` list. The Action receives { value, option }."
     }
   },
   "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation.",
