@@ -1,11 +1,29 @@
 use std::time::Instant;
 
 use nasiko_observability::ObservabilityProvider;
+use nasiko_types::a2a::{PauseReason, StreamDisposition, build_send_request_for_task};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::llm::{ChatMessage, LlmClient};
-use super::types::{ExecutionResult, MafDefinition, MafStep, StepResult};
+use super::types::{ExecutionResult, MafDefinition, MafStep, PausedStep, StepOutcome, StepResult};
+
+/// What one step's agent call produced, before extraction — a normal reply, or a pause
+/// (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3) that must stop the step (and the whole run) right
+/// there instead of being treated as an oddly-worded normal reply.
+enum AgentCallOutcome {
+    Completed(String),
+    Paused { task_id: String, raw_data: String },
+}
+
+/// What one step's execution produced — shared between a fresh step (`execute_step`) and a
+/// resumed one (`continue_paused_step`), so `run_maf`/`run_maf_from` branch on the same three
+/// outcomes regardless of which path produced them.
+enum StepLoopOutcome {
+    Advance,
+    AwaitingHuman(PausedStep),
+    Failed(String),
+}
 
 pub async fn run_maf(
     client: &reqwest::Client,
@@ -15,13 +33,12 @@ pub async fn run_maf(
     user_id: Uuid,
     maf_def: &MafDefinition,
     llm: &LlmClient,
-) -> Result<ExecutionResult, String> {
+) -> Result<StepOutcome, String> {
     // Seed one "pending" entry per step and persist immediately, so the full
     // step list is visible in the DB before the (possibly slow) planning LLM
     // call even starts.
     let mut step_results: Vec<StepResult> = maf_def.steps.iter().map(pending_result).collect();
-    let mut total_cost = 0f64;
-    persist_progress(db, execution_id, &step_results, 0, total_cost).await;
+    persist_progress(db, execution_id, &step_results, 0).await;
 
     // ── LLM call 1: plan all steps at runtime ────────────────────────────────
     // Generates prompt templates (with <placeholders>), to_extract goals, and
@@ -31,193 +48,505 @@ pub async fn run_maf(
     let mut total_tokens = plan_tokens;
 
     // Fill in the prompt template / extraction goal now that planning is
-    // done — steps stay "pending" until their turn in the loop below.
+    // done — steps stay "pending" until their turn in the loop below. Every
+    // step (not just completed ones) gets this filled in up front, which is
+    // exactly what lets `run_maf_from` reconstruct the plan on resume without
+    // a second planning call (docs/HITL_IMPLEMENTATION_PLAN.md §2.3 #6).
     for (result, plan) in step_results.iter_mut().zip(step_plans.iter()) {
         result.prompt_template = plan.prompt.clone();
         result.to_extract = plan.to_extract.clone();
     }
-    persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
+    persist_progress(db, execution_id, &step_results, total_tokens).await;
+    // Durable so a resumed run's final synthesis follows the same guidance the original run
+    // planned — otherwise only held in this function's local `output_generation`, lost on resume.
+    persist_output_generation(db, execution_id, &output_generation).await;
 
     for (i, (step, plan)) in maf_def.steps.iter().zip(step_plans.iter()).enumerate() {
         let context = build_context(&step_results[..i]);
-
-        step_results[i].status = "running".to_string();
-        persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
-
-        // ── LLM call 2: fill <placeholders> with context from previous steps ─
-        let (actual_prompt, prompt_tokens) =
-            match generate_step_prompt(&plan.prompt, &step.task_description, &context, llm).await {
-                Ok(v) => v,
-                Err(e) => {
-                    let err = format!("step {}: prompt generation failed: {e}", step.step_index);
-                    step_results[i].status = "failed".to_string();
-                    step_results[i].error = Some(err.clone());
-                    persist_progress(db, execution_id, &step_results, total_tokens, total_cost)
-                        .await;
-                    return Err(err);
-                }
-            };
-
-        // ── Agent call ────────────────────────────────────────────────────────
-        let start = Instant::now();
-        let (traceparent, trace_id) = build_traceparent(execution_id, step.step_index);
-
-        // Register this step as a flow so the LLM gateway sees it as IN-FLOW (not
-        // inert) and its tier classifier can fire. The invariant the gateway relies
-        // on (see `derive_boundary_signals`): the trace_id we forward in
-        // `traceparent` IS the `flow_id` in this row — mirroring the orchestrator /
-        // agent-proxy ingress. `context_id = execution_id` is stable across every
-        // step, so the gateway keys its decision cache on the whole MAF run: the
-        // first step writes the tier decision, later steps reuse it. Best-effort —
-        // a failed insert only means this step falls back to the default model.
-        let flow_metadata = serde_json::json!({
-            "context_id": execution_id.to_string(),
-            "mode": "free_flowing",
-        });
-        let _ = sqlx::query(
-            r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
-               VALUES ($1, $2, $3, $4, 'running', $5)
-               ON CONFLICT (flow_id) DO NOTHING"#,
-        )
-        .bind(&trace_id)
-        .bind(user_id)
-        .bind(&step.agent_name)
-        .bind(&step.task_description)
-        .bind(&flow_metadata)
-        .execute(db)
-        .await;
-        // Participant record — the MCP gateway / LLM router only authorize this
-        // step's agent for calls carrying this trace id if it is recorded here
-        // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4). Same synchronous pre-call write
-        // as the flows row; a failed insert denies (never escalates) downstream.
-        if let Err(e) = sqlx::query(
-            "INSERT INTO flow_participants (flow_id, agent_id) VALUES ($1, $2)
-             ON CONFLICT (flow_id, agent_id) DO NOTHING",
-        )
-        .bind(&trace_id)
-        .bind(step.agent_id)
-        .execute(db)
-        .await
-        {
-            tracing::warn!(
-                error = %e, flow_id = %trace_id, agent_id = %step.agent_id,
-                "flow participant record failed — the step agent's MCP/LLM calls will be denied"
-            );
-        }
-
-        let raw_response = match call_agent(
+        match execute_step(
             client,
-            &step.agent_endpoint,
-            &execution_id.to_string(),
-            &user_id.to_string(),
-            &actual_prompt,
-            &traceparent,
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                let err = format!(
-                    "step {} (agent '{}') failed: {e}",
-                    step.step_index, step.agent_name
-                );
-                step_results[i].status = "failed".to_string();
-                step_results[i].prompt = actual_prompt;
-                step_results[i].error = Some(err.clone());
-                persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
-                return Err(err);
-            }
-        };
-        let latency_ms = start.elapsed().as_millis() as i64;
-
-        // ── LLM call 3: extract relevant info from agent response ─────────────
-        let (extracted, extract_tokens) = match extract_info(
-            &plan.prompt,
-            &actual_prompt,
-            &raw_response,
-            &plan.to_extract,
+            db,
+            observability,
+            execution_id,
+            user_id,
+            step,
+            plan,
+            &mut step_results,
+            i,
             &context,
+            &mut total_tokens,
             llm,
         )
         .await
         {
+            StepLoopOutcome::Advance => {}
+            StepLoopOutcome::AwaitingHuman(paused) => {
+                return Ok(StepOutcome::AwaitingHuman(paused));
+            }
+            StepLoopOutcome::Failed(e) => return Err(e),
+        }
+    }
+
+    finish_run(step_results, total_tokens, &output_generation, llm).await
+}
+
+/// Resumes a MAF execution that paused mid-step (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3/§9),
+/// invoked by the HITL resume dispatcher re-`XADD`ing a continuation job
+/// (`oss/server/src/hitl/mod.rs::deliver_maf`). `step_results`/`tokens_used_so_far`/
+/// `output_generation` come from `maf_executions` (the durable state every prior step already
+/// persisted, plus the two columns Phase 8 added); `maf_def` is the SAME snapshot the original run
+/// used (carried in the continuation job's `maf_json`, never re-fetched from the mutable `mafs`
+/// table — §2.3 #6). Never re-plans: every step's `StepPlan` is reconstructed from the
+/// `prompt_template`/`to_extract` `run_maf` already persisted for every step up front.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_maf_from(
+    client: &reqwest::Client,
+    db: &PgPool,
+    observability: &dyn ObservabilityProvider,
+    execution_id: Uuid,
+    user_id: Uuid,
+    maf_def: &MafDefinition,
+    llm: &LlmClient,
+    mut step_results: Vec<StepResult>,
+    tokens_used_so_far: i64,
+    output_generation: String,
+    resume_index: usize,
+    resume_task_id: String,
+    resume_context_id: String,
+    injected_answer: String,
+) -> Result<StepOutcome, String> {
+    let mut total_tokens = tokens_used_so_far;
+    let plans: Vec<StepPlan> = step_results
+        .iter()
+        .map(|r| StepPlan {
+            prompt: r.prompt_template.clone(),
+            to_extract: r.to_extract.clone(),
+        })
+        .collect();
+
+    let context = build_context(&step_results[..resume_index]);
+    match continue_paused_step(
+        client,
+        db,
+        observability,
+        execution_id,
+        user_id,
+        &maf_def.steps[resume_index],
+        &plans[resume_index],
+        &mut step_results,
+        resume_index,
+        &context,
+        &mut total_tokens,
+        llm,
+        &resume_task_id,
+        &resume_context_id,
+        &injected_answer,
+    )
+    .await
+    {
+        StepLoopOutcome::Advance => {}
+        StepLoopOutcome::AwaitingHuman(paused) => return Ok(StepOutcome::AwaitingHuman(paused)),
+        StepLoopOutcome::Failed(e) => return Err(e),
+    }
+
+    for i in (resume_index + 1)..maf_def.steps.len() {
+        let context = build_context(&step_results[..i]);
+        match execute_step(
+            client,
+            db,
+            observability,
+            execution_id,
+            user_id,
+            &maf_def.steps[i],
+            &plans[i],
+            &mut step_results,
+            i,
+            &context,
+            &mut total_tokens,
+            llm,
+        )
+        .await
+        {
+            StepLoopOutcome::Advance => {}
+            StepLoopOutcome::AwaitingHuman(paused) => {
+                return Ok(StepOutcome::AwaitingHuman(paused));
+            }
+            StepLoopOutcome::Failed(e) => return Err(e),
+        }
+    }
+
+    finish_run(step_results, total_tokens, &output_generation, llm).await
+}
+
+/// Runs one step fresh: prompt generation (LLM call 2) → agent call → extraction (LLM call 3),
+/// persisting progress at every transition exactly as the original inline loop body did. Shared by
+/// `run_maf` and, for every step after the resumed one, `run_maf_from`.
+#[allow(clippy::too_many_arguments)]
+async fn execute_step(
+    client: &reqwest::Client,
+    db: &PgPool,
+    observability: &dyn ObservabilityProvider,
+    execution_id: Uuid,
+    user_id: Uuid,
+    step: &MafStep,
+    plan: &StepPlan,
+    step_results: &mut [StepResult],
+    i: usize,
+    context: &str,
+    total_tokens: &mut i64,
+    llm: &LlmClient,
+) -> StepLoopOutcome {
+    step_results[i].status = "running".to_string();
+    persist_progress(db, execution_id, step_results, *total_tokens).await;
+
+    // ── LLM call 2: fill <placeholders> with context from previous steps ─
+    let (actual_prompt, prompt_tokens) =
+        match generate_step_prompt(&plan.prompt, &step.task_description, context, llm).await {
             Ok(v) => v,
             Err(e) => {
-                let err = format!("step {}: extraction failed: {e}", step.step_index);
+                let err = format!("step {}: prompt generation failed: {e}", step.step_index);
                 step_results[i].status = "failed".to_string();
-                step_results[i].prompt = actual_prompt;
-                step_results[i].latency_ms = latency_ms;
                 step_results[i].error = Some(err.clone());
-                persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
-                return Err(err);
+                persist_progress(db, execution_id, step_results, *total_tokens).await;
+                return StepLoopOutcome::Failed(err);
             }
         };
 
-        let llm_tokens = prompt_tokens + extract_tokens;
+    // ── Agent call ────────────────────────────────────────────────────────
+    let start = Instant::now();
+    let (traceparent, trace_id) = build_traceparent(execution_id, step.step_index);
+    register_flow(
+        db,
+        execution_id,
+        user_id,
+        &trace_id,
+        &step.agent_name,
+        &step.task_description,
+        step.agent_id,
+    )
+    .await;
 
-        // Wait for the agent's own token usage to land in Tempo (it batches
-        // span export, so it's usually not there the instant the call
-        // returns) so the persisted step total already reflects LLM + agent
-        // cost together, not just MAF's own reasoning cost.
-        let agent_usage = wait_for_agent_usage(observability, &trace_id).await;
-        let step_tokens = llm_tokens + agent_usage.input as i64 + agent_usage.output as i64;
-        total_tokens += step_tokens;
+    let call_result = call_agent(
+        client,
+        &step.agent_endpoint,
+        &execution_id.to_string(),
+        &user_id.to_string(),
+        &actual_prompt,
+        &traceparent,
+    )
+    .await;
 
-        // Cost is agent-call spend only (not MAF's own planning/reasoning LLM
-        // calls) — keeps Agent-view and Workflow-view FinOps rows apples-to-
-        // apples, since agent-view cost is also agent-spend-only.
-        let step_cost = observability
-            .cost(
-                agent_usage.model.as_deref(),
-                agent_usage.input,
-                agent_usage.output,
-            )
-            .await
-            .total_usd;
-        total_cost += step_cost;
+    let raw_response = match call_result {
+        Ok(AgentCallOutcome::Completed(text)) => text,
+        Ok(AgentCallOutcome::Paused { task_id, raw_data }) => {
+            step_results[i].status = "awaiting_human".to_string();
+            step_results[i].prompt = actual_prompt;
+            persist_progress(db, execution_id, step_results, *total_tokens).await;
+            return StepLoopOutcome::AwaitingHuman(build_paused_step(
+                step.step_index,
+                task_id,
+                execution_id.to_string(),
+                &raw_data,
+            ));
+        }
+        Err(e) => {
+            let err = format!(
+                "step {} (agent '{}') failed: {e}",
+                step.step_index, step.agent_name
+            );
+            step_results[i].status = "failed".to_string();
+            step_results[i].prompt = actual_prompt;
+            step_results[i].error = Some(err.clone());
+            persist_progress(db, execution_id, step_results, *total_tokens).await;
+            return StepLoopOutcome::Failed(err);
+        }
+    };
+    let latency_ms = start.elapsed().as_millis() as i64;
 
-        let new_context = if context.is_empty() {
-            format!(
-                "Step {} ({}): {}",
-                step.step_index, step.agent_name, extracted
-            )
-        } else {
-            format!(
-                "{}\nStep {} ({}): {}",
-                context, step.step_index, step.agent_name, extracted
-            )
-        };
+    finish_step(
+        db,
+        observability,
+        execution_id,
+        step,
+        plan,
+        step_results,
+        i,
+        context,
+        total_tokens,
+        llm,
+        actual_prompt,
+        raw_response,
+        latency_ms,
+        &trace_id,
+        prompt_tokens,
+    )
+    .await
+}
 
-        step_results[i].status = "success".to_string();
-        step_results[i].prompt = actual_prompt;
-        step_results[i].extracted_info = Some(extracted);
-        step_results[i].tokens_used = step_tokens;
-        step_results[i].input_tokens = agent_usage.input as i64;
-        step_results[i].output_tokens = agent_usage.output as i64;
-        step_results[i].cache_read_tokens = agent_usage.cache_read as i64;
-        step_results[i].cache_creation_tokens = agent_usage.cache_creation as i64;
-        step_results[i].model_used = agent_usage.model;
-        step_results[i].cost_usd = step_cost;
-        step_results[i].latency_ms = latency_ms;
-        step_results[i].context = Some(new_context);
-        persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
+/// Resumes exactly the paused step: sends the human's answer on the SAME `taskId`/`contextId`
+/// (via `build_send_request_for_task` — the same builder the direct-chat HITL resume dispatcher
+/// uses, `oss/server/src/hitl/mod.rs`) instead of generating a fresh prompt and starting a new
+/// task, then runs the same extraction (LLM call 3) `execute_step` does. `actual_prompt` (the
+/// prompt sent before the pause) is read back from `step_results[i]`, where `execute_step` already
+/// persisted it on pausing.
+#[allow(clippy::too_many_arguments)]
+async fn continue_paused_step(
+    client: &reqwest::Client,
+    db: &PgPool,
+    observability: &dyn ObservabilityProvider,
+    execution_id: Uuid,
+    user_id: Uuid,
+    step: &MafStep,
+    plan: &StepPlan,
+    step_results: &mut [StepResult],
+    i: usize,
+    context: &str,
+    total_tokens: &mut i64,
+    llm: &LlmClient,
+    task_id: &str,
+    context_id: &str,
+    injected_answer: &str,
+) -> StepLoopOutcome {
+    let start = Instant::now();
+    let (traceparent, trace_id) = build_traceparent(execution_id, step.step_index);
+
+    let call_result = call_agent_continuation(
+        client,
+        &step.agent_endpoint,
+        context_id,
+        task_id,
+        &user_id.to_string(),
+        injected_answer,
+        &traceparent,
+    )
+    .await;
+
+    let raw_response = match call_result {
+        Ok(AgentCallOutcome::Completed(text)) => text,
+        Ok(AgentCallOutcome::Paused { task_id, raw_data }) => {
+            // Sequential HITL on the same step (docs/HITL_IMPLEMENTATION_PLAN.md §3.5): still
+            // awaiting a human, on a fresh question — the step's status was already
+            // "awaiting_human" and stays that way.
+            persist_progress(db, execution_id, step_results, *total_tokens).await;
+            return StepLoopOutcome::AwaitingHuman(build_paused_step(
+                step.step_index,
+                task_id,
+                context_id.to_string(),
+                &raw_data,
+            ));
+        }
+        Err(e) => {
+            let err = format!(
+                "step {} (agent '{}') resume failed: {e}",
+                step.step_index, step.agent_name
+            );
+            step_results[i].status = "failed".to_string();
+            step_results[i].error = Some(err.clone());
+            persist_progress(db, execution_id, step_results, *total_tokens).await;
+            return StepLoopOutcome::Failed(err);
+        }
+    };
+    let latency_ms = start.elapsed().as_millis() as i64;
+    let actual_prompt = step_results[i].prompt.clone();
+
+    finish_step(
+        db,
+        observability,
+        execution_id,
+        step,
+        plan,
+        step_results,
+        i,
+        context,
+        total_tokens,
+        llm,
+        actual_prompt,
+        raw_response,
+        latency_ms,
+        &trace_id,
+        // No LLM call 2 on resume — the prompt was already generated (and its tokens already
+        // unaccounted-for, same as the pre-existing behavior for a step that errors before
+        // reaching this point) before the pause.
+        0,
+    )
+    .await
+}
+
+/// Shared tail of both `execute_step` and `continue_paused_step` once a real (non-paused) agent
+/// reply is in hand: LLM call 3 (extraction), token accounting, and the `"success"` persist.
+#[allow(clippy::too_many_arguments)]
+async fn finish_step(
+    db: &PgPool,
+    observability: &dyn ObservabilityProvider,
+    execution_id: Uuid,
+    step: &MafStep,
+    plan: &StepPlan,
+    step_results: &mut [StepResult],
+    i: usize,
+    context: &str,
+    total_tokens: &mut i64,
+    llm: &LlmClient,
+    actual_prompt: String,
+    raw_response: String,
+    latency_ms: i64,
+    trace_id: &str,
+    prompt_tokens: i64,
+) -> StepLoopOutcome {
+    // ── LLM call 3: extract relevant info from agent response ─────────────
+    let (extracted, extract_tokens) = match extract_info(
+        &plan.prompt,
+        &actual_prompt,
+        &raw_response,
+        &plan.to_extract,
+        context,
+        llm,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            let err = format!("step {}: extraction failed: {e}", step.step_index);
+            step_results[i].status = "failed".to_string();
+            step_results[i].prompt = actual_prompt;
+            step_results[i].latency_ms = latency_ms;
+            step_results[i].error = Some(err.clone());
+            persist_progress(db, execution_id, step_results, *total_tokens).await;
+            return StepLoopOutcome::Failed(err);
+        }
+    };
+
+    // Wait for the agent's own token usage to land in Tempo (it batches
+    // span export, so it's usually not there the instant the call
+    // returns) so the persisted step total already reflects LLM + agent
+    // cost together, not just MAF's own reasoning cost.
+    let agent_tokens = wait_for_agent_tokens(observability, trace_id).await;
+    let step_tokens = prompt_tokens + extract_tokens + agent_tokens;
+    *total_tokens += step_tokens;
+
+    let new_context = if context.is_empty() {
+        format!(
+            "Step {} ({}): {}",
+            step.step_index, step.agent_name, extracted
+        )
+    } else {
+        format!(
+            "{}\nStep {} ({}): {}",
+            context, step.step_index, step.agent_name, extracted
+        )
+    };
+
+    step_results[i].status = "success".to_string();
+    step_results[i].prompt = actual_prompt;
+    step_results[i].extracted_info = Some(extracted);
+    step_results[i].tokens_used = step_tokens;
+    step_results[i].latency_ms = latency_ms;
+    step_results[i].context = Some(new_context);
+    persist_progress(db, execution_id, step_results, *total_tokens).await;
+
+    StepLoopOutcome::Advance
+}
+
+/// Builds the `PausedStep` a `hitl_requests` row is created from, out of a `Paused`-classified raw
+/// A2A payload — shared parsing (`oss/types::a2a`) between `execute_step` and
+/// `continue_paused_step`.
+fn build_paused_step(
+    step_index: i32,
+    task_id: String,
+    context_id: String,
+    raw_data: &str,
+) -> PausedStep {
+    let kind = match nasiko_types::a2a::pause_reason(raw_data) {
+        PauseReason::InputRequired => nasiko_hitl::HitlKind::InputRequired,
+        PauseReason::AuthRequired => nasiko_hitl::HitlKind::AuthRequired,
+    };
+    PausedStep {
+        step_index,
+        task_id,
+        context_id,
+        kind,
+        question: nasiko_types::a2a::build_pause_question(raw_data),
     }
+}
 
-    // ── LLM call 4: synthesise final output ───────────────────────────────────
-    // Use the guidelines generated by the planner at runtime.
-    let guidelines = &output_generation;
-
-    let (output, output_tokens) = generate_final_output(&step_results, guidelines, llm)
+/// LLM call 4: synthesise the final output once every step has succeeded — shared tail of
+/// `run_maf`/`run_maf_from`.
+async fn finish_run(
+    step_results: Vec<StepResult>,
+    mut total_tokens: i64,
+    output_generation: &str,
+    llm: &LlmClient,
+) -> Result<StepOutcome, String> {
+    let (output, output_tokens) = generate_final_output(&step_results, output_generation, llm)
         .await
         .map_err(|e| format!("final output generation failed: {e}"))?;
     total_tokens += output_tokens;
 
-    Ok(ExecutionResult {
+    Ok(StepOutcome::Completed(ExecutionResult {
         output,
         step_results,
         tokens_used: total_tokens,
-        cost_usd: total_cost,
-    })
+    }))
+}
+
+/// Registers this step as a flow so the LLM gateway sees it as IN-FLOW (not inert) and its tier
+/// classifier can fire. The invariant the gateway relies on (see `derive_boundary_signals`): the
+/// trace_id forwarded in `traceparent` IS the `flow_id` in this row — mirroring the orchestrator /
+/// agent-proxy ingress. Best-effort — a failed insert only means this step falls back to the
+/// default model.
+async fn register_flow(
+    db: &PgPool,
+    execution_id: Uuid,
+    user_id: Uuid,
+    trace_id: &str,
+    agent_name: &str,
+    task_description: &str,
+    agent_id: Uuid,
+) {
+    let flow_metadata = serde_json::json!({
+        "context_id": execution_id.to_string(),
+        "mode": "free_flowing",
+    });
+    let _ = sqlx::query(
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
+           VALUES ($1, $2, $3, $4, 'running', $5)
+           ON CONFLICT (flow_id) DO NOTHING"#,
+    )
+    .bind(trace_id)
+    .bind(user_id)
+    .bind(agent_name)
+    .bind(task_description)
+    .bind(&flow_metadata)
+    .execute(db)
+    .await;
+    // Participant record — the MCP gateway / LLM router only authorize this step's agent for
+    // calls carrying this trace id if it is recorded here (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4).
+    // Same synchronous pre-call write as the flows row; a failed insert denies (never escalates)
+    // downstream.
+    if let Err(e) = sqlx::query(
+        "INSERT INTO flow_participants (flow_id, agent_id) VALUES ($1, $2)
+         ON CONFLICT (flow_id, agent_id) DO NOTHING",
+    )
+    .bind(trace_id)
+    .bind(agent_id)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(
+            error = %e, flow_id = %trace_id, %agent_id,
+            "flow participant record failed — the step agent's MCP/LLM calls will be denied"
+        );
+    }
+}
+
+/// Persists the planner's synthesis guideline (LLM call 1's output) so a resumed run's final
+/// output generation (`finish_run`) can reuse it — see the migration comment in
+/// `oss/migrations/0014_maf_hitl.sql` for why this can't just be re-derived on resume.
+async fn persist_output_generation(db: &PgPool, execution_id: Uuid, output_generation: &str) {
+    let _ = sqlx::query("UPDATE maf_executions SET output_generation = $1 WHERE id = $2")
+        .bind(output_generation)
+        .bind(execution_id)
+        .execute(db)
+        .await;
 }
 
 /// Builds a placeholder "pending" entry for a step before planning/execution
@@ -235,12 +564,6 @@ fn pending_result(step: &MafStep) -> StepResult {
         prompt: String::new(),
         extracted_info: None,
         tokens_used: 0,
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_tokens: 0,
-        cache_creation_tokens: 0,
-        model_used: None,
-        cost_usd: 0.0,
         latency_ms: 0,
         context: None,
         obs_logs: serde_json::Value::Null,
@@ -256,15 +579,13 @@ async fn persist_progress(
     execution_id: Uuid,
     step_results: &[StepResult],
     tokens_used: i64,
-    cost_usd: f64,
 ) {
     let step_json = serde_json::to_value(step_results).unwrap_or_default();
     let _ = sqlx::query(
-        "UPDATE maf_executions SET step_results = $1::jsonb, tokens_used = $2, cost_usd = $3 WHERE id = $4",
+        "UPDATE maf_executions SET step_results = $1::jsonb, tokens_used = $2 WHERE id = $3",
     )
     .bind(step_json.to_string())
     .bind(tokens_used)
-    .bind(cost_usd)
     .bind(execution_id)
     .execute(db)
     .await;
@@ -722,44 +1043,21 @@ fn build_traceparent(execution_id: Uuid, step_index: i32) -> (String, String) {
 /// or 0 if nothing shows up within the timeout — Tempo/the agent being
 /// unreachable never fails the step, it just means this step's persisted total
 /// is LLM-only.
-struct AgentUsage {
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_creation: u64,
-    model: Option<String>,
-}
-
-async fn wait_for_agent_usage(
-    observability: &dyn ObservabilityProvider,
-    trace_id: &str,
-) -> AgentUsage {
+async fn wait_for_agent_tokens(observability: &dyn ObservabilityProvider, trace_id: &str) -> i64 {
     // Agents commonly batch-export spans every ~5s, so the trace usually
     // isn't queryable the instant the agent call returns — poll rather than
     // check once.
     for _ in 0..10 {
         if let Ok(trace) = observability.get_trace(trace_id).await {
-            let (input, output, model) = trace.token_totals();
-            if input + output > 0 {
-                let (cache_read, cache_creation) = trace.cache_token_totals();
-                return AgentUsage {
-                    input,
-                    output,
-                    cache_read,
-                    cache_creation,
-                    model,
-                };
+            let (input, output, _model) = trace.token_totals();
+            let total = input + output;
+            if total > 0 {
+                return total as i64;
             }
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-    AgentUsage {
-        input: 0,
-        output: 0,
-        cache_read: 0,
-        cache_creation: 0,
-        model: None,
-    }
+    0
 }
 
 async fn call_agent(
@@ -769,7 +1067,7 @@ async fn call_agent(
     user_id: &str,
     prompt: &str,
     traceparent: &str,
-) -> Result<String, String> {
+) -> Result<AgentCallOutcome, String> {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": "1",
@@ -790,6 +1088,39 @@ async fn call_agent(
         }
     });
 
+    let json = post_a2a_request(client, endpoint, user_id, traceparent, &body).await?;
+    classify_agent_response(json, context_id)
+}
+
+/// Resumes a specific paused task with the human's answer, via
+/// `nasiko_types::a2a::build_send_request_for_task` — the same request shape the direct-chat HITL
+/// resume dispatcher sends (`oss/server/src/hitl/mod.rs`). Unlike `call_agent`, this always
+/// targets an existing `taskId`, never starts a new one.
+#[allow(clippy::too_many_arguments)]
+async fn call_agent_continuation(
+    client: &reqwest::Client,
+    endpoint: &str,
+    context_id: &str,
+    task_id: &str,
+    user_id: &str,
+    answer: &str,
+    traceparent: &str,
+) -> Result<AgentCallOutcome, String> {
+    let body = build_send_request_for_task(answer, context_id, task_id);
+    let json = post_a2a_request(client, endpoint, user_id, traceparent, &body).await?;
+    classify_agent_response(json, task_id)
+}
+
+/// Shared HTTP mechanics for both a fresh `call_agent` call and `call_agent_continuation`'s
+/// resume: the `/jsonrpc`-then-`/` endpoint fallback and the top-level JSON-RPC `error` check —
+/// everything both callers previously duplicated.
+async fn post_a2a_request<T: serde::Serialize + ?Sized>(
+    client: &reqwest::Client,
+    endpoint: &str,
+    user_id: &str,
+    traceparent: &str,
+    body: &T,
+) -> Result<serde_json::Value, String> {
     // Some agents expose A2A at /jsonrpc, others at root /. Try /jsonrpc first
     // and fall back to / on 404 so both agent types work without DB changes.
     let base = endpoint.trim_end_matches('/');
@@ -806,7 +1137,7 @@ async fn call_agent(
             .header("X-User-Id", user_id)
             .header("A2A-Version", "1.0")
             .header("traceparent", traceparent)
-            .json(&body)
+            .json(body)
             .timeout(std::time::Duration::from_secs(300))
             .send()
             .await
@@ -817,7 +1148,7 @@ async fn call_agent(
                 .header("X-User-Id", user_id)
                 .header("A2A-Version", "1.0")
                 .header("traceparent", traceparent)
-                .json(&body)
+                .json(body)
                 .timeout(std::time::Duration::from_secs(300))
                 .send()
                 .await
@@ -837,7 +1168,30 @@ async fn call_agent(
         return Err(format!("A2A error: {err}"));
     }
 
-    Ok(extract_text(&json))
+    Ok(json)
+}
+
+/// Classifies an already-parsed A2A JSON-RPC response (top-level `error` already checked by
+/// `post_a2a_request`) into a normal reply or a pause, via the same wire-shape parsing
+/// `classify_stream_disposition` uses for the streaming direct-chat path.
+/// `fallback_task_id` is used only if the payload carries no task id of its own (§`paused_task_id`).
+fn classify_agent_response(
+    json: serde_json::Value,
+    fallback_task_id: &str,
+) -> Result<AgentCallOutcome, String> {
+    let data = json.to_string();
+    match nasiko_types::a2a::classify_stream_disposition(&data) {
+        StreamDisposition::Paused => {
+            let task_id = nasiko_types::a2a::paused_task_id(&data, fallback_task_id);
+            Ok(AgentCallOutcome::Paused {
+                task_id,
+                raw_data: data,
+            })
+        }
+        StreamDisposition::Completed | StreamDisposition::Continue | StreamDisposition::Failed => {
+            Ok(AgentCallOutcome::Completed(extract_text(&json)))
+        }
+    }
 }
 
 fn extract_text(json: &serde_json::Value) -> String {
@@ -911,264 +1265,4 @@ fn build_context(step_results: &[StepResult]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use async_trait::async_trait;
-    use chrono::{DateTime, Utc};
-    use nasiko_observability::{
-        AgentFinOps, AgentStats, CostBreakdown, ObservabilityError, Session, SessionDetails, Span,
-        SpanDetails, TraceDetails,
-    };
-    use std::collections::HashMap as StdHashMap;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// A hand-rolled `ObservabilityProvider` test double. Only `get_trace` is
-    /// exercised by `wait_for_agent_usage` — every other method is a
-    /// never-called stub, required only because the trait has no default for
-    /// them.
-    struct MockProvider {
-        /// `get_trace` returns `NotFound` for the first `fail_calls`
-        /// invocations, then `trace` forever after.
-        fail_calls: usize,
-        calls: Arc<AtomicUsize>,
-        trace: TraceDetails,
-    }
-
-    #[async_trait]
-    impl ObservabilityProvider for MockProvider {
-        async fn sessions_for_agent(
-            &self,
-            _: &str,
-            _: DateTime<Utc>,
-            _: DateTime<Utc>,
-        ) -> Result<Vec<Session>, ObservabilityError> {
-            Ok(vec![])
-        }
-
-        async fn get_session(
-            &self,
-            _: &str,
-            _: DateTime<Utc>,
-            _: DateTime<Utc>,
-        ) -> Result<SessionDetails, ObservabilityError> {
-            Err(ObservabilityError::NotFound("unused in these tests".into()))
-        }
-
-        async fn get_trace(&self, _trace_id: &str) -> Result<TraceDetails, ObservabilityError> {
-            let n = self.calls.fetch_add(1, Ordering::SeqCst);
-            if n < self.fail_calls {
-                Err(ObservabilityError::NotFound("not exported yet".into()))
-            } else {
-                Ok(self.trace.clone())
-            }
-        }
-
-        async fn get_span(&self, _: &str, _: &str) -> Result<SpanDetails, ObservabilityError> {
-            Err(ObservabilityError::NotFound("unused in these tests".into()))
-        }
-
-        async fn agent_stats(
-            &self,
-            agent_id: &str,
-            start: DateTime<Utc>,
-            _: DateTime<Utc>,
-        ) -> Result<AgentStats, ObservabilityError> {
-            Ok(AgentStats {
-                agent_id: agent_id.to_string(),
-                trace_count: 0,
-                is_capped: false,
-                input_tokens: 0,
-                output_tokens: 0,
-                model_used: None,
-                latency_ms_p50: None,
-                latency_ms_p99: None,
-                cost: CostBreakdown::default(),
-                period_start: start,
-            })
-        }
-
-        async fn agent_finops(
-            &self,
-            agent_id: &str,
-            _: DateTime<Utc>,
-            _: DateTime<Utc>,
-        ) -> Result<AgentFinOps, ObservabilityError> {
-            Ok(AgentFinOps {
-                agent_id: agent_id.to_string(),
-                operations: 0,
-                is_capped: false,
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
-                model_used: None,
-                latency_ms_p50: None,
-                cost: CostBreakdown::default(),
-            })
-        }
-
-        async fn count_user_traces(
-            &self,
-            _: &str,
-            _: DateTime<Utc>,
-            _: DateTime<Utc>,
-        ) -> Result<usize, ObservabilityError> {
-            Ok(0)
-        }
-
-        async fn query_logs(
-            &self,
-            _: &str,
-            _: Option<DateTime<Utc>>,
-            _: Option<DateTime<Utc>>,
-            _: usize,
-        ) -> Result<Vec<(DateTime<Utc>, String)>, ObservabilityError> {
-            Ok(vec![])
-        }
-
-        async fn cost(&self, _: Option<&str>, _: u64, _: u64) -> CostBreakdown {
-            CostBreakdown::default()
-        }
-    }
-
-    fn trace_with_tokens(input: u64, output: u64, model: Option<&str>) -> TraceDetails {
-        let mut attrs: StdHashMap<String, serde_json::Value> = StdHashMap::new();
-        attrs.insert(
-            "gen_ai.usage.input_tokens".to_string(),
-            serde_json::json!(input),
-        );
-        attrs.insert(
-            "gen_ai.usage.output_tokens".to_string(),
-            serde_json::json!(output),
-        );
-        if let Some(m) = model {
-            attrs.insert("gen_ai.request.model".to_string(), serde_json::json!(m));
-        }
-        let span = Span {
-            span_id: "span-1".into(),
-            parent_span_id: None,
-            name: "chat".into(),
-            started_at: Utc::now(),
-            ended_at: None,
-            duration_ms: Some(100),
-            service_name: "test-agent".into(),
-            kind: 2,
-            status_code: 1,
-            status_message: String::new(),
-            attributes: attrs,
-            events: vec![],
-        };
-        TraceDetails {
-            trace_id: "trace-1".into(),
-            spans: vec![span],
-            started_at: Some(Utc::now()),
-            ended_at: None,
-            duration_ms: Some(100),
-        }
-    }
-
-    fn trace_with_no_tokens() -> TraceDetails {
-        let span = Span {
-            span_id: "span-1".into(),
-            parent_span_id: None,
-            name: "infra".into(),
-            started_at: Utc::now(),
-            ended_at: None,
-            duration_ms: Some(5),
-            service_name: "test-agent".into(),
-            kind: 1,
-            status_code: 1,
-            status_message: String::new(),
-            attributes: StdHashMap::new(),
-            events: vec![],
-        };
-        TraceDetails {
-            trace_id: "trace-1".into(),
-            spans: vec![span],
-            started_at: Some(Utc::now()),
-            ended_at: None,
-            duration_ms: Some(5),
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn wait_for_agent_usage_returns_immediately_when_the_trace_is_found_on_the_first_poll() {
-        let provider = MockProvider {
-            fail_calls: 0,
-            calls: Arc::new(AtomicUsize::new(0)),
-            trace: trace_with_tokens(120, 80, Some("gpt-4o-mini")),
-        };
-        let usage = wait_for_agent_usage(&provider, "trace-1").await;
-        assert_eq!(usage.input, 120);
-        assert_eq!(usage.output, 80);
-        assert_eq!(usage.model.as_deref(), Some("gpt-4o-mini"));
-        assert_eq!(
-            provider.calls.load(Ordering::SeqCst),
-            1,
-            "must not poll again once found"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn wait_for_agent_usage_polls_through_transient_not_found_then_succeeds() {
-        let provider = MockProvider {
-            fail_calls: 4,
-            calls: Arc::new(AtomicUsize::new(0)),
-            trace: trace_with_tokens(50, 25, Some("claude-3-5-sonnet")),
-        };
-        let usage = wait_for_agent_usage(&provider, "trace-1").await;
-        assert_eq!(usage.input, 50);
-        assert_eq!(usage.output, 25);
-        assert_eq!(
-            provider.calls.load(Ordering::SeqCst),
-            5,
-            "4 failed attempts + the 1 that finally succeeded"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn wait_for_agent_usage_gives_up_after_ten_attempts_and_returns_zeroed_usage() {
-        let provider = MockProvider {
-            fail_calls: 999, // never succeeds
-            calls: Arc::new(AtomicUsize::new(0)),
-            trace: trace_with_tokens(1, 1, None),
-        };
-        let usage = wait_for_agent_usage(&provider, "trace-1").await;
-        assert_eq!(usage.input, 0);
-        assert_eq!(usage.output, 0);
-        assert!(usage.model.is_none());
-        assert_eq!(
-            provider.calls.load(Ordering::SeqCst),
-            10,
-            "must stop after exactly 10 poll attempts, not loop forever"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn wait_for_agent_usage_keeps_polling_a_trace_that_exists_but_has_no_token_attributes() {
-        // A real trace that exists (e.g. a non-LLM agent step) but never
-        // reports tokens must NOT be mistaken for "found" — the loop's exit
-        // condition is `input + output > 0`, not merely "the trace exists".
-        let provider = MockProvider {
-            fail_calls: 0,
-            calls: Arc::new(AtomicUsize::new(0)),
-            trace: trace_with_no_tokens(),
-        };
-        let usage = wait_for_agent_usage(&provider, "trace-1").await;
-        assert_eq!(usage.input, 0);
-        assert_eq!(usage.output, 0);
-        assert_eq!(
-            provider.calls.load(Ordering::SeqCst),
-            10,
-            "a token-less trace must exhaust all 10 attempts, same as never-found"
-        );
-    }
 }
