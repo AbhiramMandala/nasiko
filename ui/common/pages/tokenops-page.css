@@ -187,12 +187,15 @@
     min-width: 0;
   }
 
-  /* Fixed-size chips, not stretched across the row — the design packs 10
-     20x20 cells with room left over on the right, unlike the old full-width
-     pill grid. */
+  /* Fixed-size chips that WRAP, not a rigid 10-column grid — a grid's tracks
+     don't reflow when the column narrows (the day-grid panel this sits above
+     the chart in, `.panels`, already goes to one column under 1100px), so
+     cells 9/10 (and the same on rows 2/3) would run outside the white card
+     rather than dropping to a new line. flex-wrap fits however many 20px
+     chips + gap actually reflow the same way this panel already does. */
   .day-grid {
-    display: grid;
-    grid-template-columns: repeat(10, 20px);
+    display: flex;
+    flex-wrap: wrap;
     gap: var(--s-8);
     background: var(--bg-base);
     border-radius: var(--r-8) var(--r-8) 0 0;
@@ -204,11 +207,12 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 20px;
     width: 20px;
     height: 20px;
     padding: 0;
     border: var(--bw-2) solid transparent;
-    border-radius: var(--r-8);
+    border-radius: var(--r-4);
     /* Normal and selected share the same fill (--yellow-200) — the design
        tells the two apart by text colour and the selected border only, not
        by a colour swap. */
@@ -306,13 +310,16 @@
      every state. */
   .conc-body {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 180px;
+    grid-template-columns: minmax(0, 1fr) 140px;
     align-items: stretch;
     gap: var(--s-16);
     flex: 1;
   }
 
-  @media (max-width: 720px) {
+  /* Same breakpoint convention `.panels` above uses (1100px) — the legend
+     column drops below the plot rather than clipping once there isn't room
+     for both a shrunk plot and a fixed 140px column side by side. */
+  @media (max-width: 680px) {
     .conc-body { grid-template-columns: minmax(0, 1fr); }
   }
 
