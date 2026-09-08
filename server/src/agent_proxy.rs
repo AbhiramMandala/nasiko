@@ -392,17 +392,33 @@ pub async fn agent_proxy(
             Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>,
         > = Box::pin(stream);
         let body = Body::from_stream(futures::stream::unfold(
-            (boxed, tap, false),
-            |(mut stream, mut tap, done)| async move {
-                if done {
-                    return None;
+            RelayStep::Read(boxed, tap),
+            |step| async move {
+                match step {
+                    RelayStep::Done => None,
+                    // One extra chunk carrying the synthetic "type":"hitl" frame, injected
+                    // right after the agent's own pause event — see `RelayStep`'s doc
+                    // comment for why this can't just be yielded inline in the same step.
+                    RelayStep::Inject(extra) => Some((Ok(extra), RelayStep::Done)),
+                    RelayStep::Read(mut stream, mut tap) => {
+                        let chunk_result = stream.next().await?;
+                        if let Ok(bytes) = &chunk_result {
+                            tap.collector.feed(bytes);
+                        }
+                        if !tap.collector.is_paused() {
+                            return Some((chunk_result, RelayStep::Read(stream, tap)));
+                        }
+                        // Persist synchronously here, before the stream is allowed to
+                        // close, and inject the id-carrying frame on this same still-open
+                        // connection: this used to happen only in `Drop`, after the stream
+                        // had already ended, so a client had no id to resolve against at
+                        // the moment it needed one.
+                        match tap.build_pause_injection().await {
+                            Some(extra) => Some((chunk_result, RelayStep::Inject(extra))),
+                            None => Some((chunk_result, RelayStep::Done)),
+                        }
+                    }
                 }
-                let chunk_result = stream.next().await?;
-                if let Ok(bytes) = &chunk_result {
-                    tap.collector.feed(bytes);
-                }
-                let now_done = tap.collector.is_paused();
-                Some((chunk_result, (stream, tap, now_done)))
             },
         ));
         return builder.body(body).map_err(|e| {
@@ -854,16 +870,34 @@ pub(crate) fn message_parts_text(result: &serde_json::Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// Step type for the `stream::unfold` relay loop in the streaming branch above. A plain
+/// `(stream, tap, done: bool)` tuple (this file's earlier shape) can't express "yield one more,
+/// synthetic chunk after the one that triggered the pause" — the extra `"type":"hitl"` frame has
+/// to be its own separate item in the outgoing byte stream, not appended onto the agent's own
+/// chunk, since a client parses each `data:` line as one JSON event.
+enum RelayStep {
+    /// Still relaying the agent's own bytes.
+    Read(
+        std::pin::Pin<Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
+        SseReplyTap,
+    ),
+    /// One buffered chunk — the synthetic HITL frame — left to yield before the stream ends.
+    Inject(bytes::Bytes),
+    Done,
+}
+
 /// Persists the collected streamed reply as the session's assistant message when dropped —
-/// which happens when the response stream ends, whether the stream completed, was truncated on
-/// a detected pause (`take_while` in the caller stops pulling further chunks once
-/// `collector.is_paused()`; this still fires normally, same as any other end of stream), or the
+/// which happens when the response stream ends, whether the stream completed normally or the
 /// client disconnected.
 ///
-/// On a pause, this proxy — unlike `agent_stream()` — has no prior bookkeeping of its own for
-/// this call (no synthetic task id was ever minted; the raw request/response just gets forwarded
-/// byte-for-byte), so persisting the `hitl_requests` row happens here too, at the same point the
-/// reply would otherwise have been persisted.
+/// A pause is handled earlier and synchronously instead, by `build_pause_injection` (called from
+/// the relay loop the moment `collector.is_paused()` goes true, before the stream is allowed to
+/// close) — unlike `agent_stream()`, this proxy has no prior bookkeeping of its own for this call
+/// (no synthetic task id was ever minted; the raw request/response just gets forwarded
+/// byte-for-byte), so persisting the `hitl_requests` row happens here too. `Drop`'s own
+/// pause-handling branch below still exists as a defensive fallback (matches this same
+/// persistence exactly) for the case `build_pause_injection` was never reached at all — it always
+/// finds `pause_data` already taken in the normal case, so it's a no-op then.
 struct SseReplyTap {
     db: sqlx::PgPool,
     hitl_store: std::sync::Arc<dyn nasiko_hitl::HitlStore>,
@@ -903,6 +937,88 @@ impl SseReplyTap {
             owner_user_id,
             collector: SseReplyText::default(),
         }
+    }
+
+    /// Called once `collector.is_paused()` goes true: persists the `hitl_requests` row
+    /// synchronously (so its id exists in Postgres before any client can observe it — same
+    /// ordering guarantee `a2a_dispatch.rs`'s orchestrator/direct-chat paths already give) and
+    /// returns the same `"type":"hitl"` id-carrying SSE frame those paths inject, formatted as a
+    /// raw wire chunk for this proxy's byte-for-byte relay (which never goes through axum's `Sse`
+    /// wrapper, so the "data: ...\n\n" framing has to be built by hand here).
+    ///
+    /// Takes `pause_data` out of `self.collector` on the way in — `Drop`'s own fallback branch
+    /// checks the same field and finds it already gone in the normal case.
+    async fn build_pause_injection(&mut self) -> Option<bytes::Bytes> {
+        let pause_data = self.collector.pause_data.take()?;
+        let question = crate::router::a2a_dispatch::build_pause_question(&pause_data);
+        let message_text = question
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        // No Nasiko-synthetic task id exists for this proxy to fall back to (see the struct doc
+        // comment) — a fresh one if the payload itself carries none is the best available
+        // substitute, same spirit as `agent_stream()`'s own fallback.
+        let fallback_task_id = Uuid::new_v4().to_string();
+
+        // Same requirement `Drop`'s own pause-handling branch enforces: without both a session
+        // to correlate to and a real caller identity, there's nothing to persist a pause
+        // against — logged the same way, so the two paths read as one convention, not two.
+        let (Some(session_id), Some(owner_user_id)) =
+            (self.session_id.clone(), self.owner_user_id)
+        else {
+            tracing::error!(flow_id = %self.flow_id, "agent proxy: HITL pause detected but no session/caller user id to correlate — pause not persisted");
+            return None;
+        };
+
+        // See the other call site's comment: this proxy has no `chat_sessions` row to correlate
+        // to, so `chat_session_id` is `None` here too.
+        let row = match crate::router::a2a_dispatch::persist_direct_chat_pause(
+            &self.hitl_store,
+            &self.db,
+            nasiko_hitl::HitlOrigin::AgentProxy,
+            self.agent_id,
+            owner_user_id,
+            &session_id,
+            &fallback_task_id,
+            None,
+            &self.flow_id,
+            &pause_data,
+        )
+        .await
+        {
+            Ok(row) => row,
+            Err(_) => {
+                tracing::error!(%session_id, "agent proxy: failed to persist HITL pause");
+                return None;
+            }
+        };
+
+        if !message_text.is_empty() {
+            let _ = sqlx::query(
+                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+            )
+            .bind(&session_id)
+            .bind("assistant")
+            .bind(&message_text)
+            .execute(&self.db)
+            .await;
+        }
+
+        // `agent`: `None` — this proxy is always a conversation with exactly one agent, already
+        // known to whoever is looking at the screen (matches `build_hitl_stream_data`'s own
+        // direct-chat convention).
+        let task_id = row.task_id.clone().unwrap_or_default();
+        let context_id = row.context_id.clone().unwrap_or_default();
+        let data = crate::router::a2a_dispatch::build_hitl_stream_data(
+            &self.hitl_store,
+            &task_id,
+            &context_id,
+            &row,
+            None,
+        )
+        .await;
+        Some(bytes::Bytes::from(format!("data: {data}\n\n")))
     }
 }
 

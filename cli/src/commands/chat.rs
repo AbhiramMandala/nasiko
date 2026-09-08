@@ -797,11 +797,21 @@ fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
 
 /// Reconnects to the orchestrator's SSE stream after a HITL pause was
 /// answered, via `metadata.reconnect_after_hitl_id` (the same mechanism
-/// `oss/server/tests/hitl_reconnect.rs` exercises). `endpoint` is the
-/// orchestrator URL the turn was originally sent to — the server itself,
-/// not an externally-implemented agent — so unlike `send_message`'s SDK-quirk
-/// retry dance, this always accepts `message/stream` + `ROLE_USER` directly.
+/// `oss/server/tests/hitl_reconnect.rs` exercises). Always targets
+/// `/api/orchestrator/a2a` on the active cluster — resolving a pause reconnects
+/// through the orchestrator regardless of which endpoint the turn was
+/// originally sent to (§4.1/§7 of docs/HITL_CLI_IMPLEMENTATION_PLAN.md: this
+/// already works for `agent_proxy`-origin rows too, not just the orchestrator's
+/// own), so `nasiko chat -a` reconnects the same way `nasiko chat` does rather
+/// than re-POSTing to the single agent's own `/api/agents/{id}/...` endpoint.
+/// The server itself, not an externally-implemented agent, so unlike
+/// `send_message`'s SDK-quirk retry dance, this always accepts
+/// `message/stream` + `ROLE_USER` directly.
 fn reconnect_after_hitl(endpoint: &str, hitl_id: &str) -> Result<ureq::http::Response<ureq::Body>> {
+    let (base_url, token) = cp::cp_credentials(endpoint)
+        .context("cannot reconnect after HITL resolution: not a control-plane endpoint")?;
+    let orchestrator_url = format!("{base_url}/api/orchestrator/a2a");
+
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": uuid::Uuid::new_v4().to_string(),
@@ -822,20 +832,12 @@ fn reconnect_after_hitl(endpoint: &str, hitl_id: &str) -> Result<ureq::http::Res
             .http_status_as_error(false)
             .build(),
     );
-    let token = config::active_token().ok().flatten().filter(|_| {
-        config::active_url()
-            .ok()
-            .map(|u| endpoint.starts_with(&u))
-            .unwrap_or(false)
-    });
 
-    let mut req = http
-        .post(endpoint)
+    let req = http
+        .post(&orchestrator_url)
         .header("Content-Type", "application/json")
-        .header("A2A-Version", "1.0");
-    if let Some(ref t) = token {
-        req = req.header("Authorization", &format!("Bearer {t}"));
-    }
+        .header("A2A-Version", "1.0")
+        .header("Authorization", &format!("Bearer {token}"));
     let mut resp = req
         .send_json(&body)
         .context("failed to reconnect after HITL resolution")?;
