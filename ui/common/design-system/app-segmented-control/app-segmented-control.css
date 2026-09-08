@@ -131,7 +131,10 @@
   /* ── Size sm — 28px, matching app-input, app-select and app-tag: the same
         height, padding, radius and 12px type they drop to. ────────────────── */
   :scope[size="sm"] {
-    --seg-radius: var(--r-8);
+    /* --r-6, matching what app-input, app-select and app-tag drop to at sm.
+       This read --r-8 — the md value — so the radius did not move with the
+       size and the strip's own test caught it (7px / 7px). */
+    --seg-radius: var(--r-6);
 
     .seg {
       height: var(--control-h-sm);
