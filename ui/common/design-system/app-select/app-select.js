@@ -24,6 +24,15 @@
  * @attr {boolean} required|disabled
  * @attr {string} name|aria-label - Forwarded to the inner `<select>`.
  * @attr {string} value - Initially selected value; matched against `options`.
+ * @attr {boolean} fit-content - Shrinks/grows the trigger box to the width of
+ *       whatever option is CURRENTLY shown (the placeholder, or the selected
+ *       option), instead of the native-<select> default of sizing the box to
+ *       the WIDEST option in the list. Native `<select>` has no CSS for this —
+ *       the box width has to be measured in JS (offscreen canvas text
+ *       measurement) and set as an explicit inline width, recomputed whenever
+ *       the shown text changes. Opt-in per instance so the many existing
+ *       app-select consumers that want a stable, content-independent width
+ *       (e.g. a form field lined up in a grid) are unaffected.
  * @prop {string} value - Get/set the selected value.
  * @prop {HTMLSelectElement} select - The inner select.
  * @slot [data-slot="leading"] - A prefix glyph inside the trigger, before the
@@ -47,10 +56,19 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 let uid = 0;
 
+// Shared offscreen canvas for `fit-content` text measurement — one 2d context
+// for every app-select instance rather than one per component/render.
+let measureCtx = null;
+function measureText(text, font) {
+  if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d');
+  measureCtx.font = font;
+  return measureCtx.measureText(text).width;
+}
+
 export class AppSelect extends HTMLElement {
   static get observedAttributes() {
     return ['size', 'state', 'label', 'hint', 'placeholder', 'options', 'required',
-            'disabled', 'name', 'value', 'aria-label'];
+            'disabled', 'name', 'value', 'aria-label', 'fit-content'];
   }
 
   #id = `app-select-${++uid}`;
@@ -96,6 +114,38 @@ export class AppSelect extends HTMLElement {
   #applyValue(v) {
     const sel = this.select;
     if ([...sel.options].some((o) => o.value === String(v))) sel.value = v;
+    this.#applyFitWidth();
+  }
+
+  /**
+   * `fit-content`: measures the text of whichever option is currently shown
+   * (`selectedOptions[0]` — the placeholder header counts too) and sets that
+   * plus the trigger's own fixed chrome as an explicit width on `.select-box`,
+   * so the box tracks the shown option's width rather than the widest one the
+   * native popup would otherwise reserve room for. `align-self: flex-start`
+   * on `.select-box[fit-content-applied]` disables the parent's default
+   * stretch so the inline width actually takes effect (see app-select.css).
+   * No-ops (and leaves any width from a previous render) when `fit-content`
+   * is absent, disabled, or the select isn't in the document yet — a hidden
+   * <select> the browser hasn't laid out reports a font it can't guarantee.
+   */
+  #applyFitWidth() {
+    if (!this.hasAttribute('fit-content')) return;
+    const sel = this.select;
+    const box = this.querySelector('.select-box');
+    if (!sel || !box) return;
+    const opt = sel.selectedOptions[0] ?? sel.options[0];
+    const text = opt ? (opt.textContent || '') : '';
+    const font = getComputedStyle(sel).font;
+    const isSm = this.getAttribute('size') === 'sm';
+    // Chrome outside the measured text: select-box border (1px × 2) plus the
+    // select's own left/right padding — 12/36 at md, 8/30 at sm (see the
+    // "Right padding leaves room for..." note in app-select.css).
+    const chrome = 2 + (isSm ? 8 + 30 : 12 + 36);
+    // +4px safety margin: canvas measureText() and the browser's own text
+    // shaping for the <select> can differ by a pixel or two — better a hair
+    // of breathing room than a clipped last character.
+    box.style.width = `${Math.ceil(measureText(text, font)) + chrome + 4}px`;
   }
 
   render() {
@@ -143,7 +193,14 @@ export class AppSelect extends HTMLElement {
     unsizeIcons(this);
 
     if (value) this.#applyValue(value);
+    else this.#applyFitWidth();
     if (refocus) this.select.focus();
+
+    // Picking a new option fires 'change' on the inner <select> without going
+    // through #applyValue — a fresh element each render, so re-attached here.
+    if (this.hasAttribute('fit-content')) {
+      this.select.addEventListener('change', () => this.#applyFitWidth());
+    }
   }
 }
 customElements.define('app-select', AppSelect);

@@ -342,9 +342,10 @@ class TokenopsPage extends HTMLElement {
           >${this.#monthOptions()}</app-select>
         <div class="filter-group">
           <app-segmented-control id="range-seg" size="sm" label="Time range"></app-segmented-control>
-          <app-select id="agent-select" size="md" aria-label="Agent"></app-select>
+          <app-select id="agent-select" size="md" fit-content
+            placeholder="Agent" aria-label="Agent"></app-select>
           ${ASYNC_FILTERS.map((f) => `
-            <app-select id="${f.id}" size="md" disabled
+            <app-select id="${f.id}" size="md" disabled fit-content
               placeholder="${escAttr(f.label)}" aria-label="${escAttr(f.label)}"
               title="${escAttr(`Loading ${f.label.toLowerCase()} options…`)}"></app-select>`).join('')}
           ${INERT_FILTERS.map((f) => `
@@ -570,7 +571,7 @@ class TokenopsPage extends HTMLElement {
     const select = this.querySelector('#provider-select');
     const options = catalog.map((p) => ({ value: p.provider, label: p.provider }));
     if (!options.length) return; // leave disabled — nothing real to offer
-    select.setAttribute('options', JSON.stringify([{ value: '', label: 'Provider' }, ...options]));
+    select.setAttribute('options', JSON.stringify([{ value: '', label: 'All' }, ...options]));
     select.removeAttribute('disabled');
     select.removeAttribute('title');
   }
@@ -580,7 +581,7 @@ class TokenopsPage extends HTMLElement {
     const models = [...new Set(catalog.flatMap((p) => (p.models ?? []).map((m) => m.model)))].sort();
     if (!models.length) return;
     select.setAttribute('options', JSON.stringify([
-      { value: '', label: 'Model' },
+      { value: '', label: 'All' },
       ...models.map((m) => ({ value: m, label: m })),
     ]));
     select.removeAttribute('disabled');
@@ -596,7 +597,7 @@ class TokenopsPage extends HTMLElement {
     if (!Array.isArray(units) || !units.length) return; // stays disabled — see #loadFilterOptions
     const select = this.querySelector('#org-select');
     select.setAttribute('options', JSON.stringify([
-      { value: '', label: 'Org unit' },
+      { value: '', label: 'All' },
       ...units.map((u) => ({ value: u.id, label: `${'—'.repeat(Math.max((u.depth ?? 1) - 1, 0))} ${u.name}`.trim() })),
     ]));
     select.removeAttribute('disabled');
@@ -862,9 +863,10 @@ class TokenopsPage extends HTMLElement {
   // ── Attributions ──────────────────────────────────────────────────────────
 
   /**
-   * Agent options for the filter. `''` is every agent rather than a `placeholder`
-   * prompt, because a placeholder option is disabled — there would be no way
-   * back to the unfiltered view. <app-select> reads `options` from the
+   * Agent options for the filter. The markup carries `placeholder="Agent"`
+   * (a disabled, unselectable header — the button's own label), so the real
+   * `''` option below is the way back to the unfiltered view and reads "All",
+   * matching Provider/Model/Org unit. <app-select> reads `options` from the
    * attribute, so this writes the attribute, not a property. Always built from
    * `data.agents` (agent-view, backward-compat) — the filter names an agent
    * regardless of which attribution view the table is showing.
@@ -872,7 +874,7 @@ class TokenopsPage extends HTMLElement {
   #renderAgentOptions() {
     const select = this.querySelector('#agent-select');
     select.setAttribute('options', JSON.stringify([
-      { value: '', label: 'Agent' },
+      { value: '', label: 'All' },
       ...this.#agents.map((a) => ({ value: a.agent_id, label: a.agent_name || a.agent_id })),
     ]));
     // Re-rendered options reset the native select; keep the caller's choice.
