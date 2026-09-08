@@ -197,9 +197,12 @@ async fn deliver(state: AppState, row: HitlRequest) {
     let req_body = nasiko_types::a2a::build_stream_request_for_task(&answer, &context_id, &task_id);
 
     // Reused for the initial send and (non-streaming path only) the one-shot `message/send`
-    // retry — same headers, same delegation token, different body. 300s, not the shared
-    // client's 60s default: agent turns can be slow (mirrors `maf/executor.rs::post_a2a_request`,
-    // the other call site that talks to an agent on a human's behalf).
+    // retry — same headers, different body. 300s, not the shared client's 60s default: agent
+    // turns can be slow (mirrors `maf/executor.rs::post_a2a_request`, the other call site that
+    // talks to an agent on a human's behalf).
+    //
+    // No per-request MCP credential is forwarded: the agent authenticates to `/api/mcp` with its
+    // own deploy-time MCP_GATEWAY_TOKEN (docs/MCP_GATEWAY_AGENT_AUTH.md).
     //
     // Forwards `traceparent` from `flow_ctx` — every other inter-agent call site
     // (`agent_proxy.rs`, `a2a_dispatch.rs`) does the same. Without it, an agent whose own
@@ -210,22 +213,13 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // orchestrator's sub-agent sees the exact same tool-approval prompt again on the very next
     // step, forever.
     let build_req = |body: &nasiko_types::a2a::JsonRpcRequest| {
-        let mut req = state
+        state
             .http_client
             .post(&endpoint)
             .timeout(Duration::from_secs(300))
             .header("A2A-Version", "1.0")
-            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx));
-        if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
-            && let Ok(delegation_token) = nasiko_auth::jwt::mint_delegation_token(
-                &jwt_secret,
-                &row.owner_user_id.to_string(),
-                &row.agent_id.to_string(),
-            )
-        {
-            req = req.header("x-nasiko-agent-token", delegation_token);
-        }
-        req.json(body)
+            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
+            .json(body)
     };
 
     let response = match build_req(&req_body).send().await {

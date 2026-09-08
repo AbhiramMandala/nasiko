@@ -14,7 +14,7 @@ use crate::error::OrchestratorError;
 use crate::events::OrchestratorEvent;
 use crate::guard::CallGuard;
 use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
-use crate::tool::{A2aTool, A2aToolError, DelegationContext};
+use crate::tool::{A2aTool, A2aToolError};
 
 /// The outcome of one `toolset.call()`, with a real pause recovered from `rig`'s type-erased
 /// `Result<String, ToolSetError>` instead of being indistinguishable from an ordinary failure.
