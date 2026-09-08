@@ -391,7 +391,15 @@ pub async fn execute_build(
                 .get_blob(key)
                 .await
                 .map_err(|e| format!("fetch source from S3: {e}"))?;
-            extract_zip_to_dir(&data, &tmp_dir).map_err(|e| format!("extract zip: {e}"))?;
+            // Same reasoning as the tar below: unpacking the archive to disk is
+            // synchronous CPU + IO, so it belongs on the blocking pool. With
+            // build_concurrency > 1 running it inline would block one runtime
+            // thread per in-flight build, on the runtime serving the HTTP API.
+            let dest = tmp_dir.clone();
+            tokio::task::spawn_blocking(move || extract_zip_to_dir(&data, &dest))
+                .await
+                .map_err(|e| format!("spawn_blocking extract: {e}"))?
+                .map_err(|e| format!("extract zip: {e}"))?;
         } else {
             return Err("no source provided (neither github_url nor source zip)".into());
         }

@@ -379,12 +379,23 @@ pub async fn execute_mcp_server_build(
         }
 
         // 3. Validate — pattern-based, fail-open (see validation.rs's doc comment).
-        let detected = validate_mcp_server_zip(&tmp_dir).map_err(|e| e.to_string())?;
+        // Walks the extracted tree synchronously, so it goes on the blocking
+        // pool for the same reason as the tar below.
+        let to_validate = tmp_dir.clone();
+        let detected = tokio::task::spawn_blocking(move || validate_mcp_server_zip(&to_validate))
+            .await
+            .map_err(|e| format!("spawn_blocking validate: {e}"))?
+            .map_err(|e| e.to_string())?;
         set_detected_runtime(&db, build_id, detected.as_str()).await;
 
-        // 4. Tar the directory.
-        let tar_bytes =
-            crate::build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
+        // 4. Tar the directory. Synchronous CPU + IO over the whole source tree,
+        // so it goes on the blocking pool — with build_concurrency > 1, running
+        // it inline would block one runtime thread per in-flight build.
+        let src = tmp_dir.clone();
+        let tar_bytes = tokio::task::spawn_blocking(move || crate::build::tar_directory(&src))
+            .await
+            .map_err(|e| format!("spawn_blocking tar: {e}"))?
+            .map_err(|e| format!("tar source: {e}"))?;
 
         // 5. Build the image.
         runtime
