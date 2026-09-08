@@ -381,7 +381,26 @@
         },
         "label": {
           "type": "string",
-          "description": "Accessible name for the plot. Falls back to the type."
+          "description": "Accessible name for the plot. Falls back to the type. (The three attributes below were added after the catalog first shipped and sit last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
+        },
+        "segmented": {
+          "type": "boolean",
+          "description": "`bar` only: the concentration presentation — every stack segment is a gapped, fully-rounded pill, the y-axis is hidden, and `stacked` is implied. Pair with `average-line` for the reference rule."
+        },
+        "average-line": {
+          "type": "boolean",
+          "description": "`bar` only: dashed horizontal rule at the mean of the column totals, labelled \"avg\"."
+        },
+        "format-y2": {
+          "type": "enum",
+          "values": [
+            "number",
+            "currency",
+            "percent",
+            "compact"
+          ],
+          "default": "number",
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
         }
       },
       "excludedFromCatalog": [
@@ -960,6 +979,57 @@
         {
           "name": "search-clear",
           "description": "After the clear button runs, for call sites that want the clear itself rather than \"value became empty\"."
+        }
+      ]
+    },
+    "app-segmented-control": {
+      "element": "app-segmented-control",
+      "summary": "Segmented control — one exclusive choice from a set, shown as a joined strip.",
+      "source": "common/design-system/app-segmented-control/app-segmented-control.js",
+      "attributes": {
+        "items": {
+          "type": "json",
+          "description": "JSON array of `\"value\"` strings or `{value, label, disabled, title}` objects. Prefer the `items` property. The string form uses the label as the value, so `value` has to match it exactly, case included; pass objects when the two should differ."
+        },
+        "value": {
+          "type": "string",
+          "description": "Selected value. Reflected. A value matching no segment selects nothing, which is how \"no choice yet\" is expressed."
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "description": "`md` (default, 32px) | `sm` (28px). The same step the other controls take: 28px box, 12px type, `--r-6` corners."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "The whole control is inert. Individual segments carry their own `disabled` in `items`."
+        },
+        "state": {
+          "type": "enum",
+          "values": [
+            "hover",
+            "focus",
+            "app-input"
+          ],
+          "description": "`hover` | `focus`, for rendering those states statically (spec review), same contract as `app-input`."
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name for the group, rendered as a visually-hidden `<legend>`. A segmented control is a question (\"over what range?\") whose answer is the only thing on screen, so the question has to be somewhere for a screen reader."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Accessible name for the group, rendered as a visually-hidden `<legend>`. A segmented control is a question (\"over what range?\") whose answer is the only thing on screen, so the question has to be somewhere for a screen reader."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "Bubbles from the inner radio. Read `e.target.value`, or the host's `.value`, which is already updated."
         }
       ]
     },

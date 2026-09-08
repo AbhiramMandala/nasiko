@@ -125,6 +125,11 @@
       "actionParam": true,
       "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
     },
+    "app-segmented-control": {
+      "status": "ready",
+      "actionParam": true,
+      "note": "A form control, same as app-select: its value plumbing is Action([@Set($var, …)]) on the trailing action slot. Segments come from the `items` attribute, so a generated surface can name them directly."
+    },
     "app-search": {
       "status": "ready",
       "actionParam": true,

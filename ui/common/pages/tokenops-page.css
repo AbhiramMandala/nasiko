@@ -1,76 +1,336 @@
-/* TokenOps dashboard — NightOwl FinOps layout: KPI strips (divided columns,
-   Chivo Mono numbers), per-agent cost table with a sand header band, and the
-   token-usage strip. */
+/* TokenOps dashboard — NightOwl FinOps layout: a filter bar over a KPI strip,
+   two sand chart panels (spend over time · spend concentration), and the
+   per-agent/per-workflow attribution table. */
+
+/* Adopted sheets carry their own keyframes — same duplication as every other
+   page sheet with a skeleton (agents-page.css, app-stat-row.css). */
+@keyframes skel-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes skel-pulse { from, to { opacity: 1; } }
+}
 
 @scope (tokenops-page) {
   /* Host box (display + padding): common/styles/page-layout.css — linked, so
      it is in effect at first paint. */
 
-  /* Only the gap below the strip: everything inside it belongs to
-     <app-stat-row>, and re-declaring any of it here would win on proximity. */
-  app-stat-row { margin-bottom: var(--s-32); }
+  /* ── KPI strip ──────────────────────────────────────────────────────────
+     This screen's own strip, in plain divs: a chip per metric, no hairlines and
+     no columns to divide. `app-stat-row` is the hairline strip and stays that
+     — the two shapes are different metrics rows, not one with a mode. */
+  .kpi-strip {
+    /* Equal columns, not a packed flex row: the design distributes the
+       metrics across the full width, and flex-wrap sized each one to its own
+       content and left the remaining width empty on the right. `auto-fit` drops
+       to four/three/two columns as the card narrows, so nothing is squeezed. */
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--s-16) var(--s-24);
+    margin-block: var(--s-16) var(--s-24);
+  }
+
+  .kpi {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    min-width: 0;
+  }
+
+  /* Movement chip. One neutral tile for every metric, as the design draws it —
+     the sentiment is carried by the glyph and the number inside it (`is-up` is
+     good news), not by the tile. Five tinted tiles read as five status badges
+     and pulled the eye off the figures, which are the point of the strip. */
+  .kpi-chip {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: var(--s-8);
+    border-radius: var(--r-8);
+    background: var(--bg-surface);
+    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+
+    &.is-up   { color: var(--fg-success); }
+    &.is-down { color: var(--fg-warning); }
+  }
+
+  /* One glyph for all three directions: `arrowUpRight` points up-right, so
+     +45° is flat and +90° is down-right. */
+  .kpi-arrow { rotate: 0deg; }
+  .dir-flat .kpi-arrow { rotate: 45deg; }
+  .dir-down .kpi-arrow { rotate: 90deg; }
+
+  /* No prior period to compare against. The tile keeps its slot so the figures
+     stay on one left edge, but nothing is painted around a placeholder — four
+     empty grey squares across the strip read as broken chrome, not as
+     "no movement yet". */
+  .kpi-chip.is-empty {
+    background: none;
+    padding-inline: 0;
+    min-width: 26px;
+    color: var(--color-text-muted);
+    opacity: 0.55;
+  }
+
+  .kpi-none { font-size: var(--font-size-sm); }
+
+  .kpi-value {
+    font-family: var(--font-display);
+    font-size: var(--font-size-2xl);
+    font-weight: 500;
+    line-height: 1.25;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+    white-space: nowrap;
+  }
+
+  .kpi-label {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .kpi-skel {
+    border-radius: var(--r-4);
+    background: var(--color-border);
+    animation: skel-pulse 1.5s ease-in-out infinite;
+  }
+  .kpi-skel--chip  { display: block; width: 28px; height: 26px; }
+  .kpi-skel--value { height: 1.5em; width: 88px; }
+  .kpi-skel--label { height: 0.85em; width: 70px; margin-top: var(--s-4); }
+  @media (prefers-reduced-motion: reduce) {
+    .kpi-skel { animation: none; opacity: 0.6; }
+  }
 
   .page-head {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: var(--s-16);
-    margin-bottom: var(--s-24);
+    margin-bottom: var(--s-16);
   }
 
-  @media (max-width: 760px) {
-    .page-head { flex-direction: column; }
+  /* ── Filter bar: period on the left, everything that narrows it on the right.
+     The dashed rule is the separator in the design — a solid hairline here read
+     as a second page header. ─────────────────────────────────────────────── */
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-16);
+    flex-wrap: wrap;
+    padding-bottom: var(--s-16);
+    border-bottom: 1px dashed var(--color-border);
+    margin-bottom: var(--s-8);
   }
 
-  .page-sub {
+  .filter-group {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    flex-wrap: wrap;
+  }
+
+  /* ── Chart panels ──────────────────────────────────────────────────────── */
+  .panels {
+    display: grid;
+    /* Spend-over-time carries a 31-point axis, so it gets the wider column. */
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: var(--s-16);
+    margin-bottom: var(--s-32);
+  }
+
+  @media (max-width: 1100px) {
+    .panels { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  .panel {
+    background: var(--bg-surface);
+    border-radius: var(--r-12);
+    padding: var(--s-16);
+    min-width: 0;
+    /* The slot is the panel's flexible row: it takes whatever height the
+       panel's other rows leave, so the plot area reaches the panel floor. */
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-12);
+    margin-bottom: var(--s-8);
+  }
+
+  /* Independent of the KPI strip's month/range window — the day-drill
+     endpoint takes a single calendar date, not a range. Sized explicitly:
+     <app-input> is display:block and this sits in a flex row. */
+  .day-picker {
+    width: auto;
+    min-width: 150px;
+    flex-shrink: 0;
+  }
+
+  .panel-title {
+    font-size: var(--font-size-md);
+    font-family: var(--font-sans);
+    font-weight: 600;
+    color: var(--color-text-main);
+    margin: 0;
+  }
+
+  .panel-tools {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-16);
+    margin-bottom: var(--s-8);
+  }
+
+  /* Series legend on the tools row: 8px dot in the series' --viz slot,
+     body/secondary label, 24px between entries. Same dot rule the
+     concentration legend uses. */
+  .series-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-8) var(--s-24);
+    margin: 0;
+    padding: 0;
+    list-style: none;
     font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+
+    li {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--s-8);
+    }
+  }
+
+  /* The plots. <app-chart> paints its own ground (bg-base, 8px corners), so
+     the slot only reserves the height — the chart's plot height (300 / 220)
+     plus its 16px padding — and grows to fill whatever the panel has left, so
+     the two panels stay level. */
+  .plot-slot {
+    display: block;
+    min-height: var(--plot-h, 224px);
+    flex: 1;
+    min-width: 0;
+  }
+
+  #spend-plot { --plot-h: 332px; }
+  #conc-plot  { --plot-h: 252px; }
+
+  /* Caption under the concentration plot: the day's average $/hour — the
+     same figure the dashed average-line rule draws, restated as text. */
+  .anomaly-note {
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     margin: var(--s-8) 0 0;
   }
 
-  .head-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--s-12);
-    flex-shrink: 0;
+  /* ── Spend concentration: day picker + hourly stack + its own legend ───── */
+  .conc-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: stretch;
+    gap: var(--s-16);
+    flex: 1;
   }
 
-  /* ── KPI strip: columns divided by hairlines, top+bottom rules ────────── */
+  @media (max-width: 720px) {
+    .conc-body { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  .conc-legend {
+    align-self: center;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-12);
+    font-size: var(--font-size-xs);
+
+    li {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+      gap: 0 var(--s-8);
+    }
+  }
+
+  /* Slot colour arrives per item as `--dot`, so the swatch order cannot drift
+     from <app-chart>'s fixed --viz-* assignment. */
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dot, var(--fg-secondary));
+    grid-row: span 2;
+  }
+
+  .conc-name {
+    color: var(--color-text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .conc-cost {
+    grid-column: 2;
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Attributions ──────────────────────────────────────────────────────── */
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-16);
+    flex-wrap: wrap;
+    margin-bottom: var(--s-16);
+  }
+
   .section-title {
     font-size: var(--font-size-lg);
     font-weight: 600;
     font-family: var(--font-sans);
     color: var(--color-text-main);
-    margin: 0 0 var(--s-16);
+    margin: 0;
   }
 
-  /* ── Toolbar: <app-search> + <app-select>, the components own their paint ── */
-  .toolbar {
+  .section-tools {
     display: flex;
     align-items: center;
     gap: var(--s-12);
-    margin-bottom: var(--s-16);
   }
 
-  #agent-search {
-    display: block;
-    flex: 0 1 400px;
-    --search-bg: var(--bg-input);
-  }
-
-  /* Pushes the sort select to the right edge — no spacer element needed. */
-  #sort-select { margin-left: auto; }
-
-  /* ── Agent cost table: <app-table> owns the frame, header band and rows.
-     Columns 2–10 are numeric; app-table has no per-column alignment, so this
-     is positional and tracks COLUMNS in tokenops-page.js. ─────────────────── */
+  /* <app-table> owns the frame, header band and rows. Columns 2–9 are numeric;
+     app-table has no per-column alignment, so this is positional and tracks
+     COLUMNS in tokenops-page.js. */
   app-table { margin-bottom: var(--s-32); }
 
-  app-table .th:nth-child(n+2):nth-child(-n+10) .th-content {
+  app-table .th:nth-child(n+2):nth-child(-n+9) .th-content {
     justify-content: flex-end;
   }
 
-  app-table .td:nth-child(n+2):nth-child(-n+10) {
+  app-table .td:nth-child(n+2):nth-child(-n+9) {
     text-align: right;
     font-family: var(--font-mono);
     font-size: 13px;
