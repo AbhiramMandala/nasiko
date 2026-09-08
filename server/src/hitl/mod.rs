@@ -562,12 +562,19 @@ async fn deliver(state: AppState, row: HitlRequest) {
                 // call) — same values either way, the row was built from them.
                 let created_task_id = created.task_id.clone().unwrap_or_default();
                 let created_context_id = created.context_id.clone().unwrap_or_default();
+                // Matches `a2a_dispatch.rs`'s original-pause convention: only the orchestrator
+                // origin names the agent (it can delegate to several; direct_chat/agent_proxy are
+                // always a conversation with the one agent already on screen, so naming it again
+                // would be redundant there, not wrong — but consistency with the first pause in
+                // the chain is what this is restoring).
+                let agent_for_frame =
+                    (row.origin == HitlOrigin::Orchestrator).then_some(agent_name.as_str());
                 let data = build_hitl_stream_data(
                     &state.hitl_store,
                     &created_task_id,
                     &created_context_id,
                     &created,
-                    None,
+                    agent_for_frame,
                 )
                 .await;
                 continuation.push(data);

@@ -2,6 +2,7 @@ use std::io::{BufRead, Write as _};
 
 use anyhow::{Context, Result, bail};
 
+use crate::api::Client;
 use crate::commands::tui::session::{self as cp};
 use crate::config;
 use nasiko_utils::term as status;
@@ -23,6 +24,10 @@ struct Spinner {
     /// trailing newline. The next status/progress line (stderr) checks this
     /// first so it never glues onto the end of the streamed text.
     stdout_dirty: bool,
+    /// Whether the final answer's `❯ assistant` label has already been
+    /// printed this turn — the label goes out once, right before the first
+    /// piece of real reply text, never before status/progress chatter.
+    reply_started: bool,
 }
 
 impl Spinner {
@@ -33,6 +38,19 @@ impl Spinner {
             sub_streamed: false,
             call_started: None,
             stdout_dirty: false,
+            reply_started: false,
+        }
+    }
+
+    /// Prints the `❯ assistant` label once, right before the first piece of
+    /// the model's actual answer — call immediately before printing reply
+    /// text, never before progress/status output, so the real answer is
+    /// visually set apart from everything leading up to it.
+    fn begin_reply(&mut self) {
+        if !self.reply_started {
+            self.reply_started = true;
+            print!("\x1b[1;32m❯ assistant\x1b[0m ");
+            std::io::stdout().flush().ok();
         }
     }
 
@@ -374,7 +392,7 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
 
     let observed_session = if content_type.contains("text/event-stream") {
         spin.set("thinking");
-        let (_agent_text, observed) = handle_sse_stream(resp, &mut spin)?;
+        let (_agent_text, observed) = handle_sse_stream(resp, &mut spin, endpoint)?;
         observed
     } else {
         spin.set("thinking");
@@ -420,14 +438,21 @@ fn event_context_id(result: &serde_json::Value) -> Option<String> {
 
 /// Parse SSE stream, render events to the terminal, and return the full agent text.
 /// The spinner animates whenever the stream is quiet; every print pauses it
-/// first so output never collides with an animation frame.
+/// first so output never collides with an animation frame. `endpoint` is
+/// needed only to reconnect after a HITL pause is resolved mid-stream (same
+/// URL the turn was sent to — see `reconnect_after_hitl`).
 fn handle_sse_stream(
     resp: ureq::http::Response<ureq::Body>,
     spin: &mut Spinner,
+    endpoint: &str,
 ) -> Result<(String, Option<String>)> {
     let (_parts, body) = resp.into_parts();
     let buf = std::io::BufReader::new(body.into_reader());
     let mut collected = String::new();
+    // Reply text not yet printed — held back rather than printed per chunk so a
+    // markdown link split across two SSE chunks still gets linkified correctly;
+    // flushed (and turned into real terminal hyperlinks) at the points below.
+    let mut unprinted = String::new();
     let mut observed_session: Option<String> = None;
 
     for line in buf.lines() {
@@ -470,8 +495,8 @@ fn handle_sse_stream(
                 spin.close_sub();
                 match handle_task_result(task) {
                     Some(t) => {
-                        spin.stdout_dirty = true;
                         collected.push_str(&t);
+                        unprinted.push_str(&t);
                     }
                     // Failed/canceled with no extractable text — say so
                     // explicitly rather than silently falling through to
@@ -492,27 +517,42 @@ fn handle_sse_stream(
             spin.close_sub();
             bail!("A2A error: {err}");
         } else if let Some(status_update) = result.get("statusUpdate") {
-            handle_status_update(status_update, spin);
-            is_terminal = is_terminal_state(status_update);
+            if let Some(pause) = extract_status_hitl_pause(status_update) {
+                spin.pause();
+                spin.close_sub();
+                spin.break_stdout();
+                flush_reply(spin, &mut unprinted);
+                prompt_and_resolve_hitl(&pause)?;
+                spin.set("resuming");
+                let resumed = reconnect_after_hitl(endpoint, &pause.id)?;
+                let (resumed_text, resumed_session) = handle_sse_stream(resumed, spin, endpoint)?;
+                collected.push_str(&resumed_text);
+                if observed_session.is_none() {
+                    observed_session = resumed_session;
+                }
+                is_terminal = true;
+            } else {
+                handle_status_update(status_update, spin);
+                is_terminal = is_terminal_state(status_update);
+            }
         } else if result.get("message").is_some() {
             // Bare message reply (e.g. a2a-go SDK agents): terminal, the
             // message text is the full answer.
             spin.pause();
             spin.close_sub();
             if let Some(t) = nasiko_types::a2a::extract_text(result) {
-                print!("{t}");
-                std::io::stdout().flush().ok();
-                spin.stdout_dirty = true;
                 collected.push_str(&t);
+                unprinted.push_str(&t);
             }
             is_terminal = true;
         } else if let Some(artifact_update) = result.get("artifactUpdate") {
-            // Answer text is flowing — the text itself is the progress indicator.
+            // Answer text is flowing — held back until a flush point (see
+            // `unprinted`'s doc comment) rather than printed as it arrives.
             spin.pause();
             spin.close_sub();
             if let Some(t) = handle_artifact_update(artifact_update) {
-                spin.stdout_dirty = true;
                 collected.push_str(&t);
+                unprinted.push_str(&t);
             }
         } else if let Some(kind) = result.get("kind").and_then(|k| k.as_str()) {
             match kind {
@@ -520,8 +560,8 @@ fn handle_sse_stream(
                     spin.pause();
                     spin.close_sub();
                     if let Some(t) = handle_artifact_update(result) {
-                        spin.stdout_dirty = true;
                         collected.push_str(&t);
+                        unprinted.push_str(&t);
                     }
                 }
                 "status-update" => {
@@ -540,14 +580,278 @@ fn handle_sse_stream(
 
     spin.pause();
     spin.close_sub();
+    flush_reply(spin, &mut unprinted);
     Ok((collected, observed_session))
 }
 
-fn handle_task_result(task: &serde_json::Value) -> Option<String> {
-    let text = nasiko_types::a2a::extract_text(task)?;
-    print!("{text}");
+/// Prints whatever reply text has accumulated since the last flush, with
+/// markdown links turned into real terminal hyperlinks (`linkify_markdown_links`).
+/// Held back rather than printed per-chunk — see `unprinted`'s doc comment in
+/// `handle_sse_stream` — so this is the only place reply text actually reaches
+/// the terminal.
+fn flush_reply(spin: &mut Spinner, unprinted: &mut String) {
+    if unprinted.is_empty() {
+        return;
+    }
+    spin.begin_reply();
+    print!("{}", linkify_markdown_links(unprinted));
     std::io::stdout().flush().ok();
-    Some(text)
+    spin.stdout_dirty = true;
+    unprinted.clear();
+}
+
+/// Converts markdown-style `[label](url)` links into OSC 8 terminal hyperlinks —
+/// a blue, underlined, clickable label in terminals that support it (all
+/// mainstream ones do: iTerm2, Terminal.app, Windows Terminal, VS Code, Kitty,
+/// Alacritty, WezTerm, GNOME Terminal...) — with the raw `[]()` syntax removed
+/// either way, so a non-supporting terminal at worst shows plain link text
+/// instead of markdown punctuation.
+fn linkify_markdown_links(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let Some(close_offset) = rest[open + 1..].find(']') else {
+            break;
+        };
+        let close = open + 1 + close_offset;
+        let after_bracket = close + 1;
+        if let Some(paren_offset) = rest[after_bracket..]
+            .starts_with('(')
+            .then(|| rest[after_bracket + 1..].find(')'))
+            .flatten()
+        {
+            let paren_close = after_bracket + 1 + paren_offset;
+            let label = &rest[open + 1..close];
+            let url = &rest[after_bracket + 1..paren_close];
+            out.push_str(&rest[..open]);
+            out.push_str(&format!(
+                "\x1b]8;;{url}\x1b\\\x1b[34;4m{label}\x1b[0m\x1b]8;;\x1b\\"
+            ));
+            rest = &rest[paren_close + 1..];
+        } else {
+            // Not a real link (no matching "(...)") — keep the literal "["
+            // and resume scanning right after it, not from the "]", since a
+            // real link could immediately follow a stray "[".
+            out.push_str(&rest[..open + 1]);
+            rest = &rest[open + 1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A pause the agent raised mid-turn, parsed from the `"type":"hitl"` data
+/// part (`a2a_dispatch.rs`'s `build_hitl_stream_data`) inside a
+/// `TASK_STATE_WORKING` status update. `id` is always the real
+/// `hitl_requests.id` to resolve against — even when this pause is an MCP
+/// tool-approval mirrored onto the sub-agent's own conversation, the
+/// substitution already happened server-side (`resolve_display_row`) before
+/// this frame was built.
+struct HitlPause {
+    id: String,
+    kind: String,
+    question: serde_json::Value,
+    agent: Option<String>,
+}
+
+/// Finds the `"type":"hitl"` data part on a `statusUpdate` event, if any.
+/// The preceding `TASK_STATE_INPUT_REQUIRED`/`AUTH_REQUIRED` status (a
+/// separate SSE event) carries no id and is otherwise ignored — this frame
+/// has everything needed to prompt and resolve.
+fn extract_status_hitl_pause(status_update: &serde_json::Value) -> Option<HitlPause> {
+    let parts = status_update
+        .pointer("/status/message/parts")
+        .and_then(|p| p.as_array())?;
+    parts.iter().find_map(|part| {
+        let data = part.get("data")?;
+        if data.get("type").and_then(|t| t.as_str()) != Some("hitl") {
+            return None;
+        }
+        Some(HitlPause {
+            id: data.get("id")?.as_str()?.to_string(),
+            kind: data
+                .get("kind")?
+                .as_str()
+                .unwrap_or("input_required")
+                .to_string(),
+            question: data
+                .get("question")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            agent: data
+                .get("agent")
+                .and_then(|a| a.as_str())
+                .map(str::to_string),
+        })
+    })
+}
+
+/// Shows the pause inline and blocks on the human's response, then POSTs the
+/// resolution to `/api/hitl/{id}/resolve`. A pause someone else already
+/// resolved (`already_resolved: true` in a 200 response) is a normal
+/// outcome, not an error — printed and treated as done.
+fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
+    let who = pause.agent.as_deref().unwrap_or("agent");
+    let message = |key: &str| {
+        pause
+            .question
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+    };
+
+    let body = match pause.kind.as_str() {
+        "tool_approval" => {
+            let tool = pause.question.get("tool_name").and_then(|v| v.as_str());
+            let connector = pause.question.get("connector_id").and_then(|v| v.as_str());
+            println!();
+            println!(
+                "\x1b[1;33m⏸ {who}\x1b[0m wants approval to run: \x1b[1m{}\x1b[0m",
+                tool.unwrap_or("(unknown tool)")
+            );
+            if let Some(c) = connector {
+                println!("  \x1b[2mconnector: {c}\x1b[0m");
+            }
+            let msg = message("message");
+            if !msg.is_empty() {
+                println!("  \x1b[2m{msg}\x1b[0m");
+            }
+            let approved = dialoguer::Confirm::new()
+                .with_prompt("Approve?")
+                .default(false)
+                .interact()
+                .unwrap_or(false);
+            serde_json::json!({
+                "decision": if approved { "approve" } else { "reject" },
+                "scope": "once",
+            })
+        }
+        "auth_required" => {
+            let msg = message("message");
+            println!();
+            println!(
+                "\x1b[1;33m⏸ {who}\x1b[0m needs authorization: {}",
+                if msg.is_empty() {
+                    "re-authentication required"
+                } else {
+                    msg
+                }
+            );
+            if let Some(c) = pause
+                .question
+                .get("connector")
+                .or_else(|| pause.question.get("connector_id"))
+                .and_then(|v| v.as_str())
+            {
+                println!("  \x1b[2mconnector: {c}\x1b[0m");
+            }
+            if let Some(url) = pause
+                .question
+                .pointer("/metadata/auth_url")
+                .and_then(|v| v.as_str())
+            {
+                println!("  \x1b[2mopen this to authenticate: {url}\x1b[0m");
+            }
+            dialoguer::Input::<String>::new()
+                .with_prompt("Once you've finished, press Enter to continue")
+                .allow_empty(true)
+                .interact_text()
+                .ok();
+            serde_json::json!({ "auth_action": "confirm" })
+        }
+        // "input_required" and any forward-compatible unknown kind: a plain question.
+        _ => {
+            let msg = message("message");
+            println!();
+            println!(
+                "\x1b[1;33m⏸ {who}\x1b[0m: {}",
+                if msg.is_empty() {
+                    "(needs your input)"
+                } else {
+                    msg
+                }
+            );
+            let answer = dialoguer::Input::<String>::new()
+                .with_prompt("\x1b[1;36m❯ you\x1b[0m")
+                .allow_empty(true)
+                .interact_text()
+                .unwrap_or_default();
+            serde_json::json!({ "answer": answer })
+        }
+    };
+
+    let resp: serde_json::Value =
+        Client::from_active_cluster()?.post_json(&format!("/hitl/{}/resolve", pause.id), &body)?;
+
+    if resp.get("already_resolved").and_then(|v| v.as_bool()) == Some(true) {
+        eprintln!("  \x1b[2m(already resolved by someone else)\x1b[0m");
+    } else {
+        eprintln!(
+            "  \x1b[2m(HITL ID: {} — for reference only)\x1b[0m",
+            pause.id
+        );
+    }
+    println!();
+    Ok(())
+}
+
+/// Reconnects to the orchestrator's SSE stream after a HITL pause was
+/// answered, via `metadata.reconnect_after_hitl_id` (the same mechanism
+/// `oss/server/tests/hitl_reconnect.rs` exercises). `endpoint` is the
+/// orchestrator URL the turn was originally sent to — the server itself,
+/// not an externally-implemented agent — so unlike `send_message`'s SDK-quirk
+/// retry dance, this always accepts `message/stream` + `ROLE_USER` directly.
+fn reconnect_after_hitl(endpoint: &str, hitl_id: &str) -> Result<ureq::http::Response<ureq::Body>> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": uuid::Uuid::new_v4().to_string(),
+        "method": "message/stream",
+        "params": {
+            "message": {
+                "messageId": uuid::Uuid::new_v4().to_string(),
+                "role": "ROLE_USER",
+                "parts": []
+            },
+            "metadata": { "reconnect_after_hitl_id": hitl_id }
+        }
+    });
+
+    let http = ureq::Agent::new_with_config(
+        ureq::config::Config::builder()
+            .timeout_global(Some(std::time::Duration::from_secs(300)))
+            .http_status_as_error(false)
+            .build(),
+    );
+    let token = config::active_token().ok().flatten().filter(|_| {
+        config::active_url()
+            .ok()
+            .map(|u| endpoint.starts_with(&u))
+            .unwrap_or(false)
+    });
+
+    let mut req = http
+        .post(endpoint)
+        .header("Content-Type", "application/json")
+        .header("A2A-Version", "1.0");
+    if let Some(ref t) = token {
+        req = req.header("Authorization", &format!("Bearer {t}"));
+    }
+    let mut resp = req
+        .send_json(&body)
+        .context("failed to reconnect after HITL resolution")?;
+    if resp.status().as_u16() >= 400 {
+        let err_body = resp.body_mut().read_to_string().unwrap_or_default();
+        bail!(
+            "HTTP {} reconnecting after HITL resolution: {}",
+            resp.status().as_u16(),
+            err_body
+        );
+    }
+    Ok(resp)
+}
+
+fn handle_task_result(task: &serde_json::Value) -> Option<String> {
+    nasiko_types::a2a::extract_text(task)
 }
 
 fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
@@ -758,8 +1062,6 @@ fn handle_artifact_update(event: &serde_json::Value) -> Option<String> {
     let mut buf = String::new();
     for part in parts {
         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-            print!("{text}");
-            std::io::stdout().flush().ok();
             buf.push_str(text);
         }
     }
@@ -970,4 +1272,52 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
         ctx_id = send_msg(input, ctx_id)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod linkify_tests {
+    use super::linkify_markdown_links;
+
+    #[test]
+    fn converts_a_single_link() {
+        let out = linkify_markdown_links("see [here](https://example.com/x) for details");
+        assert_eq!(
+            out,
+            "see \x1b]8;;https://example.com/x\x1b\\\x1b[34;4mhere\x1b[0m\x1b]8;;\x1b\\ for details"
+        );
+    }
+
+    #[test]
+    fn converts_multiple_links() {
+        let out = linkify_markdown_links("[a](https://a.com) and [b](https://b.com)");
+        assert!(out.contains("\x1b]8;;https://a.com\x1b\\\x1b[34;4ma\x1b[0m"));
+        assert!(out.contains("\x1b]8;;https://b.com\x1b\\\x1b[34;4mb\x1b[0m"));
+        // No leftover raw markdown syntax — just the hyperlink escape sequences.
+        assert!(!out.contains("(https://"));
+    }
+
+    #[test]
+    fn leaves_plain_text_untouched() {
+        let out = linkify_markdown_links("no links here, just text");
+        assert_eq!(out, "no links here, just text");
+    }
+
+    #[test]
+    fn leaves_a_bracket_with_no_matching_paren_as_is() {
+        let out = linkify_markdown_links("this is [not a link] at all");
+        assert_eq!(out, "this is [not a link] at all");
+    }
+
+    #[test]
+    fn leaves_an_unclosed_bracket_as_is() {
+        let out = linkify_markdown_links("oops [unterminated");
+        assert_eq!(out, "oops [unterminated");
+    }
+
+    #[test]
+    fn a_stray_bracket_does_not_swallow_a_real_link_right_after() {
+        let out = linkify_markdown_links("[nope] then [yes](https://example.com)");
+        assert!(out.starts_with("[nope] then "));
+        assert!(out.contains("\x1b]8;;https://example.com\x1b\\\x1b[34;4myes\x1b[0m"));
+    }
 }
