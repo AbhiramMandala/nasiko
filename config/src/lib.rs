@@ -9,6 +9,13 @@ pub struct Config {
     pub agent_runtime: String,
     pub k8s_namespace: String,
     pub kubeconfig: Option<String>,
+    /// Which object-storage protocol backs artifacts: `s3` (default; any
+    /// S3-compatible store) or `azure-blob`. Carried here as an opaque string
+    /// and interpreted by the composition root that selects the backend — the
+    /// same arrangement as `agent_runtime`, whose `kubernetes` value only one
+    /// edition can serve. Held on `Config` so the value is visible to every
+    /// consumer without a second env read.
+    pub storage_provider: String,
     pub s3_endpoint: String,
     pub s3_bucket: String,
     pub s3_access_key: String,
@@ -27,6 +34,14 @@ pub struct Config {
     /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
     /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
     pub build_push_token: String,
+    /// Base URL of the Weave generation service the control plane proxies
+    /// `POST /api/weave/surface` to. The browser never talks to it directly —
+    /// it holds the internal token, and the token must not leave the server.
+    pub weave_base_url: String,
+    /// Shared secret Weave requires on `x-weave-internal-token`, same pattern
+    /// as `build_push_token`. Empty means generation is not configured, and
+    /// the route answers 503 rather than proxying without it.
+    pub weave_internal_token: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -59,42 +74,22 @@ pub struct Config {
     /// multi-tenant deployment. This crate has no notion of what a "tenant"
     /// is; it only passes the value through.
     pub tenant_id: Option<String>,
-    /// When true, a background worker periodically mirrors LLM token pricing
-    /// from Portkey's public dataset (`configs.portkey.ai`) into the
-    /// `model_pricing` table. Fails soft — a fetch error leaves existing rows
-    /// untouched. See `nasiko_observability::pricing_sync`.
+    /// When true, a background loop refreshes `provider_models` from each
+    /// configured provider's `GET /models`. Reaches the network at boot, so
+    /// tests and benches turn it off; a disabled sync just means tier routing
+    /// falls back to whatever catalog rows already exist.
+    pub model_catalog_sync_enabled: bool,
+    /// When true, a background loop mirrors the Portkey price book into
+    /// `model_pricing`. Reaches the network at boot, so tests and benches turn
+    /// it off; a disabled sync leaves the boot seed rows as the only pricing.
+    /// Also the switch for air-gapped installs that must not call out.
     pub model_pricing_sync_enabled: bool,
-    /// How often the pricing sync runs, in seconds. Provider list prices change
-    /// rarely, so daily (86400) is the default; the sync also runs once ~10s
-    /// after boot. Floored at 60s.
-    pub model_pricing_sync_interval_secs: u64,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
     pub flow_timeout_secs: i32,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
-    /// OIDC issuer authority, e.g. `https://login.microsoftonline.com/<tenant-id>/v2.0`
-    /// for Microsoft Entra ID — or any other OIDC-compliant provider. `None`
-    /// disables OIDC login entirely (see the enterprise OIDC SSO guide).
-    pub oidc_issuer_url: Option<String>,
-    pub oidc_client_id: Option<String>,
-    pub oidc_client_secret: Option<String>,
-    /// Must exactly match the redirect URI registered with the IdP, e.g.
-    /// `https://<host>/api/auth/oidc/callback`.
-    pub oidc_redirect_uri: Option<String>,
-    /// Full origins (`scheme://host[:port]`) a post-login OIDC `redirect`
-    /// target is allowed to point at, in addition to a same-origin relative
-    /// path — needed when the frontend is a separate deployment on its own
-    /// domain rather than this binary's embedded UI (comma-separated, e.g.
-    /// `"https://app.example.com,http://localhost:5173"`). Empty (the
-    /// default) means only same-origin relative paths are accepted; see
-    /// `ee/server/src/auth.rs::is_safe_redirect_target`.
-    pub oidc_allowed_redirect_origins: Vec<String>,
-    pub oidc_scopes: String,
-    /// Stored as `user_identities.provider` for OIDC-authenticated users.
-    /// Override if fronting a non-Entra OIDC provider.
-    pub oidc_provider_label: String,
     /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
     /// multi-tenant BFF — it serves no UI (root 302s to the BFF) and enforces
     /// the corporate-only admission gate below. Default off = ordinary
@@ -114,17 +109,6 @@ pub struct Config {
     pub router_shortlist_threshold: usize,
     pub router_shortlist_size: usize,
     pub max_router_history_messages: usize,
-    /// How many of the most recent chat messages the PACMS context selector
-    /// draws candidates from (widened beyond `max_router_history_messages`
-    /// so the selector has a real pool to choose from). See
-    /// `SessionHistory::fetch_pacms`.
-    pub pacms_history_pool_size: usize,
-    /// Token budget the PACMS selector fills conversation context up to.
-    pub pacms_history_token_budget: usize,
-    /// How many of the most-recent messages in the pool are force-included
-    /// (PACMS `mandatory` set) regardless of relevance/coverage score, so the
-    /// immediate conversational thread is never dropped.
-    pub pacms_history_mandatory_recent: usize,
     /// OpenAI-compatible model used for Stage 1 vector embeddings.
     /// Default: `text-embedding-3-small`. Stage 1 is skipped if `openai_api_key` is unset.
     pub embedding_model: String,
@@ -137,13 +121,6 @@ pub struct Config {
     /// cluster's tenant-id path suffix. Unset (the default, and always for
     /// standalone deployments) means GitHub calls this cluster back directly.
     pub github_central_callback_url: Option<String>,
-    /// The OIDC analogue of [`Self::github_central_callback_url`]: the fleet
-    /// relay callback used as the OIDC `redirect_uri` for both authorize and
-    /// token exchange (multi-tenant workspace CPs), so many clusters share one
-    /// Google/OIDC app whose single registered callback points at the relay.
-    /// Includes this cluster's tenant-id path suffix. Unset (default, and always
-    /// standalone) means the IdP calls this cluster back directly.
-    pub oidc_central_callback_url: Option<String>,
     /// Base URL to redirect to after a successful OAuth login. In production
     /// this is the same origin as the server. Override via `APP_BASE_URL` in
     /// dev when the server and app run on different ports.
@@ -159,6 +136,16 @@ pub struct Config {
     /// own static handler in normal deployments, so cross-origin access is
     /// opt-in only for split dev servers or external integrations.
     pub cors_allowed_origins: Vec<String>,
+    // ─── OIDC SSO ───────────────────────────────────────────────────────────
+    pub oidc_issuer_url: Option<String>,
+    pub oidc_client_id: Option<String>,
+    pub oidc_client_secret: Option<String>,
+    pub oidc_redirect_uri: Option<String>,
+    pub oidc_allowed_redirect_origins: Vec<String>,
+    pub oidc_scopes: String,
+    pub oidc_provider_label: String,
+    pub oidc_central_callback_url: Option<String>,
+
     pub admin_username: String,
     pub admin_password: String,
     /// Docker network to attach agent containers to.
@@ -228,6 +215,16 @@ pub struct Config {
     /// MCP connectors. AGENT_MAX_REPLICAS, default 1 (no autoscaling unless
     /// explicitly raised). Ignored by DockerRuntime.
     pub agent_max_replicas: u32,
+    /// Number of agent/connector image builds the build worker runs
+    /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=16: each
+    /// in-flight build is a `docker build` on this host (OSS) or a Kubernetes
+    /// Job against one buildkitd (EE), so an unbounded value is a footgun, not
+    /// a feature. Set 1 to restore the old strictly-serial behavior.
+    ///
+    /// Two builds for the *same* agent or connector never overlap regardless of
+    /// this value — the claim query skips a target that already has a build in
+    /// flight (see `build_worker::claim_next_job`).
+    pub build_concurrency: usize,
     /// Default memory limit for every agent container, Kubernetes notation
     /// (`"512Mi"`, `"1Gi"`) — see `nasiko_runtime::ResourceLimits::memory`.
     /// AGENT_DEFAULT_MEMORY, default `"1Gi"`. `nasiko_runtime::ResourceLimits`
@@ -268,15 +265,26 @@ impl Config {
             agent_runtime: env_or("AGENT_RUNTIME", "local"),
             k8s_namespace: env_or("K8S_NAMESPACE", "nasiko-agents"),
             kubeconfig: std::env::var("KUBECONFIG").ok().filter(|s| !s.is_empty()),
+            storage_provider: env_or("STORAGE_PROVIDER", "s3"),
             s3_endpoint: env_or("S3_ENDPOINT", "http://localhost:9000"),
             s3_bucket: env_or("S3_BUCKET", "nasiko"),
             s3_access_key: env_or("S3_ACCESS_KEY", "nasiko"),
-            s3_secret_key: required_env("S3_SECRET_KEY")?,
+            // Required only for an S3 backend. An Azure Blob deployment holds
+            // no S3 credential at all, and demanding one there turned a
+            // correct config into a startup failure — so the requirement
+            // follows the selected provider rather than being unconditional.
+            s3_secret_key: if uses_s3_storage(&env_or("STORAGE_PROVIDER", "s3")) {
+                required_env("S3_SECRET_KEY")?
+            } else {
+                String::new()
+            },
             s3_region: env_or("S3_REGION", "us-east-1"),
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
+            weave_base_url: env_or("WEAVE_BASE_URL", "http://localhost:8801"),
+            weave_internal_token: env_or("WEAVE_INTERNAL_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -312,34 +320,14 @@ impl Config {
             observability_enabled: std::env::var("TEMPO_URL").is_ok_and(|v| !v.is_empty())
                 && std::env::var("LOKI_URL").is_ok_and(|v| !v.is_empty()),
             tenant_id: std::env::var("TENANT_ID").ok(),
+            model_catalog_sync_enabled: env_bool("MODEL_CATALOG_SYNC_ENABLED", true),
             model_pricing_sync_enabled: env_bool("MODEL_PRICING_SYNC_ENABLED", true),
-            model_pricing_sync_interval_secs: env_parse("MODEL_PRICING_SYNC_INTERVAL_SECS", 86_400),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
-            oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_client_id: std::env::var("OIDC_CLIENT_ID")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_client_secret: std::env::var("OIDC_CLIENT_SECRET")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_allowed_redirect_origins: std::env::var("OIDC_ALLOWED_REDIRECT_ORIGINS")
-                .unwrap_or_default()
-                .split(',')
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
-            oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", "microsoft_entra"),
             multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")
                 .map(|v| v == "true")
                 .unwrap_or(false),
@@ -352,16 +340,10 @@ impl Config {
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
             max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
-            pacms_history_pool_size: env_parse("PACMS_HISTORY_POOL_SIZE", 150),
-            pacms_history_token_budget: env_parse("PACMS_HISTORY_TOKEN_BUDGET", 2000),
-            pacms_history_mandatory_recent: env_parse("PACMS_HISTORY_MANDATORY_RECENT", 3),
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            oidc_central_callback_url: std::env::var("OIDC_CENTRAL_CALLBACK_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
             app_base_url: env_or("APP_BASE_URL", ""),
@@ -390,6 +372,30 @@ impl Config {
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oidc_client_id: std::env::var("OIDC_CLIENT_ID")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oidc_client_secret: std::env::var("OIDC_CLIENT_SECRET")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oidc_redirect_uri: std::env::var("OIDC_REDIRECT_URI")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            oidc_allowed_redirect_origins: std::env::var("OIDC_ALLOWED_REDIRECT_ORIGINS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
+            oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", ""),
+            oidc_central_callback_url: std::env::var("OIDC_CENTRAL_CALLBACK_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+
             admin_username: env_or("ADMIN_USERNAME", "admin"),
             admin_password: required_env("ADMIN_PASSWORD")?,
 
@@ -417,6 +423,7 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
+            build_concurrency: env_parse("BUILD_CONCURRENCY", 4).clamp(1, 16),
             agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
             agent_memory_volume: env_or("AGENT_MEMORY_VOLUME", "nasiko-agent-memory"),
             agent_memory_init_image: env_or("AGENT_MEMORY_INIT_IMAGE", "alpine:3.21"),
@@ -538,5 +545,35 @@ mod tests {
             openai_base_url_without_v1("https://example.com/openai/v1/proxy"),
             "https://example.com/openai/v1/proxy"
         );
+    }
+}
+
+/// Whether `provider` selects an S3-compatible backend, and therefore whether
+/// the `S3_*` credentials are required at startup.
+///
+/// Unknown values answer `true`: the authoritative parse lives with whichever
+/// edition's composition root selects the backend, and it rejects them with a
+/// proper message. Answering `false` here would pre-empt that with a confusing
+/// missing-S3_SECRET_KEY error instead.
+pub fn uses_s3_storage(provider: &str) -> bool {
+    !matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "azure-blob" | "azure_blob" | "azure"
+    )
+}
+
+#[cfg(test)]
+mod storage_provider_tests {
+    use super::uses_s3_storage;
+
+    #[test]
+    fn s3_credentials_are_required_only_for_an_s3_backend() {
+        assert!(uses_s3_storage("s3"));
+        assert!(uses_s3_storage(""));
+        assert!(!uses_s3_storage("azure-blob"));
+        assert!(!uses_s3_storage(" Azure-Blob "));
+        // A typo must not silently waive the S3 requirement — the provider
+        // parser is what reports it.
+        assert!(uses_s3_storage("azureblob"));
     }
 }
