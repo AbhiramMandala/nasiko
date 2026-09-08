@@ -157,6 +157,17 @@ pub enum AgentOpsCommands {
         #[arg(long, value_name = "PATH")]
         writable_path: Option<String>,
     },
+    /// Deploy an agent from an OCI/artifact-registry reference
+    ///
+    /// The registry counterpart of `push` (local image) and `upload` (local
+    /// source): the control plane pulls the image itself, so no local Docker
+    /// is needed. The reference must include the registry host, which must be
+    /// listed in the server's REGISTRY_IMPORT_ALLOWED_HOSTS.
+    Import {
+        /// `owner/name[:tag]` (resolved against the connected registry, like
+        /// `nasiko new`) or a full `registry.host/owner/name[:tag]`
+        reference: String,
+    },
     /// List running agents
     Ps {
         /// Output as JSON
@@ -974,6 +985,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable,
             writable_path.as_deref(),
         ),
+        AgentOpsCommands::Import { reference } => commands::import::from_registry(&reference),
         AgentOpsCommands::Ps { json } => commands::agents::ps(json),
         AgentOpsCommands::Logs {
             agent,
@@ -1070,7 +1082,11 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 // so `nasiko chat <agent-name>` sent the literal name as
                 // the HTTP endpoint instead of resolving it first.
                 (Some(u), _) => commands::agents::resolve_chat_target(&u)?,
-                (None, Some(a)) => commands::agents::resolve_chat_target(&a)?,
+                (None, Some(a)) => {
+                    let base = config::active_url()?;
+                    let id = commands::agents::resolve_agent_id(&a)?;
+                    format!("{}/api/agents/{}", base.trim_end_matches('/'), id)
+                }
                 (None, None) => {
                     let base = config::active_url()?;
                     format!("{}/api/orchestrator/a2a", base.trim_end_matches('/'))

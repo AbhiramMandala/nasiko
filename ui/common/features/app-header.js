@@ -459,13 +459,6 @@ export class AppHeader extends HTMLElement {
    *  router serves by updating the mounted page rather than remounting it). */
   #lastPattern = null;
 
-  /** Drop the per-tab nav cache and repaint. See the listener in connectedCallback. */
-  #onNavRefresh = async () => {
-    try { sessionStorage.removeItem("app-header-nav"); } catch { /* private mode */ }
-    await this.loadNavigation();
-    this.render();
-  };
-
   #onRouteChange = (e) => {
     // `active-module` belongs to the page that set it, and the page that set it
     // sets it once, from connectedCallback. Clearing it on every route-change
@@ -613,11 +606,6 @@ export class AppHeader extends HTMLElement {
     // SPA: re-render active states when the router changes the page
     document.removeEventListener("route-change", this.#onRouteChange);
     document.addEventListener("route-change", this.#onRouteChange);
-    // The nav is cached per tab, so anything that *changes* what belongs in it
-    // has to say so — the rail can't discover a new entry on its own. First
-    // caller: saving a generated view, which creates the Custom Views entry.
-    document.removeEventListener("nav-refresh", this.#onNavRefresh);
-    document.addEventListener("nav-refresh", this.#onNavRefresh);
     if (this.getAttribute("nav-links")) {
       this.render();
       document.addEventListener("keydown", this.#handleKeyDown);
@@ -653,7 +641,6 @@ export class AppHeader extends HTMLElement {
 
   disconnectedCallback() {
     document.removeEventListener("keydown", this.#handleKeyDown);
-    document.removeEventListener("nav-refresh", this.#onNavRefresh);
     this.removeEventListener("click", this.#handleClick);
     this.removeEventListener("keydown", this.#handleRailKeyDown);
     clearTimeout(this.#toggleTimer);

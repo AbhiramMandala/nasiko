@@ -140,8 +140,8 @@ class AddAgentPage extends HTMLElement {
   #methodCard({ icon, id, title, req, desc, cta }) {
     return `
       <app-card name="${escAttr(title)}">
-        <span data-slot="leading">${icon}</span>
-        <div data-slot="body" class="method-body">
+        <span slot="leading">${icon}</span>
+        <div slot="body" class="method-body">
           <div class="method-card-req">${escHtml(req)}</div>
           <div class="method-card-desc">${escHtml(desc)}</div>
           <app-button class="method-btn" variant="primary" block id="${escAttr(id)}">${escHtml(cta)}</app-button>
@@ -168,7 +168,7 @@ class AddAgentPage extends HTMLElement {
     const setBusy = (busy) => {
       form.hidden = busy;
       progress.hidden = !busy;
-      modal.toggleAttribute('no-footer', busy);
+      modal.toggleAttribute('hide-footer', busy);
       if (busy) window.addEventListener('beforeunload', blockUnload);
       else window.removeEventListener('beforeunload', blockUnload);
     };
