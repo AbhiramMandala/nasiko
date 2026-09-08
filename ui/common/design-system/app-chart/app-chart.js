@@ -795,7 +795,11 @@ export class AppChart extends HTMLElement {
         // Vertical rules add no information on a categorical or time axis and
         // compete with the marks for attention.
         grid: { display: false },
-        border: { display: false },
+        // The segmented form hides the y-axis entirely (below), so the x
+        // baseline is the only rule left on the plot — it reads as the floor
+        // the pills stand on. Every other bar/line form stays borderless,
+        // matching the rest of the design system's chrome-light plots.
+        border: { display: segmented, color: pal.grid },
         // Segmented plots carry a dense categorical axis (24 hours): thin the
         // ticks rather than rotate them — slanted labels read slower than a
         // sparser run of upright ones.

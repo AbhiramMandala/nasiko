@@ -331,13 +331,14 @@ class TokenopsPage extends HTMLElement {
         <section class="panel">
           <div class="panel-head">
             <h2 class="panel-title">Spend concentration</h2>
-            <input type="date" id="day-picker" class="day-picker" aria-label="Day"
-              value="${escAttr(this.#day)}" max="${escAttr(localDateStr(new Date()))}">
           </div>
           <div class="conc-body">
-            <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line legend="off" height="220px"
-              format="currency" label="Spend by hour of day"
-              empty-text="No spend on this day" loading></app-chart>
+            <div class="conc-plot-col">
+              <div class="day-grid" id="day-grid" role="group" aria-label="Day"></div>
+              <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line legend="off" height="220px"
+                format="currency" label="Spend by hour of day"
+                empty-text="No spend on this day" loading></app-chart>
+            </div>
             <ul class="conc-legend" id="conc-legend"></ul>
           </div>
           <p class="anomaly-note" id="conc-note"></p>
@@ -362,6 +363,7 @@ class TokenopsPage extends HTMLElement {
     // to be escaped into an attribute at a call site.
     this.#segment('#range-seg', RANGES.map((r) => ({ value: r.value, label: r.label })), this.#range);
     this.#segment('#attr-seg', ATTR_MODES, this.#attrView);
+    this.#renderDayGrid();
 
     const table = this.querySelector('#cost-table');
     table.columns = AGENT_COLUMNS;
@@ -408,9 +410,13 @@ class TokenopsPage extends HTMLElement {
       this.#sort = e.target.value;
       table.refresh();
     });
-    this.querySelector('#day-picker').addEventListener('change', (e) => {
-      if (!e.target.value) return;
-      this.#day = e.target.value;
+    // The grid is redrawn (not just re-flagged) on every pick: the selected
+    // cell moves and, at a month boundary, the whole day count could change.
+    this.querySelector('#day-grid').addEventListener('click', (e) => {
+      const cell = e.target.closest('.day-cell');
+      if (!cell || cell.disabled) return;
+      this.#day = cell.dataset.date;
+      this.#renderDayGrid();
       this.#loadDay(this.#loadId);
     });
     this.querySelector('#export-btn').addEventListener('click', () => this.#exportCsv());
@@ -610,6 +616,31 @@ class TokenopsPage extends HTMLElement {
   }
 
   // ── Spend concentration ───────────────────────────────────────────────────
+
+  /**
+   * A grid of every day in `#day`'s month, one button each — the design's
+   * replacement for a native `<input type="date">`. A day past today is
+   * disabled (never a future date to drill into) rather than hidden, so the
+   * grid's shape stays constant through the month instead of growing daily.
+   * Redrawn on every pick, not just re-flagged, because moving into a new
+   * month can also change how many cells there are.
+   */
+  #renderDayGrid() {
+    const grid = this.querySelector('#day-grid');
+    if (!grid) return;
+    const [y, m] = this.#day.split('-').map(Number);
+    const daysInMonth = new Date(y, m, 0).getDate();
+    const todayStr = localDateStr(new Date());
+    grid.innerHTML = Array.from({ length: daysInMonth }, (_, i) => {
+      const day = i + 1;
+      const dateStr = `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const isFuture = dateStr > todayStr;
+      const isSelected = dateStr === this.#day;
+      return `<button type="button" class="day-cell${isSelected ? ' is-selected' : ''}"
+        data-date="${escAttr(dateStr)}" ${isFuture ? 'disabled' : ''}
+        aria-pressed="${isSelected}" aria-label="${escAttr(dateStr)}">${day}</button>`;
+    }).join('');
+  }
 
   /**
    * A single calendar day's hourly spend curve, segmented by agent — straight
