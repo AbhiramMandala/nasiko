@@ -225,7 +225,8 @@ impl AppState {
     }
 
     /// Run one-time initialization: bootstrap admin user, spawn seed agents in background,
-    /// and start periodic materialized view refresh.
+    /// reconcile any `running` agent with no live runtime resource, and start periodic
+    /// materialized view refresh.
     pub async fn init(&self) {
         if let (Ok(admin_user), Ok(admin_pass)) = (
             std::env::var("ADMIN_USERNAME"),
@@ -239,6 +240,14 @@ impl AppState {
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
             crate::seed::seed_toolkits_if_configured(&state).await;
+        });
+
+        // Covers e.g. a tenant cluster restore, which recreates the database
+        // but not the individual agent Deployments/Services — see
+        // `agents::reconcile`'s module doc.
+        let state = self.clone();
+        tokio::spawn(async move {
+            crate::agents::reconcile::reconcile_agents_on_startup(&state).await;
         });
 
         // Periodic refresh of materialized views (token_usage_daily, agent_selection_stats).

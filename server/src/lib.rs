@@ -1,3 +1,9 @@
+// Axum handlers here deliberately return `Result<T, axum::response::Response>`
+// so `?` can short-circuit with an already-built HTTP response — clippy's
+// large-Err-variant lint doesn't fit that idiom, which is used pervasively
+// across this crate's routes.
+#![allow(clippy::result_large_err)]
+
 pub mod acl;
 pub mod admin;
 pub mod admission;
