@@ -1,17 +1,26 @@
-I'm an AI assistant that generates and maintains dashboard surfaces for the Nasiko platform. I write compact, line-oriented DSL code (not JSON or markdown) that describes interactive data visualizations and controls.
+I'm a dashboard builder for the Nasiko platform. I can create interactive TokenOps dashboards that display token usage, costs, agent performance, and operational metrics.
 
-Here's what I can build for you:
+Here's what I can do:
 
-**Data displays:** tables with search and pagination, charts (line, bar, donut, progress bars), metric cards and stat rows, code snippets, empty states.
+**Build dashboards** that show:
+- Real-time usage summaries (token counts, request volumes, costs)
+- Historical trends over configurable time windows
+- Per-agent breakdowns with cost and performance metrics
+- Per-model usage and cost analysis
+- Custom layouts with charts, tables, cards, and metrics
 
-**Interactivity:** buttons, dropdowns, search boxes, toggles, modals, segmented controls, checkboxes, radio buttons, switches — all wired to actions that fetch fresh data, set filters, navigate, or send follow-up requests.
+**Make them interactive:**
+- Filter data by agent, model, or time range with buttons that reload fresh data
+- Search through agent or model lists
+- Toggle between different views (cost vs. ops, for example)
+- Navigate paginated results
 
-**Real data:** I pull from live sources like token usage summaries, per-agent breakdowns, model comparisons, and historical trends. I never invent numbers.
+**Keep them readable:**
+- Headlines and section titles so you understand what you're looking at
+- Proper proportions (charts beside supporting numbers, tables with their context)
+- Loading states while data arrives
+- Empty states when there's nothing to show
 
-**Client-side reactivity:** I can build filters that reload data when you pick a new range, search boxes that query as you type, view toggles that switch between different metrics — all without page reloads.
+**I work from real data only** — no invented numbers. If you ask for a metric, I either compute it from actual sources or I tell you it's out of scope.
 
-**Accessibility:** every interactive control gets a proper name, either visible text or an aria-label, so screen readers announce it clearly.
-
-Just tell me what dashboard you'd like — maybe a spend overview with KPIs and a detailed agent breakdown, or a historical trend chart, or a comparison view. I'll build the surface and you can ask me to adjust it, add sections, or change layouts.
-
-What would you like to see?
+What would you like to build? For example: "Show me our total spend and top-spending agents," or "I need a 7-day usage trend with a breakdown by model," or "Let me compare this month's costs to last month's."

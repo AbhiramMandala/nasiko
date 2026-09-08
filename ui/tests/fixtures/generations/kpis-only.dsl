@@ -1,9 +1,6 @@
 Sure — building that now.
-root = AppStack([heading, kpis], "md")
+root = AppStack([heading, stats], "md")
 heading = AppText("Usage summary", "title")
-totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
-totalTokensQ = Query("fetchUsageSummary", [], 0, "total_tokens")
-requestCountQ = Query("fetchUsageSummary", [], 0, "request_count")
-avgLatencyQ = Query("fetchUsageSummary", [], null, "avg_latency_ms")
-kpis = AppStatRow([{label: "Total cost", value: totalCostQ, sub: "all time"}, {label: "Requests", value: requestCountQ}, {label: "Total tokens", value: totalTokensQ}, {label: "Avg latency", value: avgLatencyQ, sub: "ms"}])
-Here's your headline metrics — four key numbers at a glance. Let me know if you'd like to adjust which metrics show up or add any filters.
+summaryQ = Query("fetchUsageSummary", [], {request_count: 0, total_cost_usd: 0})
+stats = AppStatRow([{label: "Requests", value: summaryQ.request_count}, {label: "Total cost", value: summaryQ.total_cost_usd, sub: "USD"}])
+Here's your headline numbers — just the key metrics at a glance. Let me know if you'd like to add anything else!
