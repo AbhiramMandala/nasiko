@@ -95,6 +95,12 @@
  *   `stacked` is implied. Pair with `average-line` for the reference rule.
  * @attr {boolean} average-line - `bar` only: dashed horizontal rule at the mean
  *   of the column totals, labelled "avg".
+ * @attr {boolean} flush-top - The plot's own canvas-painted background (see
+ *   `plotBackground`) normally rounds all four corners, like any other
+ *   surface card. Set this when another element sits directly above the
+ *   chart with no gap (the day grid on the concentration panel) and the two
+ *   should read as one continuous card: it squares the top two corners off,
+ *   leaving only the bottom two rounded.
  * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
  *   `number` (default) | `currency` | `percent` | `compact`
  * @prop {object|Array} data - Canvas forms take Chart.js shape:
@@ -228,9 +234,13 @@ const plotBackground = {
     ctx.save();
     ctx.fillStyle = opts.color;
     ctx.beginPath();
-    // 8px corners (the --r-8 step): the ground is a surface card, and it takes
-    // the same radius every other card in the system does.
-    ctx.roundRect(0, 0, chart.width, chart.height, 8);
+    // 8px corners (the --r-8 step): the ground is a surface card, and it
+    // takes the same radius every other card in the system does — all four,
+    // UNLESS `flush-top` says another card sits directly above this one (the
+    // day grid, for the concentration panel): then the top corners draw
+    // square so the two read as one continuous card with no seam, and only
+    // the bottom two stay rounded.
+    ctx.roundRect(0, 0, chart.width, chart.height, opts.flushTop ? [0, 0, 8, 8] : 8);
     ctx.fill();
     ctx.restore();
   },
@@ -463,7 +473,7 @@ export class AppChart extends HTMLElement {
   static get observedAttributes() {
     return ['type', 'stacked', 'segmented', 'average-line', 'height', 'format',
             'format-y2', 'currency', 'center-value',
-            'center-label', 'legend', 'empty-text', 'loading', 'label'];
+            'center-label', 'legend', 'empty-text', 'loading', 'label', 'flush-top'];
   }
 
   #initialized = false;
@@ -626,7 +636,7 @@ export class AppChart extends HTMLElement {
           appChartCrosshair: { color: pal.grid },
           appChartAnomalies: { color: pal.error, surface: pal.surface },
           appChartAverage: { color: pal.tick, font: `${pal.fontSize}px ${pal.font}` },
-          appChartPlotBg: { color: pal.base },
+          appChartPlotBg: { color: pal.base, flushTop: this.hasAttribute('flush-top') },
           appChartPills: { hoverInk: colorWithAlpha(pal.ink, 0.22) },
         },
         scales: type === 'donut' ? {} : this.#scales(pal, fmt, fmt2, { hasY2, segmented }),

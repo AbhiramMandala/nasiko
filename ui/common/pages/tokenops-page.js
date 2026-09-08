@@ -335,7 +335,7 @@ class TokenopsPage extends HTMLElement {
           <div class="conc-body">
             <div class="conc-plot-col">
               <div class="day-grid" id="day-grid" role="group" aria-label="Day"></div>
-              <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line legend="off" height="220px"
+              <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line flush-top legend="off" height="220px"
                 format="currency" label="Spend by hour of day"
                 empty-text="No spend on this day" loading></app-chart>
             </div>
