@@ -10,10 +10,13 @@
  * that promotes it into the sidebar and onto `/custom-views`; everything else
  * here is the frame around whatever was generated.
  *
- * ponytail: the dashboard body is one canned TokenOps layout, the same for
- * every prompt. `#renderDashboard()` is where a real generated tree mounts —
- * `<weave-surface>` already renders one from a model spec (see weave-page), and
- * swapping it in is a one-function change that touches nothing else on the page.
+ * The body is whatever Weave generated, rendered from the DSL stored on the
+ * view. Not a second generation: `surface.show()` draws a finished spec with no
+ * request, so reopening a view costs nothing and returns the same screen rather
+ * than a new interpretation of the same prompt.
+ *
+ * A view with no `dsl` yet is still generating — the dock writes it when the
+ * turn lands, and `VIEWS_CHANGED` is what tells this page to draw.
  *
  * @element generated-view-page
  */
@@ -26,17 +29,13 @@ import { escHtml } from '/common/utils/escape.js';
 import { icons } from '/common/utils/icons.js';
 import { toast } from '/common/utils/toast.js';
 import { navigate } from '/common/core/router.js';
-import { getView, saveView, touchView } from '/common/state/weave-views.js';
+import {
+  ensureViews, getView, saveView, touchView, onViewsChange, viewsAvailable,
+} from '/common/state/weave-views.js';
+import '/common/features/weave-surface/weave-surface.js';
 import '/common/design-system/app-button/app-button.js';
-import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-menu/app-menu.js';
-import '/common/design-system/app-chart/app-chart.js';
-import '/common/design-system/app-table/app-table.js';
-import '/common/design-system/app-toggle-group/app-toggle-group.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
-
-/** How long the generating state holds. Long enough to read, short enough to trust. */
-const GENERATE_MS = 1400;
 
 const COPY_ACTIONS = [
   { id: 'link', label: 'Copy link' },
@@ -44,48 +43,14 @@ const COPY_ACTIONS = [
   { id: 'image', label: 'Copy as image' },
 ];
 
-/** Dummy fleet rows — the shape mirrors the TokenOps dashboard's agent rows. */
-const ATTRIBUTIONS = [
-  { agent: 'DevOps Engineer',         spend: 1247.83, tokens: '18.4M', output: '6.2M',  input: '12.2M', avgCost: 0.32, hours: 128.5, latency: '2.4s' },
-  { agent: 'Documentation Assistant', spend: 892.14,  tokens: '14.1M', output: '8.7M',  input: '5.4M',  avgCost: 0.17, hours: 96.2,  latency: '1.8s' },
-  { agent: 'Finance Analyst',         spend: 2034.56, tokens: '22.7M', output: '4.9M',  input: '17.8M', avgCost: 0.94, hours: 214.7, latency: '4.1s' },
-  { agent: 'Support Triage',          spend: 618.40,  tokens: '9.8M',  output: '3.1M',  input: '6.7M',  avgCost: 0.21, hours: 74.9,  latency: '1.2s' },
-  { agent: 'Research Agent',          spend: 1502.09, tokens: '16.3M', output: '7.4M',  input: '8.9M',  avgCost: 0.55, hours: 143.1, latency: '3.6s' },
-];
-
-const KPIS = [
-  { value: '$46,210', label: 'Total AI spend',  delta: '8.4%', dir: 'up',   trend: 'bad' },
-  { value: '1.23B',   label: 'Total tokens',    delta: '6.1%', dir: 'up',   trend: 'bad' },
-  { value: '77%',     label: 'Budget burn',     delta: '6.1%', dir: 'down', trend: 'good' },
-  { value: '$0.62',   label: 'Cost / operation',delta: '6.1%', dir: 'down', trend: 'good' },
-  { value: '2.3s',    label: 'Avg latency',     delta: '6.1%', dir: 'down', trend: 'good' },
-];
-
-const SPEND_SERIES = [280, 215, 300, 340, 315, 360, 395, 350, 300, 330, 380, 420, 400, 445,
-                      330, 345, 340, 335, 350, 360, 355, 350, 360, 358, 352, 348, 340, 330, 320, 300, 285];
-
-const CONCENTRATION = [
-  { label: 'Operation agent', value: 123 },
-  { label: 'Operation agent', value: 123 },
-  { label: 'Operation agent', value: 123 },
-  { label: 'Others',          value: 123 },
-];
-
-const COLUMNS = [
-  { key: 'agent',   label: 'Agent' },
-  { key: 'spend',   label: 'Spend',       render: (v) => `$${v.toFixed(2)}` },
-  { key: 'tokens',  label: 'Tokens' },
-  { key: 'output',  label: 'Output' },
-  { key: 'input',   label: 'Input' },
-  { key: 'avgCost', label: 'Avg cost/op',  render: (v) => `$${v.toFixed(2)}` },
-  { key: 'hours',   label: 'Agent hours' },
-  { key: 'latency', label: 'Avg latency' },
-];
-
 class GeneratedViewPage extends HTMLElement {
   #initialized = false;
   #view = null;
-  #timer = null;
+  #offViewsChange = null;
+  /** The DSL currently on screen, so a store change redraws only real changes. */
+  #drawn = null;
+  /** A save in flight, so a double-click cannot POST the same view twice. */
+  #saving = false;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -95,42 +60,72 @@ class GeneratedViewPage extends HTMLElement {
     // mounted page instead of remounting it. Without this the second view would
     // never draw — the URL would change and the first dashboard would stay put.
     this.addEventListener('route-update', () => this.#load());
+    // The dock generates after routing here, so the DSL arrives while this page
+    // is already on screen. Without this the view would sit on its working
+    // state until a reload.
+    this.#offViewsChange = onViewsChange(() => this.#drawSurface());
     this.#load();
   }
 
   disconnectedCallback() {
-    clearTimeout(this.#timer);
+    this.#offViewsChange?.();
+    this.#offViewsChange = null;
   }
 
-  #load() {
-    clearTimeout(this.#timer);
+  /**
+   * Resolve the id in the URL to a view, and draw whatever that turns out to be.
+   *
+   * The lookup has to wait for `ensureViews()` because a saved view lives on the
+   * server: a link pasted into a fresh tab hits this page before any list call
+   * has run, and answering from the empty cache would tell the user their view
+   * is gone. A view the dock just created is local and resolves immediately —
+   * so the common path pays nothing, since `ensureViews` has already settled by
+   * the time anyone has generated anything.
+   */
+  async #load() {
     this.classList.remove('is-expanded');
-    this.#view = getView(new URLSearchParams(location.search).get('id') || '');
+    this.#drawn = null;
+    const id = new URLSearchParams(location.search).get('id') || '';
+    this.#view = getView(id);
+    if (!this.#view) {
+      await ensureViews();
+      // Another `?id=` may have been routed to while that was in flight.
+      if ((new URLSearchParams(location.search).get('id') || '') !== id) return;
+      this.#view = getView(id);
+    }
     if (!this.#view) {
       this.#renderMissing();
       return;
     }
+    // A link made before this view was saved carries the id it had then; the
+    // store follows the swap, and the URL is corrected to match so that the
+    // next Copy link hands out one that will still resolve on its own.
+    if (this.#view.id !== id) {
+      history.replaceState(history.state, '', `/view?id=${encodeURIComponent(this.#view.id)}`);
+    }
     touchView(this.#view.id);
     document.title = `Nasiko — ${this.#view.title}`;
     this.#render();
-    this.#timer = setTimeout(() => this.#renderDashboard(), GENERATE_MS);
+    this.#drawSurface();
   }
 
   #renderMissing() {
+    // Unsaved views really are browser-local, so that half of the sentence is
+    // still true — but a saved one could equally have been deleted from another
+    // tab, and the page cannot tell which happened (a view that is not yours
+    // answers 404 exactly like one that never existed, doc §2).
     this.innerHTML = `
       <app-empty-state heading="That view is gone"
-        description="Generated views live in this browser. Ask Weave for it again, or open one from Custom views."
+        description="It may have been deleted, or it was never saved — unsaved views live only in the browser that made them. Ask Weave for it again, or open one from Custom views."
       ></app-empty-state>`;
   }
 
   #render() {
-    const saved = this.#view.saved;
     this.innerHTML = `
       <header class="view-bar">
         <h1 class="title-page">${escHtml(this.#view.title)}</h1>
         <div class="view-bar__actions">
-          <app-button id="save" variant="primary" size="sm" ${saved ? 'disabled' : ''}
-            >${saved ? 'Saved' : 'Save view'}</app-button>
+          <app-button id="save" variant="primary" size="sm"></app-button>
           <app-menu id="copy" label="Copy view" align="end"
             items='${JSON.stringify(COPY_ACTIONS)}'>
             <app-button variant="ghost" size="sm">Copy ${icons.chevronDownSmall('', 14, 1.25)}</app-button>
@@ -156,6 +151,7 @@ class GeneratedViewPage extends HTMLElement {
         </div>
       </div>`;
 
+    this.#syncSave();
     this.querySelector('#save').addEventListener('click', () => this.#save());
     this.querySelector('#close').addEventListener('click', () => this.#close());
     this.querySelector('#expand').addEventListener('click',
@@ -166,16 +162,57 @@ class GeneratedViewPage extends HTMLElement {
     });
   }
 
-  #save() {
-    saveView(this.#view.id);
+  /**
+   * Put the Save button in the state the view is actually in.
+   *
+   * Three states, not two. "Saved" is the obvious one; the third is a view
+   * whose generation has not landed yet — saving that would send an empty
+   * `catalog_version`, which the API rejects (doc §7.1), so the button waits
+   * rather than offering something that cannot work. `#drawSurface` calls this
+   * again when the DSL arrives, which is what re-enables it.
+   *
+   * On the OSS build there is nowhere to save to, so the button is not there.
+   */
+  #syncSave() {
     const button = this.querySelector('#save');
-    button.textContent = 'Saved';
-    button.setAttribute('disabled', '');
-    // The rail caches its items per tab, so it has to be told. `nav-refresh`
-    // is app-header's own hook — the alternative was reaching into its cache
-    // from here, which is not this page's business.
-    document.dispatchEvent(new CustomEvent('nav-refresh'));
-    toast.success('Saved to Custom views');
+    if (!button) return;
+    button.hidden = viewsAvailable() === false;
+    // `label`, not `textContent` — app-button says so in as many words: assigning
+    // textContent wipes the rendered `<button>` wrapper and leaves a bare text
+    // node that keeps its box and loses every style.
+    button.label = this.#view.saved ? 'Saved' : 'Save view';
+    button.disabled = this.#view.saved || !this.#view.dsl || this.#saving;
+  }
+
+  /**
+   * Keep this view.
+   *
+   * The first save gives it a server id, so the URL has to follow: `replace`
+   * rather than `navigate`, because the id changed but the screen did not, and
+   * a Back that returns to a `?id=` nothing resolves any more is a dead end.
+   */
+  async #save() {
+    if (this.#saving) return;
+    this.#saving = true;
+    this.#syncSave();
+    try {
+      const row = await saveView(this.#view.id);
+      if (!row) return;
+      this.#view = row;
+      history.replaceState(history.state, '', `/view?id=${encodeURIComponent(row.id)}`);
+      // The rail caches its items per tab, so it has to be told. `nav-refresh`
+      // is app-header's own hook — the alternative was reaching into its cache
+      // from here, which is not this page's business.
+      document.dispatchEvent(new CustomEvent('nav-refresh'));
+      toast.success('Saved to Custom views');
+    } catch (err) {
+      // `message` on an ApiError is written to be shown to a user (doc §5), and
+      // ViewNotReadyError says the one thing the user can act on.
+      toast.error(err?.message || 'Could not save this view.');
+    } finally {
+      this.#saving = false;
+      this.#syncSave();
+    }
   }
 
   /** Back to wherever this was generated from; the app root if there is no history. */
@@ -184,95 +221,43 @@ class GeneratedViewPage extends HTMLElement {
     else navigate('/');
   }
 
-  #renderDashboard() {
+  /**
+   * Draw the generated surface, or leave the working state up.
+   *
+   * Called on load and again on every store change, because the DSL usually
+   * lands after this page is already on screen — the dock routes here the
+   * instant the user presses send and the model answers seconds later.
+   *
+   * `show()` renders a finished spec with no request. Reopening a saved view
+   * must not re-generate it: that would cost tokens, take seconds, and return
+   * a different dashboard from the one the user saved.
+   */
+  async #drawSurface() {
     const canvas = this.querySelector('#canvas');
+    if (!canvas) return;
+
+    // Re-read: this fires on any store change, including one for another view.
+    const id = new URLSearchParams(location.search).get('id') || '';
+    const view = getView(id);
+    if (!view || view.id !== this.#view?.id) return;
+    this.#view = view;
+    this.#syncSave(); // the DSL landing is what makes this view savable
+
+    if (!view.dsl) return; // still generating; the working state stays
+    if (this.#drawn === view.dsl) return; // nothing new to draw
+
     canvas.classList.add('is-ready');
-    canvas.innerHTML = `
-      <div class="filters">
-        <app-select id="month" size="sm" aria-label="Month"
-          options='["August","July","June"]' value="August"></app-select>
-        <app-toggle-group attached size="sm" value="30d" label="Period">
-          ${['24h', '7d', '30d'].map((p) => `<app-toggle value="${p}">${p}</app-toggle>`).join('')}
-        </app-toggle-group>
-        <app-select size="sm" aria-label="Server" options='["Server"]'></app-select>
-        <app-select size="sm" aria-label="Agent" options='["Agent"]'></app-select>
-        <app-select size="sm" aria-label="Provider" options='["Provider"]'></app-select>
-      </div>
-
-      <div class="kpis">
-        ${KPIS.map((k) => `
-          <div class="kpi">
-            <span class="kpi__delta is-${k.trend}">
-              ${k.dir === 'up' ? icons.arrowUpRight('', 14, 1.5) : icons.arrowDown('', 14, 1.5)}
-              <span>${escHtml(k.delta)}</span>
-            </span>
-            <span class="kpi__body">
-              <span class="kpi__value">${escHtml(k.value)}</span>
-              <span class="kpi__label">${escHtml(k.label)}</span>
-            </span>
-          </div>`).join('')}
-      </div>
-
-      <div class="panels">
-        <section class="panel">
-          <div class="panel__head">
-            <h2 class="panel__title">Spend over time</h2>
-            <app-toggle-group attached size="sm" value="usd" label="Units">
-              <app-toggle value="pct">%</app-toggle>
-              <app-toggle value="usd">$</app-toggle>
-            </app-toggle-group>
-          </div>
-          <app-chart id="spend" type="line" height="220px" format="currency"
-            label="Spend over time"></app-chart>
-        </section>
-
-        <section class="panel">
-          <div class="panel__head">
-            <h2 class="panel__title">Spend concentration</h2>
-          </div>
-          <div class="concentration">
-            <div class="calendar" role="img" aria-label="Spend by day of month, 21 August is the peak">
-              ${Array.from({ length: 30 }, (_, i) => `
-                <span class="calendar__day${i < 23 ? ' is-on' : ''}${i === 20 ? ' is-peak' : ''}">${i + 1}</span>`).join('')}
-            </div>
-            <ul class="legend">
-              ${CONCENTRATION.map((c, i) => `
-                <li><span class="legend__dot" style="background:var(--viz-${i + 1})"></span>
-                  <span class="legend__text">${escHtml(c.label)}<b>$${c.value}</b></span></li>`).join('')}
-            </ul>
-          </div>
-          <app-chart id="hours" type="bar" stacked height="160px" format="currency"
-            label="Spend by hour"></app-chart>
-        </section>
-      </div>
-
-      <section class="panel panel--wide">
-        <div class="panel__head">
-          <h2 class="panel__title">Attributions</h2>
-          <app-toggle-group attached size="sm" value="agent" label="Group by">
-            <app-toggle value="agent">Agent</app-toggle>
-            <app-toggle value="workflow">Workflow</app-toggle>
-          </app-toggle-group>
-          <app-select size="sm" aria-label="Sort"
-            options='["Most tokens","Highest spend","Slowest"]'></app-select>
-        </div>
-        <app-table id="attributions" pagination="none"></app-table>
-      </section>`;
-
-    canvas.querySelector('#spend').data = {
-      labels: SPEND_SERIES.map((_, i) => String(i + 1)),
-      datasets: [{ label: 'Cost', data: SPEND_SERIES }],
-    };
-    canvas.querySelector('#hours').data = {
-      labels: ['12am', '4', '8', '12', '4', '8', '12am'],
-      datasets: [
-        { label: 'Operations', data: [120, 180, 260, 300, 240, 280, 140] },
-        { label: 'Research',   data: [60, 90, 140, 180, 120, 150, 70] },
-      ],
-    };
-    const table = canvas.querySelector('#attributions');
-    table.columns = COLUMNS;
-    table.dataFn = async () => ATTRIBUTIONS;
+    let surface = canvas.querySelector('weave-surface');
+    if (!surface) {
+      canvas.replaceChildren();
+      surface = document.createElement('weave-surface');
+      canvas.append(surface);
+    }
+    // Marked before awaiting: show() is async (the element loads the catalog
+    // once), and a second store change arriving mid-await would otherwise
+    // start a duplicate draw of the same DSL.
+    this.#drawn = view.dsl;
+    await surface.show(view.dsl, { catalogVersion: view.catalogVersion });
   }
 }
 

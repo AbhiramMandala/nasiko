@@ -15,9 +15,14 @@
  * `/weave` is untouched and remains the surface-runtime workbench. This is the
  * conversational shell around it.
  *
- * ponytail: the assistant is canned. Everything it says, the timings, and the
- * artifact card are fixtures — `#respond()` is the one function that talks to a
- * model when there is one to talk to.
+ * `#respond()` runs a real turn against the generator: the words are the
+ * model's own (the prose it wraps its DSL in), the elapsed line is measured,
+ * and the artifact card links to a view whose DSL was actually produced.
+ *
+ * The session renders into a detached container on purpose. The dock owns the
+ * conversation; `/view` owns the canvas, and draws from the stored DSL. Drawing
+ * here too would materialize the same tree twice and run every Query twice for
+ * a surface nobody sees.
  *
  * @element weave-dock
  * @note Mounted once, from `ui/oss/app.js`. Never place it inside a page.
@@ -30,8 +35,24 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 import { icons } from '/common/utils/icons.js';
 import { escHtml } from '/common/utils/escape.js';
 import { navigate } from '/common/core/router.js';
-import { createView } from '/common/state/weave-views.js';
+import { createView, setViewSurface } from '/common/state/weave-views.js';
+import { createSurfaceSession } from '/common/surface/surface-stream.js';
 import '/common/design-system/app-chatbox/app-chatbox.js';
+
+/**
+ * "Worked for 12s" — the receipt on a finished turn.
+ *
+ * Real, not the fixed "24min" the canned version showed. A generation is
+ * usually seconds; a number that never moves reads as decoration, and the one
+ * time it matters is the turn that took a minute.
+ */
+function elapsedLabel(ms) {
+  const s = Math.max(1, Math.round(ms / 1000));
+  if (s < 60) return `Worked for ${s}s`;
+  const m = Math.floor(s / 60);
+  const rest = s % 60;
+  return rest ? `Worked for ${m}m ${rest}s` : `Worked for ${m}m`;
+}
 
 /** Drawer width, and the gutter the content card gives up to it. One number. */
 const DOCK_WIDTH = '432px';
@@ -70,7 +91,10 @@ class WeaveDock extends HTMLElement {
   #turns = [];
   #open = false;
   #busy = false;
-  #timers = [];
+  /** The generation session, built on first send and reused for follow-ups. */
+  #surfaceSession = null;
+  /** Prose the generator wrapped its DSL in, collected during the turn. */
+  #said = [];
 
   #onRouteChange = () => this.#paintLauncher();
   #onDocumentClick = (e) => {
@@ -94,8 +118,11 @@ class WeaveDock extends HTMLElement {
   disconnectedCallback() {
     document.removeEventListener('route-change', this.#onRouteChange);
     document.removeEventListener('click', this.#onDocumentClick);
-    for (const t of this.#timers) clearTimeout(t);
-    this.#timers = [];
+    // The session holds query subscriptions and an open stream. A turn already
+    // in flight still resolves — #respond and #paintThread both tolerate a
+    // detached dock — but nothing new starts.
+    this.#surfaceSession?.dispose();
+    this.#surfaceSession = null;
     document.documentElement.style.removeProperty('--app-dock-width');
   }
 
@@ -205,30 +232,87 @@ class WeaveDock extends HTMLElement {
   }
 
   /**
-   * The canned turn. Split across two timers because the two halves are
-   * different claims: "I am working" has to appear immediately, and the
-   * artifact card must not appear before the view it links to has drawn.
+   * The generation session.
+   *
+   * Its container is a detached div and stays that way: the dock owns the
+   * conversation, not the canvas. The surface is rendered by `/view`, from the
+   * DSL this turn stores — which is also what makes a saved view reopenable
+   * later, and what a reload gets back. Rendering here as well would draw the
+   * same tree twice and fire every Query twice for a canvas nobody sees.
+   *
+   * Built once and reused, so a follow-up turn carries `currentSurface` as
+   * context and the model revises rather than starting over.
    */
-  #respond(view) {
+  #session() {
+    this.#surfaceSession ??= createSurfaceSession({
+      endpoint: '/weave/surface',
+      container: document.createElement('div'),
+      onMessage: (text) => { this.#said.push(text); },
+    });
+    return this.#surfaceSession;
+  }
+
+  /**
+   * One real turn.
+   *
+   * The two-phase shape the canned version had is kept because both halves are
+   * still true: "I am working" must appear the moment the user presses send,
+   * and the artifact card must not appear before there is an artifact. What
+   * changed is that the wait is now the model's, and the words are its own —
+   * `onMessage` collects the sentences the generator wraps its DSL in, so the
+   * dock says what was actually built instead of a sentence written here.
+   */
+  async #respond(view) {
     this.#turns.push({ role: 'working' });
     this.#paintThread();
-    this.#timers.push(setTimeout(() => {
-      this.#turns.pop();
+    this.#said.length = 0;
+    const startedAt = Date.now();
+
+    let out = null;
+    try {
+      out = await this.#session().send(view.prompt);
+    } catch (err) {
+      out = { status: 'failed', surface: '', catalogVersion: null, error: err };
+    }
+
+    this.#turns.pop(); // the working line
+    if (out.status !== 'ok' || !out.surface) {
+      // Said plainly rather than as a canned apology: the user is about to
+      // land on a /view that has nothing on it, and the reason belongs here
+      // where they asked, not only in a diagnostic pill.
+      this.#turns.push({
+        role: 'assistant',
+        text: this.#said.at(-1)
+          || 'I could not build that one. The generator did not return a surface — try rephrasing, or check that Weave is reachable.',
+      });
+    } else {
+      // Awaited: on a view the user has already saved this is a real PATCH, and
+      // a surface the user can see but the server cannot is the bug it avoids.
+      // A failure there must not swallow the answer, so it is logged and the
+      // turn finishes — the DSL is on the local row either way.
+      try {
+        await setViewSurface(view.id, { dsl: out.surface, catalogVersion: out.catalogVersion });
+      } catch (err) {
+        console.error('[weave-dock] could not persist the generated surface', err);
+      }
       this.#turns.push(
         // The elapsed line stays after the answer: it is the receipt for how
         // much work the answer represents, and it is the handle into the trace.
-        { role: 'elapsed', text: 'Worked for 24min' },
-        { role: 'assistant', text: `Built ${view.title} from the TokenOps sources — spend, tokens, budget burn and per-agent attribution, filtered to the period you named. Save it from the view header to keep it in the sidebar.` },
-        { role: 'artifact', text: `${view.title} TokenOps dashboard`, view },
+        { role: 'elapsed', text: elapsedLabel(Date.now() - startedAt) },
+        { role: 'assistant', text: this.#said.at(-1) || `Built ${view.title}.` },
+        { role: 'artifact', text: view.title, view },
       );
-      this.#busy = false;
-      this.querySelector('app-chatbox').setLoading(false);
-      this.#paintThread();
-    }, 1800));
+    }
+
+    this.#busy = false;
+    this.querySelector('app-chatbox')?.setLoading(false);
+    this.#paintThread();
   }
 
   #paintThread() {
+    // A turn that resolves after the dock is gone has nothing to paint into.
     const thread = this.querySelector('#thread');
+    if (!thread) return;
     thread.replaceChildren();
     if (!this.#turns.length) {
       thread.append(this.#heroNode());

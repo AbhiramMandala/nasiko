@@ -23,9 +23,12 @@
      spans rather than sitting in a lone first column. */
   .grid app-empty-state { grid-column: 1 / -1; }
 
-  /* The card IS the link — the whole plane is the target, so there is no
-     inner hit area to miss. */
+  /* The whole plane is still the target — the link stretches over the card via
+     `::after` rather than being the card, which is what leaves room for the
+     actions menu to sit on top of it. Dropping to a small title-sized hit area
+     would have been the easy way to add a menu and the wrong one. */
   .view-card {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: var(--s-8);
@@ -41,6 +44,39 @@
   .view-card:hover {
     border-color: var(--border-hover);
     box-shadow: var(--shadow-sm);
+  }
+
+  .view-card__link {
+    text-decoration: none;
+    color: inherit;
+    /* Reserve the menu's column so a long title wraps before it runs underneath. */
+    padding-inline-end: var(--s-32);
+  }
+
+  .view-card__link::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+  }
+
+  /* Above the stretched link, so the menu is clickable rather than navigating. */
+  .view-card__menu {
+    position: absolute;
+    inset-block-start: var(--s-8);
+    inset-inline-end: var(--s-8);
+  }
+
+  /* Only while the row is hovered, focused within, or the menu is open — a grid
+     of permanent "⋯" glyphs is noise on a page whose job is to be scanned. */
+  .view-card__menu:not([open]) {
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+  }
+
+  .view-card:hover .view-card__menu,
+  .view-card:focus-within .view-card__menu {
+    opacity: 1;
   }
 
   .view-card__title {

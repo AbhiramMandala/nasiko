@@ -1,0 +1,240 @@
+/**
+ * The saved-views store, which is two stores wearing one interface.
+ *
+ * Saved views live on the server; unsaved ones live in localStorage and are
+ * never sent. The seam between them is where the bugs are, so that is what
+ * these cover: the id changing at first Save, a visit count that has to survive
+ * it, and a 404 meaning "this build does not have the feature" rather than
+ * "something went wrong".
+ *
+ * The module is imported once and keeps module-level cache between tests, which
+ * is exactly how it behaves in a tab — so each test sets the fetch script it
+ * needs and asserts on the state that results, rather than pretending to a
+ * fresh module every time.
+ */
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { installBrowserShim } from './browser-shim.mjs';
+
+installBrowserShim();
+
+/** Requests seen, so a test can assert on method/path/body as well as outcome. */
+let calls = [];
+/** Next responses, consumed in order. A test that runs out gets a loud 500. */
+let script = [];
+
+const reply = (status, data, message = 'ok') => ({
+  status,
+  body: JSON.stringify({ data, status_code: status, message }),
+});
+
+globalThis.fetch = async (url, init = {}) => {
+  const method = (init.method || 'GET').toUpperCase();
+  calls.push({ url: String(url), method, body: init.body ? JSON.parse(init.body) : null });
+  const next = script.shift()
+    ?? reply(500, null, `unscripted ${method} ${url}`);
+  return new Response(next.body, {
+    status: next.status,
+    headers: { 'content-type': 'application/json' },
+  });
+};
+
+const views = await import('../common/state/weave-views.js');
+
+function scriptedRun(responses) {
+  calls = [];
+  script = responses;
+}
+
+const row = (over = {}) => ({
+  id: 'srv-1',
+  title: 'Cost review',
+  dsl: 'root = AppStack(children: [])',
+  catalog_version: 'abc123',
+  data_sources: [],
+  created_at: '2026-09-01T10:00:00Z',
+  updated_at: '2026-09-02T10:00:00Z',
+  ...over,
+});
+
+test('the list is unwrapped, converted and marked saved', async () => {
+  scriptedRun([reply(200, [row(), row({ id: 'srv-2', title: 'Latency' })])]);
+  const list = await views.refreshViews();
+
+  assert.equal(calls[0].url, '/api/weave/views');
+  assert.equal(list.length, 2);
+  assert.equal(views.viewsAvailable(), true);
+  // snake_case and RFC3339 do not reach the pages.
+  assert.equal(list[0].catalogVersion, 'abc123');
+  assert.equal(list[0].updatedAt, Date.parse('2026-09-02T10:00:00Z'));
+  assert.equal(list[0].saved, true);
+});
+
+test('a local view is addressable but is not on the server', async () => {
+  scriptedRun([]);
+  const view = views.createView('Create a view for monitoring costs of the top 5 agents');
+
+  assert.equal(calls.length, 0, 'createView must not write to the server');
+  assert.equal(view.saved, false);
+  assert.equal(view.title, 'Monitoring costs top');
+  assert.equal(views.getView(view.id).id, view.id);
+  // …and it shows up alongside the saved ones for anything listing everything.
+  assert.ok(views.listViews().some((v) => v.id === view.id));
+  // …but not in the shelf, which is the saved list only.
+  assert.ok(!views.listSavedViews().some((v) => v.id === view.id));
+});
+
+test('setViewSurface on a local view stays local, and writes both fields', async () => {
+  scriptedRun([]);
+  const view = views.createView('spend by provider');
+  const after = await views.setViewSurface(view.id, { dsl: 'root = X()', catalogVersion: 'v1' });
+
+  assert.equal(calls.length, 0);
+  assert.equal(after.dsl, 'root = X()');
+  assert.equal(after.catalogVersion, 'v1');
+  assert.equal(views.getView(view.id).dsl, 'root = X()');
+});
+
+test('saving before the generation lands is refused here, not by the server', async () => {
+  scriptedRun([]);
+  const view = views.createView('anything');
+  await assert.rejects(() => views.saveView(view.id), { code: 'view_not_ready' });
+  assert.equal(calls.length, 0, 'a request the API would 400 must not be sent');
+});
+
+test('first Save is a POST, and the view takes the server id with it', async () => {
+  scriptedRun([]);
+  const local = views.createView('agent latency by provider');
+  await views.setViewSurface(local.id, { dsl: 'root = Y()', catalogVersion: 'cat-9' });
+  views.touchView(local.id);
+  views.touchView(local.id);
+
+  scriptedRun([reply(201, row({ id: 'srv-new', title: 'Agent latency', dsl: 'root = Y()' }))]);
+  const savedRow = await views.saveView(local.id);
+
+  assert.equal(calls[0].method, 'POST');
+  assert.equal(calls[0].url, '/api/weave/views');
+  assert.deepEqual(calls[0].body, {
+    title: 'Agent latency',
+    dsl: 'root = Y()',
+    catalog_version: 'cat-9',
+    data_sources: [],
+  });
+
+  assert.equal(savedRow.id, 'srv-new');
+  assert.notEqual(savedRow.id, local.id);
+  assert.equal(savedRow.saved, true);
+  // The local row is gone: one view, one id, one home.
+  // …but the id it had is not a dead end: the dock's artifact card and any link
+  // copied before Save still hold it.
+  assert.equal(views.resolveViewId(local.id), 'srv-new');
+  assert.equal(views.getView(local.id).id, 'srv-new');
+  assert.equal(views.getView('srv-new').id, 'srv-new');
+  assert.ok(views.listSavedViews().some((v) => v.id === 'srv-new'));
+  // The visit count followed the id across, or "Most visited" would reset every
+  // time someone saved the thing they had been opening.
+  assert.equal(views.getView('srv-new').visits, 2);
+});
+
+test('the pre-Save id keeps resolving, so nothing holding it is orphaned', () => {
+  // The dock's artifact card, and any link copied before Save, hold the local id.
+  const stale = views.listViews().find((v) => v.id === 'srv-new');
+  assert.ok(stale, 'sanity: the saved row is in the list');
+  assert.equal(views.resolveViewId('srv-new'), 'srv-new', 'a canonical id is left alone');
+});
+
+test('a second Save is a PATCH carrying dsl and catalog_version together', async () => {
+  scriptedRun([reply(200, row({ id: 'srv-new', dsl: 'root = Z()', catalog_version: 'cat-10' }))]);
+  await views.setViewSurface('srv-new', { dsl: 'root = Z()', catalogVersion: 'cat-10' });
+
+  assert.equal(calls[0].method, 'PATCH');
+  assert.equal(calls[0].url, '/api/weave/views/srv-new');
+  assert.deepEqual(calls[0].body, { dsl: 'root = Z()', catalog_version: 'cat-10' });
+  assert.equal(views.getView('srv-new').dsl, 'root = Z()');
+});
+
+test('renaming a saved view sends the title alone', async () => {
+  scriptedRun([reply(200, row({ id: 'srv-new', title: 'Spend review' }))]);
+  const renamed = await views.renameView('srv-new', '  Spend review  ');
+
+  assert.equal(calls[0].method, 'PATCH');
+  // Only `title`. Omitting is what keeps the other fields; sending `[]` or ""
+  // for them would clear them (doc §7.4).
+  assert.deepEqual(calls[0].body, { title: 'Spend review' });
+  assert.equal(renamed.title, 'Spend review');
+  assert.equal(views.getView('srv-new').title, 'Spend review');
+});
+
+test('an empty rename is refused before it reaches the server', async () => {
+  scriptedRun([]);
+  await assert.rejects(() => views.renameView('srv-new', '   '), /needs a name/);
+  assert.equal(calls.length, 0);
+});
+
+test('renaming an unsaved view stays local', async () => {
+  scriptedRun([]);
+  const local = views.createView('draft');
+  await views.renameView(local.id, 'Better name');
+  assert.equal(calls.length, 0);
+  assert.equal(views.getView(local.id).title, 'Better name');
+  await views.deleteView(local.id);
+});
+
+test('deleting a saved view waits for the server before dropping the card', async () => {
+  scriptedRun([reply(500, null, 'boom')]);
+  await assert.rejects(() => views.deleteView('srv-new'));
+  assert.ok(views.getView('srv-new'), 'a failed delete must leave the view visible');
+
+  scriptedRun([reply(200, null)]);
+  await views.deleteView('srv-new');
+  assert.equal(calls[0].method, 'DELETE');
+  assert.equal(views.getView('srv-new'), null);
+});
+
+test('deleting twice is the same outcome, so the second is not an error', async () => {
+  scriptedRun([reply(200, [row({ id: 'srv-gone' })])]);
+  await views.refreshViews();
+  scriptedRun([reply(404, null, 'no such view')]);
+  await views.deleteView('srv-gone');
+  assert.equal(views.getView('srv-gone'), null);
+});
+
+test('deleting an unsaved view sends nothing', async () => {
+  scriptedRun([]);
+  const local = views.createView('throwaway');
+  await views.deleteView(local.id);
+  assert.equal(calls.length, 0);
+  assert.equal(views.getView(local.id), null);
+});
+
+test('a 404 on the list is the OSS build, not a failure to report', async () => {
+  scriptedRun([reply(404, null, 'not found')]);
+  const list = await views.refreshViews();
+
+  assert.deepEqual(list, []);
+  assert.equal(views.viewsAvailable(), false);
+  assert.equal(views.hasSavedViews(), false);
+});
+
+test('any other list failure keeps the last good list rather than blanking it', async () => {
+  scriptedRun([reply(200, [row({ id: 'srv-keep' })])]);
+  await views.refreshViews();
+
+  scriptedRun([reply(503, null, 'upstream down')]);
+  await assert.rejects(() => views.refreshViews());
+  assert.equal(views.hasSavedViews(), true);
+  assert.equal(views.getView('srv-keep').id, 'srv-keep');
+  assert.equal(views.viewsAvailable(), true, 'a flaky network must not disable the feature');
+});
+
+test('changes are announced on document, once per mutation', async () => {
+  let beats = 0;
+  const off = views.onViewsChange(() => { beats += 1; });
+  scriptedRun([]);
+  views.createView('a');
+  assert.equal(beats, 1);
+  off();
+  views.createView('b');
+  assert.equal(beats, 1, 'unsubscribe must actually unsubscribe');
+});
