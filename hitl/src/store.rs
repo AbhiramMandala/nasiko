@@ -301,7 +301,7 @@ impl PgHitlStore {
     /// the `uq_hitl_pending_per_task` or `uq_hitl_pending_per_tool_call` index (§5).
     ///
     /// The non-`McpTool` branch is scoped by `owner_user_id`/`agent_id` in addition to
-    /// `task_id`, matching `uq_hitl_pending_per_task` (0011_hitl_task_id_scope.sql) — `task_id`
+    /// `task_id`, matching `uq_hitl_pending_per_task` (0015_hitl_task_id_scope.sql) — `task_id`
     /// is populated from agent-controlled A2A response data, not a Nasiko-minted id, so it must
     /// never be trusted alone as a database-wide key: without this scoping, a non-random or
     /// malicious agent's `taskId` could collide two different users' pauses onto the same row.
