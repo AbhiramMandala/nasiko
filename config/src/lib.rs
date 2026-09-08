@@ -159,6 +159,15 @@ pub struct Config {
     /// Poll interval in seconds for the container-hours meter. 0 disables metering.
     pub container_hours_poll_secs: u64,
 
+    // ─── Trace Materializer ─────────────────────────────────────────────────
+    /// Poll interval in seconds for the trace-usage materializer. 0 disables.
+    pub trace_usage_sync_secs: u64,
+    /// Overlap window in seconds: the materializer re-queries this far before
+    /// the high-water mark to catch late-arriving spans and pricing corrections.
+    pub trace_usage_overlap_secs: u64,
+    /// Max traces to fetch from Tempo per concurrent batch.
+    pub trace_usage_batch_size: usize,
+
     // ─── MCP Gateway ────────────────────────────────────────────────────────
     /// Composio platform API key. When unset, Composio integration is disabled
     /// (generic MCP servers still work).
@@ -354,6 +363,9 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty()),
             container_hours_poll_secs: env_parse("CONTAINER_HOURS_POLL_SECS", 60),
+            trace_usage_sync_secs: env_parse("TRACE_USAGE_SYNC_SECS", 120),
+            trace_usage_overlap_secs: env_parse("TRACE_USAGE_OVERLAP_SECS", 600),
+            trace_usage_batch_size: env_parse("TRACE_USAGE_BATCH_SIZE", 50),
             git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
                 .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
                 .split(',')

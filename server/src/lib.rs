@@ -238,6 +238,12 @@ where
     // costs two bcrypt cost-12 hashes. 10/min is generous for a human changing
     // their own password and still bounds the CPU burn from a scripted loop.
     let change_password_limiter = RateLimiter::new(10, Duration::from_secs(60));
+    // The FinOps dashboard/timeseries/calendar/attributions endpoints fan out
+    // several concurrent Tempo searches per request (bounded concurrency, but
+    // real load nonetheless) — a tighter, dedicated budget than the rest of
+    // the observability router (session/trace/span reads are cheap single
+    // lookups and shouldn't share it).
+    let finops_limiter = RateLimiter::new(20, Duration::from_secs(60));
 
     // Public A2A registry (agent discovery) — see registry_a2a.rs for why it
     // is unauthenticated; the global fixed window bounds enumeration abuse.
@@ -271,7 +277,7 @@ where
         .merge(flows::router())
         .nest(
             "/observability",
-            observability::protected_router(state.clone()),
+            observability::protected_router(state.clone(), finops_limiter),
         )
         .merge(agents::upload::status_router())
         .merge(github::router())

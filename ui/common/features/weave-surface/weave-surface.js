@@ -55,7 +55,7 @@ import { createSurfaceSession } from '/common/surface/surface-stream.js';
  * attributes that go nowhere. This is that place — the one seam between the
  * runtime and the rest of the app already promises to own "a vocabulary."
  */
-import '/common/design-system/app-menu/app-menu.js';
+import '/common/design-system/app-action-menu/app-action-menu.js';
 import '/common/design-system/app-avatar/app-avatar.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
@@ -191,32 +191,6 @@ class WeaveSurface extends HTMLElement {
       });
       return { status: 'failed', surface: '', catalogVersion: null };
     }
-  }
-
-  /**
-   * Render a surface that already exists, with no request.
-   *
-   * Reopening a saved view is not a generation. Asking the model to rebuild it
-   * would cost tokens, take seconds and hand back a different dashboard from
-   * the one that was saved — so the stored DSL is drawn as-is.
-   *
-   * Still a live surface, not a picture: Queries fetch, Actions fire, `$state`
-   * works. Only the generation is skipped.
-   *
-   * `catalogVersion` is the one the DSL was generated against, and it is
-   * checked. A view saved before a design-system change can have had its
-   * positional arguments rebound underneath it, and the host hears about that
-   * through the same `catalog_version_mismatch` diagnostic a live turn raises.
-   *
-   * @param {string} dsl
-   * @param {{catalogVersion?: string|null}} [opts]
-   */
-  async show(dsl, { catalogVersion = null } = {}) {
-    const session = await this.#ensureSession();
-    // A turn still streaming would overwrite what we are about to draw.
-    this.#abort?.abort();
-    this.#abort = null;
-    return session.show(dsl, { catalogVersion });
   }
 
   /** The raw DSL of the last turn that produced a surface. */

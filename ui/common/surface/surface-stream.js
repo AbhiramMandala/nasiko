@@ -584,54 +584,11 @@ export function createSurfaceSession(options) {
     get lastResult() { return lastOut; },
     /** Subscribe to the per-turn telemetry record. */
     onTurn: (fn) => telemetry.onTurn(fn),
-    /**
-     * Render a finished DSL string, with no network call.
-     *
-     * Reopening a saved view is not a generation: the DSL already exists and
-     * asking the model to produce it again would be slower, cost tokens and
-     * return something different. But `send()` was the only way in — every
-     * other entry point is wired to a live SSE turn — so a stored surface had
-     * nowhere to go. This is that entry point.
-     *
-     * Deliberately the same `draw()` the stream uses, not a parallel path.
-     * Queries fire, Actions bind, `$state` seeds, focus is preserved and every
-     * diagnostic reports exactly as it does live. A second renderer that
-     * "just draws it" would drift from the real one, and the drift would show
-     * up as a saved dashboard behaving subtly differently from the one the
-     * user watched being generated — the hardest kind of bug to be told about.
-     *
-     * `catalogVersion` is checked the same way a streamed one is. A view saved
-     * six weeks ago against an older catalog is the case that check exists
-     * for: positional arguments may have been rebound underneath it, and the
-     * caller gets `catalog_version_mismatch` rather than a plausible-looking
-     * dashboard whose columns have quietly shifted.
-     *
-     * @param {string} dsl the stored surface text, exactly as it was saved
-     * @param {{catalogVersion?: string|null}} [opts]
-     * @returns {{root: object|null, diagnostics: object[], unresolved: string[]}}
-     */
-    show(dsl, { catalogVersion = null } = {}) {
-      this.reset();
-      buffer = String(dsl ?? '');
-      // Nothing more is coming, so `complete` diagnostics — orphans, the root
-      // check — run on the first and only pass rather than waiting for an end
-      // frame that will never arrive.
-      ended = true;
-      reportCatalogVersion(catalogVersion);
-      const out = draw();
-      currentSurface = buffer;
-      return out;
-    },
-
     reset() {
       buffer = '';
       currentSurface = '';
       proseEmitted = 0;
       lastDiagnosticsKey = '';
-      // Turn state like the three above. Left set, a reset after show() would
-      // leave the next paint believing a surface it has not seen is finished.
-      // send() happens to clear it too; that is its own defence, not this one's.
-      ended = false;
       lastOut = null;
       liveDiagnostics.length = 0;
       queries.reset();
