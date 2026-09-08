@@ -133,6 +133,12 @@ main.app-shell {
     /* Gutter + rail: the rail is fixed at left:var(--shell-gutter), so the
        content plane starts past both it and the gutter it floats in. */
     padding-left: calc(var(--shell-gutter) + var(--app-sidebar-width));
+    /* Space the Weave dock takes when its drawer is open — <weave-dock> sets
+       the property on <html> and removes it on close, so the content card
+       shrinks rather than being covered by the conversation about it. Not
+       transitioned: animating body padding reflows the whole document every
+       frame, and the drawer has no slide of its own to match. */
+    padding-right: var(--app-dock-width, 0px);
   }
 
   body > main, .app-layout > main {

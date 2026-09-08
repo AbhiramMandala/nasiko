@@ -111,6 +111,63 @@ export default {
     ]],
   ],
   scenarios: {
+    // ── The Weave dock ──────────────────────────────────────────────────────
+    // Captured from index.html because that is the point of the dock: it is
+    // shell, reachable from any page, and it drives the router itself. The
+    // three below are one continuous flow — pill, drawer, generated view.
+    "weave-dock-open": async (page) => {
+      await page.click("weave-dock .launcher");
+      await page.waitForSelector("weave-dock .hero__title");
+    },
+    "weave-generating": async (page) => {
+      await page.click("weave-dock .launcher");
+      await page.click("weave-dock .chip");
+      await page.waitForSelector("generated-view-page .generating");
+    },
+    "weave-generated": async (page) => {
+      await page.click("weave-dock .launcher");
+      await page.click("weave-dock .chip");
+      await page.waitForSelector("generated-view-page .canvas.is-ready");
+      await page.waitForSelector("weave-dock .artifact");
+      await page.waitForTimeout(400);
+    },
+    // The view header's Copy menu. Worth a scenario: <app-menu> places its
+    // surface in the top layer, which is what keeps it from being clipped by
+    // the content card's `overflow: hidden` — the failure the old absolute
+    // dropdown had, and not something the markup alone tells you.
+    "weave-copy-menu": async (page) => {
+      await page.click("weave-dock .launcher");
+      await page.click("weave-dock .chip");
+      await page.waitForSelector("generated-view-page .canvas.is-ready");
+      await page.click("generated-view-page #copy app-button");
+      await page.waitForSelector('generated-view-page #copy [role="menu"]');
+      await page.waitForTimeout(300);
+    },
+    // A second ask while the first view is on screen. `/view?id=A` → `?id=B` is
+    // the same route pattern, so the router updates the mounted page rather than
+    // remounting it — this is the scenario that catches a page which only reads
+    // its id once, in connectedCallback.
+    "weave-second-view": async (page) => {
+      await page.click("weave-dock .launcher");
+      await page.click("weave-dock .chip");
+      await page.waitForSelector("generated-view-page .canvas.is-ready");
+      await page.fill("weave-dock #textarea", "Show me agent latency by provider");
+      await page.click("weave-dock #submitBtn");
+      await page.waitForSelector("generated-view-page .canvas.is-ready");
+      await page.waitForTimeout(400);
+    },
+    // Saved: the rail grows a Custom Views entry, and the shelf lists the view.
+    "weave-custom-views": async (page) => {
+      await page.click("weave-dock .launcher");
+      await page.click("weave-dock .chip");
+      await page.waitForSelector("generated-view-page .canvas.is-ready");
+      await page.click("generated-view-page #save");
+      await page.waitForSelector('.rail-item[href="/custom-views"]');
+      await page.click('.rail-item[href="/custom-views"]');
+      await page.waitForSelector("custom-views-page .view-card");
+      await page.waitForTimeout(400);
+    },
+
     // ── The module's views ──────────────────────────────────────────────────
     // Opened the way a shared link does (`?view=`), which also proves the shell
     // honours the param on load and not only on a nav click.
@@ -144,24 +201,22 @@ export default {
       await page.waitForTimeout(300);
     },
     // Labeled sidebar after clicking the topbar rail toggle.
-    // Rail expand is commented out in app-header — no toggle to click.
-    // "rail-expanded": async (page) => {
-    //   await page.click("[data-rail-toggle]");
-    //   await page.waitForTimeout(500);
-    // },
+    "rail-expanded": async (page) => {
+      await page.click("[data-rail-toggle]");
+      await page.waitForTimeout(500);
+    },
     "user-menu-open": async (page) => {
       await page.click("[data-user-toggle]");
       await page.waitForSelector(".user-dropdown.is-visible");
     },
     // Clicks the identity ROW (its centre lands on the name, not the avatar) —
     // fails if the trigger ever shrinks back to the 32px avatar.
-    // Rail expand is commented out in app-header — no toggle to click.
-    // "rail-expanded-user-menu": async (page) => {
-    //   await page.click("[data-rail-toggle]");
-    //   await page.waitForTimeout(500);
-    //   await page.click(".rail-identity");
-    //   await page.waitForSelector(".user-dropdown.is-visible");
-    // },
+    "rail-expanded-user-menu": async (page) => {
+      await page.click("[data-rail-toggle]");
+      await page.waitForTimeout(500);
+      await page.click(".rail-identity");
+      await page.waitForSelector(".user-dropdown.is-visible");
+    },
     // The timeline's full vocabulary in one shot, driven directly through
     // onEvent() so it doesn't depend on stream timing: an agent whose tools
     // arrive as STRUCTURED data parts (nested rows with JSON input/output),
