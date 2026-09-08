@@ -187,10 +187,13 @@
     min-width: 0;
   }
 
+  /* Fixed-size chips, not stretched across the row — the design packs 10
+     20x20 cells with room left over on the right, unlike the old full-width
+     pill grid. */
   .day-grid {
     display: grid;
-    grid-template-columns: repeat(10, 1fr);
-    gap: var(--s-4);
+    grid-template-columns: repeat(10, 20px);
+    gap: var(--s-8);
     background: var(--bg-base);
     border-radius: var(--r-8) var(--r-8) 0 0;
     padding: var(--s-12) var(--s-12) 0;
@@ -198,23 +201,32 @@
 
   .day-cell {
     appearance: none;
-    border: var(--bw-1) solid transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: var(--bw-2) solid transparent;
     border-radius: var(--r-8);
-    background: var(--bg-secondary-brand);
-    color: var(--fg-primary);
+    /* Normal and selected share the same fill (--yellow-200) — the design
+       tells the two apart by text colour and the selected border only, not
+       by a colour swap. */
+    background: var(--yellow-200);
+    color: var(--fg-brand-strong);
     font-size: var(--font-size-xs);
     font-variant-numeric: tabular-nums;
     line-height: 1;
-    padding: var(--s-8) 0;
     cursor: pointer;
 
-    &:hover:not(:disabled) { background: var(--bg-secondary-brand-hover); }
+    &:hover:not(:disabled) { background: var(--yellow-300); }
     &:focus-visible { outline: 2px solid var(--fg-brand); outline-offset: 1px; }
-    /* Selected reads as a ring on the same fill, not a colour swap — the fill
-       already says "in range", the ring says "this one specifically". */
+    /* Selected: fg-primary (not the brand tint) plus a real yellow-600 ring —
+       the ring is what says "this one specifically", same fill as every
+       other in-range day. */
     &.is-selected {
-      border-color: var(--fg-brand-strong);
-      background: var(--bg-secondary-brand-hover);
+      color: var(--fg-primary);
+      border-color: var(--yellow-600);
     }
     /* A future day is never a valid drill-down target — disabled, not hidden,
        so the grid's shape stays the month's shape all month. */
@@ -284,10 +296,17 @@
     margin: var(--s-8) 0 0;
   }
 
-  /* ── Spend concentration: day picker + hourly stack + its own legend ───── */
+  /* ── Spend concentration: day picker + hourly stack + its own legend ─────
+     The legend column is a fixed width, not `auto`: an empty <ul> (a
+     zero-spend day, or the loading state) has no content to size an `auto`
+     track by, so it would collapse to 0 and the day grid + chart would
+     stretch to fill the freed width — a layout that visibly jumps every time
+     the day picker lands on an empty day. Fixed width plus a placeholder
+     legend (`#renderConcentration`) keeps the two areas the same width in
+     every state. */
   .conc-body {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) 180px;
     align-items: stretch;
     gap: var(--s-16);
     flex: 1;
@@ -338,6 +357,25 @@
     color: var(--color-text-muted);
     font-variant-numeric: tabular-nums;
   }
+
+  /* Placeholder rows for a zero-spend/loading day — same grid shape as a real
+     legend entry (dot + two lines), so the column never visibly reflows
+     between "no data yet" and "here are four agents". Not `.kpi-skel`'s
+     pulse: this is an empty *state*, not a load in progress, so it sits still. */
+  .conc-legend-skel {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-border);
+    grid-row: span 2;
+  }
+  .conc-name-skel, .conc-cost-skel {
+    height: 0.85em;
+    border-radius: var(--r-4);
+    background: var(--color-border);
+  }
+  .conc-name-skel { width: 70%; }
+  .conc-cost-skel { grid-column: 2; width: 45%; margin-top: var(--s-4); }
 
   /* ── Attributions ──────────────────────────────────────────────────────── */
   .section-head {

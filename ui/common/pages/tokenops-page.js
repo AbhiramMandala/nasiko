@@ -813,10 +813,19 @@ class TokenopsPage extends HTMLElement {
       ...topAgents.map((a, i) => ({ label: a.agent_name, cost: a.spend_usd ?? 0, slot: `var(--viz-${i + 1})` })),
       ...(day?.others_spend_usd ? [{ label: 'Others', cost: day.others_spend_usd, slot: 'var(--fg-secondary)' }] : []),
     ];
-    legend.innerHTML = entries.map((e) => `
-      <li><span class="dot" style="--dot:${e.slot}"></span>
-        <span class="conc-name">${escHtml(e.label)}</span>
-        <span class="conc-cost">${fmtMoney(e.cost)}</span></li>`).join('');
+    // A zero-spend day (or the loading gap before `#dayDrill` resolves) has no
+    // real entries — four still rows, not an empty column, so the legend's
+    // width holds and the chart beside it never visibly widens/narrows as the
+    // day picker lands on and off empty days (see `.conc-body` in the CSS).
+    legend.innerHTML = entries.length
+      ? entries.map((e) => `
+        <li><span class="dot" style="--dot:${e.slot}"></span>
+          <span class="conc-name">${escHtml(e.label)}</span>
+          <span class="conc-cost">${fmtMoney(e.cost)}</span></li>`).join('')
+      : Array.from({ length: 4 }, () => `
+        <li><span class="conc-legend-skel"></span>
+          <span class="conc-name-skel"></span>
+          <span class="conc-cost-skel"></span></li>`).join('');
 
     const labels = hours.map((h) => (h.hour === 0 ? '12am' : h.hour === 12 ? '12pm' : String(h.hour % 12)));
     chart.removeAttribute('loading');
