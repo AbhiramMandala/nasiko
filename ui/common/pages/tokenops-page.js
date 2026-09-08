@@ -5,7 +5,7 @@
  * @element tokenops-page
  * @note Data sources (see `tokensopsapis.md`, the backend handoff this page is
  *       wired against — `/api/observability/finops/*`):
- *       `call('fetchTokenopsDashboard', { range?, startTime?, endTime?, agentId?, model?, view? })`
+ *       `call('fetchTokenopsDashboard', { range?, startTime?, endTime?, agentId?, model?, provider?, orgUnit?, view? })`
  *         → GET .../finops/dashboard — `{ data: { kpis, summary, agents,
  *           attributions } }`. `kpis` (`total_spend`/`total_tokens`/
  *           `cost_per_operation`/`avg_latency_ms`, each `{ current, previous,
@@ -45,12 +45,34 @@
  *       in-memory over the one dashboard payload rather than round-tripping a
  *       sort click — see the header note on `fetchFinopsAttributions`.
  *
- *       Provider/org-unit stay disabled (backend accepts the params, stubbed —
- *       not wired to real filtering). Server has no dimension at all. Model IS
- *       now a real windowed filter on every endpoint above, but there is no
- *       documented endpoint yet to list which models exist, so it stays
- *       disabled too rather than shipping a dropdown with no options — see
- *       `INERT_FILTERS`.
+ *       Server has no dimension in the API at all and stays disabled — see
+ *       `INERT_FILTERS`. Provider/Model/Org unit are real filters, confirmed
+ *       against `oss/server/src/observability/handler.rs`: `model`/`provider`
+ *       filter `trace_usage` on every finops endpoint; `org_unit` is EE-only
+ *       (`ee/server/src/finops_scope.rs` resolves it to `user_id`s) and only
+ *       `dashboard` reads it — the other four endpoints ignore it entirely,
+ *       and OSS ignores it outright (no org hierarchy). Their options come
+ *       from two catalogs that already exist for other pages, not a new
+ *       backend endpoint:
+ *       `call('fetchLlmProviders')` → GET `/llm-router/providers` (the same
+ *         call `llm-router-page.js` makes) gives Provider and Model their
+ *         dropdown contents. One wrinkle: this endpoint normalizes
+ *         `model_pricing.provider` for display (today, only `google` →
+ *         `gemini` — `providers.rs::normalize_provider`), but `trace_usage
+ *         .provider` — what the finops filter actually matches — keeps the
+ *         raw value. `PROVIDER_FILTER_VALUE` below maps the display value
+ *         back before it is sent, so picking "gemini" does not silently
+ *         return zero rows. Delete that shim the day the backend exposes the
+ *         raw value (or normalizes `trace_usage.provider` to match).
+ *       `call('fetchOrgUnits')` → GET `/org/units` (flat, `ee/server/src
+ *         /org_units.rs`) needs `can_read_org` (manager-or-above or
+ *         superuser) — same gate the org chart itself uses — so a lower-role
+ *         caller, or an OSS build where the route is not even mounted, sees
+ *         the filter stay disabled rather than an empty or broken dropdown.
+ *         `org-unit-service.js` (where this call lives) is only registered
+ *         on the SPA router path today, not on this standalone page, so this
+ *         page dynamic-imports it itself before calling — see
+ *         `#loadFilterOptions`.
  *
  *       A 400 from any of these (bad `range`, bad `view`, bad date, an
  *       unresolvable `agent_id`) carries a human-readable plain-text body,
@@ -176,23 +198,34 @@ const ATTR_MODES = [
 ];
 
 /**
- * Filters with no windowed dataset behind them, per the backend handoff:
- * Server has no dimension in the API at all; Provider/Org unit are accepted
- * params but stubbed (§5 — "fine to build the UI... won't actually filter
- * anything yet"); Model IS now a real per-request filter on every finops
- * endpoint, but nothing documents a way to list which models exist, so a
- * dropdown here would have no options to offer.
+ * The one filter with no dimension in the API at all — permanently disabled,
+ * unlike Provider/Model/Org unit below, which start disabled only until
+ * their options load (or, for Org unit, stay disabled if it turns out this
+ * caller/build cannot use it — see `#loadFilterOptions`).
  */
 const INERT_FILTERS = [
   { id: 'server-select', label: 'Server',
     why: 'No server dimension in the FinOps API.' },
-  { id: 'provider-select', label: 'Provider',
-    why: 'Backend accepts this param but it is stubbed — not wired to real filtering yet.' },
-  { id: 'model-select', label: 'Model',
-    why: 'The FinOps endpoints filter by model now, but nothing lists which models exist to fill this dropdown.' },
-  { id: 'org-select', label: 'Org unit',
-    why: 'Backend accepts this param but it is stubbed — not wired to real filtering yet.' },
 ];
+
+/** Real filters whose options load asynchronously — see `#loadFilterOptions`. */
+const ASYNC_FILTERS = [
+  { id: 'provider-select', label: 'Provider' },
+  { id: 'model-select', label: 'Model' },
+  { id: 'org-select', label: 'Org unit' },
+];
+
+/**
+ * `GET /llm-router/providers` normalizes some `model_pricing.provider` values
+ * for display — today, only `google` → `gemini` (`oss/server/src/llm_router
+ * /providers.rs::normalize_provider`) — but `trace_usage.provider` (what the
+ * finops `provider` filter actually matches) keeps the raw value the trace
+ * materializer copied straight out of `model_pricing`. Sending the display
+ * label as the filter would silently match zero rows for real Gemini spend.
+ * Only this one case is known to differ today; delete this the day the
+ * backend exposes the raw value (or normalizes `trace_usage.provider` too).
+ */
+const PROVIDER_FILTER_VALUE = { gemini: 'google' };
 
 const sum = (ns) => ns.reduce((a, b) => a + b, 0);
 
@@ -282,6 +315,9 @@ class TokenopsPage extends HTMLElement {
   #end = null;
   #range = '30d';
   #agentFilter = '';
+  #providerFilter = '';
+  #modelFilter = '';
+  #orgUnitFilter = '';
   #sort = 'cost';
   /** The in-flight dashboard fetch — the table awaits it, so its own skeleton
    *  rows are the page's loading state. */
@@ -307,6 +343,10 @@ class TokenopsPage extends HTMLElement {
         <div class="filter-group">
           <app-segmented-control id="range-seg" size="sm" label="Time range"></app-segmented-control>
           <app-select id="agent-select" size="md" aria-label="Agent"></app-select>
+          ${ASYNC_FILTERS.map((f) => `
+            <app-select id="${f.id}" size="md" disabled
+              placeholder="${escAttr(f.label)}" aria-label="${escAttr(f.label)}"
+              title="${escAttr(`Loading ${f.label.toLowerCase()} options…`)}"></app-select>`).join('')}
           ${INERT_FILTERS.map((f) => `
             <app-select id="${f.id}" size="md" disabled
               placeholder="${escAttr(f.label)}" aria-label="${escAttr(f.label)}"
@@ -419,9 +459,22 @@ class TokenopsPage extends HTMLElement {
       this.#renderDayGrid();
       this.#loadDay(this.#loadId);
     });
+    this.querySelector('#provider-select').addEventListener('change', (e) => {
+      this.#providerFilter = e.target.value;
+      this.#load();
+    });
+    this.querySelector('#model-select').addEventListener('change', (e) => {
+      this.#modelFilter = e.target.value;
+      this.#load();
+    });
+    this.querySelector('#org-select').addEventListener('change', (e) => {
+      this.#orgUnitFilter = e.target.value;
+      this.#load();
+    });
     this.querySelector('#export-btn').addEventListener('click', () => this.#exportCsv());
 
     this.#load();
+    this.#loadFilterOptions();
   }
 
   #segment(selector, items, value) {
@@ -468,6 +521,88 @@ class TokenopsPage extends HTMLElement {
     }
   }
 
+  /**
+   * The display value a user picks from Provider can differ from the raw
+   * value the finops API needs to match — see `PROVIDER_FILTER_VALUE`.
+   */
+  #providerFilterValue() {
+    if (!this.#providerFilter) return undefined;
+    return PROVIDER_FILTER_VALUE[this.#providerFilter] || this.#providerFilter;
+  }
+
+  /**
+   * Populates Provider/Model/Org unit once, in parallel with the first
+   * `#load()` — none of the three block the page's real data from showing.
+   *
+   * Provider/Model share one call: `fetchLlmProviders` (already registered
+   * by `llm-service.js`, which every page's barrel import loads) groups
+   * currently-effective models by provider. Org unit needs its own service
+   * module dynamic-imported first: `org-unit-service.js` only self-registers
+   * on the SPA router path (`ee/web/services/data-functions.js`), and this
+   * page is a standalone document outside that path, same as the other
+   * standalone EE documents that import their own service script directly.
+   * On an OSS build the import 404s; either way, `call('fetchOrgUnits')`
+   * throwing (import failed, route absent, or a non-manager's 403) is
+   * treated as "not available", same reasoning `mcp-detail-page.js`'s
+   * `#routeExists` uses for this exact route.
+   */
+  async #loadFilterOptions() {
+    try {
+      const resp = await call('fetchLlmProviders');
+      const catalog = resp?.data ?? resp ?? [];
+      this.#renderProviderOptions(catalog);
+      this.#renderModelOptions(catalog);
+    } catch (e) {
+      console.error('TokenOps provider/model catalog fetch failed:', e);
+    }
+
+    try {
+      await import('/services/org-unit-service.js');
+      const resp = await call('fetchOrgUnits');
+      this.#renderOrgUnitOptions(resp?.data ?? resp ?? []);
+    } catch {
+      const select = this.querySelector('#org-select');
+      select.title = 'Org unit filter unavailable — no organization hierarchy configured, or you do not have access to view it.';
+    }
+  }
+
+  #renderProviderOptions(catalog) {
+    const select = this.querySelector('#provider-select');
+    const options = catalog.map((p) => ({ value: p.provider, label: p.provider }));
+    if (!options.length) return; // leave disabled — nothing real to offer
+    select.setAttribute('options', JSON.stringify([{ value: '', label: 'Provider' }, ...options]));
+    select.removeAttribute('disabled');
+    select.removeAttribute('title');
+  }
+
+  #renderModelOptions(catalog) {
+    const select = this.querySelector('#model-select');
+    const models = [...new Set(catalog.flatMap((p) => (p.models ?? []).map((m) => m.model)))].sort();
+    if (!models.length) return;
+    select.setAttribute('options', JSON.stringify([
+      { value: '', label: 'Model' },
+      ...models.map((m) => ({ value: m, label: m })),
+    ]));
+    select.removeAttribute('disabled');
+    select.removeAttribute('title');
+  }
+
+  /**
+   * `depth` (1 = a root unit) indents the label so the hierarchy still reads
+   * in a flat dropdown. Rows already arrive in `path` order (a parent before
+   * its children — `org_units.rs::list_units`), so no client-side sort.
+   */
+  #renderOrgUnitOptions(units) {
+    if (!Array.isArray(units) || !units.length) return; // stays disabled — see #loadFilterOptions
+    const select = this.querySelector('#org-select');
+    select.setAttribute('options', JSON.stringify([
+      { value: '', label: 'Org unit' },
+      ...units.map((u) => ({ value: u.id, label: `${'—'.repeat(Math.max((u.depth ?? 1) - 1, 0))} ${u.name}`.trim() })),
+    ]));
+    select.removeAttribute('disabled');
+    select.removeAttribute('title');
+  }
+
   async #load() {
     const id = ++this.#loadId;
     this.#resolveWindow();
@@ -478,6 +613,9 @@ class TokenopsPage extends HTMLElement {
       startTime: start,
       endTime: end,
       agentId: this.#agentFilter || undefined,
+      model: this.#modelFilter || undefined,
+      provider: this.#providerFilterValue(),
+      orgUnit: this.#orgUnitFilter || undefined,
       view: this.#attrView,
     };
 
@@ -538,7 +676,12 @@ class TokenopsPage extends HTMLElement {
     const chart = this.querySelector('#conc-plot');
     chart.setAttribute('loading', '');
     try {
-      const resp = await call('fetchSpendCalendarDay', { date: this.#day, agentId: this.#agentFilter || undefined });
+      const resp = await call('fetchSpendCalendarDay', {
+        date: this.#day,
+        agentId: this.#agentFilter || undefined,
+        model: this.#modelFilter || undefined,
+        provider: this.#providerFilterValue(),
+      });
       if (id !== this.#loadId) return;
       this.#dayDrill = resp?.data ?? resp ?? null;
     } catch (e) {

@@ -31,6 +31,30 @@ function pctChange(current, previous) {
   return Math.round(((current - previous) / previous) * 1000) / 10;
 }
 
+// Provider/Model dropdown source — same shape as llm-router.preview.js's
+// `/llm-router/providers` fixture, since tokenops-page.js reads this endpoint
+// too (see the header note on `PROVIDER_FILTER_VALUE`).
+const PROVIDERS = [
+  { provider: "anthropic", models: ["claude-opus-4-1", "claude-sonnet-4-5", "claude-haiku-4-5"] },
+  { provider: "openai", models: ["gpt-5.2", "gpt-4o", "gpt-4o-mini"] },
+  { provider: "gemini", models: ["gemini-2.5-pro", "gemini-2.5-flash"] },
+].map(({ provider, models }) => ({
+  provider,
+  models: models.map((model, i) => ({
+    model, input_price_per_1m: 1 + i * 0.5, output_price_per_1m: 3 + i * 1.5,
+    cache_creation_price_per_1m: null, cache_read_price_per_1m: null,
+    currency: "USD", notes: null, effective_from: "2026-01-01T00:00:00Z", effective_until: null,
+  })),
+}));
+
+// Org unit dropdown source — flat `GET /api/org/units` shape
+// (`ee/server/src/org_units.rs::UNIT_COLUMNS`), `depth` 1 = a root unit.
+const ORG_UNITS = [
+  { id: "ou-1", parent_id: null, name: "Nasiko Max", depth: 1, lead_id: null, lead_username: null, source: "manual", provider: null, external_id: null, idp_synced_at: null, member_count: 84, created_at: "2026-01-01T00:00:00Z" },
+  { id: "ou-2", parent_id: "ou-1", name: "Engineering", depth: 2, lead_id: "u-1", lead_username: "satya", source: "manual", provider: null, external_id: null, idp_synced_at: null, member_count: 34, created_at: "2026-01-02T00:00:00Z" },
+  { id: "ou-3", parent_id: "ou-1", name: "Finance", depth: 2, lead_id: null, lead_username: null, source: "manual", provider: null, external_id: null, idp_synced_at: null, member_count: 12, created_at: "2026-01-02T00:00:00Z" },
+];
+
 export default {
   fetch: [
     [{ method: "GET", path: /^\/api\/observability\/finops\/dashboard/ }, (req) => {
@@ -171,6 +195,21 @@ export default {
     [{ method: "GET", path: /^\/api\/observability\/finops\/attributions/ }, (req) => {
       const view = qparam(req, "view") === "workflow" ? "workflow" : "agent";
       return { data: { view, rows: view === "workflow" ? WORKFLOWS : AGENTS }, status_code: 200, message: "ok" };
+    }],
+
+    // Provider/Model dropdown source — see the header note on PROVIDER_FILTER_VALUE.
+    [{ method: "GET", path: /^\/api\/llm-router\/providers/ }, () => ({
+      data: PROVIDERS, status_code: 200, message: "Providers retrieved successfully",
+    })],
+
+    // Org unit dropdown source — a dev-mode stand-in for an EE deployment
+    // (this preview file has no OSS/EE distinction of its own), so the
+    // filter renders enabled in the local preview even though a real OSS
+    // build 404s here and leaves it disabled.
+    [{ method: "GET", path: /^\/api\/org\/units/ }, (req) => {
+      const q = (qparam(req, "q") || "").toLowerCase();
+      const rows = q ? ORG_UNITS.filter((u) => u.name.toLowerCase().includes(q)) : ORG_UNITS;
+      return { data: rows, status_code: 200, message: `${rows.length} org units retrieved` };
     }],
   ],
 };

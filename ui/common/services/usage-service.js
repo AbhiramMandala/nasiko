@@ -7,10 +7,14 @@
  * The `/observability/finops/*` family below matches the backend handoff
  * (`tokensopsapis.md`): all five endpoints, `qs()` dropping any param that is
  * `undefined`/`null`/`''` so a caller can pass a whole options object without
- * hand-building a query string per call site. `provider`/`org_unit` are
- * accepted params on `dashboard` — the backend says they are stubbed (accepted,
- * not yet wired to real filtering) — so they are threaded through here for
- * forward-compat but no UI drives them yet.
+ * hand-building a query string per call site. Confirmed against the Rust
+ * handler (`oss/server/src/observability/handler.rs`): `model`/`provider`
+ * really do filter `trace_usage` on every endpoint below except
+ * `spend-calendar`'s neighbours that never declared them; `org_unit` is
+ * EE-only (resolved to `user_id`s by `ee/server/src/finops_scope.rs`'s
+ * middleware) and reaches only `dashboard` — none of the other four handlers
+ * read the `FinopsUserScope` extension it injects, so it is a no-op on them.
+ * OSS ignores `org_unit` outright (no org hierarchy).
  */
 
 import { fetchApi } from '/common/services/api.js';
@@ -49,8 +53,8 @@ const fetchTokenopsDashboard = async ({
 // "Spend over time" — GET /api/observability/finops/spend-timeseries.
 // Dollar-only (`points[].spend_usd`, `.operations`) — no percent-of-window
 // view exists against this endpoint.
-const fetchSpendTimeseries = async ({ range, startTime, endTime, agentId, model } = {}) => {
-  const params = qs({ range, start_time: startTime, end_time: endTime, agent_id: agentId, model });
+const fetchSpendTimeseries = async ({ range, startTime, endTime, agentId, model, provider } = {}) => {
+  const params = qs({ range, start_time: startTime, end_time: endTime, agent_id: agentId, model, provider });
   return fetchApi(`${FINOPS_BASE}/spend-timeseries${params}`);
 };
 
@@ -66,8 +70,8 @@ const fetchSpendCalendar = async ({ month, range, agentId, model } = {}) => {
 // `date` ("YYYY-MM-DD") is required. Powers "Spend concentration": `hours`
 // is the real 24-point curve, `top_agents`/`others_spend_usd` are the
 // pre-computed legend — no client-side aggregation needed.
-const fetchSpendCalendarDay = async ({ date, agentId, model } = {}) => {
-  const params = qs({ date, agent_id: agentId, model });
+const fetchSpendCalendarDay = async ({ date, agentId, model, provider } = {}) => {
+  const params = qs({ date, agent_id: agentId, model, provider });
   return fetchApi(`${FINOPS_BASE}/spend-calendar/day${params}`);
 };
 
