@@ -100,7 +100,10 @@
  *   surface card. Set this when another element sits directly above the
  *   chart with no gap (the day grid on the concentration panel) and the two
  *   should read as one continuous card: it squares the top two corners off,
- *   leaving only the bottom two rounded.
+ *   leaving only the bottom two rounded. Applies to the loading skeleton and
+ *   empty state too (app-chart.css) — those are plain divs shown instead of
+ *   the canvas, not something `plotBackground` paints, so they need their
+ *   own override rather than inheriting this one.
  * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
  *   `number` (default) | `currency` | `percent` | `compact`
  * @prop {object|Array} data - Canvas forms take Chart.js shape:

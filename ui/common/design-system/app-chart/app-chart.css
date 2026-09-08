@@ -173,6 +173,17 @@
     animation: skel-pulse 1.5s ease-in-out infinite;
   }
 
+  /* `flush-top` squares the plot's own top corners so it sits flush under
+     another card-like element (see `appChartPlotBg` in app-chart.js) — but
+     that plugin only paints the canvas. The skeleton and empty state are
+     plain styled divs shown INSTEAD of the canvas (no data yet, or none to
+     show), so they need the same override or the seam reappears the moment
+     a day with no spend is picked. */
+  :scope[flush-top] .chart-empty,
+  :scope[flush-top] .chart-skeleton {
+    border-radius: 0 0 var(--r-8) var(--r-8);
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .chart-skeleton { animation: none; opacity: 0.6; }
   }
