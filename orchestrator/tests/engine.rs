@@ -8,7 +8,9 @@ fn router_config_defaults_are_sensible() {
     let cfg = RouterConfig::default();
     assert_eq!(cfg.shortlist_threshold, 15);
     assert_eq!(cfg.shortlist_size, 10);
-    assert_eq!(cfg.max_history_messages, 20);
+    assert_eq!(cfg.history_pool_size, 150);
+    assert_eq!(cfg.history_token_budget, 2000);
+    assert_eq!(cfg.history_mandatory_recent, 3);
 }
 
 #[test]
@@ -16,11 +18,15 @@ fn router_config_custom_values() {
     let cfg = RouterConfig {
         shortlist_threshold: 5,
         shortlist_size: 3,
-        max_history_messages: 10,
+        history_pool_size: 80,
+        history_token_budget: 1000,
+        history_mandatory_recent: 2,
     };
     assert_eq!(cfg.shortlist_threshold, 5);
     assert_eq!(cfg.shortlist_size, 3);
-    assert_eq!(cfg.max_history_messages, 10);
+    assert_eq!(cfg.history_pool_size, 80);
+    assert_eq!(cfg.history_token_budget, 1000);
+    assert_eq!(cfg.history_mandatory_recent, 2);
 }
 
 // ── OssRoutingEngine construction ─────────────────────────────────────────────
@@ -55,7 +61,9 @@ fn oss_routing_engine_new_with_custom_config() {
     let config = RouterConfig {
         shortlist_threshold: 20,
         shortlist_size: 5,
-        max_history_messages: 15,
+        history_pool_size: 100,
+        history_token_budget: 1500,
+        history_mandatory_recent: 3,
     };
     let _ = OssRoutingEngine::new(
         config,

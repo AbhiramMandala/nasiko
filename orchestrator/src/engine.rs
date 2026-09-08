@@ -31,8 +31,14 @@ pub struct RouterConfig {
     pub shortlist_threshold: usize,
     /// Max candidates passed into Stage 3 (LLM selector).
     pub shortlist_size: usize,
-    /// How many chat messages to include as conversation context.
-    pub max_history_messages: usize,
+    /// How many recent chat messages the PACMS context selector draws
+    /// candidates from (see `SessionHistory::fetch_pacms`).
+    pub history_pool_size: usize,
+    /// Token budget the PACMS selector fills conversation context up to.
+    pub history_token_budget: usize,
+    /// How many of the most-recent pooled messages are always kept
+    /// regardless of relevance/coverage score.
+    pub history_mandatory_recent: usize,
 }
 
 impl Default for RouterConfig {
@@ -40,7 +46,9 @@ impl Default for RouterConfig {
         Self {
             shortlist_threshold: 15,
             shortlist_size: 10,
-            max_history_messages: 20,
+            history_pool_size: 150,
+            history_token_budget: 2000,
+            history_mandatory_recent: 3,
         }
     }
 }
@@ -85,7 +93,9 @@ impl OssRoutingEngine {
         let router_config = RouterConfig {
             shortlist_threshold: config.router_shortlist_threshold,
             shortlist_size: config.router_shortlist_size,
-            max_history_messages: config.max_router_history_messages,
+            history_pool_size: config.pacms_history_pool_size,
+            history_token_budget: config.pacms_history_token_budget,
+            history_mandatory_recent: config.pacms_history_mandatory_recent,
         };
         Self::new(
             router_config,
@@ -106,10 +116,25 @@ impl RoutingEngine for OssRoutingEngine {
     async fn route(&self, req: RouteRequest, pool: &PgPool) -> Result<RouteResult, RouterError> {
         let t0 = Instant::now();
 
-        // Fetch available agents + conversation history in parallel
+        // Fetch available agents + conversation history in parallel. History
+        // uses the PACMS selector (budget-aware, coverage-diversified) rather
+        // than plain recency truncation — see `SessionHistory::fetch_pacms`.
+        let history_store = VectorStore::for_embedding(
+            self.api_key.clone(),
+            self.base_url.clone(),
+            self.embedding_model.clone(),
+        );
         let (agents, history) = tokio::join!(
             agent_registry::get_agents_for_user(req.user_id, pool),
-            SessionHistory::fetch(&req.session_id, pool, self.config.max_history_messages),
+            SessionHistory::fetch_pacms(
+                &req.session_id,
+                pool,
+                &history_store,
+                &req.query,
+                self.config.history_pool_size,
+                self.config.history_token_budget,
+                self.config.history_mandatory_recent,
+            ),
         );
         let agents = agents?;
 

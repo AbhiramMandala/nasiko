@@ -141,6 +141,21 @@ impl VectorStore {
         }
     }
 
+    /// A store with no agent catalog, usable only for `embed()` — for callers
+    /// (e.g. `SessionHistory::fetch_pacms`) that need text embeddings but have
+    /// no agent shortlist to build. Disabled (falls back cleanly) when
+    /// `api_key` is empty.
+    pub fn for_embedding(api_key: String, base_url: String, model: String) -> Self {
+        let enabled = !api_key.is_empty();
+        Self {
+            agents: vec![],
+            api_key,
+            base_url,
+            model,
+            enabled,
+        }
+    }
+
     /// Empty disabled store — used when agents list is empty or as a placeholder.
     pub fn disabled() -> Self {
         Self {

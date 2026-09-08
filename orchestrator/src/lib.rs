@@ -4,6 +4,7 @@ pub mod engine;
 pub mod error;
 pub mod maf;
 pub mod models;
+pub mod pacms_selector;
 pub mod providers;
 pub mod reranker;
 pub mod selector;

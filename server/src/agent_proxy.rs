@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use nasiko_flow::{FlowContext, TRACEPARENT_HEADER};
-use nasiko_orchestrator::SessionHistory;
+use nasiko_orchestrator::{SessionHistory, VectorStore};
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -150,19 +150,6 @@ pub async fn agent_proxy(
             format!("http://{}:{}", stored.host, stored.port)
         }
     };
-    // The forwarded path. A bare `/` (the chat call) must land on the agent's
-    // actual A2A mount, which the card advertises as `transport_path` — `/a2a`
-    // for the a2a-go agents, root for the a2a-server-lf ones. POSTing to `/`
-    // unconditionally 404s every agent mounted elsewhere. Sub-paths (e.g.
-    // `/.well-known/agent-card.json`) are forwarded verbatim.
-    let forwarded_path = if forwarded_path == "/" {
-        match agent.transport_path.as_deref() {
-            None | Some("") | Some("/") => "/".to_string(),
-            Some(p) => p.to_string(),
-        }
-    } else {
-        forwarded_path
-    };
     let target_url = format!("{agent_base}{forwarded_path}");
 
     // Forward the request
@@ -180,6 +167,14 @@ pub async fn agent_proxy(
     // Persist the user message to chat_messages (fire-and-forget, mirrors CLI
     // behaviour). No trace_id column: session_traces (below) is the
     // authoritative session↔trace mapping now.
+    //
+    // The 10s dedup guard exists because the CLI's A2A method negotiation
+    // (`send_message` in oss/cli/src/commands/chat.rs) retries the same
+    // logical message under a different JSON-RPC method name (message/stream
+    // -> SendStreamingMessage -> SendMessage -> message/send) when an agent
+    // rejects one with "method not found" — each retry is a fresh proxied
+    // request and would otherwise persist an identical duplicate row before
+    // the agent has even accepted the call.
     if let Some(ref info) = persist_info
         && !info.user_text.is_empty()
     {
@@ -195,7 +190,11 @@ pub async fn agent_proxy(
         let user_text = info.user_text.clone();
         tokio::spawn(async move {
             let _ = sqlx::query(
-                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+                "INSERT INTO chat_messages (session_id, role, content) \
+                 SELECT $1, $2, $3 WHERE NOT EXISTS ( \
+                     SELECT 1 FROM chat_messages \
+                     WHERE session_id = $1 AND role = $2 AND content = $3 \
+                       AND timestamp > now() - INTERVAL '10 seconds')",
             )
             .bind(&session_id)
             .bind("user")
@@ -212,21 +211,10 @@ pub async fn agent_proxy(
     // `inert` — the classifier never fired and the resolved/default model was
     // used. Registering here with default `{}` metadata (⇒ free-flowing mode)
     // makes the forwarded trace id a *known* flow, so the boundary is fireable,
-    // exactly like the orchestrator. This runs before the request is forwarded so
-    // the row is guaranteed present before the agent can call back into the LLM
-    // gateway.
-    //
-    // On conflict the flow is *re-opened* rather than left as-is. A client may
-    // send several requests under one traceparent — `nasiko chat` mints one per
-    // turn and reuses it across its protocol-negotiation attempts — and the first
-    // one to return marks the row `completed`. Leaving it that way made every
-    // later request under that trace unattributable: strict attribution requires
-    // a `running` flow, so the agent's LLM and MCP calls came back 403
-    // "traceparent does not resolve to a live flow" even though the platform
-    // itself had just opened that flow. Only the liveness columns are touched —
-    // `user_id` is never reassigned, so replaying someone else's trace id cannot
-    // move billing — and `created_at` still ages the row out of the attribution
-    // window normally.
+    // exactly like the orchestrator. `ON CONFLICT DO NOTHING` leaves nested A2A
+    // cascade calls untouched (their flow was already registered upstream), and
+    // this runs before the request is forwarded so the row is guaranteed present
+    // before the agent can call back into the LLM gateway.
     if let Ok(user_id) = claims.user_uuid() {
         let title = persist_info.as_ref().map(|i| i.user_text.clone());
         // Carry the A2A context_id (the session id `ensure_chat_session` minted
@@ -244,8 +232,7 @@ pub async fn agent_proxy(
         let _ = sqlx::query(
             r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
                VALUES ($1, $2, $3, $4, $5, 'running', $6)
-               ON CONFLICT (flow_id) DO UPDATE
-                  SET status = 'running', completed_at = NULL"#,
+               ON CONFLICT (flow_id) DO NOTHING"#,
         )
         .bind(&flow_ctx.flow_id)
         .bind(user_id)
@@ -255,12 +242,6 @@ pub async fn agent_proxy(
         .bind(&metadata)
         .execute(&state.db)
         .await;
-        // Membership record for the flow: the MCP gateway / LLM router only
-        // authorize this agent's calls if it is a recorded participant of the
-        // traceparent-named flow. Rides the same synchronous, pre-forward write
-        // as the flows row so it is guaranteed present before the agent can
-        // call back into the platform.
-        crate::flows::record_participant(&state.db, &flow_ctx.flow_id, agent_id).await;
     }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so
@@ -297,10 +278,16 @@ pub async fn agent_proxy(
             if claims.is_superuser { "true" } else { "false" },
         );
 
-    // No per-request MCP credential is forwarded: the agent calls /api/mcp with
-    // its own deploy-time MCP_GATEWAY_TOKEN, and the gateway resolves the user
-    // from the traceparent via the flows row + flow_participants record written
-    // above (docs/MCP_GATEWAY_AGENT_AUTH.md).
+    // Mint a short-lived MCP delegation token so the agent can call back into
+    // /api/mcp on this user's behalf (the agent forwards this inbound header to
+    // MCP_GATEWAY_URL). Mirrors the orchestrator path (a2a_dispatch → A2aTool);
+    // best-effort — skipped if JWT_SECRET is unset rather than failing the proxy.
+    if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
+        && let Ok(token) =
+            nasiko_auth::jwt::mint_delegation_token(&jwt_secret, &claims.sub, &agent_id_str)
+    {
+        forwarded = forwarded.header("x-nasiko-agent-token", token);
+    }
 
     // Best-effort: record the session ↔ trace correlation so observability
     // can map Tempo traces back to chat sessions for agents that don't set
@@ -371,16 +358,17 @@ pub async fn agent_proxy(
         // below, so tap the SSE chunks on their way to the client and persist
         // the collected assistant text when the stream ends (Drop also covers
         // a client disconnect mid-stream).
-        let mut tap = SseReplyTap::new(
-            state.db.clone(),
-            persist_info.as_ref().map(|i| i.session_id.clone()),
-            flow_ctx.flow_id.clone(),
-        );
-        let body = Body::from_stream(stream.inspect(move |chunk| {
-            if let Ok(bytes) = chunk {
-                tap.collector.feed(bytes);
+        let body = match persist_info {
+            Some(ref info) => {
+                let mut tap = SseReplyTap::new(state.db.clone(), info.session_id.clone());
+                Body::from_stream(stream.inspect(move |chunk| {
+                    if let Ok(bytes) = chunk {
+                        tap.collector.feed(bytes);
+                    }
+                }))
             }
-        }));
+            None => Body::from_stream(stream),
+        };
         return builder.body(body).map_err(|e| {
             tracing::error!(error = %e, %agent_id, "agent proxy: failed to build streamed response");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -411,34 +399,10 @@ pub async fn agent_proxy(
         });
     }
 
-    // The response body is fully buffered — the flow's work is done. Without
-    // this the direct-chat path's rows stayed 'running' forever, which would
-    // poison the LLM router's active-flow attribution fallback (it only looks
-    // at running flows).
-    complete_flow(&state.db, &flow_ctx.flow_id);
-
     builder.body(Body::from(bytes)).map_err(|e| {
         tracing::error!(error = %e, %agent_id, "agent proxy: failed to build response");
         StatusCode::INTERNAL_SERVER_ERROR
     })
-}
-
-/// Mark a direct-chat flow completed (fire-and-forget). `a2a_dispatch` marks
-/// its own flows; the proxy path never did, so they accumulated as 'running'.
-fn complete_flow(db: &sqlx::PgPool, flow_id: &str) {
-    let db = db.clone();
-    let flow_id = flow_id.to_string();
-    tokio::spawn(async move {
-        let _ = sqlx::query(
-            r#"UPDATE flows SET status = 'completed',
-               duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
-               completed_at = now()
-               WHERE flow_id = $1"#,
-        )
-        .bind(&flow_id)
-        .execute(&db)
-        .await;
-    });
 }
 
 /// A2A JSON-RPC methods that carry a user message and therefore must be bound
@@ -606,7 +570,25 @@ async fn ensure_chat_session(
     // continuity its own "resume with --session-id" hint implies.
     let mut rewrite_needed = injected;
     if !user_text.is_empty() && same_agent_session {
-        let history = SessionHistory::fetch(&session_id, &state.db, 20).await;
+        let history_store = VectorStore::for_embedding(
+            state.config.openai_api_key.clone().unwrap_or_default(),
+            state
+                .config
+                .openai_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com".into()),
+            state.config.embedding_model.clone(),
+        );
+        let history = SessionHistory::fetch_pacms(
+            &session_id,
+            &state.db,
+            &history_store,
+            &user_text,
+            state.config.pacms_history_pool_size,
+            state.config.pacms_history_token_budget,
+            state.config.pacms_history_mandatory_recent,
+        )
+        .await;
         if !history.is_empty()
             && let Some(part) = message
                 .get_mut("parts")
@@ -750,20 +732,15 @@ fn message_parts_text(result: &serde_json::Value) -> Option<String> {
 /// stream completed or the client disconnected.
 struct SseReplyTap {
     db: sqlx::PgPool,
-    /// Chat session to persist the collected reply into — absent for proxied
-    /// requests that carry no user message.
-    session_id: Option<String>,
-    /// The flow this request opened — completed when the stream ends.
-    flow_id: String,
+    session_id: String,
     collector: SseReplyText,
 }
 
 impl SseReplyTap {
-    fn new(db: sqlx::PgPool, session_id: Option<String>, flow_id: String) -> Self {
+    fn new(db: sqlx::PgPool, session_id: String) -> Self {
         Self {
             db,
             session_id,
-            flow_id,
             collector: SseReplyText::default(),
         }
     }
@@ -771,27 +748,25 @@ impl SseReplyTap {
 
 impl Drop for SseReplyTap {
     fn drop(&mut self) {
+        let Some(text) = self.collector.finish() else {
+            return;
+        };
         // Drop can run during runtime shutdown, where spawn would panic.
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
         let db = self.db.clone();
-        let session_id = self.session_id.take();
-        let text = self.collector.finish();
+        let session_id = std::mem::take(&mut self.session_id);
         handle.spawn(async move {
-            if let (Some(session_id), Some(text)) = (session_id, text) {
-                let _ = sqlx::query(
-                    "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
-                )
-                .bind(&session_id)
-                .bind("assistant")
-                .bind(&text)
-                .execute(&db)
-                .await;
-            }
+            let _ = sqlx::query(
+                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+            )
+            .bind(&session_id)
+            .bind("assistant")
+            .bind(&text)
+            .execute(&db)
+            .await;
         });
-        // Stream ended (or the client disconnected): close the flow row.
-        complete_flow(&self.db, &self.flow_id);
     }
 }
 

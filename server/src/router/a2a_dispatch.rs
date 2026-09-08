@@ -21,7 +21,7 @@ use nasiko_react_agent::{
 };
 use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse};
 
-use nasiko_orchestrator::{AgentSelector, SessionHistory};
+use nasiko_orchestrator::{AgentSelector, SessionHistory, VectorStore};
 
 use nasiko_flow::FlowContext;
 
@@ -185,7 +185,25 @@ pub async fn a2a_dispatch_handler(
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
-    let history = SessionHistory::fetch(history_sid, &state.db, 20).await;
+    let history_store = VectorStore::for_embedding(
+        state.config.openai_api_key.clone().unwrap_or_default(),
+        state
+            .config
+            .openai_base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com".into()),
+        state.config.embedding_model.clone(),
+    );
+    let history = SessionHistory::fetch_pacms(
+        history_sid,
+        &state.db,
+        &history_store,
+        &text,
+        state.config.pacms_history_pool_size,
+        state.config.pacms_history_token_budget,
+        state.config.pacms_history_mandatory_recent,
+    )
+    .await;
 
     let query = history.with_current_query(&text);
 
@@ -378,16 +396,11 @@ async fn orchestrator_stream(
     // Carry the A2A context_id so the LLM gateway keys its decision cache on the
     // conversation, not this turn's trace id — mirrors the direct-agent proxy
     // (`agent_proxy.rs`). `derive_boundary_signals` reads `metadata->>'context_id'`.
-    //
-    // Re-opens on conflict for the same reason as the proxy path: a repeat
-    // request under one traceparent must not inherit the `completed` status the
-    // previous one left, or strict attribution denies the agent's LLM calls.
     let flow_metadata = serde_json::json!({ "context_id": context_id });
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, 'orchestrator', $3, 'running', $4)
-           ON CONFLICT (flow_id) DO UPDATE
-              SET status = 'running', completed_at = NULL"#,
+           ON CONFLICT (flow_id) DO NOTHING"#,
     )
     .bind(&flow_id)
     .bind(user_id)
@@ -434,12 +447,18 @@ async fn orchestrator_stream(
     let a2a_client = nasiko_react_agent::A2aClient::new()
         .with_headers(vec![("traceparent".to_string(), traceparent)]);
 
-    // Each agent the orchestrator calls authenticates to /api/mcp with its own
-    // deploy-time MCP_GATEWAY_TOKEN; the user binding rides the forwarded
-    // traceparent + the flow_participants record `CpCallGuard` writes per leg.
     let mut orchestrator = Orchestrator::new(config, RegistrySource::Static(agents))
         .with_a2a_client(a2a_client)
         .with_guard(guard);
+    // Each agent the orchestrator calls gets its own MCP delegation token
+    // minted per-call (see `A2aTool`) — best-effort, omitted if JWT_SECRET
+    // is unset rather than failing the whole chat/orchestration request.
+    if let Ok(jwt_secret) = std::env::var("JWT_SECRET") {
+        orchestrator = orchestrator.with_delegation(nasiko_react_agent::DelegationContext {
+            user_id: user_id.to_string(),
+            jwt_secret,
+        });
+    }
     orchestrator
         .init()
         .await
@@ -474,13 +493,6 @@ async fn orchestrator_stream(
         }
 
         let mut content_started = false;
-        // A `Usage` event carries no agent reference (it's the orchestrator's
-        // own reasoning-LLM call, evidence: react_loop.rs emits `Usage`
-        // immediately before the `ToolCall` it produces, same turn) — held
-        // here so the *next* event can attach the selected agent's real id
-        // before the DB insert, giving `usage/by-agent` real attribution
-        // instead of every orchestrator-tracked row being agent_id NULL.
-        let mut pending_usage: Option<(u64, u64, String, bool)> = None;
 
         loop {
             tokio::select! {
@@ -494,39 +506,6 @@ async fn orchestrator_stream(
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
                         OrchestratorEvent::ToolCall { agent, message, turn } => {
-                            // This ToolCall is the direct result of the reasoning
-                            // turn `pending_usage` was reported for — attach the
-                            // agent it resolved to before inserting.
-                            if let Some((it, ot, m, est)) = pending_usage.take() {
-                                let tracker = usage_tracker.clone();
-                                let uid = user_id;
-                                let fid = flow_id_cleanup.clone();
-                                let db2 = db.clone();
-                                let agent_name = agent.clone();
-                                tokio::spawn(async move {
-                                    let agent_uuid: Option<Uuid> = sqlx::query_scalar(
-                                        "SELECT id FROM agents WHERE name = $1 AND status = 'running'",
-                                    )
-                                    .bind(&agent_name)
-                                    .fetch_optional(&db2)
-                                    .await
-                                    .ok()
-                                    .flatten();
-
-                                    let mut builder = TokenUsageBuilder::new(uid, "orchestrator", "openai", &m)
-                                        .tokens(it as i32, ot as i32)
-                                        .session_id(&fid)
-                                        .streaming(false)
-                                        .metadata(json!({"key_source": "platform", "estimated": est}));
-                                    if let Some(aid) = agent_uuid {
-                                        builder = builder.agent_id(aid);
-                                    }
-                                    if let Err(e) = tracker.track_tokens(builder.build()).await {
-                                        tracing::warn!(error = %e, "failed to track orchestrator token usage (tool-call turn)");
-                                    }
-                                });
-                            }
-
                             let _ = sqlx::query(
                                 r#"INSERT INTO flow_steps (flow_id, step_order, depth, agent_name, caller_agent_name, input_summary, status, created_at)
                                    VALUES ($1, $2, 1, $3, 'orchestrator', $4, 'running', now())"#,
@@ -602,29 +581,30 @@ async fn orchestrator_stream(
                         OrchestratorEvent::Usage { input_tokens, output_tokens, model, estimated } => {
                             turn_usage.add(input_tokens, output_tokens, &model, estimated);
 
-                            // Flush a previous turn's usage that never got a
-                            // following ToolCall (e.g. a final synthesis-only
-                            // turn that just answers directly) — unattributed,
-                            // same as before this change.
-                            if let Some((it, ot, m, est)) = pending_usage.take() {
-                                let tracker = usage_tracker.clone();
-                                let uid = user_id;
-                                let fid = flow_id_cleanup.clone();
-                                tokio::spawn(async move {
-                                    let usage = TokenUsageBuilder::new(uid, "orchestrator", "openai", &m)
-                                        .tokens(it as i32, ot as i32)
-                                        .session_id(&fid)
-                                        .streaming(false)
-                                        .metadata(json!({"key_source": "platform", "estimated": est}))
-                                        .build();
-                                    if let Err(e) = tracker.track_tokens(usage).await {
-                                        tracing::warn!(error = %e, "failed to track orchestrator token usage");
-                                    }
-                                });
-                            }
-                            // Hold this turn's usage — the ToolCall arm above
-                            // attaches the real agent_id if one follows.
-                            pending_usage = Some((input_tokens, output_tokens, model.clone(), estimated));
+                            // Fire-and-forget: track token usage in DB
+                            let tracker = usage_tracker.clone();
+                            let uid = user_id;
+                            let fid = flow_id_cleanup.clone();
+                            let m = model.clone();
+                            tokio::spawn(async move {
+                                let usage = TokenUsageBuilder::new(
+                                    uid,
+                                    "orchestrator",
+                                    "openai",
+                                    &m,
+                                )
+                                .tokens(input_tokens as i32, output_tokens as i32)
+                                .session_id(&fid)
+                                .streaming(false)
+                                .metadata(json!({
+                                    "key_source": "platform",
+                                    "estimated": estimated,
+                                }))
+                                .build();
+                                if let Err(e) = tracker.track_tokens(usage).await {
+                                    tracing::warn!(error = %e, "failed to track orchestrator token usage");
+                                }
+                            });
 
                             // Also record in OTel GenAI metrics
                             genai_metrics.record_tokens(
@@ -715,21 +695,6 @@ async fn orchestrator_stream(
             }
         }
 
-        // Stream ended (Done/Error/channel-closed) with a still-unflushed
-        // final turn's usage (no ToolCall ever followed it) — flush it here,
-        // unattributed, so it's never silently dropped.
-        if let Some((it, ot, m, est)) = pending_usage.take() {
-            let usage = TokenUsageBuilder::new(user_id, "orchestrator", "openai", &m)
-                .tokens(it as i32, ot as i32)
-                .session_id(&flow_id_cleanup)
-                .streaming(false)
-                .metadata(json!({"key_source": "platform", "estimated": est}))
-                .build();
-            if let Err(e) = usage_tracker.track_tokens(usage).await {
-                tracing::warn!(error = %e, "failed to track orchestrator token usage (final flush)");
-            }
-        }
-
         let _ = sqlx::query(
             r#"UPDATE flows SET status = 'completed',
                duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
@@ -762,7 +727,6 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
     .ok_or_else(|| A2aDispatchError::AgentNotFound(target.to_string()))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn agent_stream(
     state: &AppState,
     agent: AgentRow,
@@ -799,13 +763,10 @@ async fn agent_stream(
     let flow_id = flow_ctx.flow_id.clone();
     state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
 
-    // Re-opens on conflict — see the orchestrator branch above: a repeat request
-    // under one traceparent must not inherit the previous one's `completed`.
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, $3, $4, $5, 'running', '{}'::jsonb)
-           ON CONFLICT (flow_id) DO UPDATE
-              SET status = 'running', completed_at = NULL"#,
+           ON CONFLICT (flow_id) DO NOTHING"#,
     )
     .bind(&flow_id)
     .bind(user_id)
@@ -814,10 +775,6 @@ async fn agent_stream(
     .bind(query)
     .execute(&state.db)
     .await;
-    // Participant record — load-bearing for MCP gateway / LLM router auth
-    // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4); same synchronous pre-forward write
-    // as the flows row above.
-    crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
 
     // Index the session ↔ trace mapping, exactly as `orchestrator_stream` and
     // `agent_proxy.rs` already do. Without it this branch — every "chat with
@@ -850,15 +807,27 @@ async fn agent_stream(
         nasiko_types::a2a::build_stream_request_with_parts(query, Some(context_id), file_parts)
     };
 
-    // No per-request MCP credential: the agent authenticates to /api/mcp with
-    // its own deploy-time MCP_GATEWAY_TOKEN; the forwarded traceparent + the
-    // flow_participants record written above carry the user binding.
     let build_agent_req = || {
-        state
+        let mut req = state
             .http_client
             .post(&endpoint)
             .header("A2A-Version", "1.0")
-            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
+            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx));
+
+        // Mint a delegation token so this agent can call back into `/api/mcp`
+        // proving "I am agent.id, acting for user_id" — mirrors `agent_proxy.rs`.
+        // Best-effort: if JWT_SECRET is unset, MCP delegation is simply
+        // unavailable to this agent rather than failing the whole chat call.
+        if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
+            && let Ok(delegation_token) = nasiko_auth::jwt::mint_delegation_token(
+                &jwt_secret,
+                &user_id.to_string(),
+                &agent.id.to_string(),
+            )
+        {
+            req = req.header("x-nasiko-agent-token", delegation_token);
+        }
+        req
     };
 
     let response = build_agent_req()
@@ -1328,8 +1297,15 @@ async fn ensure_orchestrator_chat_session(
         return;
     }
 
+    // 10s dedup guard: mirrors the one in agent_proxy.rs — the CLI's A2A
+    // method negotiation can hit this path twice for the same logical
+    // message when it retries under a different JSON-RPC method name.
     let _ = sqlx::query(
-        "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'user', $2)",
+        "INSERT INTO chat_messages (session_id, role, content) \
+         SELECT $1, 'user', $2 WHERE NOT EXISTS ( \
+             SELECT 1 FROM chat_messages \
+             WHERE session_id = $1 AND role = 'user' AND content = $2 \
+               AND timestamp > now() - INTERVAL '10 seconds')",
     )
     .bind(context_id)
     .bind(query)
