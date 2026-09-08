@@ -372,9 +372,19 @@ const pillBars = {
         const bottom = Math.max(el.y, el.base);
         if (bottom - top <= 0) return;
         const w = 8;
-        // 1px shaved off each end = the 2px gap between stacked neighbours.
-        const y0 = top + 1;
-        const h = Math.max(bottom - top - 2, w); // floor: a full circle
+        // A near-zero segment still needs to read as a dot, not vanish — but
+        // the floor must grow UPWARD from this segment's grounded edge
+        // (`bottom`: the neighbour below it, or the axis itself for the
+        // lowest series), never downward past it. Anchoring at `top` and
+        // pushing `height` down instead (the previous approach) drew the
+        // lowest series' near-zero hours several px below the actual x-axis
+        // — invisible before this form had a baseline to show it against,
+        // and wrong regardless once it did.
+        const short = bottom - top - 2 < w;
+        // 1px shaved off each end = the 2px gap between stacked neighbours;
+        // the floored case only has a neighbour above it to gap from.
+        const y0 = short ? bottom - w - 1 : top + 1;
+        const h = short ? w : bottom - top - 2;
         ctx.save();
         ctx.beginPath();
         ctx.roundRect(el.x - w / 2, y0, w, h, w / 2);
