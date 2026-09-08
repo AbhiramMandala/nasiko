@@ -491,6 +491,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
         mcp_upload_max_replicas: 1,
         agent_max_replicas: 1,
+        // Serial builds in tests: several suites seed build_jobs rows and assert
+        // on them, and a concurrent worker would make those assertions racy.
+        build_concurrency: 1,
         agent_default_memory: "512Mi".to_string(),
         agent_memory_volume: "nasiko-agent-memory".to_string(),
         agent_memory_init_image: "alpine:3.21".to_string(),

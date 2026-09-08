@@ -215,6 +215,16 @@ pub struct Config {
     /// MCP connectors. AGENT_MAX_REPLICAS, default 1 (no autoscaling unless
     /// explicitly raised). Ignored by DockerRuntime.
     pub agent_max_replicas: u32,
+    /// Number of agent/connector image builds the build worker runs
+    /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=16: each
+    /// in-flight build is a `docker build` on this host (OSS) or a Kubernetes
+    /// Job against one buildkitd (EE), so an unbounded value is a footgun, not
+    /// a feature. Set 1 to restore the old strictly-serial behavior.
+    ///
+    /// Two builds for the *same* agent or connector never overlap regardless of
+    /// this value — the claim query skips a target that already has a build in
+    /// flight (see `build_worker::claim_next_job`).
+    pub build_concurrency: usize,
     /// Default memory limit for every agent container, Kubernetes notation
     /// (`"512Mi"`, `"1Gi"`) — see `nasiko_runtime::ResourceLimits::memory`.
     /// AGENT_DEFAULT_MEMORY, default `"1Gi"`. `nasiko_runtime::ResourceLimits`
@@ -413,6 +423,7 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
+            build_concurrency: env_parse("BUILD_CONCURRENCY", 4).clamp(1, 16),
             agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
             agent_memory_volume: env_or("AGENT_MEMORY_VOLUME", "nasiko-agent-memory"),
             agent_memory_init_image: env_or("AGENT_MEMORY_INIT_IMAGE", "alpine:3.21"),

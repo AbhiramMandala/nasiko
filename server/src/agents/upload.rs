@@ -947,8 +947,16 @@ pub async fn execute_upload_and_deploy(
             return Err("no Dockerfile found in source zip".into());
         }
 
-        // Build Docker image.
-        let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
+        // Build Docker image. tar_directory walks the whole source tree and
+        // builds the archive in memory — synchronous CPU + IO, so it goes on the
+        // blocking pool. With build_concurrency > 1 running it inline would block
+        // one runtime thread per in-flight build, on the same runtime serving the
+        // HTTP API.
+        let src = tmp_dir.clone();
+        let tar_bytes = tokio::task::spawn_blocking(move || build::tar_directory(&src))
+            .await
+            .map_err(|e| format!("spawn_blocking tar: {e}"))?
+            .map_err(|e| format!("tar source: {e}"))?;
         runtime
             .build(&tar_bytes, &image_tag)
             .await
@@ -1255,7 +1263,15 @@ pub async fn execute_clone_and_deploy(
         // Build Docker image. Prefixed so the failure handler below can tell
         // a real build was attempted here — everything before this point is
         // a pre-build rejection instead (see the `Err(e)` match below).
-        let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
+        // tar_directory is synchronous CPU + IO over the whole source tree, so
+        // it goes on the blocking pool: with build_concurrency > 1, running it
+        // inline would block one runtime thread per in-flight build, on the
+        // same runtime serving the HTTP API.
+        let src = tmp_dir.clone();
+        let tar_bytes = tokio::task::spawn_blocking(move || build::tar_directory(&src))
+            .await
+            .map_err(|e| format!("spawn_blocking tar: {e}"))?
+            .map_err(|e| format!("tar source: {e}"))?;
         runtime
             .build(&tar_bytes, &image_tag)
             .await
