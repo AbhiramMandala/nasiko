@@ -402,3 +402,46 @@ test('trailing null padding is separated from a dropped value', () => {
   assert.equal(pad.diagnostics.some((d) => d.code === 'excess_arguments'), false);
   assert.match(held.diagnostics.find((d) => d.code === 'excess_arguments')?.message ?? '', /1 past the end held values/);
 });
+
+// ── an editable control that discards what is typed into it ─────────────────
+
+test('an Action-bearing input whose value is not state is named', () => {
+  // The failure is one step worse than the caret loss it sits beside: the
+  // Action fires, the store changes, render() rebuilds, and the new input is
+  // built from an argument that never moved — so the box empties as you type,
+  // silently. Found by a browser test that had left `value` unbound and could
+  // not explain why the caret came back at 0.
+  const out = run('$q = ""\na = Action([@Set($q, $event)])\n'
+    + 'root = AppSearch(null, null, null, null, "Filter", null, null, null, null, null, null, a)');
+  const d = out.diagnostics.find((x) => x.code === 'uncontrolled_input');
+  assert.ok(d, out.diagnostics.map((x) => x.code).join(','));
+  assert.match(d.message, /\$state/);
+});
+
+test('a constant value counts as unbound, because it never moves either', () => {
+  // Checked on the AST: after evaluation `$q` and "fixed" are both a string,
+  // so the difference only exists before the evaluator runs.
+  const out = run('$q = ""\na = Action([@Set($q, $event)])\n'
+    + 'root = AppSearch(null, null, null, null, "Filter", "fixed", null, null, null, null, null, a)');
+  assert.ok(out.diagnostics.some((x) => x.code === 'uncontrolled_input'));
+});
+
+test('a value read back from state is silent — this is the correct shape', () => {
+  const out = run('$q = ""\na = Action([@Set($q, $event)])\n'
+    + 'root = AppSearch(null, null, null, null, "Filter", $q, null, null, null, null, null, a)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'uncontrolled_input'), false,
+    out.diagnostics.map((x) => x.code).join(','));
+});
+
+test('a button with an Action is not an editable control', () => {
+  // The check keys on the component having a `value` parameter at all, so the
+  // components that carry an Action and nothing to type into stay quiet.
+  const out = run('$v = 1\na = Action([@Set($v, 2)])\n'
+    + 'root = AppButton("Go", null, null, null, null, null, null, null, null, null, null, a)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'uncontrolled_input'), false);
+});
+
+test('an input with no Action is left alone', () => {
+  const out = run('root = AppSearch(null, null, null, null, "Filter", null)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'uncontrolled_input'), false);
+});
