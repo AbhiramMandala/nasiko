@@ -40,9 +40,14 @@ pub async fn run(
 
     loop {
         tick.tick().await;
-        if let Err(e) =
-            materialize_once(&db, provider.as_ref(), session_resolver.as_ref(), overlap, batch_size)
-                .await
+        if let Err(e) = materialize_once(
+            &db,
+            provider.as_ref(),
+            session_resolver.as_ref(),
+            overlap,
+            batch_size,
+        )
+        .await
         {
             tracing::warn!(error = %e, "trace_materializer: pass failed");
         }
