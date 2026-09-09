@@ -399,6 +399,10 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         oci_storage_bucket: "nasiko-test-artifacts".into(),
         agent_image_registry: String::new(),
         build_push_token: String::new(),
+        // No Weave in the test topology; an empty token makes
+        // /api/weave/surface answer 503 rather than dial out.
+        weave_base_url: "http://localhost:8801".into(),
+        weave_internal_token: String::new(),
         seed_agents: None,
         openai_api_key: None,
         openai_base_url: None,
@@ -437,6 +441,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         docker_agent_network: None,
         oci_registry_host: None,
         container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly
+        trace_usage_sync_secs: 0,
+        trace_usage_overlap_secs: 600,
+        trace_usage_batch_size: 50,
         git_clone_allowed_hosts: vec![
             "github.com".to_owned(),
             "gitlab.com".to_owned(),
@@ -487,6 +494,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
         mcp_upload_max_replicas: 1,
         agent_max_replicas: 1,
+        // Serial builds in tests: several suites seed build_jobs rows and assert
+        // on them, and a concurrent worker would make those assertions racy.
+        build_concurrency: 1,
         agent_default_memory: "512Mi".to_string(),
         agent_memory_volume: "nasiko-agent-memory".to_string(),
         agent_memory_init_image: "alpine:3.21".to_string(),

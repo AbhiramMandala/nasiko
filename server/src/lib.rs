@@ -1,3 +1,9 @@
+// Axum handlers here deliberately return `Result<T, axum::response::Response>`
+// so `?` can short-circuit with an already-built HTTP response — clippy's
+// large-Err-variant lint doesn't fit that idiom, which is used pervasively
+// across this crate's routes.
+#![allow(clippy::result_large_err)]
+
 pub mod acl;
 pub mod admin;
 pub mod admission;
@@ -30,6 +36,7 @@ pub mod telemetry;
 pub mod transcribe;
 pub mod usage;
 pub mod users;
+pub mod weave;
 
 use axum::handler::Handler;
 use axum::http::Method;
@@ -231,6 +238,12 @@ where
     // costs two bcrypt cost-12 hashes. 10/min is generous for a human changing
     // their own password and still bounds the CPU burn from a scripted loop.
     let change_password_limiter = RateLimiter::new(10, Duration::from_secs(60));
+    // The FinOps dashboard/timeseries/calendar/attributions endpoints fan out
+    // several concurrent Tempo searches per request (bounded concurrency, but
+    // real load nonetheless) — a tighter, dedicated budget than the rest of
+    // the observability router (session/trace/span reads are cheap single
+    // lookups and shouldn't share it).
+    let finops_limiter = RateLimiter::new(20, Duration::from_secs(60));
 
     // Public A2A registry (agent discovery) — see registry_a2a.rs for why it
     // is unauthenticated; the global fixed window bounds enumeration abuse.
@@ -264,7 +277,7 @@ where
         .merge(flows::router())
         .nest(
             "/observability",
-            observability::protected_router(state.clone()),
+            observability::protected_router(state.clone(), finops_limiter),
         )
         .merge(agents::upload::status_router())
         .merge(github::router())
@@ -272,6 +285,7 @@ where
         .merge(transcribe::router())
         .merge(mcp::router())
         .merge(mcp_upload_routes)
+        .merge(weave::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,

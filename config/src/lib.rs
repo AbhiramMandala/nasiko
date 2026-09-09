@@ -34,6 +34,14 @@ pub struct Config {
     /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
     /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
     pub build_push_token: String,
+    /// Base URL of the Weave generation service the control plane proxies
+    /// `POST /api/weave/surface` to. The browser never talks to it directly —
+    /// it holds the internal token, and the token must not leave the server.
+    pub weave_base_url: String,
+    /// Shared secret Weave requires on `x-weave-internal-token`, same pattern
+    /// as `build_push_token`. Empty means generation is not configured, and
+    /// the route answers 503 rather than proxying without it.
+    pub weave_internal_token: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -151,6 +159,15 @@ pub struct Config {
     /// Poll interval in seconds for the container-hours meter. 0 disables metering.
     pub container_hours_poll_secs: u64,
 
+    // ─── Trace Materializer ─────────────────────────────────────────────────
+    /// Poll interval in seconds for the trace-usage materializer. 0 disables.
+    pub trace_usage_sync_secs: u64,
+    /// Overlap window in seconds: the materializer re-queries this far before
+    /// the high-water mark to catch late-arriving spans and pricing corrections.
+    pub trace_usage_overlap_secs: u64,
+    /// Max traces to fetch from Tempo per concurrent batch.
+    pub trace_usage_batch_size: usize,
+
     // ─── MCP Gateway ────────────────────────────────────────────────────────
     /// Composio platform API key. When unset, Composio integration is disabled
     /// (generic MCP servers still work).
@@ -207,6 +224,16 @@ pub struct Config {
     /// MCP connectors. AGENT_MAX_REPLICAS, default 1 (no autoscaling unless
     /// explicitly raised). Ignored by DockerRuntime.
     pub agent_max_replicas: u32,
+    /// Number of agent/connector image builds the build worker runs
+    /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=16: each
+    /// in-flight build is a `docker build` on this host (OSS) or a Kubernetes
+    /// Job against one buildkitd (EE), so an unbounded value is a footgun, not
+    /// a feature. Set 1 to restore the old strictly-serial behavior.
+    ///
+    /// Two builds for the *same* agent or connector never overlap regardless of
+    /// this value — the claim query skips a target that already has a build in
+    /// flight (see `build_worker::claim_next_job`).
+    pub build_concurrency: usize,
     /// Default memory limit for every agent container, Kubernetes notation
     /// (`"512Mi"`, `"1Gi"`) — see `nasiko_runtime::ResourceLimits::memory`.
     /// AGENT_DEFAULT_MEMORY, default `"1Gi"`. `nasiko_runtime::ResourceLimits`
@@ -265,6 +292,8 @@ impl Config {
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
+            weave_base_url: env_or("WEAVE_BASE_URL", "http://localhost:8801"),
+            weave_internal_token: env_or("WEAVE_INTERNAL_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -334,6 +363,9 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty()),
             container_hours_poll_secs: env_parse("CONTAINER_HOURS_POLL_SECS", 60),
+            trace_usage_sync_secs: env_parse("TRACE_USAGE_SYNC_SECS", 120),
+            trace_usage_overlap_secs: env_parse("TRACE_USAGE_OVERLAP_SECS", 600),
+            trace_usage_batch_size: env_parse("TRACE_USAGE_BATCH_SIZE", 50),
             git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
                 .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
                 .split(',')
@@ -403,6 +435,7 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
+            build_concurrency: env_parse("BUILD_CONCURRENCY", 4).clamp(1, 16),
             agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
             agent_memory_volume: env_or("AGENT_MEMORY_VOLUME", "nasiko-agent-memory"),
             agent_memory_init_image: env_or("AGENT_MEMORY_INIT_IMAGE", "alpine:3.21"),

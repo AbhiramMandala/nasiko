@@ -256,6 +256,10 @@ pub struct AgentStats {
     pub agent_id: String,
     /// Number of user-query traces in the window.
     pub trace_count: usize,
+    /// True when `trace_count` exceeded the token-aggregation trace cap, so
+    /// `input_tokens`/`output_tokens`/`cost` were only summed over the first
+    /// `TOKEN_AGGREGATION_TRACE_CAP` traces and understate the real total.
+    pub is_capped: bool,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub model_used: Option<String>,
@@ -271,6 +275,10 @@ pub struct AgentFinOps {
     pub agent_id: String,
     /// User-query trace count in the window.
     pub operations: usize,
+    /// True when `operations` exceeded the token-aggregation trace cap, so
+    /// the token/cost fields below were only summed over the first
+    /// `TOKEN_AGGREGATION_TRACE_CAP` traces and understate the real total.
+    pub is_capped: bool,
     pub input_tokens: u64,
     pub output_tokens: u64,
     /// Prompt tokens served from provider cache (OpenAI cached / Anthropic cache read).
@@ -280,6 +288,27 @@ pub struct AgentFinOps {
     pub model_used: Option<String>,
     pub latency_ms_p50: Option<f64>,
     pub cost: CostBreakdown,
+}
+
+/// One row materialized from a Tempo trace for the `trace_usage` table.
+/// Keyed by `(trace_id, agent_name)` — a multi-agent trace produces one row
+/// per participating agent. Produced by [`ObservabilityProvider::extract_trace_usage`].
+#[derive(Debug, Clone)]
+pub struct TraceUsageRow {
+    pub trace_id: String,
+    pub agent_name: String,
+    pub session_id: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cost_usd: f64,
+    pub prompt_cost_usd: f64,
+    pub completion_cost_usd: f64,
+    pub latency_ms: Option<i64>,
+    pub started_at: DateTime<Utc>,
 }
 
 /// Sorted-percentile helper over millisecond durations.
