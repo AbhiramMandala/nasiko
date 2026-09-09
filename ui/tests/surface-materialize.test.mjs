@@ -26,6 +26,47 @@ const tree = (n, d = 0) => (!n ? '' : `${'  '.repeat(d)}${n.tag}\n${(n.children 
 
 // ── arithmetic and coercion ─────────────────────────────────────────────────
 
+test('a component downstream of a failed query says so, not "No data"', () => {
+  // A failed fetch falls back to the declared default, so by value alone it is
+  // identical to a genuinely empty result — and the component then asserts
+  // nothing exists. Observed live: "Spend over time / No data" for a
+  // fetchSpendTimeseries that had returned a malformed body.
+  const dsl = [
+    'root = AppStack([chart, table], "md")',
+    'spendQ = Query("fetchSpendTimeseries", [], {points: []}, "data.points")',
+    'chart = AppChart({labels: spendQ.bucket_start, datasets: []}, "line")',
+    'okQ = Query("fetchUsageByAgent", [null, 1, 50], [], "data")',
+    'table = AppTable(okQ, 20, "pages", false)',
+  ].join('\n');
+
+  const failed = run(dsl, { complete: true, failedQueries: new Set(['spendQ']) });
+  const [chart, table] = failed.root.children;
+  assert.match(chart.props['empty-text'], /Could not load/);
+  // The transitive step is the point: the failure is on spendQ, the message
+  // lands on the chart that reads it.
+  assert.equal(table.props['empty-message'], undefined, 'a healthy query is untouched');
+
+  // And with nothing failing, neither is touched — an empty result still reads
+  // as empty, which is true.
+  const healthy = run(dsl, { complete: true });
+  assert.equal(healthy.root.children[0].props['empty-text'], undefined);
+});
+
+test('a hand-written empty message survives a failed query', () => {
+  // Overriding wording the author chose would be a worse default than the one
+  // it replaced.
+  const out = run([
+    'root = AppStack([chart], "md")',
+    'spendQ = Query("fetchSpendTimeseries", [], {points: []}, "data.points")',
+    // empty-text is the 9th positional argument (paramOrder), not the 6th —
+    // getting that wrong puts the string in center-value, which is exactly the
+    // silent-rebinding hazard the catalog's written-out paramOrder exists for.
+    'chart = AppChart({labels: spendQ.bucket_start, datasets: []}, "line", false, "currency", "USD", null, null, null, "No spend in the last 7 days")',
+  ].join('\n'), { complete: true, failedQueries: new Set(['spendQ']) });
+  assert.equal(out.root.children[0].props['empty-text'], 'No spend in the last 7 days');
+});
+
+
 test('a root restatement that drops a child is caught, not silent', () => {
   // agent.yaml rule 7 forbids writing `root` twice, and justifies it with
   // "anything that was only reachable through the first root ... never renders,

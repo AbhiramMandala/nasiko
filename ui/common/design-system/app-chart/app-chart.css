@@ -149,20 +149,29 @@
   /* The empty state is the plot's own box — same ground, same corners, the
      height the plot would have had — with the message centred in it. The row
      forms have no fixed height and fall back to a padded line. */
+  /* Reads as a reserved region, not as a stray line of text.
+     It used to be `background: var(--bg-base)` with no border — the same fill
+     as the surface it sits on, so the box the comment in the JS describes was
+     invisible and "No data" floated in whitespace, while app-table's empty row
+     next to it sat in a proper frame. One design system, and the two disagreed.
+     Dashed rather than solid: a solid border reads as a component that failed
+     to draw, a dashed one reads as space waiting to be filled. */
   .chart-empty {
     display: flex;
     flex: 1 1 auto;
     align-items: center;
     justify-content: center;
-    min-height: 64px;
-    padding: var(--s-16);
-    background: var(--bg-base);
+    min-height: 120px;
+    padding: var(--s-24) var(--s-16);
+    background: var(--bg-subtle);
+    border: 1px dashed var(--border-primary);
     border-radius: var(--r-8);
     text-align: center;
+    text-wrap: balance;
     font-size: var(--font-size-sm);
     color: var(--fg-secondary);
 
-    & p { margin: 0; }
+    & p { margin: 0; max-width: 44ch; }
   }
 
   .chart-skeleton {
@@ -171,17 +180,6 @@
     border-radius: var(--r-8);
     background: var(--bg-track);
     animation: skel-pulse 1.5s ease-in-out infinite;
-  }
-
-  /* `flush-top` squares the plot's own top corners so it sits flush under
-     another card-like element (see `appChartPlotBg` in app-chart.js) — but
-     that plugin only paints the canvas. The skeleton and empty state are
-     plain styled divs shown INSTEAD of the canvas (no data yet, or none to
-     show), so they need the same override or the seam reappears the moment
-     a day with no spend is picked. */
-  :scope[flush-top] .chart-empty,
-  :scope[flush-top] .chart-skeleton {
-    border-radius: 0 0 var(--r-8) var(--r-8);
   }
 
   @media (prefers-reduced-motion: reduce) {

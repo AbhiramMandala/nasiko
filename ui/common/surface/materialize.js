@@ -118,6 +118,42 @@ export function materialize(statements, componentIndex, ctx = {}) {
     else symbols.set(id, ast);
   }
 
+  /**
+   * Statements whose data is currently a failed fetch rather than a real result.
+   *
+   * The query manager knows which Query statements are failing. What a component
+   * needs to know is whether IT is downstream of one — `spendChart` reads
+   * `spendQ.points`, so a failure on `spendQ` is a failure of the chart. That is
+   * a transitive question, so it is answered here once, statically, over the
+   * same symbol table the orphan walk uses.
+   *
+   * Without it the two states are indistinguishable at the component: a failed
+   * fetch falls back to the declared default, usually `[]`, and the component
+   * renders its empty state — telling the user nothing exists when the truth is
+   * that it could not be loaded.
+   */
+  function degradedStatements() {
+    const failedQueries = ctx.failedQueries;
+    if (!failedQueries?.size) return new Set();
+
+    const out = new Set();
+    for (const name of symbols.keys()) {
+      // Depth-first over this statement's references. `seen` is per statement
+      // and also the cycle guard — a DSL cycle is possible and must not hang.
+      const seen = new Set([name]);
+      const queue = [name];
+      while (queue.length) {
+        const at = queue.pop();
+        if (failedQueries.has(at)) { out.add(name); break; }
+        walkAstRefs(symbols.get(at), (_kind, ref) => {
+          if (!seen.has(ref) && symbols.has(ref)) { seen.add(ref); queue.push(ref); }
+        });
+      }
+    }
+    return out;
+  }
+  const degraded = degradedStatements();
+
   const unresolved = [];
   const diagnostics = [];
   /** @type {Array<{statementId: string, source: string, args: unknown[], select: string|null}>} */
@@ -414,6 +450,22 @@ export function materialize(statements, componentIndex, ctx = {}) {
           + 'Action([@Set($q, $event)])',
         statementId,
       );
+    }
+
+    // A component downstream of a failed fetch must not claim the data is
+    // absent. Set through whichever empty-state attribute this component
+    // actually declares, read off the catalog rather than a hardcoded list, so
+    // a new component with an empty state is covered the day it is added.
+    // Only when the generator has not written one itself — an author who chose
+    // the wording keeps it, and overriding a deliberate string would be worse
+    // than the default it replaced.
+    if (degraded.has(statementId)) {
+      const attrs = entry.def.attributes ?? {};
+      for (const name of ['empty-text', 'empty-message']) {
+        if (name in attrs && props[name] == null) {
+          props[name] = 'Could not load this data — the request failed.';
+        }
+      }
     }
 
     return {

@@ -258,6 +258,10 @@ export function createSurfaceSession(options) {
     const out = materialize(statements, index, {
       store,
       queryResults: queries.results,
+      // Which statements are currently a failed fetch rather than an empty
+      // result — the two are indistinguishable by value, since a failure falls
+      // back to the declared default.
+      failedQueries: queries.failed,
       mutationResults: queries.mutationResults,
       // Orphan reporting waits for the last pass. Mid-stream a statement is
       // routinely unreferenced for a chunk or two, until the parent that
