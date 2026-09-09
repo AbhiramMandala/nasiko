@@ -188,14 +188,17 @@ export function materialize(statements, componentIndex, ctx = {}) {
       case 'Null': return null;
 
       case 'StateRef': {
-        // A per-fire binding first. `$event` is the live value the component
-        // just produced, and it belongs to one Action run — putting it in the
-        // store would leave the last thing anyone typed sitting there as
-        // durable state for every later expression to read.
-        const bound = lookupScope(scope, node.n);
-        if (bound.found) return bound.value;
-
-        // Then the store, then the statement that declared it. That fallback
+        // `$event` (and only `$event`) is never in the store — it is the live
+        // value of whatever DOM event just fired the Action being evaluated,
+        // injected by the action runner as a scope entry rather than a store
+        // write, because it must not persist past this one evaluation. The
+        // scope chain already exists for `@Each`'s loop variable, so this is
+        // that same mechanism, checked first and only for a name it actually
+        // carries — an ordinary `$state` name is never placed in scope, so
+        // this adds nothing to the lookup for every other case.
+        const local = lookupScope(scope, node.n);
+        if (local.found) return local.value;
+        // The store first, then the statement that declared it. That fallback
         // is what makes the *first* paint of a turn correct: `$days = 7` and
         // `historyQ = Query("fetchUsageHistory", [$days], [])` arrive in the
         // same chunk, and the query has to fetch 7 rather than fetch null and

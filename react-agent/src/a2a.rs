@@ -33,6 +33,11 @@ pub enum AgentStreamEvent {
     Status(String),
     /// A chunk of the agent's reply text as it generates.
     Content(String),
+    /// A structured data part from the called agent's own stream (e.g. a
+    /// nested orchestrator's `agent_invoke`/`agent_result` for its own
+    /// sub-agents). Relayed as-is — depth is still bounded independently by
+    /// `FlowGuard::max_depth`, so this cannot grow unbounded.
+    Data(serde_json::Value),
 }
 
 /// One JSON-RPC `result` object from a streaming call, unclassified — for a
@@ -483,9 +488,11 @@ impl A2aClient {
                                 let _ = tx.send(AgentStreamEvent::Status(text)).await;
                             }
                         }
-                        // Structured data parts are another orchestrator's own
-                        // events — not relayed, to keep nesting bounded.
-                        SseEvent::StatusData(_) => {}
+                        SseEvent::StatusData(data) => {
+                            if let Some(ref tx) = progress {
+                                let _ = tx.send(AgentStreamEvent::Data(data)).await;
+                            }
+                        }
                         SseEvent::Completed { snapshot_text } => {
                             if collected.is_empty()
                                 && let Some(t) = snapshot_text

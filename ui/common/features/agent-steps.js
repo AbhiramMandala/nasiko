@@ -263,7 +263,7 @@ class AgentSteps extends HTMLElement {
     return {
       name,
       args: d.arguments ?? d.args ?? d.input ?? d.parameters ?? null,
-      result: d.result ?? d.output ?? d.response ?? null,
+      result: d.result ?? d.output ?? d.response ?? d.content ?? null,
       success: d.success !== false && !d.error,
       durationMs: d.duration_ms ?? null,
       agent: d.agent || d.agent_name || null,
