@@ -193,6 +193,60 @@ async fn deliver(state: AppState, row: HitlRequest) {
         return;
     }
 
+    // Register this resume as a live flow in the MCP-gateway sense (Postgres `flows` +
+    // `flow_participants`) — a completely separate bookkeeping system from the FlowGuard
+    // cascade-limit check just above, which never touches these tables. Without this, the
+    // resumed agent's own MCP tool calls (e.g. retrying the exact call a human just approved)
+    // 403 with "traceparent does not resolve to a live flow": `flow_ctx` is a brand-new root
+    // flow that no dispatch path had ever registered here (confirmed live — HITL_PR342-style
+    // regression). Mirrors every other dispatch site's flows insert (`agent_proxy.rs`,
+    // `a2a_dispatch.rs`, `maf/executor.rs::register_flow`).
+    //
+    // `metadata.context_id` carries the STABLE chat-session id (`context_id`, e.g. `ses_...`),
+    // not this resume's own fresh `flow_ctx.flow_id` — matching `agent_proxy.rs`'s convention
+    // (`derive_boundary_signals` reads it as the sticky key). Session-traces is what actually
+    // matters here, though: `nasiko_mcp_gateway::session::resolve_context_id` resolves a
+    // tools/call's session by looking up `session_traces` for the CALLING trace_id, falling back
+    // to the trace_id itself only when no row exists. Every resume mints a brand-new
+    // `flow_ctx.flow_id`, so without this row `resolve_tool_approval_retry`'s once/session-scope
+    // grant lookup keys on a trace_id that's different on every single resume, never matching
+    // the original ask's `context_id` — every resumed retry of a tool the human just approved
+    // gets asked again, forever (confirmed live: approving the same tool_approval repeatedly,
+    // every retry still comes back `ask_required`). Mapping this resume's flow_id to the real
+    // `context_id` here is what lets the retry resolve to the SAME session the original ask used.
+    let _ = sqlx::query(
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
+           VALUES ($1, $2, $3, $4, $5, 'running', $6)
+           ON CONFLICT (flow_id) DO UPDATE
+              SET status = 'running', completed_at = NULL"#,
+    )
+    .bind(&flow_ctx.flow_id)
+    .bind(row.owner_user_id)
+    .bind(row.agent_id)
+    .bind(&agent_name)
+    .bind("HITL resume")
+    .bind(serde_json::json!({ "context_id": context_id }))
+    .execute(&state.db)
+    .await;
+    crate::flows::record_participant(&state.db, &flow_ctx.flow_id, row.agent_id).await;
+    if let Err(e) = sqlx::query(
+        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (session_id, trace_id) DO NOTHING",
+    )
+    .bind(&context_id)
+    .bind(&flow_ctx.flow_id)
+    .bind(row.agent_id)
+    .bind(&agent_name)
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(
+            error = %e, %context_id, flow_id = %flow_ctx.flow_id,
+            "hitl resume: session_traces record failed — tool-approval retry matching for this resume may re-ask"
+        );
+    }
+
     let answer = answer_text(&row);
     let req_body = nasiko_types::a2a::build_stream_request_for_task(&answer, &context_id, &task_id);
 
