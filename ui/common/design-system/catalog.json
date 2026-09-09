@@ -338,6 +338,14 @@
           "type": "boolean",
           "description": "`bar` only: stack datasets instead of grouping them"
         },
+        "segmented": {
+          "type": "boolean",
+          "description": "`bar` only: the concentration presentation — every stack segment is a gapped, fully-rounded pill, the y-axis is hidden, and `stacked` is implied. Pair with `average-line` for the reference rule."
+        },
+        "average-line": {
+          "type": "boolean",
+          "description": "`bar` only: dashed horizontal rule at the mean of the column totals, labelled \"avg\"."
+        },
         "format": {
           "type": "enum",
           "values": [
@@ -348,6 +356,17 @@
           ],
           "default": "number",
           "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact`"
+        },
+        "format-y2": {
+          "type": "enum",
+          "values": [
+            "number",
+            "currency",
+            "percent",
+            "compact"
+          ],
+          "default": "number",
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
         },
         "currency": {
           "type": "string",
