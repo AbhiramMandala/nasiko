@@ -11,7 +11,8 @@
  * lines in a page:
  *
  *   **Prose is output, not noise.** The generator is told to wrap its DSL in
- *   two plain sentences (agent.yaml rule 13). Those lines are the assistant
+ *   two plain sentences (agent.yaml's two-sentence wrapper rule). Those lines
+ *   are the assistant
  *   talking and belong in the chat log. They also arrive character by character
  *   like everything else, so a line is only emitted once it is no longer the
  *   tail of the buffer — otherwise the user watches "Sure — buil" appear as a
@@ -34,6 +35,7 @@ import { router } from '../core/router.js';
 import { parseBuffer } from './parser.js';
 import { materialize, buildComponentIndex } from './materialize.js';
 import { render } from './render.js';
+import { captureFocus, restoreFocus } from './focus.js';
 import { createStore } from './store.js';
 import { pruneUnreachable } from './gc.js';
 import { createQueryManager } from './queries.js';
@@ -121,7 +123,12 @@ export function createSurfaceSession(options) {
     onTurn,
     fetchImpl = globalThis.fetch?.bind(globalThis),
     schedule = (fn) => (globalThis.requestAnimationFrame ?? ((f) => setTimeout(f, 0)))(fn),
-    doc,
+    // Resolved here rather than left undefined for render.js to fall back on.
+    // The fallback made this field look optional while `activeElement` needs a
+    // real one: captureFocus would have taken undefined and returned null on
+    // every paint, so the caret fix would have been dead in production and
+    // green in every test that injects a recorder.
+    doc = globalThis.document,
   } = options;
 
   const index = buildComponentIndex(catalog);
@@ -264,6 +271,14 @@ export function createSurfaceSession(options) {
     const out = walk();
     const diagnostics = [...out.diagnostics];
 
+    // Every paint replaces the whole tree, including whatever the user is
+    // typing into — and a `$state` write is itself a paint, so a filter box
+    // wired to @Set($q, $event) destroys itself on its own keystroke. Captured
+    // here rather than inside render.js: that module is a pure tree-to-DOM
+    // function, testable without a document, and `activeElement` is not its
+    // business. See focus.js for why the restore refuses rather than guesses.
+    const focused = captureFocus(container, doc);
+
     render(out.root, container, catalog, {
       doc,
       onAction: (action, el, domEvent) => {
@@ -278,6 +293,8 @@ export function createSurfaceSession(options) {
       routes,
       onDiagnostic: (d) => diagnostics.push(d),
     });
+
+    restoreFocus(container, focused);
 
     // Once per settled pass, and only when the set changed — the same
     // diagnostics on every chunk is noise nobody reads.
@@ -372,9 +389,59 @@ export function createSurfaceSession(options) {
       });
 
       if (!res.ok) {
+        // Say which status, and what the body said. The proxy answers a JSON
+        // `{error}` that names the actual problem — "weave generation is not
+        // configured on this deployment" for a missing token, "the generation
+        // service is unreachable" for a dead upstream. Reporting a bare
+        // `http_error` threw that away and left the status pill as the only
+        // evidence, which is a symptom with the cause already in hand.
+        //
+        // Bounded and best-effort: an error body is small, but this must not
+        // hang or throw on a server that sends something else.
+        let detail = '';
+        try {
+          const text = (await res.text()).slice(0, 300).trim();
+          if (text) {
+            try { detail = JSON.parse(text).error ?? text; } catch { detail = text; }
+          }
+        } catch { /* a body we cannot read is not worse than no body */ }
+        emitDiagnostics([{
+          source: 'stream',
+          code: 'http_error',
+          message: `${url} answered ${res.status}${detail ? ` — ${detail}` : ''}`,
+        }]);
         onStatus?.({ phase: 'failed', detail: `HTTP ${res.status}` });
         telemetry.end({ status: 'http_error', rendered: false });
         return { status: 'http_error', surface: currentSurface, catalogVersion: null };
+      }
+
+      // A 200 that is not an event stream is not a stream that dropped — it is
+      // something else answering. The shape that cost an evening: a control
+      // plane with no `/api/weave/surface` route falls the request through to
+      // the SPA fallback, which serves index.html with a 200. Read as a stream,
+      // that is indistinguishable from a dead connection — no frames, no
+      // terminal frame — so the resume loop below spends two more requests
+      // proving it again and then reports "the stream dropped", which sends you
+      // looking at the network instead of at the router.
+      //
+      // The answer was in the response headers the whole time.
+      const contentType = res.headers?.get?.('content-type') ?? '';
+      if (!contentType.includes('text/event-stream')) {
+        emitDiagnostics([{
+          source: 'stream',
+          code: 'not_an_event_stream',
+          message: `${url} answered ${res.status} with `
+            + `${contentType || 'no content-type'} — that is not the generator. `
+            + 'A control plane without the /api/weave/surface route serves the '
+            + 'page shell here instead.',
+        }]);
+        onStatus?.({ phase: 'failed', detail: 'not an event stream' });
+        telemetry.end({ status: 'not_an_event_stream', rendered: false });
+        return {
+          status: 'not_an_event_stream',
+          surface: currentSurface,
+          catalogVersion: null,
+        };
       }
 
       onStatus?.({ phase: attempt ? 'resuming' : 'streaming' });

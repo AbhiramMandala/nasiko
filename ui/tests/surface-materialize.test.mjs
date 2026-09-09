@@ -122,8 +122,13 @@ test('an unknown component is dropped with a diagnostic', () => {
 // ── positional mapping ──────────────────────────────────────────────────────
 
 test('arguments map positionally onto the catalog paramOrder', () => {
-  const out = run('root = AppStatCard("Total cost", "12", null, "up")');
-  assert.deepEqual(out.root.props, { label: 'Total cost', value: '12', delta: null, trend: 'up' });
+  // AppGrid rather than AppStatCard: four parameters, a mix of types, and a
+  // signature that is not about to be trimmed. The point is the mapping, and a
+  // test that has to be rewritten every time a component's DSL surface changes
+  // is testing the component instead.
+  const out = run('root = AppGrid([], "2fr 1fr", "md", "lg")');
+  assert.deepEqual(out.root.props, { columns: '2fr 1fr', gap: 'md', padding: 'lg' });
+  assert.deepEqual(out.root.children, [], 'children lead, and land in children rather than props');
 });
 
 test('children, data, text and action land in their own slots, not in props', () => {
@@ -234,18 +239,20 @@ root = AppChart(@Each(rows, "r", r.cost), "line")`);
 // ── the whole worked example ────────────────────────────────────────────────
 
 test('Worked Example 1 materializes into the tree it describes', () => {
-  const out = run(`root = AppStack([kpis], "md")
-kpis = AppRow([kpiCost, kpiCount], "md")
+  const out = run(`root = AppStack([heading, kpis], "md")
+heading = AppText("Usage summary", "title")
 totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 requestCountQ = Query("fetchUsageSummary", [], 0, "request_count")
-kpiCost = AppStatCard("Total cost", totalCostQ, null, "up")
-kpiCount = AppStatCard("Requests", requestCountQ, null, "neutral")`,
+kpis = AppStatRow([{label: "Total cost", value: totalCostQ, sub: "all time"}, {label: "Requests", value: requestCountQ}])`,
   { queryResults: new Map([['totalCostQ', 12.5], ['requestCountQ', 342]]) });
 
-  assert.equal(tree(out.root), 'app-stack\n  app-row\n    app-stat-card\n    app-stat-card\n');
-  const [cost, count] = out.root.children[0].children;
-  assert.deepEqual([cost.props.value, cost.props.trend], [12.5, 'up']);
-  assert.deepEqual([count.props.value, count.props.trend], [342, 'neutral']);
+  assert.equal(tree(out.root), 'app-stack\n  app-text\n  app-stat-row\n');
+  // Query references resolve inside a json literal, which is what makes the
+  // one-statement strip usable for live figures rather than only for constants.
+  assert.deepEqual(out.root.children[1].props.items, [
+    { label: 'Total cost', value: 12.5, sub: 'all time' },
+    { label: 'Requests', value: 342 },
+  ]);
   assert.equal(out.queries.length, 2);
   assert.deepEqual(out.diagnostics, []);
 });
@@ -269,6 +276,27 @@ test('a default that is the whole response is caught at the Query, not at the ta
   const d = out.diagnostics.find((x) => x.code === 'default_is_whole_response');
   assert.ok(d, 'the diagnostic has to name the Query, or nobody finds it');
   assert.match(d.message, /"data" path/);
+});
+
+test('a default that walked half the path is caught at the same place', () => {
+  // Recorded, not imagined: `{agents: []}` under a "data.agents" path. The model
+  // walked `data` and stopped. The head-only test missed it because the default
+  // has no "data" key, so it surfaced two hops later as `data_not_rows` — a
+  // diagnostic pointing at the table, which is not the line that is wrong.
+  const out = run('q = Query("fetchTokenopsDashboard", [], {agents: []}, "data.agents")\nroot = AppTable(q)');
+  const d = out.diagnostics.find((x) => x.code === 'default_is_whole_response');
+  assert.ok(d, 'a half-walked default is the same mistake as an unwalked one');
+  assert.match(d.message, /stops at "data"/, d?.message);
+  assert.deepEqual(out.root.data, [], 'and it is repaired to the rows the table wanted');
+  assert.equal(out.diagnostics.some((x) => x.code === 'data_not_rows'), false,
+    'the table no longer takes the blame for the Query line');
+});
+
+test('a deeper path than the default knows about is left alone', () => {
+  // No segment of "meta.page.size" is a key here, so this default is simply a
+  // value of its own shape — repairing it would be inventing a mistake.
+  const out = run('q = Query("fetchUsageByModel", ["", 1, 50], {rows: []}, "meta.page.size")\nroot = AppTable(q)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'default_is_whole_response'), false);
 });
 
 test('a correctly shaped default is silent', () => {
@@ -373,4 +401,47 @@ test('trailing null padding is separated from a dropped value', () => {
   assert.equal(pad.diagnostics.find((d) => d.code === 'excess_null_padding')?.code, 'excess_null_padding');
   assert.equal(pad.diagnostics.some((d) => d.code === 'excess_arguments'), false);
   assert.match(held.diagnostics.find((d) => d.code === 'excess_arguments')?.message ?? '', /1 past the end held values/);
+});
+
+// ── an editable control that discards what is typed into it ─────────────────
+
+test('an Action-bearing input whose value is not state is named', () => {
+  // The failure is one step worse than the caret loss it sits beside: the
+  // Action fires, the store changes, render() rebuilds, and the new input is
+  // built from an argument that never moved — so the box empties as you type,
+  // silently. Found by a browser test that had left `value` unbound and could
+  // not explain why the caret came back at 0.
+  const out = run('$q = ""\na = Action([@Set($q, $event)])\n'
+    + 'root = AppSearch(null, null, null, null, "Filter", null, null, null, null, null, null, a)');
+  const d = out.diagnostics.find((x) => x.code === 'uncontrolled_input');
+  assert.ok(d, out.diagnostics.map((x) => x.code).join(','));
+  assert.match(d.message, /\$state/);
+});
+
+test('a constant value counts as unbound, because it never moves either', () => {
+  // Checked on the AST: after evaluation `$q` and "fixed" are both a string,
+  // so the difference only exists before the evaluator runs.
+  const out = run('$q = ""\na = Action([@Set($q, $event)])\n'
+    + 'root = AppSearch(null, null, null, null, "Filter", "fixed", null, null, null, null, null, a)');
+  assert.ok(out.diagnostics.some((x) => x.code === 'uncontrolled_input'));
+});
+
+test('a value read back from state is silent — this is the correct shape', () => {
+  const out = run('$q = ""\na = Action([@Set($q, $event)])\n'
+    + 'root = AppSearch(null, null, null, null, "Filter", $q, null, null, null, null, null, a)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'uncontrolled_input'), false,
+    out.diagnostics.map((x) => x.code).join(','));
+});
+
+test('a button with an Action is not an editable control', () => {
+  // The check keys on the component having a `value` parameter at all, so the
+  // components that carry an Action and nothing to type into stay quiet.
+  const out = run('$v = 1\na = Action([@Set($v, 2)])\n'
+    + 'root = AppButton("Go", null, null, null, null, null, null, null, null, null, null, a)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'uncontrolled_input'), false);
+});
+
+test('an input with no Action is left alone', () => {
+  const out = run('root = AppSearch(null, null, null, null, "Filter", null)');
+  assert.equal(out.diagnostics.some((x) => x.code === 'uncontrolled_input'), false);
 });

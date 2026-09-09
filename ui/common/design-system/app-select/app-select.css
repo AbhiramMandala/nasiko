@@ -33,6 +33,13 @@
 
   .req { color: var(--fg-error); }
 
+  /* `fit-content` (see app-select.js #applyFitWidth): the field column's default
+     stretch would otherwise force .select-box to the container's full width,
+     overriding the inline width JS computes from the shown option's text. */
+  :scope[fit-content] .select-box {
+    align-self: flex-start;
+  }
+
   .select-box {
     position: relative;
     display: flex;

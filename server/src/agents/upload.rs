@@ -947,8 +947,16 @@ pub async fn execute_upload_and_deploy(
             return Err("no Dockerfile found in source zip".into());
         }
 
-        // Build Docker image.
-        let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
+        // Build Docker image. tar_directory walks the whole source tree and
+        // builds the archive in memory — synchronous CPU + IO, so it goes on the
+        // blocking pool. With build_concurrency > 1 running it inline would block
+        // one runtime thread per in-flight build, on the same runtime serving the
+        // HTTP API.
+        let src = tmp_dir.clone();
+        let tar_bytes = tokio::task::spawn_blocking(move || build::tar_directory(&src))
+            .await
+            .map_err(|e| format!("spawn_blocking tar: {e}"))?
+            .map_err(|e| format!("tar source: {e}"))?;
         runtime
             .build(&tar_bytes, &image_tag)
             .await
@@ -1120,7 +1128,13 @@ async fn restore_prior_state_or_clean_up(
 }
 
 /// Execute the full clone-and-deploy pipeline: extract tar.gz, OTel patch, docker build, deploy.
-/// Called by the build worker for `BuildJobPayload::Clone` jobs.
+/// Called by the build worker for `BuildJobPayload::Clone` jobs, and internally
+/// by [`execute_github_clone_and_deploy`] once its git-clone step succeeds.
+///
+/// `prior_version`/`prior_image`/`prior_status` are `Some` only if this
+/// pipeline overwrote a pre-existing agent — see
+/// [`restore_prior_state_or_clean_up`], which decides whether a failure here
+/// restores that snapshot or cleans up a genuinely brand-new agent.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_clone_and_deploy(
     runtime: std::sync::Arc<dyn nasiko_runtime::ContainerRuntime>,
@@ -1255,7 +1269,15 @@ pub async fn execute_clone_and_deploy(
         // Build Docker image. Prefixed so the failure handler below can tell
         // a real build was attempted here — everything before this point is
         // a pre-build rejection instead (see the `Err(e)` match below).
-        let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
+        // tar_directory is synchronous CPU + IO over the whole source tree, so
+        // it goes on the blocking pool: with build_concurrency > 1, running it
+        // inline would block one runtime thread per in-flight build, on the
+        // same runtime serving the HTTP API.
+        let src = tmp_dir.clone();
+        let tar_bytes = tokio::task::spawn_blocking(move || build::tar_directory(&src))
+            .await
+            .map_err(|e| format!("spawn_blocking tar: {e}"))?
+            .map_err(|e| format!("tar source: {e}"))?;
         runtime
             .build(&tar_bytes, &image_tag)
             .await
@@ -1492,6 +1514,9 @@ pub async fn execute_github_clone_and_deploy(
                 &name,
                 owner_id,
                 "GitHub OAuth not configured",
+                &prior_version,
+                &prior_image,
+                &prior_status,
             )
             .await;
             return;
@@ -1531,6 +1556,9 @@ pub async fn execute_github_clone_and_deploy(
                 &name,
                 owner_id,
                 "GitHub not connected",
+                &prior_version,
+                &prior_image,
+                &prior_status,
             )
             .await;
             return;
@@ -1553,6 +1581,9 @@ pub async fn execute_github_clone_and_deploy(
                 &name,
                 owner_id,
                 "git clone failed",
+                &prior_version,
+                &prior_image,
+                &prior_status,
             )
             .await;
             return;
@@ -1577,6 +1608,9 @@ pub async fn execute_github_clone_and_deploy(
             &name,
             owner_id,
             "internal error saving archive",
+            &prior_version,
+            &prior_image,
+            &prior_status,
         )
         .await;
         return;
@@ -1616,7 +1650,10 @@ pub async fn execute_github_clone_and_deploy(
 }
 
 /// Drive the agent and build to a terminal failed state when the clone step
-/// fails before `execute_clone_and_deploy` can take over status management.
+/// fails before `execute_clone_and_deploy` can take over status management —
+/// restoring `prior_*` on a pre-existing agent rather than deleting it, same
+/// as every other rejection branch (see `restore_prior_state_or_clean_up`).
+#[allow(clippy::too_many_arguments)]
 async fn fail_github_clone_terminal(
     db: &sqlx::PgPool,
     build_id: Uuid,
@@ -1625,10 +1662,13 @@ async fn fail_github_clone_terminal(
     name: &str,
     owner_id: Uuid,
     reason: &str,
+    prior_version: &Option<String>,
+    prior_image: &Option<String>,
+    prior_status: &Option<String>,
 ) {
     set_build_status(db, build_id, BuildStatus::Failed).await;
     set_upload_status(db, upload_id, name, owner_id, "failed", None, Some(reason)).await;
-    super::utils::delete_agent_or_mark_failed(db, agent_id).await;
+    restore_prior_state_or_clean_up(db, agent_id, prior_version, prior_image, prior_status).await;
 }
 
 // ─── GET /deploy-status/{build_id} (SSE) ─────────────────────────────────────

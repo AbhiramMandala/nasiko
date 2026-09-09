@@ -1,7 +1,5 @@
-Got it, building a simple headline KPI strip for you.
-
-root = AppStack([stats], "md")
-dashboardQ = Query("fetchTokenopsDashboard", [], {summary: {total_cost: 0, total_operations: 0, active_agents: 0, total_tokens: 0}}, "data.summary")
-stats = AppStatRow([{label: "Total cost", value: dashboardQ.total_cost}, {label: "Operations", value: dashboardQ.total_operations}, {label: "Active agents", value: dashboardQ.active_agents}, {label: "Total tokens", value: dashboardQ.total_tokens}])
-
-Here's your headline KPI row with cost, operations, active agents, and token usage — let me know if you'd like to add detail or swap any metrics!
+Sure — building that now.
+root = AppStack([kpis], "md")
+summaryQ = Query("fetchUsageSummary", [], {request_count: 0, total_input_tokens: 0, total_output_tokens: 0, total_tokens: 0, total_cost_usd: 0, avg_latency_ms: null, period_days: 0})
+kpis = AppStatRow([{label: "Total cost", value: "$" + @Round(summaryQ.total_cost_usd, 2), sub: "all time"}, {label: "Requests", value: summaryQ.request_count}, {label: "Total tokens", value: summaryQ.total_tokens}])
+Here's your headline numbers — total cost, request count, and token usage all in one row. Let me know if you'd like to add charts, trends, or a breakdown by agent or model!

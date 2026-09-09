@@ -115,6 +115,34 @@ export function renderNode(node, catalog, deps = {}) {
   }
 }
 
+/**
+ * Is this value a materialized component, or a list containing one?
+ *
+ * A model that calls a component with children it does not accept —
+ * `AppEmptyState([chart], "No usage yet")`, where the first positional is
+ * `title` — puts a whole element node into a string slot. Nothing throws:
+ * `toText` flattens it, the attribute renders as noise or empty, and the chart
+ * is simply absent from the page. That is the hardest kind of failure to see,
+ * because the surface still looks plausible.
+ *
+ * The example used to be `AppCard([chart], "Cost by Model")`, which is what
+ * three recorded generations actually wrote. That one is correct DSL now —
+ * app-card leads with children like every other container — but the diagnostic
+ * outlived its first case, because the category error is general and every
+ * component with slots and no children parameter can still meet it.
+ */
+function isComponentValue(value) {
+  if (Array.isArray(value)) return value.some(isComponentValue);
+  return !!value && typeof value === 'object' && value.type === 'element';
+}
+
+/** "app-chart" / "app-chart, app-table" — for the diagnostic text. */
+function describeComponents(value) {
+  const list = Array.isArray(value) ? value : [value];
+  const tags = list.filter((v) => v && typeof v === 'object' && v.type === 'element').map((v) => v.tag);
+  return tags.length ? tags.join(', ') : 'a component';
+}
+
 /** @returns {Element|null} */
 function buildNode(node, catalog, deps = {}) {
   const doc = deps.doc ?? globalThis.document;
@@ -138,6 +166,19 @@ function buildNode(node, catalog, deps = {}) {
     const spec = attrs[key];
     if (!spec) { report('unknown_attribute', `${node.tag} has no "${key}" attribute`); continue; }
 
+    // A component is not a value. This is a category error the renderer can
+    // see, so it says so rather than stringifying it: `json` is the one
+    // attribute type that legitimately takes structure, and even it takes
+    // data, never nodes. Dropped, because "[object Object]" in a heading is
+    // not closer to the intent than an empty one, and the diagnostic names
+    // both the slot and what was put in it.
+    if (isComponentValue(value)) {
+      report('component_as_attribute',
+        `${node.tag}.${key} takes a value and was given ${describeComponents(value)}`
+        + (def.childrenParam ? '' : ` — ${node.tag} takes children through slots, not as an argument`));
+      continue;
+    }
+
     if (spec.type === 'boolean') {
       // Presence is what a boolean attribute means. Writing `search="false"`
       // would read as true to every `hasAttribute` check in the component.
@@ -150,6 +191,25 @@ function buildNode(node, catalog, deps = {}) {
       report('enum_violation', `"${value}" is not one of ${spec.values.join(', ')} for ${node.tag}.${key}`);
       if (spec.default === undefined) continue;
       el.setAttribute(key, String(spec.default));
+      continue;
+    }
+    // A closed set of non-numeric values the attribute also accepts. Only
+    // `app-grid.columns` today: an integer means `repeat(n, 1fr)`, a template
+    // string is the one way to express a ratio anywhere in the vocabulary.
+    //
+    // Checked rather than passed through, because the value reaches
+    // `style.setProperty('--grid-columns', …)` unfiltered and this DSL is
+    // written by a model. An integer stays an integer; anything else has to be
+    // one of the named proportions. Dropped rather than defaulted — a grid with
+    // no template falls back to the responsive `auto-fill` default, which is a
+    // worse layout but never a broken one.
+    if (spec.templates?.length && !Number.isInteger(Number(value))) {
+      if (!spec.templates.includes(String(value))) {
+        report('template_not_allowed',
+          `"${value}" is not one of ${spec.templates.join(', ')} for ${node.tag}.${key}`);
+        continue;
+      }
+      el.setAttribute(key, String(value));
       continue;
     }
     if (spec.type === 'json') {
@@ -189,7 +249,11 @@ function buildNode(node, catalog, deps = {}) {
   // textParam — the component's visible text is its own child text, not an
   // attribute. textContent, so no markup can come out of it by construction.
   if (node.text !== null && node.text !== undefined && def.textParam) {
-    el.textContent = toText(node.text);
+    if (isComponentValue(node.text)) {
+      report('component_as_attribute', `${node.tag} takes text and was given ${describeComponents(node.text)}`);
+    } else {
+      el.textContent = toText(node.text);
+    }
   }
 
   // dataParam — always a property, never an attribute. Which property, and

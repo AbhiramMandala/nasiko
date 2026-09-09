@@ -113,6 +113,37 @@ async fn deploy(
         None => ContainerId::new(&req.name),
     };
 
+    // `--writable` is a durable property of a registered agent (persisted in the
+    // `agents` row by whichever on-ramp first set it), not a per-deploy flag.
+    // Source it from the catalog so an ad-hoc redeploy through this path — e.g. a
+    // UI "redeploy" that doesn't re-send the flag — can never silently detach a
+    // live volume and drop the agent's files. An explicit request flag still wins
+    // (so `nasiko deploy --writable` of an as-yet-unregistered image works too).
+    let (db_writable, db_writable_path) = match resolved_agent_id {
+        Some(agent_id) => match sqlx::query_as::<_, (bool, Option<String>)>(
+            "SELECT writable, writable_path FROM agents WHERE id = $1",
+        )
+        .bind(agent_id)
+        .fetch_optional(&state.db)
+        .await
+        {
+            // A missing row is a genuinely ad-hoc image with no catalog record —
+            // `false` is correct there. A DB *error*, though, must NOT collapse to
+            // `false`: that would deploy a writable agent with no volume and then
+            // persist `writable=false`, the exact silent detach this block exists
+            // to prevent. Fail the deploy instead of guessing.
+            Ok(row) => row.unwrap_or((false, None)),
+            Err(e) => {
+                tracing::error!(%e, %agent_id, "deploy: could not read writable from catalog");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                    .into_response();
+            }
+        },
+        None => (false, None),
+    };
+    let writable_path = req.writable_path.clone().or(db_writable_path);
+    let writable = req.writable || db_writable || writable_path.is_some();
+
     let ports = if req.ports.is_empty() {
         vec![crate::agents::DEFAULT_AGENT_PORT]
     } else {
@@ -137,10 +168,9 @@ async fn deploy(
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
-        // A path implies the mount — requiring both flags would make
-        // `--writable-path X` alone silently deploy without storage.
-        writable: req.writable || req.writable_path.is_some(),
-        writable_path: req.writable_path.clone(),
+        // Sourced from the catalog (see above) so redeploys keep the mount.
+        writable,
+        writable_path,
         owner_id,
     };
     // Only a name that already maps to a registered catalog agent has an
@@ -171,6 +201,13 @@ async fn deploy(
                         .await;
                 let image = spec.image.clone();
                 let owner_id = claims.user_uuid().ok();
+                // Persist the effective writable config so it survives on the
+                // agents row. Without this, a deploy that turned an agent
+                // writable here would leave `writable=false` in the catalog, and
+                // the next restart/update/rollback (which read the flag from the
+                // row, not the request) would silently redeploy with no volume.
+                let spec_writable = spec.writable;
+                let spec_writable_path = spec.writable_path.clone();
 
                 // Probe the agent's card and persist `transport_path` (plus
                 // description/skills/tags/capabilities) — the same probe the
@@ -194,11 +231,13 @@ async fn deploy(
                     // the catalog, so restart (which needs `image` to redeploy) works
                     // for agents deployed through this ad-hoc path too.
                     let _ = sqlx::query(
-                        "UPDATE agents SET url = COALESCE(NULLIF($1, ''), url), image = $2, status = 'running', updated_at = now() WHERE id = $3",
+                        "UPDATE agents SET url = COALESCE(NULLIF($1, ''), url), image = $2, status = 'running', writable = $4, writable_path = $5, updated_at = now() WHERE id = $3",
                     )
                     .bind(&endpoint)
                     .bind(&image)
                     .bind(agent_id)
+                    .bind(spec_writable)
+                    .bind(&spec_writable_path)
                     .execute(&db)
                     .await;
 

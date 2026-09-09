@@ -27,6 +27,42 @@ function recorder() {
   return { doc: { createElement: make }, container: make('div') };
 }
 
+/**
+ * The same recorder, plus the four things focus.js asks of a document.
+ *
+ * Separate rather than folded into `recorder()` because every other test in
+ * this file asserts on a tree that has no notion of who is focused, and a
+ * recorder that grows a `doc.activeElement` invites those tests to start
+ * depending on it by accident.
+ */
+function focusRecorder() {
+  const doc = { activeElement: null };
+  const make = (tag) => {
+    const node = {
+      tag,
+      tagName: tag.toUpperCase(),
+      attrs: {},
+      children: [],
+      listeners: {},
+      parentElement: null,
+      focusCount: 0,
+      setAttribute(k, v) { this.attrs[k] = v; },
+      hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
+      appendChild(c) { c.parentElement = node; node.children.push(c); return c; },
+      addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
+      replaceChildren() {
+        for (const c of node.children) c.parentElement = null;
+        node.children.length = 0;
+      },
+      contains(other) { for (let n = other; n; n = n.parentElement) if (n === node) return true; return false; },
+      focus() { node.focusCount++; doc.activeElement = node; },
+    };
+    return node;
+  };
+  doc.createElement = make;
+  return { doc, container: make('div') };
+}
+
 const frame = (event, obj, id) => `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(obj)}\n\n`;
 
 /** A Response whose body emits `chunks`, one per tick. */
@@ -41,7 +77,12 @@ function sse(chunks) {
       controller.close();
     },
   });
-  return new Response(body, { status: 200 });
+  // Weave sends this, and the client now refuses a 200 without it — a body
+  // that is not an event stream is the wrong endpoint, not a dropped one.
+  return new Response(body, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
 }
 
 /**
@@ -84,7 +125,7 @@ const DSL = [
   'Sure — building that now.\n',
   'root = AppStack([kpis], "md")\n',
   'kpis = AppRow([kpiCost], "md")\n',
-  'kpiCost = AppStatCard("Total cost", "12.50", null, "up")\n',
+  'kpiCost = AppStatCard("Total cost", "12.50", "+3.20", 12.50 > 9.30 ? "up" : "neutral")\n',
   "Here's your spend dashboard — let me know if you'd like anything adjusted!",
 ];
 const TURN = [
@@ -100,7 +141,14 @@ test('a full turn renders the tree the DSL describes', async () => {
   const stack = container.children[0];
   assert.equal(stack.tag, 'app-stack');
   const card = stack.children[0].children[0];
-  assert.deepEqual([card.attrs.label, card.attrs.value, card.attrs.trend], ['Total cost', '12.50', 'up']);
+  // The delta and its arrow are COMPUTED, which is the only honest way to show
+  // either. A generation that hardcodes "up" is asserting a direction nothing
+  // measured, and this fixture is the shape the prompt teaches instead.
+  // The arrow is derived from a comparison rather than stated. A generation
+  // that hardcodes "up" is asserting a direction nothing measured, and this
+  // fixture is the shape the prompt teaches instead.
+  assert.deepEqual([card.attrs.label, card.attrs.value, card.attrs.delta, card.attrs.trend],
+    ['Total cost', '12.50', '+3.20', 'up']);
 });
 
 test('both prose sentences reach the chat log, and no DSL line does', async () => {
@@ -586,4 +634,116 @@ test('a $state line goes back holding what the user set, not what the DSL declar
   await s.send('now change it');
   assert.ok(requests[1].body.context.currentSurface.includes('$view = "ops"'),
     requests[1].body.context.currentSurface);
+});
+
+test('a 200 that is not an event stream is named, not retried as a drop', async () => {
+  // The real shape: the control plane has no /api/weave/surface route, the
+  // request falls through to the SPA fallback, and index.html comes back with
+  // a 200. That used to read as a dropped connection — no frames, no terminal
+  // frame — so the resume loop spent two more requests on it and reported
+  // "the stream dropped", which points at the network rather than the router.
+  const { doc, container } = recorder();
+  const diagnostics = [];
+  const statuses = [];
+  let requests = 0;
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    onStatus: (x) => statuses.push(x.phase),
+    fetchImpl: async () => {
+      requests++;
+      return new Response('<!doctype html><title>Nasiko</title>', {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    },
+  });
+
+  const out = await s.send('spend last 14 days');
+
+  assert.equal(out.status, 'not_an_event_stream');
+  assert.equal(requests, 1, 'must not burn resume attempts proving it again');
+  const d = diagnostics.find((x) => x.code === 'not_an_event_stream');
+  assert.ok(d, JSON.stringify(diagnostics));
+  assert.match(d.message, /text\/html/);
+  assert.equal(diagnostics.some((x) => x.code === 'stream_resumed'), false);
+  assert.equal(diagnostics.some((x) => x.code === 'stream_interrupted'), false);
+  assert.ok(statuses.includes('failed'));
+});
+
+test('an error status reports the code and what the body said', async () => {
+  // The proxy answers `{error}` naming the actual problem. Reporting a bare
+  // "http_error" threw that away and left the status pill as the only evidence.
+  const { doc, container } = recorder();
+  const diagnostics = [];
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    fetchImpl: async () => new Response(
+      JSON.stringify({ error: 'weave generation is not configured on this deployment' }),
+      { status: 503, headers: { 'content-type': 'application/json' } },
+    ),
+  });
+
+  const out = await s.send('spend last 14 days');
+  assert.equal(out.status, 'http_error');
+  const d = diagnostics.find((x) => x.code === 'http_error');
+  assert.ok(d, JSON.stringify(diagnostics));
+  assert.match(d.message, /503/);
+  assert.match(d.message, /not configured on this deployment/);
+});
+
+// ── the caret across a $state write ─────────────────────────────────────────
+
+test('typing into a filter box does not throw the caret away', async () => {
+  // The bug this exists for: store.subscribe(() => paint()) means a @Set is a
+  // repaint, render() is replaceChildren(), and the input being typed into is
+  // destroyed by its own keystroke. One character landed and the next went
+  // nowhere. Driven end to end rather than through focus.js directly, because
+  // the failure was never in either half — it was that nothing joined them.
+  const { doc, container } = focusRecorder();
+  const dsl = [
+    '$q = ""\n',
+    'setQ = Action([@Set($q, $event)])\n',
+    'box = AppSearch(null, null, null, null, null, null, null, null, null, null, "Filter agents", setQ)\n',
+    'root = AppStack([box], "md")\n',
+  ];
+  const chunks = [
+    frame('surface', { specVersion: '1.0', catalogVersion: catalog.catalogVersion, surfaceId: 's1' }, 1),
+    ...dsl.map((t, i) => frame('dsl-chunk', { text: t }, i + 2)),
+    frame('end', { status: 'ok' }, 9),
+  ];
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    fetchImpl: async () => sse(chunks),
+    routes: new Set(),
+  });
+  await s.send('a dashboard with a filter');
+
+  const before = container.children[0].children[0];
+  assert.equal(before.tag, 'app-search');
+
+  // The user clicks into it and types one character.
+  doc.activeElement = before;
+  const fire = before.listeners.input?.[0] ?? before.listeners.change?.[0];
+  assert.ok(fire, 'the search must carry its action listener, or there is no bug to fix');
+  fire({ target: { value: 'a' }, detail: 'a' });
+  await new Promise((r) => setTimeout(r, 0));
+
+  const after = container.children[0].children[0];
+  assert.notEqual(after, before, 'the repaint really did rebuild the tree');
+  assert.equal(doc.activeElement, after, 'and the caret followed it to the new node');
+  assert.equal(after.focusCount, 1, 'focused once, not on a loop');
 });

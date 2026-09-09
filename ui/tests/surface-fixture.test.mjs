@@ -120,33 +120,40 @@ test('the fixture materializes to the dashboard it claims to show', async () => 
 
   const stack = s.container.children[0];
   assert.equal(stack.tag, 'app-stack');
-  const [kpis, filters, chart, table] = stack.children;
-  assert.equal(kpis.tag, 'app-row');
+  const [heading, kpis, filters, chartCard, table] = stack.children;
+  assert.equal(heading.tag, 'app-text');
+  assert.equal(kpis.tag, 'app-stat-row');
   assert.equal(filters.tag, 'app-row');
-  assert.equal(chart.tag, 'app-chart');
+  assert.equal(chartCard.tag, 'app-card');
+  assert.equal(chartCard.children[0].tag, 'app-chart', 'the chart is inside the card, not beside it');
   assert.equal(table.tag, 'app-table');
 });
 
-test('the stat cards get the real numbers, and the trend lands in trend', async () => {
+test('the headline metrics get the real numbers, through a json attribute', async () => {
   const { call } = sources();
   const s = surface(TEXT, { call });
   s.draw();
   await s.queries.settled();
   const out = s.draw();
 
-  const [cost, requests] = out.root.children[0].children;
-  assert.equal(cost.props.label, 'Total cost');
-  assert.equal(cost.props.value, 12.47);
-  assert.equal(cost.props.trend, 'up');
-  assert.equal(requests.props.value, 1842);
+  // The strip takes its metrics as data, not as child components, so this is
+  // also the proof that a Query reference resolves inside a json literal —
+  // the whole reason AppStatRow is usable for live figures at all.
+  assert.deepEqual(out.root.children[1].props.items, [
+    { label: 'Total cost', value: 12.47 },
+    { label: 'Requests', value: 1842 },
+  ]);
 
-  // The bug in Weave's own agent.yaml, locked so this fixture cannot repeat it:
-  // AppStatCard's third positional argument is `delta`, not `trend`. Passing
-  // "up" there sets the delta slot and renders no arrow. `null` skips it.
-  assert.equal(cost.props.delta, null);
-  const rendered = s.container.children[0].children[0].children[0];
-  assert.equal(rendered.hasAttribute('delta'), false, 'a null argument sets no attribute at all');
-  assert.equal(rendered.attrs.trend, 'up');
+  // This test used to lock a bug in Weave's own agent.yaml: AppStatCard's third
+  // positional is `delta`, not `trend`, so a generation writing "up" there set
+  // the delta slot and rendered no arrow. The preview no longer builds a row of
+  // cards at all — a strip of headline metrics is what AppStatRow is for — so
+  // the positional trap is gone from this fixture by construction rather than
+  // by being watched. The card's own positions are covered in
+  // surface-materialize.test.mjs.
+  const rendered = s.container.children[0].children[1];
+  assert.equal(rendered.tag, 'app-stat-row');
+  assert.equal(rendered.children.length, 0, 'the metrics are data, not child components');
 });
 
 test('one summary fetch serves both cards', async () => {
@@ -171,7 +178,7 @@ test('the chart gets a plucked array of numbers, not the rows', async () => {
   s.draw();
   await s.queries.settled();
   const out = s.draw();
-  const chart = out.root.children[2];
+  const chart = out.root.children[3].children[0];
   assert.deepEqual(chart.data, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
     'AppChart(historyQ.total_cost_usd) is an array pluck — Worked Example 2c');
 });
@@ -199,7 +206,7 @@ test('the filter buttons carry a click handler each', async () => {
   s.draw();
   await s.queries.settled();
   s.draw();
-  const [seven, fourteen] = s.container.children[0].children[1].children;
+  const [seven, fourteen] = s.container.children[0].children[2].children;
   assert.equal(seven.tag, 'app-button');
   assert.equal(seven.attrs.text ?? seven.textContent, '7 days');
   assert.equal(seven.listeners.click?.length, 1, 'an action-bearing button with no listener is a dead button');

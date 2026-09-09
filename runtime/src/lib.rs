@@ -14,10 +14,13 @@ pub use stats::{
     ResourceStatsProvider, StatsGroup, UnsupportedStatsProvider,
 };
 pub use types::validate_build_inputs;
-pub use types::validate_writable_path;
 pub use types::{
     ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, ResourceLimits, RuntimeState,
-    WorkloadKind,
+    WorkloadKind, WorkspaceEntry, WorkspaceFile, WorkspaceRef,
+};
+pub use types::{
+    WORKSPACE_CAT_SCRIPT, WORKSPACE_LIST_SCRIPT, WORKSPACE_SETUP_SCRIPT, WORKSPACE_STAT_SCRIPT,
+    validate_workspace_relative_path, validate_writable_path,
 };
 
 // ─── Legacy type aliases (used by server during transition from old orchestrator) ─────
@@ -210,6 +213,38 @@ pub trait ContainerRuntime: Send + Sync {
         _env_vars: std::collections::HashMap<String, String>,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// List every file in a `--writable` agent's persistent directory, so a
+    /// caller can offer them for download.
+    ///
+    /// Paths are relative to the agent's writable directory and are exactly
+    /// what [`read_workspace_file`](ContainerRuntime::read_workspace_file)
+    /// expects back. Reads the shared volume directly rather than the agent's
+    /// container, so it works while the agent is stopped, scaled to zero or
+    /// crash-looping — and needs no tooling in the agent image.
+    ///
+    /// Default: empty, correct for a runtime with no persistent storage.
+    /// Decorators MUST forward it explicitly (see RUN-1 in `InstrumentedRuntime`).
+    async fn list_workspace(&self, _workspace: &WorkspaceRef) -> Result<Vec<WorkspaceEntry>> {
+        Ok(vec![])
+    }
+
+    /// Stream one file out of a `--writable` agent's persistent directory.
+    ///
+    /// `rel_path` is caller-supplied and MUST already have passed
+    /// [`validate_workspace_relative_path`] — implementations join it onto the
+    /// agent's own subdirectory and never interpret it through a shell.
+    ///
+    /// Default: unsupported. Decorators MUST forward it explicitly (RUN-1).
+    async fn read_workspace_file(
+        &self,
+        _workspace: &WorkspaceRef,
+        _rel_path: &str,
+    ) -> Result<WorkspaceFile> {
+        Err(RuntimeError::Internal(
+            "this runtime has no persistent agent storage to read from".to_owned(),
+        ))
     }
 
     /// Return one entry per currently-existing container instance (Docker

@@ -1,9 +1,7 @@
 Sure — building that now.
-root = AppStack([header, charts], "md")
-header = AppRow([titleCard], "md")
-titleCard = AppCard(null, "Usage over 14 days")
-charts = AppRow([costChart, requestChart], "md")
-historyQ = Query("fetchUsageHistory", [14], [])
-costChart = AppChart({labels: historyQ.date, datasets: [{label: "Cost (USD)", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD")
-requestChart = AppChart({labels: historyQ.date, datasets: [{label: "Requests", data: historyQ.request_count}]}, "line", false, "number")
-Here's a 14-day spend and request volume dashboard with two trend charts — let me know if you'd like to adjust the layout, add KPI cards, or drill down further!
+root = AppStack([heading, chart, table], "md")
+heading = AppText("Last 14 days", "title")
+historyRows = Query("fetchUsageHistory", [14], [])
+chart = AppChart({labels: historyRows.date, datasets: [{label: "Cost", data: historyRows.total_cost_usd}]}, "line", false, "currency", "USD")
+table = AppTable(historyRows, 14, "pages", false)
+Here's your spend and request volume for the last 14 days — a trend chart showing daily cost and a table with all the detail. Let me know if you'd like anything adjusted!

@@ -12,13 +12,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { check, evaluateGeneration, CASES, ALLOWED_SOURCES } from '../scripts/eval-generations.mjs';
 
 const GOOD = `Sure — building that now.
 totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 requestsQ = Query("fetchUsageSummary", [], 0, "request_count")
-costCard = AppStatCard("Total cost", totalCostQ, null, "up")
-reqCard = AppStatCard("Requests", requestsQ, null, "up")
+costCard = AppStatCard("Total cost", totalCostQ)
+reqCard = AppStatCard("Requests", requestsQ)
 root = AppStack([costCard, reqCard], "md")
 There you go — let me know if you want anything changed.`;
 
@@ -44,7 +45,7 @@ test('a source outside the scope is caught', () => {
 });
 
 test('a component that does not exist is caught', () => {
-  const dsl = GOOD.replace('costCard = AppStatCard("Total cost", totalCostQ, null, "up")',
+  const dsl = GOOD.replace('costCard = AppStatCard("Total cost", totalCostQ)',
                            'costCard = AppSparklineDeluxe("Total cost", totalCostQ)');
   const { fail } = check(kase({}), dsl);
   assert.ok(fail.length > 0, 'an invented component must not pass');
@@ -57,7 +58,7 @@ test('a generation with no root is caught', () => {
 
 test('a dashboard with no data at all is caught', () => {
   const dsl = `Here you go.
-costCard = AppStatCard("Total cost", "0", null, "up")
+costCard = AppStatCard("Total cost", "0")
 root = AppStack([costCard], "md")
 Done.`;
   const { fail } = check(kase({ minQueries: 1 }), dsl);
@@ -110,7 +111,7 @@ $view = "cost"
 costQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 showOps = Action([@Set($view, "ops")])
 btn = AppButton("Ops", "primary", "md", false, null, false, false, "button", null, null, null, showOps)
-card = AppStatCard("Cost", costQ, null, "up")
+card = AppStatCard("Cost", costQ)
 root = AppStack([btn, card], "md")
 Done.`;
   const { fail } = check(kase({ minQueries: 1, minActions: 1, minStates: 1 }), dsl);
@@ -150,4 +151,42 @@ Done.`;
 test('a genuine breakage is still fatal', () => {
   const { fail } = check(kase({}), 'root = AppStack([ghost], "md")\n');
   assert.ok(fail.length > 0);
+});
+
+test('the checker reads severity from the manifest, not from a literal', () => {
+  // The coupling this asserts is the point of the manifest. Before it, severity
+  // was a three-entry Set in eval-generations.mjs, and a new code moved the
+  // pass/fail line the moment it was added — twice, in the wrong direction, by
+  // making a correct surface look broken.
+  //
+  // Reclassifying a code in gen-diagnostics.mjs must change what the checker
+  // does. So: take a code the manifest calls advisory, plant it, and assert the
+  // checker files it as advisory rather than as a failure — and the same for a
+  // fatal one. If someone reintroduces a hardcoded list, one of these breaks.
+  const manifest = JSON.parse(
+    readFileSync(new URL('../common/surface/diagnostics.json', import.meta.url), 'utf8'),
+  ).diagnostics;
+
+  assert.equal(manifest.non_route_value.severity, 'advisory');
+  // AppCard(children, name, status, description, tags, href, loading) — the
+  // boolean lands in `href`, which is a route slot. Sixteen positions is how
+  // this used to happen by accident; seven is why it now takes effort.
+  const wrongSlot = `Here.
+c = AppCard([], "Spend", null, null, null, false)
+root = AppStack([c], "md")
+Done.`;
+  const shifted = check(kase({}), wrongSlot);
+  assert.deepEqual(shifted.fail, [], shifted.fail.join(' / '));
+  assert.match(shifted.advisory.join(' '), /non_route_value/);
+
+  assert.equal(manifest.component_as_attribute.severity, 'fatal');
+  // app-empty-state, not app-card: the card leads with children now, so that
+  // call is correct DSL. What is still a category error is a component handed
+  // to a component that has slots but no children parameter.
+  const swallowed = `Here.
+chart = AppChart([], "bar")
+root = AppEmptyState([chart], "No usage yet")
+Done.`;
+  const lost = check(kase({}), swallowed);
+  assert.match(lost.fail.join(' '), /component_as_attribute/);
 });

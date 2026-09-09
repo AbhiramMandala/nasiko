@@ -157,9 +157,13 @@
      absent — nothing needs one yet, and a ramp invented ahead of its first use
      is a ramp nobody validated.
 
-     Chart chrome is NOT here. Grid lines are --border-primary, tick and legend
-     text is --fg-secondary, an unfilled meter track is --bg-track. A chart is a
-     surface like any other; it does not get private greys. */
+     Chart chrome is mostly NOT here. Grid lines are --border-primary, an
+     unfilled meter track is --bg-track — a chart is a surface like any other
+     and does not get private greys. The one exception below is the axis/legend
+     label ink, which the design names as its own decision (chart/axis/label,
+     sand-700 in light) so a re-skin can change chart labelling without moving
+     every body caption with it. */
+  --chart-axis-label: light-dark(var(--sand-700), var(--neutral-400));
   --viz-1: var(--yellow-300);
   --viz-2: var(--blue-400);
   --viz-3: var(--teal-300);

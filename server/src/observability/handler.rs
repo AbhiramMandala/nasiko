@@ -1,17 +1,24 @@
 use crate::auth::Claims;
 use crate::state::AppState;
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use chrono::{DateTime, Utc};
 use nasiko_observability::ObservabilityError;
 use serde::Deserialize;
 use tracing::instrument;
 use utoipa::IntoParams;
 
 use super::service::{EnsureSessionOutcome, InsightsRequest, ObservabilityService};
+
+/// Request extension injected by EE middleware to scope FinOps queries to a
+/// set of user UUIDs (org-unit filter). OSS handlers check for this extension
+/// and pass it through to the service layer; if absent, no user filtering.
+#[derive(Clone, Debug)]
+pub struct FinopsUserScope(pub Vec<uuid::Uuid>);
 
 // ─── Error mapping ────────────────────────────────────────────────────────────
 
@@ -82,12 +89,116 @@ pub struct AgentStatsParams {
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
-pub struct FinopsParams {
-    /// ISO-8601 window start (default: 30 days ago).
+pub struct FinopsFilterParams {
+    /// ISO-8601 window start (default: 30 days ago). Ignored when `range` is set.
     pub start_time: Option<String>,
     /// ISO-8601 window end (default: now). Without it a past-month selection
     /// means "that month through today" rather than that month.
     pub end_time: Option<String>,
+    /// "24h" | "7d" | "30d" — quick-select range, overrides `start_time`.
+    pub range: Option<String>,
+    /// Agent UUID or name — scopes the whole response to one agent.
+    pub agent_id: Option<String>,
+    /// Exact model id, matched against span model attributes.
+    pub model: Option<String>,
+    /// Provider name filter (e.g. "openai", "anthropic"), matched against
+    /// the `provider` column in `trace_usage` (derived from `model_pricing`).
+    pub provider: Option<String>,
+    /// Org-unit filter — resolved to user_ids by the EE auth layer. OSS
+    /// accepts the param but ignores it (no org hierarchy). EE reads it in
+    /// the handler and passes user_ids to the service.
+    #[allow(dead_code)]
+    pub org_unit: Option<String>,
+    /// "agent" | "workflow" — which attribution source powers the response's
+    /// `attributions` field (default "agent").
+    pub view: Option<String>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct FinopsDayDrilldownParams {
+    /// Calendar day, "YYYY-MM-DD", interpreted in UTC.
+    pub date: String,
+    pub agent_id: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct FinopsSpendCalendarParams {
+    /// "YYYY-MM", interpreted in UTC.
+    pub month: String,
+    pub range: Option<String>,
+    pub agent_id: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct FinopsAttributionsParams {
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub range: Option<String>,
+    pub agent_id: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub view: Option<String>,
+    /// "cost" | "tokens" | "operations" | "avg_latency" | "container_hours" | "name"
+    pub sort_by: Option<String>,
+    /// "asc" | "desc" (default "desc")
+    pub sort_dir: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// Validates `range` is one of "24h"/"7d"/"30d" when present.
+// `Response` as the Err type is clippy::result_large_err-flagged, but this
+// runs at most once per request (an early-return 400 path), not a hot loop —
+// boxing it would just move the allocation, not remove it.
+#[allow(clippy::result_large_err)]
+fn validate_range(range: Option<&str>) -> Result<(), Response> {
+    match range {
+        None | Some("24h") | Some("7d") | Some("30d") => Ok(()),
+        Some(other) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("invalid range '{other}' — expected 24h, 7d, or 30d"),
+        )
+            .into_response()),
+    }
+}
+
+/// Validates `view` is one of "agent"/"workflow" when present, returning the
+/// resolved value (default "agent").
+#[allow(clippy::result_large_err)] // see validate_range
+fn validate_view(view: Option<&str>) -> Result<&str, Response> {
+    match view {
+        None | Some("agent") => Ok("agent"),
+        Some("workflow") => Ok("workflow"),
+        Some(other) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("invalid view '{other}' — expected agent or workflow"),
+        )
+            .into_response()),
+    }
+}
+
+/// Resolves an optional agent UUID-or-name filter into the Tempo-queryable
+/// agent name. Returns `Ok(None)` when no filter was given, `Err` (400) when
+/// one was given but didn't resolve — a silently-dropped filter would show
+/// unfiltered data under a caller-set "Agent: X" label, which is worse than
+/// an explicit error.
+async fn resolve_agent_filter(
+    db: &sqlx::PgPool,
+    agent_id: Option<&str>,
+) -> Result<Option<String>, Response> {
+    match agent_id {
+        None => Ok(None),
+        Some(id) => match super::routes::resolve_agent(db, id).await {
+            Some((_, name)) => Ok(Some(name)),
+            None => {
+                Err((StatusCode::BAD_REQUEST, format!("agent '{id}' not found")).into_response())
+            }
+        },
+    }
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -340,24 +451,272 @@ pub async fn get_agent_stats(
     get,
     path = "/api/observability/finops/dashboard",
     tag = "observability",
-    params(FinopsParams),
+    params(FinopsFilterParams),
     responses(
         (status = 200, description = "FinOps dashboard data", body = crate::observability::service::FinopsDashboardResponse),
+        (status = 400, description = "Malformed filter (range/view/agent_id)"),
         (status = 401, description = "Missing or invalid session"),
     ),
 )]
-#[instrument(skip(state))]
+#[instrument(skip(state, user_scope))]
 pub async fn get_finops_dashboard(
     State(state): State<AppState>,
     claims: Claims,
-    Query(params): Query<FinopsParams>,
-) -> impl IntoResponse {
+    user_scope: Option<Extension<FinopsUserScope>>,
+    Query(params): Query<FinopsFilterParams>,
+) -> Response {
+    if let Err(r) = validate_range(params.range.as_deref()) {
+        return r;
+    }
+    let view = match validate_view(params.view.as_deref()) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let agent_name = match resolve_agent_filter(&state.db, params.agent_id.as_deref()).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    if let Some(name) = agent_name.as_deref()
+        && !super::routes::agent_name_fully_accessible(&state, &claims, name).await
+    {
+        return (StatusCode::NOT_FOUND, "agent not found").into_response();
+    }
+
+    let (start_time, end_time) =
+        match resolve_range_params(&params.start_time, &params.end_time, &params.range) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+
+    let user_ids = user_scope.map(|Extension(s)| s.0);
     let accessible_agent_ids = accessible_agent_ids(&state, &claims).await;
     match svc(&state)
         .get_finops_dashboard(
+            &claims.sub,
+            None,
+            None,
+            None,
+            start_time.as_deref(),
+            end_time.as_deref(),
+            agent_name.as_deref(),
+            params.model.as_deref(),
+            params.provider.as_deref(),
+            user_ids.as_deref(),
+            accessible_agent_ids.as_deref(),
+            view,
+        )
+        .await
+    {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => obs_err(e),
+    }
+}
+
+/// "range" (24h/7d/30d) overrides `start_time`/`end_time` when present,
+/// computed relative to `end_time` (or now). Returns the resolved
+/// `(start_time, end_time)` ISO strings the service layer already knows how
+/// to parse.
+#[allow(clippy::result_large_err)] // see validate_range
+fn resolve_range_params(
+    start_time: &Option<String>,
+    end_time: &Option<String>,
+    range: &Option<String>,
+) -> Result<(Option<String>, Option<String>), Response> {
+    let Some(r) = range.as_deref() else {
+        return Ok((start_time.clone(), end_time.clone()));
+    };
+    let hours = match r {
+        "24h" => 24,
+        "7d" => 24 * 7,
+        "30d" => 24 * 30,
+        other => {
+            return Err(
+                (StatusCode::BAD_REQUEST, format!("invalid range '{other}'")).into_response(),
+            );
+        }
+    };
+    let end = end_time
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let start = end - chrono::Duration::hours(hours);
+    Ok((
+        Some(start.to_rfc3339()),
+        Some(end_time.clone().unwrap_or_else(|| end.to_rfc3339())),
+    ))
+}
+
+// ─── 6b. GET /v1/observability/finops/spend-timeseries ───────────────────────
+
+/// Spend-over-time series, dollar-only, honoring the full requested range
+/// (not silently clamped to Tempo's 168h single-search limit).
+#[utoipa::path(
+    get,
+    path = "/api/observability/finops/spend-timeseries",
+    tag = "observability",
+    params(FinopsFilterParams),
+    responses(
+        (status = 200, description = "Spend time series", body = crate::observability::service::FinopsSpendTimeseriesResponse),
+        (status = 400, description = "Malformed filter"),
+    ),
+)]
+#[instrument(skip(state))]
+pub async fn get_finops_spend_timeseries(
+    State(state): State<AppState>,
+    _claims: Claims,
+    Query(params): Query<FinopsFilterParams>,
+) -> Response {
+    if let Err(r) = validate_range(params.range.as_deref()) {
+        return r;
+    }
+    let agent_name = match resolve_agent_filter(&state.db, params.agent_id.as_deref()).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    match svc(&state)
+        .get_finops_spend_timeseries(
             params.start_time.as_deref(),
             params.end_time.as_deref(),
-            accessible_agent_ids.as_deref(),
+            params.range.as_deref(),
+            agent_name.as_deref(),
+            params.model.as_deref(),
+            params.provider.as_deref(),
+        )
+        .await
+    {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => obs_err(e),
+    }
+}
+
+// ─── 6c. GET /v1/observability/finops/spend-calendar ─────────────────────────
+
+/// Day-of-month spend heatmap for the given month.
+#[utoipa::path(
+    get,
+    path = "/api/observability/finops/spend-calendar",
+    tag = "observability",
+    params(FinopsSpendCalendarParams),
+    responses(
+        (status = 200, description = "Spend calendar", body = crate::observability::service::FinopsSpendCalendarResponse),
+        (status = 400, description = "Malformed month/filter"),
+    ),
+)]
+#[instrument(skip(state))]
+pub async fn get_finops_spend_calendar(
+    State(state): State<AppState>,
+    _claims: Claims,
+    Query(params): Query<FinopsSpendCalendarParams>,
+) -> Response {
+    if let Err(r) = validate_range(params.range.as_deref()) {
+        return r;
+    }
+    let agent_name = match resolve_agent_filter(&state.db, params.agent_id.as_deref()).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    match svc(&state)
+        .get_finops_spend_calendar(
+            &params.month,
+            params.range.as_deref(),
+            agent_name.as_deref(),
+            params.model.as_deref(),
+            params.provider.as_deref(),
+        )
+        .await
+    {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => obs_err(e),
+    }
+}
+
+// ─── 6d. GET /v1/observability/finops/spend-calendar/day ─────────────────────
+
+/// Hourly spend drill-down for one calendar day.
+#[utoipa::path(
+    get,
+    path = "/api/observability/finops/spend-calendar/day",
+    tag = "observability",
+    params(FinopsDayDrilldownParams),
+    responses(
+        (status = 200, description = "Hourly spend for one day", body = crate::observability::service::FinopsDayDrilldownResponse),
+        (status = 400, description = "Malformed date/filter"),
+    ),
+)]
+#[instrument(skip(state))]
+pub async fn get_finops_spend_calendar_day(
+    State(state): State<AppState>,
+    _claims: Claims,
+    Query(params): Query<FinopsDayDrilldownParams>,
+) -> Response {
+    let agent_name = match resolve_agent_filter(&state.db, params.agent_id.as_deref()).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    match svc(&state)
+        .get_finops_spend_calendar_day(
+            &params.date,
+            agent_name.as_deref(),
+            params.model.as_deref(),
+            params.provider.as_deref(),
+        )
+        .await
+    {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => obs_err(e),
+    }
+}
+
+// ─── 6e. GET /v1/observability/finops/attributions ────────────────────────────
+
+/// Agent/Workflow attribution table, server-side sorted and paginated —
+/// separate from `/dashboard` so a sort/page click doesn't re-run the
+/// KPI/timeseries work.
+#[utoipa::path(
+    get,
+    path = "/api/observability/finops/attributions",
+    tag = "observability",
+    params(FinopsAttributionsParams),
+    responses(
+        (status = 200, description = "Attribution rows", body = crate::observability::service::FinopsAttributionsResponse),
+        (status = 400, description = "Malformed filter"),
+    ),
+)]
+#[instrument(skip(state))]
+pub async fn get_finops_attributions(
+    State(state): State<AppState>,
+    _claims: Claims,
+    Query(params): Query<FinopsAttributionsParams>,
+) -> Response {
+    if let Err(r) = validate_range(params.range.as_deref()) {
+        return r;
+    }
+    let view = match validate_view(params.view.as_deref()) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let agent_name = match resolve_agent_filter(&state.db, params.agent_id.as_deref()).await {
+        Ok(n) => n,
+        Err(r) => return r,
+    };
+    let (start_time, end_time) =
+        match resolve_range_params(&params.start_time, &params.end_time, &params.range) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    match svc(&state)
+        .get_finops_attributions(
+            start_time.as_deref(),
+            end_time.as_deref(),
+            agent_name.as_deref(),
+            params.model.as_deref(),
+            params.provider.as_deref(),
+            view,
+            params.sort_by.as_deref(),
+            params.sort_dir.as_deref(),
+            params.limit,
+            params.offset,
         )
         .await
     {
@@ -375,7 +734,7 @@ pub async fn get_finops_dashboard(
     tag = "observability",
     request_body = crate::observability::service::InsightsRequest,
     responses(
-        (status = 200, description = "Up to 3 insight bullet points", body = crate::observability::service::InsightsResponse),
+        (status = 200, description = "Up to 3 insight bullet points", body = crate::observability::service::InsightsResponseEnvelope),
         (status = 500, description = "LLM call failed"),
     ),
 )]
@@ -449,4 +808,101 @@ async fn accessible_agent_ids(state: &AppState, claims: &Claims) -> Option<Vec<u
         }
     }
     Some(accessible)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── validate_range ───────────────────────────────────────────────────────
+
+    #[test]
+    fn validate_range_accepts_none_and_the_three_known_values() {
+        assert!(validate_range(None).is_ok());
+        assert!(validate_range(Some("24h")).is_ok());
+        assert!(validate_range(Some("7d")).is_ok());
+        assert!(validate_range(Some("30d")).is_ok());
+    }
+
+    #[test]
+    fn validate_range_rejects_anything_else_with_400() {
+        for bad in ["1h", "7D", "", "30days", "24H"] {
+            let err = validate_range(Some(bad)).expect_err(&format!("{bad:?} must be rejected"));
+            assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        }
+    }
+
+    // ── validate_view ────────────────────────────────────────────────────────
+
+    #[test]
+    fn validate_view_defaults_to_agent() {
+        assert_eq!(validate_view(None).unwrap(), "agent");
+        assert_eq!(validate_view(Some("agent")).unwrap(), "agent");
+    }
+
+    #[test]
+    fn validate_view_accepts_workflow() {
+        assert_eq!(validate_view(Some("workflow")).unwrap(), "workflow");
+    }
+
+    #[test]
+    fn validate_view_rejects_unknown_values_with_400() {
+        for bad in ["Agent", "workflows", "team", ""] {
+            let err = validate_view(Some(bad)).expect_err(&format!("{bad:?} must be rejected"));
+            assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        }
+    }
+
+    // ── resolve_range_params ─────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_range_params_passthrough_when_no_range() {
+        let start = Some("2024-01-01T00:00:00Z".to_string());
+        let end = Some("2024-01-31T00:00:00Z".to_string());
+        let (rs, re) = resolve_range_params(&start, &end, &None).unwrap();
+        assert_eq!(rs, start);
+        assert_eq!(re, end);
+    }
+
+    #[test]
+    fn resolve_range_params_24h_overrides_start_time_and_keeps_a_given_end_time() {
+        let stale_start = Some("2000-01-01T00:00:00Z".to_string());
+        let fixed_end = Some("2024-06-15T12:00:00Z".to_string());
+        let (rs, re) =
+            resolve_range_params(&stale_start, &fixed_end, &Some("24h".to_string())).unwrap();
+        assert_eq!(
+            re, fixed_end,
+            "an explicit end_time must be preserved verbatim"
+        );
+        let start_parsed = DateTime::parse_from_rfc3339(rs.as_deref().unwrap()).unwrap();
+        let end_parsed = DateTime::parse_from_rfc3339(re.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            (end_parsed - start_parsed).num_hours(),
+            24,
+            "resolved start must be exactly 24h before the given end_time"
+        );
+    }
+
+    #[test]
+    fn resolve_range_params_30d_with_no_end_time_anchors_to_now() {
+        let before = Utc::now();
+        let (rs, re) = resolve_range_params(&None, &None, &Some("30d".to_string())).unwrap();
+        let start_parsed = DateTime::parse_from_rfc3339(rs.as_deref().unwrap()).unwrap();
+        let end_parsed = DateTime::parse_from_rfc3339(re.as_deref().unwrap()).unwrap();
+        assert!(
+            end_parsed.with_timezone(&Utc) >= before,
+            "end_time must default to (roughly) now"
+        );
+        assert_eq!((end_parsed - start_parsed).num_hours(), 720);
+    }
+
+    #[test]
+    fn resolve_range_params_rejects_an_invalid_range_with_400() {
+        let err = resolve_range_params(&None, &None, &Some("bogus".to_string())).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
 }

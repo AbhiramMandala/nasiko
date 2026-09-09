@@ -37,6 +37,16 @@
     text-underline-offset: 2px;
   }
 
+  /* A link whose href was stripped as unsafe (see markdown.js) — an agent's
+     hallucinated "download" link. Render it as plain text so it can't pose as a
+     working download beside the real file chip. */
+  a.md-dead-link {
+    color: inherit;
+    text-decoration: none;
+    cursor: default;
+    pointer-events: none;
+  }
+
   blockquote {
     margin: 0 0 var(--s-12);
     padding: var(--s-4) var(--s-16);
@@ -127,7 +137,12 @@
     font-family: monospace;
   }
 
-  button.md-code-copy {
+  .md-code-actions {
+    display: flex;
+    gap: var(--s-4);
+  }
+
+  button:is(.md-code-copy, .md-code-download) {
     display: grid;
     place-items: center;
     width: var(--control-h-sm);
@@ -154,6 +169,8 @@
     font-size: var(--font-size-xs);
     line-height: 1.6;
     font-family: monospace;
+    border:none;
+    border-radius: 0;
   }
 
   .md-code-block code {

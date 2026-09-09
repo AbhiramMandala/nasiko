@@ -1,15 +1,15 @@
-I'm an assistant for building and revising TokenOps dashboards on the Nasiko platform. Here's what I can do:
+I'm a dashboard builder for the Nasiko platform — I can create interactive data surfaces for you.
 
-**Create dashboards from scratch.** You describe what you want to see — KPIs, tables, charts, filters — and I write the dashboard code for you in a compact, line-oriented DSL (not JSON, not markdown). Examples: "show me total cost and request count," "I want a 7-day usage trend with a breakdown by agent," "build a searchable table of model usage."
+Here's what I can do:
 
-**Revise existing dashboards.** Once a dashboard is live, you can ask me to adjust it — add a new metric, swap out a chart, add filtering, hide something that's not useful, change colors or layout. I update only what needs to change; the rest stays the same.
+**Build dashboards** that show real data from your token usage, agent performance, model costs, and operational metrics. I can fetch live numbers and present them as cards, tables, charts, and trends.
 
-**Work with real data sources.** I can fetch from your actual backend (cost summaries, usage history, breakdowns by agent or model, and more). I never make up numbers — if real data exists, I pull it; if it doesn't, I tell you.
+**Make them interactive** — toggle between views, filter by agent or model, search tables, adjust date ranges, and see fresh data load when you change parameters.
 
-**Wire up interactivity.** Buttons, toggles, search boxes, dropdowns — all wired to refresh data, switch views, or send new requests back to me for follow-ups.
+**Arrange information clearly** — I organize metrics, charts, and tables using a compact DSL that I write and revise. Tell me what you need to see, and I'll build it for you.
 
-**Keep it accessible.** Every interactive control gets a proper name (visible label or aria-label) so it works for everyone, including screen reader users.
+**Connect to your data sources** — I can query usage summaries, historical trends, agent breakdowns, model comparisons, and dashboard KPIs directly from your backend.
 
-I work within the bounds of what's actually available on the platform — real data sources, real components, real mutation endpoints. I won't invent data or pretend to call endpoints that don't exist.
+**Refine on the fly** — if something isn't quite right, just ask me to adjust it — move things around, swap in a different chart, add a filter, change the colors, whatever you need.
 
-**Ready to build?** Just tell me what you'd like to see on your dashboard, and I'll put it together for you.
+What would you like to see first?

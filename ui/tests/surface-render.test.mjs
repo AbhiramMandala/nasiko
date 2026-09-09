@@ -84,9 +84,9 @@ test('numbers and strings are written as text', () => {
 });
 
 test('a null prop is omitted rather than written as "null"', () => {
-  const { el } = draw('root = AppStatCard("Total", "12", null, "up")');
-  assert.equal(el.hasAttribute('delta'), false);
-  assert.equal(el.attrs.trend, 'up');
+  const { el } = draw('root = AppGrid([], null, "md")');
+  assert.equal(el.hasAttribute('columns'), false);
+  assert.equal(el.attrs.gap, 'md');
 });
 
 test('style and class can never be set from a surface', () => {
@@ -208,17 +208,21 @@ test('a component missing from the catalog is skipped, siblings survive', () => 
 });
 
 test('Worked Example 1 renders the whole tree with its real values', () => {
-  const { el, diagnostics } = draw(`root = AppStack([kpis], "md")
-kpis = AppRow([kpiCost, kpiCount], "md")
+  const { el, diagnostics } = draw(`root = AppStack([heading, kpis], "md")
+heading = AppText("Usage summary", "title")
 totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 requestCountQ = Query("fetchUsageSummary", [], 0, "request_count")
-kpiCost = AppStatCard("Total cost", totalCostQ, null, "up")
-kpiCount = AppStatCard("Requests", requestCountQ, null, "neutral")`,
+kpis = AppStatRow([{label: "Total cost", value: totalCostQ, sub: "all time"}, {label: "Requests", value: requestCountQ}])`,
   { ctx: { queryResults: new Map([['totalCostQ', 12.5], ['requestCountQ', 342]]) } });
 
-  const [cost, count] = el.children[0].children;
-  assert.deepEqual([cost.attrs.label, cost.attrs.value, cost.attrs.trend], ['Total cost', '12.5', 'up']);
-  assert.deepEqual([count.attrs.label, count.attrs.value], ['Requests', '342']);
+  const [heading, kpis] = el.children;
+  assert.equal(heading.attrs.variant, 'title');
+  assert.equal(heading.textContent, 'Usage summary');
+  // A json attribute is serialised, not spread — the strip parses it itself.
+  assert.deepEqual(JSON.parse(kpis.attrs.items), [
+    { label: 'Total cost', value: 12.5, sub: 'all time' },
+    { label: 'Requests', value: 342 },
+  ]);
   assert.deepEqual(diagnostics, []);
 });
 
@@ -316,4 +320,102 @@ test('the diagnostic says which attributes would fix it', () => {
   const { diagnostics } = draw('root = AppButton(null, "danger")');
   const d = diagnostics.find((x) => x.code === 'missing_accessible_name');
   assert.match(d.message, /text or aria-label/);
+});
+
+// ── app-grid.columns: an integer or a named ratio, nothing else ───────────
+
+test('an integer column count still renders', () => {
+  assert.equal(draw('root = AppGrid([], 3)').el.attrs.columns, '3');
+});
+
+test('a named ratio renders — the only way to express proportion anywhere', () => {
+  // app-row has no per-child sizing, so AppGrid's template string is the whole
+  // mechanism. It worked all along; nothing ever told the model it existed,
+  // because @attr {string|number} is collapsed to `number` in the catalog.
+  assert.equal(draw('root = AppGrid([], "2fr 1fr")').el.attrs.columns, '2fr 1fr');
+});
+
+test('an unlisted template is refused rather than reaching the stylesheet', () => {
+  // app-grid.js puts this straight into style.setProperty('--grid-columns', ...)
+  // with no filtering, and the DSL is written by a model — so the set is closed
+  // rather than "a string is fine".
+  const { el, diagnostics } = draw('root = AppGrid([], "7fr 3fr")');
+  assert.equal(el.attrs.columns, undefined, 'must not reach the element');
+  assert.ok(codes(diagnostics).includes('template_not_allowed'), codes(diagnostics).join(','));
+});
+
+test('omitting columns leaves the responsive default in place', () => {
+  // The CSS default is repeat(auto-fill, minmax(300px, 1fr)); setting columns at
+  // all replaces it, so the integer and template forms are both deliberate
+  // desktop shapes rather than interchangeable with omitting it.
+  assert.equal(draw('root = AppGrid([])').el.attrs.columns, undefined);
+});
+
+// ── a component in a value slot ─────────────────────────────────────────────
+//
+// Measured, not imagined. Three recorded generations tried to nest something
+// in an app-card, which had no children parameter: one wrote
+// `AppCard([chart], "Cost Distribution by Model")` and put the chart into
+// `name`, one padded nineteen arguments at a card that takes fifteen, and one
+// gave up and left the chart orphaned. app-card now leads with children, so
+// the first of those is correct DSL today — but the category error it exposed
+// is general, and app-empty-state still has a default slot and no children
+// parameter, so it stands in here.
+
+test('a component handed to a string attribute is named, not stringified', () => {
+  const { el, diagnostics } = draw([
+    'chart = AppChart([], "bar")',
+    'root = AppEmptyState([chart], "No usage yet")',
+  ].join('\n'));
+  assert.equal(el.attrs.title, undefined, 'a node must never reach the attribute');
+  assert.ok(codes(diagnostics).includes('component_as_attribute'), codes(diagnostics).join(','));
+  const d = diagnostics.find((x) => x.code === 'component_as_attribute');
+  assert.match(d.message, /app-chart/, 'names what was put in the slot');
+  assert.match(d.message, /slots/, 'says how app-empty-state actually takes children');
+});
+
+test('a bare component, not only a list of them, is caught', () => {
+  const { diagnostics } = draw([
+    'chart = AppChart([], "bar")',
+    'root = AppEmptyState(chart)',
+  ].join('\n'));
+  assert.ok(codes(diagnostics).includes('component_as_attribute'), codes(diagnostics).join(','));
+});
+
+test('and a card, which now leads with children, simply takes them', () => {
+  // The other half of the same change: what used to be silent content loss is
+  // the plain way to write a card. If this regresses, the diagnostic above
+  // starts firing on correct DSL.
+  const { el, diagnostics } = draw([
+    'chart = AppChart([], "bar")',
+    'root = AppCard([chart], "Cost distribution")',
+  ].join('\n'));
+  assert.equal(el.attrs.name, 'Cost distribution');
+  assert.equal(el.children.length, 1, 'the chart is inside the card');
+  assert.equal(el.children[0].tag, 'app-chart');
+  assert.deepEqual(codes(diagnostics), []);
+});
+
+test('structured data still reaches a json attribute untouched', () => {
+  // The check is for nodes, not for structure — `json` attributes take arrays
+  // and objects by design, and narrowing that would be the cure being worse.
+  const { el, diagnostics } = draw('root = AppTable([{"a": 1}], ["a"])');
+  assert.ok(!codes(diagnostics).includes('component_as_attribute'), codes(diagnostics).join(','));
+  assert.ok(el, 'renders');
+});
+
+// ── app-text ────────────────────────────────────────────────────────────────
+
+test('AppText puts its text in the element, not in an attribute', () => {
+  const { el } = draw('root = AppText("Spend is up 12% week over week")');
+  assert.equal(el.tag, 'app-text');
+  assert.equal(el.textContent, 'Spend is up 12% week over week');
+  assert.deepEqual(el.attrs, {}, 'body is the default — nothing to write');
+});
+
+test('the role is the second positional, and it is a closed set', () => {
+  assert.equal(draw('root = AppText("Cost overview", "title")').el.attrs.variant, 'title');
+  const { el, diagnostics } = draw('root = AppText("Cost overview", "h1")');
+  assert.ok(codes(diagnostics).includes('enum_violation'), codes(diagnostics).join(','));
+  assert.equal(el.attrs.variant, 'body', 'falls back to the default rather than rendering unstyled');
 });

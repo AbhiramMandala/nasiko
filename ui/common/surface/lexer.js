@@ -14,7 +14,8 @@
  *     lexes and parses as something complete. This is what makes rendering a
  *     half-arrived response possible at all.
  *   - An unrecognised character is skipped rather than thrown on. The model
- *     writes prose around the DSL by design (agent.yaml rule 13), and a
+ *     writes prose around the DSL by design (agent.yaml's two-sentence
+ *     wrapper rule), and a
  *     tokenizer that refuses stray text would take the whole surface down with
  *     the first friendly sentence.
  *

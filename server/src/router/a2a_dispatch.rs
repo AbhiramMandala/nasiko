@@ -762,6 +762,7 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
     .ok_or_else(|| A2aDispatchError::AgentNotFound(target.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn agent_stream(
     state: &AppState,
     agent: AgentRow,

@@ -12,7 +12,9 @@ pub use db_pricing::DbPricing;
 pub use error::ObservabilityError;
 pub use injector::{AgentContext, InstrumentationInjector, OtelInjector};
 pub use loki::{LokiClient, SpanContent, parse_trace_logs};
-pub use pricing::{CostBreakdown, PricingSource, StaticPricing, compute_cost};
+pub use pricing::{
+    CostBreakdown, PricingSource, StaticPricing, compute_cost, compute_cost_with_cache,
+};
 pub use provider::{
     NoSessionIdResolver, ObservabilityProvider, SessionIdResolver, SpendBucket, TempoLokiProvider,
     TimeBucket, chunk_tempo_range, clamp_tempo_range, find_root_span,
@@ -21,7 +23,8 @@ pub use runtime_ext::InstrumentedRuntime;
 pub use tempo::TempoClient;
 pub use types::{
     AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, TokenUsage, TraceDetails,
-    TraceSummary, TraceUsageRow, extract_token_attrs, latency_percentiles,
+    TraceSummary, TraceUsageRow, extract_cache_token_attrs, extract_token_attrs,
+    latency_percentiles,
 };
 
 pub struct TelemetryConfig {

@@ -28,7 +28,10 @@
  * @fires weave-message     - `{detail: {text}}` an assistant sentence
  * @fires weave-assistant   - `{detail: {text}}` `@ToAssistant` — the surface asking for a new turn
  * @fires weave-status      - `{detail: {phase, detail}}` requesting / streaming / done / failed
- * @fires weave-diagnostics - `{detail: {diagnostics}}` anything the runtime could not honour
+ * @fires weave-diagnostics - `{detail: {diagnostics}}` anything the runtime could not
+ *   honour. Each carries `severity`: `fatal` (the surface is wrong), `advisory`
+ *   (a mistake the runtime corrected) or `runtime` (a failed source or stream,
+ *   which says nothing about the generation).
  * @fires weave-turn        - `{detail: {record}}` one per turn: codes, counts and timings,
  *   never prompt or DSL content. The reporting sink subscribes here (NAS-211).
  */
@@ -77,6 +80,7 @@ import '/common/design-system/app-stat-row/app-stat-row.js';
 import '/common/design-system/app-switch/app-switch.js';
 import '/common/design-system/app-table/app-table.js';
 import '/common/design-system/app-tag/app-tag.js';
+import '/common/design-system/app-text/app-text.js';
 import '/common/design-system/app-toolbar/app-toolbar.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -90,6 +94,36 @@ function loadCatalog() {
       return res.json();
     });
   return catalogPromise;
+}
+
+/**
+ * How seriously to take each diagnostic code, from the generated manifest.
+ *
+ * The runtime deliberately does not carry this: a module that reports a problem
+ * should not also be ranking it, and the ranking is a product decision that
+ * changes without the code changing. Stamped on here, once, so a host has the
+ * distinction without every consumer re-deriving it — the page paints a lost
+ * chart differently from a dropped connection, which was impossible while every
+ * diagnostic arrived as an undifferentiated warning.
+ *
+ * A code the manifest does not know is treated as fatal: `gen-diagnostics
+ * --check` should have caught it, so if one gets here the loud answer is right.
+ * A failed fetch leaves the field undefined rather than guessing.
+ */
+let severityPromise = null;
+let severityMap = null;
+function loadSeverities() {
+  severityPromise ??= fetch(new URL('/common/surface/diagnostics.json', document.baseURI))
+    .then((res) => (res.ok ? res.json() : null))
+    .then((json) => { severityMap = json?.diagnostics ?? null; })
+    .catch(() => { severityMap = null; });
+  return severityPromise;
+}
+
+/** @param {{code?: string}[]} diagnostics */
+function withSeverity(diagnostics) {
+  if (!severityMap) return diagnostics;
+  return diagnostics.map((d) => ({ ...d, severity: severityMap[d.code]?.severity ?? 'fatal' }));
 }
 
 class WeaveSurface extends HTMLElement {
@@ -153,7 +187,7 @@ class WeaveSurface extends HTMLElement {
       if (err?.name === 'AbortError') return { status: 'aborted', surface: '', catalogVersion: null };
       this.#emit('weave-status', { phase: 'failed', detail: String(err?.message ?? err) });
       this.#emit('weave-diagnostics', {
-        diagnostics: [{ source: 'host', code: 'request_failed', message: String(err?.message ?? err) }],
+        diagnostics: withSeverity([{ source: 'host', code: 'request_failed', message: String(err?.message ?? err) }]),
       });
       return { status: 'failed', surface: '', catalogVersion: null };
     }
@@ -166,7 +200,11 @@ class WeaveSurface extends HTMLElement {
 
   async #ensureSession() {
     if (this.#session) return this.#session;
-    const catalog = this.catalog ?? (await loadCatalog());
+    // Together, so the manifest costs no latency of its own.
+    const [catalog] = await Promise.all([
+      this.catalog ?? loadCatalog(),
+      loadSeverities(),
+    ]);
     this.#session = createSurfaceSession({
       endpoint: this.getAttribute('endpoint') || '/weave/surface',
       catalog,
@@ -174,7 +212,7 @@ class WeaveSurface extends HTMLElement {
       onMessage: (text) => this.#emit('weave-message', { text }),
       onAssistant: (text) => this.#emit('weave-assistant', { text }),
       onStatus: (s) => this.#emit('weave-status', s),
-      onDiagnostics: (diagnostics) => this.#emit('weave-diagnostics', { diagnostics }),
+      onDiagnostics: (diagnostics) => this.#emit('weave-diagnostics', { diagnostics: withSeverity(diagnostics) }),
       onTurn: (record) => this.#emit('weave-turn', { record }),
     });
     return this.#session;

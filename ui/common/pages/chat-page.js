@@ -14,7 +14,7 @@ registerAll({ transcribeAudio }, { replace: true });
 
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./chat-page.css', import.meta.url));
-import { escHtml } from '/common/utils/escape.js';
+import { escHtml, escAttr } from '/common/utils/escape.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the
 // gutter was reserved and the nav never upgraded.
@@ -353,12 +353,19 @@ class ChatPage extends HTMLElement {
       }
 
       pendingRow.remove();
-      const { text: reply, traceId, usage, aborted } = await this.#readA2aStream(res, messagesEl);
+      const { text: reply, traceId, usage, aborted, contentEl } = await this.#readA2aStream(res, messagesEl);
       // An aborted stream returns normally (it is a cancellation, not a
       // failure), so this guard is what stops a half-received reply from being
       // written to the server as if the agent had finished saying it.
       if (aborted) return;
-      this.#persistMessage(this.#sessionId, "assistant", reply, { traceId, usage });
+      const persisted = await this.#persistMessage(this.#sessionId, "assistant", reply, { traceId, usage });
+      // Surface any files this turn produced on the just-streamed message. The
+      // server captures the agent's `/workspace` writes onto the message and
+      // returns them here, session-scoped. Attach to this turn's own element so
+      // an interleaved second message can't steal the chips.
+      if (persisted?.file_parts?.length && contentEl?.isConnected) {
+        contentEl.insertAdjacentHTML("beforeend", this.#filesHtml(persisted.file_parts));
+      }
       this.#updateRetryButtons(messagesEl);
     } catch (err) {
       pendingRow.remove();
@@ -391,6 +398,7 @@ class ChatPage extends HTMLElement {
               usage: usageFromMessage(m),
               traceId: m.trace_id,
               metadata: m.metadata,
+              files: m.file_parts,
             });
             if (m.role === 'user') this.#lastUserContent = m.content;
           } catch (error) {
@@ -405,7 +413,7 @@ class ChatPage extends HTMLElement {
     }
   }
 
-  #appendMsg(messagesEl, role, content, { usage = null, traceId = null, metadata = null } = {}) {
+  #appendMsg(messagesEl, role, content, { usage = null, traceId = null, metadata = null, files = null } = {}) {
     // Sessions are written by multiple clients: the web UI stores replies as
     // "assistant" while the CLI/TUI store them as "agent". Anything that is
     // not the user renders as an agent reply (markdown + assistant styling).
@@ -430,6 +438,9 @@ class ChatPage extends HTMLElement {
       steps = document.createElement('agent-steps');
       row.appendChild(steps);
     }
+
+    const filesHtml = this.#filesHtml(files);
+    if (filesHtml) div.insertAdjacentHTML('beforeend', filesHtml);
     row.appendChild(div);
 
     // Message actions toolbar
@@ -559,7 +570,10 @@ class ChatPage extends HTMLElement {
     `;
     streamArea.appendChild(actions);
 
-    return { text: fullText, traceId: out.traceId, usage: out.usage, aborted: out.aborted };
+    // Hand back the content element for this turn so the caller can attach file
+    // chips to *this* reply — not `:last-child`, which drifts to a newer row if
+    // the user sends another message while the persist is still awaiting.
+    return { text: fullText, traceId: out.traceId, usage: out.usage, aborted: out.aborted, contentEl };
   }
 
   // Opens the full Observability session view with this turn's trace
@@ -576,7 +590,10 @@ class ChatPage extends HTMLElement {
 
   // Assistant rows carry their usage_meta + trace id so chips and the
   // "Detailed trace" link survive a history reload.
-  #persistMessage(sessionId, role, content, { traceId = null, usage = null } = {}) {
+  // Returns the persisted message (with any `file_parts` the server captured
+  // from the agent's `/workspace` this turn), or null on failure — persistence
+  // stays best-effort, but the reply chips need the response.
+  async #persistMessage(sessionId, role, content, { traceId = null, usage = null } = {}) {
     const body = { role, content };
     if (traceId || usage) {
       body.usage = {
@@ -589,11 +606,46 @@ class ChatPage extends HTMLElement {
         trace_id: traceId,
       };
     }
-    apiFetch(`/chat/sessions/${sessionId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }).catch(() => {});
+    try {
+      const res = await apiFetch(`/chat/sessions/${sessionId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) return null;
+      const j = await res.json();
+      return j.data || j;
+    } catch {
+      return null;
+    }
+  }
+
+  // Files a turn produced, as real download links. Platform-driven: the server
+  // captures the agent's `/workspace` writes onto the message and serves them,
+  // session-scoped, from the fixed `/chat/files/{id}/download` route — so any
+  // agent's files become downloadable with no Nasiko-awareness in the agent.
+  #filesHtml(files) {
+    if (!Array.isArray(files) || !files.length) return '';
+    const rows = files
+      .map(
+        (f) => `
+        <a class="chat-msg-file" href="/api/chat/files/${encodeURIComponent(f.id)}/download"
+           download="${escAttr(f.name)}" title="Download ${escAttr(f.name)}">
+          ${icons.arrowDown('', 14)}<span class="chat-msg-file-name">${escHtml(f.name)}</span>
+          <span class="chat-msg-file-size">${this.#formatSize(f.size)}</span>
+        </a>`,
+      )
+      .join('');
+    return `<div class="chat-msg-files">${rows}</div>`;
+  }
+
+  #formatSize(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KB', 'MB', 'GB'];
+    let n = bytes / 1024;
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return `${n < 10 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
   }
 
 }

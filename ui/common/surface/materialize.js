@@ -378,14 +378,39 @@ export function materialize(statements, componentIndex, ctx = {}) {
     let text = null;
     let action = null;
 
+    // Whether the value the user edits is driven by state, which can only be
+    // asked of the argument's AST — after evaluation `$q` and "literal" are
+    // both just a string.
+    let valueFromState = false;
+
     for (let i = 0; i < params.length && i < node.args.length; i++) {
       const param = params[i];
       const value = evaluate(node.args[i], statementId, scope);
+      if (param === 'value' || param === 'checked') valueFromState = mentionsState(node.args[i]);
       if (param === 'children') children = toArray(value);
       else if (param === 'data') data = value;
       else if (param === 'text') text = value;
       else if (param === 'action') action = value;
       else props[param] = value;
+    }
+
+    // An editable control whose Action writes state, whose own value is not
+    // read back from state, loses what the user typed on the very next paint —
+    // the Action fires, the store changes, render() rebuilds the tree, and the
+    // new input is built from an argument that never moved. Worse than the
+    // caret loss this sits next to, and completely silent: the box simply
+    // empties as you type.
+    //
+    // Checked on the AST because that is the only place the difference lives.
+    // `value` present but constant counts as unbound; so does omitting it.
+    if (action && !valueFromState && params.includes('value')) {
+      note(
+        'uncontrolled_input',
+        `${node.name} has an Action but its value is not read back from a $state variable — `
+          + 'what the user types is discarded on the next repaint. Bind it, e.g. value: $q with '
+          + 'Action([@Set($q, $event)])',
+        statementId,
+      );
     }
 
     return {
@@ -433,8 +458,16 @@ export function materialize(statements, componentIndex, ctx = {}) {
         // with "needs an array of rows".
         //
         // Detected narrowly: only when the default is a plain object that
-        // literally contains the first path segment, which no correct default
+        // literally contains one of the path segments, which no correct default
         // ever does — a correct `[]` has no "data" key, so it is untouched.
+        //
+        // Any segment, not only the first, because the model also stops
+        // half-way: `Query(src, args, {agents: []}, "data.agents")` walked
+        // `data` and forgot `.agents`. The head test alone missed that, and it
+        // surfaced two hops later as `data_not_rows` pointing at the table —
+        // a diagnostic naming the wrong file. Matching the deepest segment
+        // present tells us which level the default is really at, and the rest
+        // of the path is what has to be applied from there.
         //
         // And repaired, under exactly that guard. Applying the path
         // unconditionally would break the correct case; applying it only where
@@ -449,14 +482,22 @@ export function materialize(statements, componentIndex, ctx = {}) {
         // which is what tipped this from "report" to "report and repair".
         let usable = fallback;
         if (select && fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
-          const head = String(select).split('.')[0];
-          if (head && Object.prototype.hasOwnProperty.call(fallback, head)) {
-            usable = selectPath(fallback, select);
+          const segments = String(select).split('.').filter(Boolean);
+          // The deepest segment the default actually has a key for. That is the
+          // level it was written at, so everything after it is the part the
+          // model forgot to walk.
+          const at = segments.findLastIndex((seg) => Object.prototype.hasOwnProperty.call(fallback, seg));
+          if (at !== -1) {
+            const remainder = segments.slice(at).join('.');
+            usable = selectPath(fallback, remainder);
             if (!warnedDefault.has(statementId)) {
               warnedDefault.add(statementId);
+              const how = at === 0
+                ? 'is the whole response'
+                : `stops at "${segments.slice(0, at).join('.')}"`;
               note(
                 'default_is_whole_response',
-                `${statementId}'s default is the whole response — with a "${select}" path it should be `
+                `${statementId}'s default ${how} — with a "${select}" path it should be `
                   + `what that path yields. Using ${JSON.stringify(usable)} until the fetch lands`,
                 statementId,
               );

@@ -71,15 +71,15 @@ export const GENERATED_DSL = [
   'agentRows = Query("fetchUsageByAgent", ["", 1, 20], [], "data")\n',
   'showSeven = Action([@Set($days, 7), @Run(historyQ)])\n',
   'showFourteen = Action([@Set($days, 14), @Run(historyQ)])\n',
-  'costCard = AppStatCard("Total cost", summaryQ, null, "up")\n',
-  'reqCard = AppStatCard("Requests", requestsQ, null, "up")\n',
-  'kpis = AppRow([costCard, reqCard], "md")\n',
+  'heading = AppText("Spend and request volume", "title")\n',
+  'kpis = AppStatRow([{label: "Total cost", value: summaryQ}, {label: "Requests", value: requestsQ}])\n',
   'sevenBtn = AppButton("7 days", "tertiary", "sm", false, null, false, false, "button", null, null, null, showSeven)\n',
   'fourteenBtn = AppButton("14 days", "primary", "sm", false, null, false, false, "button", null, null, null, showFourteen)\n',
   'filters = AppRow([sevenBtn, fourteenBtn], "sm")\n',
   'spendChart = AppChart(historyQ.total_cost_usd, "line")\n',
   'agentTable = AppTable(agentRows)\n',
-  'root = AppStack([kpis, filters, spendChart, agentTable], "md")\n',
+  'chartCard = AppCard([spendChart], "Daily spend")\n',
+  'root = AppStack([heading, kpis, filters, chartCard, agentTable], "md")\n',
   "Here's your spend dashboard with a 7/14 day filter — let me know if you'd like anything adjusted!",
 ];
 
@@ -130,7 +130,7 @@ export default {
         page_.querySelector("#composer").dispatchEvent(new Event("submit", { cancelable: true }));
       });
 
-      await page.waitForSelector("weave-surface app-stat-card");
+      await page.waitForSelector("weave-surface app-stat-row");
       await page.waitForFunction(() => {
         const b = document.querySelector("weave-page #status");
         return b && /done|ok/.test(b.textContent);

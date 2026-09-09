@@ -194,6 +194,50 @@
     max-width: 100%;
   }
 
+  /* ── Download chips ──────────────────────────────────────────────────── */
+  /* Files the agent produced this turn, captured by the server and served
+     session-scoped from /api/chat/files/{id}/download. */
+  .chat-msg-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-8);
+    margin-top: var(--s-8);
+  }
+  a.chat-msg-file {
+    display: inline-flex;
+    /* The name and the size are two different font sizes, so centring them
+       leaves the smaller one riding ~1px high. Align their baselines and let
+       the icon centre itself against the row. */
+    align-items: baseline;
+    gap: var(--s-8);
+    max-width: 100%;
+    padding: var(--s-8) var(--s-12);
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-12);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+    text-decoration: none;
+    font-size: var(--font-size-sm);
+  }
+  a.chat-msg-file:hover {
+    border-color: var(--color-primary);
+  }
+  .chat-msg-file svg {
+    flex: none;
+    align-self: center;
+    color: var(--color-text-muted);
+  }
+  .chat-msg-file-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chat-msg-file-size {
+    flex: none;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+  }
+
   /* ── Message actions toolbar ─────────────────────────────────────────── */
   /* Assistant replies: static icon row below the answer (per NightOwl mock). */
   .msg-actions {

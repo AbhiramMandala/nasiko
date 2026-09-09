@@ -229,11 +229,32 @@ impl AppState {
             ));
         }
 
+        // Trace-usage materializer: reads recent traces from Tempo, extracts
+        // FinOps metrics, and upserts into trace_usage so dashboard queries
+        // hit Postgres instead of Tempo. 0 disables.
+        if state.config.observability_enabled && state.config.trace_usage_sync_secs > 0 {
+            let session_resolver: std::sync::Arc<dyn nasiko_observability::SessionIdResolver> =
+                std::sync::Arc::new(
+                    crate::observability::session_resolver::PgSessionIdResolver::new(
+                        state.db.clone(),
+                    ),
+                );
+            tokio::spawn(crate::observability::trace_materializer::run(
+                state.db.clone(),
+                state.observability.clone(),
+                session_resolver,
+                std::time::Duration::from_secs(state.config.trace_usage_sync_secs),
+                std::time::Duration::from_secs(state.config.trace_usage_overlap_secs),
+                state.config.trace_usage_batch_size,
+            ));
+        }
+
         state
     }
 
     /// Run one-time initialization: bootstrap admin user, spawn seed agents in background,
-    /// and start periodic materialized view refresh.
+    /// reconcile any `running` agent with no live runtime resource, and start periodic
+    /// materialized view refresh.
     pub async fn init(&self) {
         if let (Ok(admin_user), Ok(admin_pass)) = (
             std::env::var("ADMIN_USERNAME"),
@@ -247,6 +268,14 @@ impl AppState {
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
             crate::seed::seed_toolkits_if_configured(&state).await;
+        });
+
+        // Covers e.g. a tenant cluster restore, which recreates the database
+        // but not the individual agent Deployments/Services — see
+        // `agents::reconcile`'s module doc.
+        let state = self.clone();
+        tokio::spawn(async move {
+            crate::agents::reconcile::reconcile_agents_on_startup(&state).await;
         });
 
         // Periodic refresh of materialized views (token_usage_daily, agent_selection_stats).

@@ -32,6 +32,7 @@ import '/common/design-system/app-loading-bar/app-loading-bar.js';
 import '/common/design-system/app-radio/app-radio.js';
 import '/common/design-system/app-row/app-row.js';
 import '/common/design-system/app-search/app-search.js';
+import '/common/design-system/app-segmented-control/app-segmented-control.js';
 import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/design-system/app-stack/app-stack.js';
@@ -41,6 +42,7 @@ import '/common/design-system/app-switch/app-switch.js';
 import '/common/design-system/app-table/app-table.js';
 import '/common/design-system/app-tabs/app-tabs.js';
 import '/common/design-system/app-tag/app-tag.js';
+import '/common/design-system/app-text/app-text.js';
 import '/common/design-system/app-toolbar/app-toolbar.js';
 import '/common/design-system/app-tooltip/app-tooltip.js';
 import '/common/design-system/auto-complete/auto-complete.js';
@@ -101,6 +103,39 @@ const DS_CHART_DATA = {
   'ds-chart-donut': {
     labels: ['gpt-4o 35%', 'claude 25%', 'embeddings 18%', 'gemini 12%', 'other 10%'],
     datasets: [{ label: 'Spend', data: [35, 25, 18, 12, 10] }],
+  },
+  // TokenOps "Spend over time": cost series on the left axis, token volume on
+  // the right (`axis: 'y2'`), with two flagged anomalies on the spend series.
+  'ds-chart-anomaly-line': {
+    labels: Array.from({ length: 31 }, (_, i) => String(i + 1)),
+    datasets: [
+      { label: 'Spend', data: [310, 250, 205, 240, 280, 305, 330, 355, 450, 340,
+        330, 345, 360, 365, 370, 372, 375, 374, 372, 370, 365, 360, 372, 371,
+        370, 372, 370, 340, 300, 270, 245],
+        anomalies: [8, { index: 22, note: 'DevOps Engineer spend 55M tokens' }] },
+      { label: 'Waste', data: [85, 100, 120, 135, 145, 130, 105, 95, 110, 90,
+        88, 92, 118, 112, 104, 100, 98, 96, 100, 104, 108, 104, 100, 104, 110,
+        112, 108, 116, 112, 108, 110] },
+      { label: 'Tokens', axis: 'y2', data: [2.2e6, 4.1e6, 5.8e6, 6.9e6, 6.1e6,
+        5.4e6, 4.9e6, 5.6e6, 6.4e6, 5.2e6, 4.8e6, 5.1e6, 5.9e6, 6.6e6, 7.1e6,
+        6.8e6, 7.0e6, 7.6e6, 8.1e6, 7.2e6, 6.4e6, 5.8e6, 5.1e6, 4.4e6, 3.9e6,
+        3.4e6, 3.0e6, 3.6e6, 4.5e6, 5.6e6, 6.6e6] },
+    ],
+  },
+  // TokenOps "Spend concentration": one column per hour, one pill per agent.
+  'ds-chart-concentration': {
+    labels: ['12am', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11',
+      '12pm', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11'],
+    datasets: [
+      { label: 'Router', data: [38, 30, 26, 24, 26, 30, 36, 42, 50, 55, 52, 48,
+        50, 54, 52, 48, 44, 46, 42, 38, 40, 44, 40, 36] },
+      { label: 'DevOps Engineer', data: [12, 8, 6, 5, 6, 10, 18, 30, 44, 52, 48, 40,
+        44, 50, 46, 38, 30, 34, 26, 18, 22, 28, 20, 14] },
+      { label: 'Finance Analyst', data: [4, 3, 2, 2, 2, 4, 8, 16, 28, 34, 30, 24,
+        28, 32, 30, 22, 16, 18, 12, 8, 10, 14, 8, 5] },
+      { label: 'Other', data: [2, 1, 1, 1, 1, 2, 4, 8, 12, 14, 12, 10,
+        12, 14, 12, 9, 7, 8, 6, 4, 5, 6, 4, 3] },
+    ],
   },
   // Row forms take a flat array. `trend` is the sentiment, not the arrow:
   // rising spend is bad news, so it is `down` next to an up arrow.
@@ -431,6 +466,40 @@ const SPECS = [
   },
   {
     group: 'Controls',
+    tag: 'app-segmented-control',
+    blurb: 'One exclusive choice from a set — Status × Selection, in the one shape the spec draws: a bordered strip with hairline dividers and a brand-tinted selection. Native radios, so arrow keys, the single tab stop and the announced selection are the browser’s. Fill and focus ring are independent treatments: <code>state="focus"</code> rings an <em>unfilled</em> segment, the way the spec draws it.',
+    demo: `<app-stack gap="md" align="start">
+  <app-row gap="lg" wrap align="center">
+    <app-segmented-control label="Range" value="Week"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control label="Range hover" value="Week" state="hover"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control label="Range focus" value="Week" state="focus"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control label="Range disabled" value="Week" disabled
+      items='["Day","Week","Month"]'></app-segmented-control>
+  </app-row>
+  <app-row gap="lg" wrap align="center">
+    <app-segmented-control label="Nothing selected"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control label="One segment disabled" value="day"
+      items='[{"value":"day","label":"Day"},{"value":"week","label":"Week"},
+              {"value":"month","label":"Month","disabled":true,"title":"No monthly rollup yet"}]'></app-segmented-control>
+    <app-segmented-control label="Attribute by" value="Agent"
+      items='["Agent","Workflow"]'></app-segmented-control>
+  </app-row>
+  <app-row gap="lg" wrap align="center">
+    <app-segmented-control label="Focus, first selected" value="Day" state="focus"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control label="Focus, last selected" value="Month" state="focus"
+      items='["Day","Week","Month"]'></app-segmented-control>
+    <app-segmented-control size="sm" label="Small 28" value="Week"
+      items='["Day","Week","Month"]'></app-segmented-control>
+  </app-row>
+</app-stack>`,
+  },
+  {
+    group: 'Controls',
     tag: 'app-switch',
     blurb: 'Figma’s Toggle Item (88:822) × Toggle (88:945) — Size × Type × Status. 40×24 and 36×20 tracks. Only the On track has a hover step, and the disabled paint is the same grey on or off.',
     demo: `<app-stack gap="md" align="start">
@@ -513,6 +582,18 @@ const SPECS = [
   <app-avatar size="lg" filled label="Label" description="name@email.com"></app-avatar>
   <app-avatar size="lg" filled state="hover" label="Label" description="name@email.com"></app-avatar>
   <app-avatar size="lg" disabled label="Label" description="name@email.com"></app-avatar>
+</app-stack>`,
+  },
+  {
+    group: 'Data display',
+    tag: 'app-text',
+    blurb: 'The typography primitive \u2014 five roles, no new sizes. Every ramp is one the tokens already define: title is the same recipe as .title-page, caption is Figma\u2019s second body ramp, label is the uppercase eyebrow two stylesheets already declared separately. Heading level is fixed (title = h2, subtitle = h3) because a surface renders inside a page that owns the h1. No margins \u2014 spacing belongs to the stack that holds it.',
+    demo: `<app-stack gap="sm" align="start">
+  <app-text variant="label">This month</app-text>
+  <app-text variant="title">Cost overview</app-text>
+  <app-text variant="subtitle">By model</app-text>
+  <app-text>Spend is up 12% week over week, driven almost entirely by the long-context runs on Friday. The measure caps at 68ch so a paragraph stays readable at full dashboard width.</app-text>
+  <app-text variant="caption">Figures exclude cached reads.</app-text>
 </app-stack>`,
   },
   {
@@ -655,6 +736,20 @@ const SPECS = [
     blurb: 'type="donut" \u2014 center-value/center-label fill the hole; the legend is always on, since a slice cannot be direct-labelled.',
     demo: `<app-chart id="ds-chart-donut" type="donut" format="percent" height="180px"
   center-value="$11.4k" center-label="total" label="Spend by model"></app-chart>`,
+  },
+  {
+    group: 'Data display',
+    tag: 'app-chart',
+    blurb: 'TokenOps "Spend over time": a dataset with anomalies: [indices] gets status-red markers and bands (never a series colour \u2014 an anomaly is a state); a dataset with axis: "y2" binds to the right-hand scale, formatted by format-y2. Hovering draws the crosshair. Use y2 reluctantly \u2014 two scales invite reading a crossing the scale ratio invented.',
+    demo: `<app-chart id="ds-chart-anomaly-line" type="line" format="currency" format-y2="compact"
+  height="200px" label="Spend over time with anomalies"></app-chart>`,
+  },
+  {
+    group: 'Data display',
+    tag: 'app-chart',
+    blurb: 'TokenOps "Spend concentration": [segmented] draws each stack segment as a gapped pill and hides the y-axis; [average-line] adds the dashed mean-of-column-totals rule. One column per hour, colour per agent from the fixed --viz scale.',
+    demo: `<app-chart id="ds-chart-concentration" type="bar" segmented average-line legend="off"
+  height="200px" label="Spend concentration by hour"></app-chart>`,
   },
   {
     group: 'Data display',
