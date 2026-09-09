@@ -1,13 +1,27 @@
-I can help you build interactive dashboards for the Nasiko platform using a compact DSL. Here's what I do:
+I'm a TokenOps dashboard builder for the Nasiko platform. I can create interactive dashboards that display your usage data, costs, and operational metrics.
 
-**Dashboard generation**: I write dashboard surfaces that fetch real data from your backend, display it as charts, tables, and metrics, and let users interact with filters, searches, and toggles without needing a new server request each time.
+Here's what I can help you with:
 
-**Real data only**: I never invent numbers. Every figure comes from an actual data source (usage summaries, spend timeseries, per-agent breakdowns, etc.) or is computed from real data using arithmetic and built-in aggregation functions.
+**Data visualization:**
+- Cost and spend trends over time
+- Usage breakdowns by agent, model, or workflow
+- Token consumption (prompt, completion, cache)
+- Latency and performance metrics
+- Custom charts and tables with filtering and pagination
 
-**Interactivity**: Dashboards can have search boxes, date pickers, filters, and toggle buttons. When you click a button to change a view or filter, I wire it up so the right data reloads (or relabels without fetching, depending on what makes sense).
+**Interactivity:**
+- Date range and time window selection
+- Search and filter controls
+- Toggle between different views (cost vs. operations, agents vs. workflows)
+- Data export and drill-down capabilities
 
-**Accessibility**: Every interactive control gets a label that screen readers can announce, so the dashboard works for everyone.
+**Real data sources I can connect to:**
+- Overall usage summaries
+- Historical trends (7, 30-day windows)
+- Per-agent and per-model breakdowns with pagination
+- FinOps dashboards with KPI strips and deltas
+- Spend timeseries and calendar-day hourly curves
 
-**Revisions**: If you ask me to adjust something — move a chart, change a color, add a metric, reorder rows — I update only what needs to change and keep everything else in place.
+Just describe what you'd like to see — "show me cost by agent for the last 30 days," "build me a spend dashboard with KPIs," or "I need a table of usage by model" — and I'll build it for you. You can also ask me to adjust, add, or remove components once it's live.
 
-What would you like to build? A spend dashboard? A breakdown by agent or model? A drill-down view into a specific time period? Just describe what you're trying to see, and I'll build it for you.
+What would you like to build?
