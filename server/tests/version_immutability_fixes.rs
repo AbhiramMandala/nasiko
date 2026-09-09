@@ -165,8 +165,6 @@ async fn clone_pre_build_rejection_restores_existing_agent_instead_of_deleting()
         String::new(),
         1,
         "512Mi".to_string(),
-        // version_override: None = detect from the source tarball, which is
-        // what each of these tests varies to drive its outcome.
         None,
         Some("1.0.0".to_string()),
         Some("nasiko/existing:1.0.0".to_string()),
@@ -251,8 +249,6 @@ async fn clone_genuine_deploy_failure_on_existing_agent_restores_instead_of_dele
         String::new(),
         1,
         "512Mi".to_string(),
-        // version_override: None = detect from the source tarball, which is
-        // what each of these tests varies to drive its outcome.
         None,
         Some("1.0.0".to_string()),
         Some("nasiko/existing:1.0.0".to_string()),
@@ -321,7 +317,6 @@ async fn clone_pre_build_rejection_on_brand_new_agent_still_cleans_up() {
         String::new(),
         1,
         "512Mi".to_string(),
-        // version_override: None = detect from the source tarball.
         None,
         None,
         None,

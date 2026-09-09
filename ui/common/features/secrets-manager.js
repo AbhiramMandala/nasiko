@@ -190,7 +190,7 @@ class SecretsManager extends HTMLElement {
     this.innerHTML = `
       ${heading ? `<h2 class="sm-title">${esc(heading)}</h2>` : ''}
       ${description ? `<p class="sm-sub">${esc(description)}</p>` : ''}
-      <div class="sm-list" id="sm-list"><app-skeleton height="44px" radius="md" style="margin-bottom:var(--s-8);"></app-skeleton><app-skeleton height="44px" radius="md" style="margin-bottom:var(--s-8);"></app-skeleton><app-skeleton height="44px" radius="md"></app-skeleton></div>
+      <div class="sm-list" id="sm-list"><app-skeleton lines="3" height="88px"></app-skeleton></div>
       <form class="sm-add" id="sm-add" novalidate hidden>
         <app-input id="sm-name" label="Name" placeholder="API_KEY"
           maxlength="128" autocomplete="off"

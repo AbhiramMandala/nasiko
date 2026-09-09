@@ -391,15 +391,7 @@ pub async fn execute_build(
                 .get_blob(key)
                 .await
                 .map_err(|e| format!("fetch source from S3: {e}"))?;
-            // Same reasoning as the tar below: unpacking the archive to disk is
-            // synchronous CPU + IO, so it belongs on the blocking pool. With
-            // build_concurrency > 1 running it inline would block one runtime
-            // thread per in-flight build, on the runtime serving the HTTP API.
-            let dest = tmp_dir.clone();
-            tokio::task::spawn_blocking(move || extract_zip_to_dir(&data, &dest))
-                .await
-                .map_err(|e| format!("spawn_blocking extract: {e}"))?
-                .map_err(|e| format!("extract zip: {e}"))?;
+            extract_zip_to_dir(&data, &tmp_dir).map_err(|e| format!("extract zip: {e}"))?;
         } else {
             return Err("no source provided (neither github_url nor source zip)".into());
         }
@@ -410,15 +402,9 @@ pub async fn execute_build(
             return Err("no Dockerfile found in source".into());
         }
 
-        // Build image. tar_directory is synchronous CPU + IO over the whole
-        // source tree, so it goes on the blocking pool — with build_concurrency
-        // > 1, running it inline would block one runtime thread per in-flight
-        // build, on the same runtime serving the HTTP API.
-        let src = tmp_dir.clone();
-        let tar_bytes = tokio::task::spawn_blocking(move || crate::build::tar_directory(&src))
-            .await
-            .map_err(|e| format!("spawn_blocking tar: {e}"))?
-            .map_err(|e| format!("tar source: {e}"))?;
+        // Build image
+        let tar_bytes =
+            crate::build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
         runtime
             .build(&tar_bytes, &image_tag)
             .await

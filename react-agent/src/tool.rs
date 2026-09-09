@@ -180,7 +180,7 @@ impl Tool for A2aTool {
 impl A2aTool {
     /// Call the agent via streaming (`message/stream`, or the proto
     /// `SendStreamingMessage` fallback), forwarding its live events into the
-    /// orchestrator stream as `SubStatus`/`SubContent`/`SubData`.
+    /// orchestrator stream as `SubStatus`/`SubContent`.
     async fn call_streaming(
         &self,
         args: &A2aToolArgs,
@@ -200,10 +200,6 @@ impl A2aTool {
                     AgentStreamEvent::Content(content) => OrchestratorEvent::SubContent {
                         agent: agent_name.clone(),
                         content,
-                    },
-                    AgentStreamEvent::Data(data) => OrchestratorEvent::SubData {
-                        via_agent: agent_name.clone(),
-                        data,
                     },
                 };
                 if orch_tx.send(mapped).await.is_err() {

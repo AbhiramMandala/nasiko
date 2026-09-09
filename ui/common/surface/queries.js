@@ -70,8 +70,6 @@ export function createQueryManager({ call, onChange, onDiagnostic }) {
   const firing = new Set();
   /** statementId → resolved, dot-path-selected value. What materialize reads. */
   const results = new Map();
-  /** Statement ids whose current key is in error — see `publish`. */
-  const failed = new Set();
   /**
    * statementId → the cache key whose value that statement is currently
    * showing. Usually the key its declaration hashes to — but not while a
@@ -90,15 +88,6 @@ export function createQueryManager({ call, onChange, onDiagnostic }) {
     const decl = declared.get(statementId);
     const entry = cache.get(activeKeys.get(statementId));
     if (!decl || !entry) return;
-    // Whether this statement's data is currently a failure, tracked apart from
-    // the value because the two answers differ: a failed refetch keeps the last
-    // good value on screen (below), so `results` alone cannot tell a component
-    // it is looking at something stale. Without this a failed fetch and a
-    // genuinely empty result are the same thing downstream, and the component
-    // says "No data" — asserting nothing exists when it could not be loaded.
-    if (entry.status === 'error') failed.add(statementId);
-    else if (entry.status === 'ok') failed.delete(statementId);
-
     if (entry.value === undefined) return; // nothing has landed yet
     // An error keeps whatever was last good on screen rather than blanking it.
     if (entry.status === 'error' && results.has(statementId)) return;
@@ -159,14 +148,6 @@ export function createQueryManager({ call, onChange, onDiagnostic }) {
   return {
     /** What `materialize()` reads: statementId → value. Live, not a copy. */
     results,
-    /**
-     * Statement ids whose data is currently a failure. Live, not a copy.
-     *
-     * Separate from `results` on purpose: a failed refetch deliberately keeps
-     * the previous value on screen, so a statement can hold good data and still
-     * be failing. Only this says so.
-     */
-    failed,
     mutationResults,
 
     /**
@@ -219,7 +200,7 @@ export function createQueryManager({ call, onChange, onDiagnostic }) {
       // stays: revisions flip a chart back and forth and re-fetching each time
       // would make an undo cost a round trip.
       for (const id of [...declared.keys()]) {
-        if (!seen.has(id)) { declared.delete(id); results.delete(id); activeKeys.delete(id); failed.delete(id); }
+        if (!seen.has(id)) { declared.delete(id); results.delete(id); activeKeys.delete(id); }
       }
 
       declaredMutations.clear();

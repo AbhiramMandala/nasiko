@@ -28,10 +28,7 @@
  * @fires weave-message     - `{detail: {text}}` an assistant sentence
  * @fires weave-assistant   - `{detail: {text}}` `@ToAssistant` — the surface asking for a new turn
  * @fires weave-status      - `{detail: {phase, detail}}` requesting / streaming / done / failed
- * @fires weave-diagnostics - `{detail: {diagnostics}}` anything the runtime could not
- *   honour. Each carries `severity`: `fatal` (the surface is wrong), `advisory`
- *   (a mistake the runtime corrected) or `runtime` (a failed source or stream,
- *   which says nothing about the generation).
+ * @fires weave-diagnostics - `{detail: {diagnostics}}` anything the runtime could not honour
  * @fires weave-turn        - `{detail: {record}}` one per turn: codes, counts and timings,
  *   never prompt or DSL content. The reporting sink subscribes here (NAS-211).
  */
@@ -55,7 +52,7 @@ import { createSurfaceSession } from '/common/surface/surface-stream.js';
  * attributes that go nowhere. This is that place — the one seam between the
  * runtime and the rest of the app already promises to own "a vocabulary."
  */
-import '/common/design-system/app-menu/app-menu.js';
+import '/common/design-system/app-action-menu/app-action-menu.js';
 import '/common/design-system/app-avatar/app-avatar.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
@@ -80,12 +77,20 @@ import '/common/design-system/app-stat-row/app-stat-row.js';
 import '/common/design-system/app-switch/app-switch.js';
 import '/common/design-system/app-table/app-table.js';
 import '/common/design-system/app-tag/app-tag.js';
-import '/common/design-system/app-text/app-text.js';
 import '/common/design-system/app-toolbar/app-toolbar.js';
 
-import { loadCatalog, loadSeverities, withSeverity } from '/common/surface/catalog-load.js';
-
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
+
+/** The generated vocabulary. Fetched once for the whole app. */
+let catalogPromise = null;
+function loadCatalog() {
+  catalogPromise ??= fetch(new URL('/common/surface/dsl-catalog.json', document.baseURI))
+    .then((res) => {
+      if (!res.ok) throw new Error(`dsl-catalog.json: ${res.status}`);
+      return res.json();
+    });
+  return catalogPromise;
+}
 
 class WeaveSurface extends HTMLElement {
   #initialized = false;
@@ -148,36 +153,10 @@ class WeaveSurface extends HTMLElement {
       if (err?.name === 'AbortError') return { status: 'aborted', surface: '', catalogVersion: null };
       this.#emit('weave-status', { phase: 'failed', detail: String(err?.message ?? err) });
       this.#emit('weave-diagnostics', {
-        diagnostics: withSeverity([{ source: 'host', code: 'request_failed', message: String(err?.message ?? err) }]),
+        diagnostics: [{ source: 'host', code: 'request_failed', message: String(err?.message ?? err) }],
       });
       return { status: 'failed', surface: '', catalogVersion: null };
     }
-  }
-
-  /**
-   * Render a surface that already exists, with no request.
-   *
-   * Reopening a saved view is not a generation. Asking the model to rebuild it
-   * would cost tokens, take seconds and hand back a different dashboard from
-   * the one that was saved — so the stored DSL is drawn as-is.
-   *
-   * Still a live surface, not a picture: Queries fetch, Actions fire, `$state`
-   * works. Only the generation is skipped.
-   *
-   * `catalogVersion` is the one the DSL was generated against, and it is
-   * checked. A view saved before a design-system change can have had its
-   * positional arguments rebound underneath it, and the host hears about that
-   * through the same `catalog_version_mismatch` diagnostic a live turn raises.
-   *
-   * @param {string} dsl
-   * @param {{catalogVersion?: string|null}} [opts]
-   */
-  async show(dsl, { catalogVersion = null } = {}) {
-    const session = await this.#ensureSession();
-    // A turn still streaming would overwrite what we are about to draw.
-    this.#abort?.abort();
-    this.#abort = null;
-    return session.show(dsl, { catalogVersion });
   }
 
   /** The raw DSL of the last turn that produced a surface. */
@@ -187,11 +166,7 @@ class WeaveSurface extends HTMLElement {
 
   async #ensureSession() {
     if (this.#session) return this.#session;
-    // Together, so the manifest costs no latency of its own.
-    const [catalog] = await Promise.all([
-      this.catalog ?? loadCatalog(),
-      loadSeverities(),
-    ]);
+    const catalog = this.catalog ?? (await loadCatalog());
     this.#session = createSurfaceSession({
       endpoint: this.getAttribute('endpoint') || '/weave/surface',
       catalog,
@@ -199,7 +174,7 @@ class WeaveSurface extends HTMLElement {
       onMessage: (text) => this.#emit('weave-message', { text }),
       onAssistant: (text) => this.#emit('weave-assistant', { text }),
       onStatus: (s) => this.#emit('weave-status', s),
-      onDiagnostics: (diagnostics) => this.#emit('weave-diagnostics', { diagnostics: withSeverity(diagnostics) }),
+      onDiagnostics: (diagnostics) => this.#emit('weave-diagnostics', { diagnostics }),
       onTurn: (record) => this.#emit('weave-turn', { record }),
     });
     return this.#session;

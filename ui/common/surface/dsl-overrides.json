@@ -12,17 +12,7 @@
     },
     "app-grid": {
       "status": "ready",
-      "childrenParam": true,
-      "attrTemplates": {
-        "columns": [
-          "1fr 1fr",
-          "2fr 1fr",
-          "1fr 2fr",
-          "3fr 2fr",
-          "2fr 3fr"
-        ]
-      },
-      "note": "columns takes an integer OR a grid-template string. app-grid.js:20 turns a positive integer into repeat(n, 1fr) and passes anything else through verbatim into style.setProperty('--grid-columns', \u2026), which is the only way to express a ratio \u2014 app-row has no per-child sizing at all. The template form is a closed set rather than free text for two reasons: the value reaches a CSS custom property unfiltered and the DSL is written by a model, and a ratio carries meaning, so five named proportions are a vocabulary while arbitrary fr pairs are noise. Omitting columns entirely is the responsive option \u2014 the CSS default is repeat(auto-fill, minmax(300px, 1fr)) and setting columns replaces it, so both the integer and template forms are deliberate desktop shapes."
+      "childrenParam": true
     },
     "app-table": {
       "status": "ready",
@@ -50,9 +40,7 @@
       "note": "Only useful with Slot() \u2014 its content is entirely start/end slotted."
     },
     "app-stat-card": {
-      "status": "ready",
-      "dslSummary": "One metric standing on its own \u2014 label, value, and an optional delta with its trend arrow. For two or more headline metrics use AppStatRow, which separates them with hairlines and reserves the right skeleton.",
-      "reason": "The summary is the strongest place to say which of the two stat components to reach for, because it is read at the moment the model is choosing. Seventeen recorded AppStatCard calls across eleven fixtures and not one AppStatRow: the strip lost to a hand-built row of cards every time, and the design system calls it \"the one stat strip\". delta and trend stay \u2014 the DSL has real arithmetic (materialize.js:305), so a delta is @Last(rows.x) - @First(rows.x) and a trend is the sign of it. They were never once filled, but that is the prompt's failure to teach the computation, not a missing capability, and withholding them would remove a real one."
+      "status": "ready"
     },
     "app-stat-row": {
       "status": "ready"
@@ -64,11 +52,6 @@
     "app-tag": {
       "status": "ready",
       "textParam": true
-    },
-    "app-text": {
-      "status": "ready",
-      "textParam": true,
-      "reason": "The typography primitive. Nothing else in the vocabulary can put a heading above a group or a sentence beside a number, so without it every generated surface is a wall of boxes with no voice."
     },
     "app-divider": {
       "status": "ready"
@@ -98,20 +81,9 @@
     },
     "app-card": {
       "status": "ready",
-      "childrenParam": true,
-      "reason": "The card is the one container in the vocabulary, and until now nothing could go inside it. app-card declares four slots \u2014 leading, actions, body, footer \u2014 and every one of them was unreachable from DSL: children are only bound when childrenParam is set, so AppCard([chart], \"Cost\") put the chart into `name`, Slot(\"body\", chart) had no children list to land in, and padding to a trailing position hit excess_arguments. Three recorded generations tried all three. Children lead here, as they do on app-modal, app-accordion and app-toolbar.",
-      "reason2": "The attribute list is cut to what a generated dashboard can mean. What is left out is agent-catalog chrome the model can only reach by accident \u2014 and it did: chat-href sat at position 13 and a boolean landed in it, which is what non_route_value has been reporting. card-title is an alias for name kept for the replaced card's call sites; the model has no legacy call sites. Sixteen positions was itself the defect.",
+      "reason": "agent-id stays out: an internal record id the model cannot know, and as the first positional it shifted every AppCard() call. Route attributes are back in \u2014 render.js now checks each one against the live router and refuses anything unregistered.",
       "dslExcludeAttributes": [
-        "agent-id",
-        "card-title",
-        "version",
-        "error-title",
-        "error-body",
-        "deploy-label",
-        "deploy-hint",
-        "max-visible-tags",
-        "details-href",
-        "chat-href"
+        "agent-id"
       ]
     },
     "app-chart": {
@@ -137,11 +109,6 @@
       "status": "ready",
       "actionParam": true,
       "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
-    },
-    "app-segmented-control": {
-      "status": "ready",
-      "actionParam": true,
-      "note": "A form control, same as app-select: its value plumbing is Action([@Set($var, …)]) on the trailing action slot. Segments come from the `items` attribute, so a generated surface can name them directly."
     },
     "app-search": {
       "status": "ready",

@@ -26,72 +26,6 @@ const tree = (n, d = 0) => (!n ? '' : `${'  '.repeat(d)}${n.tag}\n${(n.children 
 
 // ── arithmetic and coercion ─────────────────────────────────────────────────
 
-test('a component downstream of a failed query says so, not "No data"', () => {
-  // A failed fetch falls back to the declared default, so by value alone it is
-  // identical to a genuinely empty result — and the component then asserts
-  // nothing exists. Observed live: "Spend over time / No data" for a
-  // fetchSpendTimeseries that had returned a malformed body.
-  const dsl = [
-    'root = AppStack([chart, table], "md")',
-    'spendQ = Query("fetchSpendTimeseries", [], {points: []}, "data.points")',
-    'chart = AppChart({labels: spendQ.bucket_start, datasets: []}, "line")',
-    'okQ = Query("fetchUsageByAgent", [null, 1, 50], [], "data")',
-    'table = AppTable(okQ, 20, "pages", false)',
-  ].join('\n');
-
-  const failed = run(dsl, { complete: true, failedQueries: new Set(['spendQ']) });
-  const [chart, table] = failed.root.children;
-  assert.match(chart.props['empty-text'], /Could not load/);
-  // The transitive step is the point: the failure is on spendQ, the message
-  // lands on the chart that reads it.
-  assert.equal(table.props['empty-message'], undefined, 'a healthy query is untouched');
-
-  // And with nothing failing, neither is touched — an empty result still reads
-  // as empty, which is true.
-  const healthy = run(dsl, { complete: true });
-  assert.equal(healthy.root.children[0].props['empty-text'], undefined);
-});
-
-test('a hand-written empty message survives a failed query', () => {
-  // Overriding wording the author chose would be a worse default than the one
-  // it replaced.
-  const out = run([
-    'root = AppStack([chart], "md")',
-    'spendQ = Query("fetchSpendTimeseries", [], {points: []}, "data.points")',
-    // empty-text is the 9th positional argument (paramOrder), not the 6th —
-    // getting that wrong puts the string in center-value, which is exactly the
-    // silent-rebinding hazard the catalog's written-out paramOrder exists for.
-    'chart = AppChart({labels: spendQ.bucket_start, datasets: []}, "line", false, "currency", "USD", null, null, null, "No spend in the last 7 days")',
-  ].join('\n'), { complete: true, failedQueries: new Set(['spendQ']) });
-  assert.equal(out.root.children[0].props['empty-text'], 'No spend in the last 7 days');
-});
-
-
-test('a root restatement that drops a child is caught, not silent', () => {
-  // agent.yaml rule 7 forbids writing `root` twice, and justifies it with
-  // "anything that was only reachable through the first root ... never renders,
-  // with no error shown anywhere". That justification is obsolete: the orphan
-  // walk reports exactly this, fatally. The rule is what stops the generator
-  // ever changing a layout on a revision turn, so the safety it claims to buy
-  // is worth pinning — if this assertion ever fails, restating root becomes
-  // unsafe again and the prompt rule has to come back.
-  const out = run([
-    'root = AppStack([heading, kpis, spendChart], "md")',
-    'heading = AppText("Cost", "title")',
-    'kpis = AppStatRow([{label: "Spend", value: 0}])',
-    'spendChart = AppChart({labels: [], datasets: []}, "line")',
-    'root = AppStack([heading, kpis], "md")',
-  ].join('\n'), { complete: true });
-
-  const orphans = out.diagnostics.filter((d) => d.code === 'orphaned_statement');
-  assert.equal(orphans.length, 1);
-  assert.match(orphans[0].message, /spendChart/);
-  // And the surviving root is the second one — same-name-replaces, which is
-  // what makes a revision turn able to change the layout at all.
-  assert.equal(out.root.children.length, 2);
-});
-
-
 test('divide and modulo by zero are 0, never Infinity or NaN', () => {
   assert.equal(val('1 / 0'), 0);
   assert.equal(val('5 % 0'), 0);
@@ -188,13 +122,8 @@ test('an unknown component is dropped with a diagnostic', () => {
 // ── positional mapping ──────────────────────────────────────────────────────
 
 test('arguments map positionally onto the catalog paramOrder', () => {
-  // AppGrid rather than AppStatCard: four parameters, a mix of types, and a
-  // signature that is not about to be trimmed. The point is the mapping, and a
-  // test that has to be rewritten every time a component's DSL surface changes
-  // is testing the component instead.
-  const out = run('root = AppGrid([], "2fr 1fr", "md", "lg")');
-  assert.deepEqual(out.root.props, { columns: '2fr 1fr', gap: 'md', padding: 'lg' });
-  assert.deepEqual(out.root.children, [], 'children lead, and land in children rather than props');
+  const out = run('root = AppStatCard("Total cost", "12", null, "up")');
+  assert.deepEqual(out.root.props, { label: 'Total cost', value: '12', delta: null, trend: 'up' });
 });
 
 test('children, data, text and action land in their own slots, not in props', () => {
@@ -305,20 +234,18 @@ root = AppChart(@Each(rows, "r", r.cost), "line")`);
 // ── the whole worked example ────────────────────────────────────────────────
 
 test('Worked Example 1 materializes into the tree it describes', () => {
-  const out = run(`root = AppStack([heading, kpis], "md")
-heading = AppText("Usage summary", "title")
+  const out = run(`root = AppStack([kpis], "md")
+kpis = AppRow([kpiCost, kpiCount], "md")
 totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 requestCountQ = Query("fetchUsageSummary", [], 0, "request_count")
-kpis = AppStatRow([{label: "Total cost", value: totalCostQ, sub: "all time"}, {label: "Requests", value: requestCountQ}])`,
+kpiCost = AppStatCard("Total cost", totalCostQ, null, "up")
+kpiCount = AppStatCard("Requests", requestCountQ, null, "neutral")`,
   { queryResults: new Map([['totalCostQ', 12.5], ['requestCountQ', 342]]) });
 
-  assert.equal(tree(out.root), 'app-stack\n  app-text\n  app-stat-row\n');
-  // Query references resolve inside a json literal, which is what makes the
-  // one-statement strip usable for live figures rather than only for constants.
-  assert.deepEqual(out.root.children[1].props.items, [
-    { label: 'Total cost', value: 12.5, sub: 'all time' },
-    { label: 'Requests', value: 342 },
-  ]);
+  assert.equal(tree(out.root), 'app-stack\n  app-row\n    app-stat-card\n    app-stat-card\n');
+  const [cost, count] = out.root.children[0].children;
+  assert.deepEqual([cost.props.value, cost.props.trend], [12.5, 'up']);
+  assert.deepEqual([count.props.value, count.props.trend], [342, 'neutral']);
   assert.equal(out.queries.length, 2);
   assert.deepEqual(out.diagnostics, []);
 });
@@ -342,27 +269,6 @@ test('a default that is the whole response is caught at the Query, not at the ta
   const d = out.diagnostics.find((x) => x.code === 'default_is_whole_response');
   assert.ok(d, 'the diagnostic has to name the Query, or nobody finds it');
   assert.match(d.message, /"data" path/);
-});
-
-test('a default that walked half the path is caught at the same place', () => {
-  // Recorded, not imagined: `{agents: []}` under a "data.agents" path. The model
-  // walked `data` and stopped. The head-only test missed it because the default
-  // has no "data" key, so it surfaced two hops later as `data_not_rows` — a
-  // diagnostic pointing at the table, which is not the line that is wrong.
-  const out = run('q = Query("fetchTokenopsDashboard", [], {agents: []}, "data.agents")\nroot = AppTable(q)');
-  const d = out.diagnostics.find((x) => x.code === 'default_is_whole_response');
-  assert.ok(d, 'a half-walked default is the same mistake as an unwalked one');
-  assert.match(d.message, /stops at "data"/, d?.message);
-  assert.deepEqual(out.root.data, [], 'and it is repaired to the rows the table wanted');
-  assert.equal(out.diagnostics.some((x) => x.code === 'data_not_rows'), false,
-    'the table no longer takes the blame for the Query line');
-});
-
-test('a deeper path than the default knows about is left alone', () => {
-  // No segment of "meta.page.size" is a key here, so this default is simply a
-  // value of its own shape — repairing it would be inventing a mistake.
-  const out = run('q = Query("fetchUsageByModel", ["", 1, 50], {rows: []}, "meta.page.size")\nroot = AppTable(q)');
-  assert.equal(out.diagnostics.some((x) => x.code === 'default_is_whole_response'), false);
 });
 
 test('a correctly shaped default is silent', () => {
@@ -467,47 +373,4 @@ test('trailing null padding is separated from a dropped value', () => {
   assert.equal(pad.diagnostics.find((d) => d.code === 'excess_null_padding')?.code, 'excess_null_padding');
   assert.equal(pad.diagnostics.some((d) => d.code === 'excess_arguments'), false);
   assert.match(held.diagnostics.find((d) => d.code === 'excess_arguments')?.message ?? '', /1 past the end held values/);
-});
-
-// ── an editable control that discards what is typed into it ─────────────────
-
-test('an Action-bearing input whose value is not state is named', () => {
-  // The failure is one step worse than the caret loss it sits beside: the
-  // Action fires, the store changes, render() rebuilds, and the new input is
-  // built from an argument that never moved — so the box empties as you type,
-  // silently. Found by a browser test that had left `value` unbound and could
-  // not explain why the caret came back at 0.
-  const out = run('$q = ""\na = Action([@Set($q, $event)])\n'
-    + 'root = AppSearch(null, null, null, null, "Filter", null, null, null, null, null, null, a)');
-  const d = out.diagnostics.find((x) => x.code === 'uncontrolled_input');
-  assert.ok(d, out.diagnostics.map((x) => x.code).join(','));
-  assert.match(d.message, /\$state/);
-});
-
-test('a constant value counts as unbound, because it never moves either', () => {
-  // Checked on the AST: after evaluation `$q` and "fixed" are both a string,
-  // so the difference only exists before the evaluator runs.
-  const out = run('$q = ""\na = Action([@Set($q, $event)])\n'
-    + 'root = AppSearch(null, null, null, null, "Filter", "fixed", null, null, null, null, null, a)');
-  assert.ok(out.diagnostics.some((x) => x.code === 'uncontrolled_input'));
-});
-
-test('a value read back from state is silent — this is the correct shape', () => {
-  const out = run('$q = ""\na = Action([@Set($q, $event)])\n'
-    + 'root = AppSearch(null, null, null, null, "Filter", $q, null, null, null, null, null, a)');
-  assert.equal(out.diagnostics.some((x) => x.code === 'uncontrolled_input'), false,
-    out.diagnostics.map((x) => x.code).join(','));
-});
-
-test('a button with an Action is not an editable control', () => {
-  // The check keys on the component having a `value` parameter at all, so the
-  // components that carry an Action and nothing to type into stay quiet.
-  const out = run('$v = 1\na = Action([@Set($v, 2)])\n'
-    + 'root = AppButton("Go", null, null, null, null, null, null, null, null, null, null, a)');
-  assert.equal(out.diagnostics.some((x) => x.code === 'uncontrolled_input'), false);
-});
-
-test('an input with no Action is left alone', () => {
-  const out = run('root = AppSearch(null, null, null, null, "Filter", null)');
-  assert.equal(out.diagnostics.some((x) => x.code === 'uncontrolled_input'), false);
 });

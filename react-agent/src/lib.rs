@@ -9,7 +9,7 @@ mod react_loop;
 mod registry;
 mod tool;
 
-pub use a2a::{A2aClient, A2aClientError, A2aResponse, RawAgentFrame};
+pub use a2a::{A2aClient, A2aClientError, A2aResponse};
 pub use context::{ContextConfig, ContextManager, ContextWindow};
 pub use error::OrchestratorError;
 pub use events::OrchestratorEvent;

@@ -1,3 +1,13 @@
+const persistedToolCalls = Array.from({ length: 205 }, (_, index) => ({
+  id: `stored-tool-${index + 1}`,
+  name: index === 0 ? 'read_file' : `tool_${index + 1}`,
+  kind: 'tool',
+  status: index === 1 ? 'unknown' : 'succeeded',
+  arguments: index === 0 ? { path: '<img src=x onerror=alert(1)>' } : { index },
+  output: index === 0 ? "<script>alert('persisted')</script> **sanitized markdown**" : `Result ${index + 1}`,
+  duration_ms: index === 1 ? null : 18,
+}));
+
 export default {
   fetch: [
     ["POST /api/chat/sessions", { session_id: "s-preview-001", id: "s-preview-001" }],
@@ -11,7 +21,7 @@ export default {
         // the UI must render both as markdown agent replies.
         { role: "agent", content: "Yes, mTLS between agents is supported. Here's how:\n\n1. Enable the `mtls` feature on the namespace\n2. The platform auto-provisions certificates via the internal CA\n3. Agents receive certs as mounted secrets\n\nNo code changes needed in your agent -- the sidecar proxy handles TLS termination.\n\n`NASIKO_MTLS=enabled` in the agent's env vars activates it.", trace_id: "xyz789abc012" },
         { role: "user", content: "Compare the network policy modes in a table", trace_id: null },
-        { role: "assistant", content: "Here's a comparison of the available network policy modes:\n\n| Mode | Default peers | Use case | Overhead |\n| --- | --- | --- | --- |\n| `open` | All agents in namespace | Development, trusted teams | None |\n| `restricted` | Only `allowed_peers` | Production multi-tenant | Low |\n| `isolated` | None | Sensitive workloads, compliance | Low |\n| `mtls` | `allowed_peers` + mutual TLS | Zero-trust environments | Medium |\n\nFor most production deployments, `restricted` is the sweet spot between security and operability.", trace_id: "tbl456trace789" },
+        { role: "assistant", content: "Here's a comparison of the available network policy modes:\n\n| Mode | Default peers | Use case | Overhead |\n| --- | --- | --- | --- |\n| `open` | All agents in namespace | Development, trusted teams | None |\n| `restricted` | Only `allowed_peers` | Production multi-tenant | Low |\n| `isolated` | None | Sensitive workloads, compliance | Low |\n| `mtls` | `allowed_peers` + mutual TLS | Zero-trust environments | Medium |\n\nFor most production deployments, `restricted` is the sweet spot between security and operability.", trace_id: "tbl456trace789", metadata: { coding_agent: { capture_policy: "content", tool_calls: persistedToolCalls } } },
       ],
     }],
     ["POST /api/orchestrator/a2a", (() => {
@@ -97,6 +107,20 @@ export default {
       await page.waitForSelector('agent-steps.is-done', { timeout: 8000 });
       await page.click('agent-steps .steps-header');
       await page.waitForTimeout(200);
+    },
+    "persisted-tools-bounded": async (page) => {
+      const base = page.url().split('?')[0];
+      await page.goto(`${base}?agent_id=a-001&agent_name=Coding+Agent&session_id=s-001`);
+      await page.waitForSelector('agent-steps .steps-load-more');
+      const steps = page.locator('agent-steps').last();
+      if (await steps.locator('.step--tool').count() !== 100) {
+        throw new Error('persisted tools must initially render exactly 100 rows');
+      }
+      await steps.locator('.steps-header').click();
+      await steps.locator('.steps-load-more').click();
+      if (await steps.locator('.step--tool').count() !== 200) {
+        throw new Error('persisted tool expansion must render the next chunk');
+      }
     },
   },
 };

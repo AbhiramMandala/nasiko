@@ -118,42 +118,6 @@ export function materialize(statements, componentIndex, ctx = {}) {
     else symbols.set(id, ast);
   }
 
-  /**
-   * Statements whose data is currently a failed fetch rather than a real result.
-   *
-   * The query manager knows which Query statements are failing. What a component
-   * needs to know is whether IT is downstream of one — `spendChart` reads
-   * `spendQ.points`, so a failure on `spendQ` is a failure of the chart. That is
-   * a transitive question, so it is answered here once, statically, over the
-   * same symbol table the orphan walk uses.
-   *
-   * Without it the two states are indistinguishable at the component: a failed
-   * fetch falls back to the declared default, usually `[]`, and the component
-   * renders its empty state — telling the user nothing exists when the truth is
-   * that it could not be loaded.
-   */
-  function degradedStatements() {
-    const failedQueries = ctx.failedQueries;
-    if (!failedQueries?.size) return new Set();
-
-    const out = new Set();
-    for (const name of symbols.keys()) {
-      // Depth-first over this statement's references. `seen` is per statement
-      // and also the cycle guard — a DSL cycle is possible and must not hang.
-      const seen = new Set([name]);
-      const queue = [name];
-      while (queue.length) {
-        const at = queue.pop();
-        if (failedQueries.has(at)) { out.add(name); break; }
-        walkAstRefs(symbols.get(at), (_kind, ref) => {
-          if (!seen.has(ref) && symbols.has(ref)) { seen.add(ref); queue.push(ref); }
-        });
-      }
-    }
-    return out;
-  }
-  const degraded = degradedStatements();
-
   const unresolved = [];
   const diagnostics = [];
   /** @type {Array<{statementId: string, source: string, args: unknown[], select: string|null}>} */
@@ -224,17 +188,14 @@ export function materialize(statements, componentIndex, ctx = {}) {
       case 'Null': return null;
 
       case 'StateRef': {
-        // `$event` (and only `$event`) is never in the store — it is the live
-        // value of whatever DOM event just fired the Action being evaluated,
-        // injected by the action runner as a scope entry rather than a store
-        // write, because it must not persist past this one evaluation. The
-        // scope chain already exists for `@Each`'s loop variable, so this is
-        // that same mechanism, checked first and only for a name it actually
-        // carries — an ordinary `$state` name is never placed in scope, so
-        // this adds nothing to the lookup for every other case.
-        const local = lookupScope(scope, node.n);
-        if (local.found) return local.value;
-        // The store first, then the statement that declared it. That fallback
+        // A per-fire binding first. `$event` is the live value the component
+        // just produced, and it belongs to one Action run — putting it in the
+        // store would leave the last thing anyone typed sitting there as
+        // durable state for every later expression to read.
+        const bound = lookupScope(scope, node.n);
+        if (bound.found) return bound.value;
+
+        // Then the store, then the statement that declared it. That fallback
         // is what makes the *first* paint of a turn correct: `$days = 7` and
         // `historyQ = Query("fetchUsageHistory", [$days], [])` arrive in the
         // same chunk, and the query has to fetch 7 rather than fetch null and
@@ -417,55 +378,14 @@ export function materialize(statements, componentIndex, ctx = {}) {
     let text = null;
     let action = null;
 
-    // Whether the value the user edits is driven by state, which can only be
-    // asked of the argument's AST — after evaluation `$q` and "literal" are
-    // both just a string.
-    let valueFromState = false;
-
     for (let i = 0; i < params.length && i < node.args.length; i++) {
       const param = params[i];
       const value = evaluate(node.args[i], statementId, scope);
-      if (param === 'value' || param === 'checked') valueFromState = mentionsState(node.args[i]);
       if (param === 'children') children = toArray(value);
       else if (param === 'data') data = value;
       else if (param === 'text') text = value;
       else if (param === 'action') action = value;
       else props[param] = value;
-    }
-
-    // An editable control whose Action writes state, whose own value is not
-    // read back from state, loses what the user typed on the very next paint —
-    // the Action fires, the store changes, render() rebuilds the tree, and the
-    // new input is built from an argument that never moved. Worse than the
-    // caret loss this sits next to, and completely silent: the box simply
-    // empties as you type.
-    //
-    // Checked on the AST because that is the only place the difference lives.
-    // `value` present but constant counts as unbound; so does omitting it.
-    if (action && !valueFromState && params.includes('value')) {
-      note(
-        'uncontrolled_input',
-        `${node.name} has an Action but its value is not read back from a $state variable — `
-          + 'what the user types is discarded on the next repaint. Bind it, e.g. value: $q with '
-          + 'Action([@Set($q, $event)])',
-        statementId,
-      );
-    }
-
-    // A component downstream of a failed fetch must not claim the data is
-    // absent. Set through whichever empty-state attribute this component
-    // actually declares, read off the catalog rather than a hardcoded list, so
-    // a new component with an empty state is covered the day it is added.
-    // Only when the generator has not written one itself — an author who chose
-    // the wording keeps it, and overriding a deliberate string would be worse
-    // than the default it replaced.
-    if (degraded.has(statementId)) {
-      const attrs = entry.def.attributes ?? {};
-      for (const name of ['empty-text', 'empty-message']) {
-        if (name in attrs && props[name] == null) {
-          props[name] = 'Could not load this data — the request failed.';
-        }
-      }
     }
 
     return {
@@ -513,16 +433,8 @@ export function materialize(statements, componentIndex, ctx = {}) {
         // with "needs an array of rows".
         //
         // Detected narrowly: only when the default is a plain object that
-        // literally contains one of the path segments, which no correct default
+        // literally contains the first path segment, which no correct default
         // ever does — a correct `[]` has no "data" key, so it is untouched.
-        //
-        // Any segment, not only the first, because the model also stops
-        // half-way: `Query(src, args, {agents: []}, "data.agents")` walked
-        // `data` and forgot `.agents`. The head test alone missed that, and it
-        // surfaced two hops later as `data_not_rows` pointing at the table —
-        // a diagnostic naming the wrong file. Matching the deepest segment
-        // present tells us which level the default is really at, and the rest
-        // of the path is what has to be applied from there.
         //
         // And repaired, under exactly that guard. Applying the path
         // unconditionally would break the correct case; applying it only where
@@ -537,22 +449,14 @@ export function materialize(statements, componentIndex, ctx = {}) {
         // which is what tipped this from "report" to "report and repair".
         let usable = fallback;
         if (select && fallback && typeof fallback === 'object' && !Array.isArray(fallback)) {
-          const segments = String(select).split('.').filter(Boolean);
-          // The deepest segment the default actually has a key for. That is the
-          // level it was written at, so everything after it is the part the
-          // model forgot to walk.
-          const at = segments.findLastIndex((seg) => Object.prototype.hasOwnProperty.call(fallback, seg));
-          if (at !== -1) {
-            const remainder = segments.slice(at).join('.');
-            usable = selectPath(fallback, remainder);
+          const head = String(select).split('.')[0];
+          if (head && Object.prototype.hasOwnProperty.call(fallback, head)) {
+            usable = selectPath(fallback, select);
             if (!warnedDefault.has(statementId)) {
               warnedDefault.add(statementId);
-              const how = at === 0
-                ? 'is the whole response'
-                : `stops at "${segments.slice(0, at).join('.')}"`;
               note(
                 'default_is_whole_response',
-                `${statementId}'s default ${how} — with a "${select}" path it should be `
+                `${statementId}'s default is the whole response — with a "${select}" path it should be `
                   + `what that path yields. Using ${JSON.stringify(usable)} until the fetch lands`,
                 statementId,
               );

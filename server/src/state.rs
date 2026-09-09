@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_observability::ObservabilityProvider;
-use nasiko_orchestrator::{RoutingEngine, TextEmbeddingCache};
+use nasiko_orchestrator::RoutingEngine;
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
@@ -14,16 +13,12 @@ use crate::usage::UsageTracker;
 use nasiko_config::Config;
 use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
 
-/// (config fingerprint, client) pair for the DB-configured OIDC client — see
-/// `AppState::resolve_oidc_client`.
-type OidcClientCache = Arc<tokio::sync::RwLock<Option<(String, Arc<nasiko_oidc::OidcClient>)>>>;
-
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<dyn ContainerRuntime>,
     pub db: PgPool,
     pub redis: redis::Client,
-    pub oci_storage: nasiko_oci::storage::S3Storage,
+    pub oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
     pub auth: Arc<dyn AuthService>,
@@ -33,11 +28,6 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
-    /// PACMS candidate/query embedding cache for the history enrichment done
-    /// directly in `a2a_dispatch.rs` (shared across requests, like the one
-    /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
-    /// see `TextEmbeddingCache` docs).
-    pub history_embedding_cache: TextEmbeddingCache,
     /// Tempo+Loki observability provider with DB-backed model pricing.
     /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
     /// addresses; queries fail soft when the stack is absent.
@@ -49,18 +39,6 @@ pub struct AppState {
     pub resource_stats: Arc<dyn nasiko_runtime::ResourceStatsProvider>,
     /// Shared GitHubService instance — None if GitHub OAuth is not configured.
     pub github_svc: Option<Arc<GitHubService>>,
-    /// Env-configured OIDC relying-party client (e.g. Microsoft Entra ID) —
-    /// None until `OIDC_ISSUER_URL`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`/
-    /// `OIDC_REDIRECT_URI` are all set. This is the fallback; prefer
-    /// `resolve_oidc_client()`, which lets DB-stored settings (configurable
-    /// by an admin via `PUT /api/settings`, see `oss/server/src/settings.rs`)
-    /// take precedence. See the enterprise OIDC SSO guide.
-    pub oidc_svc: Option<Arc<nasiko_oidc::OidcClient>>,
-    /// Cache for the DB-configured OIDC client: (config fingerprint, client).
-    /// Rebuilt only when the stored config actually changes, so a config
-    /// change takes effect on the next login without forcing a fresh
-    /// discovery/JWKS fetch on every single request. See `resolve_oidc_client`.
-    oidc_dynamic_cache: OidcClientCache,
     /// Wakes the build worker immediately when a new job is enqueued.
     pub build_tx: mpsc::Sender<()>,
     /// UI mounts for the page gate (`auth::require_page_auth`) — each frontend
@@ -74,32 +52,54 @@ impl AppState {
         config: Config,
         auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
+        oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
     ) -> Self {
         let db = PgPool::connect(&config.database_url)
             .await
-            .expect("failed to connect to postgres");
-        Self::from_config_with_db(config, auth, runtime, db).await
+            .unwrap_or_else(|e| panic!("{}", pg_connect_error_message(&config.database_url, &e)));
+        Self::from_config_with_db(config, auth, runtime, oci_storage, db).await
     }
 
     pub async fn run_migrations(db: &PgPool) {
+        ensure_pg_extensions(db).await;
         sqlx::migrate!("../migrations")
             .set_ignore_missing(true)
             .run(db)
             .await
             .expect("database migration failed");
+        // Offline pricing baseline: gap-filling upsert, so operator-set prices
+        // and pricing-sync history always win. Code (not a migration) so price
+        // updates ship with the binary.
+        nasiko_observability::pricing::seed_model_pricing(db).await;
     }
 
+    /// `oci_storage` is received, not constructed, for the same reason `auth`
+    /// and `runtime` are: which backend is in play is an edition decision. OSS
+    /// ships the S3-compatible one; the enterprise composition root selects
+    /// among more. Constructing it here would drag every backend — and their
+    /// dependencies — into the public edition that cannot configure them.
     pub async fn from_config_with_db(
         config: Config,
         auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
+        oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
         db: PgPool,
     ) -> Self {
         let redis = redis::Client::open(config.redis_url.as_str()).expect("invalid redis url");
 
-        let oci_storage =
-            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await;
-        oci_storage.ensure_bucket(false).await.ok();
+        // Fail fast, exactly as the Postgres connect above does. This was
+        // `.ok()` — which discarded the error without even logging it, so a
+        // control plane whose object store was unreachable, misconfigured, or
+        // missing its bucket booted green and reported healthy, then failed
+        // every image push and agent deploy afterwards with no startup signal
+        // pointing at the cause. An unusable artifact store is not a degraded
+        // mode, it is a broken one. The startup-ordering race this used to
+        // paper over (the store not ready yet when the control plane boots)
+        // is handled the same way it already is for Postgres: the process
+        // exits and the orchestrator restarts it.
+        if let Err(e) = oci_storage.ensure_bucket(false).await {
+            panic!("object storage is not usable: {e}");
+        }
 
         let usage_tracker = UsageTracker::new(db.clone());
 
@@ -114,7 +114,6 @@ impl AppState {
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
             nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone()),
         );
-        let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
             max_depth: config.flow_max_depth as u32,
@@ -167,38 +166,6 @@ impl AppState {
                 GitHubService::new(cfg).ok().map(Arc::new)
             });
 
-        let oidc_svc: Option<Arc<nasiko_oidc::OidcClient>> = config
-            .oidc_issuer_url
-            .as_ref()
-            .zip(config.oidc_client_id.as_ref())
-            .zip(config.oidc_client_secret.as_ref())
-            .zip(config.oidc_redirect_uri.as_ref())
-            .map(|(((issuer_url, client_id), client_secret), redirect_uri)| {
-                let oidc_config = nasiko_oidc::OidcConfig {
-                    issuer_url: issuer_url.clone(),
-                    client_id: client_id.clone(),
-                    client_secret: client_secret.clone(),
-                    redirect_uri: redirect_uri.clone(),
-                    central_callback_url: config.oidc_central_callback_url.clone(),
-                    scopes: config.oidc_scopes.clone(),
-                };
-                Arc::new(nasiko_oidc::OidcClient::new(
-                    oidc_config,
-                    http_client.clone(),
-                ))
-            });
-
-        if let Some(svc) = oidc_svc.clone() {
-            // Best-effort discovery warmup — a transient network hiccup at
-            // boot must not crash the server; the first real login attempt
-            // will just retry discovery lazily if this fails.
-            tokio::spawn(async move {
-                if let Err(e) = svc.warm().await {
-                    tracing::warn!(%e, "OIDC discovery warmup failed at boot — will retry lazily on first login");
-                }
-            });
-        }
-
         let (build_tx, build_rx) = mpsc::channel(64);
 
         // MCP gateway state: reuses the same pool, redis client, and pooled
@@ -232,11 +199,8 @@ impl AppState {
             genai_metrics,
             config: Arc::new(config),
             routing_engine,
-            history_embedding_cache,
             observability,
             github_svc,
-            oidc_svc,
-            oidc_dynamic_cache: Arc::new(tokio::sync::RwLock::new(None)),
             build_tx,
             ui_mounts: &[crate::auth::UiMount::ROOT],
         };
@@ -244,6 +208,14 @@ impl AppState {
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
         let worker_state = state.clone();
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
+
+        if let Some(endpoint) = state.config.coding_agent_otlp_endpoint.clone() {
+            tokio::spawn(crate::coding_agent_otlp::run(
+                state.db.clone(),
+                state.http_client.clone(),
+                endpoint,
+            ));
+        }
 
         // Container-hours meter: records per-instance run sessions for billing
         // (see agents/hours_meter.rs). 0 disables — used by tests that drive
@@ -254,17 +226,6 @@ impl AppState {
                 state.runtime.clone(),
                 state.config.agent_runtime.clone(),
                 std::time::Duration::from_secs(state.config.container_hours_poll_secs),
-            ));
-        }
-
-        // Mirror LLM pricing from Portkey into model_pricing on a schedule, so
-        // cost calculation stays current without hand-written seed migrations.
-        // Fails soft; the seed rows + StaticPricing remain the floor.
-        if state.config.model_pricing_sync_enabled {
-            tokio::spawn(nasiko_observability::pricing_sync::run(
-                state.db.clone(),
-                state.http_client.clone(),
-                state.config.model_pricing_sync_interval_secs,
             ));
         }
 
@@ -309,125 +270,6 @@ impl AppState {
         });
     }
 
-    /// Resolves the OIDC client — and the `user_identities.provider` label
-    /// to file new logins under — to actually use for a login/callback: a
-    /// DB-stored config (set via `PUT /api/settings`, see
-    /// `oss/server/src/settings.rs`) takes precedence over the env-configured
-    /// `oidc_svc`/`config.oidc_provider_label`, so an admin can configure or
-    /// rotate SSO without a redeploy. Falls back to the env config when no
-    /// DB config is present.
-    ///
-    /// The built `OidcClient` is cached (see `oidc_dynamic_cache`) keyed by a
-    /// fingerprint of the config in use, so this is cheap on the common path
-    /// (one indexed row read + a string compare) and only pays for a fresh
-    /// `OidcClient` (and thus a fresh discovery/JWKS fetch on first use)
-    /// when the stored config has actually changed since last checked.
-    pub async fn resolve_oidc_client(&self) -> Option<(Arc<nasiko_oidc::OidcClient>, String)> {
-        match self.fetch_db_oidc_config().await {
-            Some((config, label)) => Some((self.cached_or_build_oidc_client(config).await, label)),
-            None => self
-                .oidc_svc
-                .clone()
-                .map(|svc| (svc, self.config.oidc_provider_label.clone())),
-        }
-    }
-
-    /// Same resolution order as [`resolve_oidc_client`](Self::resolve_oidc_client)
-    /// (DB `settings` row, falling back to env config) but returns the raw
-    /// `OidcConfig` fields instead of a built `OidcClient` — for callers that
-    /// need `client_id`/`client_secret`/`issuer_url` directly for a different
-    /// OAuth2 flow (e.g. EE's Azure AD directory sync uses Graph API's
-    /// client-credentials flow, not the login authorization-code flow
-    /// `OidcClient` is built for). Critically, the returned label is the same
-    /// one `resolve_oidc_client`'s caller writes to `user_identities.provider`
-    /// at login — any caller minting `user_identities` rows ahead of time
-    /// (like directory sync) must reuse this exact label or a later real
-    /// login's `(provider, provider_id)` lookup will never match.
-    pub async fn resolve_raw_oidc_config(&self) -> Option<(nasiko_oidc::OidcConfig, String)> {
-        if let Some(db_config) = self.fetch_db_oidc_config().await {
-            return Some(db_config);
-        }
-        let config = nasiko_oidc::OidcConfig {
-            issuer_url: self.config.oidc_issuer_url.clone()?,
-            client_id: self.config.oidc_client_id.clone()?,
-            client_secret: self.config.oidc_client_secret.clone()?,
-            redirect_uri: self.config.oidc_redirect_uri.clone()?,
-            central_callback_url: self.config.oidc_central_callback_url.clone(),
-            scopes: self.config.oidc_scopes.clone(),
-        };
-        Some((config, self.config.oidc_provider_label.clone()))
-    }
-
-    async fn fetch_db_oidc_config(&self) -> Option<(nasiko_oidc::OidcConfig, String)> {
-        #[derive(sqlx::FromRow)]
-        struct Row {
-            oidc_issuer_url: Option<String>,
-            oidc_client_id: Option<String>,
-            oidc_client_secret_encrypted: Option<String>,
-            oidc_redirect_uri: Option<String>,
-            oidc_scopes: Option<String>,
-            oidc_provider_label: Option<String>,
-        }
-
-        let row: Row = sqlx::query_as(
-            r#"SELECT oidc_issuer_url, oidc_client_id, oidc_client_secret_encrypted,
-                      oidc_redirect_uri, oidc_scopes, oidc_provider_label
-               FROM settings LIMIT 1"#,
-        )
-        .fetch_optional(&self.db)
-        .await
-        .ok()??;
-
-        let secret = nasiko_secrets::SecretsCrypto::for_platform_settings()
-            .decrypt(row.oidc_client_secret_encrypted.as_deref()?)
-            .ok()?;
-
-        let config = nasiko_oidc::OidcConfig {
-            issuer_url: row.oidc_issuer_url?,
-            client_id: row.oidc_client_id?,
-            client_secret: secret,
-            redirect_uri: row.oidc_redirect_uri?,
-            // Fleet-level env override applies whether OIDC config came from the
-            // settings row or env — a workspace CP still relays through the BFF.
-            central_callback_url: self.config.oidc_central_callback_url.clone(),
-            scopes: row
-                .oidc_scopes
-                .unwrap_or_else(|| "openid profile email".to_string()),
-        };
-        let label = row
-            .oidc_provider_label
-            .unwrap_or_else(|| "microsoft_entra".to_string());
-        Some((config, label))
-    }
-
-    async fn cached_or_build_oidc_client(
-        &self,
-        config: nasiko_oidc::OidcConfig,
-    ) -> Arc<nasiko_oidc::OidcClient> {
-        let fingerprint = format!(
-            "{}|{}|{}|{}|{}",
-            config.issuer_url,
-            config.client_id,
-            config.client_secret,
-            config.redirect_uri,
-            config.scopes
-        );
-        {
-            let cached = self.oidc_dynamic_cache.read().await;
-            if let Some((cached_fp, client)) = cached.as_ref()
-                && cached_fp == &fingerprint
-            {
-                return client.clone();
-            }
-        }
-        let client = Arc::new(nasiko_oidc::OidcClient::new(
-            config,
-            self.http_client.clone(),
-        ));
-        *self.oidc_dynamic_cache.write().await = Some((fingerprint, client.clone()));
-        client
-    }
-
     /// Platform-level fallback env vars applied to every agent deployment
     /// when the agent has no secret of the same name. Also served to the CLI
     /// (`GET /api/agents/dev-env`, deployer+) so `nasiko run` can give local
@@ -455,5 +297,92 @@ impl AppState {
         }
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
         env
+    }
+}
+
+/// Postgres extensions the migrations require (`0001_schema.sql` runs
+/// `CREATE EXTENSION IF NOT EXISTS` for each). Invisible on the in-cluster
+/// `pgvector/pgvector` image, which ships all three preinstalled.
+const REQUIRED_PG_EXTENSIONS: [&str; 3] = ["pgcrypto", "pg_trgm", "vector"];
+
+/// Creates the required extensions before the migration runner touches them,
+/// so a managed Postgres that hasn't installed or allowlisted one (Azure
+/// Flexible Server, RDS, Cloud SQL all gate `CREATE EXTENSION`) fails fast
+/// with an actionable message instead of a raw mid-migration SQL error.
+async fn ensure_pg_extensions(db: &PgPool) {
+    for ext in REQUIRED_PG_EXTENSIONS {
+        if let Err(err) = sqlx::query(&format!("CREATE EXTENSION IF NOT EXISTS \"{ext}\""))
+            .execute(db)
+            .await
+        {
+            panic!("{}", pg_extension_error_message(ext, &err.to_string()));
+        }
+    }
+}
+
+/// Explains a startup connect failure by naming the address it failed against.
+///
+/// sqlx reports a filtered or blackholed host as a bare `PoolTimedOut` after the
+/// acquire timeout elapses, with nothing logged in the meantime — so the most
+/// likely managed-Postgres misconfiguration (a firewall rule or egress
+/// NetworkPolicy that never admits the control plane) reads as "the platform
+/// hung" rather than "nothing answered at this address". The credentials the DSN
+/// also carries are never included: the options are parsed rather than the
+/// string printed, so there is no path by which the password reaches a log.
+pub fn pg_connect_error_message(database_url: &str, err: &sqlx::Error) -> String {
+    use std::str::FromStr;
+    let target = sqlx::postgres::PgConnectOptions::from_str(database_url)
+        .map(|o| {
+            format!(
+                "{}:{}/{}",
+                o.get_host(),
+                o.get_port(),
+                o.get_database().unwrap_or("<no database>")
+            )
+        })
+        .unwrap_or_else(|e| format!("<unparseable DATABASE_URL: {e}>"));
+    format!(
+        "failed to connect to Postgres at {target}: {err}\n\
+         A timeout here means nothing answered, not that the credentials are \
+         wrong — check that the host and port are reachable from the control \
+         plane (managed Postgres: firewall rule, private endpoint, or the \
+         egress NetworkPolicy derived from `postgres.external.egress_cidr`), \
+         and that `sslmode` matches what the server requires."
+    )
+}
+
+fn pg_extension_error_message(ext: &str, err: &str) -> String {
+    format!(
+        "required Postgres extension \"{ext}\" is unavailable: {err}\n\
+         The migrations need pgcrypto, pg_trgm, and vector. On a managed \
+         Postgres, install/allowlist them on the server first — e.g. Azure \
+         Flexible Server: `az postgres flexible-server parameter set \
+         --name azure.extensions --value VECTOR,PG_TRGM,PGCRYPTO` — then \
+         restart the control plane."
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_error_names_the_address_but_never_the_password() {
+        let err = sqlx::Error::PoolTimedOut;
+        let msg = pg_connect_error_message(
+            "postgres://nasiko_admin:sup3rs3cret@pg.internal:5432/nasiko_prod?sslmode=require",
+            &err,
+        );
+        assert!(msg.contains("pg.internal:5432/nasiko_prod"));
+        assert!(msg.contains("egress_cidr"));
+        assert!(!msg.contains("sup3rs3cret"));
+    }
+
+    #[test]
+    fn extension_error_names_the_extension_and_the_remedy() {
+        let msg = pg_extension_error_message("vector", "permission denied");
+        assert!(msg.contains("\"vector\""));
+        assert!(msg.contains("permission denied"));
+        assert!(msg.contains("azure.extensions"));
     }
 }

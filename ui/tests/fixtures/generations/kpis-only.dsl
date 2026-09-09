@@ -1,5 +1,7 @@
-Sure — building that now.
-root = AppStack([kpis], "md")
-dashQ = Query("fetchTokenopsDashboard", [{range: "7d"}], {kpis: {total_spend: {current: 0, previous: 0, change_pct: null}, total_tokens: {current: 0, previous: 0, change_pct: null}, cost_per_operation: {current: 0, previous: 0, change_pct: null}, avg_latency_ms: {current: null, previous: null, change_pct: null}}}, "data.kpis")
-kpis = AppStatRow([{label: "Total spend", value: "$" + @Round(dashQ.total_spend.current, 2), delta: dashQ.total_spend.change_pct ? @Round(dashQ.total_spend.change_pct, 1) + "%" : null, trend: dashQ.total_spend.change_pct ? dashQ.total_spend.change_pct > 0 ? "up" : "down" : "neutral"}, {label: "Total tokens", value: @Round(dashQ.total_tokens.current, 0), delta: dashQ.total_tokens.change_pct ? @Round(dashQ.total_tokens.change_pct, 1) + "%" : null, trend: dashQ.total_tokens.change_pct ? dashQ.total_tokens.change_pct > 0 ? "up" : "down" : "neutral"}, {label: "Cost per op", value: "$" + @Round(dashQ.cost_per_operation.current, 4), delta: dashQ.cost_per_operation.change_pct ? @Round(dashQ.cost_per_operation.change_pct, 1) + "%" : null, trend: dashQ.cost_per_operation.change_pct ? dashQ.cost_per_operation.change_pct > 0 ? "up" : "down" : "neutral"}])
-Here's your headline KPIs for the last 7 days with spend, token count, and cost per operation — let me know if you'd like to adjust the time range or add more detail!
+Got it, building a simple headline KPI strip for you.
+
+root = AppStack([stats], "md")
+dashboardQ = Query("fetchTokenopsDashboard", [], {summary: {total_cost: 0, total_operations: 0, active_agents: 0, total_tokens: 0}}, "data.summary")
+stats = AppStatRow([{label: "Total cost", value: dashboardQ.total_cost}, {label: "Operations", value: dashboardQ.total_operations}, {label: "Active agents", value: dashboardQ.active_agents}, {label: "Total tokens", value: dashboardQ.total_tokens}])
+
+Here's your headline KPI row with cost, operations, active agents, and token usage — let me know if you'd like to add detail or swap any metrics!

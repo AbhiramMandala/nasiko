@@ -15,21 +15,13 @@
     }
     .stat-card.is-loading {
       min-height: 100px;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      gap: var(--s-12);
-    }
-    .stat-card.is-loading .skel-line {
-      border-radius: var(--r-4);
       background: var(--color-border);
+      border: none;
+      box-shadow: none;
       animation: skel-pulse 1.5s ease-in-out infinite;
     }
-    .skel-line--label { height: 0.85em; width: 45%; }
-    .skel-line--value { height: 1.6em; width: 65%; }
-    .skel-line--delta { height: 0.8em; width: 30%; }
     @media (prefers-reduced-motion: reduce) {
-      .stat-card.is-loading .skel-line { animation: none; opacity: 0.6; }
+      .stat-card.is-loading { animation: none; opacity: 0.6; }
     }
     .label { margin: 0 0 var(--s-8); color: var(--color-text-muted); font-size: var(--font-size-sm); }
     .value { margin: 0; font-size: var(--font-size-3xl); font-weight: 700; line-height: 1.1; }

@@ -10,7 +10,7 @@ __pycache__/
 # (public URLs/tuning only — the import script scans it for credentials).
 # Deliberately NOT negating .env.* : the import script prunes non-release
 # flavors, and this makes an accidental re-import of one fail its ignore-check.
-!ee/ui/app/assets/.env
+!ui/ee/app/assets/.env
 .venv/
 node_modules/
 *.egg-info/
@@ -39,8 +39,5 @@ values.json
 /docs/MCP_SERVER_UPLOAD_EE_IMPLEMENTATION_PLAN.md
 /docs/MCP_UPLOAD_PLAN_OSS.md
 .preview-shots/
-
-# Vendored LongMemEval benchmark (local PACMS eval harness only, not product
-# code) — clone https://github.com/xiaowu0162/LongMemEval separately if
-# re-running scripts/pacms_longmemeval_test.py.
-/LongMemEval-main/
+/_to_delete/
+/_xfer/

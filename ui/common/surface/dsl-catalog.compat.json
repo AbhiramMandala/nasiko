@@ -1,9 +1,9 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "bda536152ec8",
+  "catalogVersion": "5c3cfee77b27",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 29,
+  "componentCount": 27,
   "components": {
     "app-accordion": {
       "element": "app-accordion",
@@ -268,14 +268,21 @@
     "app-card": {
       "element": "app-card",
       "summary": "`<app-card>` — THE card component.",
-      "childrenParam": true,
       "paramOrder": [
-        "children",
         "name",
+        "card-title",
+        "version",
         "status",
         "description",
         "tags",
         "href",
+        "error-title",
+        "error-body",
+        "deploy-label",
+        "deploy-hint",
+        "max-visible-tags",
+        "details-href",
+        "chat-href",
         "loading"
       ],
       "attributes": {
@@ -283,6 +290,14 @@
           "type": "string",
           "required": true,
           "description": "Display name (required). `card-title` is accepted as an alias, because `title` is a reserved global attribute and the replaced card used that spelling — kept so call sites did not all have to change."
+        },
+        "card-title": {
+          "type": "string",
+          "description": "Alias for `name`, kept for the replaced card's call sites."
+        },
+        "version": {
+          "type": "string",
+          "description": "Rendered after the name; a leading \"v\" is added if absent"
         },
         "status": {
           "type": "enum",
@@ -306,6 +321,35 @@
         "href": {
           "type": "route",
           "description": "Where the whole card navigates. Defaults to the details href."
+        },
+        "error-title": {
+          "type": "string",
+          "description": "Shown in place of the description when status is error/failed"
+        },
+        "error-body": {
+          "type": "string",
+          "description": "Supporting line for the error state"
+        },
+        "deploy-label": {
+          "type": "string",
+          "description": "Overrides the deploying headline (default \"Agent is being deployed...\")"
+        },
+        "deploy-hint": {
+          "type": "string",
+          "description": "Overrides the deploying hint line"
+        },
+        "max-visible-tags": {
+          "type": "number",
+          "default": 2,
+          "description": "Chips shown before the \"+N\" overflow chip (default 2)"
+        },
+        "details-href": {
+          "type": "route",
+          "description": "Overrides the default `/agent-card?id=…`"
+        },
+        "chat-href": {
+          "type": "route",
+          "description": "Overrides the default `/chat?agent_id=…&agent_name=…`"
         },
         "loading": {
           "type": "boolean",
@@ -347,10 +391,7 @@
         "legend",
         "empty-text",
         "loading",
-        "label",
-        "segmented",
-        "average-line",
-        "format-y2"
+        "label"
       ],
       "attributes": {
         "type": {
@@ -411,26 +452,7 @@
         },
         "label": {
           "type": "string",
-          "description": "Accessible name for the plot. Falls back to the type. (The three attributes below were added after the catalog first shipped and sit last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
-        },
-        "segmented": {
-          "type": "boolean",
-          "description": "`bar` only: the concentration presentation — every stack segment is a gapped, fully-rounded pill, the y-axis is hidden, and `stacked` is implied. Pair with `average-line` for the reference rule."
-        },
-        "average-line": {
-          "type": "boolean",
-          "description": "`bar` only: dashed horizontal rule at the mean of the column totals, labelled \"avg\"."
-        },
-        "format-y2": {
-          "type": "enum",
-          "values": [
-            "number",
-            "currency",
-            "percent",
-            "compact"
-          ],
-          "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
+          "description": "Accessible name for the plot. Falls back to the type."
         }
       },
       "slots": [],
@@ -657,14 +679,7 @@
       "attributes": {
         "columns": {
           "type": "number",
-          "description": "Column count (integer) or CSS grid-template value (e.g. `auto-fit`)",
-          "templates": [
-            "1fr 1fr",
-            "2fr 1fr",
-            "1fr 2fr",
-            "3fr 2fr",
-            "2fr 3fr"
-          ]
+          "description": "Column count (integer) or CSS grid-template value (e.g. `auto-fit`)"
         },
         "gap": {
           "type": "enum",
@@ -691,8 +706,7 @@
         }
       },
       "slots": [],
-      "events": [],
-      "note": "columns takes an integer OR a grid-template string. app-grid.js:20 turns a positive integer into repeat(n, 1fr) and passes anything else through verbatim into style.setProperty('--grid-columns', …), which is the only way to express a ratio — app-row has no per-child sizing at all. The template form is a closed set rather than free text for two reasons: the value reaches a CSS custom property unfiltered and the DSL is written by a model, and a ratio carries meaning, so five named proportions are a vocabulary while arbitrary fr pairs are noise. Omitting columns entirely is the responsive option — the CSS default is repeat(auto-fill, minmax(300px, 1fr)) and setting columns replaces it, so both the integer and template forms are deliberate desktop shapes."
+      "events": []
     },
     "app-input": {
       "element": "app-input",
@@ -1127,73 +1141,6 @@
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute. nameFallback: the field has no visible label to fill in, so the component emits the placeholder as its accessible name when aria-label is absent — a floor, not the recommended path."
     },
-    "app-segmented-control": {
-      "element": "app-segmented-control",
-      "summary": "Segmented control — one exclusive choice from a set, shown as a joined strip.",
-      "actionParam": true,
-      "paramOrder": [
-        "items",
-        "value",
-        "size",
-        "disabled",
-        "state",
-        "label",
-        "aria-label",
-        "action"
-      ],
-      "requiresName": true,
-      "nameFrom": [
-        "label",
-        "aria-label"
-      ],
-      "attributes": {
-        "items": {
-          "type": "json",
-          "description": "JSON array of `\"value\"` strings or `{value, label, disabled, title}` objects. Prefer the `items` property. The string form uses the label as the value, so `value` has to match it exactly, case included; pass objects when the two should differ."
-        },
-        "value": {
-          "type": "string",
-          "description": "Selected value. Reflected. A value matching no segment selects nothing, which is how \"no choice yet\" is expressed."
-        },
-        "size": {
-          "type": "enum",
-          "values": [
-            "md",
-            "sm"
-          ],
-          "description": "`md` (default, 32px) | `sm` (28px). The same step the other controls take: 28px box, 12px type, `--r-6` corners."
-        },
-        "disabled": {
-          "type": "boolean",
-          "description": "The whole control is inert. Individual segments carry their own `disabled` in `items`."
-        },
-        "state": {
-          "type": "enum",
-          "values": [
-            "hover",
-            "focus",
-            "app-input"
-          ],
-          "description": "`hover` | `focus`, for rendering those states statically (spec review), same contract as `app-input`."
-        },
-        "label": {
-          "type": "string",
-          "description": "Accessible name for the group, rendered as a visually-hidden `<legend>`. A segmented control is a question (\"over what range?\") whose answer is the only thing on screen, so the question has to be somewhere for a screen reader."
-        },
-        "aria-label": {
-          "type": "string",
-          "description": "Accessible name for the group, rendered as a visually-hidden `<legend>`. A segmented control is a question (\"over what range?\") whose answer is the only thing on screen, so the question has to be somewhere for a screen reader."
-        }
-      },
-      "slots": [],
-      "events": [
-        {
-          "name": "change",
-          "description": "Bubbles from the inner radio. Read `e.target.value`, or the host's `.value`, which is already updated."
-        }
-      ],
-      "note": "A form control, same as app-select: its value plumbing is Action([@Set($var, …)]) on the trailing action slot. Segments come from the `items` attribute, so a generated surface can name them directly."
-    },
     "app-select": {
       "element": "app-select",
       "summary": "Single-select dropdown: a styled native `<select>` with the input's label, hint and state treatment.",
@@ -1365,7 +1312,7 @@
     },
     "app-stat-card": {
       "element": "app-stat-card",
-      "summary": "One metric standing on its own — label, value, and an optional delta with its trend arrow. For two or more headline metrics use AppStatRow, which separates them with hairlines and reserves the right skeleton.",
+      "summary": "Metric summary card showing a label, primary value, delta, and trend direction.",
       "paramOrder": [
         "label",
         "value",
@@ -1629,31 +1576,6 @@
         }
       ]
     },
-    "app-text": {
-      "element": "app-text",
-      "summary": "Typography — a heading, a paragraph, a caption, an eyebrow label.",
-      "textParam": true,
-      "paramOrder": [
-        "text",
-        "variant"
-      ],
-      "attributes": {
-        "variant": {
-          "type": "enum",
-          "values": [
-            "body",
-            "title",
-            "subtitle",
-            "caption",
-            "label"
-          ],
-          "default": "body",
-          "description": "Role on the page: `body` (default) | `title` | `subtitle` | `caption` | `label`"
-        }
-      },
-      "slots": [],
-      "events": []
-    },
     "app-toolbar": {
       "element": "app-toolbar",
       "summary": "Horizontal toolbar with named start and end slots for grouping actions.",
@@ -1691,7 +1613,6 @@
     "/build",
     "/builds",
     "/chat",
-    "/chats",
     "/design-system",
     "/executions",
     "/flow",

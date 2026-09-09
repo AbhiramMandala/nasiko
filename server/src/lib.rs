@@ -1,9 +1,3 @@
-// Axum handlers here deliberately return `Result<T, axum::response::Response>`
-// so `?` can short-circuit with an already-built HTTP response — clippy's
-// large-Err-variant lint doesn't fit that idiom, which is used pervasively
-// across this crate's routes.
-#![allow(clippy::result_large_err)]
-
 pub mod acl;
 pub mod admin;
 pub mod admission;
@@ -14,6 +8,8 @@ pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
+pub mod coding_agent_otlp;
+pub mod coding_agent_telemetry;
 pub mod flows;
 pub mod github;
 pub mod llm_configs;
@@ -36,6 +32,7 @@ pub mod telemetry;
 pub mod transcribe;
 pub mod usage;
 pub mod users;
+pub mod weave;
 
 use axum::handler::Handler;
 use axum::http::Method;
@@ -237,12 +234,6 @@ where
     // costs two bcrypt cost-12 hashes. 10/min is generous for a human changing
     // their own password and still bounds the CPU burn from a scripted loop.
     let change_password_limiter = RateLimiter::new(10, Duration::from_secs(60));
-    // The FinOps dashboard/timeseries/calendar/attributions endpoints fan out
-    // several concurrent Tempo searches per request (bounded concurrency, but
-    // real load nonetheless) — a tighter, dedicated budget than the rest of
-    // the observability router (session/trace/span reads are cheap single
-    // lookups and shouldn't share it).
-    let finops_limiter = RateLimiter::new(20, Duration::from_secs(60));
 
     // Public A2A registry (agent discovery) — see registry_a2a.rs for why it
     // is unauthenticated; the global fixed window bounds enumeration abuse.
@@ -265,6 +256,7 @@ where
         .merge(build_routes)
         .merge(degradable_routes)
         .merge(chat::router())
+        .merge(coding_agent_telemetry::router())
         .merge(maf::router())
         .merge(secrets::router())
         .merge(llm_configs::router())
@@ -276,7 +268,7 @@ where
         .merge(flows::router())
         .nest(
             "/observability",
-            observability::protected_router(state.clone(), finops_limiter),
+            observability::protected_router(state.clone()),
         )
         .merge(agents::upload::status_router())
         .merge(github::router())
@@ -284,6 +276,7 @@ where
         .merge(transcribe::router())
         .merge(mcp::router())
         .merge(mcp_upload_routes)
+        .merge(weave::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -378,22 +371,7 @@ where
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_page_auth,
-        ))
-        // An /api path that reached the UI fallback matched no API route, and
-        // must not be answered with the SPA. Serving index.html here — status
-        // 200, Content-Type text/html — is what made a missing route surface in
-        // the browser as "Server returned a malformed JSON body": a real
-        // failure wearing a label that sends you at your own JSON parsing
-        // instead of at a route that is not there.
-        //
-        // Registered here rather than on the outer router because `nest("/api",
-        // …)` already owns a catch-all at that position and a second wildcard
-        // beside it panics at startup. Nothing else routes inside `ui_pages`,
-        // so there is no conflict. After `.layer()` on purpose: the page-auth
-        // redirect is for document navigations, and bouncing an API call to
-        // login.html would put HTML back in the response we are removing it
-        // from.
-        .route("/api/{*rest}", any(api_not_found));
+        ));
 
     Router::new()
         .route("/health", get(health))
@@ -424,20 +402,6 @@ where
                 )
             },
         ))
-}
-
-/// The 404 for an unmatched `/api` path, in the envelope every other API error
-/// uses (`{data, status_code, message}`) so the frontend's error handling reads
-/// it the same way as any other failure rather than choking on HTML.
-async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {
-    (
-        axum::http::StatusCode::NOT_FOUND,
-        Json(serde_json::json!({
-            "data": null,
-            "status_code": 404,
-            "message": format!("no API route matches {}", uri.path()),
-        })),
-    )
 }
 
 /// State for [`authenticate_oci_request`] — bundles the two things it needs

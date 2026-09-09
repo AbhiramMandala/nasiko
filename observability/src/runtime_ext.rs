@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use nasiko_runtime::{
     ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, InstanceInfo, Result,
-    WorkspaceEntry, WorkspaceFile, WorkspaceRef,
 };
 
 use crate::injector::{AgentContext, InstrumentationInjector};
@@ -145,24 +144,6 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
     async fn list_instances(&self) -> Result<Vec<InstanceInfo>> {
         self.inner.list_instances().await
     }
-
-    /// Forward workspace listing to the inner runtime. MUST be overridden here —
-    /// the trait's default is an empty list, so without this every agent's
-    /// files would look absent no matter what the backend can see (RUN-1).
-    async fn list_workspace(&self, workspace: &WorkspaceRef) -> Result<Vec<WorkspaceEntry>> {
-        self.inner.list_workspace(workspace).await
-    }
-
-    /// Forward workspace file reads to the inner runtime. MUST be overridden
-    /// here — the trait's default is "unsupported", so without this every
-    /// download would fail even on a backend that supports it (RUN-1).
-    async fn read_workspace_file(
-        &self,
-        workspace: &WorkspaceRef,
-        rel_path: &str,
-    ) -> Result<WorkspaceFile> {
-        self.inner.read_workspace_file(workspace, rel_path).await
-    }
 }
 
 #[cfg(test)]
@@ -235,25 +216,6 @@ mod tests {
                 started_at: None,
                 ready: true,
             }])
-        }
-        async fn list_workspace(&self, _w: &WorkspaceRef) -> Result<Vec<WorkspaceEntry>> {
-            Ok(vec![WorkspaceEntry {
-                path: "marker-file".to_string(),
-                size: 3,
-                mtime: 0,
-            }])
-        }
-        async fn read_workspace_file(
-            &self,
-            _w: &WorkspaceRef,
-            _rel: &str,
-        ) -> Result<WorkspaceFile> {
-            Ok(WorkspaceFile {
-                size: 3,
-                stream: Box::pin(futures_util::stream::once(async {
-                    Ok(bytes::Bytes::from_static(b"abc"))
-                })),
-            })
         }
     }
 
@@ -414,60 +376,6 @@ mod tests {
             Some("weather"),
             "refresh must use the agent name, not the container id, as service name"
         );
-    }
-
-    /// A decorator over `RecordingRuntime` with the injector that changes
-    /// nothing — the shape every forwarding guard below needs.
-    fn instrumented() -> InstrumentedRuntime<RecordingRuntime, NoopInjector> {
-        InstrumentedRuntime::new(
-            RecordingRuntime {
-                refreshed: Arc::new(AtomicBool::new(false)),
-                refresh_env: Arc::new(Mutex::new(HashMap::new())),
-            },
-            NoopInjector,
-            "http://collector:4318".to_string(),
-            "http/protobuf".to_string(),
-            false,
-            None,
-        )
-    }
-
-    /// RUN-1 regression guard: the decorator must forward `list_workspace`. The
-    /// trait's default returns `[]`, so the marker entry is what distinguishes
-    /// "forwarded" from "silently fell through to the default".
-    #[tokio::test]
-    async fn list_workspace_forwards_to_inner() {
-        let rt = instrumented();
-        let files = rt
-            .list_workspace(&WorkspaceRef {
-                owner_id: uuid::Uuid::nil(),
-                container_id: ContainerId::new("agent"),
-            })
-            .await
-            .expect("list_workspace should succeed");
-        assert_eq!(
-            files.first().map(|f| f.path.as_str()),
-            Some("marker-file"),
-            "InstrumentedRuntime must forward list_workspace to the inner runtime (RUN-1)"
-        );
-    }
-
-    /// RUN-1 regression guard: the decorator must forward `read_workspace_file`.
-    /// The trait's default is an error, so merely succeeding proves forwarding.
-    #[tokio::test]
-    async fn read_workspace_file_forwards_to_inner() {
-        let rt = instrumented();
-        let file = rt
-            .read_workspace_file(
-                &WorkspaceRef {
-                    owner_id: uuid::Uuid::nil(),
-                    container_id: ContainerId::new("agent"),
-                },
-                "marker-file",
-            )
-            .await
-            .expect("InstrumentedRuntime must forward read_workspace_file (RUN-1)");
-        assert_eq!(file.size, 3);
     }
 
     /// RUN-1 regression guard: the decorator must forward `list_instances` to the

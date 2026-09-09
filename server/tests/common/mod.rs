@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use nasiko_config::Config;
 use nasiko_runtime::{
     ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, InstanceInfo,
-    Result as RuntimeResult, RuntimeState, WorkspaceEntry, WorkspaceFile, WorkspaceRef,
+    Result as RuntimeResult, RuntimeState,
 };
 use nasiko_server::state::AppState;
 use sqlx::PgPool;
@@ -46,10 +46,6 @@ pub struct FakeRuntime {
     /// When set, `deploy` fails instead of succeeding — lets a test exercise
     /// a genuine (post-build) deploy failure without a real runtime.
     fail_deploy: std::sync::atomic::AtomicBool,
-    /// Stands in for agents' persistent `/workspace`, keyed by
-    /// `{subpath}/{rel_path}` so a test can prove the server scoped a read to
-    /// the right agent rather than just echoing back what it asked for.
-    workspace: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
 }
 
 impl FakeRuntime {
@@ -57,17 +53,6 @@ impl FakeRuntime {
     #[allow(dead_code)]
     pub fn set_instances(&self, instances: Vec<InstanceInfo>) {
         *self.instances.lock().unwrap() = instances;
-    }
-
-    /// Put a file in an agent's fake persistent storage.
-    #[allow(dead_code)]
-    pub fn put_workspace_file(&self, workspace: &WorkspaceRef, rel_path: &str, body: &[u8]) {
-        // Key on the *scoped* subpath so a test can seed files under a specific
-        // user's `u/<token>` subtree, mirroring the real runtimes.
-        self.workspace
-            .lock()
-            .unwrap()
-            .insert(format!("{}/{rel_path}", workspace.subpath()), body.to_vec());
     }
 
     /// Make the next (and all subsequent) `deploy` calls fail instead of
@@ -153,49 +138,6 @@ impl ContainerRuntime for FakeRuntime {
     // hours-meter reconciler observes.
     async fn list_instances(&self) -> RuntimeResult<Vec<InstanceInfo>> {
         Ok(self.instances.lock().unwrap().clone())
-    }
-
-    // Explicit impls (not the trait defaults, which are "empty" and
-    // "unsupported") so a test can prove the server reached the runtime and
-    // scoped the read to one agent's subdirectory.
-    async fn list_workspace(&self, w: &WorkspaceRef) -> RuntimeResult<Vec<WorkspaceEntry>> {
-        let prefix = format!("{}/", w.subpath());
-        Ok(self
-            .workspace
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|(key, body)| {
-                Some(WorkspaceEntry {
-                    path: key.strip_prefix(&prefix)?.to_owned(),
-                    size: body.len() as u64,
-                    mtime: 0,
-                })
-            })
-            .collect())
-    }
-
-    async fn read_workspace_file(
-        &self,
-        w: &WorkspaceRef,
-        rel_path: &str,
-    ) -> RuntimeResult<WorkspaceFile> {
-        let key = format!("{}/{rel_path}", w.subpath());
-        let body = self
-            .workspace
-            .lock()
-            .unwrap()
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| {
-                nasiko_runtime::RuntimeError::Internal(format!("no such file: {rel_path}"))
-            })?;
-        Ok(WorkspaceFile {
-            size: body.len() as u64,
-            stream: Box::pin(futures::stream::once(async move {
-                Ok(bytes::Bytes::from(body))
-            })),
-        })
     }
 }
 
@@ -340,7 +282,6 @@ impl TestServer {
         }
     }
 
-    #[allow(dead_code)]
     pub async fn cleanup(&self) {
         // Terminate connections to the test DB before dropping it.
         sqlx::query(&format!(
@@ -399,6 +340,10 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         oci_storage_bucket: "nasiko-test-artifacts".into(),
         agent_image_registry: String::new(),
         build_push_token: String::new(),
+        // No Weave in the test topology; an empty token makes
+        // /api/weave/surface answer 503 rather than dial out.
+        weave_base_url: "http://localhost:8801".into(),
+        weave_internal_token: String::new(),
         seed_agents: None,
         openai_api_key: None,
         openai_base_url: None,
@@ -414,6 +359,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         otel_sample_ratio: "0.0".into(),
         otel_collector_endpoint: "http://localhost:4318".into(),
         otel_capture_content: false,
+        coding_agent_otlp_endpoint: None,
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         observability_enabled: false,
@@ -437,9 +383,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         docker_agent_network: None,
         oci_registry_host: None,
         container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly
-        trace_usage_sync_secs: 0,
-        trace_usage_overlap_secs: 600,
-        trace_usage_batch_size: 50,
         git_clone_allowed_hosts: vec![
             "github.com".to_owned(),
             "gitlab.com".to_owned(),
@@ -490,9 +433,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
         mcp_upload_max_replicas: 1,
         agent_max_replicas: 1,
-        // Serial builds in tests: several suites seed build_jobs rows and assert
-        // on them, and a concurrent worker would make those assertions racy.
-        build_concurrency: 1,
         agent_default_memory: "512Mi".to_string(),
         agent_memory_volume: "nasiko-agent-memory".to_string(),
         agent_memory_init_image: "alpine:3.21".to_string(),

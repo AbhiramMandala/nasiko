@@ -26,7 +26,23 @@ const fetchSessions = async (_query, limit = 25, cursor = null) => {
 };
 
 const fetchChatSession = async (sessionId) => {
-  return fetchApi(`/chat/sessions/${encodeURIComponent(sessionId)}`);
+  const encoded = encodeURIComponent(sessionId);
+  let page = await fetchApi(`/chat/sessions/${encoded}/messages?limit=500`);
+  let messages = page?.data ?? [];
+  let cursor = page?.prev_cursor ?? null;
+  const seen = new Set();
+
+  for (let count = 0; page?.has_more && cursor && count < 100; count += 1) {
+    if (seen.has(cursor)) break;
+    seen.add(cursor);
+    page = await fetchApi(
+      `/chat/sessions/${encoded}/messages?limit=500&prev_cursor=${encodeURIComponent(cursor)}`,
+    );
+    messages = [...(page?.data ?? []), ...messages];
+    cursor = page?.prev_cursor ?? null;
+  }
+
+  return { data: messages };
 };
 
 registerAll({ deleteSession, fetchSessions, fetchChatSession }, { replace: true });

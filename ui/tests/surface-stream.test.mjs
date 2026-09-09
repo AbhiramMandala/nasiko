@@ -27,42 +27,6 @@ function recorder() {
   return { doc: { createElement: make }, container: make('div') };
 }
 
-/**
- * The same recorder, plus the four things focus.js asks of a document.
- *
- * Separate rather than folded into `recorder()` because every other test in
- * this file asserts on a tree that has no notion of who is focused, and a
- * recorder that grows a `doc.activeElement` invites those tests to start
- * depending on it by accident.
- */
-function focusRecorder() {
-  const doc = { activeElement: null };
-  const make = (tag) => {
-    const node = {
-      tag,
-      tagName: tag.toUpperCase(),
-      attrs: {},
-      children: [],
-      listeners: {},
-      parentElement: null,
-      focusCount: 0,
-      setAttribute(k, v) { this.attrs[k] = v; },
-      hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
-      appendChild(c) { c.parentElement = node; node.children.push(c); return c; },
-      addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
-      replaceChildren() {
-        for (const c of node.children) c.parentElement = null;
-        node.children.length = 0;
-      },
-      contains(other) { for (let n = other; n; n = n.parentElement) if (n === node) return true; return false; },
-      focus() { node.focusCount++; doc.activeElement = node; },
-    };
-    return node;
-  };
-  doc.createElement = make;
-  return { doc, container: make('div') };
-}
-
 const frame = (event, obj, id) => `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(obj)}\n\n`;
 
 /** A Response whose body emits `chunks`, one per tick. */
@@ -77,12 +41,7 @@ function sse(chunks) {
       controller.close();
     },
   });
-  // Weave sends this, and the client now refuses a 200 without it — a body
-  // that is not an event stream is the wrong endpoint, not a dropped one.
-  return new Response(body, {
-    status: 200,
-    headers: { 'content-type': 'text/event-stream' },
-  });
+  return new Response(body, { status: 200 });
 }
 
 /**
@@ -125,7 +84,7 @@ const DSL = [
   'Sure — building that now.\n',
   'root = AppStack([kpis], "md")\n',
   'kpis = AppRow([kpiCost], "md")\n',
-  'kpiCost = AppStatCard("Total cost", "12.50", "+3.20", 12.50 > 9.30 ? "up" : "neutral")\n',
+  'kpiCost = AppStatCard("Total cost", "12.50", null, "up")\n',
   "Here's your spend dashboard — let me know if you'd like anything adjusted!",
 ];
 const TURN = [
@@ -134,22 +93,6 @@ const TURN = [
   frame('end', { status: 'ok' }, 9),
 ];
 
-test('a session built without a catalog fails at construction, not at send', () => {
-  // The bug this exists for: the dock built a session with no catalog, every
-  // turn threw inside the request builder, the host caught it and told the user
-  // the generator was unreachable. A running server was blamed for a missing
-  // argument. Constructing must fail loudly and say what to pass.
-  assert.throws(
-    () => createSurfaceSession({ endpoint: '/weave/surface', container: {} }),
-    (err) => err instanceof TypeError && /requires a `catalog`/.test(err.message),
-  );
-  assert.throws(
-    () => createSurfaceSession({ endpoint: '/weave/surface', container: {}, catalog: {} }),
-    /requires a `catalog`/,
-    'an object that is not a catalog is no better than none',
-  );
-});
-
 test('a full turn renders the tree the DSL describes', async () => {
   const { s, container } = session(TURN);
   const out = await s.send('build me a spend dashboard');
@@ -157,14 +100,7 @@ test('a full turn renders the tree the DSL describes', async () => {
   const stack = container.children[0];
   assert.equal(stack.tag, 'app-stack');
   const card = stack.children[0].children[0];
-  // The delta and its arrow are COMPUTED, which is the only honest way to show
-  // either. A generation that hardcodes "up" is asserting a direction nothing
-  // measured, and this fixture is the shape the prompt teaches instead.
-  // The arrow is derived from a comparison rather than stated. A generation
-  // that hardcodes "up" is asserting a direction nothing measured, and this
-  // fixture is the shape the prompt teaches instead.
-  assert.deepEqual([card.attrs.label, card.attrs.value, card.attrs.delta, card.attrs.trend],
-    ['Total cost', '12.50', '+3.20', 'up']);
+  assert.deepEqual([card.attrs.label, card.attrs.value, card.attrs.trend], ['Total cost', '12.50', 'up']);
 });
 
 test('both prose sentences reach the chat log, and no DSL line does', async () => {
@@ -650,297 +586,4 @@ test('a $state line goes back holding what the user set, not what the DSL declar
   await s.send('now change it');
   assert.ok(requests[1].body.context.currentSurface.includes('$view = "ops"'),
     requests[1].body.context.currentSurface);
-});
-
-test('a revision turn that only emits the changed statement does not blank the screen', async () => {
-  // agent.yaml rule 8: on a revision turn the generator is told to ONLY EMIT
-  // STATEMENTS THAT ARE NEW OR ACTUALLY CHANGING — so a real second turn's
-  // response, unlike every other test above, must NOT repeat `root`. Before
-  // the fix this went straight to `if (!root) return;` in render.js and the
-  // whole dashboard vanished, even though nothing about it had actually
-  // changed except one card's title.
-  const first = [
-    frame('surface', {}, 1),
-    frame('dsl-chunk', { text: 'root = AppStack([kpi], "md")\n' }, 2),
-    frame('dsl-chunk', { text: 'kpi = AppStatCard("Cost", "1", null, "up")\n' }, 3),
-    frame('end', { status: 'ok' }, 4),
-  ];
-  const secondDelta = [
-    frame('surface', {}, 1),
-    frame('dsl-chunk', { text: 'kpi = AppStatCard("Spend", "1", null, "up")\n' }, 2),
-    frame('end', { status: 'ok' }, 3),
-  ];
-  let n = 0;
-  const { doc, container: c2 } = recorder();
-  const s2 = createSurfaceSession({
-    endpoint: '/weave/surface',
-    catalog,
-    container: c2,
-    doc,
-    schedule: (fn) => fn(),
-    fetchImpl: async () => sse(++n === 1 ? first : secondDelta),
-  });
-
-  await s2.send('build it');
-  assert.ok(c2.children[0], 'first turn renders a root');
-
-  await s2.send('rename the card');
-  assert.ok(c2.children[0], 'root must still be on screen: it was never re-emitted because it never changed');
-  assert.ok(s2.currentSurface.includes('root = AppStack'),
-    'the seeded root survives the merge: ' + s2.currentSurface);
-  assert.ok(s2.currentSurface.includes('"Spend"'), 'and the actual change took effect: ' + s2.currentSurface);
-});
-
-test('a restart mid a revision turn discards back to the seeded prior surface, not empty', async () => {
-  // Same interaction as "a restart discards the partial surface..." above,
-  // but on turn TWO — where a naive discard-to-'' would silently reintroduce
-  // the exact bug the previous test fixes, since this turn's buffer starts
-  // seeded rather than empty.
-  const first = [
-    frame('surface', {}, 1),
-    frame('dsl-chunk', { text: 'root = AppStack([kpi], "md")\n' }, 2),
-    frame('dsl-chunk', { text: 'kpi = AppStatCard("Cost", "1", null, "up")\n' }, 3),
-    frame('end', { status: 'ok' }, 4),
-  ];
-  const deltaTruncated = [frame('surface', {}, 1), frame('dsl-chunk', { text: 'kpi = AppStatCard("Sp' }, 2)];
-  const deltaFull = [
-    frame('surface', {}, 1),
-    frame('dsl-chunk', { text: 'kpi = AppStatCard("Spend", "1", null, "up")\n' }, 2),
-    frame('end', { status: 'ok' }, 3),
-  ];
-  let n = 0;
-  const { doc, container } = recorder();
-  const s = createSurfaceSession({
-    endpoint: '/weave/surface',
-    catalog,
-    container,
-    doc,
-    schedule: (fn) => fn(),
-    fetchImpl: async () => sse(++n === 1 ? first : n === 2 ? deltaTruncated : deltaFull),
-  });
-
-  await s.send('build it');
-  await s.send('rename the card');
-
-  assert.equal(n, 3, 'turn two actually dropped and restarted, or this proves nothing');
-  assert.equal(container.children[0]?.tag, 'app-stack', 'root survived the restart, not just the happy path');
-  assert.ok(s.currentSurface.includes('root = AppStack'), 'seeded root: ' + s.currentSurface);
-  assert.ok(s.currentSurface.includes('"Spend"'), 'and the restarted delta still landed: ' + s.currentSurface);
-});
-
-test('a 200 that is not an event stream is named, not retried as a drop', async () => {
-  // The real shape: the control plane has no /api/weave/surface route, the
-  // request falls through to the SPA fallback, and index.html comes back with
-  // a 200. That used to read as a dropped connection — no frames, no terminal
-  // frame — so the resume loop spent two more requests on it and reported
-  // "the stream dropped", which points at the network rather than the router.
-  const { doc, container } = recorder();
-  const diagnostics = [];
-  const statuses = [];
-  let requests = 0;
-  const s = createSurfaceSession({
-    endpoint: '/weave/surface',
-    catalog,
-    container,
-    doc,
-    schedule: (fn) => fn(),
-    onDiagnostics: (d) => diagnostics.push(...d),
-    onStatus: (x) => statuses.push(x.phase),
-    fetchImpl: async () => {
-      requests++;
-      return new Response('<!doctype html><title>Nasiko</title>', {
-        status: 200,
-        headers: { 'content-type': 'text/html; charset=utf-8' },
-      });
-    },
-  });
-
-  const out = await s.send('spend last 14 days');
-
-  assert.equal(out.status, 'not_an_event_stream');
-  assert.equal(requests, 1, 'must not burn resume attempts proving it again');
-  const d = diagnostics.find((x) => x.code === 'not_an_event_stream');
-  assert.ok(d, JSON.stringify(diagnostics));
-  assert.match(d.message, /text\/html/);
-  assert.equal(diagnostics.some((x) => x.code === 'stream_resumed'), false);
-  assert.equal(diagnostics.some((x) => x.code === 'stream_interrupted'), false);
-  assert.ok(statuses.includes('failed'));
-});
-
-test('an error status reports the code and what the body said', async () => {
-  // The proxy answers `{error}` naming the actual problem. Reporting a bare
-  // "http_error" threw that away and left the status pill as the only evidence.
-  const { doc, container } = recorder();
-  const diagnostics = [];
-  const s = createSurfaceSession({
-    endpoint: '/weave/surface',
-    catalog,
-    container,
-    doc,
-    schedule: (fn) => fn(),
-    onDiagnostics: (d) => diagnostics.push(...d),
-    fetchImpl: async () => new Response(
-      JSON.stringify({ error: 'weave generation is not configured on this deployment' }),
-      { status: 503, headers: { 'content-type': 'application/json' } },
-    ),
-  });
-
-  const out = await s.send('spend last 14 days');
-  assert.equal(out.status, 'http_error');
-  const d = diagnostics.find((x) => x.code === 'http_error');
-  assert.ok(d, JSON.stringify(diagnostics));
-  assert.match(d.message, /503/);
-  assert.match(d.message, /not configured on this deployment/);
-});
-
-// ── the caret across a $state write ─────────────────────────────────────────
-
-test('typing into a filter box does not throw the caret away', async () => {
-  // The bug this exists for: store.subscribe(() => paint()) means a @Set is a
-  // repaint, render() is replaceChildren(), and the input being typed into is
-  // destroyed by its own keystroke. One character landed and the next went
-  // nowhere. Driven end to end rather than through focus.js directly, because
-  // the failure was never in either half — it was that nothing joined them.
-  const { doc, container } = focusRecorder();
-  const dsl = [
-    '$q = ""\n',
-    'setQ = Action([@Set($q, $event)])\n',
-    'box = AppSearch(null, null, null, null, null, null, null, null, null, null, "Filter agents", setQ)\n',
-    'root = AppStack([box], "md")\n',
-  ];
-  const chunks = [
-    frame('surface', { specVersion: '1.0', catalogVersion: catalog.catalogVersion, surfaceId: 's1' }, 1),
-    ...dsl.map((t, i) => frame('dsl-chunk', { text: t }, i + 2)),
-    frame('end', { status: 'ok' }, 9),
-  ];
-  const s = createSurfaceSession({
-    endpoint: '/weave/surface',
-    catalog,
-    container,
-    doc,
-    schedule: (fn) => fn(),
-    fetchImpl: async () => sse(chunks),
-    routes: new Set(),
-  });
-  await s.send('a dashboard with a filter');
-
-  const before = container.children[0].children[0];
-  assert.equal(before.tag, 'app-search');
-
-  // The user clicks into it and types one character.
-  doc.activeElement = before;
-  const fire = before.listeners.input?.[0] ?? before.listeners.change?.[0];
-  assert.ok(fire, 'the search must carry its action listener, or there is no bug to fix');
-  fire({ target: { value: 'a' }, detail: 'a' });
-  await new Promise((r) => setTimeout(r, 0));
-
-  const after = container.children[0].children[0];
-  assert.notEqual(after, before, 'the repaint really did rebuild the tree');
-  assert.equal(doc.activeElement, after, 'and the caret followed it to the new node');
-  assert.equal(after.focusCount, 1, 'focused once, not on a loop');
-});
-
-// ── show(): a saved surface, rendered without a turn ────────────────────────
-//
-// Reopening a stored view is not a generation. Before this there was no way in
-// that did not involve an SSE stream, so a saved dashboard had nowhere to go.
-
-test('a stored surface renders with no request at all', async () => {
-  const { doc, container } = recorder();
-  let requests = 0;
-  const s = createSurfaceSession({
-    endpoint: '/weave/surface',
-    catalog,
-    container,
-    doc,
-    schedule: (fn) => fn(),
-    fetchImpl: async () => { requests++; return sse([]); },
-    routes: new Set(),
-  });
-
-  const out = s.show('root = AppStack([kpi], "md")\nkpi = AppStatCard("Total cost", "12.50")');
-  assert.equal(requests, 0, 'reopening a view must not call the generator');
-  assert.equal(container.children[0].tag, 'app-stack');
-  assert.equal(container.children[0].children[0].tag, 'app-stat-card');
-  assert.deepEqual(out.diagnostics, []);
-});
-
-test('show() runs the complete-only diagnostics on its single pass', async () => {
-  // Mid-stream an unreferenced statement is normal — the parent has not arrived
-  // yet. A stored surface has no "yet", so orphan reporting must fire on the
-  // first and only pass rather than waiting for an end frame that never comes.
-  const { doc, container } = recorder();
-  const diagnostics = [];
-  const s = createSurfaceSession({
-    endpoint: '/weave/surface',
-    catalog,
-    container,
-    doc,
-    schedule: (fn) => fn(),
-    onDiagnostics: (d) => diagnostics.push(...d),
-    routes: new Set(),
-  });
-  s.show('root = AppStack([], "md")\nstray = AppBadge("nobody references me")');
-  assert.ok(diagnostics.some((d) => d.code === 'orphaned_statement'), diagnostics.map((d) => d.code).join(','));
-});
-
-test('a view saved against an older catalog says so', async () => {
-  // The case this check exists for. A stored surface can outlive the catalog it
-  // was generated against, and positional arguments may have been rebound
-  // underneath it — so the caller gets a diagnostic rather than a plausible
-  // dashboard whose columns have quietly shifted.
-  const { doc, container } = recorder();
-  const diagnostics = [];
-  const s = createSurfaceSession({
-    endpoint: '/weave/surface',
-    catalog,
-    container,
-    doc,
-    schedule: (fn) => fn(),
-    onDiagnostics: (d) => diagnostics.push(...d),
-    routes: new Set(),
-  });
-  s.show('root = AppBadge("hi")', { catalogVersion: 'aaaaaaaaaaaa' });
-  const d = diagnostics.find((x) => x.code === 'catalog_version_mismatch');
-  assert.ok(d, diagnostics.map((x) => x.code).join(','));
-  assert.match(d.message, /aaaaaaaaaaaa/);
-});
-
-test('reopening one view after another leaves nothing of the first behind', async () => {
-  const { doc, container } = recorder();
-  const s = createSurfaceSession({
-    endpoint: '/weave/surface', catalog, container, doc,
-    schedule: (fn) => fn(), routes: new Set(),
-  });
-  s.show('root = AppStack([a, b], "md")\na = AppBadge("one")\nb = AppBadge("two")');
-  assert.equal(container.children[0].children.length, 2);
-  s.show('root = AppBadge("only")');
-  assert.equal(container.children.length, 1, 'the container holds one surface, not two');
-  assert.equal(container.children[0].tag, 'app-badge');
-  assert.equal(s.currentSurface, 'root = AppBadge("only")', 'and currentSurface is the one on screen');
-});
-
-test('a reopened surface is still live, not a screenshot', async () => {
-  // The reason show() reuses draw() rather than rendering once and stopping.
-  // A saved dashboard whose filters do nothing would be a picture of a
-  // dashboard, and the difference is invisible until someone clicks.
-  const { doc, container } = recorder();
-  const s = createSurfaceSession({
-    endpoint: '/weave/surface', catalog, container, doc,
-    schedule: (fn) => fn(), routes: new Set(),
-  });
-  s.show([
-    '$label = "before"',
-    'flip = Action([@Set($label, "after")])',
-    // action is the 12th positional (paramOrder ends 'aria-expanded', 'action')
-    'btn = AppButton($label, "primary", null, null, null, null, null, null, null, null, null, flip)',
-    'root = AppStack([btn], "md")',
-  ].join('\n'));
-
-  const button = container.children[0].children[0];
-  assert.equal(button.textContent, 'before');
-  button.listeners.click[0]({});
-  await new Promise((r) => setTimeout(r, 0));
-  assert.equal(container.children[0].children[0].textContent, 'after',
-    'the Action ran and the surface repainted');
 });

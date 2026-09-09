@@ -22,6 +22,8 @@ pub struct UsageRecord {
     /// Bare provider-native model id (no prefix).
     pub model: String,
     pub usage: Option<Usage>,
+    pub cached_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
     pub latency_ms: i64,
     pub streaming: bool,
     pub finish_reason: Option<String>,
@@ -81,24 +83,26 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
         r#"INSERT INTO token_usage
                (user_id, agent_id, operation_type, provider, model,
                 input_tokens, output_tokens, total_tokens,
-                cache_read_input_tokens, cache_creation_input_tokens, cached_tokens,
+                cache_read_input_tokens, cache_creation_input_tokens,
+                cached_tokens, reasoning_tokens,
                 latency_ms, streaming, finish_reason, session_id, metadata)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)"#,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"#,
     )
     .bind(owner)
     .bind(agent)
     .bind(record.operation_type)
     .bind(&record.provider)
     .bind(&record.model)
-    .bind(input.unwrap_or(0) as i32)
-    .bind(output.unwrap_or(0) as i32)
-    .bind(total.unwrap_or(0) as i32)
-    .bind(cache_read.unwrap_or(0) as i32)
-    .bind(cache_creation.unwrap_or(0) as i32)
-    // `cached_tokens` is the OpenAI-flavoured read count; mirror cache_read into it
-    // so either column family answers "how much came from cache".
-    .bind(cache_read.unwrap_or(0) as i32)
-    .bind(record.latency_ms as i32)
+    .bind(saturating_i32(input.unwrap_or(0)))
+    .bind(saturating_i32(output.unwrap_or(0)))
+    .bind(saturating_i32(total.unwrap_or(0)))
+    .bind(saturating_i32(cache_read.unwrap_or(0)))
+    .bind(saturating_i32(cache_creation.unwrap_or(0)))
+    .bind(saturating_i32(
+        record.cached_tokens.unwrap_or(cache_read.unwrap_or(0)),
+    ))
+    .bind(saturating_i32(record.reasoning_tokens.unwrap_or(0)))
+    .bind(saturating_i32(record.latency_ms))
     .bind(record.streaming)
     .bind(record.finish_reason)
     .bind(record.flow_id)
@@ -107,4 +111,20 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn saturating_i32(value: i64) -> i32 {
+    value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::saturating_i32;
+
+    #[test]
+    fn usage_values_saturate_without_wrapping() {
+        assert_eq!(saturating_i32(i64::MAX), i32::MAX);
+        assert_eq!(saturating_i32(i64::MIN), i32::MIN);
+        assert_eq!(saturating_i32(42), 42);
+    }
 }

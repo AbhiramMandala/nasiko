@@ -164,19 +164,11 @@
     line-height: 1.45;
   }
 
-  /* Three ranks, from surface/diagnostics.json. Amber for everything was the
-     old behaviour and it flattened "the chart is not on the page" into the same
-     line as "the stream reconnected" — so the one worth reading was the one
-     that got skimmed. Unstamped stays amber: an unknown code is not a reason to
-     look calmer. */
   .diag__code {
     flex: 0 0 auto;
     font-family: var(--font-mono);
     color: var(--color-warning);
   }
-
-  .diag[data-severity="fatal"] .diag__code { color: var(--fg-error); }
-  .diag[data-severity="runtime"] .diag__code { color: var(--color-text-muted); }
 
   .diag__msg {
     color: var(--color-text-muted);

@@ -704,6 +704,9 @@ fn response_usage(value: Option<&Value>) -> Option<ResponseUsage> {
             prompt_tokens: value.get("input_tokens").and_then(Value::as_i64),
             completion_tokens: value.get("output_tokens").and_then(Value::as_i64),
             total_tokens: value.get("total_tokens").and_then(Value::as_i64),
+            prompt_tokens_details: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
         },
         cached_tokens: value
             .get("input_tokens_details")
@@ -775,6 +778,7 @@ impl AttemptGuard {
                 streaming,
                 finish_reason: None,
                 flow_id: routed.flow_id.clone(),
+                attribution_source: routed.attribution_source,
                 platform_paid: attempt.platform_paid,
             }),
         }
@@ -840,6 +844,7 @@ fn log_response_usage(
             streaming,
             finish_reason,
             flow_id: routed.flow_id,
+            attribution_source: routed.attribution_source,
             platform_paid: attempt.platform_paid,
         },
     );
@@ -902,6 +907,7 @@ fn error_code(error: &GatewayError) -> &'static str {
         | GatewayError::TokenExpired
         | GatewayError::InvalidToken(_)
         | GatewayError::MissingAgentId => "invalid_api_key",
+        GatewayError::Forbidden(_) => "permission_denied",
         GatewayError::BadRequest(_) => "invalid_request_error",
         GatewayError::NoRegistryEntry(_)
         | GatewayError::SecretNotFound(_, _)
@@ -1825,6 +1831,7 @@ mod tests {
                 is_coding_agent: false,
             },
             flow_id: None,
+            attribution_source: None,
         };
         let mut guard =
             AttemptGuard::new(&context, &routed, &routed.resolved, Instant::now(), false);

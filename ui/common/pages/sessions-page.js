@@ -139,7 +139,8 @@ class SessionsPage extends HTMLElement {
           const agent = s.agent_name || 'Orchestrator';
           const href = `/chat?session_id=${encodeURIComponent(s.session_id)}`
             + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
-            + `&agent_name=${encodeURIComponent(agent)}`;
+            + `&agent_name=${encodeURIComponent(agent)}`
+            + (s.is_coding_agent ? '&read_only=1' : '');
           const msgs = s.message_count
             ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
           const preview = s.last_message

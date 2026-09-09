@@ -1,9 +1,10 @@
 Sure — building that now.
-
-root = AppStack([heading, kpis, agentTable], "md")
-heading = AppText("Cost overview", "title")
-dashboardQ = Query("fetchTokenopsDashboard", [{range: "7d"}], {kpis: {total_spend: {current: 0, previous: 0, change_pct: null}, total_tokens: {current: 0, previous: 0, change_pct: null}, cost_per_operation: {current: 0, previous: 0, change_pct: null}}, attributions: {rows: []}}, "data")
-kpis = AppStatRow([{label: "Total spend", value: "$" + @Round(dashboardQ.kpis.total_spend.current, 2), delta: @Round(dashboardQ.kpis.total_spend.current - dashboardQ.kpis.total_spend.previous, 2), trend: dashboardQ.kpis.total_spend.change_pct > 0 ? "up" : dashboardQ.kpis.total_spend.change_pct < 0 ? "down" : "neutral"}, {label: "Total tokens", value: @Round(dashboardQ.kpis.total_tokens.current, 0), delta: @Round(dashboardQ.kpis.total_tokens.current - dashboardQ.kpis.total_tokens.previous, 0), trend: dashboardQ.kpis.total_tokens.change_pct > 0 ? "up" : dashboardQ.kpis.total_tokens.change_pct < 0 ? "down" : "neutral"}, {label: "Cost per op", value: "$" + @Round(dashboardQ.kpis.cost_per_operation.current, 4), delta: @Round(dashboardQ.kpis.cost_per_operation.current - dashboardQ.kpis.cost_per_operation.previous, 4), trend: dashboardQ.kpis.cost_per_operation.change_pct > 0 ? "up" : dashboardQ.kpis.cost_per_operation.change_pct < 0 ? "down" : "neutral"}])
-agentTable = AppTable(dashboardQ.attributions.rows, 20, "pages", false)
-
-Here's your cost overview for the last 7 days — showing total spend, token usage, and a breakdown by agent. Let me know if you'd like to adjust the time range or see different metrics!
+root = AppStack([kpis, agentTable], "md")
+summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0, avg_latency_ms: null})
+dashboardQ = Query("fetchTokenopsDashboard", [], {summary: {total_cost: 0, total_operations: 0, operations_last_24h: 0, active_agents: 0}, agents: []}, "data")
+kpis = AppRow([costCard, opsCard, agentsCard], "md")
+costCard = AppStatCard("Total cost", summaryQ.total_cost_usd, null, "neutral", false)
+opsCard = AppStatCard("Requests", summaryQ.request_count, null, "neutral", false)
+agentsCard = AppStatCard("Active agents", dashboardQ.summary.active_agents, null, "neutral", false)
+agentTable = AppTable(dashboardQ.agents, 20, "pages", false)
+Here's your cost overview with top-line spending, request volume, agent count, and a breakdown table — let me know if you'd like to filter by time range or dive deeper into any agent!

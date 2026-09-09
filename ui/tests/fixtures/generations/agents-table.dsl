@@ -1,6 +1,6 @@
 Sure — building that now.
-root = AppStack([heading, agentTable], "md")
-heading = AppText("Cost by agent", "title")
-agentData = Query("fetchTokenopsDashboard", [{range: "30d", view: "agent"}], [], "data.agents")
-agentTable = AppTable(agentData, 50, "pages", false)
-Here's a table showing your agents ranked by cost over the last 30 days — let me know if you'd like a different time window or additional breakdowns!
+root = AppStack([heading, table], "md")
+heading = AppCard(null, "Agent costs", null, null, "Top agents by total cost", null, null, null, null, null, null, null, null, false)
+agentRows = Query("fetchTokenopsDashboard", [], [], "data.agents")
+table = AppTable(agentRows, 20, "pages", false)
+Here's a table of agents ranked by cost with all their usage metrics — let me know if you'd like to filter, sort by a specific field, or add a chart breakdown!

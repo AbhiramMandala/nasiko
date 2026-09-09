@@ -133,8 +133,7 @@ test('a $state declaration is a statement, keeping its $ as the name', () => {
 });
 
 test('prose around the DSL is captured, not dropped', () => {
-  // agent.yaml's two-sentence wrapper rule requires exactly this shape. A
-  // splitter that only
+  // agent.yaml rule 12 requires exactly this shape. A splitter that only
   // returns statements loses both sentences the assistant wrote.
   const { statements, prose } = parseBuffer(
     'Sure — building that now.\nroot = AppStack([kpi], "md")\nHere is your dashboard!',

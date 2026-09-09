@@ -11,8 +11,7 @@
  * lines in a page:
  *
  *   **Prose is output, not noise.** The generator is told to wrap its DSL in
- *   two plain sentences (agent.yaml's two-sentence wrapper rule). Those lines
- *   are the assistant
+ *   two plain sentences (agent.yaml rule 13). Those lines are the assistant
  *   talking and belong in the chat log. They also arrive character by character
  *   like everything else, so a line is only emitted once it is no longer the
  *   tail of the buffer — otherwise the user watches "Sure — buil" appear as a
@@ -35,7 +34,6 @@ import { router } from '../core/router.js';
 import { parseBuffer } from './parser.js';
 import { materialize, buildComponentIndex } from './materialize.js';
 import { render } from './render.js';
-import { captureFocus, restoreFocus } from './focus.js';
 import { createStore } from './store.js';
 import { pruneUnreachable } from './gc.js';
 import { createQueryManager } from './queries.js';
@@ -123,27 +121,8 @@ export function createSurfaceSession(options) {
     onTurn,
     fetchImpl = globalThis.fetch?.bind(globalThis),
     schedule = (fn) => (globalThis.requestAnimationFrame ?? ((f) => setTimeout(f, 0)))(fn),
-    // Resolved here rather than left undefined for render.js to fall back on.
-    // The fallback made this field look optional while `activeElement` needs a
-    // real one: captureFocus would have taken undefined and returned null on
-    // every paint, so the caret fix would have been dead in production and
-    // green in every test that injects a recorder.
-    doc = globalThis.document,
+    doc,
   } = options;
-
-  // Checked here rather than left to the first property read, because the two
-  // failures look nothing alike from the outside. Omitted, `buildComponentIndex`
-  // threw `Cannot read properties of undefined (reading 'components')` from
-  // inside the constructor — a host that wrapped its send in a try/catch saw
-  // only a failed turn and told the user Weave was unreachable, which sent the
-  // debugging at a running server instead of at the missing argument.
-  if (!catalog || typeof catalog !== 'object' || !catalog.components) {
-    throw new TypeError(
-      'createSurfaceSession requires a `catalog` — load /common/surface/dsl-catalog.json '
-      + '(common/surface/catalog-load.js#loadCatalog) and pass it. Without it no turn can '
-      + 'be built, and the failure surfaces as an unreachable generator.',
-    );
-  }
 
   const index = buildComponentIndex(catalog);
 
@@ -258,10 +237,6 @@ export function createSurfaceSession(options) {
     const out = materialize(statements, index, {
       store,
       queryResults: queries.results,
-      // Which statements are currently a failed fetch rather than an empty
-      // result — the two are indistinguishable by value, since a failure falls
-      // back to the declared default.
-      failedQueries: queries.failed,
       mutationResults: queries.mutationResults,
       // Orphan reporting waits for the last pass. Mid-stream a statement is
       // routinely unreferenced for a chunk or two, until the parent that
@@ -289,14 +264,6 @@ export function createSurfaceSession(options) {
     const out = walk();
     const diagnostics = [...out.diagnostics];
 
-    // Every paint replaces the whole tree, including whatever the user is
-    // typing into — and a `$state` write is itself a paint, so a filter box
-    // wired to @Set($q, $event) destroys itself on its own keystroke. Captured
-    // here rather than inside render.js: that module is a pure tree-to-DOM
-    // function, testable without a document, and `activeElement` is not its
-    // business. See focus.js for why the restore refuses rather than guesses.
-    const focused = captureFocus(container, doc);
-
     render(out.root, container, catalog, {
       doc,
       onAction: (action, el, domEvent) => {
@@ -311,8 +278,6 @@ export function createSurfaceSession(options) {
       routes,
       onDiagnostic: (d) => diagnostics.push(d),
     });
-
-    restoreFocus(container, focused);
 
     // Once per settled pass, and only when the set changed — the same
     // diagnostics on every chunk is noise nobody reads.
@@ -333,32 +298,7 @@ export function createSurfaceSession(options) {
    * @returns {Promise<{status: string, surface: string, catalogVersion: string|null}>}
    */
   async function send(prompt, opts = {}) {
-    // Seeded with the previous turn's pruned surface, not emptied. agent.yaml
-    // rule 8 tells the generator that on a revision turn it must ONLY EMIT
-    // STATEMENTS THAT ARE NEW OR ACTUALLY CHANGING — and materialize.js's own
-    // symbol table already implements "a later statement with the same name
-    // replaces the earlier one" as, in its own words, "the whole revision
-    // model". But that model only replaces what it is actually handed: an
-    // empty buffer means a delta-only turn's parsed statements ARE the whole
-    // symbol table, so `root` itself (never re-emitted, because it did not
-    // change) is simply absent and the entire surface disappears. Seeding
-    // with `currentSurface` here — pure DSL; gc.js's pruning never keeps
-    // prose — is what makes both halves true at once: the model only sends
-    // the diff, and the screen keeps showing everything else, because the
-    // new statements naturally override the seeded ones by name.
-    // No trailing newline from pruneUnreachable's own join, so a newline is
-    // added here — without it the first incoming chunk (usually the prose
-    // sentence) would concatenate directly onto the seed's last DSL line with
-    // nothing separating them, corrupting the parser's line-based statement
-    // boundary.
-    //
-    // Captured once as `turnSeed`, not recomputed inline at every reset point:
-    // a mid-turn restart (the `sawSurface` branch in handleFrame, below) must
-    // discard back to this SAME seed, not to '' — otherwise a restart mid a
-    // delta-only revision turn would drop the very thing this fix exists to
-    // keep, silently reintroducing the blank-screen bug in that one path.
-    const turnSeed = currentSurface ? `${pruneUnreachable(currentSurface, store)}\n` : '';
-    buffer = turnSeed;
+    buffer = '';
     proseEmitted = 0;
     lastDiagnosticsKey = '';
     ended = false;
@@ -432,59 +372,9 @@ export function createSurfaceSession(options) {
       });
 
       if (!res.ok) {
-        // Say which status, and what the body said. The proxy answers a JSON
-        // `{error}` that names the actual problem — "weave generation is not
-        // configured on this deployment" for a missing token, "the generation
-        // service is unreachable" for a dead upstream. Reporting a bare
-        // `http_error` threw that away and left the status pill as the only
-        // evidence, which is a symptom with the cause already in hand.
-        //
-        // Bounded and best-effort: an error body is small, but this must not
-        // hang or throw on a server that sends something else.
-        let detail = '';
-        try {
-          const text = (await res.text()).slice(0, 300).trim();
-          if (text) {
-            try { detail = JSON.parse(text).error ?? text; } catch { detail = text; }
-          }
-        } catch { /* a body we cannot read is not worse than no body */ }
-        emitDiagnostics([{
-          source: 'stream',
-          code: 'http_error',
-          message: `${url} answered ${res.status}${detail ? ` — ${detail}` : ''}`,
-        }]);
         onStatus?.({ phase: 'failed', detail: `HTTP ${res.status}` });
         telemetry.end({ status: 'http_error', rendered: false });
         return { status: 'http_error', surface: currentSurface, catalogVersion: null };
-      }
-
-      // A 200 that is not an event stream is not a stream that dropped — it is
-      // something else answering. The shape that cost an evening: a control
-      // plane with no `/api/weave/surface` route falls the request through to
-      // the SPA fallback, which serves index.html with a 200. Read as a stream,
-      // that is indistinguishable from a dead connection — no frames, no
-      // terminal frame — so the resume loop below spends two more requests
-      // proving it again and then reports "the stream dropped", which sends you
-      // looking at the network instead of at the router.
-      //
-      // The answer was in the response headers the whole time.
-      const contentType = res.headers?.get?.('content-type') ?? '';
-      if (!contentType.includes('text/event-stream')) {
-        emitDiagnostics([{
-          source: 'stream',
-          code: 'not_an_event_stream',
-          message: `${url} answered ${res.status} with `
-            + `${contentType || 'no content-type'} — that is not the generator. `
-            + 'A control plane without the /api/weave/surface route serves the '
-            + 'page shell here instead.',
-        }]);
-        onStatus?.({ phase: 'failed', detail: 'not an event stream' });
-        telemetry.end({ status: 'not_an_event_stream', rendered: false });
-        return {
-          status: 'not_an_event_stream',
-          surface: currentSurface,
-          catalogVersion: null,
-        };
       }
 
       onStatus?.({ phase: attempt ? 'resuming' : 'streaming' });
@@ -544,12 +434,9 @@ export function createSurfaceSession(options) {
           // A second `surface` frame means the server started the generation
           // over rather than replaying from Last-Event-ID. Whatever is in the
           // buffer belongs to the abandoned attempt, and appending to it would
-          // splice two different dashboards together. Discarded back to
-          // `turnSeed`, not '' — this turn may itself be a revision turn, and
-          // '' would drop the seeded prior surface a restart has no reason to
-          // touch.
+          // splice two different dashboards together.
           if (sawSurface) {
-            buffer = turnSeed;
+            buffer = '';
             proseEmitted = 0;
             emitDiagnostics([{
               source: 'stream',
@@ -630,54 +517,11 @@ export function createSurfaceSession(options) {
     get lastResult() { return lastOut; },
     /** Subscribe to the per-turn telemetry record. */
     onTurn: (fn) => telemetry.onTurn(fn),
-    /**
-     * Render a finished DSL string, with no network call.
-     *
-     * Reopening a saved view is not a generation: the DSL already exists and
-     * asking the model to produce it again would be slower, cost tokens and
-     * return something different. But `send()` was the only way in — every
-     * other entry point is wired to a live SSE turn — so a stored surface had
-     * nowhere to go. This is that entry point.
-     *
-     * Deliberately the same `draw()` the stream uses, not a parallel path.
-     * Queries fire, Actions bind, `$state` seeds, focus is preserved and every
-     * diagnostic reports exactly as it does live. A second renderer that
-     * "just draws it" would drift from the real one, and the drift would show
-     * up as a saved dashboard behaving subtly differently from the one the
-     * user watched being generated — the hardest kind of bug to be told about.
-     *
-     * `catalogVersion` is checked the same way a streamed one is. A view saved
-     * six weeks ago against an older catalog is the case that check exists
-     * for: positional arguments may have been rebound underneath it, and the
-     * caller gets `catalog_version_mismatch` rather than a plausible-looking
-     * dashboard whose columns have quietly shifted.
-     *
-     * @param {string} dsl the stored surface text, exactly as it was saved
-     * @param {{catalogVersion?: string|null}} [opts]
-     * @returns {{root: object|null, diagnostics: object[], unresolved: string[]}}
-     */
-    show(dsl, { catalogVersion = null } = {}) {
-      this.reset();
-      buffer = String(dsl ?? '');
-      // Nothing more is coming, so `complete` diagnostics — orphans, the root
-      // check — run on the first and only pass rather than waiting for an end
-      // frame that will never arrive.
-      ended = true;
-      reportCatalogVersion(catalogVersion);
-      const out = draw();
-      currentSurface = buffer;
-      return out;
-    },
-
     reset() {
       buffer = '';
       currentSurface = '';
       proseEmitted = 0;
       lastDiagnosticsKey = '';
-      // Turn state like the three above. Left set, a reset after show() would
-      // leave the next paint believing a surface it has not seen is finished.
-      // send() happens to clear it too; that is its own defence, not this one's.
-      ended = false;
       lastOut = null;
       liveDiagnostics.length = 0;
       queries.reset();

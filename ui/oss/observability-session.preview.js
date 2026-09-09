@@ -3,6 +3,7 @@
 
 const SESSION_ID = "ses_18a5801d3353463ca39ebc216887f385";
 const TRACE_ID = "8a880df26caf4c12a0e2d5f898f49420";
+const ZERO_TRACE_ID = "00000000000000000000000000000000";
 
 // Re-load the page with ?session_id=… when the harness opened it bare.
 const withSession = async (page) => {
@@ -123,11 +124,13 @@ export default {
         session: {
           id: btoa(SESSION_ID),
           session_id: SESSION_ID,
-          num_traces: 1,
+          agent_name: "admin-claude-code",
+          num_traces: 2,
           token_usage: { total: 6705 },
           cost_summary: { total: { cost: 0.001 }, prompt: { cost: 0.0007 }, completion: { cost: 0.0003 } },
           latency_p50: 15620,
           latency_p99: 15620,
+          metrics_complete: true,
           traces: [{
             id: btoa(TRACE_ID),
             trace_id: TRACE_ID,
@@ -144,7 +147,18 @@ export default {
               project: { id: "orchestrator" },
               input: { value: "Hello, what can you do?", mime_type: "text/plain" },
               output: { value: "Hello! I'm an orchestrator...", mime_type: "text/plain" },
-              trace: { id: btoa(TRACE_ID), cost_summary: { total: { cost: 0.001 } } },
+              trace: { id: btoa(TRACE_ID), cost_summary: { total: { cost: 0.0004 } } },
+            },
+          }, {
+            id: btoa(ZERO_TRACE_ID),
+            trace_id: ZERO_TRACE_ID,
+            cursor: "c2",
+            root_span: {
+              id: btoa("span-zero"),
+              span_id: "span-zero",
+              cumulative_token_count_total: 0,
+              latency_ms: 0,
+              trace: { id: btoa(ZERO_TRACE_ID), cost_summary: { total: { cost: 0 } } },
             },
           }],
           pagination: { end_cursor: null, has_next_page: false },
@@ -171,11 +185,16 @@ export default {
     [{ method: "GET", path: /^\/api\/observability\/span\/[^/]+\/span-cc1$/ }, spanDetail("span-cc1", "ChatCompletion")],
     [{ method: "GET", path: /^\/api\/observability\/span\/[^/]+\/span-cc2$/ }, spanDetail("span-cc2", "ChatCompletion")],
     [{ method: "GET", path: /^\/api\/observability\/span\/[^/]+\/span-cc3$/ }, spanDetail("span-cc3", "ChatCompletion")],
-    [{ method: "GET", path: /^\/api\/chat\/sessions\/ses_/ }, {
+    [{ method: "GET", path: /^\/api\/chat\/sessions\/ses_.*\/messages/ }, {
       data: [
         { id: "m1", session_id: SESSION_ID, role: "user", content: "Hello, what can you do?", has_file_parts: false, timestamp: new Date(Date.now() - 40 * 60 * 1000).toISOString() },
-        { id: "m2", session_id: SESSION_ID, role: "assistant", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents. Here's what I can do:", has_file_parts: false, timestamp: new Date(Date.now() - 39 * 60 * 1000).toISOString() },
+        { id: "m2", session_id: SESSION_ID, role: "assistant", content: "Hello! I'm an orchestrator that can help you with a variety of tasks by delegating to specialized agents. Here's what I can do:", trace_id: TRACE_ID, metadata: { coding_agent: { capture_policy: "content", tool_calls: [{ id: "tool-1", name: "list_agents", kind: "tool", status: "succeeded", duration_ms: 24 }] } }, has_file_parts: false, timestamp: new Date(Date.now() - 39 * 60 * 1000).toISOString() },
+        { id: "m3", session_id: SESSION_ID, role: "user", content: "Synthetic no-op turn", has_file_parts: false, timestamp: new Date(Date.now() - 38 * 60 * 1000).toISOString() },
+        { id: "m4", session_id: SESSION_ID, role: "assistant", content: "No model call was required for this turn.", trace_id: ZERO_TRACE_ID, has_file_parts: false, timestamp: new Date(Date.now() - 38 * 60 * 1000).toISOString() },
       ],
+      has_more: false,
+      next_cursor: null,
+      prev_cursor: "m1",
     }],
   ],
   scenarios: {

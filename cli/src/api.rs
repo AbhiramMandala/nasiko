@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use nasiko_types::{CodingAgentEventBatchRequest, CodingAgentEventBatchResponse};
 use nasiko_utils::display::opt_dash;
 use serde::{Deserialize, Serialize};
 use tabled::Tabled;
@@ -86,17 +87,28 @@ pub struct Client {
 impl Client {
     pub fn from_active_cluster() -> Result<Self> {
         let (_, entry) = config::active_cluster()?;
+        Ok(Self::from_cluster_entry(&entry))
+    }
+
+    pub(crate) fn from_cluster_entry(entry: &config::ClusterEntry) -> Self {
+        Self::from_cluster_entry_with_timeout(entry, None)
+    }
+
+    pub(crate) fn from_cluster_entry_with_timeout(
+        entry: &config::ClusterEntry,
+        timeout: Option<std::time::Duration>,
+    ) -> Self {
         let agent = Agent::new_with_config(
             ureq::config::Config::builder()
-                .timeout_global(None)
+                .timeout_global(timeout)
                 .http_status_as_error(false)
                 .build(),
         );
-        Ok(Self {
+        Self {
             agent,
             base_url: entry.url.clone(),
-            token: entry.token,
-        })
+            token: entry.token.clone(),
+        }
     }
 
     /// Build a client against an arbitrary base URL (mock server in tests),
@@ -239,6 +251,22 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
+    /// Authenticated JSON POST without terminal status output. Credential helpers
+    /// must write only the credential itself to stdout.
+    pub(crate) fn post_json_quiet<T: for<'de> Deserialize<'de>, B: Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let url = self.api_url(path);
+        let mut resp = self
+            .auth_post(&url)
+            .send_json(body)
+            .context("cannot reach control plane")?;
+        check_status(&mut resp, &url)?;
+        Ok(resp.body_mut().read_json()?)
+    }
+
     pub fn put_json<T: for<'de> Deserialize<'de>, B: Serialize>(
         &self,
         path: &str,
@@ -291,6 +319,44 @@ impl Client {
             .context("cannot reach control plane")?;
         check_status(&mut resp, &url)?;
         Ok(())
+    }
+
+    /// POST a JSON body, treating 409 Conflict as success.
+    ///
+    /// Returns `true` when the resource was created and `false` when it already
+    /// existed, so callers that only need the resource to *exist* can be run
+    /// repeatedly without special-casing an error string.
+    pub fn post_json_allow_conflict<B: Serialize>(&self, path: &str, body: &B) -> Result<bool> {
+        let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
+        let url = self.api_url(path);
+        let mut resp = self
+            .auth_post(&url)
+            .send_json(body)
+            .context("cannot reach control plane")?;
+        if resp.status().as_u16() == 409 {
+            return Ok(false);
+        }
+        check_status(&mut resp, &url)?;
+        Ok(true)
+    }
+
+    pub(crate) fn post_coding_agent_batch(
+        &self,
+        body: &CodingAgentEventBatchRequest,
+    ) -> Result<CodingAgentEventBatchResponse> {
+        let path = "/telemetry/coding-agent/events/batch";
+        let url = self.api_url(path);
+        let mut resp = self
+            .auth_post(&url)
+            .send_json(body)
+            .context("cannot reach control plane")?;
+        check_status(&mut resp, &url)?;
+        let envelope: serde_json::Value = resp
+            .body_mut()
+            .read_json()
+            .with_context(|| format!("invalid coding-agent batch response from {url}"))?;
+        unwrap_data(envelope)
+            .with_context(|| format!("invalid coding-agent batch response from {url}"))
     }
 
     pub fn delete(&self, path: &str) -> Result<()> {
