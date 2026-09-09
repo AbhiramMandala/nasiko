@@ -148,14 +148,15 @@
 
   /* The empty state is the plot's own box — same ground, same corners, the
      height the plot would have had — with the message centred in it. The row
-     forms have no fixed height and fall back to a padded line. */
-  /* Reads as a reserved region, not as a stray line of text.
-     It used to be `background: var(--bg-base)` with no border — the same fill
-     as the surface it sits on, so the box the comment in the JS describes was
-     invisible and "No data" floated in whitespace, while app-table's empty row
-     next to it sat in a proper frame. One design system, and the two disagreed.
-     Dashed rather than solid: a solid border reads as a component that failed
-     to draw, a dashed one reads as space waiting to be filled. */
+     forms have no fixed height and fall back to a padded line.
+     No border: this box sits inside a page-level white chart card
+     (tokenops-page.css's `.chart-card`, and any other consumer that wraps
+     app-chart the same way) that is meant to read as ONE white surface top
+     to bottom, in every state — loading, empty, or plotted. A dashed or
+     solid frame here would draw a second border inside that card instead of
+     letting the message sit flush in it, and --bg-subtle (the earlier fill)
+     was the same tone as the beige panel around the card, putting a visible
+     seam right back into it. */
   .chart-empty {
     display: flex;
     flex: 1 1 auto;
@@ -163,8 +164,7 @@
     justify-content: center;
     min-height: 120px;
     padding: var(--s-24) var(--s-16);
-    background: var(--bg-subtle);
-    border: 1px dashed var(--border-primary);
+    background: var(--bg-base);
     border-radius: var(--r-8);
     text-align: center;
     text-wrap: balance;
@@ -174,11 +174,32 @@
     & p { margin: 0; max-width: 44ch; }
   }
 
+  /* Loading placeholder for the canvas forms (line/bar/donut): a few thin
+     bars on --bg-base, the same white ground the real canvas paints itself
+     onto (`appChartPlotBg`'s `opts.color`) — not a grey slab, and not
+     `.chart-empty`'s --bg-subtle/dashed-border treatment either: that box is
+     static and needs a drawn frame to read as "waiting"; this one already
+     reads as active because its bars are moving. See #barsSkeletonHtml() in
+     app-chart.js. The container itself no longer animates; each
+     `.chart-skel-bar` does, on its own staggered delay. */
   .chart-skeleton {
     flex: 1 1 auto;
     min-height: 200px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-evenly;
+    gap: var(--s-12);
+    padding: var(--s-24) var(--s-16);
     border-radius: var(--r-8);
-    background: var(--bg-track);
+    background: var(--bg-base);
+  }
+
+  .chart-skel-bar {
+    flex: 0 0 auto;
+    width: 10px;
+    max-width: 6%;
+    border-radius: var(--r-full);
+    background: var(--color-border);
     animation: skel-pulse 1.5s ease-in-out infinite;
   }
 
@@ -193,8 +214,30 @@
     border-radius: 0 0 var(--r-8) var(--r-8);
   }
 
+  /* Loading placeholder for the row forms (hbar/progress): a few rows in the
+     real `.chart-rows` grid — see #rowsSkeletonHtml() in app-chart.js. */
+  .chart-row-skel-label,
+  .chart-row-skel-value {
+    display: inline-block;
+    height: 0.8em;
+    border-radius: var(--r-4);
+    background: var(--color-border);
+    animation: skel-pulse 1.5s ease-in-out infinite;
+  }
+  .chart-row-skel-label { width: 60%; }
+  .chart-row-skel-value { width: 3em; justify-self: end; }
+
+  .chart-row-fill.is-skeleton {
+    width: 100%;
+    background: var(--color-border);
+    animation: skel-pulse 1.5s ease-in-out infinite;
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .chart-skeleton { animation: none; opacity: 0.6; }
+    .chart-skel-bar,
+    .chart-row-skel-label,
+    .chart-row-skel-value,
+    .chart-row-fill.is-skeleton { animation: none; opacity: 0.6; }
   }
 
   /* ── Row forms: hbar and progress ────────────────────────────────────────
