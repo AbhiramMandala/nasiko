@@ -964,8 +964,7 @@ impl SseReplyTap {
         // Same requirement `Drop`'s own pause-handling branch enforces: without both a session
         // to correlate to and a real caller identity, there's nothing to persist a pause
         // against — logged the same way, so the two paths read as one convention, not two.
-        let (Some(session_id), Some(owner_user_id)) =
-            (self.session_id.clone(), self.owner_user_id)
+        let (Some(session_id), Some(owner_user_id)) = (self.session_id.clone(), self.owner_user_id)
         else {
             tracing::error!(flow_id = %self.flow_id, "agent proxy: HITL pause detected but no session/caller user id to correlate — pause not persisted");
             return None;
