@@ -21,7 +21,6 @@
 
 import '/common/services/data-functions.js';
 import { call, registerAll, resolveOptional } from '/common/core/data-sources.js';
-import { ensureViews, hasSavedViews } from '/common/state/weave-views.js';
 
 // rail: true → shown as a rail module icon; everything else is reachable
 // through the module tree navs and the ⌘F nav search.
@@ -38,7 +37,11 @@ const BASE_ITEMS = () => [
   { title: "Workflows", url: "/workflows", icon: "workflow", module: "orchestrator" },
   { title: "Executions", url: "/executions", icon: "play", module: "orchestrator" },
   { title: "Agents", url: "/agents", icon: "bot", rail: true, module: "agents" },
-  { title: "Sessions", url: "/sessions", icon: "activity", rail: true, module: "observability" },
+  // Two rail items over chat sessions, deliberately: Sessions is the transcript
+  // reader (module nav lists every agent's chats, /chats opens one), Observability
+  // is the analytics view over the same rows (traces, tokens, latency).
+  { title: "Sessions", url: "/chats", icon: "history", rail: true, module: "sessions" },
+  { title: "Observability", url: "/sessions", icon: "activity", rail: true, module: "observability" },
   { title: "MCP gateway", url: "/mcp", icon: "server", rail: true, module: "mcp" },
   { title: "LLM router", url: "/llm-router", icon: "route", rail: true },
   { title: "TokenOps", url: "/tokenops", icon: "banknote", rail: true },
@@ -54,12 +57,6 @@ const BASE_ITEMS = () => [
   { title: "Secrets", url: "/secrets", icon: "lock", module: "settings" },
   { title: "Settings", url: "/settings", icon: "settings", rail: true, module: "settings" },
 ];
-
-// Rail entry for the views Weave generated and the user chose to keep. Absent
-// until the first save, because a rail icon leading to an empty shelf is a
-// promise the product has not made yet — <app-header> re-reads the nav on
-// `nav-refresh`, which generated-view-page fires the moment one is saved.
-const CUSTOM_VIEWS_ITEM = { title: "Custom Views", url: "/custom-views", icon: "layers", rail: true };
 
 // In-card module tree navs (app-module-nav). Items are either page links
 // ({label, url}) or in-page sections ({label, section} → the page handles
@@ -123,6 +120,9 @@ const MODULE_NAVS = {
       ]},
     ],
   },
+  // Every chat, newest first, under one tree — the group is dynamic, so the
+  // static tree is empty and #fetchModuleNav fills it (see sessionItems).
+  sessions: { title: 'Sessions', icon: 'history', groups: [] },
   settings: {
     title: 'Settings', icon: 'settings',
     groups: [
@@ -143,30 +143,41 @@ const MODULE_NAVS = {
   },
 };
 
-// Orchestrator chats listed under the Session group. `agent_name: null` is the
-// marker for a session the orchestrator routed (a direct agent chat carries the
-// agent's name and belongs to that agent, not here). The API has no filter for
-// it, so over-fetch one page and filter client-side.
-const ORCH_SESSION_ROWS = 15;
-const orchestratorSessionItems = async () => {
+// Chat rows for a module nav's session group.
+//
+// `orchestratorOnly` keeps the Orchestrator tree to sessions the orchestrator
+// routed — `agent_name: null` is that marker, a direct agent chat carries the
+// agent's name and belongs to that agent. The Sessions module lists every
+// agent's chats instead. The API has no filter for either, so over-fetch one
+// page and filter client-side.
+const SESSION_ROWS = 15;
+const sessionItems = async ({ orchestratorOnly = false, path = '/chat' } = {}) => {
   try {
     const res = await call('fetchSessions', '', 50);
     return (res?.data || [])
-      .filter((s) => !s.agent_name)
-      .slice(0, ORCH_SESSION_ROWS)
-      .map((s) => ({
-        // Present ⇒ app-module-nav renders the row's delete affordance.
-        sessionId: s.session_id,
-        // Titles are auto-generated and often the literal "New chat", which
-        // makes every row look the same — fall back to the last message.
-        // Sliced: a last_message is a whole markdown answer, and the row
-        // ellipsises anyway — no reason to carry KBs of it through the cache.
-        label: ((s.title && s.title !== 'New chat' ? s.title : s.last_message) || 'New chat')
-          .replace(/\s+/g, ' ').trim().slice(0, 60),
-        // Same target as an Execution history row: chat-page loads the
-        // transcript and posts to /orchestrator/a2a when there's no agent_id.
-        url: `/chat?session_id=${encodeURIComponent(s.session_id)}&agent_name=Orchestrator`,
-      }));
+      .filter((s) => !orchestratorOnly || !s.agent_name)
+      .slice(0, SESSION_ROWS)
+      .map((s) => {
+        const params = new URLSearchParams({ session_id: s.session_id });
+        // Absent, not empty: app-module-nav's active-row match compares every
+        // param in the row's url against the location, and chat-page reads a
+        // missing agent_id as "the orchestrator routed this one".
+        if (s.agent_id) params.set('agent_id', s.agent_id);
+        params.set('agent_name', s.agent_name || 'Orchestrator');
+        return {
+          // Present ⇒ app-module-nav renders the row's delete affordance.
+          sessionId: s.session_id,
+          // Titles are auto-generated and often the literal "New chat", which
+          // makes every row look the same — fall back to the last message.
+          // Sliced: a last_message is a whole markdown answer, and the row
+          // ellipsises anyway — no reason to carry KBs of it through the cache.
+          label: ((s.title && s.title !== 'New chat' ? s.title : s.last_message) || 'New chat')
+            .replace(/\s+/g, ' ').trim().slice(0, 60),
+          // Same target as an Execution history row: chat-page loads the
+          // transcript and posts to /orchestrator/a2a when there's no agent_id.
+          url: `${path}?${params}`,
+        };
+      });
   } catch {
     return []; // a flaky request must not blank the sidebar
   }
@@ -212,13 +223,6 @@ const extensionContext = async () => {
 
 const fetchNavigation = async () => {
   const base = BASE_ITEMS();
-  // The saved list lives on the server, so the rail cannot know whether the
-  // Custom views entry belongs until it has been fetched. `ensureViews` does it
-  // once per load and never rejects; on the OSS build it answers 404, the list
-  // stays empty and the entry simply never appears — which is correct, because
-  // the routes it leads to are not there either.
-  await ensureViews();
-  if (hasSavedViews()) base.push(CUSTOM_VIEWS_ITEM);
   const ext = await extension();
   if (!ext.items) return base;
   try {
@@ -237,11 +241,22 @@ const fetchModuleNav = async (module) => {
   // is filterable, sortable and complete. Truncated duplicates of the primary
   // content are noise, and it cost an extra API call per page load.
   let base = nav ? { ...nav, groups: [...nav.groups] } : null;
-  if (module === 'orchestrator' && base) {
-    const sessions = await orchestratorSessionItems();
+  // The two trees that list chats: Orchestrator shows the ones it routed under
+  // its own entry point, Sessions shows every agent's.
+  if (base && (module === 'orchestrator' || module === 'sessions')) {
+    const orchestratorOnly = module === 'orchestrator';
+    const sessions = await sessionItems({
+      orchestratorOnly,
+      path: orchestratorOnly ? '/chat' : '/chats',
+    });
     // Last, below Workflows; omitted entirely when empty, since a group with
     // no items and no url renders as a stray heading.
-    if (sessions.length) base = { ...base, groups: [...base.groups, { label: 'Session', items: sessions }] };
+    if (sessions.length) {
+      base = {
+        ...base,
+        groups: [...base.groups, { label: orchestratorOnly ? 'Session' : 'All sessions', items: sessions }],
+      };
+    }
   }
   const ext = await extension();
   if (!ext.moduleNav) return base;
