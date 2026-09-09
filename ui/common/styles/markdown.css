@@ -137,7 +137,12 @@
     font-family: monospace;
   }
 
-  button.md-code-copy {
+  .md-code-actions {
+    display: flex;
+    gap: var(--s-4);
+  }
+
+  button:is(.md-code-copy, .md-code-download) {
     display: grid;
     place-items: center;
     width: var(--control-h-sm);
@@ -164,6 +169,8 @@
     font-size: var(--font-size-xs);
     line-height: 1.6;
     font-family: monospace;
+    border:none;
+    border-radius: 0;
   }
 
   .md-code-block code {

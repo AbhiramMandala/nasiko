@@ -194,7 +194,10 @@
   }
   a.chat-msg-file {
     display: inline-flex;
-    align-items: center;
+    /* The name and the size are two different font sizes, so centring them
+       leaves the smaller one riding ~1px high. Align their baselines and let
+       the icon centre itself against the row. */
+    align-items: baseline;
     gap: var(--s-8);
     max-width: 100%;
     padding: var(--s-8) var(--s-12);
@@ -210,6 +213,7 @@
   }
   .chat-msg-file svg {
     flex: none;
+    align-self: center;
     color: var(--color-text-muted);
   }
   .chat-msg-file-name {

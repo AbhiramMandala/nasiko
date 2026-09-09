@@ -13,8 +13,9 @@ import { icons } from '/common/utils/icons.js';
  *   container.classList.add('md-body');       // styles: /common/styles/markdown.css
  *   container.innerHTML = renderMarkdown(text);
  *
- * Code blocks emit a header with a copy button; bind a delegated click
- * handler for `.md-code-copy` (see chat-page.js / orchestrator-page.js).
+ * Code blocks emit a header with copy + download buttons. Download is handled
+ * here by a module-level delegate; bind a delegated click handler for
+ * `.md-code-copy` in the page (see chat-page.js / orchestrator-page.js).
  */
 
 function escapeHtml(text) {
@@ -51,7 +52,10 @@ const marked = new Marked({
         `<div class="md-code-block">` +
         `<div class="md-code-header">` +
         `<span class="md-code-lang">${escapeHtml(language) || 'code'}</span>` +
+        `<div class="md-code-actions">` +
+        `<button type="button" class="md-code-download" data-lang="${escapeHtml(language)}" aria-label="Download code">${icons.download('', 14)}</button>` +
         `<button type="button" class="md-code-copy" aria-label="Copy code">${icons.copy('', 14)}</button>` +
+        `</div>` +
         `</div>` +
         `<pre><code>${highlightCode(text, language)}</code></pre>` +
         `</div>`
@@ -61,6 +65,33 @@ const marked = new Marked({
       return `<code class="md-inline-code">${escapeHtml(text)}</code>`;
     },
   },
+});
+
+// Extensions for the languages LLM chat actually emits; anything else is .txt.
+const CODE_EXTENSIONS = {
+  python: 'py', javascript: 'js', jsx: 'jsx', typescript: 'ts', tsx: 'tsx',
+  rust: 'rs', go: 'go', java: 'java', c: 'c', cpp: 'cpp', csharp: 'cs',
+  ruby: 'rb', php: 'php', swift: 'swift', kotlin: 'kt', sql: 'sql',
+  html: 'html', css: 'css', json: 'json', yaml: 'yml', yml: 'yml',
+  toml: 'toml', xml: 'xml', markdown: 'md', md: 'md',
+  bash: 'sh', sh: 'sh', shell: 'sh', dockerfile: 'Dockerfile',
+};
+
+// ponytail: one document-level delegate instead of wiring a handler into every
+// page that renders markdown — downloading needs no page state. Module scope,
+// so it binds once no matter how many pages import this.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('.md-code-download');
+  if (!btn) return;
+  const code = btn.closest('.md-code-block')?.querySelector('code')?.textContent;
+  if (!code) return;
+  const ext = CODE_EXTENSIONS[btn.dataset.lang] || 'txt';
+  const url = URL.createObjectURL(new Blob([code], { type: 'text/plain' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = ext === 'Dockerfile' ? 'Dockerfile' : `snippet.${ext}`;
+  a.click();
+  URL.revokeObjectURL(url);
 });
 
 // LLM output is untrusted: force links to open in a new tab without a
