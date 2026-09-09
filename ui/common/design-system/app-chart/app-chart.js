@@ -455,216 +455,6 @@ const averageLine = {
   },
 };
 
-/**
- * Paint the whole canvas on --bg-base, whatever surface the panel sits on.
- * The full canvas, not just the plot rectangle: the design's white ground
- * runs under the tick labels and axis captions too, and a base-coloured plot
- * inside surface-coloured margins read as a patch.
- */
-const plotBackground = {
-  id: 'appChartPlotBg',
-  beforeDraw(chart, _args, opts) {
-    const { ctx } = chart;
-    ctx.save();
-    ctx.fillStyle = opts.color;
-    ctx.beginPath();
-    // 8px corners (the --r-8 step): the ground is a surface card, and it takes
-    // the same radius every other card in the system does.
-    ctx.roundRect(0, 0, chart.width, chart.height, 8);
-    ctx.fill();
-    ctx.restore();
-  },
-};
-
-/** `anomalies` entries may be bare indices or `{ index, note }`. One shape out. */
-function normAnomalies(ds) {
-  if (!Array.isArray(ds.anomalies)) return [];
-  return ds.anomalies
-    .map((a) => (typeof a === 'number' ? { index: a } : a))
-    .filter((a) => a && Number.isInteger(a.index));
-}
-
-/** Pixel positions of every anomaly-flagged point on visible datasets. */
-function anomalyPoints(chart) {
-  const out = [];
-  chart.data.datasets.forEach((ds, di) => {
-    const meta = chart.getDatasetMeta(di);
-    if (meta.hidden) return;
-    for (const { index } of normAnomalies(ds)) {
-      const el = meta.data?.[index];
-      if (el) out.push({ x: el.x, y: el.y });
-    }
-  });
-  return out;
-}
-
-/**
- * Anomaly overlays: an 8px band *behind* the marks running from the flagged
- * point DOWN to the baseline — never above it — fading as it falls, and a
- * status-red dot with a 2px surface ring on the point itself. Band behind,
- * dot in front: the band is context, the dot is the datum. Driven by
- * `anomalies: [index | { index, note }]` on a dataset; the same flags are
- * spelled out as "(anomaly)" in the sr-only table, so a screen reader gets
- * the signal the colour carries, and a note travels into the tooltip.
- */
-const anomalyOverlay = {
-  id: 'appChartAnomalies',
-  beforeDatasetsDraw(chart, _args, opts) {
-    const { ctx, chartArea } = chart;
-    for (const { x, y } of anomalyPoints(chart)) {
-      ctx.save();
-      // Gradient in alpha, not in hue: strongest at the datum, gone at the
-      // baseline, so the band points at its dot instead of striping the plot.
-      const g = ctx.createLinearGradient(0, y, 0, chartArea.bottom);
-      g.addColorStop(0, colorWithAlpha(opts.color, 0.28));
-      g.addColorStop(1, colorWithAlpha(opts.color, 0.03));
-      ctx.fillStyle = g;
-      ctx.fillRect(x - 4, y, 8, chartArea.bottom - y);
-      ctx.restore();
-    }
-  },
-  afterDatasetsDraw(chart, _args, opts) {
-    const { ctx } = chart;
-    for (const { x, y } of anomalyPoints(chart)) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(x, y, 4, 0, Math.PI * 2);
-      ctx.fillStyle = opts.color;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = opts.surface;
-      ctx.stroke();
-      ctx.restore();
-    }
-  },
-};
-
-/**
- * The smallest "nice" tick step ≥ raw. The candidate list is wider than the
- * classic 1/2/5 so a series whose max falls just past a step (8.1M across 3
- * rows → 2.7M raw) lands on 3M rather than leaping to 5M and leaving the top
- * half of its axis empty.
- */
-function niceStep(raw) {
-  if (!Number.isFinite(raw) || raw <= 0) return 1;
-  const mag = 10 ** Math.floor(Math.log10(raw));
-  for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 10]) {
-    if (m * mag >= raw) return m * mag;
-  }
-  return 10 * mag;
-}
-
-/** `rgb(a, b, c)` (what the palette probe returns) with an alpha applied. */
-function colorWithAlpha(rgb, alpha) {
-  const m = rgb.match(/rgba?\(([^)]+)\)/);
-  if (!m) return rgb;
-  const [r, g, b] = m[1].split(',').map((v) => parseFloat(v));
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-/**
- * Hover crosshair for the line form: a 1px vertical rule at the active index.
- * The tooltip already says the values; the rule says where on the axis they
- * sit, which matters once the plot is wide and the eye has to travel.
- */
-const hoverCrosshair = {
-  id: 'appChartCrosshair',
-  afterDatasetsDraw(chart, _args, opts) {
-    const active = chart.tooltip?.getActiveElements?.() || [];
-    if (!active.length) return;
-    const { ctx, chartArea } = chart;
-    ctx.save();
-    ctx.strokeStyle = opts.color;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(active[0].element.x, chartArea.top);
-    ctx.lineTo(active[0].element.x, chartArea.bottom);
-    ctx.stroke();
-    ctx.restore();
-  },
-};
-
-/**
- * The segmented form's own renderer. The native bars are made transparent and
- * this draws the pills over their geometry: every segment a fully-rounded
- * capsule, a 2px breathing gap between neighbours, and a floor of one full
- * circle so a tiny "Other" share reads as a dot instead of vanishing (the
- * design's floating dots; the honest number is one hover away).
- *
- * Chart.js's own borderRadius was not this: on stacked bars it squares inner
- * corners however it is configured, and faking gaps with a surface-coloured
- * border paints a visible casing the moment the plot background is not the
- * surface colour. Owning the draw ends both fights.
- *
- * Hover: the active column's pills are overpainted with a translucent ink so
- * they darken in place — contrast, not a box around the column.
- */
-const pillBars = {
-  id: 'appChartPills',
-  afterDatasetsDraw(chart, _args, opts) {
-    const { ctx } = chart;
-    const active = new Set((chart.getActiveElements() || []).map((a) => a.index));
-    chart.data.datasets.forEach((ds, di) => {
-      const meta = chart.getDatasetMeta(di);
-      if (meta.hidden) return;
-      meta.data.forEach((el, i) => {
-        const top = Math.min(el.y, el.base);
-        const bottom = Math.max(el.y, el.base);
-        if (bottom - top <= 0) return;
-        const w = 8;
-        // 1px shaved off each end = the 2px gap between stacked neighbours.
-        const y0 = top + 1;
-        const h = Math.max(bottom - top - 2, w); // floor: a full circle
-        ctx.save();
-        ctx.beginPath();
-        ctx.roundRect(el.x - w / 2, y0, w, h, w / 2);
-        ctx.fillStyle = ds._slot;
-        ctx.fill();
-        if (active.has(i)) {
-          ctx.fillStyle = opts.hoverInk;
-          ctx.fill();
-        }
-        ctx.restore();
-      });
-    });
-  },
-};
-
-/**
- * Dashed mean-of-column-totals rule for the segmented bar form. The mean is
- * over ALL columns, quiet hours included — dropping the zeros would flatter
- * every busy hour by raising the bar it is compared against.
- */
-const averageLine = {
-  id: 'appChartAverage',
-  afterDatasetsDraw(chart, _args, opts) {
-    const { ctx, chartArea, scales } = chart;
-    const labels = chart.data.labels || [];
-    if (!labels.length || !scales.y) return;
-    const totals = labels.map((_, i) =>
-      chart.data.datasets.reduce(
-        (t, ds, di) => (chart.getDatasetMeta(di).hidden ? t : t + (Number(ds.data?.[i]) || 0)), 0));
-    const avg = totals.reduce((a, b) => a + b, 0) / totals.length;
-    const y = scales.y.getPixelForValue(avg);
-    if (y < chartArea.top || y > chartArea.bottom) return;
-    ctx.save();
-    ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = opts.color;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(chartArea.left, y);
-    ctx.lineTo(chartArea.right, y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = opts.color;
-    ctx.font = opts.font;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText('avg', chartArea.left, y - 3);
-    ctx.restore();
-  },
-};
-
 /** @returns {(n: number) => string} */
 function formatter(el, attr = 'format') {
   const kind = el.getAttribute(attr) || 'number';
@@ -756,6 +546,34 @@ export class AppChart extends HTMLElement {
       : this.#rows().length === 0;
   }
 
+  /**
+   * Loading placeholder for the two canvas forms (line/bar/donut). A row of
+   * bars with varied heights — each its own element, each pulsing on its
+   * own timing — reads as "a chart is coming" instead of one flat rectangle
+   * that could be standing in for anything.
+   */
+  #barsSkeletonHtml(box) {
+    const heights = [55, 82, 38, 68, 92, 50, 74];
+    const bar = (h, i) => `<div class="chart-skel-bar" style="height:${h}%;animation-delay:${(i * 0.1).toFixed(1)}s"></div>`;
+    return `<div class="chart-skeleton" ${box}>${heights.map(bar).join('')}</div>`;
+  }
+
+  /**
+   * Loading placeholder for the two row forms (hbar/progress). They are
+   * ranked lists, not plots — a label, a track and a value per row — so the
+   * placeholder is a few rows in the real `.chart-rows` grid instead of a
+   * rectangle shaped like a chart this form never draws.
+   */
+  #rowsSkeletonHtml() {
+    const row = () => `
+      <div class="chart-row">
+        <span class="chart-row-skel-label"></span>
+        <span class="chart-row-track"><span class="chart-row-fill is-skeleton"></span></span>
+        <span class="chart-row-skel-value"></span>
+      </div>`;
+    return `<div class="chart-rows">${Array.from({ length: 4 }, row).join('')}</div>`;
+  }
+
   render() {
     this.#destroyChart();
 
@@ -766,7 +584,9 @@ export class AppChart extends HTMLElement {
 
     if (this.hasAttribute('loading')) {
       this.setAttribute('aria-busy', 'true');
-      this.innerHTML = `<div class="chart-skeleton" ${box}></div>`;
+      this.innerHTML = CANVAS_TYPES.has(this.#type())
+        ? this.#barsSkeletonHtml(box)
+        : this.#rowsSkeletonHtml();
       return;
     }
     this.removeAttribute('aria-busy');

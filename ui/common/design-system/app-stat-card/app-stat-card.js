@@ -25,9 +25,19 @@ export class AppStatCard extends HTMLElement {
   attributeChangedCallback() { if (this.isConnected) this.render(); }
   render() {
     if (this.hasAttribute('loading')) {
-      this.innerHTML = '<div class="stat-card is-loading"></div>';
+      this.setAttribute('aria-busy', 'true');
+      // Label + value + delta as three independent bars, matching the real
+      // card's three lines, instead of the whole card becoming one flat
+      // pulsing rectangle that hides which numbers are still loading.
+      this.innerHTML = `
+        <div class="stat-card is-loading">
+          <div class="skel-line skel-line--label"></div>
+          <div class="skel-line skel-line--value"></div>
+          <div class="skel-line skel-line--delta"></div>
+        </div>`;
       return;
     }
+    this.removeAttribute('aria-busy');
     const label = this.getAttribute('label') || '';
     const value = this.getAttribute('value') || '—';
     const delta = this.getAttribute('delta') || '';

@@ -43,9 +43,12 @@
      good news), not by the tile. Five tinted tiles read as five status badges
      and pulled the eye off the figures, which are the point of the strip. */
   .kpi-chip {
+    height: 52px;
+    width: 52px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
+    justify-content: center;
     align-items: center;
     gap: 2px;
     padding: var(--s-8);

@@ -378,7 +378,22 @@ where
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_page_auth,
-        ));
+        ))
+        // An /api path that reached the UI fallback matched no API route, and
+        // must not be answered with the SPA. Serving index.html here — status
+        // 200, Content-Type text/html — is what made a missing route surface in
+        // the browser as "Server returned a malformed JSON body": a real
+        // failure wearing a label that sends you at your own JSON parsing
+        // instead of at a route that is not there.
+        //
+        // Registered here rather than on the outer router because `nest("/api",
+        // …)` already owns a catch-all at that position and a second wildcard
+        // beside it panics at startup. Nothing else routes inside `ui_pages`,
+        // so there is no conflict. After `.layer()` on purpose: the page-auth
+        // redirect is for document navigations, and bouncing an API call to
+        // login.html would put HTML back in the response we are removing it
+        // from.
+        .route("/api/{*rest}", any(api_not_found));
 
     Router::new()
         .route("/health", get(health))
@@ -409,6 +424,20 @@ where
                 )
             },
         ))
+}
+
+/// The 404 for an unmatched `/api` path, in the envelope every other API error
+/// uses (`{data, status_code, message}`) so the frontend's error handling reads
+/// it the same way as any other failure rather than choking on HTML.
+async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "data": null,
+            "status_code": 404,
+            "message": format!("no API route matches {}", uri.path()),
+        })),
+    )
 }
 
 /// State for [`authenticate_oci_request`] — bundles the two things it needs
