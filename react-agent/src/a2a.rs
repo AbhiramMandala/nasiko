@@ -533,12 +533,21 @@ impl A2aClient {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         let mut body = self.build_message_body(Dialect::JsonRpc, true, message, &ctx, &[]);
+        // On `params.message.metadata`, not `params.metadata` — this method's
+        // only real caller (weave_surface.rs) sets `request_metadata` to carry
+        // `{skill: "generate-ui", ...}`, and the receiving agent's A2A server
+        // reads the skill id off the MESSAGE object it dispatches
+        // (`params.message.metadata.skill`), not off `params` itself.
+        // `build_message_body`'s own `params.metadata` insertion above is a
+        // separate, unrelated convention (e.g. traceparent forwarding for
+        // other callers of this client) and is left as-is; this is additive,
+        // not a replacement.
         if let Some(ref metadata) = self.request_metadata
-            && let Some(params) = body.get_mut("params")
+            && let Some(message_obj) = body.pointer_mut("/params/message")
         {
-            params
+            message_obj
                 .as_object_mut()
-                .map(|p| p.insert("metadata".to_string(), metadata.clone()));
+                .map(|m| m.insert("metadata".to_string(), metadata.clone()));
         }
 
         let mut req = self
@@ -843,6 +852,36 @@ mod tests {
         };
         assert_eq!(v["kind"], "artifact-update");
         assert_eq!(v["append"], true);
+    }
+
+    #[tokio::test]
+    async fn send_message_streaming_raw_puts_metadata_on_the_message_not_params() {
+        // Regression: this metadata used to land on `params.metadata`, a
+        // sibling of `params.message` — but a receiving A2A server (weave2.0's
+        // `_skill_id`, e.g.) reads the skill id off `params.message.metadata`,
+        // the MESSAGE object it actually dispatches. With the old placement,
+        // `skill: "generate-ui"` was silently invisible to the agent, which
+        // fell back to its own default skill and rejected the request with
+        // "unknown skill" — a real, live bug this pins down.
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "params": {"message": {"metadata": {"skill": "generate-ui"}}}
+            })))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"artifact-update\",\"final\":true}}\n\n")
+            .create_async()
+            .await;
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let client = A2aClient::new().with_metadata(serde_json::json!({"skill": "generate-ui"}));
+        client
+            .send_message_streaming_raw(&server.url(), "hi", Some("ctx-1"), tx, &[])
+            .await
+            .unwrap();
+        mock.assert_async().await;
     }
 
     #[tokio::test]
