@@ -99,10 +99,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         oci_storage_bucket: "nasiko-bench-artifacts".into(),
         agent_image_registry: String::new(),
         build_push_token: String::new(),
-        // Empty token: the /api/weave/surface proxy answers 503 rather than
-        // reaching out, which is what a bench with no Weave running wants.
-        weave_base_url: "http://localhost:8801".into(),
-        weave_internal_token: String::new(),
         seed_agents: None,
         // Dummy but non-empty — ee build_ee_app requires Some(), and a
         // non-empty api_key is also what lets Stage 1 (VectorStore) attempt

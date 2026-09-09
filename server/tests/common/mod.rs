@@ -399,10 +399,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         oci_storage_bucket: "nasiko-test-artifacts".into(),
         agent_image_registry: String::new(),
         build_push_token: String::new(),
-        // No Weave in the test topology; an empty token makes
-        // /api/weave/surface answer 503 rather than dial out.
-        weave_base_url: "http://localhost:8801".into(),
-        weave_internal_token: String::new(),
         seed_agents: None,
         openai_api_key: None,
         openai_base_url: None,

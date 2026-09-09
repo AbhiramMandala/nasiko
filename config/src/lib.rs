@@ -34,14 +34,6 @@ pub struct Config {
     /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
     /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
     pub build_push_token: String,
-    /// Base URL of the Weave generation service the control plane proxies
-    /// `POST /api/weave/surface` to. The browser never talks to it directly —
-    /// it holds the internal token, and the token must not leave the server.
-    pub weave_base_url: String,
-    /// Shared secret Weave requires on `x-weave-internal-token`, same pattern
-    /// as `build_push_token`. Empty means generation is not configured, and
-    /// the route answers 503 rather than proxying without it.
-    pub weave_internal_token: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -292,8 +284,6 @@ impl Config {
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
-            weave_base_url: env_or("WEAVE_BASE_URL", "http://localhost:8801"),
-            weave_internal_token: env_or("WEAVE_INTERNAL_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),

@@ -36,7 +36,6 @@ pub mod telemetry;
 pub mod transcribe;
 pub mod usage;
 pub mod users;
-pub mod weave;
 
 use axum::handler::Handler;
 use axum::http::Method;
@@ -285,7 +284,6 @@ where
         .merge(transcribe::router())
         .merge(mcp::router())
         .merge(mcp_upload_routes)
-        .merge(weave::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
