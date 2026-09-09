@@ -202,18 +202,26 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // regression). Mirrors every other dispatch site's flows insert (`agent_proxy.rs`,
     // `a2a_dispatch.rs`, `maf/executor.rs::register_flow`).
     //
-    // `metadata.context_id` carries the STABLE chat-session id (`context_id`, e.g. `ses_...`),
-    // not this resume's own fresh `flow_ctx.flow_id` — matching `agent_proxy.rs`'s convention
-    // (`derive_boundary_signals` reads it as the sticky key). Session-traces is what actually
-    // matters here, though: `nasiko_mcp_gateway::session::resolve_context_id` resolves a
-    // tools/call's session by looking up `session_traces` for the CALLING trace_id, falling back
-    // to the trace_id itself only when no row exists. Every resume mints a brand-new
-    // `flow_ctx.flow_id`, so without this row `resolve_tool_approval_retry`'s once/session-scope
-    // grant lookup keys on a trace_id that's different on every single resume, never matching
-    // the original ask's `context_id` — every resumed retry of a tool the human just approved
-    // gets asked again, forever (confirmed live: approving the same tool_approval repeatedly,
-    // every retry still comes back `ask_required`). Mapping this resume's flow_id to the real
-    // `context_id` here is what lets the retry resolve to the SAME session the original ask used.
+    // `metadata.context_id` carries `row.context_id` (the agent's OWN, private A2A context —
+    // never a `chat_sessions` row) purely for observability/debugging, mirroring
+    // `agent_proxy.rs`'s convention of stamping the sticky key onto `flows.metadata`. It is NOT
+    // what makes retry-matching work — that's `session_traces` below, and `session_traces.session_id`
+    // has a hard FK to `chat_sessions(session_id)` (`0004_observability.sql`), which `context_id`
+    // can never satisfy. `nasiko_mcp_gateway::session::resolve_context_id` resolves a tools/call's
+    // session by looking up `session_traces` for the CALLING trace_id, falling back to the trace_id
+    // itself only when no row exists. Every resume mints a brand-new `flow_ctx.flow_id`, so without
+    // a session_traces row mapping it to something STABLE, `resolve_tool_approval_retry`'s
+    // once/session-scope grant lookup keys on a trace_id that's different on every single resume,
+    // never matching the original ask's own resolved context — every resumed retry of a tool the
+    // human just approved gets asked again, forever (confirmed live: approving the same
+    // tool_approval repeatedly, every retry still comes back `ask_required`, and the earlier
+    // `session_id = context_id` version of this INSERT was silently failing its FK check on every
+    // single call — `context_id` is never a real chat session, so it never once succeeded).
+    // `row.chat_session_id` is the real, existing `chat_sessions` row every mirror in this chain
+    // carries forward (`NewHitlRequest::orchestrator`/`persist_direct_chat_pause`) — mapping every
+    // resume's fresh flow_id to THAT is what actually lets retries resolve to the SAME session the
+    // original ask did. Skipped when absent (direct_chat/agent_proxy rows aren't guaranteed one):
+    // no stable id to map to, so falling back to today's re-ask behavior is the only honest option.
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, $3, $4, $5, 'running', $6)
@@ -229,20 +237,21 @@ async fn deliver(state: AppState, row: HitlRequest) {
     .execute(&state.db)
     .await;
     crate::flows::record_participant(&state.db, &flow_ctx.flow_id, row.agent_id).await;
-    if let Err(e) = sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (session_id, trace_id) DO NOTHING",
-    )
-    .bind(&context_id)
-    .bind(&flow_ctx.flow_id)
-    .bind(row.agent_id)
-    .bind(&agent_name)
-    .execute(&state.db)
-    .await
+    if let Some(chat_session_id) = row.chat_session_id.as_deref()
+        && let Err(e) = sqlx::query(
+            "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (session_id, trace_id) DO NOTHING",
+        )
+        .bind(chat_session_id)
+        .bind(&flow_ctx.flow_id)
+        .bind(row.agent_id)
+        .bind(&agent_name)
+        .execute(&state.db)
+        .await
     {
         tracing::warn!(
-            error = %e, %context_id, flow_id = %flow_ctx.flow_id,
+            error = %e, %chat_session_id, flow_id = %flow_ctx.flow_id,
             "hitl resume: session_traces record failed — tool-approval retry matching for this resume may re-ask"
         );
     }

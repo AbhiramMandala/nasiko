@@ -310,6 +310,23 @@ async fn continue_paused_step(
     let start = Instant::now();
     let (traceparent, trace_id) = build_traceparent(execution_id, step.step_index);
 
+    // `register_flow` (execute_step's first-attempt insert) stamped `created_at` once, at the
+    // original attempt — `ON CONFLICT DO NOTHING`, never touched again. The MCP gateway's
+    // liveness check (`gateway.rs::flow_user`) requires `created_at` to be within
+    // `FLOW_TIMEOUT_SECS` (120s default) of `now()`, so a human who takes longer than that to
+    // approve a paused tool call permanently strands this trace id: every retried `tools/call`
+    // 403s as "not a live flow", the agent re-asks, and re-approving can never fix it, since
+    // nothing ever refreshes this row. Reopen it here, same as every other HITL resume dispatch
+    // site (`a2a_dispatch.rs`'s `dispatch_to_agent`, `hitl/mod.rs`'s `deliver`) — except also
+    // resetting `created_at`, which those two don't (they aren't the traceparent this specific
+    // 120s-vs-human-latency bug was diagnosed against, but would have the same exposure).
+    let _ = sqlx::query(
+        "UPDATE flows SET status = 'running', completed_at = NULL, created_at = now() WHERE flow_id = $1",
+    )
+    .bind(&trace_id)
+    .execute(db)
+    .await;
+
     let call_result = call_agent_continuation(
         client,
         &step.agent_endpoint,
