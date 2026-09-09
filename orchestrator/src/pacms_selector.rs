@@ -87,10 +87,7 @@ impl<'a> PacmsSelector<'a> {
         candidates: &[String],
         query: &str,
     ) -> Result<(Vec<Vec<f32>>, Vec<f32>), RouterError> {
-        let mut embeddings = Vec::with_capacity(candidates.len());
-        for c in candidates {
-            embeddings.push(self.vector_store.embed(c).await?);
-        }
+        let embeddings = self.vector_store.embed_batch(candidates).await?;
         let query_emb = self.vector_store.embed(query).await?;
         Ok((embeddings, query_emb))
     }

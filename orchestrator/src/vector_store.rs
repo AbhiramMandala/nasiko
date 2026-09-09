@@ -197,6 +197,20 @@ impl VectorStore {
         embed_text(&client, &self.api_key, &self.base_url, &self.model, text).await
     }
 
+    /// Embed multiple texts in a single request — lets callers that need one
+    /// embedding per candidate (e.g. PACMS's coverage/diversity scoring) pay
+    /// for one HTTP round-trip instead of one per candidate.
+    pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, RouterError> {
+        if !self.enabled {
+            return Err(RouterError::Embedding("vector store is disabled".into()));
+        }
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+        let client = Client::new();
+        embed_texts(&client, &self.api_key, &self.base_url, &self.model, texts).await
+    }
+
     /// Score a pre-computed embedding against a subset of agents using stored embeddings.
     /// Used by Reranker so it doesn't need to re-embed the agents.
     /// Falls back to equal weight (1.0) when store is disabled.
@@ -312,6 +326,56 @@ async fn embed_text(
         .next()
         .map(|d| d.embedding)
         .ok_or_else(|| RouterError::Embedding("empty embedding response".into()))
+}
+
+/// Batch variant of `embed_text` — sends all `texts` as a single `input` array
+/// and returns their embeddings in the same order. The OpenAI embeddings API
+/// preserves input order in `data` (each item carries an `index`, and results
+/// are returned sorted by it), so a positional zip is safe here.
+async fn embed_texts(
+    client: &Client,
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    texts: &[String],
+) -> Result<Vec<Vec<f32>>, RouterError> {
+    let url = format!(
+        "{}/v1/embeddings",
+        nasiko_config::openai_base_url_without_v1(base_url)
+    );
+    let resp = client
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": model,
+            "input": texts,
+        }))
+        .send()
+        .await
+        .map_err(|e| RouterError::Embedding(format!("OpenAI embeddings request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(RouterError::Embedding(format!(
+            "OpenAI embeddings returned {status}: {body}"
+        )));
+    }
+
+    let parsed: OpenAiEmbeddingResponse = resp
+        .json()
+        .await
+        .map_err(|e| RouterError::Embedding(format!("failed to parse embedding response: {e}")))?;
+
+    if parsed.data.len() != texts.len() {
+        return Err(RouterError::Embedding(format!(
+            "expected {} embeddings, got {}",
+            texts.len(),
+            parsed.data.len()
+        )));
+    }
+
+    Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
 }
 
 #[cfg(test)]
