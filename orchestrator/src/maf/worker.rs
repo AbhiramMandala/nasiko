@@ -1,11 +1,16 @@
 use std::sync::Arc;
 
+use nasiko_hitl::{HitlStore, NewHitlRequest};
 use nasiko_observability::ObservabilityProvider;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use super::{executor, llm::LlmClient, types::MafDefinition};
+use super::{
+    executor,
+    llm::LlmClient,
+    types::{MafDefinition, PausedStep, StepOutcome, StepResult},
+};
 
 const STREAM_KEY: &str = "nasiko:maf:execute";
 const GROUP_NAME: &str = "maf-workers";
@@ -26,6 +31,7 @@ pub async fn run(
     http_client: reqwest::Client,
     observability: Arc<dyn ObservabilityProvider>,
     llm: LlmClient,
+    hitl_store: Arc<dyn HitlStore>,
 ) {
     let consumer = consumer_name();
 
@@ -54,6 +60,7 @@ pub async fn run(
         &http_client,
         observability.as_ref(),
         &llm,
+        &hitl_store,
         &consumer,
     )
     .await;
@@ -90,6 +97,7 @@ pub async fn run(
                             &http_client,
                             observability.as_ref(),
                             &llm,
+                            &hitl_store,
                         )
                         .await;
                     } else {
@@ -111,12 +119,24 @@ struct Job {
     execution_id: Uuid,
     maf_json: String,
     user_id: Uuid,
+    /// Present only on a continuation job, `oss/server/src/hitl/mod.rs::deliver_maf`'s `XADD` —
+    /// a fresh run always omits these three (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3).
+    resume: Option<ResumeFields>,
+}
+
+struct ResumeFields {
+    step_index: i32,
+    task_id: String,
+    answer: String,
 }
 
 fn parse_job(fields: &[redis::Value]) -> Option<Job> {
     let mut execution_id = None;
     let mut maf_json = None;
     let mut user_id = None;
+    let mut resume_step_index = None;
+    let mut resume_task_id = None;
+    let mut resume_answer = None;
 
     let mut i = 0;
     while i + 1 < fields.len() {
@@ -139,15 +159,28 @@ fn parse_job(fields: &[redis::Value]) -> Option<Job> {
             "execution_id" => execution_id = val.parse().ok(),
             "maf_json" => maf_json = Some(val),
             "user_id" => user_id = val.parse().ok(),
+            "resume_step_index" => resume_step_index = val.parse().ok(),
+            "resume_task_id" => resume_task_id = Some(val),
+            "resume_answer" => resume_answer = Some(val),
             _ => {}
         }
         i += 2;
     }
 
+    let resume = match (resume_step_index, resume_task_id, resume_answer) {
+        (Some(step_index), Some(task_id), Some(answer)) => Some(ResumeFields {
+            step_index,
+            task_id,
+            answer,
+        }),
+        _ => None,
+    };
+
     Some(Job {
         execution_id: execution_id?,
         maf_json: maf_json?,
         user_id: user_id?,
+        resume,
     })
 }
 
@@ -193,6 +226,7 @@ fn extract_messages(val: redis::Value) -> Vec<(String, Vec<redis::Value>)> {
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_job(
     job: Job,
     msg_id: &str,
@@ -201,10 +235,12 @@ async fn process_job(
     http_client: &reqwest::Client,
     observability: &dyn ObservabilityProvider,
     llm: &LlmClient,
+    hitl_store: &Arc<dyn HitlStore>,
 ) {
     let execution_id = job.execution_id;
     let user_id = job.user_id;
     let maf_json_str = job.maf_json;
+    let is_resume = job.resume.is_some();
 
     // Fetch current attempt counters
     #[derive(sqlx::FromRow)]
@@ -258,18 +294,115 @@ async fn process_job(
         }
     };
 
-    match executor::run_maf(
-        http_client,
-        db,
-        observability,
+    let outcome = match job.resume {
+        None => {
+            executor::run_maf(
+                http_client,
+                db,
+                observability,
+                execution_id,
+                user_id,
+                &maf_def,
+                llm,
+            )
+            .await
+        }
+        Some(resume) => match fetch_resume_state(db, execution_id).await {
+            Ok((step_results, tokens_used, output_generation)) => {
+                executor::run_maf_from(
+                    http_client,
+                    db,
+                    observability,
+                    execution_id,
+                    user_id,
+                    &maf_def,
+                    llm,
+                    step_results,
+                    tokens_used,
+                    output_generation,
+                    resume.step_index as usize,
+                    resume.task_id,
+                    execution_id.to_string(),
+                    resume.answer,
+                )
+                .await
+            }
+            Err(e) => Err(format!("failed to load resume state: {e}")),
+        },
+    };
+
+    finish_job(
+        outcome,
         execution_id,
+        msg_id,
+        conn,
+        db,
+        hitl_store,
         user_id,
+        &maf_json_str,
+        new_attempt,
+        max_attempts,
         &maf_def,
-        llm,
+        is_resume,
     )
+    .await;
+}
+
+/// Loads the durable state a resume needs from `maf_executions`: `step_results` (every step's
+/// plan is embedded in it — see `run_maf_from`'s doc comment), the running token total, and the
+/// planner's `output_generation` guideline (both new in `oss/migrations/0014_maf_hitl.sql`).
+async fn fetch_resume_state(
+    db: &PgPool,
+    execution_id: Uuid,
+) -> Result<(Vec<StepResult>, i64, String), String> {
+    #[derive(sqlx::FromRow)]
+    struct ResumeStateRow {
+        step_results: Option<String>,
+        tokens_used: i64,
+        output_generation: Option<String>,
+    }
+
+    let row = sqlx::query_as::<_, ResumeStateRow>(
+        "SELECT step_results::text AS step_results, tokens_used, output_generation \
+         FROM maf_executions WHERE id = $1",
+    )
+    .bind(execution_id)
+    .fetch_optional(db)
     .await
-    {
-        Ok(result) => {
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "execution not found".to_string())?;
+
+    let step_results: Vec<StepResult> = match row.step_results.as_deref() {
+        Some(s) => serde_json::from_str(s).map_err(|e| format!("invalid step_results: {e}"))?,
+        None => return Err("execution has no step_results to resume from".to_string()),
+    };
+
+    Ok((
+        step_results,
+        row.tokens_used,
+        row.output_generation.unwrap_or_default(),
+    ))
+}
+
+/// Handles a MAF run's outcome — success, a fresh pause, or an error — shared by both a normal
+/// run and a resumed one so the two paths never diverge in how they finish.
+#[allow(clippy::too_many_arguments)]
+async fn finish_job(
+    outcome: Result<StepOutcome, String>,
+    execution_id: Uuid,
+    msg_id: &str,
+    conn: &mut redis::aio::MultiplexedConnection,
+    db: &PgPool,
+    hitl_store: &Arc<dyn HitlStore>,
+    user_id: Uuid,
+    maf_json_str: &str,
+    new_attempt: i32,
+    max_attempts: i32,
+    maf_def: &MafDefinition,
+    is_resume: bool,
+) {
+    match outcome {
+        Ok(StepOutcome::Completed(result)) => {
             let step_json = serde_json::to_value(&result.step_results).unwrap_or_default();
             let step_json_str = step_json.to_string();
             let _ = sqlx::query(
@@ -278,23 +411,44 @@ async fn process_job(
                        output = $1,
                        step_results = $2::jsonb,
                        tokens_used = $3,
-                       cost_usd = $4,
                        completed_at = now(),
                        duration_ms = EXTRACT(EPOCH FROM (now() - started_at))::BIGINT * 1000
-                   WHERE id = $5"#,
+                   WHERE id = $4"#,
             )
             .bind(&result.output)
             .bind(&step_json_str)
             .bind(result.tokens_used)
-            .bind(result.cost_usd)
             .bind(execution_id)
             .execute(db)
             .await;
             ack(conn, msg_id).await;
             info!("MAF execution {execution_id} succeeded");
         }
+        Ok(StepOutcome::AwaitingHuman(paused)) => {
+            // `step_results`/`tokens_used` were already persisted by the executor at the moment
+            // it detected the pause (`execute_step`/`continue_paused_step`'s own
+            // `persist_progress` call) — only the execution-level status still needs flipping.
+            let _ =
+                sqlx::query("UPDATE maf_executions SET status = 'awaiting_human' WHERE id = $1")
+                    .bind(execution_id)
+                    .execute(db)
+                    .await;
+            create_hitl_request(hitl_store, execution_id, user_id, maf_def, &paused).await;
+            // Done for now — no retry, no re-enqueue. The row waits for
+            // `POST /api/hitl/{id}/resolve` to trigger a continuation job.
+            ack(conn, msg_id).await;
+            info!(
+                "MAF execution {execution_id} paused at step {} awaiting a human",
+                paused.step_index
+            );
+        }
         Err(e) => {
-            if new_attempt >= max_attempts {
+            // A resumed job's failure is never retried by restarting from step 0 — that would
+            // silently redo already-succeeded steps' agent calls and discard the human's answer.
+            // Terminal failure here, not a re-enqueue, is the safe default (`docs/
+            // HITL_IMPLEMENTATION_PLAN.md` doesn't specify resume-retry semantics; hardening that
+            // is a Phase 9-shaped follow-up, not required for Phase 8).
+            if is_resume || new_attempt >= max_attempts {
                 mark_failed(db, execution_id, &e).await;
                 ack(conn, msg_id).await;
                 warn!(
@@ -309,13 +463,44 @@ async fn process_job(
                 .bind(execution_id)
                 .execute(db)
                 .await;
-                re_enqueue(conn, execution_id, &maf_json_str, user_id).await;
+                re_enqueue(conn, execution_id, maf_json_str, user_id).await;
                 ack(conn, msg_id).await;
                 warn!(
                     "MAF execution {execution_id} failed (attempt {new_attempt}/{max_attempts}), re-enqueued: {e}"
                 );
             }
         }
+    }
+}
+
+/// Creates the `hitl_requests` row a paused step surfaces to a human, resolved via the generic
+/// `POST /api/hitl/{id}/resolve` (`oss/server/src/router/hitl.rs` — already origin-agnostic).
+async fn create_hitl_request(
+    hitl_store: &Arc<dyn HitlStore>,
+    execution_id: Uuid,
+    user_id: Uuid,
+    maf_def: &MafDefinition,
+    paused: &PausedStep,
+) {
+    let Some(step) = maf_def.steps.get(paused.step_index as usize) else {
+        error!(
+            "MAF execution {execution_id}: paused step index {} out of range, cannot record the HITL pause",
+            paused.step_index
+        );
+        return;
+    };
+    let req = NewHitlRequest::maf(
+        paused.kind,
+        step.agent_id,
+        user_id,
+        paused.task_id.clone(),
+        paused.context_id.clone(),
+        execution_id,
+        paused.step_index,
+        paused.question.clone(),
+    );
+    if let Err(e) = hitl_store.create(req).await {
+        error!("MAF execution {execution_id}: failed to persist HITL pause: {e}");
     }
 }
 
@@ -368,6 +553,7 @@ async fn reclaim_pending(
     http_client: &reqwest::Client,
     observability: &dyn ObservabilityProvider,
     llm: &LlmClient,
+    hitl_store: &Arc<dyn HitlStore>,
     consumer: &str,
 ) {
     let result: redis::RedisResult<redis::Value> = redis::cmd("XAUTOCLAIM")
@@ -410,7 +596,17 @@ async fn reclaim_pending(
         };
         if let Some(job) = parse_job(&fields) {
             info!("Reclaiming crashed MAF execution {}", job.execution_id);
-            process_job(job, &msg_id, conn, db, http_client, observability, llm).await;
+            process_job(
+                job,
+                &msg_id,
+                conn,
+                db,
+                http_client,
+                observability,
+                llm,
+                hitl_store,
+            )
+            .await;
         }
     }
 }

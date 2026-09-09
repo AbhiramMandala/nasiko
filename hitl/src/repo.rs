@@ -698,39 +698,6 @@ pub async fn finish_resume(
     row.map(HitlRequestRow::try_into_domain).transpose()
 }
 
-/// Marks an `mcp_tool`-origin row as already delivered without ever sending
-/// `RuntimeResumeNotifier`'s standalone nudge — for the case where resolving it
-/// also auto-resolved a linked `direct_chat`/`agent_proxy`/`maf`/`orchestrator`
-/// mirror row (`find_linked_direct_chat_row` + `auto_resolve_linked_direct_chat_row`,
-/// `oss/server/src/router/hitl.rs`). That mirror has its own real `task_id` and
-/// its own dispatcher (`oss/server/src/hitl/mod.rs`), which correctly resumes the
-/// paused A2A task; the `mcp_tool` row's own delivery is not just redundant in
-/// that case but actively harmful — `RuntimeResumeNotifier` has no `task_id` to
-/// resume against (this origin never carries one), so its nudge starts the agent
-/// on a brand-new, context-free task instead. Left standalone, `claim_for_resume`
-/// would pick this row up and fire that nudge anyway, racing the mirror's own
-/// correct resume — confirmed live: the agent received both, the fresh nudge
-/// re-asked its own clarifying question with no memory of the original one, and
-/// every retry re-triggered exactly the same fork, forever.
-///
-/// Sets both `resume_claimed_at` and `resume_status` in one step (rather than
-/// composing `claim_for_resume` + `finish_resume`) so `claim_for_resume`'s own
-/// `resume_status = 'not_started' AND resume_claimed_at IS NULL` filter can never
-/// select this row for real delivery — no separate claim step to race against.
-pub async fn skip_resume_for_mirrored_row(db: &PgPool, id: Uuid) -> Result<()> {
-    sqlx::query(
-        r#"
-        UPDATE hitl_requests
-           SET resume_status = 'completed', resume_claimed_at = now()
-         WHERE id = $1 AND resume_status = 'not_started' AND resume_claimed_at IS NULL
-        "#,
-    )
-    .bind(id)
-    .execute(db)
-    .await?;
-    Ok(())
-}
-
 /// Quarantine claims whose lease looks abandoned: claimed
 /// (`resume_claimed_at` set) more than `lease_minutes` ago, but still
 /// `resume_status = 'not_started'` — meaning `finish_resume` was never
