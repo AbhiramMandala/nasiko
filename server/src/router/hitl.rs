@@ -421,6 +421,14 @@ async fn grant_session_scope(state: &AppState, row: &HitlRequest, granted_by: Uu
 /// `auth_action: confirm` flow already produces for a real auth_required
 /// row, so the resume path this triggers is the same one already proven,
 /// not a new one.
+///
+/// Once the mirror is resolved, `mcp_row`'s own resume is skipped
+/// (`nasiko_hitl::repo::skip_resume_for_mirrored_row`) rather than left for the
+/// `mcp_tool` dispatcher to also deliver: the mirror is the real, task_id-bearing
+/// resume — `RuntimeResumeNotifier`'s standalone nudge on `mcp_row` would race it
+/// with a context-free message the agent has no way to make sense of (confirmed
+/// live: the agent lost the paused conversation and re-asked its own question
+/// from scratch, on every single approval).
 async fn auto_resolve_linked_direct_chat_row(
     state: &AppState,
     mcp_row: &HitlRequest,
@@ -462,6 +470,16 @@ async fn auto_resolve_linked_direct_chat_row(
             // same continuation buffer (see `ContinuationRegistry::alias`'s own doc comment).
             state.continuation_events.alias(mcp_row.id, linked.id);
             let _ = state.hitl_resume_tx.try_send(());
+            // `linked` is the real resume now — never let the `mcp_tool` dispatcher also fire
+            // `mcp_row`'s own task_id-less nudge on top of it (see this function's own doc comment).
+            if let Err(e) =
+                nasiko_hitl::repo::skip_resume_for_mirrored_row(&state.db, mcp_row.id).await
+            {
+                tracing::warn!(
+                    error = %e, mcp_row_id = %mcp_row.id,
+                    "failed to skip the mirrored mcp_tool row's own resume — it may still race the linked row's resume"
+                );
+            }
         }
         Err(e) => {
             tracing::error!(
