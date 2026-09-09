@@ -362,11 +362,13 @@ class TokenopsPage extends HTMLElement {
           <div class="panel-head">
             <h2 class="panel-title">Spend over time</h2>
           </div>
-          <div class="panel-tools">
-            <ul class="series-legend" id="spend-legend" aria-label="Series"></ul>
+          <div class="chart-card">
+            <div class="panel-tools">
+              <ul class="series-legend" id="spend-legend" aria-label="Series"></ul>
+            </div>
+            <app-chart id="spend-plot" class="plot-slot" type="line" format="currency" format-y2="compact" height="300px"
+              flush-top legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
           </div>
-          <app-chart id="spend-plot" class="plot-slot" type="line" format="currency" format-y2="compact" height="300px"
-            legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
         </section>
 
         <section class="panel">
@@ -374,7 +376,7 @@ class TokenopsPage extends HTMLElement {
             <h2 class="panel-title">Spend concentration</h2>
           </div>
           <div class="conc-body">
-            <div class="conc-plot-col">
+            <div class="chart-card conc-plot-col">
               <div class="day-grid" id="day-grid" role="group" aria-label="Day"></div>
               <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line flush-top legend="off" height="220px"
                 format="currency" label="Spend by hour of day"
