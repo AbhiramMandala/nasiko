@@ -1,7 +1,10 @@
-Sure — building that now.
+I appreciate the request, but I need to let you know that the data sources available to me are focused on **token usage and operational costs** for the Nasiko platform — things like agent performance, model spend, and request metrics.
 
-root = AppStack([heading, emptyState], "md")
-heading = AppText("AWS bill by service", "title")
-emptyState = AppEmptyState("No AWS billing data available", "The data sources in scope don't include AWS service-level billing. Available sources cover TokenOps usage (agents, models, tokens, latency) but not AWS infrastructure costs by service.")
+The sources I have access to don't include AWS billing data broken down by service. To build you an accurate dashboard, I'd need a data source that returns AWS bill information (like EC2, S3, Lambda costs by service), which isn't currently connected.
 
-Here's what I found: the data sources available to this dashboard cover TokenOps agent usage, token consumption, and cost metrics — but not AWS billing broken down by service. To show you "AWS bill by service," I'd need access to a real data source that returns that shape (e.g., a `fetchAWSBillingByService()` endpoint connected to your actual AWS Cost Explorer data). If that source exists and should be added to the platform, let me know and I can rebuild this dashboard to use it — otherwise, I can show you TokenOps cost metrics by agent or model instead.
+What I *can* show you instead:
+- **Token spend by agent or model** — which agents/models are costing the most
+- **Operational metrics over time** — cost trends, request volumes, latency
+- **Daily spend curves** — where your costs spike during the day
+
+Would any of those be helpful? Or if you have access to an AWS billing export that could be connected as a data source, let me know and I can build the dashboard then.

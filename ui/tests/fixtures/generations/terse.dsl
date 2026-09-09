@@ -1,18 +1,15 @@
 Sure — building that now.
 
-root = AppStack([heading, summarySection, agentSection, modelSection], "md")
-heading = AppText("Token Ops Spend Dashboard", "title")
-summarySection = AppStack([summaryHeading, summaryStats], "md")
-summaryHeading = AppText("Overall usage summary", "subtitle")
-summaryQ = Query("fetchUsageSummary", [], {request_count: 0, total_input_tokens: 0, total_output_tokens: 0, total_tokens: 0, total_cost_usd: 0, avg_latency_ms: null, period_days: 0})
-summaryStats = AppStatRow([{label: "Total cost", value: "$" + @Round(summaryQ.total_cost_usd, 2)}, {label: "Requests", value: summaryQ.request_count}, {label: "Total tokens", value: summaryQ.total_tokens}])
-agentSection = AppStack([agentHeading, agentTable], "md")
-agentHeading = AppText("Spend by agent", "subtitle")
-agentRows = Query("fetchUsageByAgent", [null, 1, 50], [], "data")
-agentTable = AppTable(agentRows, 50, "pages", false)
-modelSection = AppStack([modelHeading, modelTable], "md")
-modelHeading = AppText("Spend by model", "subtitle")
-modelRows = Query("fetchUsageByModel", [null, 1, 50], [], "data")
-modelTable = AppTable(modelRows, 50, "pages", false)
+root = AppStack([heading, kpis, rangeRow, table], "md")
+heading = AppText("Spend overview", "title")
+$range = "7d"
+rangeRow = AppRow([sevenBtn, thirtyBtn], "sm")
+sevenBtn = AppButton("7 days", "secondary", null, null, null, null, null, null, null, null, showSeven)
+thirtyBtn = AppButton("30 days", "primary", null, null, null, null, null, null, null, null, showThirty)
+showSeven = Action([@Set($range, "7d"), @Run(dashboardQ)])
+showThirty = Action([@Set($range, "30d"), @Run(dashboardQ)])
+dashboardQ = Query("fetchTokenopsDashboard", [{range: $range}], {kpis: {total_spend: {current: 0, previous: 0, change_pct: null}, total_tokens: {current: 0, previous: 0, change_pct: null}, cost_per_operation: {current: 0, previous: 0, change_pct: null}, avg_latency_ms: {current: null, previous: null, change_pct: null}}, attributions: {rows: []}}, "data")
+kpis = AppStatRow([{label: "Total spend", value: "$" + @Round(dashboardQ.kpis.total_spend.current, 2), delta: dashboardQ.kpis.total_spend.change_pct, trend: dashboardQ.kpis.total_spend.change_pct > 0 ? "up" : dashboardQ.kpis.total_spend.change_pct < 0 ? "down" : "neutral"}, {label: "Total tokens", value: @Round(dashboardQ.kpis.total_tokens.current, 0), delta: dashboardQ.kpis.total_tokens.change_pct, trend: dashboardQ.kpis.total_tokens.change_pct > 0 ? "up" : dashboardQ.kpis.total_tokens.change_pct < 0 ? "down" : "neutral"}, {label: "Cost per operation", value: "$" + @Round(dashboardQ.kpis.cost_per_operation.current, 4)}])
+table = AppTable(dashboardQ.attributions.rows, 20, "pages", false)
 
-Here's your spend dashboard with overall usage KPIs and tables showing cost broken down by agent and by model — let me know if you'd like to add filters, charts, or different metrics!
+Here's your spend dashboard with KPIs and a table of agent attributions — let me know if you'd like to adjust the time range options, add charts, or dig into specific agents!

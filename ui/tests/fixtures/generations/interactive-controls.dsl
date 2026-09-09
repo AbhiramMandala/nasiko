@@ -1,21 +1,14 @@
-Sure — building a cost dashboard with search, time window controls, and real cost data for you.
-
-root = AppStack([heading, controlRow, costCards, agentTable], "md")
+Sure — building that now.
+root = AppStack([heading, controls, kpis, table], "md")
 heading = AppText("Cost dashboard", "title")
-$days = 7
-$searchQuery = ""
-controlRow = AppRow([rangeButtonRow, searchBox], "md", "center")
-rangeButtonRow = AppRow([sevenDayBtn, thirtyDayBtn], "sm")
-sevenDayBtn = AppButton("7 days", $days == 7 ? "primary" : "secondary", null, null, null, null, null, null, null, null, setSeven)
-thirtyDayBtn = AppButton("30 days", $days == 30 ? "primary" : "secondary", null, null, null, null, null, null, null, null, setThirty)
-setSeven = Action([@Set($days, 7), @Run(summaryQ), @Run(historyQ), @Run(agentQ)])
-setThirty = Action([@Set($days, 30), @Run(summaryQ), @Run(historyQ), @Run(agentQ)])
-searchBox = AppSearch("md", null, false, false, "Search agents...", $searchQuery, null, null, null, null, null, runSearch)
-runSearch = Action([@Set($searchQuery, $event), @Run(agentQ)])
-summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0}, "total_cost_usd")
-historyQ = Query("fetchUsageHistory", [$days], [])
-agentQ = Query("fetchUsageByAgent", [$searchQuery, 1, 50], [], "data")
-costCards = AppStatRow([{label: "Total cost", value: summaryQ, sub: $days == 7 ? "last 7 days" : "last 30 days"}, {label: "Requests", value: summaryQ, sub: "total"}])
-agentTable = AppTable(agentQ, 50, "pages", true)
-
-Here's your cost dashboard with KPI cards, time window buttons (7 and 30 days), a search box for agents, and a paginated table of agent costs — let me know if you'd like to adjust the layout, add a chart, or refine the metrics!
+$range = "7d"
+$search = ""
+controls = AppRow([rangeGroup, searchBox], "md")
+rangeGroup = AppSegmentedControl([{label: "24h", value: "24h"}, {label: "7d", value: "7d"}, {label: "30d", value: "30d"}], $range, "md", false, null, null, "Time window", setRange)
+setRange = Action([@Set($range, $event), @Run(dashboardQ)])
+searchBox = AppSearch("md", null, false, false, "Search by agent or model...", $search, null, null, null, null, null, runSearch)
+runSearch = Action([@Set($search, $event), @Run(dashboardQ)])
+dashboardQ = Query("fetchTokenopsDashboard", [{range: $range}], {kpis: {total_spend: {current: 0, previous: 0, change_pct: null}, total_tokens: {current: 0, previous: 0, change_pct: null}, cost_per_operation: {current: 0, previous: 0, change_pct: null}, avg_latency_ms: {current: null, previous: null, change_pct: null}}, attributions: {rows: []}}, "data")
+kpis = AppStatRow([{label: "Total spend", value: @Round(dashboardQ.kpis.total_spend.current, 2), sub: "USD", delta: @Round(dashboardQ.kpis.total_spend.change_pct, 1), trend: dashboardQ.kpis.total_spend.change_pct > 0 ? "up" : dashboardQ.kpis.total_spend.change_pct < 0 ? "down" : "neutral"}, {label: "Total tokens", value: @Round(dashboardQ.kpis.total_tokens.current, 0), delta: @Round(dashboardQ.kpis.total_tokens.change_pct, 1), trend: dashboardQ.kpis.total_tokens.change_pct > 0 ? "up" : dashboardQ.kpis.total_tokens.change_pct < 0 ? "down" : "neutral"}, {label: "Cost per op", value: @Round(dashboardQ.kpis.cost_per_operation.current, 4), sub: "USD", delta: @Round(dashboardQ.kpis.cost_per_operation.change_pct, 1), trend: dashboardQ.kpis.cost_per_operation.change_pct > 0 ? "up" : dashboardQ.kpis.cost_per_operation.change_pct < 0 ? "down" : "neutral"}])
+table = AppTable(dashboardQ.attributions.rows, 20, "pages", false)
+Here's your cost dashboard with a time-window selector, search box, KPI strip, and agent/attribution table — let me know if you'd like to adjust the metrics, add filters, or change the layout!
