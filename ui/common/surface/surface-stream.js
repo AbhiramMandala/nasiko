@@ -329,7 +329,25 @@ export function createSurfaceSession(options) {
    * @returns {Promise<{status: string, surface: string, catalogVersion: string|null}>}
    */
   async function send(prompt, opts = {}) {
-    buffer = '';
+    // Seeded with the previous turn's pruned surface, not emptied. agent.yaml
+    // rule 8 tells the generator that on a revision turn it must ONLY EMIT
+    // STATEMENTS THAT ARE NEW OR ACTUALLY CHANGING — and materialize.js's own
+    // symbol table already implements "a later statement with the same name
+    // replaces the earlier one" as, in its own words, "the whole revision
+    // model". But that model only replaces what it is actually handed: an
+    // empty buffer means a delta-only turn's parsed statements ARE the whole
+    // symbol table, so `root` itself (never re-emitted, because it did not
+    // change) is simply absent and the entire surface disappears. Seeding
+    // with `currentSurface` here — pure DSL; gc.js's pruning never keeps
+    // prose — is what makes both halves true at once: the model only sends
+    // the diff, and the screen keeps showing everything else, because the
+    // new statements naturally override the seeded ones by name.
+    // No trailing newline from pruneUnreachable's own join, so a newline is
+    // added here — without it the first incoming chunk (usually the prose
+    // sentence) would concatenate directly onto the seed's last DSL line with
+    // nothing separating them, corrupting the parser's line-based statement
+    // boundary.
+    buffer = currentSurface ? `${pruneUnreachable(currentSurface, store)}\n` : '';
     proseEmitted = 0;
     lastDiagnosticsKey = '';
     ended = false;

@@ -652,6 +652,45 @@ test('a $state line goes back holding what the user set, not what the DSL declar
     requests[1].body.context.currentSurface);
 });
 
+test('a revision turn that only emits the changed statement does not blank the screen', async () => {
+  // agent.yaml rule 8: on a revision turn the generator is told to ONLY EMIT
+  // STATEMENTS THAT ARE NEW OR ACTUALLY CHANGING — so a real second turn's
+  // response, unlike every other test above, must NOT repeat `root`. Before
+  // the fix this went straight to `if (!root) return;` in render.js and the
+  // whole dashboard vanished, even though nothing about it had actually
+  // changed except one card's title.
+  const first = [
+    frame('surface', {}, 1),
+    frame('dsl-chunk', { text: 'root = AppStack([kpi], "md")\n' }, 2),
+    frame('dsl-chunk', { text: 'kpi = AppStatCard("Cost", "1", null, "up")\n' }, 3),
+    frame('end', { status: 'ok' }, 4),
+  ];
+  const secondDelta = [
+    frame('surface', {}, 1),
+    frame('dsl-chunk', { text: 'kpi = AppStatCard("Spend", "1", null, "up")\n' }, 2),
+    frame('end', { status: 'ok' }, 3),
+  ];
+  let n = 0;
+  const { doc, container: c2 } = recorder();
+  const s2 = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container: c2,
+    doc,
+    schedule: (fn) => fn(),
+    fetchImpl: async () => sse(++n === 1 ? first : secondDelta),
+  });
+
+  await s2.send('build it');
+  assert.ok(c2.children[0], 'first turn renders a root');
+
+  await s2.send('rename the card');
+  assert.ok(c2.children[0], 'root must still be on screen: it was never re-emitted because it never changed');
+  assert.ok(s2.currentSurface.includes('root = AppStack'),
+    'the seeded root survives the merge: ' + s2.currentSurface);
+  assert.ok(s2.currentSurface.includes('"Spend"'), 'and the actual change took effect: ' + s2.currentSurface);
+});
+
 test('a 200 that is not an event stream is named, not retried as a drop', async () => {
   // The real shape: the control plane has no /api/weave/surface route, the
   // request falls through to the SPA fallback, and index.html comes back with
