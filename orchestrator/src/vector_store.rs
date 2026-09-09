@@ -40,6 +40,22 @@ pub struct CachedEmbedding {
 /// relative to the window.
 pub type EmbeddingCache = Arc<DashMap<Uuid, CachedEmbedding>>;
 
+/// One cached embedding for a piece of free-form text (e.g. a PACMS candidate
+/// message), keyed by content hash in `TextEmbeddingCache`. The key already
+/// identifies the content, so unlike `CachedEmbedding` there's no separate
+/// `content_hash` field to compare.
+pub struct CachedTextEmbedding {
+    embedding: Vec<f32>,
+    cached_at: Instant,
+}
+
+/// Cache of text embeddings keyed by a hash of the text itself, shared across
+/// `route()` calls (held on `OssRoutingEngine`, like `EmbeddingCache`). PACMS's
+/// history pool overlaps heavily turn-to-turn within a session, so without
+/// this every call to `SessionHistory::fetch_pacms` would re-embed messages
+/// already embedded on a previous turn.
+pub type TextEmbeddingCache = Arc<DashMap<u64, CachedTextEmbedding>>;
+
 const EMBEDDING_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 
 fn hash_prompt(prompt: &str) -> u64 {
@@ -55,6 +71,9 @@ pub struct VectorStore {
     base_url: String,
     model: String,
     enabled: bool,
+    /// Only set by `for_embedding` — the agent-catalog constructors already
+    /// cache via `EmbeddingCache` keyed on agent id.
+    text_cache: Option<TextEmbeddingCache>,
 }
 
 #[derive(Deserialize)]
@@ -138,14 +157,23 @@ impl VectorStore {
             base_url,
             model,
             enabled: true,
+            text_cache: None,
         }
     }
 
-    /// A store with no agent catalog, usable only for `embed()` — for callers
-    /// (e.g. `SessionHistory::fetch_pacms`) that need text embeddings but have
-    /// no agent shortlist to build. Disabled (falls back cleanly) when
-    /// `api_key` is empty.
-    pub fn for_embedding(api_key: String, base_url: String, model: String) -> Self {
+    /// A store with no agent catalog, usable only for `embed()`/`embed_batch()`
+    /// — for callers (e.g. `SessionHistory::fetch_pacms`) that need text
+    /// embeddings but have no agent shortlist to build. Disabled (falls back
+    /// cleanly) when `api_key` is empty.
+    ///
+    /// `cache` is consulted per-text before making a network call, keyed by a
+    /// hash of the text — see `TextEmbeddingCache` docs.
+    pub fn for_embedding(
+        api_key: String,
+        base_url: String,
+        model: String,
+        cache: TextEmbeddingCache,
+    ) -> Self {
         let enabled = !api_key.is_empty();
         Self {
             agents: vec![],
@@ -153,6 +181,7 @@ impl VectorStore {
             base_url,
             model,
             enabled,
+            text_cache: Some(cache),
         }
     }
 
@@ -164,6 +193,7 @@ impl VectorStore {
             base_url: String::new(),
             model: String::new(),
             enabled: false,
+            text_cache: None,
         }
     }
 
@@ -185,21 +215,64 @@ impl VectorStore {
             base_url: String::new(),
             model: String::new(),
             enabled: false,
+            text_cache: None,
+        }
+    }
+
+    /// Look up a text embedding in `text_cache`, if this store has one and the
+    /// entry hasn't expired. Logs the outcome under `pacms_embedding_cache`
+    /// (hit/miss + text hash) so external probes (e.g.
+    /// `scripts/pacms_longmemeval_test.py`) can verify caching behavior from
+    /// the server log without instrumenting the call sites themselves.
+    fn cached_embedding(&self, text: &str) -> Option<Vec<f32>> {
+        let cache = self.text_cache.as_ref()?;
+        let key = hash_prompt(text);
+        let hit = cache
+            .get(&key)
+            .filter(|entry| entry.cached_at.elapsed() < EMBEDDING_CACHE_TTL)
+            .map(|entry| entry.embedding.clone());
+        tracing::debug!(
+            target: "pacms_embedding_cache",
+            hit = hit.is_some(),
+            text_hash = key,
+            "PACMS embedding cache {}",
+            if hit.is_some() { "hit" } else { "miss" }
+        );
+        hit
+    }
+
+    fn store_embedding(&self, text: &str, embedding: &[f32]) {
+        if let Some(cache) = &self.text_cache {
+            cache.insert(
+                hash_prompt(text),
+                CachedTextEmbedding {
+                    embedding: embedding.to_vec(),
+                    cached_at: Instant::now(),
+                },
+            );
         }
     }
 
     /// Embed a single text string — reused by Reranker for history embedding.
+    /// Consults `text_cache` first when this store has one.
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>, RouterError> {
         if !self.enabled {
             return Err(RouterError::Embedding("vector store is disabled".into()));
         }
+        if let Some(cached) = self.cached_embedding(text) {
+            return Ok(cached);
+        }
         let client = Client::new();
-        embed_text(&client, &self.api_key, &self.base_url, &self.model, text).await
+        let embedding =
+            embed_text(&client, &self.api_key, &self.base_url, &self.model, text).await?;
+        self.store_embedding(text, &embedding);
+        Ok(embedding)
     }
 
-    /// Embed multiple texts in a single request — lets callers that need one
-    /// embedding per candidate (e.g. PACMS's coverage/diversity scoring) pay
-    /// for one HTTP round-trip instead of one per candidate.
+    /// Embed multiple texts, fetching only the ones missing from `text_cache`
+    /// in a single request — lets callers that need one embedding per
+    /// candidate (e.g. PACMS's coverage/diversity scoring) pay for at most one
+    /// HTTP round-trip per call, and none at all once the pool is warm.
     pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, RouterError> {
         if !self.enabled {
             return Err(RouterError::Embedding("vector store is disabled".into()));
@@ -207,8 +280,40 @@ impl VectorStore {
         if texts.is_empty() {
             return Ok(vec![]);
         }
-        let client = Client::new();
-        embed_texts(&client, &self.api_key, &self.base_url, &self.model, texts).await
+
+        let mut result: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
+        let mut misses: Vec<(usize, String)> = Vec::new();
+        for (i, text) in texts.iter().enumerate() {
+            match self.cached_embedding(text) {
+                Some(emb) => result.push(Some(emb)),
+                None => {
+                    result.push(None);
+                    misses.push((i, text.clone()));
+                }
+            }
+        }
+
+        if !misses.is_empty() {
+            let client = Client::new();
+            let miss_texts: Vec<String> = misses.iter().map(|(_, t)| t.clone()).collect();
+            let fetched = embed_texts(
+                &client,
+                &self.api_key,
+                &self.base_url,
+                &self.model,
+                &miss_texts,
+            )
+            .await?;
+            for ((i, text), emb) in misses.into_iter().zip(fetched) {
+                self.store_embedding(&text, &emb);
+                result[i] = Some(emb);
+            }
+        }
+
+        Ok(result
+            .into_iter()
+            .map(|e| e.expect("filled above"))
+            .collect())
     }
 
     /// Score a pre-computed embedding against a subset of agents using stored embeddings.

@@ -15,7 +15,7 @@ use crate::selector::AgentSelector;
 use crate::selector::ConversationMessage;
 use crate::session_history::SessionHistory;
 use crate::types::{AgentCard, RouteRequest, RouteResult, RouterLogEntry};
-use crate::vector_store::{EmbeddingCache, VectorStore};
+use crate::vector_store::{EmbeddingCache, TextEmbeddingCache, VectorStore};
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -66,6 +66,11 @@ pub struct OssRoutingEngine {
     /// every incoming request. See `EmbeddingCache` docs for the invalidation
     /// strategy (TTL + content-hash).
     embedding_cache: EmbeddingCache,
+    /// Cache of PACMS candidate/query embeddings shared across `route()` calls.
+    /// PACMS's history pool overlaps heavily turn-to-turn within a session, so
+    /// without this `SessionHistory::fetch_pacms` would re-embed the same
+    /// messages on every call. See `TextEmbeddingCache` docs.
+    history_embedding_cache: TextEmbeddingCache,
 }
 
 impl OssRoutingEngine {
@@ -86,6 +91,7 @@ impl OssRoutingEngine {
             base_url,
             embedding_model,
             embedding_cache: Arc::new(DashMap::new()),
+            history_embedding_cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -123,6 +129,7 @@ impl RoutingEngine for OssRoutingEngine {
             self.api_key.clone(),
             self.base_url.clone(),
             self.embedding_model.clone(),
+            Arc::clone(&self.history_embedding_cache),
         );
         let (agents, history) = tokio::join!(
             agent_registry::get_agents_for_user(req.user_id, pool),

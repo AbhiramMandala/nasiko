@@ -20,4 +20,4 @@ pub use selector::AgentSelector;
 pub use selector::ConversationMessage;
 pub use session_history::SessionHistory;
 pub use types::{AgentCard, FilePart, RouteRequest, RouteResult, RouterLogEntry};
-pub use vector_store::{EmbeddingCache, VectorStore};
+pub use vector_store::{EmbeddingCache, TextEmbeddingCache, VectorStore};
