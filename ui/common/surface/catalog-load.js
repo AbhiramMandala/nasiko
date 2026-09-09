@@ -53,8 +53,22 @@ export function loadSeverities() {
   return severityPromise;
 }
 
-/** @param {{code?: string}[]} diagnostics */
+/**
+ * Stamp each diagnostic with its severity and its plain-language `why`.
+ *
+ * `why` is the manifest's one-line answer to "what does this mean for the
+ * person looking at the screen" — `orphaned_statement`'s is "the model built
+ * something and never put it on the page". A host showing a diagnostic to a
+ * user should show that, not the runtime's own message, which names statements
+ * and paths that mean nothing outside the generator.
+ *
+ * @param {{code?: string}[]} diagnostics
+ */
 export function withSeverity(diagnostics) {
   if (!severityMap) return diagnostics;
-  return diagnostics.map((d) => ({ ...d, severity: severityMap[d.code]?.severity ?? 'fatal' }));
+  return diagnostics.map((d) => ({
+    ...d,
+    severity: severityMap[d.code]?.severity ?? 'fatal',
+    why: severityMap[d.code]?.why,
+  }));
 }

@@ -37,7 +37,7 @@ import { escHtml } from '/common/utils/escape.js';
 import { navigate } from '/common/core/router.js';
 import { createView, setViewSurface } from '/common/state/weave-views.js';
 import { createSurfaceSession } from '/common/surface/surface-stream.js';
-import { loadCatalog } from '/common/surface/catalog-load.js';
+import { loadCatalog, withSeverity } from '/common/surface/catalog-load.js';
 import '/common/design-system/app-chatbox/app-chatbox.js';
 
 /**
@@ -96,6 +96,8 @@ class WeaveDock extends HTMLElement {
   #sessionPromise = null;
   /** Prose the generator wrapped its DSL in, collected during the turn. */
   #said = [];
+  /** Diagnostics raised during the turn, so the answer can be qualified. */
+  #faults = [];
 
   #onRouteChange = () => this.#paintLauncher();
   #onDocumentClick = (e) => {
@@ -261,6 +263,11 @@ class WeaveDock extends HTMLElement {
         catalog,
         container: document.createElement('div'),
         onMessage: (text) => { this.#said.push(text); },
+        // Collected so the turn's own claim can be checked against what the
+        // runtime actually managed. The model writes its closing sentence
+        // before anything renders, so on a bad turn it says "here's your chart"
+        // with conviction and nothing contradicts it.
+        onDiagnostics: (list) => { this.#faults.push(...withSeverity(list)); },
       });
     })();
     return this.#sessionPromise;
@@ -280,6 +287,7 @@ class WeaveDock extends HTMLElement {
     this.#turns.push({ role: 'working' });
     this.#paintThread();
     this.#said.length = 0;
+    this.#faults.length = 0;
     const startedAt = Date.now();
 
     let out = null;
@@ -309,6 +317,13 @@ class WeaveDock extends HTMLElement {
       } catch (err) {
         console.error('[weave-dock] could not persist the generated surface', err);
       }
+      // The model writes its closing sentence before a single component has
+      // rendered, so on a turn that dropped something it still says "here's
+      // your chart" — which is exactly what happened, and the screen was the
+      // only place that disagreed. A fatal diagnostic makes that sentence
+      // untrue, so it is followed by what actually went wrong rather than left
+      // to stand on its own.
+      const fatal = this.#faults.filter((d) => d.severity === 'fatal');
       this.#turns.push(
         // The elapsed line stays after the answer: it is the receipt for how
         // much work the answer represents, and it is the handle into the trace.
@@ -316,6 +331,14 @@ class WeaveDock extends HTMLElement {
         { role: 'assistant', text: this.#said.at(-1) || `Built ${view.title}.` },
         { role: 'artifact', text: view.title, view },
       );
+      if (fatal.length) {
+        this.#turns.push({
+          role: 'assistant',
+          text: `Not all of that reached the page — ${
+            [...new Set(fatal.map((d) => d.why || d.code))].join('; ')
+          }. The view shows the detail.`,
+        });
+      }
     }
 
     this.#busy = false;

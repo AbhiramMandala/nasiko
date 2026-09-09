@@ -44,6 +44,16 @@
   /* ── Canvas ───────────────────────────────────────────────────────────── */
   /* The dotted plane says "this is a surface something was placed on" — it is
      the one visual difference between a generated screen and a built one. */
+  /* Between the title bar and the canvas: read before the dashboard, because
+     what it says is why the dashboard looks the way it does. Empty most of the
+     time, so it takes no space until there is something to say. */
+  .diagnostics:not(:empty) {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-8);
+    margin-block-end: var(--s-16);
+  }
+
   .canvas {
     min-height: 60vh;
     padding: var(--s-24);

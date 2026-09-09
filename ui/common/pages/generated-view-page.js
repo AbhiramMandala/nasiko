@@ -36,6 +36,7 @@ import '/common/features/weave-surface/weave-surface.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-menu/app-menu.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-alert/app-alert.js';
 
 const COPY_ACTIONS = [
   { id: 'link', label: 'Copy link' },
@@ -51,6 +52,8 @@ class GeneratedViewPage extends HTMLElement {
   #drawn = null;
   /** A save in flight, so a double-click cannot POST the same view twice. */
   #saving = false;
+  /** Diagnostics already on screen, so a repaint does not stack duplicates. */
+  #seenDiagnostics = new Set();
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -137,6 +140,8 @@ class GeneratedViewPage extends HTMLElement {
         </div>
       </header>
 
+      <div class="diagnostics" id="diagnostics"></div>
+
       <div class="canvas" id="canvas">
         <div class="generating">
           <p class="generating__head">Generating your dashboard…</p>
@@ -222,6 +227,46 @@ class GeneratedViewPage extends HTMLElement {
   }
 
   /**
+   * Show what the runtime could not do, instead of leaving a gap on the page.
+   *
+   * This is the difference between "the dashboard is wrong" and "the dashboard
+   * says why it is wrong". A generated surface fails silently by construction:
+   * a statement the model built but never placed produces a page that is simply
+   * missing it, while the assistant's own closing sentence says it is there.
+   * The runtime already detects that and calls it fatal — nothing was showing it.
+   *
+   * Fatal and runtime only. Fatal means the surface is not what was asked for;
+   * runtime means something the surface needed did not arrive. Advisory is a
+   * nudge aimed at the generator, not at the person reading the screen, and
+   * putting it here would train everyone to ignore the strip.
+   *
+   * Keyed by code+message so a re-render of the same turn does not stack
+   * duplicates, and cleared per draw because the state each one describes
+   * belongs to the surface currently on screen.
+   */
+  #showDiagnostics(diagnostics) {
+    const host = this.querySelector('#diagnostics');
+    if (!host) return;
+    for (const d of diagnostics ?? []) {
+      if (d.severity !== 'fatal' && d.severity !== 'runtime') continue;
+      const key = `${d.code}/${d.message}`;
+      if (this.#seenDiagnostics.has(key)) continue;
+      this.#seenDiagnostics.add(key);
+
+      const alert = document.createElement('app-alert');
+      alert.setAttribute('variant', d.severity === 'fatal' ? 'destructive' : 'warning');
+      // `why` is written for a person; `message` names statements and dot-paths
+      // and is written for whoever is debugging the generator. Lead with the
+      // first and keep the second, because the person reporting this is often
+      // the one who then has to fix it.
+      alert.setAttribute('heading', d.why || 'This dashboard did not render as intended');
+      alert.setAttribute('description', d.message || '');
+      alert.setAttribute('dismissible', '');
+      host.append(alert);
+    }
+  }
+
+  /**
    * Draw the generated surface, or leave the working state up.
    *
    * Called on load and again on every store change, because the DSL usually
@@ -251,8 +296,16 @@ class GeneratedViewPage extends HTMLElement {
     if (!surface) {
       canvas.replaceChildren();
       surface = document.createElement('weave-surface');
+      // Bound before show(): the catalog-version check and the materializer's
+      // own diagnostics both fire during the first draw, so a listener added
+      // afterwards would miss the turn it is there to report on.
+      surface.addEventListener('weave-diagnostics',
+        (e) => this.#showDiagnostics(e.detail.diagnostics));
       canvas.append(surface);
     }
+    // A new DSL is a new surface, so last draw's complaints no longer apply.
+    this.querySelector('#diagnostics')?.replaceChildren();
+    this.#seenDiagnostics.clear();
     // Marked before awaiting: show() is async (the element loads the catalog
     // once), and a second store change arriving mid-await would otherwise
     // start a duplicate draw of the same DSL.

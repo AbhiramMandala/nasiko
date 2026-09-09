@@ -26,6 +26,31 @@ const tree = (n, d = 0) => (!n ? '' : `${'  '.repeat(d)}${n.tag}\n${(n.children 
 
 // ── arithmetic and coercion ─────────────────────────────────────────────────
 
+test('a root restatement that drops a child is caught, not silent', () => {
+  // agent.yaml rule 7 forbids writing `root` twice, and justifies it with
+  // "anything that was only reachable through the first root ... never renders,
+  // with no error shown anywhere". That justification is obsolete: the orphan
+  // walk reports exactly this, fatally. The rule is what stops the generator
+  // ever changing a layout on a revision turn, so the safety it claims to buy
+  // is worth pinning — if this assertion ever fails, restating root becomes
+  // unsafe again and the prompt rule has to come back.
+  const out = run([
+    'root = AppStack([heading, kpis, spendChart], "md")',
+    'heading = AppText("Cost", "title")',
+    'kpis = AppStatRow([{label: "Spend", value: 0}])',
+    'spendChart = AppChart({labels: [], datasets: []}, "line")',
+    'root = AppStack([heading, kpis], "md")',
+  ].join('\n'), { complete: true });
+
+  const orphans = out.diagnostics.filter((d) => d.code === 'orphaned_statement');
+  assert.equal(orphans.length, 1);
+  assert.match(orphans[0].message, /spendChart/);
+  // And the surviving root is the second one — same-name-replaces, which is
+  // what makes a revision turn able to change the layout at all.
+  assert.equal(out.root.children.length, 2);
+});
+
+
 test('divide and modulo by zero are 0, never Infinity or NaN', () => {
   assert.equal(val('1 / 0'), 0);
   assert.equal(val('5 % 0'), 0);
