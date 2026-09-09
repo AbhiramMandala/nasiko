@@ -143,6 +143,28 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // calling `watch()`, so that ambiguity never actually reaches a client.
     let continuation = ContinuationGuard::new(state.continuation_events.clone(), row.id);
 
+    // If this row mirrors a real `mcp_tool` pause (`question.metadata.hitl_request_id` — set
+    // when an agent maps an MCP-gateway-detected auth_required/tool_approval onto its own A2A
+    // pause, e.g. a `create_issue_via_connector`-style escalation), alias that id onto this
+    // row's own buffer too. A reconnecting client uses whichever id `resolve_display_row`
+    // showed it — the *real* mcp_tool row's id — but `deliver()` only ever runs on *this* row;
+    // without this, that reconnect finds no buffer at all. Doing it here, unconditionally,
+    // covers both ways the mcp_tool row can get resolved: the manual `/resolve` endpoint
+    // (`router/hitl.rs::auto_resolve_linked_direct_chat_row` already aliases there too — a
+    // harmless redundant alias in that case, just earlier) and Nasiko's own OAuth-callback
+    // auto-resolve (`oss/hitl/src/repo.rs::resolve_linked_direct_chat_mirror`), which runs
+    // inside `nasiko-mcp-gateway` with no access to `continuation_events` at all and could
+    // never alias anything itself — that path previously left this row correctly resolved
+    // (the agent really does resume) but permanently unreconnectable.
+    if let Some(mcp_row_id) = row
+        .question
+        .pointer("/metadata/hitl_request_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    {
+        state.continuation_events.alias(mcp_row_id, row.id);
+    }
+
     // `claim_for_resume` has no attempts cap of its own — a row only reaches this many attempts
     // by surviving past every prior attempt's own cap check without a clean completed/failed
     // outcome, i.e. the dispatcher process itself crashed mid-delivery on each one. A clean

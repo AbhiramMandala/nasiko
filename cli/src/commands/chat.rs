@@ -2,7 +2,6 @@ use std::io::{BufRead, Write as _};
 
 use anyhow::{Context, Result, bail};
 
-use crate::api::Client;
 use crate::commands::tui::session::{self as cp};
 use crate::config;
 use nasiko_utils::term as status;
@@ -522,7 +521,7 @@ fn handle_sse_stream(
                 spin.close_sub();
                 spin.break_stdout();
                 flush_reply(spin, &mut unprinted);
-                prompt_and_resolve_hitl(&pause)?;
+                crate::hitl::prompt_and_resolve_hitl(&pause)?;
                 spin.set("resuming");
                 let resumed = reconnect_after_hitl(endpoint, &pause.id)?;
                 let (resumed_text, resumed_session) = handle_sse_stream(resumed, spin, endpoint)?;
@@ -640,25 +639,11 @@ fn linkify_markdown_links(text: &str) -> String {
     out
 }
 
-/// A pause the agent raised mid-turn, parsed from the `"type":"hitl"` data
-/// part (`a2a_dispatch.rs`'s `build_hitl_stream_data`) inside a
-/// `TASK_STATE_WORKING` status update. `id` is always the real
-/// `hitl_requests.id` to resolve against — even when this pause is an MCP
-/// tool-approval mirrored onto the sub-agent's own conversation, the
-/// substitution already happened server-side (`resolve_display_row`) before
-/// this frame was built.
-struct HitlPause {
-    id: String,
-    kind: String,
-    question: serde_json::Value,
-    agent: Option<String>,
-}
-
 /// Finds the `"type":"hitl"` data part on a `statusUpdate` event, if any.
 /// The preceding `TASK_STATE_INPUT_REQUIRED`/`AUTH_REQUIRED` status (a
 /// separate SSE event) carries no id and is otherwise ignored — this frame
 /// has everything needed to prompt and resolve.
-fn extract_status_hitl_pause(status_update: &serde_json::Value) -> Option<HitlPause> {
+fn extract_status_hitl_pause(status_update: &serde_json::Value) -> Option<crate::hitl::HitlPause> {
     let parts = status_update
         .pointer("/status/message/parts")
         .and_then(|p| p.as_array())?;
@@ -667,7 +652,7 @@ fn extract_status_hitl_pause(status_update: &serde_json::Value) -> Option<HitlPa
         if data.get("type").and_then(|t| t.as_str()) != Some("hitl") {
             return None;
         }
-        Some(HitlPause {
+        Some(crate::hitl::HitlPause {
             id: data.get("id")?.as_str()?.to_string(),
             kind: data
                 .get("kind")?
@@ -686,124 +671,15 @@ fn extract_status_hitl_pause(status_update: &serde_json::Value) -> Option<HitlPa
     })
 }
 
-/// Shows the pause inline and blocks on the human's response, then POSTs the
-/// resolution to `/api/hitl/{id}/resolve`. A pause someone else already
-/// resolved (`already_resolved: true` in a 200 response) is a normal
-/// outcome, not an error — printed and treated as done.
-fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
-    let who = pause.agent.as_deref().unwrap_or("agent");
-    let message = |key: &str| {
-        pause
-            .question
-            .get(key)
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-    };
-
-    let body = match pause.kind.as_str() {
-        "tool_approval" => {
-            let tool = pause.question.get("tool_name").and_then(|v| v.as_str());
-            let connector = pause.question.get("connector_id").and_then(|v| v.as_str());
-            println!();
-            println!(
-                "\x1b[1;33m⏸ {who}\x1b[0m wants approval to run: \x1b[1m{}\x1b[0m",
-                tool.unwrap_or("(unknown tool)")
-            );
-            if let Some(c) = connector {
-                println!("  \x1b[2mconnector: {c}\x1b[0m");
-            }
-            let msg = message("message");
-            if !msg.is_empty() {
-                println!("  \x1b[2m{msg}\x1b[0m");
-            }
-            let approved = dialoguer::Confirm::new()
-                .with_prompt("Approve?")
-                .default(false)
-                .interact()
-                .unwrap_or(false);
-            serde_json::json!({
-                "decision": if approved { "approve" } else { "reject" },
-                "scope": "once",
-            })
-        }
-        "auth_required" => {
-            let msg = message("message");
-            println!();
-            println!(
-                "\x1b[1;33m⏸ {who}\x1b[0m needs authorization: {}",
-                if msg.is_empty() {
-                    "re-authentication required"
-                } else {
-                    msg
-                }
-            );
-            if let Some(c) = pause
-                .question
-                .get("connector")
-                .or_else(|| pause.question.get("connector_id"))
-                .and_then(|v| v.as_str())
-            {
-                println!("  \x1b[2mconnector: {c}\x1b[0m");
-            }
-            if let Some(url) = pause
-                .question
-                .pointer("/metadata/auth_url")
-                .and_then(|v| v.as_str())
-            {
-                println!("  \x1b[2mopen this to authenticate: {url}\x1b[0m");
-            }
-            dialoguer::Input::<String>::new()
-                .with_prompt("Once you've finished, press Enter to continue")
-                .allow_empty(true)
-                .interact_text()
-                .ok();
-            serde_json::json!({ "auth_action": "confirm" })
-        }
-        // "input_required" and any forward-compatible unknown kind: a plain question.
-        _ => {
-            let msg = message("message");
-            println!();
-            println!(
-                "\x1b[1;33m⏸ {who}\x1b[0m: {}",
-                if msg.is_empty() {
-                    "(needs your input)"
-                } else {
-                    msg
-                }
-            );
-            let answer = dialoguer::Input::<String>::new()
-                .with_prompt("\x1b[1;36m❯ you\x1b[0m")
-                .allow_empty(true)
-                .interact_text()
-                .unwrap_or_default();
-            serde_json::json!({ "answer": answer })
-        }
-    };
-
-    let resp: serde_json::Value =
-        Client::from_active_cluster()?.post_json(&format!("/hitl/{}/resolve", pause.id), &body)?;
-
-    if resp.get("already_resolved").and_then(|v| v.as_bool()) == Some(true) {
-        eprintln!("  \x1b[2m(already resolved by someone else)\x1b[0m");
-    } else {
-        eprintln!(
-            "  \x1b[2m(HITL ID: {} — for reference only)\x1b[0m",
-            pause.id
-        );
-    }
-    println!();
-    Ok(())
-}
-
 /// Reconnects to the orchestrator's SSE stream after a HITL pause was
 /// answered, via `metadata.reconnect_after_hitl_id` (the same mechanism
 /// `oss/server/tests/hitl_reconnect.rs` exercises). Always targets
 /// `/api/orchestrator/a2a` on the active cluster — resolving a pause reconnects
 /// through the orchestrator regardless of which endpoint the turn was
-/// originally sent to (§4.1/§7 of docs/HITL_CLI_IMPLEMENTATION_PLAN.md: this
-/// already works for `agent_proxy`-origin rows too, not just the orchestrator's
-/// own), so `nasiko chat -a` reconnects the same way `nasiko chat` does rather
-/// than re-POSTing to the single agent's own `/api/agents/{id}/...` endpoint.
+/// originally sent to, since that already works for `agent_proxy`-origin rows
+/// too, not just the orchestrator's own, so `nasiko chat -a` reconnects the
+/// same way `nasiko chat` does rather than re-POSTing to the single agent's
+/// own `/api/agents/{id}/...` endpoint.
 /// The server itself, not an externally-implemented agent, so unlike
 /// `send_message`'s SDK-quirk retry dance, this always accepts
 /// `message/stream` + `ROLE_USER` directly.

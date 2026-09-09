@@ -506,7 +506,10 @@ fn print_execution(e: &Value) {
 /// A stalled execution (e.g. the server has no `OPENAI_API_KEY` configured, so the MAF worker
 /// never started — jobs then sit at `pending` in Redis indefinitely; this is a documented,
 /// supported "degrades gracefully" server configuration, not a transient blip) must not hang
-/// `--wait` forever. Bounds the poll to ~5 minutes before giving up with an actionable message.
+/// `--wait` forever. Bounds the poll to ~5 minutes of actual polling before giving up with an
+/// actionable message — time spent blocked on a human answering an `awaiting_human` pause never
+/// counts against this budget, since that wait has nothing to do with whether the worker itself
+/// is alive.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const MAX_POLL_ATTEMPTS: u32 = 150;
 
@@ -522,6 +525,26 @@ fn poll_execution(client: &Client, exec_id: &str) -> Result<()> {
             .and_then(Value::as_str)
             .unwrap_or("pending")
             .to_string();
+
+        if status == "awaiting_human" {
+            match pending_hitl_pause(&resp) {
+                Some(pause) => {
+                    drop(spin.take());
+                    crate::hitl::prompt_and_resolve_hitl(&pause)?;
+                    spin = Some(nasiko_utils::term::start_status("resuming"));
+                }
+                // Nothing `pending` right now: either the pause we just answered hasn't
+                // propagated to `maf_executions.status` yet (the resume dispatcher picks it
+                // up on its own ~2s cycle), or the response briefly caught the step
+                // mid-transition — either way, not a new pause, just keep polling.
+                None => {
+                    spin.get_or_insert_with(|| nasiko_utils::term::start_status("resuming"));
+                }
+            }
+            last_status = status;
+            std::thread::sleep(POLL_INTERVAL);
+            continue;
+        }
 
         if status != last_status {
             last_status = status.clone();
@@ -576,6 +599,34 @@ running (e.g. OPENAI_API_KEY not configured on the server). Check again later wi
 nasiko maf execution result {exec_id}",
         MAX_POLL_ATTEMPTS as u64 * POLL_INTERVAL.as_secs()
     );
+}
+
+/// The one `hitl[]` entry still `status: "pending"` on this execution response, if any —
+/// `ExecWithHitlResponse`'s own doc comment guarantees at most one at a time, since MAF steps run
+/// strictly sequentially. `agent` is a step label (`execution.maf_step_index`), not an agent name —
+/// the response carries only the agent's id here, not its display name, and a step number is
+/// enough context for a human answering inline.
+fn pending_hitl_pause(resp: &Value) -> Option<crate::hitl::HitlPause> {
+    let hitl = resp.get("hitl")?.as_array()?;
+    let entry = hitl
+        .iter()
+        .find(|h| h.get("status").and_then(Value::as_str) == Some("pending"))?;
+    Some(crate::hitl::HitlPause {
+        id: entry.get("id")?.as_str()?.to_string(),
+        kind: entry
+            .get("kind")?
+            .as_str()
+            .unwrap_or("input_required")
+            .to_string(),
+        question: entry
+            .get("question")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        agent: entry
+            .pointer("/execution/maf_step_index")
+            .and_then(Value::as_i64)
+            .map(|i| format!("step {i}")),
+    })
 }
 
 /// Print `  <label>  <value>`, showing `-` for null/missing so the layout stays stable.
