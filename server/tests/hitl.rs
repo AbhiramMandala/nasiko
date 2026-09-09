@@ -67,6 +67,33 @@ async fn seed_pending_tool_approval(
     .unwrap()
 }
 
+/// Insert a pending `input_required` row directly, with an arbitrary `question` — used for both
+/// the pre-existing plain-text shape and the selectable-options extension (`question.options`).
+async fn seed_pending_input_required(
+    server: &common::TestServer,
+    agent_id: Uuid,
+    owner_user_id: Uuid,
+    context_id: &str,
+    question: Value,
+) -> Uuid {
+    sqlx::query_scalar::<_, Uuid>(
+        r#"
+        INSERT INTO hitl_requests
+            (kind, origin, agent_id, owner_user_id, task_id, context_id, question)
+        VALUES
+            ('input_required', 'direct_chat', $1, $2, $3, $3, $4)
+        RETURNING id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(owner_user_id)
+    .bind(context_id)
+    .bind(question)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 #[serial]
 async fn list_pending_returns_only_the_callers_own_rows() {
@@ -501,6 +528,449 @@ async fn unauthenticated_requests_are_rejected() {
         .await
         .unwrap();
     assert_eq!(res.status(), 401);
+
+    server.cleanup().await;
+}
+
+// ─── Selectable-options extension to `input_required` ──────────────────────────────────────
+//
+// The structured single-select "click to resolve, no Submit button" / multi-select "toggle,
+// Submit resolves" behavior described in the request is a frontend interaction pattern — there is
+// no frontend UI in this repo to exercise it against. What's tested here is the backend contract
+// that interaction is built on: whatever `/resolve` request either interaction pattern eventually
+// sends is validated and persisted correctly.
+
+fn format_options_question() -> Value {
+    json!({
+        "message": "How should I format the output?",
+        "header": "Format",
+        "options": [
+            {"label": "Summary", "description": "Brief overview"},
+            {"label": "Detailed", "description": "Full explanation"},
+        ],
+        "multi_select": false,
+        "allow_custom_input": true,
+    })
+}
+
+fn sections_multiselect_question() -> Value {
+    json!({
+        "message": "Which sections should I include?",
+        "options": [
+            {"label": "Introduction"},
+            {"label": "Architecture"},
+            {"label": "Security"},
+            {"label": "Conclusion"},
+        ],
+        "multi_select": true,
+        "allow_custom_input": true,
+    })
+}
+
+#[tokio::test]
+#[serial]
+async fn plain_input_required_without_options_still_works_unchanged() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-plain-1").await;
+    let agent_id = seed_agent(&server, owner, "hitl-plain-agent-1").await;
+    let request_id = seed_pending_input_required(
+        &server,
+        agent_id,
+        owner,
+        "ctx-plain-1",
+        json!({ "message": "Please provide the environment name." }),
+    )
+    .await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-plain-1",
+    )
+    .json(&json!({"answer": "production"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let human_response: Value =
+        sqlx::query_scalar("SELECT human_response FROM hitl_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(human_response, json!({ "answer": "production" }));
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn plain_input_required_still_rejects_an_empty_answer() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-plain-2").await;
+    let agent_id = seed_agent(&server, owner, "hitl-plain-agent-2").await;
+    let request_id = seed_pending_input_required(
+        &server,
+        agent_id,
+        owner,
+        "ctx-plain-2",
+        json!({ "message": "Please provide the environment name." }),
+    )
+    .await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-plain-2",
+    )
+    .json(&json!({"answer": "   "}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 400);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn single_select_predefined_option_resolves_with_the_label() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-ss-1").await;
+    let agent_id = seed_agent(&server, owner, "hitl-ss-agent-1").await;
+    let request_id = seed_pending_input_required(
+        &server,
+        agent_id,
+        owner,
+        "ctx-ss-1",
+        format_options_question(),
+    )
+    .await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-ss-1",
+    )
+    .json(&json!({"answer": "Summary"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.json::<Value>().await.unwrap();
+    assert_eq!(body["status"], json!("resolved"));
+    assert_eq!(body["human_response"], json!({ "answer": "Summary" }));
+
+    // Round-trips through the resolve DTO too — `question.header`/`options` are passed through
+    // verbatim (`to_response`), not stripped.
+    assert_eq!(body["question"]["header"], json!("Format"));
+    assert_eq!(body["question"]["options"][0]["label"], json!("Summary"));
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn single_select_rejects_an_option_that_was_never_offered() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-ss-2").await;
+    let agent_id = seed_agent(&server, owner, "hitl-ss-agent-2").await;
+    // allow_custom_input = false — an unlisted answer must be rejected, not silently accepted
+    // as custom text.
+    let mut question = format_options_question();
+    question["allow_custom_input"] = json!(false);
+    let request_id =
+        seed_pending_input_required(&server, agent_id, owner, "ctx-ss-2", question).await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-ss-2",
+    )
+    .json(&json!({"answer": "Delete everything"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 400);
+
+    let status: String = sqlx::query_scalar("SELECT status FROM hitl_requests WHERE id = $1")
+        .bind(request_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        status, "pending",
+        "a rejected answer must not resolve the row"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn single_select_custom_input_is_accepted_when_allowed() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-ss-3").await;
+    let agent_id = seed_agent(&server, owner, "hitl-ss-agent-3").await;
+    let request_id = seed_pending_input_required(
+        &server,
+        agent_id,
+        owner,
+        "ctx-ss-3",
+        format_options_question(), // allow_custom_input: true
+    )
+    .await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-ss-3",
+    )
+    .json(&json!({"answer": "Give me a concise executive summary"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let human_response: Value =
+        sqlx::query_scalar("SELECT human_response FROM hitl_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        human_response,
+        json!({ "answer": "Give me a concise executive summary" })
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn multi_select_zero_selections_is_valid() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-ms-1").await;
+    let agent_id = seed_agent(&server, owner, "hitl-ms-agent-1").await;
+    let request_id = seed_pending_input_required(
+        &server,
+        agent_id,
+        owner,
+        "ctx-ms-1",
+        sections_multiselect_question(),
+    )
+    .await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-ms-1",
+    )
+    .json(&json!({"answer": [], "custom_answer": "Only discuss security implications"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let human_response: Value =
+        sqlx::query_scalar("SELECT human_response FROM hitl_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        human_response,
+        json!({ "answer": [], "custom_answer": "Only discuss security implications" })
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn multi_select_one_selection_is_valid() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-ms-2").await;
+    let agent_id = seed_agent(&server, owner, "hitl-ms-agent-2").await;
+    let request_id = seed_pending_input_required(
+        &server,
+        agent_id,
+        owner,
+        "ctx-ms-2",
+        sections_multiselect_question(),
+    )
+    .await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-ms-2",
+    )
+    .json(&json!({"answer": ["Introduction"]}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let human_response: Value =
+        sqlx::query_scalar("SELECT human_response FROM hitl_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(human_response, json!({ "answer": ["Introduction"] }));
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn multi_select_multiple_selections_plus_custom_answer_is_valid() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-ms-3").await;
+    let agent_id = seed_agent(&server, owner, "hitl-ms-agent-3").await;
+    let request_id = seed_pending_input_required(
+        &server,
+        agent_id,
+        owner,
+        "ctx-ms-3",
+        sections_multiselect_question(),
+    )
+    .await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-ms-3",
+    )
+    .json(&json!({
+        "answer": ["Introduction", "Security"],
+        "custom_answer": "Also include deployment risks",
+    }))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let human_response: Value =
+        sqlx::query_scalar("SELECT human_response FROM hitl_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        human_response,
+        json!({
+            "answer": ["Introduction", "Security"],
+            "custom_answer": "Also include deployment risks",
+        })
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn multi_select_rejects_an_option_that_was_never_offered() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-ms-4").await;
+    let agent_id = seed_agent(&server, owner, "hitl-ms-agent-4").await;
+    let request_id = seed_pending_input_required(
+        &server,
+        agent_id,
+        owner,
+        "ctx-ms-4",
+        sections_multiselect_question(),
+    )
+    .await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-ms-4",
+    )
+    .json(&json!({"answer": ["Not a real section"]}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 400);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn multi_select_zero_selections_and_no_custom_answer_is_rejected() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-ms-5").await;
+    let agent_id = seed_agent(&server, owner, "hitl-ms-agent-5").await;
+    let request_id = seed_pending_input_required(
+        &server,
+        agent_id,
+        owner,
+        "ctx-ms-5",
+        sections_multiselect_question(),
+    )
+    .await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-ms-5",
+    )
+    .json(&json!({"answer": []}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 400);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn custom_input_is_rejected_when_the_question_disallows_it() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-custom-1").await;
+    let agent_id = seed_agent(&server, owner, "hitl-custom-agent-1").await;
+    let mut question = format_options_question();
+    question["allow_custom_input"] = json!(false);
+    let request_id =
+        seed_pending_input_required(&server, agent_id, owner, "ctx-custom-1", question).await;
+
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &owner.to_string(),
+        "hitl-custom-1",
+    )
+    .json(&json!({"answer": "Something not on the list"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 400);
 
     server.cleanup().await;
 }
