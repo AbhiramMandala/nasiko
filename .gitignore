@@ -10,7 +10,7 @@ __pycache__/
 # (public URLs/tuning only — the import script scans it for credentials).
 # Deliberately NOT negating .env.* : the import script prunes non-release
 # flavors, and this makes an accidental re-import of one fail its ignore-check.
-!ui/ee/app/assets/.env
+!ee/ui/app/assets/.env
 .venv/
 node_modules/
 *.egg-info/
@@ -28,15 +28,6 @@ uv.lock
 *.swo
 .envrc
 
-# Claude Code. Only the personal half — settings.local.json is per-developer
-# permissions and holds absolute paths from whoever's machine wrote it, so it
-# is never shareable. The rest of .claude/ is: settings.json, skills/, agents/
-# and commands/ are team config and should be committed when someone adds one
-# (.claude/skills/backend-ui-slice is already scaffolded). Same split as
-# .vscode/settings.json above — ignore the personal file, not the tool's
-# directory, or the shared half can never land.
-.claude/settings.local.json
-
 
 # Local MCP config — contains a registry credential, do not commit
 .mcp.json
@@ -48,5 +39,8 @@ values.json
 /docs/MCP_SERVER_UPLOAD_EE_IMPLEMENTATION_PLAN.md
 /docs/MCP_UPLOAD_PLAN_OSS.md
 .preview-shots/
-/_to_delete/
-/_xfer/
+
+# Vendored LongMemEval benchmark (local PACMS eval harness only, not product
+# code) — clone https://github.com/xiaowu0162/LongMemEval separately if
+# re-running scripts/pacms_longmemeval_test.py.
+/LongMemEval-main/
