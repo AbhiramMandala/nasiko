@@ -193,13 +193,79 @@ async fn deliver(state: AppState, row: HitlRequest) {
         return;
     }
 
+    // Register this resume as a live flow in the MCP-gateway sense (Postgres `flows` +
+    // `flow_participants`) — a completely separate bookkeeping system from the FlowGuard
+    // cascade-limit check just above, which never touches these tables. Without this, the
+    // resumed agent's own MCP tool calls (e.g. retrying the exact call a human just approved)
+    // 403 with "traceparent does not resolve to a live flow": `flow_ctx` is a brand-new root
+    // flow that no dispatch path had ever registered here (confirmed live — HITL_PR342-style
+    // regression). Mirrors every other dispatch site's flows insert (`agent_proxy.rs`,
+    // `a2a_dispatch.rs`, `maf/executor.rs::register_flow`).
+    //
+    // `metadata.context_id` carries `row.context_id` (the agent's OWN, private A2A context —
+    // never a `chat_sessions` row) purely for observability/debugging, mirroring
+    // `agent_proxy.rs`'s convention of stamping the sticky key onto `flows.metadata`. It is NOT
+    // what makes retry-matching work — that's `session_traces` below, and `session_traces.session_id`
+    // has a hard FK to `chat_sessions(session_id)` (`0004_observability.sql`), which `context_id`
+    // can never satisfy. `nasiko_mcp_gateway::session::resolve_context_id` resolves a tools/call's
+    // session by looking up `session_traces` for the CALLING trace_id, falling back to the trace_id
+    // itself only when no row exists. Every resume mints a brand-new `flow_ctx.flow_id`, so without
+    // a session_traces row mapping it to something STABLE, `resolve_tool_approval_retry`'s
+    // once/session-scope grant lookup keys on a trace_id that's different on every single resume,
+    // never matching the original ask's own resolved context — every resumed retry of a tool the
+    // human just approved gets asked again, forever (confirmed live: approving the same
+    // tool_approval repeatedly, every retry still comes back `ask_required`, and the earlier
+    // `session_id = context_id` version of this INSERT was silently failing its FK check on every
+    // single call — `context_id` is never a real chat session, so it never once succeeded).
+    // `row.chat_session_id` is the real, existing `chat_sessions` row every mirror in this chain
+    // carries forward (`NewHitlRequest::orchestrator`/`persist_direct_chat_pause`) — mapping every
+    // resume's fresh flow_id to THAT is what actually lets retries resolve to the SAME session the
+    // original ask did. Skipped when absent (direct_chat/agent_proxy rows aren't guaranteed one):
+    // no stable id to map to, so falling back to today's re-ask behavior is the only honest option.
+    let _ = sqlx::query(
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
+           VALUES ($1, $2, $3, $4, $5, 'running', $6)
+           ON CONFLICT (flow_id) DO UPDATE
+              SET status = 'running', completed_at = NULL"#,
+    )
+    .bind(&flow_ctx.flow_id)
+    .bind(row.owner_user_id)
+    .bind(row.agent_id)
+    .bind(&agent_name)
+    .bind("HITL resume")
+    .bind(serde_json::json!({ "context_id": context_id }))
+    .execute(&state.db)
+    .await;
+    crate::flows::record_participant(&state.db, &flow_ctx.flow_id, row.agent_id).await;
+    if let Some(chat_session_id) = row.chat_session_id.as_deref()
+        && let Err(e) = sqlx::query(
+            "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (session_id, trace_id) DO NOTHING",
+        )
+        .bind(chat_session_id)
+        .bind(&flow_ctx.flow_id)
+        .bind(row.agent_id)
+        .bind(&agent_name)
+        .execute(&state.db)
+        .await
+    {
+        tracing::warn!(
+            error = %e, %chat_session_id, flow_id = %flow_ctx.flow_id,
+            "hitl resume: session_traces record failed — tool-approval retry matching for this resume may re-ask"
+        );
+    }
+
     let answer = answer_text(&row);
     let req_body = nasiko_types::a2a::build_stream_request_for_task(&answer, &context_id, &task_id);
 
     // Reused for the initial send and (non-streaming path only) the one-shot `message/send`
-    // retry — same headers, same delegation token, different body. 300s, not the shared
-    // client's 60s default: agent turns can be slow (mirrors `maf/executor.rs::post_a2a_request`,
-    // the other call site that talks to an agent on a human's behalf).
+    // retry — same headers, different body. 300s, not the shared client's 60s default: agent
+    // turns can be slow (mirrors `maf/executor.rs::post_a2a_request`, the other call site that
+    // talks to an agent on a human's behalf).
+    //
+    // No per-request MCP credential is forwarded: the agent authenticates to `/api/mcp` with its
+    // own deploy-time MCP_GATEWAY_TOKEN (docs/MCP_GATEWAY_AGENT_AUTH.md).
     //
     // Forwards `traceparent` from `flow_ctx` — every other inter-agent call site
     // (`agent_proxy.rs`, `a2a_dispatch.rs`) does the same. Without it, an agent whose own
@@ -210,22 +276,13 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // orchestrator's sub-agent sees the exact same tool-approval prompt again on the very next
     // step, forever.
     let build_req = |body: &nasiko_types::a2a::JsonRpcRequest| {
-        let mut req = state
+        state
             .http_client
             .post(&endpoint)
             .timeout(Duration::from_secs(300))
             .header("A2A-Version", "1.0")
-            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx));
-        if let Ok(jwt_secret) = std::env::var("JWT_SECRET")
-            && let Ok(delegation_token) = nasiko_auth::jwt::mint_delegation_token(
-                &jwt_secret,
-                &row.owner_user_id.to_string(),
-                &row.agent_id.to_string(),
-            )
-        {
-            req = req.header("x-nasiko-agent-token", delegation_token);
-        }
-        req.json(body)
+            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
+            .json(body)
     };
 
     let response = match build_req(&req_body).send().await {
@@ -756,8 +813,28 @@ async fn trigger_new_orchestrator_turn(
         None => format!("The {agent_name} agent has completed the requested step."),
     };
 
+    // The orchestrator's own system prompt (`react_loop.rs`) reads every turn as "analyze the
+    // user's request, determine which agent can help" — reasonable for a real user message, but
+    // `continuation` above is not one: it's a delegated agent's own reply to a call the
+    // orchestrator already made, being fed back in because a paused sub-agent call has no way to
+    // resume the ORIGINAL in-progress ReAct turn's own tool-call state (§Step 7's known
+    // limitation — ContextManager/SessionHistory only carry flat user/assistant text, not an
+    // interrupted tool-call transcript). Read as a plain "user" turn, the model has no signal
+    // that it's the OUTCOME of an action it already took rather than a new one to take — and
+    // confirmed live, it can and does call the same agent again for the same completed action
+    // (e.g. "created the issue" read as "please create the issue"). This instruction is reasoning
+    // input only, not shown to the human: `raw_text` below (what actually gets persisted to
+    // `chat_messages`) stays the plain `continuation` text, unchanged.
+    let reasoning_query = format!(
+        "{continuation}\n\n\
+         (System note: this is the result of an action you already delegated, not a new request \
+         from the user. If it fully answers the original request, respond to the user with the \
+         result now as plain text — do not call {agent_name}, or any other agent, again for the \
+         same action.)"
+    );
+
     let history = nasiko_orchestrator::SessionHistory::fetch(&chat_session_id, &state.db, 20).await;
-    let query = history.with_current_query(&continuation);
+    let query = history.with_current_query(&reasoning_query);
     let new_task_id = Uuid::new_v4().to_string();
 
     // Never assume the original turn's privilege level — apply the resumed user's real, current
