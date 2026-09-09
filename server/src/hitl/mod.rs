@@ -784,8 +784,28 @@ async fn trigger_new_orchestrator_turn(
         None => format!("The {agent_name} agent has completed the requested step."),
     };
 
+    // The orchestrator's own system prompt (`react_loop.rs`) reads every turn as "analyze the
+    // user's request, determine which agent can help" — reasonable for a real user message, but
+    // `continuation` above is not one: it's a delegated agent's own reply to a call the
+    // orchestrator already made, being fed back in because a paused sub-agent call has no way to
+    // resume the ORIGINAL in-progress ReAct turn's own tool-call state (§Step 7's known
+    // limitation — ContextManager/SessionHistory only carry flat user/assistant text, not an
+    // interrupted tool-call transcript). Read as a plain "user" turn, the model has no signal
+    // that it's the OUTCOME of an action it already took rather than a new one to take — and
+    // confirmed live, it can and does call the same agent again for the same completed action
+    // (e.g. "created the issue" read as "please create the issue"). This instruction is reasoning
+    // input only, not shown to the human: `raw_text` below (what actually gets persisted to
+    // `chat_messages`) stays the plain `continuation` text, unchanged.
+    let reasoning_query = format!(
+        "{continuation}\n\n\
+         (System note: this is the result of an action you already delegated, not a new request \
+         from the user. If it fully answers the original request, respond to the user with the \
+         result now as plain text — do not call {agent_name}, or any other agent, again for the \
+         same action.)"
+    );
+
     let history = nasiko_orchestrator::SessionHistory::fetch(&chat_session_id, &state.db, 20).await;
-    let query = history.with_current_query(&continuation);
+    let query = history.with_current_query(&reasoning_query);
     let new_task_id = Uuid::new_v4().to_string();
 
     // Never assume the original turn's privilege level — apply the resumed user's real, current
