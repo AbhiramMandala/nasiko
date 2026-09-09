@@ -347,7 +347,14 @@ export function createSurfaceSession(options) {
     // sentence) would concatenate directly onto the seed's last DSL line with
     // nothing separating them, corrupting the parser's line-based statement
     // boundary.
-    buffer = currentSurface ? `${pruneUnreachable(currentSurface, store)}\n` : '';
+    //
+    // Captured once as `turnSeed`, not recomputed inline at every reset point:
+    // a mid-turn restart (the `sawSurface` branch in handleFrame, below) must
+    // discard back to this SAME seed, not to '' — otherwise a restart mid a
+    // delta-only revision turn would drop the very thing this fix exists to
+    // keep, silently reintroducing the blank-screen bug in that one path.
+    const turnSeed = currentSurface ? `${pruneUnreachable(currentSurface, store)}\n` : '';
+    buffer = turnSeed;
     proseEmitted = 0;
     lastDiagnosticsKey = '';
     ended = false;
@@ -533,9 +540,12 @@ export function createSurfaceSession(options) {
           // A second `surface` frame means the server started the generation
           // over rather than replaying from Last-Event-ID. Whatever is in the
           // buffer belongs to the abandoned attempt, and appending to it would
-          // splice two different dashboards together.
+          // splice two different dashboards together. Discarded back to
+          // `turnSeed`, not '' — this turn may itself be a revision turn, and
+          // '' would drop the seeded prior surface a restart has no reason to
+          // touch.
           if (sawSurface) {
-            buffer = '';
+            buffer = turnSeed;
             proseEmitted = 0;
             emitDiagnostics([{
               source: 'stream',

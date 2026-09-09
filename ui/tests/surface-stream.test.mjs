@@ -691,6 +691,43 @@ test('a revision turn that only emits the changed statement does not blank the s
   assert.ok(s2.currentSurface.includes('"Spend"'), 'and the actual change took effect: ' + s2.currentSurface);
 });
 
+test('a restart mid a revision turn discards back to the seeded prior surface, not empty', async () => {
+  // Same interaction as "a restart discards the partial surface..." above,
+  // but on turn TWO — where a naive discard-to-'' would silently reintroduce
+  // the exact bug the previous test fixes, since this turn's buffer starts
+  // seeded rather than empty.
+  const first = [
+    frame('surface', {}, 1),
+    frame('dsl-chunk', { text: 'root = AppStack([kpi], "md")\n' }, 2),
+    frame('dsl-chunk', { text: 'kpi = AppStatCard("Cost", "1", null, "up")\n' }, 3),
+    frame('end', { status: 'ok' }, 4),
+  ];
+  const deltaTruncated = [frame('surface', {}, 1), frame('dsl-chunk', { text: 'kpi = AppStatCard("Sp' }, 2)];
+  const deltaFull = [
+    frame('surface', {}, 1),
+    frame('dsl-chunk', { text: 'kpi = AppStatCard("Spend", "1", null, "up")\n' }, 2),
+    frame('end', { status: 'ok' }, 3),
+  ];
+  let n = 0;
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    fetchImpl: async () => sse(++n === 1 ? first : n === 2 ? deltaTruncated : deltaFull),
+  });
+
+  await s.send('build it');
+  await s.send('rename the card');
+
+  assert.equal(n, 3, 'turn two actually dropped and restarted, or this proves nothing');
+  assert.equal(container.children[0]?.tag, 'app-stack', 'root survived the restart, not just the happy path');
+  assert.ok(s.currentSurface.includes('root = AppStack'), 'seeded root: ' + s.currentSurface);
+  assert.ok(s.currentSurface.includes('"Spend"'), 'and the restarted delta still landed: ' + s.currentSurface);
+});
+
 test('a 200 that is not an event stream is named, not retried as a drop', async () => {
   // The real shape: the control plane has no /api/weave/surface route, the
   // request falls through to the SPA fallback, and index.html comes back with
