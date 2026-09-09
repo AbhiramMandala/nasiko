@@ -81,7 +81,9 @@ struct SkillRow {
 async fn discoverable_agents(state: &AppState) -> Result<Vec<Value>, sqlx::Error> {
     let rows = sqlx::query_as::<_, AgentRow>(
         "SELECT id, name, description, url FROM agents \
-         WHERE status = 'running' AND deleted_at IS NULL ORDER BY name",
+         WHERE status = 'running' AND deleted_at IS NULL \
+           AND NOT is_internal \
+         ORDER BY name",
     )
     .fetch_all(&state.db)
     .await?;

@@ -13,6 +13,7 @@ pub async fn get_agents_for_user(
            FROM agents a
            LEFT JOIN agent_grants g ON g.agent_id = a.id
            WHERE a.status = 'running'
+             AND NOT a.is_internal
              AND (a.owner_id = $1 OR a.is_public = true OR g.grantee_id = $1::text)
            GROUP BY a.id"#,
     )

@@ -161,6 +161,7 @@ pub(crate) async fn by_skill(
                   a.version, a.status, a.tags, a.created_at
            FROM agents a
            WHERE ({access})
+             AND NOT a.is_internal
              AND EXISTS (
                  SELECT 1 FROM agent_skills s
                  WHERE s.agent_id = a.id AND s.tags @> ARRAY[$1]::text[]
@@ -367,6 +368,7 @@ pub(crate) async fn list(
     let sql = format!(
         r#"SELECT * FROM agents
            WHERE deleted_at IS NULL
+             AND NOT is_internal
              AND ($1::uuid IS NULL OR owner_id = $1)
              AND ({access})
              AND ($2::text IS NULL OR status = $2)

@@ -418,6 +418,53 @@ async fn list_includes_public_agent_for_non_owner() {
 
 #[tokio::test]
 #[serial]
+async fn list_excludes_internal_agent_even_for_superuser() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let internal = create_agent(
+        &server,
+        uid,
+        json!({"name": "cat3-internal-hidden", "version": "1.0.0"}),
+    )
+    .await;
+    let internal_id = internal["id"].as_str().unwrap();
+    // Public too — proves the exclusion applies regardless of access rules,
+    // not just because it would otherwise have been invisible. `is_internal`
+    // isn't exposed through the create/update API by design (an ordinary
+    // metadata edit must never be able to flip it), so it's set directly.
+    sqlx::query("UPDATE agents SET is_public = true, is_internal = true WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(internal_id).unwrap())
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let normal = create_agent(
+        &server,
+        uid,
+        json!({"name": "cat3-internal-normal", "version": "1.0.0"}),
+    )
+    .await;
+    let normal_id = normal["id"].as_str().unwrap();
+
+    let seen = list_agents(&server, uid, true).await;
+    let ids: Vec<&str> = seen.iter().filter_map(|a| a["id"].as_str()).collect();
+
+    assert!(
+        !ids.contains(&internal_id),
+        "an internal agent must not appear in the list, even for a superuser"
+    );
+    assert!(
+        ids.contains(&normal_id),
+        "an ordinary agent's visibility must be unaffected"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn by_skill_includes_user_granted_agent_for_non_owner() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
@@ -461,6 +508,41 @@ async fn by_skill_includes_user_granted_agent_for_non_owner() {
     assert!(
         !ids.contains(&ungranted_id),
         "non-owner must not see a non-granted agent via by-skill"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn by_skill_excludes_internal_agent_even_with_a_matching_skill_tag() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let internal = create_agent(
+        &server,
+        uid,
+        json!({
+            "name": "cat3-skill-internal",
+            "version": "1.0.0",
+            "skills": [skill("cat3-s3", &["cat3-internal-skill-tag"])],
+        }),
+    )
+    .await;
+    let internal_id = internal["id"].as_str().unwrap();
+    sqlx::query("UPDATE agents SET is_public = true, is_internal = true WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(internal_id).unwrap())
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let seen = by_skill(&server, uid, true, "cat3-internal-skill-tag").await;
+    let ids: Vec<&str> = seen.iter().filter_map(|a| a["id"].as_str()).collect();
+
+    assert!(
+        !ids.contains(&internal_id),
+        "an internal agent must not appear via by-skill, even for a superuser, even with a matching skill tag"
     );
 
     server.cleanup().await;

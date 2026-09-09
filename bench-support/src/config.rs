@@ -81,9 +81,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         mcp_servers_network: "nasiko-mcp-servers-net".into(),
         mcp_upload_max_replicas: 1,
         agent_max_replicas: 1,
-        // The bench never builds images; keep the worker serial so it can't
-        // compete with the benchmarked request path for runtime threads.
-        build_concurrency: 1,
         agent_default_memory: "512Mi".into(),
         agent_memory_volume: "nasiko-agent-memory".into(),
         agent_memory_init_image: "alpine:3.21".into(),
@@ -99,10 +96,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         oci_storage_bucket: "nasiko-bench-artifacts".into(),
         agent_image_registry: String::new(),
         build_push_token: String::new(),
-        // Empty token: the /api/weave/surface proxy answers 503 rather than
-        // reaching out, which is what a bench with no Weave running wants.
-        weave_base_url: "http://localhost:8801".into(),
-        weave_internal_token: String::new(),
         seed_agents: None,
         // Dummy but non-empty — ee build_ee_app requires Some(), and a
         // non-empty api_key is also what lets Stage 1 (VectorStore) attempt
@@ -156,8 +149,5 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         admin_username: "admin".into(),
         admin_password: "bench-admin-password".into(),
         container_hours_poll_secs: 60,
-        trace_usage_sync_secs: 0,
-        trace_usage_overlap_secs: 600,
-        trace_usage_batch_size: 50,
     }
 }

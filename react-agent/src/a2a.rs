@@ -35,6 +35,16 @@ pub enum AgentStreamEvent {
     Content(String),
 }
 
+/// One JSON-RPC `result` object from a streaming call, unclassified — for a
+/// caller that needs the raw `kind`/`append`/`final` shape
+/// [`AgentStreamEvent`] collapses away (see
+/// [`A2aClient::send_message_streaming_raw`]).
+#[derive(Debug)]
+pub enum RawAgentFrame {
+    Frame(serde_json::Value),
+    Error(A2aClientError),
+}
+
 /// A2A method-name / message-shape dialect.
 ///
 /// Standard JSON-RPC agents (`preferredTransport: JSONRPC`, e.g. a2a-sdk) use
@@ -498,6 +508,125 @@ impl A2aClient {
         Ok(collected)
     }
 
+    /// Like [`send_message_streaming`], but relays every JSON-RPC `result`
+    /// object over `tx` unclassified — for a caller that needs frame-level
+    /// fidelity (`kind`/`append`/`final`) [`AgentStreamEvent`] can't give.
+    pub async fn send_message_streaming_raw(
+        &self,
+        endpoint: &str,
+        message: &str,
+        context_id: Option<&str>,
+        tx: tokio::sync::mpsc::Sender<RawAgentFrame>,
+        per_call_headers: &[(String, String)],
+    ) -> Result<(), A2aClientError> {
+        use futures::StreamExt as _;
+
+        let ctx = context_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+        let mut body = self.build_message_body(Dialect::JsonRpc, true, message, &ctx, &[]);
+        if let Some(ref metadata) = self.request_metadata
+            && let Some(params) = body.get_mut("params")
+        {
+            params
+                .as_object_mut()
+                .map(|p| p.insert("metadata".to_string(), metadata.clone()));
+        }
+
+        let mut req = self
+            .http
+            .post(endpoint)
+            .header("A2A-Version", "1.0")
+            .header("Accept", "text/event-stream")
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(600));
+        for (key, value) in self.extra_headers.iter().chain(per_call_headers) {
+            req = req.header(key, value);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| A2aClientError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(A2aClientError::Http(status.as_u16(), body));
+        }
+
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        if !content_type.contains("text/event-stream") {
+            let a2a: A2aResponse = resp
+                .json()
+                .await
+                .map_err(|e| A2aClientError::InvalidResponse(e.to_string()))?;
+            if let Some(ref err) = a2a.error {
+                return Err(A2aClientError::A2aProtocol {
+                    code: err.code,
+                    message: err.message.clone(),
+                });
+            }
+            if let Some(result) = a2a.result {
+                let _ = tx.send(RawAgentFrame::Frame(result)).await;
+            }
+            return Ok(());
+        }
+
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut stream = resp.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| A2aClientError::Network(e.to_string()))?;
+            buffer.extend_from_slice(&chunk);
+
+            while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line_bytes);
+                let line = line.trim_end_matches(['\n', '\r']);
+
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                let data = data.trim();
+                if data.is_empty() {
+                    continue;
+                }
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(data) else {
+                    continue;
+                };
+
+                if let Some(err) = event.get("error") {
+                    let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32;
+                    let message = err
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("error")
+                        .to_string();
+                    let _ = tx
+                        .send(RawAgentFrame::Error(A2aClientError::A2aProtocol {
+                            code,
+                            message,
+                        }))
+                        .await;
+                    continue;
+                }
+                if let Some(result) = event.get("result") {
+                    let _ = tx.send(RawAgentFrame::Frame(result.clone())).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Extract text content from an A2A response (artifacts or status message).
     pub fn extract_text(response: &A2aResponse) -> Option<String> {
         let result = response.result.as_ref()?;
@@ -670,6 +799,103 @@ mod tests {
             "task": {"artifacts": [{"artifactId": "a1", "parts": [{"text": ""}]}]}
         });
         assert_eq!(A2aClient::extract_text_from_value(&result), None);
+    }
+
+    #[tokio::test]
+    async fn send_message_streaming_raw_relays_each_frame_unmodified() {
+        let mut server = mockito::Server::new_async().await;
+        let body = concat!(
+            "data: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"status-update\",\"status\":{\"state\":\"working\"}}}\n\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"artifact-update\",\"append\":true,\"final\":false}}\n\n",
+        );
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let client = A2aClient::new();
+        client
+            .send_message_streaming_raw(&server.url(), "hi", Some("ctx-1"), tx, &[])
+            .await
+            .unwrap();
+        mock.assert_async().await;
+
+        let first = rx.recv().await.unwrap();
+        let RawAgentFrame::Frame(v) = first else {
+            panic!("expected a Frame");
+        };
+        assert_eq!(v["kind"], "status-update");
+
+        let second = rx.recv().await.unwrap();
+        let RawAgentFrame::Frame(v) = second else {
+            panic!("expected a Frame");
+        };
+        assert_eq!(v["kind"], "artifact-update");
+        assert_eq!(v["append"], true);
+    }
+
+    #[tokio::test]
+    async fn send_message_streaming_raw_relays_error_frames() {
+        let mut server = mockito::Server::new_async().await;
+        let body = "data: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":-32000,\"message\":\"boom\"}}\n\n";
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let client = A2aClient::new();
+        client
+            .send_message_streaming_raw(&server.url(), "hi", Some("ctx-1"), tx, &[])
+            .await
+            .unwrap();
+        mock.assert_async().await;
+
+        match rx.recv().await.unwrap() {
+            RawAgentFrame::Error(A2aClientError::A2aProtocol { code, message }) => {
+                assert_eq!(code, -32000);
+                assert_eq!(message, "boom");
+            }
+            other => panic!("expected an Error frame, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_message_streaming_raw_handles_a_non_streaming_json_response() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": "1",
+                    "result": {"kind": "artifact-update", "artifact": {"parts": [{"text": "hi"}]}},
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let client = A2aClient::new();
+        client
+            .send_message_streaming_raw(&server.url(), "hi", Some("ctx-1"), tx, &[])
+            .await
+            .unwrap();
+        mock.assert_async().await;
+
+        let RawAgentFrame::Frame(v) = rx.recv().await.unwrap() else {
+            panic!("expected a Frame");
+        };
+        assert_eq!(v["artifact"]["parts"][0]["text"], "hi");
     }
 
     #[test]

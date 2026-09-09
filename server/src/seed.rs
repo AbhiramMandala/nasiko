@@ -220,6 +220,182 @@ pub async fn seed_agents_if_configured(state: &AppState) {
     }
 }
 
+const DEFAULT_WEAVE_AGENT_NAME: &str = "weave-dashboard-generator";
+
+/// Deploys the Weave dynamic-UI generation agent the same way
+/// `seed_agents_if_configured` deploys any other agent, except this row has
+/// `is_internal = true` — excluded from every agent list/router/discovery
+/// query, reachable only through the dedicated `ee/server/src/weave_surface.rs`
+/// route, never the generic explicit-`agent_id` A2A dispatch path. Set
+/// `WEAVE_AGENT_IMAGE` to enable; unset skips this entirely, same posture as
+/// `SEED_AGENTS`. `WEAVE_FORCE_PULL` (any value) forces a redeploy even when
+/// `WEAVE_AGENT_IMAGE` is unchanged — for reusing the same tag across builds
+/// instead of bumping it (`SEED_FORCE_PULL`'s equivalent for this agent).
+pub async fn seed_weave_agent_if_configured(state: &AppState) {
+    let image = match std::env::var("WEAVE_AGENT_IMAGE") {
+        Ok(val) if !val.trim().is_empty() => val,
+        _ => {
+            info!("WEAVE_AGENT_IMAGE not set, skipping weave agent seeding");
+            return;
+        }
+    };
+    let agent_name =
+        std::env::var("WEAVE_AGENT_NAME").unwrap_or_else(|_| DEFAULT_WEAVE_AGENT_NAME.to_string());
+
+    let owner_id: Uuid = match sqlx::query_scalar(
+        "SELECT id FROM users WHERE is_superuser = true AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(id)) => id,
+        _ => {
+            warn!("no admin user found, cannot seed weave agent (run bootstrap first)");
+            return;
+        }
+    };
+
+    let existing = sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE name = $1")
+        .bind(&agent_name)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None);
+
+    let force_pull = std::env::var("WEAVE_FORCE_PULL").is_ok();
+    let needs_deploy = match &existing {
+        None => true,
+        Some(agent) => {
+            let image_changed = agent.image.as_deref() != Some(image.as_str());
+            if image_changed || force_pull {
+                true
+            } else {
+                let container_id = ContainerId::from_uuid(agent.id);
+                match state.runtime.status(&container_id).await {
+                    Ok(status) => status.state != RuntimeState::Running,
+                    Err(_) => true,
+                }
+            }
+        }
+    };
+    if !needs_deploy {
+        info!(agent = %agent_name, "weave agent already running, skipping");
+        return;
+    }
+
+    info!(agent = %agent_name, %image, "seeding weave agent");
+
+    let agent = match &existing {
+        Some(a) => {
+            let _ = sqlx::query(
+                "UPDATE agents SET image = $2, status = 'deploying', updated_at = now() WHERE id = $1",
+            )
+            .bind(a.id)
+            .bind(&image)
+            .execute(&state.db)
+            .await;
+            a.clone()
+        }
+        None => {
+            let inserted = sqlx::query_as::<_, Agent>(
+                r#"INSERT INTO agents (name, owner_id, image, status, is_public, is_internal, metadata)
+                   VALUES ($1, $2, $3, 'deploying', false, true, '{"seed": true}')
+                   RETURNING *"#,
+            )
+            .bind(&agent_name)
+            .bind(owner_id)
+            .bind(&image)
+            .fetch_one(&state.db)
+            .await;
+            match inserted {
+                Ok(a) => a,
+                Err(e) => {
+                    warn!(agent = %agent_name, error = %e, "failed to register weave agent");
+                    return;
+                }
+            }
+        }
+    };
+
+    let mut env = HashMap::new();
+    env.insert("PORT".into(), AGENT_PORT.to_string());
+    env.insert(
+        "WEAVE_EXTRA_SKILLS".into(),
+        "examples.dynamic_ui.skill:build_skill".into(),
+    );
+    for (key, var) in [
+        ("ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+        ("ANTHROPIC_BASE_URL", "ANTHROPIC_BASE_URL"),
+        ("AWS_REGION", "AWS_REGION"),
+        ("AWS_BEARER_TOKEN_BEDROCK", "AWS_BEARER_TOKEN_BEDROCK"),
+    ] {
+        if let Ok(val) = std::env::var(var)
+            && !val.is_empty()
+        {
+            env.insert(key.into(), val);
+        }
+    }
+    if let Ok(domain) = std::env::var("CP_DOMAIN")
+        && !domain.is_empty()
+    {
+        env.insert(
+            "WEAVE_CATALOG_URL".into(),
+            format!("https://{domain}/common/surface/dsl-catalog.json"),
+        );
+    }
+
+    let mut spec = crate::agents::build_agent_spec(
+        agent.id,
+        &agent_name,
+        image.clone(),
+        vec![AGENT_PORT],
+        env,
+        &state.config.agent_default_memory,
+        state.config.agent_max_replicas,
+        false,
+        None,
+        owner_id,
+    );
+    crate::agents::attach_pull_credential(
+        &state.db,
+        &state.config.agent_runtime,
+        &state.config.agent_image_registry,
+        &mut spec,
+        agent.id,
+    )
+    .await;
+
+    match state.runtime.deploy(&spec).await {
+        Ok(status) => {
+            info!(agent = %agent_name, ?status, "weave agent deployed");
+            let agent_url =
+                crate::agents::resolve_agent_url(&state.runtime, &status, &spec.container_id).await;
+            let _ = sqlx::query(
+                "UPDATE agents SET status = 'running', url = $2, transport_path = '/jsonrpc', updated_at = now() WHERE id = $1",
+            )
+            .bind(agent.id)
+            .bind(&agent_url)
+            .execute(&state.db)
+            .await;
+            crate::agents::utils::ensure_deployment_tracked(
+                &state.db,
+                agent.id,
+                Some(owner_id),
+                &image,
+            )
+            .await;
+        }
+        Err(e) => {
+            warn!(agent = %agent_name, error = %e, "failed to deploy weave agent");
+            let _ = sqlx::query(
+                "UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1",
+            )
+            .bind(agent.id)
+            .execute(&state.db)
+            .await;
+        }
+    }
+}
+
 /// Extract agent name from image ref: "nasiko/echo-agent:v1" -> "echo-agent"
 fn extract_name(image: &str) -> String {
     let without_tag = image.split(':').next().unwrap_or(image);
