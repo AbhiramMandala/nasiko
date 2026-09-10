@@ -46,20 +46,6 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
  */
 const ico = (glyph, size) => unsafeHTML(glyph('', size));
 
-/**
- * An agent-supplied link, or null. The value reaches us from the paused agent,
- * so the scheme is checked rather than trusted: `window.open('javascript:…')`
- * runs in this page. Only http(s) is a place a human can sign in.
- */
-const externalUrl = (value) => {
-  try {
-    const url = new URL(String(value ?? ''));
-    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
-  } catch {
-    return null;
-  }
-};
-
 class HitlCard extends NasikoElement {
   // Mounted into a live transcript, never present in a page's first paint, so
   // there is no geometry to reserve against an upgrade.
@@ -546,26 +532,13 @@ class HitlCard extends NasikoElement {
   /**
    * `start` deliberately does not change `status` — it is a `human_response`
    * write that keeps the row pending — so this arms the confirm button and
-   * hands off to whatever will actually take the sign-in.
-   *
-   * `question.auth_url` is the agent's own authorize link — a well-known key
-   * the pause hoists out of the A2A metadata (External Agent Contract, and
-   * `WELL_KNOWN_QUESTION_KEYS` in oss/types/src/a2a.rs) — and it is the only
-   * destination an external agent has: those rows carry no `connector_id` at
-   * all, so keying off the connector alone opened nothing and the button did
-   * visibly nothing. The connector detail page is the fallback for our own
-   * gateway connectors, whose OAuth flow starts there rather than at a URL.
+   * hands off to the connector's own OAuth flow, which is a separate API.
    */
   async #startAuth(row) {
     this.#authStarted.add(row.id);
     await this.run(({ signal }) => resolveHitl(row.id, { auth_action: 'start' }, { signal }));
     const id = row.question?.connector_id;
-    // Same two positions `structuredOptions` reads: hoisted, else still in the
-    // agent's own metadata on a row that predates the hoist.
-    const target = externalUrl(row.question?.auth_url || row.question?.metadata?.auth_url)
-      || (id ? `/mcp-detail?id=${encodeURIComponent(id)}` : null);
-    if (target) window.open(target, '_blank', 'noopener');
-    else showToast('This request carries no sign-in link.');
+    if (id) window.open(`/mcp-detail?id=${encodeURIComponent(id)}`, '_blank', 'noopener');
     this.requestUpdate();
   }
 

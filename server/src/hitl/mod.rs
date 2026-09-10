@@ -599,8 +599,37 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 /// `"authorized"` would tell the agent the opposite of what happened, so `"denied"` is echoed back
 /// literally instead, on the same "echo the word, let the agent determine the real outcome from
 /// its own next response" principle (§7's "intent ≠ success").
+/// Selectable-options extension (additive to `input_required`, `router/hitl.rs::
+/// resolve_structured_answer`): a multi-select `human_response.answer` is a JSON array of the
+/// selected option labels, never a plain string — this branch is unreachable for any row that
+/// predates the feature or whose question was never structured, since `resolve()` only ever writes
+/// an array under `answer` for a `question.multi_select = true` row. Flattened as one label per
+/// line rather than comma-joined, since a label itself may contain a comma (§11 of the request) —
+/// a newline can't collide with option text the same way, and this keeps the agent's continuation
+/// a single plain-text message, exactly like every other resume, with no new wire structure.
+/// `custom_answer` (multi-select's "Something else" text) is appended as its own trailing line when
+/// present, so a custom-only answer (zero predefined selections) degrades to a single-line
+/// message — indistinguishable from a plain single-select or free-text answer to the agent, which
+/// is a deliberate, not incidental, property: no agent has to special-case "was this multi-select."
 fn answer_text(row: &HitlRequest) -> String {
     let response = row.human_response.as_ref();
+    if let Some(items) = response
+        .and_then(|r| r.get("answer"))
+        .and_then(|v| v.as_array())
+    {
+        let mut lines: Vec<String> = items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(str::to_string)
+            .collect();
+        if let Some(custom) = response
+            .and_then(|r| r.get("custom_answer"))
+            .and_then(|v| v.as_str())
+        {
+            lines.push(custom.to_string());
+        }
+        return lines.join("\n");
+    }
     if let Some(answer) = response
         .and_then(|r| r.get("answer"))
         .and_then(|v| v.as_str())
@@ -979,4 +1008,115 @@ async fn persist_resume_reply(
     .bind(&text)
     .execute(&state.db)
     .await;
+}
+
+#[cfg(test)]
+mod answer_text_tests {
+    use super::*;
+    use nasiko_hitl::{HitlKind, HitlOrigin, HitlStatus, ResumeStatus};
+
+    fn row_with_response(human_response: Option<serde_json::Value>) -> HitlRequest {
+        let now = chrono::Utc::now();
+        HitlRequest {
+            id: Uuid::new_v4(),
+            kind: HitlKind::InputRequired,
+            origin: HitlOrigin::DirectChat,
+            status: HitlStatus::Resolved,
+            resume_status: ResumeStatus::NotStarted,
+            agent_id: Uuid::new_v4(),
+            owner_user_id: Uuid::new_v4(),
+            resolved_by: None,
+            task_id: Some("task-1".into()),
+            context_id: Some("ctx-1".into()),
+            chat_session_id: None,
+            maf_execution_id: None,
+            maf_step_index: None,
+            connector_id: None,
+            tool_name: None,
+            arguments_hash: None,
+            consumed_at: None,
+            question: serde_json::Value::Null,
+            human_response,
+            resume_state: serde_json::Value::Null,
+            resume_claimed_at: None,
+            resume_dispatch_attempts: 0,
+            resume_last_error: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+        }
+    }
+
+    #[test]
+    fn plain_string_answer_is_unchanged() {
+        let row = row_with_response(Some(serde_json::json!({ "answer": "production" })));
+        assert_eq!(answer_text(&row), "production");
+    }
+
+    #[test]
+    fn single_select_predefined_answer_is_the_label_verbatim() {
+        let row = row_with_response(Some(serde_json::json!({ "answer": "Summary" })));
+        assert_eq!(answer_text(&row), "Summary");
+    }
+
+    #[test]
+    fn single_select_custom_answer_is_the_raw_text_verbatim() {
+        let row = row_with_response(Some(
+            serde_json::json!({ "answer": "Give me a concise executive summary" }),
+        ));
+        assert_eq!(answer_text(&row), "Give me a concise executive summary");
+    }
+
+    #[test]
+    fn multi_select_answers_join_by_newline_not_comma() {
+        // The whole point of not comma-joining: a label containing a comma must round-trip
+        // unambiguously.
+        let row = row_with_response(Some(serde_json::json!({
+            "answer": ["Introduction, architecture and design", "Security, privacy and compliance"]
+        })));
+        assert_eq!(
+            answer_text(&row),
+            "Introduction, architecture and design\nSecurity, privacy and compliance"
+        );
+    }
+
+    #[test]
+    fn multi_select_with_custom_answer_appends_it_as_a_trailing_line() {
+        let row = row_with_response(Some(serde_json::json!({
+            "answer": ["Introduction", "Security"],
+            "custom_answer": "Also include deployment risks",
+        })));
+        assert_eq!(
+            answer_text(&row),
+            "Introduction\nSecurity\nAlso include deployment risks"
+        );
+    }
+
+    #[test]
+    fn multi_select_with_only_custom_answer_is_a_single_line() {
+        let row = row_with_response(Some(serde_json::json!({
+            "answer": [],
+            "custom_answer": "Only discuss security implications",
+        })));
+        assert_eq!(answer_text(&row), "Only discuss security implications");
+    }
+
+    #[test]
+    fn auth_outcome_confirmed_is_unchanged() {
+        let row = row_with_response(Some(serde_json::json!({ "auth_outcome": "confirmed" })));
+        assert_eq!(answer_text(&row), "authorized");
+    }
+
+    #[test]
+    fn auth_outcome_denied_is_unchanged() {
+        let row = row_with_response(Some(serde_json::json!({ "auth_outcome": "denied" })));
+        assert_eq!(answer_text(&row), "denied");
+    }
+
+    #[test]
+    fn no_human_response_is_empty_string() {
+        let row = row_with_response(None);
+        assert_eq!(answer_text(&row), "");
+    }
 }

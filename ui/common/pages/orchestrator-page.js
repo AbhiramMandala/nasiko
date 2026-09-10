@@ -36,15 +36,6 @@ class OrchestratorPage extends HTMLElement {
 
   /** Serializes reconnects so two answered decisions append in order. */
   #resumeTail = Promise.resolve();
-  /**
-   * Rows already reconnected to. A resume is keyed by the hitl id, and that id's
-   * continuation buffer is replayed in full to whoever attaches — so a second
-   * reconnect for the same row cannot produce anything new, it just paints the
-   * same reply into a second message row. Seen live: one answered decision
-   * queued two `#resume` calls (the second fired the instant the first stream
-   * closed, via the chain above) and the transcript showed the reply twice.
-   */
-  #resumed = new Set();
 
   /**
    * Aborted on disconnect. Before this existed, navigating away mid-response
@@ -255,8 +246,6 @@ class OrchestratorPage extends HTMLElement {
    */
   #resume(id) {
     const messagesEl = this.querySelector('#messages');
-    if (this.#resumed.has(id)) return;
-    this.#resumed.add(id);
     this.#resumeTail = this.#resumeTail.then(async () => {
       this.#syncComposer({ streaming: true });
       try {

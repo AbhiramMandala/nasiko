@@ -723,20 +723,38 @@ pub fn paused_task_id(data: &str, fallback: &str) -> String {
 /// blob, matching `hitl_requests.question`'s documented shape.
 const WELL_KNOWN_QUESTION_KEYS: &[&str] = &["auth_url", "provider", "expected_input"];
 
+/// Structured-options bounds (Nasiko HITL selectable-options extension, additive to
+/// `input_required`). Purely defensive — nothing in the contract requires a cap, but
+/// `question`/`hitl_requests.question` rides on every stream frame and session-load response
+/// (`docs/FRONTEND_HITL_API_CONTRACT.md`), so an agent bug or malicious agent must not be able to
+/// balloon it unboundedly.
+const MAX_OPTIONS: usize = 20;
+const MAX_OPTION_LABEL_LEN: usize = 200;
+const MAX_OPTION_DESCRIPTION_LEN: usize = 2000;
+const MAX_QUESTION_HEADER_LEN: usize = 200;
+
 /// Build the `hitl_requests.question` JSONB from an already-extracted message + `metadata` blob
-/// (the External Agent Contract's optional `auth_url`/`provider`/`expected_input`). Well-known
-/// keys are hoisted to the top level; the full `metadata` blob is also kept verbatim underneath
-/// for anything else the agent attached, since Nasiko does not know a given agent's metadata
-/// shape in advance beyond those three keys.
+/// (the External Agent Contract's optional `auth_url`/`provider`/`expected_input`, plus the
+/// optional selectable-options extension — `header`/`options`/`multi_select`/
+/// `allow_custom_input`, see `hoist_structured_options`). Well-known keys are hoisted to the top
+/// level; the full `metadata` blob is also kept verbatim underneath for anything else the agent
+/// attached, since Nasiko does not know a given agent's metadata shape in advance beyond those
+/// keys.
 ///
 /// Exposed separately from [`build_pause_question`] (which parses this same shape out of a raw
 /// wire payload) for a caller that already has `message`/`metadata` as their own typed fields —
 /// the orchestrator's `AwaitingHuman` handling (`a2a_dispatch.rs`), whose `pause: PauseInfo` was
-/// extracted earlier in `oss/react-agent`. Both must build byte-identical shapes: a consumer
-/// reading `question.auth_url` should find the OAuth link on every origin's row, not just the
-/// ones built straight from a raw payload — two rows in one paused chain carrying different
-/// schemas was a confirmed-live bug this split exists to prevent.
-pub fn build_question(message: &str, metadata: Option<serde_json::Value>) -> serde_json::Value {
+/// extracted earlier in `oss/react-agent`. Both must build byte-identical shapes, options
+/// extension included: a consumer reading `question.auth_url` (or `question.options`) should find
+/// it on every origin's row, not just the ones built straight from a raw payload — two rows in one
+/// paused chain carrying different schemas was a confirmed-live bug this split exists to prevent.
+/// `task_id` is correlation-only (log context for `hoist_structured_options`'s drop warnings) —
+/// pass `None` when the caller has none handy; it never affects the resulting `question`.
+pub fn build_question(
+    message: &str,
+    metadata: Option<serde_json::Value>,
+    task_id: Option<&str>,
+) -> serde_json::Value {
     let mut question = serde_json::json!({ "message": message });
     if let Some(metadata) = metadata
         && let Some(obj) = question.as_object_mut()
@@ -747,6 +765,7 @@ pub fn build_question(message: &str, metadata: Option<serde_json::Value>) -> ser
                     obj.insert((*key).to_string(), value.clone());
                 }
             }
+            hoist_structured_options(obj, metadata_obj, task_id);
         }
         obj.insert("metadata".to_string(), metadata);
     }
@@ -784,7 +803,116 @@ pub fn build_pause_question(data: &str) -> serde_json::Value {
         .or_else(|| status_update.get("metadata"))
         .cloned();
 
-    build_question(&message, metadata)
+    // Correlation only (log context for `hoist_structured_options`'s drop warnings) — never
+    // written onto `question` itself; `paused_task_id` (a separate, more permissive function with
+    // its own fallback) is what resume actually addresses.
+    let task_id = status_update.get("taskId").and_then(|v| v.as_str());
+
+    build_question(&message, metadata, task_id)
+}
+
+/// Hoists the selectable-options extension (`header`/`options`/`multi_select`/
+/// `allow_custom_input`) from the agent's `metadata` onto `question`, the same way
+/// `auth_url`/`provider`/`expected_input` are hoisted — an additive extension of `input_required`,
+/// not a new pause kind or wire event (§3/§19 of the request: keep `TASK_STATE_INPUT_REQUIRED`,
+/// carry the richer shape through the existing metadata/question mechanism).
+///
+/// `options` is validated here, once, at the single choke point every origin (direct chat, the
+/// orchestrator, MAF, and the resume dispatcher's own follow-up-pause construction) already shares
+/// for turning a paused payload into a `question` — see this function's caller. A malformed block
+/// (no `options` array, an option missing/empty/oversized `label`, or two options with the same
+/// `label`) is dropped in its entirety rather than surfacing a broken or ambiguous prompt to the
+/// human: the agent still gets its plain-text `input_required` pause exactly as if it had never
+/// attempted structured options, instead of the whole pause failing over an agent-side bug in a
+/// value the platform doesn't strictly need to render a working prompt. Labels must be unique
+/// because a label is the semantic answer value (§4/§13 of the request) — an ambiguous label set
+/// would make a human's selection unresolvable on resume.
+///
+/// Every drop path logs a `tracing::warn!` (`task_id` — the agent's own task id, best-effort, for
+/// correlation — is `None` for a bare `message`-only reply with no task wrapper at all) so an
+/// agent shipping a broken `options` block is observable rather than silently degrading forever —
+/// the fallback itself is unchanged; only its visibility is new.
+fn hoist_structured_options(
+    question: &mut serde_json::Map<String, serde_json::Value>,
+    metadata_obj: &serde_json::Map<String, serde_json::Value>,
+    task_id: Option<&str>,
+) {
+    let warn_dropped = |reason: &str| {
+        tracing::warn!(
+            task_id = task_id.unwrap_or("unknown"),
+            reason,
+            "dropping malformed/ambiguous structured HITL options — falling back to a plain input_required question"
+        );
+    };
+
+    if let Some(header) = metadata_obj.get("header").and_then(|v| v.as_str()) {
+        let header = header.trim();
+        if !header.is_empty() && header.len() <= MAX_QUESTION_HEADER_LEN {
+            question.insert("header".to_string(), serde_json::json!(header));
+        }
+    }
+
+    let Some(raw_options) = metadata_obj.get("options").and_then(|v| v.as_array()) else {
+        return;
+    };
+    if raw_options.is_empty() {
+        warn_dropped("options array is empty");
+        return;
+    }
+    if raw_options.len() > MAX_OPTIONS {
+        warn_dropped("options array exceeds the maximum allowed option count");
+        return;
+    }
+
+    let mut labels_seen = std::collections::HashSet::with_capacity(raw_options.len());
+    let mut options = Vec::with_capacity(raw_options.len());
+    for raw_option in raw_options {
+        let Some(label) = raw_option.get("label").and_then(|v| v.as_str()) else {
+            warn_dropped("an option is missing its label");
+            return;
+        };
+        let label = label.trim();
+        if label.is_empty() || label.len() > MAX_OPTION_LABEL_LEN {
+            warn_dropped("an option label is empty or exceeds the maximum allowed length");
+            return;
+        }
+        if !labels_seen.insert(label) {
+            // Duplicate label — ambiguous as a semantic answer value, drop the whole block.
+            warn_dropped("two options share the same label");
+            return;
+        }
+        let description = raw_option
+            .get("description")
+            .and_then(|v| v.as_str())
+            .filter(|d| !d.is_empty() && d.len() <= MAX_OPTION_DESCRIPTION_LEN);
+
+        let mut option = serde_json::Map::with_capacity(2);
+        option.insert("label".to_string(), serde_json::json!(label));
+        if let Some(description) = description {
+            option.insert("description".to_string(), serde_json::json!(description));
+        }
+        options.push(serde_json::Value::Object(option));
+    }
+
+    question.insert("options".to_string(), serde_json::Value::Array(options));
+    question.insert(
+        "multi_select".to_string(),
+        serde_json::json!(
+            metadata_obj
+                .get("multi_select")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        ),
+    );
+    question.insert(
+        "allow_custom_input".to_string(),
+        serde_json::json!(
+            metadata_obj
+                .get("allow_custom_input")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        ),
+    );
 }
 
 #[cfg(test)]
@@ -849,6 +977,133 @@ mod pause_parsing_tests {
             pause_reason(AUTH_REQUIRED_PAYLOAD),
             PauseReason::AuthRequired
         );
+    }
+
+    // ── Structured options extension (selectable-options HITL) ─────────────────────────────
+
+    fn payload_with_metadata(metadata: serde_json::Value) -> String {
+        serde_json::json!({
+            "result": {
+                "statusUpdate": {
+                    "taskId": "t1",
+                    "contextId": "c1",
+                    "status": {
+                        "state": "TASK_STATE_INPUT_REQUIRED",
+                        "message": {
+                            "parts": [{"text": "How should I format the output?"}],
+                            "metadata": metadata,
+                        }
+                    }
+                }
+            },
+            "id": "1",
+            "jsonrpc": "2.0",
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn build_pause_question_hoists_well_formed_options() {
+        let payload = payload_with_metadata(serde_json::json!({
+            "header": "Format",
+            "options": [
+                {"label": "Summary", "description": "Brief overview"},
+                {"label": "Detailed", "description": "Full explanation"},
+            ],
+            "multi_select": false,
+            "allow_custom_input": true,
+        }));
+        let question = build_pause_question(&payload);
+        assert_eq!(question["header"], "Format");
+        assert_eq!(question["multi_select"], false);
+        assert_eq!(question["allow_custom_input"], true);
+        let options = question["options"].as_array().unwrap();
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0]["label"], "Summary");
+        assert_eq!(options[0]["description"], "Brief overview");
+        assert_eq!(options[1]["label"], "Detailed");
+    }
+
+    #[test]
+    fn build_pause_question_defaults_multi_select_and_allow_custom_input_to_false() {
+        let payload = payload_with_metadata(serde_json::json!({
+            "options": [{"label": "Yes"}, {"label": "No"}],
+        }));
+        let question = build_pause_question(&payload);
+        assert_eq!(question["multi_select"], false);
+        assert_eq!(question["allow_custom_input"], false);
+        // description is genuinely optional per option.
+        assert!(question["options"][0].get("description").is_none());
+    }
+
+    #[test]
+    fn build_pause_question_drops_options_with_duplicate_labels() {
+        let payload = payload_with_metadata(serde_json::json!({
+            "options": [{"label": "Summary"}, {"label": "Summary"}],
+        }));
+        let question = build_pause_question(&payload);
+        assert!(
+            question.get("options").is_none(),
+            "duplicate labels are ambiguous as answer values and must drop the whole block"
+        );
+        assert!(question.get("multi_select").is_none());
+        assert!(question.get("allow_custom_input").is_none());
+        // The plain-text pause must still work — this is a fallback, not a failure.
+        assert_eq!(question["message"], "How should I format the output?");
+    }
+
+    #[test]
+    fn build_pause_question_drops_options_with_an_empty_label() {
+        let payload = payload_with_metadata(serde_json::json!({
+            "options": [{"label": ""}, {"label": "No"}],
+        }));
+        let question = build_pause_question(&payload);
+        assert!(question.get("options").is_none());
+    }
+
+    #[test]
+    fn build_pause_question_drops_options_missing_a_label() {
+        let payload = payload_with_metadata(serde_json::json!({
+            "options": [{"description": "no label here"}],
+        }));
+        let question = build_pause_question(&payload);
+        assert!(question.get("options").is_none());
+    }
+
+    #[test]
+    fn build_pause_question_drops_an_empty_options_array() {
+        let payload = payload_with_metadata(serde_json::json!({ "options": [] }));
+        let question = build_pause_question(&payload);
+        assert!(question.get("options").is_none());
+    }
+
+    #[test]
+    fn build_pause_question_drops_options_beyond_the_cap() {
+        let too_many: Vec<_> = (0..(MAX_OPTIONS + 1))
+            .map(|i| serde_json::json!({"label": format!("option-{i}")}))
+            .collect();
+        let payload = payload_with_metadata(serde_json::json!({ "options": too_many }));
+        let question = build_pause_question(&payload);
+        assert!(question.get("options").is_none());
+    }
+
+    #[test]
+    fn build_pause_question_hoists_header_independently_of_options() {
+        let payload = payload_with_metadata(serde_json::json!({ "header": "Format" }));
+        let question = build_pause_question(&payload);
+        assert_eq!(question["header"], "Format");
+        assert!(question.get("options").is_none());
+    }
+
+    #[test]
+    fn build_pause_question_with_no_options_key_behaves_exactly_as_before() {
+        // The pre-existing, non-structured input_required shape — must be completely unaffected.
+        let payload = payload_with_metadata(serde_json::json!({}));
+        let question = build_pause_question(&payload);
+        assert!(question.get("options").is_none());
+        assert!(question.get("multi_select").is_none());
+        assert!(question.get("allow_custom_input").is_none());
+        assert!(question.get("header").is_none());
     }
 
     // Captured live from `agent_proxy.rs`'s non-streaming branch (`SendMessage`, not

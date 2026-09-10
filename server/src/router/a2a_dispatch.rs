@@ -800,13 +800,14 @@ pub(crate) async fn orchestrator_stream(
                                     // `build_question`, not an inline `json!` — direct chat and
                                     // the orchestrator's own follow-up pauses (`hitl/mod.rs`) both
                                     // go through it, hoisting `auth_url`/`provider`/
-                                    // `expected_input` to the top level; building this row's
-                                    // `question` by hand instead meant a consumer reading
-                                    // `question.auth_url` got the OAuth link on one row in a
-                                    // paused chain but not another.
+                                    // `expected_input` (and the selectable-options extension) to
+                                    // the top level; building this row's `question` by hand
+                                    // instead meant a consumer reading `question.auth_url` got the
+                                    // OAuth link on one row in a paused chain but not another.
                                     let question = a2a::build_question(
                                         &pause.message,
                                         (!pause.metadata.is_null()).then(|| pause.metadata.clone()),
+                                        Some(pause.task_id.as_str()),
                                     );
                                     hitl_store
                                         .create(nasiko_hitl::NewHitlRequest::orchestrator(

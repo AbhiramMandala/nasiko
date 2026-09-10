@@ -828,6 +828,7 @@ mod resolve_display_row_tests {
             json!({ "message": "Approve creating a GitHub issue?" }),
         );
         mcp_row.owner_user_id = mirror.owner_user_id;
+        mcp_row.agent_id = mirror.agent_id;
         let store = FakeStore::default();
         store.0.lock().unwrap().insert(mcp_id, mcp_row.clone());
 
@@ -976,6 +977,7 @@ mod resolve_display_row_tests {
             json!({ "message": "Approve creating a GitHub issue?" }),
         );
         mcp_row.owner_user_id = mirror.owner_user_id;
+        mcp_row.agent_id = mirror.agent_id;
         let store = FakeStore::default();
         store.0.lock().unwrap().insert(mcp_id, mcp_row.clone());
 
@@ -1012,6 +1014,7 @@ mod resolve_display_row_tests {
             json!({ "message": "Approve creating a GitHub issue?" }),
         );
         mcp_row.owner_user_id = mirror.owner_user_id;
+        mcp_row.agent_id = mirror.agent_id;
         let store = FakeStore::default();
         store.0.lock().unwrap().insert(mcp_id, mcp_row.clone());
 

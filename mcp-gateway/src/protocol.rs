@@ -1334,7 +1334,10 @@ mod tests {
         // unchanged for this fallback.
         let cid = Uuid::new_v4();
         let resolved = unusable_mcp_session(cid, ConnectorUnusable::AuthRequired, "github");
-        let p = perms(&[], vec![]);
+        // Enabled for this agent — this test is about the missing-traceparent fallback, not the
+        // per-agent connector gate (see `auth_required_on_disabled_connector_is_denied_before_disclosure`
+        // for that case), so a disabled connector must not short-circuit before ever reaching it.
+        let p = perms(&[cid], vec![]);
         let tool = format!("{}__list_repos", crate::types::connector_prefix(cid));
 
         let res = handle_tools_call(
@@ -1356,6 +1359,33 @@ mod tests {
                 .contains("not available"),
             "must fall back to the original generic message: {res}"
         );
+    }
+
+    #[tokio::test]
+    async fn auth_required_on_disabled_connector_is_denied_before_disclosure() {
+        // A connector the admin disabled for this agent must never reach
+        // `handle_auth_required` — that would disclose the connector's name/UUID to the agent
+        // and file a pending `auth_required` row asking the human to re-authenticate a connector
+        // this agent isn't permitted to use, even though `perms.decide` would still correctly
+        // block the actual call. `is_connector_enabled` (Layer 2's connector-level gate) must run
+        // BEFORE the `AuthRequired` short-circuit, not after.
+        let cid = Uuid::new_v4();
+        let resolved = unusable_mcp_session(cid, ConnectorUnusable::AuthRequired, "github");
+        let p = perms(&[], vec![]); // never enabled for the agent
+        let tool = format!("{}__list_repos", crate::types::connector_prefix(cid));
+
+        let res = handle_tools_call(
+            &test_state(),
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": tool, "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+        )
+        .await;
+
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
     }
 
     #[tokio::test]

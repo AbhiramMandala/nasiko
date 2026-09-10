@@ -41,9 +41,28 @@ pub fn router() -> Router<AppState> {
 /// `auth_required`'s two-click start/confirm, `decision`/`scope`/`note` for `tool_approval`'s
 /// approve-once/approve-session/reject. `message` is unused — reserved, not yet part of any kind's
 /// contract.
+///
+/// `answer` is polymorphic (selectable-options extension, additive to `input_required` — never
+/// used by `auth_required`/`tool_approval`): a bare string for the pre-existing plain-text shape
+/// and for a single-select structured question (`{"answer": "Summary"}`, whether that string
+/// matches a predefined option's label or — when `question.allow_custom_input` is set — is custom
+/// text), or a string array for a multi-select structured question's predefined selections
+/// (`{"answer": ["Introduction", "Conclusion"]}`). `custom_answer` carries multi-select's "Something
+/// else" text alongside `answer`, kept as a separate field rather than folded into the array so a
+/// custom answer containing a comma or matching another option's label can never be confused with a
+/// predefined selection (§11 of the request: no comma-joining, no ambiguity). Neither field is used
+/// by a plain (non-structured) `input_required` question, which keeps working exactly as before —
+/// see `resolve`'s branching on `row.question`.
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct HitlResolveRequest {
-    answer: Option<String>,
+    answer: Option<HitlAnswer>,
+    /// Multi-select's "Something else" text — always alongside `answer`, never in place of it (an
+    /// empty/absent `answer` is how "no predefined selections" is expressed for multi-select).
+    /// Single-select's custom answer is submitted as a plain `answer` string instead (see the
+    /// struct doc comment) — this field is meaningless there and silently ignored, matching this
+    /// handler's existing convention of only reading the fields relevant to the row's own shape
+    /// (e.g. `tool_approval`'s `note` is read only on that kind's branch).
+    custom_answer: Option<String>,
     auth_action: Option<String>,
     decision: Option<String>,
     scope: Option<String>,
@@ -52,6 +71,123 @@ pub(crate) struct HitlResolveRequest {
     note: Option<String>,
     #[allow(dead_code)]
     message: Option<String>,
+}
+
+/// `HitlResolveRequest.answer`'s wire shape — see that field's doc comment for what each variant
+/// means. `#[serde(untagged)]` tries `String` then `Vec<String>`; the two are structurally
+/// distinguishable in JSON, so this is never ambiguous.
+#[derive(Deserialize, ToSchema)]
+#[serde(untagged)]
+pub(crate) enum HitlAnswer {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+/// A `question`'s selectable-options extension, parsed back out of the JSONB `hoist_structured_options`
+/// (`oss/types/src/a2a.rs`) wrote at pause time. `None` from `parse` means this is a plain
+/// (non-structured) `input_required` question — every existing pre-extension row, and any row whose
+/// agent never set `options` — which must resolve exactly as it did before this feature existed.
+struct StructuredOptions {
+    labels: Vec<String>,
+    multi_select: bool,
+    allow_custom_input: bool,
+}
+
+impl StructuredOptions {
+    fn parse(question: &Value) -> Option<Self> {
+        let options = question.get("options")?.as_array()?;
+        let labels: Vec<String> = options
+            .iter()
+            .filter_map(|o| o.get("label")?.as_str().map(str::to_string))
+            .collect();
+        if labels.is_empty() {
+            return None;
+        }
+        Some(Self {
+            labels,
+            multi_select: question
+                .get("multi_select")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            allow_custom_input: question
+                .get("allow_custom_input")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        })
+    }
+
+    fn contains(&self, label: &str) -> bool {
+        self.labels.iter().any(|l| l == label)
+    }
+}
+
+/// Validates and shapes a structured `input_required` answer into the exact `human_response` JSON
+/// to persist — the single-select and multi-select rules from §5/§6/§8/§9/§12 of the request. Never
+/// called for a plain (non-structured) question — see `resolve`'s branch on `StructuredOptions::parse`.
+fn resolve_structured_answer(
+    opts: &StructuredOptions,
+    answer: Option<&HitlAnswer>,
+    custom_answer: Option<&str>,
+) -> Result<Value, &'static str> {
+    let custom_answer = custom_answer.map(str::trim).filter(|c| !c.is_empty());
+
+    if !opts.multi_select {
+        // Single-select: `answer` is always a bare string — a predefined label, or (only when
+        // allowed) custom text. There is no separate "is this custom" flag on the wire; membership
+        // in `opts.labels` is what distinguishes the two, per §4/§8's "labels are the canonical
+        // semantic answer value."
+        let answer = match answer {
+            Some(HitlAnswer::Single(s)) if !s.trim().is_empty() => s.trim(),
+            Some(HitlAnswer::Multiple(_)) => {
+                return Err("answer must be a single string for a single-select question");
+            }
+            _ => return Err("answer is required for input_required"),
+        };
+        if opts.contains(answer) || opts.allow_custom_input {
+            return Ok(json!({ "answer": answer }));
+        }
+        return Err(
+            "answer does not match any offered option, and custom input is not allowed for this question",
+        );
+    }
+
+    // Multi-select: `answer` (if present at all) must be an array — §6's "no minimum, no maximum"
+    // means an absent/empty array is valid on its own as long as `custom_answer` carries something.
+    let selected: Vec<String> = match answer {
+        None => Vec::new(),
+        Some(HitlAnswer::Multiple(items)) => items.clone(),
+        Some(HitlAnswer::Single(s)) if s.trim().is_empty() => Vec::new(),
+        Some(HitlAnswer::Single(_)) => {
+            return Err("answer must be an array of selected options for a multi-select question");
+        }
+    };
+
+    // Dedupe, preserving first-occurrence order (§12: "duplicate selections should be rejected or
+    // normalized safely" — normalizing is strictly more forgiving of e.g. a double-submitted
+    // checkbox toggle than rejecting the whole request over it).
+    let mut normalized = Vec::with_capacity(selected.len());
+    for label in selected {
+        let label = label.trim().to_string();
+        if label.is_empty() {
+            continue;
+        }
+        if !opts.contains(&label) {
+            return Err("answer contains an option that was not offered by this question");
+        }
+        if !normalized.contains(&label) {
+            normalized.push(label);
+        }
+    }
+
+    if normalized.is_empty() && custom_answer.is_none() {
+        return Err("at least one selected option or a custom answer is required");
+    }
+
+    let mut response = json!({ "answer": normalized });
+    if let (Some(obj), Some(custom_answer)) = (response.as_object_mut(), custom_answer) {
+        obj.insert("custom_answer".to_string(), json!(custom_answer));
+    }
+    Ok(response)
 }
 
 fn identity(claims: &Claims) -> Result<HitlIdentity, (StatusCode, &'static str)> {
@@ -246,17 +382,32 @@ async fn resolve(
         }
         return Json(body).into_response();
     }
-    let answer_missing = payload
-        .answer
-        .as_deref()
-        .map(|a| a.trim().is_empty())
-        .unwrap_or(true);
-    if row.kind == HitlKind::InputRequired && answer_missing {
-        return (
-            StatusCode::BAD_REQUEST,
-            "answer is required for input_required",
-        )
-            .into_response();
+    // `Some(row.question)` only for a structured `input_required` question (selectable-options
+    // extension) — `None` for every plain `input_required` row (every row that predates this
+    // feature, and any row whose agent never set `options`), which must validate and resolve
+    // exactly as before.
+    let structured_options = (row.kind == HitlKind::InputRequired)
+        .then(|| StructuredOptions::parse(&row.question))
+        .flatten();
+
+    if row.kind == HitlKind::InputRequired && structured_options.is_none() {
+        match &payload.answer {
+            Some(HitlAnswer::Single(a)) if !a.trim().is_empty() => {}
+            Some(HitlAnswer::Multiple(_)) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "answer must be a single string for this question",
+                )
+                    .into_response();
+            }
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "answer is required for input_required",
+                )
+                    .into_response();
+            }
+        }
     }
 
     // §7/Phase 4: `auth_required` is a two-click flow — "start" only records that the human
@@ -299,16 +450,29 @@ async fn resolve(
         }
     }
 
-    let mut human_response = json!({});
-    if row.kind == HitlKind::AuthRequired {
+    let human_response = if row.kind == HitlKind::AuthRequired {
         // Only "confirm" reaches here (validated above). Intent, not proof — the agent's own
         // next response is what determines whether the external auth actually succeeded (§7).
-        if let Some(obj) = human_response.as_object_mut() {
-            obj.insert("auth_outcome".to_string(), json!("confirmed"));
+        json!({ "auth_outcome": "confirmed" })
+    } else if let Some(opts) = &structured_options {
+        match resolve_structured_answer(
+            opts,
+            payload.answer.as_ref(),
+            payload.custom_answer.as_deref(),
+        ) {
+            Ok(response) => response,
+            Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
         }
-    } else if let (Some(obj), Some(answer)) = (human_response.as_object_mut(), &payload.answer) {
-        obj.insert("answer".to_string(), json!(answer));
-    }
+    } else {
+        // Plain (non-structured) `input_required` — already validated non-empty above; stored
+        // verbatim, exactly as before this feature existed.
+        let Some(HitlAnswer::Single(answer)) = &payload.answer else {
+            unreachable!(
+                "validated above: a plain input_required row always has a single-string answer here"
+            );
+        };
+        json!({ "answer": answer })
+    };
 
     let outcome = match state
         .hitl_store
@@ -656,4 +820,253 @@ async fn stream_one(
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+#[cfg(test)]
+mod structured_answer_tests {
+    use super::*;
+
+    fn single_select(allow_custom_input: bool) -> StructuredOptions {
+        StructuredOptions {
+            labels: vec!["Summary".to_string(), "Detailed".to_string()],
+            multi_select: false,
+            allow_custom_input,
+        }
+    }
+
+    fn multi_select() -> StructuredOptions {
+        StructuredOptions {
+            labels: vec![
+                "Introduction".to_string(),
+                "Architecture".to_string(),
+                "Security".to_string(),
+                "Conclusion".to_string(),
+            ],
+            multi_select: true,
+            allow_custom_input: true,
+        }
+    }
+
+    #[test]
+    fn parse_returns_none_for_a_plain_question() {
+        assert!(StructuredOptions::parse(&json!({ "message": "env name?" })).is_none());
+    }
+
+    #[test]
+    fn parse_reads_labels_multi_select_and_allow_custom_input() {
+        let question = json!({
+            "message": "Which sections?",
+            "options": [{"label": "Introduction"}, {"label": "Security", "description": "..."}],
+            "multi_select": true,
+            "allow_custom_input": true,
+        });
+        let opts = StructuredOptions::parse(&question).unwrap();
+        assert_eq!(opts.labels, vec!["Introduction", "Security"]);
+        assert!(opts.multi_select);
+        assert!(opts.allow_custom_input);
+    }
+
+    #[test]
+    fn parse_defaults_multi_select_and_allow_custom_input_to_false() {
+        let question = json!({ "options": [{"label": "Yes"}] });
+        let opts = StructuredOptions::parse(&question).unwrap();
+        assert!(!opts.multi_select);
+        assert!(!opts.allow_custom_input);
+    }
+
+    // ── single-select ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn single_select_predefined_option_resolves_to_the_label() {
+        let opts = single_select(false);
+        let result =
+            resolve_structured_answer(&opts, Some(&HitlAnswer::Single("Summary".into())), None)
+                .unwrap();
+        assert_eq!(result, json!({ "answer": "Summary" }));
+    }
+
+    #[test]
+    fn single_select_rejects_an_unlisted_answer_when_custom_input_is_disallowed() {
+        let opts = single_select(false);
+        let err = resolve_structured_answer(
+            &opts,
+            Some(&HitlAnswer::Single("Delete everything".into())),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("does not match"));
+    }
+
+    #[test]
+    fn single_select_accepts_custom_text_when_allowed() {
+        let opts = single_select(true);
+        let result = resolve_structured_answer(
+            &opts,
+            Some(&HitlAnswer::Single(
+                "Give me a concise executive summary".into(),
+            )),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            json!({ "answer": "Give me a concise executive summary" })
+        );
+    }
+
+    #[test]
+    fn single_select_requires_a_non_empty_answer() {
+        let opts = single_select(true);
+        assert!(resolve_structured_answer(&opts, None, None).is_err());
+        assert!(
+            resolve_structured_answer(&opts, Some(&HitlAnswer::Single("  ".into())), None).is_err()
+        );
+    }
+
+    #[test]
+    fn single_select_rejects_an_array_answer() {
+        let opts = single_select(true);
+        let err = resolve_structured_answer(
+            &opts,
+            Some(&HitlAnswer::Multiple(vec!["Summary".into()])),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("single string"));
+    }
+
+    // ── multi-select ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn multi_select_accepts_one_selection() {
+        let opts = multi_select();
+        let result = resolve_structured_answer(
+            &opts,
+            Some(&HitlAnswer::Multiple(vec!["Introduction".into()])),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result, json!({ "answer": ["Introduction"] }));
+    }
+
+    #[test]
+    fn multi_select_accepts_multiple_selections() {
+        let opts = multi_select();
+        let result = resolve_structured_answer(
+            &opts,
+            Some(&HitlAnswer::Multiple(vec![
+                "Introduction".into(),
+                "Security".into(),
+            ])),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result, json!({ "answer": ["Introduction", "Security"] }));
+    }
+
+    #[test]
+    fn multi_select_accepts_all_selections() {
+        let opts = multi_select();
+        let all: Vec<String> = opts.labels.clone();
+        let result =
+            resolve_structured_answer(&opts, Some(&HitlAnswer::Multiple(all.clone())), None)
+                .unwrap();
+        assert_eq!(result, json!({ "answer": all }));
+    }
+
+    #[test]
+    fn multi_select_zero_predefined_selections_with_custom_answer_is_valid() {
+        let opts = multi_select();
+        let result = resolve_structured_answer(
+            &opts,
+            Some(&HitlAnswer::Multiple(vec![])),
+            Some("Only discuss security implications"),
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            json!({ "answer": [], "custom_answer": "Only discuss security implications" })
+        );
+    }
+
+    #[test]
+    fn multi_select_selections_plus_custom_answer_preserves_both() {
+        let opts = multi_select();
+        let result = resolve_structured_answer(
+            &opts,
+            Some(&HitlAnswer::Multiple(vec![
+                "Introduction".into(),
+                "Security".into(),
+            ])),
+            Some("Also include deployment risks"),
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "answer": ["Introduction", "Security"],
+                "custom_answer": "Also include deployment risks",
+            })
+        );
+    }
+
+    #[test]
+    fn multi_select_missing_answer_is_treated_as_zero_selections() {
+        let opts = multi_select();
+        let result =
+            resolve_structured_answer(&opts, None, Some("Only discuss security implications"))
+                .unwrap();
+        assert_eq!(
+            result,
+            json!({ "answer": [], "custom_answer": "Only discuss security implications" })
+        );
+    }
+
+    #[test]
+    fn multi_select_zero_selections_and_no_custom_answer_is_rejected() {
+        let opts = multi_select();
+        let err = resolve_structured_answer(&opts, Some(&HitlAnswer::Multiple(vec![])), None)
+            .unwrap_err();
+        assert!(err.contains("at least one"));
+    }
+
+    #[test]
+    fn multi_select_rejects_an_option_that_was_not_offered() {
+        let opts = multi_select();
+        let err = resolve_structured_answer(
+            &opts,
+            Some(&HitlAnswer::Multiple(vec!["Not a real option".into()])),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("not offered"));
+    }
+
+    #[test]
+    fn multi_select_deduplicates_repeated_selections() {
+        let opts = multi_select();
+        let result = resolve_structured_answer(
+            &opts,
+            Some(&HitlAnswer::Multiple(vec![
+                "Introduction".into(),
+                "Introduction".into(),
+                "Security".into(),
+            ])),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result, json!({ "answer": ["Introduction", "Security"] }));
+    }
+
+    #[test]
+    fn multi_select_rejects_a_bare_string_answer() {
+        let opts = multi_select();
+        let err = resolve_structured_answer(
+            &opts,
+            Some(&HitlAnswer::Single("Introduction".into())),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("array"));
+    }
 }

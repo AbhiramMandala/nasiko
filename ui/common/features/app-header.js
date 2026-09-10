@@ -13,6 +13,12 @@
  * @note Includes `<app-nav-search>` and `<app-user-menu>` internally.
  * @note Dispatches `loading-start` on nav clicks (see app-loading-bar).
  */
+// The composition root, which binds keys.api / keys.store / keys.notifier and
+// self-invokes on import. Every page loads <app-header>, so importing it here
+// is what makes `static inject = { api: keys.api }` resolvable app-wide —
+// container.js and ui/AGENTS.md both already claim this file does it, and until
+// now nothing did, so any component declaring `inject` threw on construction.
+import "../core/bootstrap.js";
 import { authService } from "../services/auth-service.js";
 import { icons } from "../utils/icons.js";
 import { confirmDialog } from "../design-system/app-modal/app-modal.js";
