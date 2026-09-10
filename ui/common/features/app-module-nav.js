@@ -561,17 +561,6 @@ export class AppModuleNav extends HTMLElement {
     }
 
     wrap?.remove();
-
-    // Which row to open if this one is on screen — worked out before the tree
-    // is rewritten, since "next" is a position in the list as rendered. The
-    // list is newest-first, so the next row down is the next-oldest chat, and
-    // deleting the oldest wraps back to the top.
-    // ponytail: only the rows the nav holds (SESSION_ROWS of them), which is
-    // the list the user can see.
-    const rows = (this.#nav?.groups || []).flatMap((g) => g.items || []).filter((i) => i.sessionId);
-    const at = rows.findIndex((i) => i.sessionId === sessionId);
-    const next = at === -1 ? null : rows[at + 1] || rows.find((i) => i.sessionId !== sessionId);
-
     if (this.#nav?.groups) {
       this.#nav = {
         ...this.#nav,
@@ -591,10 +580,9 @@ export class AppModuleNav extends HTMLElement {
     }
 
     // Deleting the chat that is on screen leaves a transcript with no session
-    // behind it. With a sibling left, open it; with none, the module's entry
-    // point renders its empty state.
+    // behind it — send the user back to the orchestrator entry point.
     if (new URLSearchParams(window.location.search).get("session_id") === sessionId) {
-      routerNavigate(next?.url || (this.getAttribute("module") === "sessions" ? '/chats' : '/'));
+      routerNavigate('/orchestrator');
     }
   }
 

@@ -40,19 +40,29 @@ function qs(params) {
 // (`24h`|`7d`|`30d`) wins over `start_time`/`end_time` when both are sent —
 // callers pick one or the other, not both, but the backend's own precedence
 // is `range` first either way.
+// `myAgent: true` sends `my_agent=true`, which narrows the dashboard's agent
+// list to agents the caller OWNS (`agents.owner_id = claims.sub` — see
+// `get_agent_names` in `oss/server/src/observability/service.rs`). It is
+// declared on `FinopsFilterParams`, so `spend-timeseries` deserializes it
+// too — but only the dashboard handler reads it, so do NOT pass it there and
+// pretend the series narrowed.
 const fetchTokenopsDashboard = async ({
-  range, startTime, endTime, agentId, model, view, provider, orgUnit,
+  range, startTime, endTime, agentId, model, view, provider, orgUnit, myAgent,
 } = {}) => {
   const params = qs({
     range, start_time: startTime, end_time: endTime,
     agent_id: agentId, model, view, provider, org_unit: orgUnit,
+    my_agent: myAgent ? 'true' : undefined,
   });
   return fetchApi(`${FINOPS_BASE}/dashboard${params}`);
 };
 
 // "Spend over time" — GET /api/observability/finops/spend-timeseries.
 // Dollar-only (`points[].spend_usd`, `.operations`) — no percent-of-window
-// view exists against this endpoint.
+// view exists against this endpoint. Each point also carries `tool_calls` and
+// the fleet-wide `p50/p95/p99_latency_ms` percentiles (migration 0015), which
+// is what Overview's Activity and Latency panels plot.
+// No `my_agent`/`org_unit`: this handler ignores both.
 const fetchSpendTimeseries = async ({ range, startTime, endTime, agentId, model, provider } = {}) => {
   const params = qs({ range, start_time: startTime, end_time: endTime, agent_id: agentId, model, provider });
   return fetchApi(`${FINOPS_BASE}/spend-timeseries${params}`);

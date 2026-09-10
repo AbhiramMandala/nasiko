@@ -19,6 +19,14 @@
  *     That is the icon-rail case: a 32px button in a 32px-wide column has no
  *     room below it, and a label beside it is what the user is reading anyway.
  *
+ * Wrapping:
+ *   - Single line by default — these are labels, and a label that wraps is
+ *     usually a label that should be shorter.
+ *   - `data-tooltip-wrap` on the trigger opts into a wrapping block, capped at
+ *     the same 280px. For the explanatory case a label cannot cover: a
+ *     glossary definition behind a term in body copy (Overview's "Latency
+ *     tail"), where the text IS a sentence and truncating it says nothing.
+ *
  * The tooltip is rendered as a singleton floating `<div>` appended to
  * `<body>` (portal pattern) — avoids overflow:hidden clipping from any
  * ancestor, and means zero DOM weight when no tooltip is visible.
@@ -88,6 +96,16 @@ function _position(trigger) {
   // 2px off-centre against the item it was labelling.
   const side = trigger.dataset.tooltipPlacement === 'right' ? 'right' : 'below';
   el.dataset.placement = side;
+
+  // Same deal for wrapping, and for the same reason: the box is single-line by
+  // default (`white-space: nowrap`), so a sentence-length label ran off past
+  // the 280px cap instead of filling it. `data-tooltip-wrap` on the trigger
+  // opts that one tooltip into a wrapping block — a glossary definition, not
+  // an icon label. Set here, beside the placement, so it is applied BEFORE the
+  // measure below and so the singleton is reset for the next trigger that
+  // does not want it.
+  if (trigger.dataset.tooltipWrap !== undefined) el.dataset.wrap = '';
+  else delete el.dataset.wrap;
 
   const tipW = el.offsetWidth;
   const tipH = el.offsetHeight;

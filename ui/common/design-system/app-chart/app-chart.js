@@ -79,7 +79,8 @@
  * @attr {string} height - Plot height, any CSS length (default `200px`). Canvas forms only.
  *   A floor, not a fixed size: when the host is laid out taller (a flex panel
  *   that runs to its floor), the plot, skeleton and empty state fill it.
- * @attr {string} format - Value formatting: `number` (default) | `currency` | `percent` | `compact`
+ * @attr {string} format - Value formatting: `number` (default) | `currency` | `percent` |
+ *   `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)
  * @attr {string} currency - ISO code for `format="currency"` (default `USD`)
  * @attr {string} center-value - `donut` only: the figure drawn in the hole
  * @attr {string} center-label - `donut` only: the caption under it
@@ -87,7 +88,7 @@
  * @attr {string} empty-text - Shown when `data` is empty (default "No data")
  * @attr {boolean} loading - Shimmer placeholder instead of the plot
  * @attr {string} label - Accessible name for the plot. Falls back to the type.
- *   (The four attributes below were added after the catalog first shipped and sit
+ *   (The three attributes below were added after the catalog first shipped and sit
  *   last on purpose: the DSL passes attributes positionally in @attr order, so a
  *   new one must append — see catalog-compat.mjs.)
  * @attr {boolean} segmented - `bar` only: the concentration presentation — every
@@ -95,8 +96,6 @@
  *   `stacked` is implied. Pair with `average-line` for the reference rule.
  * @attr {boolean} average-line - `bar` only: dashed horizontal rule at the mean
  *   of the column totals, labelled "avg".
- * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
- *   `number` (default) | `currency` | `percent` | `compact`
  * @attr {boolean} flush-top - The plot's own canvas-painted background (see
  *   `plotBackground`) normally rounds all four corners, like any other
  *   surface card. Set this when another element sits directly above the
@@ -106,6 +105,8 @@
  *   empty state too (app-chart.css) — those are plain divs shown instead of
  *   the canvas, not something `plotBackground` paints, so they need their
  *   own override rather than inheriting this one.
+ * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
+ *   `number` (default) | `currency` | `percent` | `compact` | `duration`
  * @prop {object|Array} data - Canvas forms take Chart.js shape:
  *   `{ labels: string[], datasets: [{ label, data }] }`, where a dataset may
  *   also carry `axis: 'y2'` (bind to the right-hand scale — line only),
@@ -464,6 +465,15 @@ function formatter(el, attr = 'format') {
     return (n) => (Math.abs(n) < 10 && n !== Math.round(n) ? cents : whole).format(n);
   }
   if (kind === 'percent') return (n) => `${Math.round(n)}%`;
+  // Milliseconds in, the unit a person reads out. A latency axis labelled
+  // 1,000 / 2,000 / 3,000 makes the reader do the division on every glance;
+  // the same axis labelled 1s / 2s / 3s does not. Sub-second stays in ms
+  // because "0.4s" hides a digit the tooltip has room for.
+  if (kind === 'duration') {
+    return (n) => (Math.abs(n) < 1000
+      ? `${Math.round(n)}ms`
+      : `${Number((n / 1000).toFixed(1))}s`);
+  }
   if (kind === 'compact') {
     const f = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
     return (n) => f.format(n);
@@ -629,7 +639,21 @@ export class AppChart extends HTMLElement {
           legend: showLegend
             ? { position: type === 'donut' ? 'right' : 'bottom', align: 'start',
                 // 28px between the series entries, per the design's legend row.
-                labels: { usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, padding: 28 } }
+                labels: { usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, padding: 28,
+                  // The segmented form draws its bars transparent and lets the
+                  // pillBars plugin paint from `_slot` — so Chart.js's default
+                  // swatch, which reads `backgroundColor`, came out invisible
+                  // and the legend was labels with no dots. Read `_slot` here
+                  // too. (The concentration panel never hit this because it
+                  // sets `legend="off"` and hand-rolls its own row.)
+                  ...(segmented ? { generateLabels: (chart) => chart.data.datasets.map((ds, i) => ({
+                    text: ds.label,
+                    fillStyle: ds._slot,
+                    strokeStyle: ds._slot,
+                    pointStyle: 'circle',
+                    hidden: !chart.isDatasetVisible(i),
+                    datasetIndex: i,
+                  })) } : {}) } }
             : { display: false },
           // The native canvas tooltip cannot do the design's card — bold date
           // title, label left / value right, an anomaly note line — so it is

@@ -51,7 +51,7 @@
     margin: 0;
     background: var(--bg-base);
   }
-  .thead { background: var(--bg-subtle); }
+  .thead { background: var(--bg-group); }
 
   .th {
     text-align: left;
@@ -119,7 +119,7 @@
     overflow: visible;
     text-overflow: clip;
   }
-  .th.is-plain { background: var(--bg-subtle); }
+  .th.is-plain { background: var(--bg-group); }
   .td.is-plain { background: var(--bg-base); }
   .tbody tr:hover .td.is-plain { background: var(--bg-subtle); }
 

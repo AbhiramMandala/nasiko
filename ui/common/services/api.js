@@ -38,6 +38,7 @@ import {
   TimeoutError,
   isAbort,
 } from '../core/errors.js';
+import { clearShellCache } from './auth-service.js';
 
 /// Multi-tenant seam: the BFF dashboard injects
 /// `window.nasikoConfig = { apiBase: "https://<sub>.nasiko.dev", ... }` at
@@ -151,6 +152,13 @@ function beginSessionRecovery() {
   if (window.location.pathname.startsWith('/login')) return;
   navigatingAway = true;
 
+  // The session is gone server-side; the per-tab identity + role-derived nav
+  // caches must go with it. Without this the shell still renders as signed in
+  // (auth-service reads `nasiko-current-user` from sessionStorage before it
+  // asks /api/me), so a user bounced to /login could navigate straight back
+  // into the app and sit there half-authenticated until the next call 401'd.
+  clearShellCache();
+
   const base = apiBase();
   let restart = '/login';
 
@@ -210,6 +218,16 @@ function beginSessionRecovery() {
       }
       restart = '/api/enter?return_to=' + encodeURIComponent(location.pathname + location.search);
     }
+  }
+  if (!base) {
+    // Single-tenant: also drop the dead cookie server-side, so the browser
+    // stops sending it and this is a real sign-out rather than a redirect.
+    // `keepalive` lets the POST outlive the navigation on the next line.
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      keepalive: true,
+    }).catch(() => {});
   }
   window.location.href = restart;
 }

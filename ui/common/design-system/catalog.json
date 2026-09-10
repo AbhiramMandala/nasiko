@@ -344,10 +344,11 @@
             "number",
             "currency",
             "percent",
-            "compact"
+            "compact",
+            "duration"
           ],
           "default": "number",
-          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact`"
+          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)"
         },
         "currency": {
           "type": "string",
@@ -381,7 +382,7 @@
         },
         "label": {
           "type": "string",
-          "description": "Accessible name for the plot. Falls back to the type. (The four attributes below were added after the catalog first shipped and sit last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
+          "description": "Accessible name for the plot. Falls back to the type. (The three attributes below were added after the catalog first shipped and sit last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
         },
         "segmented": {
           "type": "boolean",
@@ -391,20 +392,21 @@
           "type": "boolean",
           "description": "`bar` only: dashed horizontal rule at the mean of the column totals, labelled \"avg\"."
         },
+        "flush-top": {
+          "type": "boolean",
+          "description": "The plot's own canvas-painted background (see `plotBackground`) normally rounds all four corners, like any other surface card. Set this when another element sits directly above the chart with no gap (the day grid on the concentration panel) and the two should read as one continuous card: it squares the top two corners off, leaving only the bottom two rounded. Applies to the loading skeleton and empty state too (app-chart.css) — those are plain divs shown instead of the canvas, not something `plotBackground` paints, so they need their own override rather than inheriting this one."
+        },
         "format-y2": {
           "type": "enum",
           "values": [
             "number",
             "currency",
             "percent",
-            "compact"
+            "compact",
+            "duration"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
-        },
-        "flush-top": {
-          "type": "boolean",
-          "description": "The plot's own canvas-painted background (see `plotBackground`) normally rounds all four corners, like any other surface card. Set this when another element sits directly above the chart with no gap (the day grid on the concentration panel) and the two should read as one continuous card: it squares the top two corners off, leaving only the bottom two rounded. Applies to the loading skeleton and empty state too (app-chart.css) — those are plain divs shown instead of the canvas, not something `plotBackground` paints, so they need their own override rather than inheriting this one."
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `duration`"
         }
       },
       "excludedFromCatalog": [

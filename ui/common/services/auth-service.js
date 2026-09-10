@@ -24,19 +24,27 @@ function writeCache(user) {
   } catch { /* private mode / quota — in-memory cache still applies */ }
 }
 
+let _cachedUser = readCache();
+
 /// Drops every per-tab shell cache. The nav trees are role-derived, so they
 /// must not survive a sign-out into the next user's session.
 export function clearShellCache() {
+  // The in-memory copy too — api.js calls this from the 401 funnel, and the
+  // navigation it then starts is not instant, so `isAuthenticated()` must stop
+  // answering yes the moment the session is known to be gone.
+  _cachedUser = null;
   try {
     sessionStorage.removeItem(CACHE_KEY);
     sessionStorage.removeItem('app-header-nav');
-    Object.keys(sessionStorage)
-      .filter((k) => k.startsWith('app-module-nav:'))
-      .forEach((k) => sessionStorage.removeItem(k));
+    // Backwards, by index: removing while walking forwards skips entries, and
+    // `Object.keys(sessionStorage)` only enumerates keys on the real Storage
+    // object. Same walk as `state/store.js#clearIdentity`.
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const k = sessionStorage.key(i);
+      if (k && k.startsWith('app-module-nav:')) sessionStorage.removeItem(k);
+    }
   } catch { /* nothing to clear */ }
 }
-
-let _cachedUser = readCache();
 
 class AuthService {
   getCurrentUser() {

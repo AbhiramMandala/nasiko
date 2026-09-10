@@ -169,7 +169,7 @@
     flex: 1 1 auto;
     min-height: 200px;
     border-radius: var(--r-8);
-    background: var(--bg-track);
+    background: var(--color-border);
     animation: skel-pulse 1.5s ease-in-out infinite;
   }
 

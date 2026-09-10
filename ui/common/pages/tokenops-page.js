@@ -88,6 +88,7 @@ import { ApiError } from '../core/errors.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-chart/app-chart.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-segmented-control/app-segmented-control.js';
 import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-table/app-table.js';
@@ -184,8 +185,8 @@ const WORKFLOW_SORTS = [
   { value: 'name', label: 'Name', field: 'workflow_name' },
 ];
 
-/** Fixed windows, relative to now. No selection here means the month select owns
- *  the window instead — the two controls write the same start/end. */
+/** How far back from the selected month's end (today, for the current month) to
+ *  look. No selection here means the whole month. */
 const RANGES = [
   { value: '24h', label: '24h', days: 1 },
   { value: '7d', label: '7d', days: 7 },
@@ -260,16 +261,19 @@ function deltaChip(changePct, goodWhen) {
  *
  * One arrow glyph for all three directions — `arrowUpRight` rotated by CSS, so
  * there is no second icon that can drift from the first.
+ *
+ * No baseline to compare against ⇒ **no chip at all**. This used to render a
+ * placeholder tile holding an em dash, on the reasoning that the figures should
+ * keep one left edge; in practice the strip read as a row of metrics with
+ * something broken next to them, and a chip is a number or it is nothing.
  */
 function kpiHtml({ label, value, sub, delta, dir, trend }) {
   return `
     <div class="kpi"${sub ? ` title="${escAttr(sub)}"` : ''}>
-      <div class="kpi-chip is-${trend} dir-${dir ?? 'none'}">
-        ${delta === null
-          ? '<span class="kpi-none" aria-hidden="true">—</span>'
-          : icons.arrowUpRight('kpi-arrow', 14)}
-        <span class="kpi-delta">${escHtml(delta ?? '')}</span>
-      </div>
+      ${delta === null ? '' : `<div class="kpi-chip is-${trend} dir-${dir ?? 'none'}">
+        ${icons.arrowUpRight('kpi-arrow', 14)}
+        <span class="kpi-delta">${escHtml(delta)}</span>
+      </div>`}
       <div class="kpi-text">
         <div class="kpi-value">${escHtml(value == null || value === '' ? '—' : String(value))}</div>
         <div class="kpi-label">${escHtml(label)}</div>
@@ -294,6 +298,16 @@ function localDateStr(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/** The day to drill into for a given month: today when it is the current
+ *  month, otherwise that month's last day. The day grid renders `#day`'s
+ *  month, so without re-anchoring it a past month kept showing the CURRENT
+ *  month's grid — with everything after today disabled. */
+function monthAnchorDay(monthStart) {
+  const today = new Date();
+  const lastOfMonth = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0);
+  return localDateStr(lastOfMonth < today ? lastOfMonth : today);
+}
+
 class TokenopsPage extends HTMLElement {
   #initialized = false;
   #agents = [];
@@ -304,20 +318,6 @@ class TokenopsPage extends HTMLElement {
   #attrView = 'agent';
   /** `{ bucket: 'hour'|'day', points: [...] }` from `/finops/spend-timeseries`. */
   #spend = { bucket: 'day', points: [] };
-
-  /**
-   * Whether the panel's own fetch failed, as opposed to returning nothing.
-   *
-   * Both end with an empty series, and the two are not the same sentence. "No
-   * usage in this window" is a claim about the account; a failed request is a
-   * claim about us, and printing the first when the second happened tells the
-   * reader their spend was zero when we do not know that. Kept as state rather
-   * than written straight onto the element so the render owns the wording —
-   * it was an ordering trap otherwise, since each render resets the text.
-   */
-  #spendFailed = false;
-
-  #dayFailed = false;
   /** `/finops/spend-calendar/day` response for the selected `#day`, or `null`
    *  while it has not loaded yet. */
   #dayDrill = null;
@@ -328,19 +328,6 @@ class TokenopsPage extends HTMLElement {
   #start = null;
   #end = null;
   #range = '30d';
-  /**
-   * Which control actually drives the window. The two are independently
-   * displayed now — the range strip keeps whatever preset was last picked lit
-   * (30d by default) instead of going blank the moment a month is chosen —
-   * but only one of them can be authoritative for `#resolveWindow()` and the
-   * `range` param sent to the backend: `range` (24h|7d|30d) wins over
-   * `start_time`/`end_time` server-side whenever both are sent (see
-   * usage-service.js's fetchTokenopsDashboard note), so sending it while a
-   * month is selected would silently make the month a no-op — the backend
-   * would just re-derive "last 30 days from now" and ignore the picked month
-   * entirely. `#load()` omits `range` whenever this is `'month'`.
-   */
-  #windowSource = 'range';
   #agentFilter = '';
   #providerFilter = '';
   #modelFilter = '';
@@ -349,6 +336,8 @@ class TokenopsPage extends HTMLElement {
   /** The in-flight dashboard fetch — the table awaits it, so its own skeleton
    *  rows are the page's loading state. */
   #pending = null;
+  /** No agents at all in the window → the first-run screen. */
+  #empty = false;
   /** Bumped per load. Requests fan out per window and a second window can be
    *  picked mid-flight, so every one of them checks this before writing:
    *  otherwise a slow August response overwrites the September numbers. */
@@ -389,13 +378,14 @@ class TokenopsPage extends HTMLElement {
           <div class="panel-head">
             <h2 class="panel-title">Spend over time</h2>
           </div>
-          <div class="chart-card">
-            <div class="panel-tools">
-              <ul class="series-legend" id="spend-legend" aria-label="Series"></ul>
-            </div>
-            <app-chart id="spend-plot" class="plot-slot" type="line" format="currency" format-y2="compact" height="300px"
-              flush-top legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
+          <div class="panel-tools">
+            <ul class="series-legend" id="spend-legend" aria-label="Series"></ul>
           </div>
+          <app-chart id="spend-plot" class="plot-slot" type="line" format="currency" format-y2="compact" height="300px"
+            legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
+          <app-empty-state id="spend-empty" hidden
+            title="Track your spend as it happens"
+            description="Cost and operation volume will chart here once your agents start running."></app-empty-state>
         </section>
 
         <section class="panel">
@@ -403,11 +393,14 @@ class TokenopsPage extends HTMLElement {
             <h2 class="panel-title">Spend concentration</h2>
           </div>
           <div class="conc-body">
-            <div class="chart-card conc-plot-col">
+            <div class="conc-plot-col">
               <div class="day-grid" id="day-grid" role="group" aria-label="Day"></div>
-              <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line flush-top legend="off" height="220px"
+              <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line legend="off" height="220px"
                 format="currency" label="Spend by hour of day"
                 empty-text="No spend on this day" loading></app-chart>
+              <app-empty-state id="conc-empty" hidden
+                title="See when spend clusters"
+                description="An hour-by-hour breakdown of the day you pick will appear here once your agents run."></app-empty-state>
             </div>
             <ul class="conc-legend" id="conc-legend"></ul>
           </div>
@@ -417,16 +410,21 @@ class TokenopsPage extends HTMLElement {
 
       <div class="section-head">
         <h2 class="section-title">Attributions</h2>
-        <div class="section-tools">
+      </div>
+      <div class="section-attr-container">
+      <div class="section-tools">
           <app-segmented-control id="attr-seg"
             size="sm" label="Attribute by"></app-segmented-control>
           <app-select id="sort-select" size="md" aria-label="Sort"
             options='${JSON.stringify(AGENT_SORTS)}'></app-select>
         </div>
-      </div>
       <app-table id="cost-table" pagination="none" search
         search-placeholder="Search by name..."
         empty-message="No activity in this period"></app-table>
+      <app-empty-state id="table-empty" hidden
+        title="See what&#39;s driving spend"
+        description="Your agents will appear here once they&#39;re connected and running."></app-empty-state>
+        </div>
     `;
 
     // Segment sets are data, not markup: assigned as properties so no JSON has
@@ -444,23 +442,12 @@ class TokenopsPage extends HTMLElement {
       return this.#visibleRows(query);
     };
 
-    this.querySelector('#month-select').addEventListener('change', () => {
-      // The range strip is left exactly as it was (30d, by default) — it is
-      // no longer the source of truth once a month is picked, just a label
-      // that keeps reading as "not broken". #resolveWindow() and #load()'s
-      // `range` param both key off #windowSource, not off whether #range-seg
-      // happens to show something.
-      this.#windowSource = 'month';
-      // The day picker is keyed to a single date, not a window, so a month
-      // jump has to move it too or it keeps showing the OLD month's days
-      // (see the comment on #syncDayToSelectedMonth).
-      this.#syncDayToSelectedMonth();
-      this.#renderDayGrid();
+    this.querySelector('#month-select').addEventListener('change', (e) => {
+      this.#day = monthAnchorDay(new Date(e.target.value));
       this.#load();
     });
     this.querySelector('#range-seg').addEventListener('change', (e) => {
       this.#range = e.target.value;
-      this.#windowSource = 'range';
       this.#load();
     });
     this.querySelector('#agent-select').addEventListener('change', (e) => {
@@ -536,19 +523,21 @@ class TokenopsPage extends HTMLElement {
     }).join('');
   }
 
-  /** `#windowSource` (not whichever control looks selected) decides the
-   *  window — see the field's own comment for why they had to be split. */
+  /** The month picks the anchor, the range group picks how far back from it —
+   *  so changing month keeps the 24h/7d/30d pick instead of dropping it. With
+   *  no range selected the window is the whole month. */
   #resolveWindow() {
-    if (this.#windowSource === 'range') {
-      const range = RANGES.find((r) => r.value === this.#range) || RANGES[RANGES.length - 1];
-      this.#end = new Date();
-      this.#start = new Date(this.#end.getTime() - range.days * DAY_MS);
-      return;
-    }
     const select = this.querySelector('#month-select');
-    this.#start = new Date(select.value);
-    const end = select.select?.selectedOptions[0]?.dataset.end;
-    this.#end = end ? new Date(end) : new Date();
+    const monthStart = new Date(select.value);
+    const monthEnd = select.select?.selectedOptions[0]?.dataset.end;
+    const now = Date.now();
+    // Never past now: that also makes a range on the current month resolve to
+    // the same now-anchored window it always did.
+    this.#end = new Date(Math.min(monthEnd ? new Date(monthEnd).getTime() : now, now));
+    const range = RANGES.find((r) => r.value === this.#range);
+    this.#start = range
+      ? new Date(this.#end.getTime() - range.days * DAY_MS)
+      : monthStart;
   }
 
   /** Surface a 400's human-readable body (bad range/view/date/agent_id — the
@@ -558,44 +547,6 @@ class TokenopsPage extends HTMLElement {
     if (err instanceof ApiError && err.isClientError) {
       toast.error(err.message || `${what} request was rejected`);
     }
-  }
-
-  /**
-   * The dashboard call feeds the KPI strip and both chart panels, and none of
-   * the three has a failure path of its own — they only ever leave their
-   * loading state inside `#renderSummary`/`#renderSpend`/`#renderConcentration`,
-   * which `#load()` only reaches once the dashboard call has actually
-   * succeeded. Called from that call's `catch` so a failed dashboard fetch
-   * shows a real "couldn't load" state instead of an indefinite skeleton.
-   * The attributions table needs none of this — its own `dataFn` awaits the
-   * same rejected `#pending` and surfaces the failure itself (see app-table's
-   * `refresh()`).
-   */
-  #renderLoadFailure() {
-    const strip = this.querySelector('#kpi-strip');
-    strip.removeAttribute('aria-busy');
-    strip.innerHTML = `
-      <div class="kpi-error" role="alert">
-        <span>Couldn't load usage data.</span>
-        <app-button id="kpi-retry" variant="tertiary" size="sm">Retry</app-button>
-      </div>`;
-    strip.querySelector('#kpi-retry')?.addEventListener('click', () => this.#load());
-
-    // Both charts already know how to show an empty state (`empty-text`), and
-    // the failure wording rides the same attribute. Setting the flags rather
-    // than the attribute is what keeps that honest: each render resets the
-    // text, so writing it here worked only if written *after* the render, and
-    // one of the two calls a render and the other does not.
-    this.#spendFailed = true;
-    this.#dayFailed = true;
-
-    const spendChart = this.querySelector('#spend-plot');
-    spendChart.removeAttribute('loading');
-    spendChart.setAttribute('empty-text', "Couldn't load this chart");
-    spendChart.data = { labels: [], datasets: [] };
-
-    this.#dayDrill = null;
-    this.#renderConcentration();
   }
 
   /**
@@ -648,7 +599,7 @@ class TokenopsPage extends HTMLElement {
     const options = catalog.map((p) => ({ value: p.provider, label: p.provider }));
     if (!options.length) return; // leave disabled — nothing real to offer
     select.setAttribute('options', JSON.stringify([{ value: '', label: 'All' }, ...options]));
-    select.removeAttribute('disabled');
+    if (!this.#empty) select.removeAttribute('disabled'); // races #load — see #renderEmptyState
     select.removeAttribute('title');
   }
 
@@ -660,7 +611,7 @@ class TokenopsPage extends HTMLElement {
       { value: '', label: 'All' },
       ...models.map((m) => ({ value: m, label: m })),
     ]));
-    select.removeAttribute('disabled');
+    if (!this.#empty) select.removeAttribute('disabled'); // races #load — see #renderEmptyState
     select.removeAttribute('title');
   }
 
@@ -676,7 +627,7 @@ class TokenopsPage extends HTMLElement {
       { value: '', label: 'All' },
       ...units.map((u) => ({ value: u.id, label: `${'—'.repeat(Math.max((u.depth ?? 1) - 1, 0))} ${u.name}`.trim() })),
     ]));
-    select.removeAttribute('disabled');
+    if (!this.#empty) select.removeAttribute('disabled'); // races #load — see #renderEmptyState
     select.removeAttribute('title');
   }
 
@@ -686,12 +637,7 @@ class TokenopsPage extends HTMLElement {
     const start = this.#start.toISOString();
     const end = this.#end.toISOString();
     const params = {
-      // Sent only when the range strip actually owns the window: the backend
-      // takes `range` over `start_time`/`end_time` whenever both arrive, so
-      // sending it while a month is selected would overrule the month with
-      // "last 30 days from now" despite start/end correctly bounding that
-      // month (see #windowSource's comment).
-      range: this.#windowSource === 'range' ? (this.#range || undefined) : undefined,
+      range: this.#range || undefined,
       startTime: start,
       endTime: end,
       agentId: this.#agentFilter || undefined,
@@ -711,21 +657,18 @@ class TokenopsPage extends HTMLElement {
     strip.setAttribute('aria-busy', 'true');
     strip.innerHTML = KPI_SKELETON;
     this.querySelector('#spend-plot').setAttribute('loading', '');
+    // The day-drill fires only after the dashboard call resolves, so without
+    // this the concentration panel would keep its previous day on screen while
+    // every other panel is a skeleton.
+    this.#concLoading();
 
     let resp;
     try {
       resp = await this.#pending;
     } catch (e) {
       // The table surfaces the failure itself — its dataFn awaits the same
-      // rejected promise. The KPI strip and both charts have no such path of
-      // their own, though: #loadSpend/#loadDay are only reached below, on the
-      // success side of this try, and each of those clears the loading flag
-      // it set above (`aria-busy` / `loading`) as part of its own render, so
-      // skipping them here — via this early `return` — left all three stuck
-      // on their loading skeleton forever instead of showing a real failure.
+      // rejected promise.
       this.#reportError(e, 'dashboard');
-      if (id !== this.#loadId) return;
-      this.#renderLoadFailure();
       return;
     }
     if (id !== this.#loadId) return;
@@ -735,6 +678,11 @@ class TokenopsPage extends HTMLElement {
     this.#kpis = data.kpis || null;
     const rawRows = data.attributions?.rows ?? data.agents ?? [];
     this.#attributions = rawRows.map((r) => this.#normalizeRow(r));
+    // "Nothing deployed yet" is the first-run screen; "deployed but idle" is
+    // still the real dashboard, with zeroes in it. `total_agents` is the only
+    // field that tells the two apart. Same rule as `overview-page.js`.
+    this.#empty = (this.#summary.total_agents ?? 0) === 0;
+    this.#renderEmptyState();
     this.#renderAgentOptions();
     table.refresh();
     this.#renderSummary();
@@ -753,19 +701,27 @@ class TokenopsPage extends HTMLElement {
       if (id !== this.#loadId) return;
       const data = resp?.data ?? resp ?? {};
       this.#spend = { bucket: data.bucket || 'day', points: Array.isArray(data.points) ? data.points : [] };
-      this.#spendFailed = false;
     } catch (e) {
       this.#reportError(e, 'spend-timeseries');
       if (id !== this.#loadId) return;
       this.#spend = { bucket: 'day', points: [] };
-      this.#spendFailed = true;
     }
     this.#renderSpend();
   }
 
+  /**
+   * Concentration panel → loading. Nothing true to name while a fetch is in
+   * flight: the legend is emptied, which the CSS's `:empty` rules turn into a
+   * hidden legend column and a full-width chart, rather than stale rows
+   * sitting beside a skeleton.
+   */
+  #concLoading() {
+    this.querySelector('#conc-plot').setAttribute('loading', '');
+    this.querySelector('#conc-legend').innerHTML = '';
+  }
+
   async #loadDay(id) {
-    const chart = this.querySelector('#conc-plot');
-    chart.setAttribute('loading', '');
+    this.#concLoading();
     try {
       const resp = await call('fetchSpendCalendarDay', {
         date: this.#day,
@@ -775,14 +731,50 @@ class TokenopsPage extends HTMLElement {
       });
       if (id !== this.#loadId) return;
       this.#dayDrill = resp?.data ?? resp ?? null;
-      this.#dayFailed = false;
     } catch (e) {
       this.#reportError(e, 'spend-calendar/day');
       if (id !== this.#loadId) return;
       this.#dayDrill = null;
-      this.#dayFailed = true;
     }
     this.#renderConcentration();
+  }
+
+  // ── First-run screen ──────────────────────────────────────────────────────
+
+  /**
+   * Nothing deployed yet: each instrument swaps for the copy that says what
+   * will appear in it, the way `overview-page.js` does it. No hero here — that
+   * belongs to the landing page, and a second copy of the same CTA one rail
+   * icon away is chrome. The day picker stays live: it narrows a window that
+   * cannot itself produce this screen.
+   */
+  #renderEmptyState() {
+    // Nothing to narrow: every window and attribution control goes inert. The
+    // Server filter is left alone — it is disabled permanently either way
+    // (INERT_FILTERS), and re-enabling it here would be a lie.
+    for (const sel of ['#month-select', '#range-seg', '#agent-select', '#attr-seg',
+      '#sort-select']) {
+      this.querySelector(sel)?.toggleAttribute('disabled', this.#empty);
+    }
+    // The async filters are NOT simply the inverse: one whose catalog never
+    // arrived has no options to offer and stays disabled on both screens, so
+    // the predicate is "has options AND there is something to filter" — the
+    // same reason their loaders check `#empty` before enabling.
+    for (const f of ASYNC_FILTERS) {
+      const select = this.querySelector(`#${f.id}`);
+      select?.toggleAttribute('disabled', this.#empty || !select.hasAttribute('options'));
+    }
+    // The day picker is a filter too — its cells carry the attribute
+    // individually, so the grid is redrawn rather than toggled.
+    this.#renderDayGrid();
+    for (const [instrument, empty] of [
+      ['#spend-plot', '#spend-empty'],
+      ['#conc-plot', '#conc-empty'],
+      ['#cost-table', '#table-empty'],
+    ]) {
+      this.querySelector(instrument).hidden = this.#empty;
+      this.querySelector(empty).hidden = !this.#empty;
+    }
   }
 
   // ── KPI strip ─────────────────────────────────────────────────────────────
@@ -815,7 +807,12 @@ class TokenopsPage extends HTMLElement {
 
     const strip = this.querySelector('#kpi-strip');
     strip.removeAttribute('aria-busy');
-    strip.innerHTML = items.map(kpiHtml).join('');
+    // First run: every figure is a dash, not a mix of true zeroes ("0 tokens")
+    // and figures that are only zero because there is nothing to measure
+    // ("$0.00"). One reading for the whole strip — there is no data.
+    strip.innerHTML = items
+      .map((it) => (this.#empty ? { ...it, value: '—' } : it))
+      .map(kpiHtml).join('');
   }
 
   // ── Spend over time ───────────────────────────────────────────────────────
@@ -829,8 +826,6 @@ class TokenopsPage extends HTMLElement {
    */
   #renderSpend() {
     const chart = this.querySelector('#spend-plot');
-    chart.setAttribute('empty-text', this.#spendFailed
-      ? "Couldn't load this chart" : 'No usage in this window');
     const points = this.#spend.points;
     const fmtLabel = this.#spend.bucket === 'hour'
       ? new Intl.DateTimeFormat('en', { hour: 'numeric' })
@@ -840,7 +835,7 @@ class TokenopsPage extends HTMLElement {
     // card — so app-chart's own legend is off and this row mirrors the dataset
     // order, which is what fixes each series' colour slot.
     const legend = this.querySelector('#spend-legend');
-    legend.innerHTML = ['Spend', 'Operations'].map((name, i) => `
+    legend.innerHTML = this.#empty ? '' : ['Spend', 'Operations'].map((name, i) => `
       <li><span class="dot" style="--dot:var(--viz-${i + 1})"></span>${escHtml(name)}</li>`).join('');
 
     chart.removeAttribute('loading');
@@ -863,25 +858,6 @@ class TokenopsPage extends HTMLElement {
    * Redrawn on every pick, not just re-flagged, because moving into a new
    * month can also change how many cells there are.
    */
-  /**
-   * Moves `#day` inside whatever month the KPI strip's month select just
-   * jumped to. `#day` drives the concentration panel's calendar independently
-   * of the KPI/chart window (its endpoint takes one date, not a range) — but
-   * "independent" only meant the range group shouldn't also own it, not that
-   * a month jump should leave it behind. Without this the grid kept showing
-   * last month's days after the window had already moved on.
-   * Lands on today when the newly picked month IS the current month (there is
-   * still a "today" to default to); the 1st otherwise, since a past month has
-   * no "today" of its own to land on.
-   */
-  #syncDayToSelectedMonth() {
-    const start = new Date(this.querySelector('#month-select').value);
-    const now = new Date();
-    const isCurrentMonth = start.getFullYear() === now.getFullYear()
-      && start.getMonth() === now.getMonth();
-    this.#day = isCurrentMonth ? localDateStr(now) : localDateStr(start);
-  }
-
   #renderDayGrid() {
     const grid = this.querySelector('#day-grid');
     if (!grid) return;
@@ -894,7 +870,7 @@ class TokenopsPage extends HTMLElement {
       const isFuture = dateStr > todayStr;
       const isSelected = dateStr === this.#day;
       return `<button type="button" class="day-cell${isSelected ? ' is-selected' : ''}"
-        data-date="${escAttr(dateStr)}" ${isFuture ? 'disabled' : ''}
+        data-date="${escAttr(dateStr)}" ${isFuture || this.#empty ? 'disabled' : ''}
         aria-pressed="${isSelected}" aria-label="${escAttr(dateStr)}">${day}</button>`;
     }).join('');
   }
@@ -918,8 +894,6 @@ class TokenopsPage extends HTMLElement {
   #renderConcentration() {
     const legend = this.querySelector('#conc-legend');
     const chart = this.querySelector('#conc-plot');
-    chart.setAttribute('empty-text', this.#dayFailed
-      ? "Couldn't load this chart" : 'No spend on this day');
     const note = this.querySelector('#conc-note');
     const day = this.#dayDrill;
     const hours = day?.hours ?? [];
@@ -929,19 +903,12 @@ class TokenopsPage extends HTMLElement {
       ...topAgents.map((a, i) => ({ label: a.agent_name, cost: a.spend_usd ?? 0, slot: `var(--viz-${i + 1})` })),
       ...(day?.others_spend_usd ? [{ label: 'Others', cost: day.others_spend_usd, slot: 'var(--fg-secondary)' }] : []),
     ];
-    // A zero-spend day (or the loading gap before `#dayDrill` resolves) has no
-    // real entries — four still rows, not an empty column, so the legend's
-    // width holds and the chart beside it never visibly widens/narrows as the
-    // day picker lands on and off empty days (see `.conc-body` in the CSS).
-    legend.innerHTML = entries.length
-      ? entries.map((e) => `
+    // A zero-spend day legend is simply empty; the CSS then drops the legend
+    // column and gives the chart the full panel width.
+    legend.innerHTML = entries.map((e) => `
         <li><span class="dot" style="--dot:${e.slot}"></span>
           <span class="conc-name">${escHtml(e.label)}</span>
-          <span class="conc-cost">${fmtMoney(e.cost)}</span></li>`).join('')
-      : Array.from({ length: 4 }, () => `
-        <li><span class="conc-legend-skel"></span>
-          <span class="conc-name-skel"></span>
-          <span class="conc-cost-skel"></span></li>`).join('');
+          <span class="conc-cost">${fmtMoney(e.cost)}</span></li>`).join('');
 
     const labels = hours.map((h) => (h.hour === 0 ? '12am' : h.hour === 12 ? '12pm' : String(h.hour % 12)));
     chart.removeAttribute('loading');
@@ -973,6 +940,15 @@ class TokenopsPage extends HTMLElement {
     note.textContent = day?.avg_hourly_spend_usd != null
       ? `Averaging ${fmtMoney(day.avg_hourly_spend_usd)}/hour on ${this.#day}.`
       : '';
+
+    // The day picker only makes sense over a real chart — hidden until the
+    // first drill-down lands (the panel reads as one skeleton until then),
+    // then it stays put through every later pick so nothing jumps. `flush-top`
+    // squares the chart's top corners against the picker above it, so it is
+    // set at the same moment rather than in the markup — with no picker there
+    // the skeleton would otherwise render as a flat-topped block.
+    this.querySelector('.conc-body').classList.add('is-ready');
+    chart.setAttribute('flush-top', '');
   }
 
   // ── Attributions ──────────────────────────────────────────────────────────

@@ -253,3 +253,33 @@ test('data-sources: duplicate registration and missing names both fail loudly', 
   assert.equal(resolveOptional('nothingHere'), undefined);
   reset();
 });
+
+// Runs last on purpose: `beginSessionRecovery` latches a module-level
+// `navigatingAway`, so once this fires the funnel is spent for the process.
+test('api: a 401 signs the user out, it does not just redirect', async () => {
+  const { fetchApi, isNavigatingAway } = await load('services/api.js');
+
+  sessionStorage.setItem('nasiko-current-user', JSON.stringify({ name: 'a' }));
+  sessionStorage.setItem('app-header-nav', '[]');
+  sessionStorage.setItem('app-module-nav:tokenops', '[]');
+
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url, method: init?.method || 'GET' });
+    return new Response('unauthorized', { status: 401 });
+  };
+
+  await assert.rejects(fetchApi('/observability/finops/dashboard?org_unit=x'), /unauthorized/);
+
+  // The whole point: nothing identity-shaped survives, so the shell cannot
+  // render as signed in when the user navigates back into the app.
+  assert.equal(sessionStorage.getItem('nasiko-current-user'), null);
+  assert.equal(sessionStorage.getItem('app-header-nav'), null);
+  assert.equal(sessionStorage.getItem('app-module-nav:tokenops'), null);
+  assert.ok(
+    seen.some((c) => c.url === '/api/auth/logout' && c.method === 'POST'),
+    'the dead cookie is cleared server-side too',
+  );
+  assert.equal(location.href, '/login');
+  assert.equal(isNavigatingAway(), true);
+});
