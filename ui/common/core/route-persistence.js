@@ -45,11 +45,16 @@ export function persistRoute({ path, title, data, scrollTop }) {
   const entries = _readEntries();
 
   // Re-insert to move path to MRU end
+  const previous = entries[path];
   delete entries[path];
   entries[path] = {
     title,
     data: data ?? null,
-    scrollTop: scrollTop ?? null,
+    // Keep the remembered position when this call does not carry one. This runs
+    // on every arrival at a path, and it used to write `null` — so it wiped what
+    // saveScrollPosition() had stored on leaving that same path, one navigation
+    // earlier. Restoring could never work, whatever else was fixed.
+    scrollTop: scrollTop ?? previous?.scrollTop ?? null,
     ts: Date.now(),
   };
 
@@ -153,10 +158,60 @@ export function restoreScrollPosition(path, scrollContainer) {
     || document.getElementById('outlet');
   if (!el) return;
 
-  requestAnimationFrame(() => {
-    el.scrollTop = persisted.scrollTop;
-  });
+  applyScrollWhenReachable(el, persisted.scrollTop);
 }
+
+/** How long to keep trying before giving up on a remembered position. Async page
+ *  data usually lands in one or two frames; a slow list can take longer, and
+ *  after this the jump would be more surprising than useful. */
+const RESTORE_DEADLINE_MS = 1200;
+
+/** @type {(() => void) | null} Cancels the restore attempt still in flight. */
+let cancelPendingRestore = null;
+
+/**
+ * Set `scrollTop` as soon as the scroller can actually reach it.
+ *
+ * A page mounts before its data arrives, so at `loading-end` the scroller is
+ * usually one viewport tall and assigning a remembered 400px silently clamps to
+ * 0 — which is what the old single `requestAnimationFrame` did on every page
+ * that fetches. Wait for the content instead, and stop early if the reader
+ * starts scrolling: a page that yanks itself somewhere under your finger is
+ * worse than one that forgot where you were.
+ *
+ * @param {HTMLElement} el
+ * @param {number} target
+ */
+function applyScrollWhenReachable(el, target) {
+  cancelPendingRestore?.();
+
+  const started = performance.now();
+  let frame = 0;
+  const stop = () => {
+    cancelAnimationFrame(frame);
+    for (const type of USER_SCROLL_EVENTS) el.removeEventListener(type, stop);
+    window.removeEventListener('keydown', stop);
+    cancelPendingRestore = null;
+  };
+  cancelPendingRestore = stop;
+
+  // Deliberately not the `scroll` event: our own assignment fires that too.
+  for (const type of USER_SCROLL_EVENTS) el.addEventListener(type, stop, { once: true, passive: true });
+  window.addEventListener('keydown', stop, { once: true });
+
+  const tick = () => {
+    if (el.scrollHeight - el.clientHeight >= target) {
+      el.scrollTop = target;
+      stop();
+      return;
+    }
+    if (performance.now() - started > RESTORE_DEADLINE_MS) { stop(); return; }
+    frame = requestAnimationFrame(tick);
+  };
+  frame = requestAnimationFrame(tick);
+}
+
+const USER_SCROLL_EVENTS = ['wheel', 'touchstart', 'pointerdown'];
 
 // ── History integration ────────────────────────────────────────────────
 
@@ -178,10 +233,19 @@ export function initRouteIntegration(opts = {}) {
     if (prev) saveScrollPosition(prev, container);
   });
 
-  // On loading-end (new page rendered), restore scroll
+  // Back/forward only — this module's own contract ("restores them on popstate")
+  // that the implementation did not keep: it restored after every navigation, so
+  // clicking a rail item into a page you had scrolled before dropped you into
+  // the middle of it. The router reports which kind of navigation this was.
+  let lastWasPopState = false;
+  window.addEventListener('route-change', (evt) => {
+    lastWasPopState = !!(/** @type {CustomEvent} */ (evt).detail?.popState);
+  });
+
+  // On loading-end the new page is mounted, though its data may still be coming.
   window.addEventListener('loading-end', () => {
-    const path = location.pathname;
-    restoreScrollPosition(path, container);
+    if (!lastWasPopState) return;
+    restoreScrollPosition(location.pathname, container);
   });
 
   // Persist current route context on route-change

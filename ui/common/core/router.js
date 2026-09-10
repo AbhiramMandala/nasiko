@@ -304,7 +304,10 @@ export class Router {
   };
 
   #onPopState = () => {
-    this.#handleRoute(true);
+    // Back/forward, as opposed to a deliberate click. route-persistence only
+    // restores a remembered scroll position for this kind of navigation —
+    // landing mid-page after clicking a rail item would read as a bug.
+    this.#handleRoute(true, { popState: true });
   };
 
   #findMatch(normalizedPath) {
@@ -315,7 +318,7 @@ export class Router {
     return null;
   }
 
-  async #handleRoute(animate) {
+  async #handleRoute(animate, { popState = false } = {}) {
     const path = normalizePath(location.pathname);
     const match = this.#findMatch(path);
 
@@ -343,7 +346,7 @@ export class Router {
     this.#previousPath = location.pathname;
     document.dispatchEvent(new CustomEvent('route-change', {
       bubbles: true,
-      detail: { path: location.pathname, previousPath, pattern: route.pattern, params },
+      detail: { path: location.pathname, previousPath, pattern: route.pattern, params, popState },
     }));
 
     // Update document title
