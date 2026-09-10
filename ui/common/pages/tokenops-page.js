@@ -304,6 +304,20 @@ class TokenopsPage extends HTMLElement {
   #attrView = 'agent';
   /** `{ bucket: 'hour'|'day', points: [...] }` from `/finops/spend-timeseries`. */
   #spend = { bucket: 'day', points: [] };
+
+  /**
+   * Whether the panel's own fetch failed, as opposed to returning nothing.
+   *
+   * Both end with an empty series, and the two are not the same sentence. "No
+   * usage in this window" is a claim about the account; a failed request is a
+   * claim about us, and printing the first when the second happened tells the
+   * reader their spend was zero when we do not know that. Kept as state rather
+   * than written straight onto the element so the render owns the wording —
+   * it was an ordering trap otherwise, since each render resets the text.
+   */
+  #spendFailed = false;
+
+  #dayFailed = false;
   /** `/finops/spend-calendar/day` response for the selected `#day`, or `null`
    *  while it has not loaded yet. */
   #dayDrill = null;
@@ -567,22 +581,21 @@ class TokenopsPage extends HTMLElement {
       </div>`;
     strip.querySelector('#kpi-retry')?.addEventListener('click', () => this.#load());
 
-    // Both charts already know how to show an empty state (`empty-text`) —
-    // reused here for the failure case too, just overridden with a message
-    // that says "couldn't load" instead of "no data". #renderSpend and
-    // #renderConcentration each restore their own default text on the next
-    // successful load, so a later genuine empty window doesn't inherit this.
+    // Both charts already know how to show an empty state (`empty-text`), and
+    // the failure wording rides the same attribute. Setting the flags rather
+    // than the attribute is what keeps that honest: each render resets the
+    // text, so writing it here worked only if written *after* the render, and
+    // one of the two calls a render and the other does not.
+    this.#spendFailed = true;
+    this.#dayFailed = true;
+
     const spendChart = this.querySelector('#spend-plot');
     spendChart.removeAttribute('loading');
     spendChart.setAttribute('empty-text', "Couldn't load this chart");
     spendChart.data = { labels: [], datasets: [] };
 
     this.#dayDrill = null;
-    // #renderConcentration() resets empty-text to its own default on every
-    // call (see the comment there), so the override has to come after it
-    // runs, not before.
     this.#renderConcentration();
-    this.querySelector('#conc-plot').setAttribute('empty-text', "Couldn't load this chart");
   }
 
   /**
@@ -740,10 +753,12 @@ class TokenopsPage extends HTMLElement {
       if (id !== this.#loadId) return;
       const data = resp?.data ?? resp ?? {};
       this.#spend = { bucket: data.bucket || 'day', points: Array.isArray(data.points) ? data.points : [] };
+      this.#spendFailed = false;
     } catch (e) {
       this.#reportError(e, 'spend-timeseries');
       if (id !== this.#loadId) return;
       this.#spend = { bucket: 'day', points: [] };
+      this.#spendFailed = true;
     }
     this.#renderSpend();
   }
@@ -760,10 +775,12 @@ class TokenopsPage extends HTMLElement {
       });
       if (id !== this.#loadId) return;
       this.#dayDrill = resp?.data ?? resp ?? null;
+      this.#dayFailed = false;
     } catch (e) {
       this.#reportError(e, 'spend-calendar/day');
       if (id !== this.#loadId) return;
       this.#dayDrill = null;
+      this.#dayFailed = true;
     }
     this.#renderConcentration();
   }
@@ -812,9 +829,8 @@ class TokenopsPage extends HTMLElement {
    */
   #renderSpend() {
     const chart = this.querySelector('#spend-plot');
-    // Restores the real empty-text after a previous load failed and
-    // #renderLoadFailure overrode it with a "couldn't load" message.
-    chart.setAttribute('empty-text', 'No usage in this window');
+    chart.setAttribute('empty-text', this.#spendFailed
+      ? "Couldn't load this chart" : 'No usage in this window');
     const points = this.#spend.points;
     const fmtLabel = this.#spend.bucket === 'hour'
       ? new Intl.DateTimeFormat('en', { hour: 'numeric' })
@@ -902,9 +918,8 @@ class TokenopsPage extends HTMLElement {
   #renderConcentration() {
     const legend = this.querySelector('#conc-legend');
     const chart = this.querySelector('#conc-plot');
-    // Restores the real empty-text after a previous load failed and
-    // #renderLoadFailure overrode it with a "couldn't load" message.
-    chart.setAttribute('empty-text', 'No spend on this day');
+    chart.setAttribute('empty-text', this.#dayFailed
+      ? "Couldn't load this chart" : 'No spend on this day');
     const note = this.querySelector('#conc-note');
     const day = this.#dayDrill;
     const hours = day?.hours ?? [];
