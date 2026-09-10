@@ -12,12 +12,15 @@
  *
  * So the change is classified rather than merely detected:
  *
- *   **additive** — a new component, a new attribute at the end of paramOrder,
- *   a new enum value, a new route. Old DSL keeps meaning exactly what it meant.
+ *   **additive** — a new component, a new enum value, a new route, or a new
+ *   attribute at the end of paramOrder *on a component with no action slot*.
+ *   Old DSL keeps meaning exactly what it meant.
  *
  *   **breaking** — a removed or renamed component or attribute, a reordered
- *   paramOrder, a removed enum value, a changed type, a withdrawn route. Old
- *   DSL now means something else, or nothing.
+ *   paramOrder, a removed enum value, a changed type, a withdrawn route, or a
+ *   new attribute on a component whose last argument is its action (appending
+ *   there displaces the action, so a stored call rebinds it to the new
+ *   attribute). Old DSL now means something else, or nothing.
  *
  * A breaking change is not forbidden. It is required to be deliberate: state
  * it in `dsl-catalog.compat.json` and the gate passes, with the statement
@@ -52,21 +55,48 @@ export function classify(before, after) {
     if (!a[tag]) { breaking.push(`component ${tag} was removed — every stored call to it now names nothing`); continue; }
 
     // `action` is not an attribute — it is a synthetic slot that is always last
-    // by construction. Comparing it in place would make *every* new attribute
-    // on an interactive component read as breaking, because adding one shifts
-    // `action` by one. That is a gate firing on safe changes, which is how a
-    // gate stops being read.
-    const trim = (p) => (p[p.length - 1] === 'action' ? p.slice(0, -1) : p);
-    const bp = trim(b[tag].paramOrder ?? []);
-    const ap = trim(a[tag].paramOrder ?? []);
-    // A prefix match is the whole test. Appending is safe because a stored
-    // call simply does not pass the new trailing argument; anything else
-    // rebinds arguments that were already written.
+    // by construction, so it is compared separately from the attributes rather
+    // than in place.
+    //
+    // It used to be trimmed off and then ignored, on the reasoning that
+    // appending an attribute is safe because "a stored call simply does not
+    // pass the new trailing argument". That reasoning is wrong for exactly the
+    // components that have an `action`, and the repo's own test caught it:
+    // `AppSelect(…11 nulls…, act)` puts the action in the last position by
+    // construction, because that is the only position it has. Append a twelfth
+    // attribute and the action does not stay put — it moves to index 13, and
+    // the stored call now binds `act` to `fit-content`. No error; the control
+    // just stops doing anything. That is precisely the failure this gate
+    // exists to name, and it was the one case it waved through.
+    //
+    // So: appending is additive on a component with no action, and breaking on
+    // one with an action. That does make every new attribute on the nine
+    // interactive components a deliberate accept. It should — under positional
+    // binding there is no such thing as a free append there. The durable fix is
+    // to stop binding the action positionally; until then the gate says so out
+    // loud instead of being quietly wrong.
+    const endsWithAction = (p) => p[p.length - 1] === 'action';
+    const trim = (p) => (endsWithAction(p) ? p.slice(0, -1) : p);
+    const bFull = b[tag].paramOrder ?? [];
+    const aFull = a[tag].paramOrder ?? [];
+    const bp = trim(bFull);
+    const ap = trim(aFull);
+    // A prefix match is the whole test for the attributes themselves; anything
+    // else rebinds arguments that were already written.
     const kept = ap.slice(0, bp.length);
     if (JSON.stringify(kept) !== JSON.stringify(bp)) {
       breaking.push(`${tag} paramOrder changed: [${bp.join(', ')}] → [${ap.join(', ')}]`);
     } else if (ap.length > bp.length) {
-      additive.push(`${tag} gained ${ap.slice(bp.length).map((p) => `"${p}"`).join(', ')} at the end`);
+      const gained = ap.slice(bp.length).map((p) => `"${p}"`).join(', ');
+      if (endsWithAction(aFull)) {
+        breaking.push(
+          `${tag} gained ${gained} at the end, which moves its action slot from ` +
+            `argument ${bp.length + 1} to ${ap.length + 1} — every stored call that ` +
+            `passes an action positionally now binds it to "${ap[ap.length - 1]}" instead`,
+        );
+      } else {
+        additive.push(`${tag} gained ${gained} at the end`);
+      }
     }
 
     const ba = b[tag].attributes ?? {};

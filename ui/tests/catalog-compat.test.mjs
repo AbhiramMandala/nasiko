@@ -105,14 +105,38 @@ test('several breakages are all reported, not just the first', () => {
   assert.equal(breaking.length, 2, 'one fix per run is a slow way to find out');
 });
 
-test('the trailing synthetic action slot is not compared in place', () => {
-  // `action` is always last by construction, so adding any attribute to an
-  // interactive component shifts it. Comparing it positionally would make
-  // every safe addition read as breaking — and a gate that fires on safe
-  // changes is one people learn to wave through.
-  const { breaking, additive } = classify(
+test('appending to a component that takes an action displaces the action, and is breaking', () => {
+  // This test used to assert the opposite, on the reasoning that `action` is
+  // synthetic and always last so shifting it is harmless. It is not harmless:
+  // `action` being always-last is exactly why appending breaks. A stored call
+  // passes the action in the last position because that is the only position
+  // it has, so a new twelfth attribute does not leave the action alone — it
+  // takes the argument the action was written into, and the action moves one
+  // to the right where nothing passes it. Nothing errors; the control just
+  // stops responding.
+  //
+  // Real instance: app-select gained `fit-content`, and
+  // `AppSelect(…11 nulls…, act)` in surface-render.test.mjs bound `act` to
+  // `fit-content`. The suite caught it. This gate did not, and this gate is
+  // the one that will still be watching once NAS-294 stores DSL that no test
+  // is looking at.
+  const { breaking } = classify(
     cat({ 'app-x': card(['a', 'action']) }),
     cat({ 'app-x': card(['a', 'b', 'action']) }),
+  );
+  assert.equal(breaking.length, 1);
+  assert.match(breaking[0], /moves its action slot from argument 2 to 3/);
+  assert.match(breaking[0], /binds it to "b"/);
+});
+
+test('appending to a component with no action stays additive', () => {
+  // The other half: without an action there is nothing after the attributes,
+  // so a stored call genuinely just does not pass the new argument. Keeping
+  // this additive is what stops the stricter rule above from turning every
+  // catalog change into a ceremony.
+  const { breaking, additive } = classify(
+    cat({ 'app-chart': card(['a']) }),
+    cat({ 'app-chart': card(['a', 'b']) }),
   );
   assert.deepEqual(breaking, []);
   assert.match(additive[0], /gained "b" at the end/);
