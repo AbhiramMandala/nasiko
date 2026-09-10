@@ -136,7 +136,6 @@ pub(crate) async fn list_deployments(
                     d.k8s_deployment_name
              FROM agent_deployments d
              LEFT JOIN agents a ON a.id = d.agent_id
-             WHERE a.id IS NULL OR NOT a.is_internal
              ORDER BY d.created_at DESC LIMIT 50",
         )
         .fetch_all(&state.db)

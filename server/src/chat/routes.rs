@@ -100,7 +100,7 @@ const SESSION_LIST_SELECT: &str = r#"
            agg.total_tokens,
            agg.latency_p50_ms
     FROM chat_sessions cs
-    LEFT JOIN agents a ON a.id = cs.agent_id AND NOT a.is_internal
+    LEFT JOIN agents a ON a.id = cs.agent_id
     LEFT JOIN LATERAL (
         SELECT content FROM chat_messages
         WHERE session_id = cs.session_id

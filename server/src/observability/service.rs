@@ -962,7 +962,7 @@ impl ObservabilityService {
         // not row-keyed.
         sqlx::query_as::<_, (uuid::Uuid, String, String, String)>(
             "SELECT id, name, COALESCE(display_name, name), version FROM agents \
-             WHERE deleted_at IS NULL AND NOT is_internal ORDER BY name",
+             WHERE deleted_at IS NULL ORDER BY name",
         )
         .fetch_all(&self.db)
         .await

@@ -253,7 +253,6 @@ pub(crate) async fn by_agent(
         FROM token_usage tu
         LEFT JOIN agents a ON a.id = tu.agent_id
         WHERE tu.user_id = $1 AND tu.created_at >= $2
-          AND (a.id IS NULL OR NOT a.is_internal)
           AND ($3::text IS NULL OR a.name ILIKE '%' || $3 || '%')
         GROUP BY tu.agent_id, a.name
         ORDER BY total_tokens DESC

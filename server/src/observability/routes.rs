@@ -367,14 +367,13 @@ struct Metrics {
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    let agents_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE NOT is_internal")
+    let agents_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
         .fetch_one(&state.db)
         .await
         .unwrap_or(0);
 
-    let agents_running: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM agents WHERE status = 'running' AND NOT is_internal",
-    )
+    let agents_running: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE status = 'running'")
             .fetch_one(&state.db)
             .await
             .unwrap_or(0);
