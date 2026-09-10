@@ -460,6 +460,8 @@ mod redaction_tests {
 
     #[test]
     fn strips_it_with_a_query_string_too() {
+        // The token is in the path, so the whole URI is replaced rather than
+        // trying to reassemble it around the secret.
         let redacted = redact_credential_uri(&uri("/api/mcp/s/ngt_deadbeef?trace=1"));
         assert!(!redacted.contains("ngt_deadbeef"), "leaked: {redacted}");
     }
