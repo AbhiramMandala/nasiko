@@ -33,7 +33,7 @@ class FlowDetailPage extends HTMLElement {
     if (!flowId) {
       this.innerHTML = `${this.#toolbar()}
         <app-empty-state
-          heading="No flow selected"
+          title="No flow selected"
           description="Open a flow from the list to inspect its trace."
           icon='${icons.activity("", 40)}'></app-empty-state>`;
       return;
@@ -75,7 +75,7 @@ class FlowDetailPage extends HTMLElement {
       this.innerHTML = `${this.#toolbar()}
         <div class="empty-wrap">
           <app-empty-state
-            heading="Couldn't load this flow"
+            title="Couldn't load this flow"
             description="Something went wrong fetching this trace."
             icon='${icons.alertTriangle("", 40)}'>
             <app-button id="flow-retry" variant="primary">Retry</app-button>
@@ -87,7 +87,7 @@ class FlowDetailPage extends HTMLElement {
     if (!data) {
       this.innerHTML = `${this.#toolbar()}
         <app-empty-state
-          heading="Flow not found"
+          title="Flow not found"
           description="This flow may have expired or been removed."
           icon='${icons.faceFrown("", 40)}'></app-empty-state>`;
       return;
@@ -144,7 +144,7 @@ class FlowDetailPage extends HTMLElement {
     if (!steps.length) {
       container.innerHTML = `
         <app-empty-state
-          heading="No steps recorded"
+          title="No steps recorded"
           description="No agent calls were recorded for this flow."
           icon='${icons.activity("", 40)}'></app-empty-state>`;
       return;
