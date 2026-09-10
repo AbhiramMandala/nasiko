@@ -314,6 +314,19 @@ class TokenopsPage extends HTMLElement {
   #start = null;
   #end = null;
   #range = '30d';
+  /**
+   * Which control actually drives the window. The two are independently
+   * displayed now — the range strip keeps whatever preset was last picked lit
+   * (30d by default) instead of going blank the moment a month is chosen —
+   * but only one of them can be authoritative for `#resolveWindow()` and the
+   * `range` param sent to the backend: `range` (24h|7d|30d) wins over
+   * `start_time`/`end_time` server-side whenever both are sent (see
+   * usage-service.js's fetchTokenopsDashboard note), so sending it while a
+   * month is selected would silently make the month a no-op — the backend
+   * would just re-derive "last 30 days from now" and ignore the picked month
+   * entirely. `#load()` omits `range` whenever this is `'month'`.
+   */
+  #windowSource = 'range';
   #agentFilter = '';
   #providerFilter = '';
   #modelFilter = '';
@@ -418,15 +431,12 @@ class TokenopsPage extends HTMLElement {
     };
 
     this.querySelector('#month-select').addEventListener('change', () => {
-      // Clearing the range group's value deselects every segment: the month is
-      // now the window, and two lit controls would each claim to own it. The
-      // blank strip is deliberate, not a bug — a title explains it on hover
-      // rather than leaving it looking like a click that didn't take.
-      this.#range = '';
-      const seg = this.querySelector('#range-seg');
-      seg.value = '';
-      seg.title = `Showing ${this.querySelector('#month-select').select
-        ?.selectedOptions[0]?.textContent ?? 'the selected month'} — pick a preset range to override.`;
+      // The range strip is left exactly as it was (30d, by default) — it is
+      // no longer the source of truth once a month is picked, just a label
+      // that keeps reading as "not broken". #resolveWindow() and #load()'s
+      // `range` param both key off #windowSource, not off whether #range-seg
+      // happens to show something.
+      this.#windowSource = 'month';
       // The day picker is keyed to a single date, not a window, so a month
       // jump has to move it too or it keeps showing the OLD month's days
       // (see the comment on #syncDayToSelectedMonth).
@@ -436,7 +446,7 @@ class TokenopsPage extends HTMLElement {
     });
     this.querySelector('#range-seg').addEventListener('change', (e) => {
       this.#range = e.target.value;
-      this.querySelector('#range-seg').removeAttribute('title');
+      this.#windowSource = 'range';
       this.#load();
     });
     this.querySelector('#agent-select').addEventListener('change', (e) => {
@@ -512,10 +522,11 @@ class TokenopsPage extends HTMLElement {
     }).join('');
   }
 
-  /** The range group wins when it holds a selection; otherwise the month does. */
+  /** `#windowSource` (not whichever control looks selected) decides the
+   *  window — see the field's own comment for why they had to be split. */
   #resolveWindow() {
-    const range = RANGES.find((r) => r.value === this.#range);
-    if (range) {
+    if (this.#windowSource === 'range') {
+      const range = RANGES.find((r) => r.value === this.#range) || RANGES[RANGES.length - 1];
       this.#end = new Date();
       this.#start = new Date(this.#end.getTime() - range.days * DAY_MS);
       return;
@@ -623,7 +634,12 @@ class TokenopsPage extends HTMLElement {
     const start = this.#start.toISOString();
     const end = this.#end.toISOString();
     const params = {
-      range: this.#range || undefined,
+      // Sent only when the range strip actually owns the window: the backend
+      // takes `range` over `start_time`/`end_time` whenever both arrive, so
+      // sending it while a month is selected would overrule the month with
+      // "last 30 days from now" despite start/end correctly bounding that
+      // month (see #windowSource's comment).
+      range: this.#windowSource === 'range' ? (this.#range || undefined) : undefined,
       startTime: start,
       endTime: end,
       agentId: this.#agentFilter || undefined,
