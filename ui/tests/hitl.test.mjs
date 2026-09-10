@@ -19,8 +19,9 @@ import { installBrowserShim } from './browser-shim.mjs';
 installBrowserShim();
 
 const { readA2aStream } = await import(new URL('../common/utils/a2a-stream.js', import.meta.url).href);
-const { connectorFor, detailRows, pendingRows, toolLabel } = await import(
-  new URL('../common/services/hitl.js', import.meta.url).href);
+const {
+  answeredSummary, connectorFor, decidedRows, detailRows, pendingRows, structuredOptions, toolLabel,
+} = await import(new URL('../common/services/hitl.js', import.meta.url).href);
 
 function sse(frames) {
   const enc = new TextEncoder();
@@ -153,4 +154,82 @@ test('only pending rows are shown; resolved history is not', () => {
   ];
   assert.deepEqual(pendingRows(rows).map((r) => r.id), ['b', 'd']);
   assert.deepEqual(pendingRows(undefined), []);
+});
+
+test('a question is structured only when it offers usable options', () => {
+  const spec = structuredOptions({
+    message: 'How should I format the output?',
+    header: 'Format',
+    options: [{ label: 'Summary', description: 'Brief overview' }, { label: 'Detailed' }],
+    multi_select: false,
+    allow_custom_input: true,
+  });
+  assert.equal(spec.header, 'Format');
+  assert.deepEqual(spec.options.map((o) => o.label), ['Summary', 'Detailed']);
+  assert.equal(spec.multiSelect, false);
+  assert.equal(spec.allowCustom, true);
+
+  // Both flags default to off, so an options block on its own is single-select
+  // with no free-text escape hatch.
+  const bare = structuredOptions({ options: [{ label: 'Yes' }] });
+  assert.equal(bare.multiSelect, false);
+  assert.equal(bare.allowCustom, false);
+  assert.equal(bare.header, null);
+
+  // Null is "render the plain question you always rendered" — never an error
+  // state, because a malformed block is dropped server-side and arrives as a
+  // plain question (§5 of the contract).
+  assert.equal(structuredOptions({ message: 'Which environment?' }), null);
+  assert.equal(structuredOptions({ options: [] }), null);
+  assert.equal(structuredOptions({ options: [{ description: 'no label' }, { label: '  ' }] }), null);
+  assert.equal(structuredOptions(null), null);
+});
+
+test('a decided row says what was answered, whichever kind it is', () => {
+  // The human's own words, for the shape each kind of answer is stored in.
+  assert.deepEqual(
+    answeredSummary({ kind: 'input_required', status: 'resolved', human_response: { answer: 'Detailed' } }),
+    { label: 'You answered', answer: 'Detailed' });
+  assert.deepEqual(
+    answeredSummary({
+      kind: 'input_required',
+      status: 'resolved',
+      human_response: { answer: ['Introduction', 'Security'], custom_answer: 'and deployment risks' },
+    }),
+    { label: 'You answered', answer: 'Introduction, Security \u00b7 \u201cand deployment risks\u201d' });
+  // Multi-select with nothing ticked is a valid answer — the text is all there is.
+  assert.deepEqual(
+    answeredSummary({ kind: 'input_required', status: 'resolved', human_response: { answer: [], custom_answer: 'only security' } }),
+    { label: 'You answered', answer: '\u201conly security\u201d' });
+
+  assert.deepEqual(
+    answeredSummary({ kind: 'tool_approval', status: 'resolved', human_response: { decision: 'approve', scope: 'session' } }),
+    { label: 'Allowed for this session', answer: null });
+  assert.deepEqual(
+    answeredSummary({ kind: 'tool_approval', status: 'rejected', human_response: { decision: 'reject', note: 'wrong account' } }),
+    { label: 'Denied', answer: 'wrong account' });
+  assert.deepEqual(
+    answeredSummary({ kind: 'auth_required', status: 'resolved', human_response: { auth_outcome: 'confirmed' } }),
+    { label: 'Sign-in confirmed', answer: null });
+
+  // Status wins over kind: neither of these was answered at all.
+  assert.equal(answeredSummary({ kind: 'input_required', status: 'canceled' }).answer, null);
+  assert.match(answeredSummary({ kind: 'input_required', status: 'canceled' }).label, /Dismissed/);
+  assert.match(answeredSummary({ kind: 'tool_approval', status: 'expired' }).label, /Expired/);
+  // A row with no response at all still renders something rather than throwing.
+  assert.deepEqual(answeredSummary({ kind: 'input_required', status: 'resolved' }),
+    { label: 'You answered', answer: null });
+});
+
+test("the session's hitl array splits into what is waiting and what is history", () => {
+  const rows = [
+    { id: 'b', status: 'resolved', created_at: '2026-09-09T10:05:00Z' },
+    { id: 'a', status: 'rejected', created_at: '2026-09-09T10:01:00Z' },
+    { id: 'p', status: 'pending', created_at: '2026-09-09T10:09:00Z' },
+    { id: 'c', status: 'canceled', created_at: '2026-09-09T10:07:00Z' },
+  ];
+  // Oldest first, so history replays in the order it happened.
+  assert.deepEqual(decidedRows(rows).map((r) => r.id), ['a', 'b', 'c']);
+  assert.deepEqual(pendingRows(rows).map((r) => r.id), ['p']);
+  assert.deepEqual(decidedRows(undefined), []);
 });

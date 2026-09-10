@@ -32,6 +32,12 @@ export function getHitl(id, opts = {}) {
  *   auth_required  { auth_action: 'start'|'confirm' }   // 'start' leaves it pending
  *   input_required { answer: string }                   // non-empty after trim
  *
+ * A structured `input_required` question (`question.options`, see
+ * `structuredOptions`) keeps the same field with a shape picked by
+ * `multi_select`: a bare label string for single-select (or the human's own
+ * text, when `allow_custom_input`), an array of labels for multi-select, whose
+ * "something else" text rides alongside as `custom_answer`.
+ *
  * Resolving does not deliver the answer synchronously — reconnect (§20) is how
  * you see what the resumed agent actually does. A duplicate call is a 200 with
  * `already_resolved: true`, so this is safe to retry.
@@ -106,6 +112,22 @@ export function pendingRows(rows) {
 }
 
 /**
+ * The other half of the same array: rows already answered, denied, withdrawn
+ * or expired, oldest first — the transcript replays these as history so a
+ * reloaded session still shows what was asked and what the human said.
+ */
+export function decidedRows(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .filter((r) => r && r.status && r.status !== 'pending')
+    .sort((a, b) => askedAt(a) - askedAt(b));
+}
+
+/** When a row was asked, as a sortable number. 0 when the DTO carries no date. */
+export function askedAt(row) {
+  return Date.parse(row?.created_at) || 0;
+}
+
+/**
  * Who a tool belongs to, best available answer first:
  *
  *  1. `question.connector_name` (+ `connector_logo_url`) — `tool_approval`
@@ -150,6 +172,63 @@ export function toolLabel(slug, connectorName) {
   const phrase = words.join(' ').toLowerCase();
   const pretty = phrase.charAt(0).toUpperCase() + phrase.slice(1);
   return connectorName ? `${pretty} from ${connectorName}` : pretty;
+}
+
+/**
+ * What a decided row should say in the transcript: what happened, and — when
+ * the human's own words are the answer — what they said.
+ *
+ * Every kind writes its own `human_response` shape (`oss/server/src/router/hitl.rs`):
+ * `{decision, scope, note}` for an approval, `{auth_outcome}` for a sign-in,
+ * `{answer}` (string, or an array plus `custom_answer` for multi-select) for a
+ * question. Reading them here rather than in the card means a row reloaded
+ * from the session reads exactly like the one just answered on screen — the
+ * card no longer has to remember which button was clicked, because the row
+ * itself says.
+ *
+ * @returns {{label: string, answer: string|null}}
+ */
+export function answeredSummary(row) {
+  const response = (row && typeof row.human_response === 'object' && row.human_response) || {};
+  if (row?.status === 'canceled') return { label: 'Dismissed — the agent was not answered', answer: null };
+  if (row?.status === 'expired') return { label: 'Expired before it was answered', answer: null };
+
+  if (row?.kind === 'tool_approval') {
+    const approved = response.decision === 'approve';
+    const label = !approved ? 'Denied'
+      : response.scope === 'session' ? 'Allowed for this session' : 'Allowed once';
+    return { label, answer: response.note || null };
+  }
+  if (row?.kind === 'auth_required') return { label: 'Sign-in confirmed', answer: null };
+
+  const picked = Array.isArray(response.answer)
+    ? response.answer.filter(Boolean).map(String)
+    : (response.answer ? [String(response.answer)] : []);
+  const custom = response.custom_answer ? `“${response.custom_answer}”` : null;
+  const answer = [picked.join(', ') || null, custom].filter(Boolean).join(' · ');
+  return { label: 'You answered', answer: answer || null };
+}
+
+/**
+ * The selectable-options extension on an `input_required` question, or null
+ * when the question is a plain one — which is every pre-extension row and any
+ * question whose agent never sent `options`.
+ *
+ * `label` is the semantic answer value and is what goes back on resolve;
+ * `description` is presentation only. A malformed block never reaches us (the
+ * server drops it at pause time), so this only guards the shape it needs:
+ * no options with a usable label means "plain question", not "broken card".
+ */
+export function structuredOptions(question) {
+  const options = (Array.isArray(question?.options) ? question.options : [])
+    .filter((o) => o && typeof o.label === 'string' && o.label.trim() !== '');
+  if (!options.length) return null;
+  return {
+    header: question.header || null,
+    options,
+    multiSelect: question.multi_select === true,
+    allowCustom: question.allow_custom_input === true,
+  };
 }
 
 /** How many detail rows a card will render, and how much of each value. */
