@@ -16,7 +16,6 @@ anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-toml_edit = "0.25"
 ureq.workspace = true
 dialoguer.workspace = true
 indicatif.workspace = true
@@ -35,6 +34,7 @@ ratatui.workspace = true
 crossterm.workspace = true
 chrono.workspace = true
 tabled.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 mockito.workspace = true

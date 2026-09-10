@@ -5,6 +5,7 @@
 //! pause can surface, rather than each surface reimplementing its own.
 
 use anyhow::Result;
+use nasiko_utils::term;
 
 use crate::api::Client;
 
@@ -41,18 +42,19 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
         "tool_approval" => {
             let tool = pause.question.get("tool_name").and_then(|v| v.as_str());
             let connector = pause.question.get("connector_id").and_then(|v| v.as_str());
-            println!();
-            println!(
-                "\x1b[1;33m⏸ {who}\x1b[0m wants approval to run: \x1b[1m{}\x1b[0m",
+            let msg = message("message");
+            let mut panel = format!(
+                "{who} wants to run  \x1b[1m{}\x1b[0m",
                 tool.unwrap_or("(unknown tool)")
             );
             if let Some(c) = connector {
-                println!("  \x1b[2mconnector: {c}\x1b[0m");
+                panel.push_str(&format!("\nvia connector  {c}"));
             }
-            let msg = message("message");
             if !msg.is_empty() {
-                println!("  \x1b[2m{msg}\x1b[0m");
+                panel.push_str(&format!("\n{msg}"));
             }
+            println!();
+            term::print_box(Some("⏸ APPROVAL NEEDED"), &panel, "33");
             // Same three choices the web UI's tool-approval card offers — "session"
             // scope (§5 of the HITL plan) is a real, separately-meaningful option, not
             // just a variant of "once", so it needs its own place in the prompt rather
@@ -75,22 +77,22 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
         }
         "auth_required" => {
             let msg = message("message");
-            println!();
-            println!(
-                "\x1b[1;33m⏸ {who}\x1b[0m needs authorization: {}",
+            let mut panel = format!(
+                "{who} needs authorization: {}",
                 if msg.is_empty() {
                     "re-authentication required"
                 } else {
                     msg
                 }
             );
+            let connector_id = pause.question.get("connector_id").and_then(|v| v.as_str());
             if let Some(c) = pause
                 .question
                 .get("connector")
-                .or_else(|| pause.question.get("connector_id"))
                 .and_then(|v| v.as_str())
+                .or(connector_id)
             {
-                println!("  \x1b[2mconnector: {c}\x1b[0m");
+                panel.push_str(&format!("\nconnector  {c}"));
             }
             // Two different shapes carry this, depending on which layer raised the
             // pause: an agent's own token-URL flow nests it under "metadata" (its
@@ -103,8 +105,18 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
                 .or_else(|| pause.question.pointer("/metadata/auth_url"))
                 .and_then(|v| v.as_str())
             {
-                println!("  \x1b[2mopen this to authenticate: {url}\x1b[0m");
+                panel.push_str(&format!("\nopen this to authenticate: {url}"));
             }
+            // `connector_id` only appears on a real MCP-gateway-raised pause
+            // (`handle_auth_required`) — an agent's own fixture/demo auth_required
+            // has no connector to reconnect, so there's no CLI fix to suggest.
+            if let Some(id) = connector_id {
+                panel.push_str(&format!(
+                    "\nor from the CLI: nasiko mcp connect --connector-id {id}\nthen confirm with: nasiko mcp connections"
+                ));
+            }
+            println!();
+            term::print_box(Some("⏸ AUTHORIZATION NEEDED"), &panel, "33");
             dialoguer::Input::<String>::new()
                 .with_prompt("Once you've finished, press Enter to continue")
                 .allow_empty(true)
@@ -116,13 +128,14 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
         _ => {
             let msg = message("message");
             println!();
-            println!(
-                "\x1b[1;33m⏸ {who}\x1b[0m: {}",
+            term::print_box(
+                Some(&format!("⏸ {who}")),
                 if msg.is_empty() {
                     "(needs your input)"
                 } else {
                     msg
-                }
+                },
+                "33",
             );
             let answer = dialoguer::Input::<String>::new()
                 .with_prompt("\x1b[1;36m❯ you\x1b[0m")

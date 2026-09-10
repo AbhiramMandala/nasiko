@@ -168,6 +168,115 @@ fn format_elapsed(duration: Duration) -> String {
     }
 }
 
+/// Visible width of `s`, skipping ANSI SGR (`\x1b[...m`) and OSC 8 hyperlink
+/// (`\x1b]8;;url\x1b\\...\x1b]8;;\x1b\\`) escape sequences — both appear in box content (colored
+/// labels, `nasiko chat`'s linkified replies) and would otherwise throw off [`print_box`]'s
+/// padding and word-wrap width, which must size by what's actually on screen, not byte length.
+pub fn visible_width(s: &str) -> usize {
+    let mut width = 0;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            width += 1;
+            continue;
+        }
+        match chars.peek() {
+            Some('[') => {
+                chars.next();
+                for c2 in chars.by_ref() {
+                    if c2.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                chars.next();
+                // OSC sequence: consume through its terminator, BEL or ST (`\x1b\\`).
+                while let Some(c2) = chars.next() {
+                    if c2 == '\x07' {
+                        break;
+                    }
+                    if c2 == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    width
+}
+
+/// Word-wraps `text` to `width` visible columns ([`visible_width`]), splitting on spaces and
+/// treating existing newlines as hard breaks. [`print_box`]'s only caller.
+fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        let mut current_width = 0;
+        for word in paragraph.split(' ') {
+            let word_width = visible_width(word);
+            if !current.is_empty() && current_width + 1 + word_width > width {
+                lines.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+            if !current.is_empty() {
+                current.push(' ');
+                current_width += 1;
+            }
+            current.push_str(word);
+            current_width += word_width;
+        }
+        lines.push(current);
+    }
+    lines
+}
+
+/// Draws a bordered box around `body` to stderr, with an optional `title` set into the top
+/// border — the visual anchor for anything that should stand out from the surrounding stream:
+/// `nasiko chat`'s sub-agent tool-call announcements/replies, and its HITL pause prompts.
+/// `color` is the ANSI SGR code (e.g. `"36"` cyan, `"33"` yellow) applied to the border and
+/// title; `body` may already carry its own ANSI colors or OSC 8 hyperlinks — sizing and
+/// wrapping account for that via [`visible_width`]. Width comes from the real terminal (same
+/// source [`start_status`] uses), clamped so a huge terminal doesn't produce an absurdly wide
+/// box and a narrow one still fits a full sentence. Respects `NO_COLOR` like the rest of this
+/// module.
+pub fn print_box(title: Option<&str>, body: &str, color: &str) {
+    let line_width = terminal_cols().clamp(40, 92).saturating_sub(2);
+    let content_width = line_width.saturating_sub(4).max(10);
+
+    let (open, close) = if use_color() {
+        (format!("\x1b[{color}m"), "\x1b[0m".to_string())
+    } else {
+        (String::new(), String::new())
+    };
+
+    let top = match title {
+        Some(t) => {
+            let dashes = line_width.saturating_sub(visible_width(t) + 5).max(1);
+            format!("┌─ {t} {}┐", "─".repeat(dashes))
+        }
+        None => format!("┌{}┐", "─".repeat(line_width.saturating_sub(2))),
+    };
+    eprintln!("{open}{top}{close}");
+
+    for raw_line in body.split('\n') {
+        for line in wrap_to_width(raw_line, content_width) {
+            let pad = content_width.saturating_sub(visible_width(&line));
+            eprintln!("{open}│{close} {line}{} {open}│{close}", " ".repeat(pad));
+        }
+    }
+    eprintln!(
+        "{open}└{}┘{close}",
+        "─".repeat(line_width.saturating_sub(2))
+    );
+}
+
 /// Returns the terminal column count, falling back to `$COLUMNS`, then 80.
 fn terminal_cols() -> usize {
     crossterm::terminal::size()
@@ -221,5 +330,40 @@ mod tests {
         let fitted = fit_msg(&long, 5);
         assert!(fitted.ends_with('…'));
         assert!(fitted.chars().count() < 500);
+    }
+
+    #[test]
+    fn visible_width_ignores_sgr_codes() {
+        assert_eq!(visible_width("\x1b[1;36mhello\x1b[0m"), 5);
+    }
+
+    #[test]
+    fn visible_width_ignores_osc8_hyperlinks() {
+        let hyperlink = "\x1b]8;;https://example.com\x1b\\\x1b[34;4mhere\x1b[0m\x1b]8;;\x1b\\";
+        assert_eq!(visible_width(hyperlink), 4);
+    }
+
+    #[test]
+    fn visible_width_plain_text_is_char_count() {
+        assert_eq!(visible_width("plain text"), 10);
+    }
+
+    #[test]
+    fn wrap_to_width_breaks_on_spaces_within_budget() {
+        let wrapped = wrap_to_width("one two three four", 8);
+        assert_eq!(wrapped, vec!["one two", "three", "four"]);
+    }
+
+    #[test]
+    fn wrap_to_width_preserves_existing_newlines_as_hard_breaks() {
+        let wrapped = wrap_to_width("first line\nsecond line", 80);
+        assert_eq!(wrapped, vec!["first line", "second line"]);
+    }
+
+    #[test]
+    fn wrap_to_width_never_splits_a_single_long_word() {
+        let word = "x".repeat(20);
+        let wrapped = wrap_to_width(&word, 8);
+        assert_eq!(wrapped, vec![word]);
     }
 }

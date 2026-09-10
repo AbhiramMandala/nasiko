@@ -807,9 +807,9 @@ fn render_status_data(data: &serde_json::Value, spin: &mut Spinner) {
             spin.pause();
             spin.close_sub();
             spin.break_stdout();
-            // The call header is the visual anchor — bold, colored, flush
+            // The call header is the visual anchor — a bordered box, flush
             // left. Everything the agent does below it is dim and indented.
-            eprintln!("\x1b[1;36m❯ {agent}\x1b[0m \x1b[2m· {message}\x1b[0m");
+            status::print_box(Some(agent), message, "36");
             spin.sub_streamed = false;
             spin.call_started = Some(std::time::Instant::now());
             spin.set(format!("{agent} working"));

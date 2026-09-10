@@ -1022,11 +1022,25 @@ async fn trigger_new_orchestrator_turn(
         return;
     };
 
+    // Framed as an already-done status report, not a fresh ask — and deliberately sent with NO
+    // prior history glued in front of it (contrast every other `orchestrator_stream` caller, which
+    // does via `SessionHistory::with_current_query`): reframing this text alone wasn't enough,
+    // because gluing the full transcript back in put the original, still-verbatim "please do X"
+    // request right back in front of the orchestrating LLM, which then re-read it as outstanding
+    // and re-invoked the same tool — pausing for approval again, forever
+    // (docs/HITL_ORCHESTRATOR_BRANCH_STATUS.md:225-233, :288-293). This continuation message is
+    // self-contained (it names the agent and repeats what it did), so the orchestrating LLM needs
+    // nothing else to relay it — and history is not lost, only skipped for *this* synthesis call:
+    // it's still persisted as `raw_text` below, so the next real user turn sees it normally.
     let continuation = match reply_text.filter(|t| !t.is_empty()) {
-        Some(text) => format!("The {agent_name} agent replied: {text}"),
+        Some(text) => format!(
+            "The {agent_name} agent already completed the previously requested action and replied: {text}\n\nRelay this result to the user. The action has already been performed — do not call the same tool or repeat the action again."
+        ),
         // auth_required has no free-text reply — same "intent, not success" framing `answer_text`
         // above already uses for the agent-facing side of this same resume.
-        None => format!("The {agent_name} agent has completed the requested step."),
+        None => format!(
+            "The {agent_name} agent has already completed the previously requested step. Tell the user it's done — do not repeat the action."
+        ),
     };
 
     // The orchestrator's own system prompt (`react_loop.rs`) reads every turn as "analyze the
