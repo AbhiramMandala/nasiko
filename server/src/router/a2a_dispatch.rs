@@ -1823,6 +1823,62 @@ pub(crate) async fn persist_direct_chat_pause(
     // The agent's OWN task id, not Nasiko's synthetic per-request `task_id` — see
     // `paused_task_id`'s doc comment. Resume must address the task the agent's own store holds.
     let real_task_id = paused_task_id(pause_data, task_id);
+
+    // This pause may itself be a mirror of a real `mcp_tool` row (see `resolve_display_row`'s doc
+    // comment) — the agent stamped `hitl_request_id` into its own pause metadata, and
+    // `build_pause_question` forwarded it verbatim into `question`. A tool-call retry re-pauses
+    // on a brand-new `task_id` while the underlying `mcp_tool` approval is still the SAME pending
+    // one, and nothing before this point knows that — without this check, every retry mints a
+    // second, third, ... mirror row for the identical wait, each resolving to the same
+    // substituted question and rendered as a separate, duplicate approval card. Retargets the
+    // existing mirror onto the new task/context instead of minting another one — not a plain
+    // reuse-as-is, since the OLD mirror's `task_id` names a task the retry has already
+    // superseded; resolving it unchanged would deliver the human's answer to a dead task while
+    // the actually-live retry sits unresolved.
+    if let Some(linked_id) = question
+        .get("metadata")
+        .and_then(|m| m.get("hitl_request_id"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    {
+        let existing_mirror_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM hitl_requests
+              WHERE owner_user_id = $1 AND agent_id = $2 AND status = 'pending'
+                AND question->'metadata'->>'hitl_request_id' = $3
+              LIMIT 1",
+        )
+        .bind(user_id)
+        .bind(agent_id_for_hitl)
+        .bind(linked_id.to_string())
+        .fetch_optional(db)
+        .await
+        .unwrap_or(None);
+        if let Some(existing_mirror_id) = existing_mirror_id {
+            let retargeted = sqlx::query(
+                "UPDATE hitl_requests SET task_id = $2, context_id = $3, updated_at = now() \
+                 WHERE id = $1",
+            )
+            .bind(existing_mirror_id)
+            .bind(&real_task_id)
+            .bind(context_id)
+            .execute(db)
+            .await
+            .is_ok();
+            if retargeted {
+                // Same flow-status bookkeeping the create path below does — this retry opened
+                // its own `flows` row (`flow_id`), which needs marking `paused` too, distinct
+                // from whatever flow the mirror's original pause opened.
+                let _ = sqlx::query("UPDATE flows SET status = 'paused' WHERE flow_id = $1")
+                    .bind(flow_id)
+                    .execute(db)
+                    .await;
+                if let Ok(Some(existing_row)) = hitl_store.get(existing_mirror_id).await {
+                    return Ok(existing_row);
+                }
+            }
+        }
+    }
+
     // `hitl_requests.chat_session_id` carries a hard FK to `chat_sessions(session_id)` — unlike
     // `context_id`/`task_id`, which are free-form strings, a bogus value here doesn't just fail
     // to correlate, it fails the ENTIRE insert (confirmed live: `hitl_requests_chat_session_id_fkey`

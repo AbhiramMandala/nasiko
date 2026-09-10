@@ -143,16 +143,25 @@ pub trait HitlStore: Send + Sync {
 /// writes. This returns `row.clone()` unchanged unless ALL of the following hold: `row.origin` is
 /// `direct_chat`/`agent_proxy`/`maf`/`orchestrator`, `question.metadata.hitl_request_id` is
 /// present and parses as a `Uuid`, that id resolves to a real row via `store.get()`, AND that
-/// row's `owner_user_id` matches `row`'s own (the mirror's owner is who this substitution is being
-/// computed for — see `caller_owner_id` below). Any failure at any step — no link, a malformed
-/// id, a stale/nonexistent id, a lookup error, or an owner mismatch — falls back to the mirror
-/// as-is: a broken (or hostile) link must never turn into a broken or missing HITL prompt for the
-/// human, and must never turn into *another user's* prompt either. Without the owner check, a
-/// buggy or malicious agent could point `hitl_request_id` at any other user's row and have that
-/// row's real `question` (which can carry tool arguments, connector names, auth URLs) substituted
-/// into this requester's view — every caller of this function already scopes `row` itself to the
-/// right owner (`list_for_chat_session`/`list_for_maf_execution`/the live stream's own row), so
-/// `caller_owner_id` is always `row.owner_user_id` in practice, never a value the caller invents.
+/// row is a genuine link target — `owner_user_id` matches `row`'s own (the mirror's owner is who
+/// this substitution is being computed for — see `caller_owner_id` below), `origin` is
+/// `mcp_tool` (the only kind of row this mirroring exists to surface — anything else is not a
+/// real `mcp_tool`/mirror pair, just an agent-supplied id), `status` is still `pending` (a
+/// resolved/rejected/expired/canceled row is stale — substituting it would show the human a
+/// question for something already decided), and `agent_id` matches `row`'s own (the two halves of
+/// one real pause always belong to the same agent; a cross-agent link can only be a forged or
+/// stale one). Any failure at any step — no link, a malformed id, a stale/nonexistent id, a
+/// lookup error, or any of the checks above — falls back to the mirror as-is: a broken (or
+/// hostile) link must never turn into a broken or missing HITL prompt for the human. Without the
+/// `owner_user_id` check, a buggy or malicious agent could point `hitl_request_id` at any other
+/// user's row and have that row's real `question` (which can carry tool arguments, connector
+/// names, auth URLs) substituted into this requester's view — every caller of this function
+/// already scopes `row` itself to the right owner (`list_for_chat_session`/
+/// `list_for_maf_execution`/the live stream's own row), so `caller_owner_id` is always
+/// `row.owner_user_id` in practice, never a value the caller invents. Without the `origin`/
+/// `status`/`agent_id` checks, an agent could still point the link at any OTHER pending or
+/// already-resolved row this same user owns — including one from a different agent entirely —
+/// and have its `id`/`kind`/`question` rendered into this session's panel.
 ///
 /// Only `id`/`kind`/`question` come from the linked row; every other field — crucially
 /// `task_id`/`context_id`/`chat_session_id` — stays the mirror's own, since those are what the
@@ -181,12 +190,19 @@ pub async fn resolve_display_row(
         return row.clone();
     };
     match store.get(linked_id).await {
-        Ok(Some(linked)) if linked.owner_user_id == caller_owner_id => HitlRequest {
-            id: linked.id,
-            kind: linked.kind,
-            question: linked.question,
-            ..row.clone()
-        },
+        Ok(Some(linked))
+            if linked.owner_user_id == caller_owner_id
+                && linked.origin == HitlOrigin::McpTool
+                && linked.status == HitlStatus::Pending
+                && linked.agent_id == row.agent_id =>
+        {
+            HitlRequest {
+                id: linked.id,
+                kind: linked.kind,
+                question: linked.question,
+                ..row.clone()
+            }
+        }
         _ => row.clone(),
     }
 }
@@ -402,6 +418,16 @@ impl HitlStore for PgHitlStore {
         // actionable pending item — only the linked `mcp_tool` row is the one that does real
         // work. The regex guards the `::uuid` cast: `hitl_request_id` is caller-supplied agent
         // metadata, so a malformed value must not error the whole listing, just fail to match.
+        // The `linked.*` conditions here must match `resolve_display_row`'s own definition of a
+        // genuine link exactly — otherwise a row this filter treats as "has a real mirror target"
+        // could be one `resolve_display_row` would reject (or vice versa), and the two surfaces
+        // disagree on whether the same row is a real mirror. In particular `linked.owner_user_id`
+        // is NOT implicitly `h.owner_user_id` — `hitl_request_id` is agent-controlled metadata on
+        // `h`, not a value scoped to `h`'s own owner — so without this check an agent could stamp
+        // any OTHER user's real pending `mcp_tool` row's id into its own pause's metadata and make
+        // its own genuine pause (`h`, already scoped to the correct owner by the caller's WHERE
+        // clause) match this EXISTS and vanish from that owner's `/api/hitl` listing entirely, with
+        // no dispatch and no visible error — silently stuck until the 7-day TTL expires it.
         const MIRROR_FILTER: &str = "
             AND NOT (
                 h.origin IN ('direct_chat', 'agent_proxy', 'maf', 'orchestrator')
@@ -410,6 +436,9 @@ impl HitlStore for PgHitlStore {
                     SELECT 1 FROM hitl_requests linked
                      WHERE linked.id = (h.question->'metadata'->>'hitl_request_id')::uuid
                        AND linked.status = 'pending'
+                       AND linked.owner_user_id = h.owner_user_id
+                       AND linked.origin = 'mcp_tool'
+                       AND linked.agent_id = h.agent_id
                 )
             )";
         let rows: Vec<HitlRequestRow> = if identity.is_superuser {
