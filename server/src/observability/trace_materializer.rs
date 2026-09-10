@@ -185,9 +185,10 @@ async fn materialize_once(
                    trace_id, agent_name, session_id, agent_id, user_id,
                    model, provider,
                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                   tool_call_count,
                    cost_usd, prompt_cost_usd, completion_cost_usd,
                    latency_ms, started_at, materialized_at
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
                ON CONFLICT (trace_id, agent_name) DO UPDATE SET
                    session_id = COALESCE(EXCLUDED.session_id, trace_usage.session_id),
                    agent_id = COALESCE(EXCLUDED.agent_id, trace_usage.agent_id),
@@ -198,6 +199,7 @@ async fn materialize_once(
                    output_tokens = EXCLUDED.output_tokens,
                    cache_read_tokens = EXCLUDED.cache_read_tokens,
                    cache_creation_tokens = EXCLUDED.cache_creation_tokens,
+                   tool_call_count = EXCLUDED.tool_call_count,
                    cost_usd = EXCLUDED.cost_usd,
                    prompt_cost_usd = EXCLUDED.prompt_cost_usd,
                    completion_cost_usd = EXCLUDED.completion_cost_usd,
@@ -216,6 +218,7 @@ async fn materialize_once(
         .bind(row.output_tokens as i64)
         .bind(row.cache_read_tokens as i64)
         .bind(row.cache_creation_tokens as i64)
+        .bind(row.tool_call_count as i64)
         .bind(row.cost_usd)
         .bind(row.prompt_cost_usd)
         .bind(row.completion_cost_usd)

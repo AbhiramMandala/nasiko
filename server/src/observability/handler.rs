@@ -12,7 +12,7 @@ use serde::Deserialize;
 use tracing::instrument;
 use utoipa::IntoParams;
 
-use super::service::{EnsureSessionOutcome, InsightsRequest, ObservabilityService};
+use super::service::{InsightsRequest, ObservabilityService};
 
 /// Request extension injected by EE middleware to scope FinOps queries to a
 /// set of user UUIDs (org-unit filter). OSS handlers check for this extension
@@ -112,6 +112,10 @@ pub struct FinopsFilterParams {
     /// "agent" | "workflow" — which attribution source powers the response's
     /// `attributions` field (default "agent").
     pub view: Option<String>,
+    /// When `true`, restricts results to agents owned by the caller.
+    /// Ignored when `agent_id` is also set (already scoped to one agent).
+    #[serde(default)]
+    pub my_agent: bool,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -249,55 +253,6 @@ pub async fn get_all_sessions(
         Err(e) => obs_err(e),
     }
 }
-
-// ─── 1b. POST /v1/observability/session/ensure ──────────────────────────────
-
-/// Request body for the ensure-session endpoint.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct EnsureSessionRequest {
-    /// The coding agent's session id (e.g. a Claude Code session UUID).
-    pub session_id: String,
-    /// The agent name as registered in the `agents` table (e.g. "claude-code").
-    pub agent_name: String,
-}
-
-/// Ensure a `chat_sessions` row exists for an external coding agent session.
-///
-/// Called by the CLI after the first OTLP export for a session. Idempotent —
-/// returns 200 whether the row was just created or already existed.
-#[utoipa::path(
-    post,
-    path = "/api/observability/session/ensure",
-    tag = "observability",
-    request_body = EnsureSessionRequest,
-    responses(
-        (status = 200, description = "Session ensured (created or already existed)"),
-        (status = 404, description = "Owned agent not found"),
-        (status = 409, description = "Session already belongs to another user or agent"),
-        (status = 401, description = "Missing or invalid session"),
-    ),
-)]
-#[instrument(skip(state))]
-pub async fn ensure_session(
-    State(state): State<AppState>,
-    claims: Claims,
-    Json(body): Json<EnsureSessionRequest>,
-) -> impl IntoResponse {
-    match svc(&state)
-        .ensure_session(&body.session_id, &body.agent_name, &claims.sub)
-        .await
-    {
-        Ok(EnsureSessionOutcome::Created) => StatusCode::CREATED.into_response(),
-        Ok(EnsureSessionOutcome::Existing) => StatusCode::OK.into_response(),
-        Ok(EnsureSessionOutcome::Conflict) => (
-            StatusCode::CONFLICT,
-            "session belongs to another user or agent",
-        )
-            .into_response(),
-        Err(e) => obs_err(e),
-    }
-}
-
 // ─── 2. GET /v1/observability/session/{session_id} ────────────────────────────
 
 /// Detail for one session: traces, token usage, and cost summary.
@@ -316,22 +271,13 @@ pub async fn ensure_session(
 #[instrument(skip(state))]
 pub async fn get_session_details(
     State(state): State<AppState>,
-    claims: Claims,
+    _claims: Claims,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(error) = svc(&state)
-        .authorize_session_access(&session_id, &claims.sub, claims.is_superuser)
-        .await
-    {
-        return obs_err(error);
-    }
     if !state.config.observability_enabled {
         return observability_unconfigured();
     }
-    match svc(&state)
-        .get_session_details(&session_id, &claims.sub, claims.is_superuser)
-        .await
-    {
+    match svc(&state).get_session_details(&session_id).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }
@@ -355,13 +301,10 @@ pub async fn get_session_details(
 #[instrument(skip(state))]
 pub async fn get_trace_details(
     State(state): State<AppState>,
-    claims: Claims,
+    _claims: Claims,
     Path(trace_id): Path<String>,
 ) -> impl IntoResponse {
-    match svc(&state)
-        .get_trace_details(&trace_id, &claims.sub, claims.is_superuser)
-        .await
-    {
+    match svc(&state).get_trace_details(&trace_id).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }
@@ -386,13 +329,10 @@ pub async fn get_trace_details(
 #[instrument(skip(state))]
 pub async fn get_span_details(
     State(state): State<AppState>,
-    claims: Claims,
+    _claims: Claims,
     Path((trace_id, span_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match svc(&state)
-        .get_span_details(&trace_id, &span_id, &claims.sub, claims.is_superuser)
-        .await
-    {
+    match svc(&state).get_span_details(&trace_id, &span_id).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }
@@ -417,24 +357,20 @@ pub async fn get_span_details(
 #[instrument(skip(state))]
 pub async fn get_agent_stats(
     State(state): State<AppState>,
-    claims: Claims,
+    _claims: Claims,
     Path(agent_id): Path<String>,
     Query(params): Query<AgentStatsParams>,
 ) -> impl IntoResponse {
-    let Some((_resolved_id, tempo_ref)) =
-        super::routes::resolve_accessible_agent(&state, &claims, &agent_id).await
-    else {
-        return (StatusCode::NOT_FOUND, "agent not found").into_response();
-    };
-    if !super::routes::agent_name_fully_accessible(&state, &claims, &tempo_ref).await {
-        return (StatusCode::NOT_FOUND, "agent not found").into_response();
-    }
     if !state.config.observability_enabled {
         return observability_unconfigured();
     }
     // Tempo's service.name is the agent name (the injector sets
     // OTEL_SERVICE_NAME to the container/agent name); accept a name or UUID
     // here (same contract as the logs endpoints) and query by name.
+    let tempo_ref = match super::routes::resolve_agent(&state.db, &agent_id).await {
+        Some((_id, name)) => name,
+        None => agent_id.clone(),
+    };
     match svc(&state)
         .get_agent_stats(&tempo_ref, params.start_time.as_deref())
         .await
@@ -476,11 +412,6 @@ pub async fn get_finops_dashboard(
         Ok(n) => n,
         Err(r) => return r,
     };
-    if let Some(name) = agent_name.as_deref()
-        && !super::routes::agent_name_fully_accessible(&state, &claims, name).await
-    {
-        return (StatusCode::NOT_FOUND, "agent not found").into_response();
-    }
 
     let (start_time, end_time) =
         match resolve_range_params(&params.start_time, &params.end_time, &params.range) {
@@ -489,7 +420,7 @@ pub async fn get_finops_dashboard(
         };
 
     let user_ids = user_scope.map(|Extension(s)| s.0);
-    let accessible_agent_ids = accessible_agent_ids(&state, &claims).await;
+    let owner_id = params.my_agent.then_some(claims.sub.as_str());
     match svc(&state)
         .get_finops_dashboard(
             &claims.sub,
@@ -502,7 +433,7 @@ pub async fn get_finops_dashboard(
             params.model.as_deref(),
             params.provider.as_deref(),
             user_ids.as_deref(),
-            accessible_agent_ids.as_deref(),
+            owner_id,
             view,
         )
         .await
@@ -766,48 +697,21 @@ pub async fn get_finops_insights(
 #[instrument(skip(state))]
 pub async fn get_agent_hours(
     State(state): State<AppState>,
-    claims: Claims,
+    _claims: Claims,
     Query(params): Query<AgentHoursParams>,
 ) -> impl IntoResponse {
-    if !claims.is_superuser
-        && let Some(Ok(agent_id)) = params.agent_id.as_deref().map(str::parse)
-        && !crate::acl::can_access_agent(&state, &claims, agent_id).await
-    {
-        return (StatusCode::NOT_FOUND, "agent not found").into_response();
-    }
-    let accessible_agent_ids = accessible_agent_ids(&state, &claims).await;
     match svc(&state)
         .get_agent_hours(
             params.start_time.as_deref(),
             params.end_time.as_deref(),
             params.agent_id.as_deref(),
             params.bucket.as_deref(),
-            accessible_agent_ids.as_deref(),
         )
         .await
     {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }
-}
-
-async fn accessible_agent_ids(state: &AppState, claims: &Claims) -> Option<Vec<uuid::Uuid>> {
-    if claims.is_superuser {
-        return None;
-    }
-
-    let agent_ids: Vec<uuid::Uuid> =
-        sqlx::query_scalar("SELECT id FROM agents WHERE deleted_at IS NULL ORDER BY id")
-            .fetch_all(&state.db)
-            .await
-            .unwrap_or_default();
-    let mut accessible = Vec::new();
-    for agent_id in agent_ids {
-        if crate::acl::can_access_agent(state, claims, agent_id).await {
-            accessible.push(agent_id);
-        }
-    }
-    Some(accessible)
 }
 
 // ---------------------------------------------------------------------------
