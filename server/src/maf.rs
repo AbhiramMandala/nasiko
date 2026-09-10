@@ -823,10 +823,9 @@ async fn run_workflow(
         .unwrap_or(3);
 
     // Create execution record. `maf_json` durably captures the exact snapshot this run executes
-    // against — needed so a HITL resume (Phase 8) can carry the SAME snapshot forward without
-    // re-fetching the mutable `mafs.maf_json`, which may have changed since
-    // (docs/HITL_IMPLEMENTATION_PLAN.md §2.3 #6). The in-flight Redis message below carries the
-    // identical string for the worker's normal, non-resume path — unchanged.
+    // against — needed so a HITL resume can carry the SAME snapshot forward without re-fetching
+    // the mutable `mafs.maf_json`, which may have changed since. The in-flight Redis message below
+    // carries the identical string for the worker's normal, non-resume path — unchanged.
     let (exec_id, exec_number): (Uuid, i64) = match sqlx::query_as(
         r#"INSERT INTO maf_executions (maf_id, user_id, status, max_attempts, maf_json)
            VALUES ($1, $2, 'pending', $3, $4::jsonb)

@@ -506,7 +506,7 @@ async fn sequential_pauses_on_same_task_get_distinct_hitl_ids() {
 /// pause metadata to a real (pre-existing) `mcp_tool` row via `hitl_request_id`. The live stream
 /// frame must show the REAL row's id/kind/question, not the mirror's own — while `task_id`/
 /// `context_id` on the frame stay the mirror's own, since those are what ties it to this visible
-/// chat turn (`docs/HITL_ARCHITECTURE_INVESTIGATION.md`'s dual-origin write-up).
+/// chat turn.
 #[tokio::test]
 #[serial]
 async fn mcp_linked_mirror_stream_frame_shows_the_real_row() {

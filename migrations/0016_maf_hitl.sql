@@ -1,5 +1,5 @@
 -- =============================================================================
--- MAF HITL support (docs/HITL_IMPLEMENTATION_PLAN.md §2.3/§9, Phase 8)
+-- MAF HITL support
 --
 -- Two columns needed to resume a paused MAF execution without re-deriving state that today only
 -- lives transiently (a Redis message payload, or a local variable inside `run_maf`):

@@ -85,8 +85,7 @@ pub struct ExecutionResult {
 }
 
 /// What a MAF run produced: either it ran to completion, or one step's agent asked for a human
-/// (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3) and the run stopped there, awaiting
-/// `POST /api/hitl/{id}/resolve`.
+/// and the run stopped there, awaiting `POST /api/hitl/{id}/resolve`.
 pub enum StepOutcome {
     Completed(ExecutionResult),
     AwaitingHuman(PausedStep),

@@ -1,4 +1,4 @@
-//! HITL resume dispatcher (`docs/HITL_IMPLEMENTATION_PLAN.md` §3.2, Phase 3). Delivers a human's
+//! HITL resume dispatcher. Delivers a human's
 //! answer back onto the same A2A `taskId`/`contextId` the agent paused on. Shape mirrors
 //! `agents/build_worker.rs`: poll/notify, atomically claim one row, execute in a panic-isolated
 //! spawned task.
@@ -579,13 +579,13 @@ async fn deliver(state: AppState, row: HitlRequest) {
     }
 }
 
-/// MAF resume (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3/§9). Unlike `deliver()`'s direct-chat
+/// MAF resume. Unlike `deliver()`'s direct-chat
 /// path above, this never talks to the agent itself — it hands off to the existing MAF worker
 /// (`oss/orchestrator/src/maf/worker.rs`) by re-`XADD`ing to the same Redis stream it already
 /// reads, carrying a continuation marker (`resume_step_index`/`resume_task_id`/`resume_answer`).
 /// The worker owns the actual agent call, LLM extraction, and continuation logic — "delivered"
-/// here means "the continuation job was durably enqueued" (§3.2's "Redis XADD acked" criterion,
-/// the plan's own stated confirmation-of-receipt for this origin).
+/// here means "the continuation job was durably enqueued" (the Redis `XADD` was acked), the
+/// stated confirmation-of-receipt for this origin.
 async fn deliver_maf(state: &AppState, row: HitlRequest) {
     let (Some(task_id), Some(execution_id)) = (row.task_id.clone(), row.maf_execution_id) else {
         let _ = state
@@ -723,7 +723,7 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 
 /// The text sent back to the agent as the human's reply. `input_required` carries `answer`
 /// directly; `auth_required` has no free-text answer. A genuine external-credential `auth_required`
-/// (`docs/HITL_REFERENCE_AGENT.md`'s "reply authorized" convention) only ever reaches this
+/// (the "reply authorized" convention) only ever reaches this
 /// dispatcher via a "confirm" resolve (a "start" resolve leaves the row `pending`,
 /// `router/hitl.rs::resolve`) — there's no reject path for that kind, so its `auth_outcome` is
 /// always `"confirmed"`, and the literal reply must stay `"authorized"`, not a paraphrase: a

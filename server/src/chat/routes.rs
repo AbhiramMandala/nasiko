@@ -796,7 +796,7 @@ async fn list_messages(
         None
     };
 
-    // Session-load HITL discovery (docs/HITL_STATUS.md): every HITL request tied to this
+    // Session-load HITL discovery: every HITL request tied to this
     // session, pending or already resolved, rides along with the message page instead of
     // requiring a separate `GET /api/hitl/pending` call. Scoped by BOTH `chat_session_id` and
     // `owner_user_id` inside the query (`list_for_chat_session`) — the second is redundant with

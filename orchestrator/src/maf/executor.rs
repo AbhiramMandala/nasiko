@@ -8,9 +8,9 @@ use uuid::Uuid;
 use super::llm::{ChatMessage, LlmClient};
 use super::types::{ExecutionResult, MafDefinition, MafStep, PausedStep, StepOutcome, StepResult};
 
-/// What one step's agent call produced, before extraction — a normal reply, or a pause
-/// (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3) that must stop the step (and the whole run) right
-/// there instead of being treated as an oddly-worded normal reply.
+/// What one step's agent call produced, before extraction — a normal reply, or a pause that must
+/// stop the step (and the whole run) right there instead of being treated as an oddly-worded
+/// normal reply.
 enum AgentCallOutcome {
     Completed(String),
     Paused { task_id: String, raw_data: String },
@@ -52,7 +52,7 @@ pub async fn run_maf(
     // done — steps stay "pending" until their turn in the loop below. Every
     // step (not just completed ones) gets this filled in up front, which is
     // exactly what lets `run_maf_from` reconstruct the plan on resume without
-    // a second planning call (docs/HITL_IMPLEMENTATION_PLAN.md §2.3 #6).
+    // a second planning call.
     for (result, plan) in step_results.iter_mut().zip(step_plans.iter()) {
         result.prompt_template = plan.prompt.clone();
         result.to_extract = plan.to_extract.clone();
@@ -99,11 +99,11 @@ pub async fn run_maf(
     .await
 }
 
-/// Resumes a MAF execution that paused mid-step (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3/§9),
-/// invoked by the HITL resume dispatcher re-`XADD`ing a continuation job
-/// (`oss/server/src/hitl/mod.rs::deliver_maf`). `step_results`/`tokens_used_so_far`/
-/// `output_generation` come from `maf_executions` (the durable state every prior step already
-/// persisted, plus the two columns Phase 8 added); `maf_def` is the SAME snapshot the original run
+/// Resumes a MAF execution that paused mid-step, invoked by the HITL resume dispatcher
+/// re-`XADD`ing a continuation job (`oss/server/src/hitl/mod.rs::deliver_maf`).
+/// `step_results`/`tokens_used_so_far`/`output_generation` come from `maf_executions` (the durable
+/// state every prior step already persisted, plus the two columns HITL support added); `maf_def`
+/// is the SAME snapshot the original run
 /// used (carried in the continuation job's `maf_json`, never re-fetched from the mutable `mafs`
 /// table — §2.3 #6). Never re-plans: every step's `StepPlan` is reconstructed from the
 /// `prompt_template`/`to_extract` `run_maf` already persisted for every step up front.
@@ -379,7 +379,7 @@ async fn continue_paused_step(
     let raw_response = match call_result {
         Ok(AgentCallOutcome::Completed(text)) => text,
         Ok(AgentCallOutcome::Paused { task_id, raw_data }) => {
-            // Sequential HITL on the same step (docs/HITL_IMPLEMENTATION_PLAN.md §3.5): still
+            // Sequential HITL on the same step: still
             // awaiting a human, on a fresh question — the step's status was already
             // "awaiting_human" and stays that way.
             persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;

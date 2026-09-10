@@ -126,7 +126,7 @@ struct Job {
     maf_json: String,
     user_id: Uuid,
     /// Present only on a continuation job, `oss/server/src/hitl/mod.rs::deliver_maf`'s `XADD` —
-    /// a fresh run always omits these three (`docs/HITL_IMPLEMENTATION_PLAN.md` §2.3).
+    /// a fresh run always omits these three.
     resume: Option<ResumeFields>,
 }
 

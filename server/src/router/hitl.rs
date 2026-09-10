@@ -1,4 +1,4 @@
-//! HITL human-facing API (`docs/HITL_IMPLEMENTATION_PLAN.md` §11): `GET /api/hitl/pending`,
+//! HITL human-facing API: `GET /api/hitl/pending`,
 //! `GET /api/hitl/{id}`, `POST /api/hitl/{id}/resolve`, `POST /api/hitl/{id}/cancel`,
 //! `GET /api/hitl/{id}/stream`, `POST /api/hitl/{id}/requeue` (superuser-only operator
 //! remediation for a stuck `delivery_outcome_unknown` resume — see `requeue_resume`'s own doc

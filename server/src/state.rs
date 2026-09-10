@@ -42,11 +42,11 @@ pub struct AppState {
     /// Wakes the build worker immediately when a new job is enqueued.
     pub build_tx: mpsc::Sender<()>,
     /// HITL persistence (`hitl_requests`) — detection, human-facing API, and the resume
-    /// dispatcher all go through this. See `oss/hitl` and `docs/HITL_IMPLEMENTATION_PLAN.md`.
+    /// dispatcher all go through this. See `oss/hitl`.
     pub hitl_store: Arc<dyn nasiko_hitl::HitlStore>,
     /// Best-effort wake for the HITL resume dispatcher right after a `resolve()` commits — a
     /// latency optimization only; the dispatcher's own poll loop is the actual delivery
-    /// guarantee (§3.2/Phase 3 of the HITL plan).
+    /// guarantee.
     pub hitl_resume_tx: mpsc::Sender<()>,
     /// Replay buffer for a resumed HITL execution's real A2A/SSE events, so a frontend
     /// reconnecting through `POST /api/orchestrator/a2a` (`metadata.reconnect_after_hitl_id`)
