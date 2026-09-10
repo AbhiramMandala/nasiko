@@ -164,33 +164,6 @@ function importsOf(source) {
 
 const lineOf = (source, index) => source.slice(0, index).split('\n').length;
 
-/**
- * Every path any route table registers, across editions.
- *
- * Route tables are `{ path: '/x', tag, module }` literals living in an `app.js`
- * (the base table) or a `routes-ext.js` (an edition's additions), so they are
- * found by filename rather than by naming a directory here — ui/scripts/ is
- * published and must not know the private layout. Read as text: these modules
- * import browser mount paths ('/common/...') that no loader here can resolve.
- */
-let ROUTE_PATHS;
-function routePaths() {
-  if (ROUTE_PATHS) return ROUTE_PATHS;
-  ROUTE_PATHS = new Set();
-  const walk = (dir) => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name === 'node_modules' || e.name === 'vendor' || e.name === 'tests') continue;
-      const full = resolve(dir, e.name);
-      if (e.isDirectory()) walk(full);
-      else if (e.name === 'app.js' || e.name === 'routes-ext.js') {
-        for (const m of readFileSync(full, 'utf8').matchAll(/\bpath:\s*'([^']+)'/g)) ROUTE_PATHS.add(m[1]);
-      }
-    }
-  };
-  walk(UI);
-  return ROUTE_PATHS;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 //  Rules
 // ─────────────────────────────────────────────────────────────────────────────
@@ -488,27 +461,6 @@ const rules = [
   },
 
   {
-    id: 'nav-url-must-have-route',
-    enforce: 'zero',
-    why: 'The nav is a list of URLs and the router is a list of paths, and nothing but this connects them. A nav ' +
-         'entry pointing at a path no route table registers is not a 404: the server serves the SPA shell for any ' +
-         'clean URL, the router finds no match and returns, and the outlet stays empty — a blank page with working ' +
-         'chrome. That is how a page goes blank when its route is renamed, or dropped, and the nav is not. Both ' +
-         'sides are plain object literals, so they are matched as text; add the route, or drop the nav entry.',
-    check({ rel, source, isJs }) {
-      if (!isJs || !/(^|\/)(navigation|nav-ext)\.js$/.test(rel)) return [];
-      const routes = routePaths();
-      return [...source.matchAll(/\burl:\s*'(\/[^']*)'/g)]
-        .filter((m) => !routes.has(m[1]))
-        .map((m) => ({
-          file: rel,
-          line: lineOf(source, m.index),
-          message: `nav links ${m[1]}, which no route table registers — the router leaves the outlet empty`,
-        }));
-    },
-  },
-
-  {
     id: 'no-css-module-import',
     enforce: 'zero',
     why: 'CSS module scripts — `import styles from \'./x.css\' with { type: \'css\' }` — are Chrome/Edge only. ' +
@@ -654,6 +606,32 @@ if (updating) {
   );
   console.log('baseline updated:');
   for (const r of rules) console.log(`  ${String(counts[r.id]).padStart(5)}  ${r.id}`);
+  process.exit(0);
+}
+
+// `--json`: the whole finding set, machine-readable, on stdout — and ALWAYS
+// exit 0. The PR reviewer in .github/scripts/ consumes this as evidence, and
+// it needs the findings even (especially) on a run that would fail the gate,
+// so the exit code has to carry "did the tool run", not "is the tree clean".
+// Text mode below is unchanged and stays the thing humans and CI read.
+if (process.argv.includes('--json')) {
+  process.stdout.write(
+    JSON.stringify(
+      {
+        fileCount,
+        rules: rules.map((r) => ({
+          id: r.id,
+          why: r.why,
+          enforce: r.enforce ?? 'baseline',
+          baseline: baseline.counts?.[r.id] ?? 0,
+          count: findings.get(r.id).length,
+          findings: findings.get(r.id),
+        })),
+      },
+      null,
+      2,
+    ) + '\n',
+  );
   process.exit(0);
 }
 

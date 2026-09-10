@@ -301,6 +301,8 @@ fn deploy_from_directory(
     Ok(())
 }
 
+// Same eight values `deploy_with_version_flags` threads into
+// `deploy_from_directory` above, which carries the same allow.
 #[allow(clippy::too_many_arguments)]
 fn deploy_from_image(
     image: &str,
