@@ -3,13 +3,15 @@ import { isAbort, userMessage } from '/common/core/errors.js';
 import "../design-system/app-chatbox/app-chatbox.js";
 import "../features/agent-steps.js";
 import { icons } from '/common/utils/icons.js';
+import { navigate as routerNavigate } from '/common/core/router.js';
+// Both are rendered by the Sessions route's landing states below.
+import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
-import { askedAt, decidedRows, pendingRows, reconnectAfterHitl } from '/common/services/hitl.js';
-import '/common/features/hitl-card.js';
 import { usageChipsHtml, usageFromMessage } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
-import { registerAll } from '/common/core/data-sources.js';
+import { call, registerAll } from '/common/core/data-sources.js';
 
 const transcribeAudio = transcribeBlob;
 registerAll({ transcribeAudio }, { replace: true });
@@ -23,8 +25,34 @@ import { escHtml, escAttr } from '/common/utils/escape.js';
 import '/common/features/app-module-nav.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
+/**
+ * The Sessions module's route (app.js registers it onto this same page): the
+ * same transcript view, but its module nav lists every agent's chats rather
+ * than only the ones the orchestrator routed, and it opens the newest one when
+ * the url names no session.
+ */
+const SESSIONS_PATH = '/chats';
+
+/** Transcript placeholder — one message-shaped block per turn, so the wait for
+ *  a transcript looks like the transcript that is coming. */
+const TRANSCRIPT_SKELETON = `
+  <div class="msg-skel is-right"><div class="msg-skel-bubble" style="width:38%"></div></div>
+  <div class="msg-skel"><div class="msg-skel-block" style="width:78%">
+    <div class="msg-skel-line" style="width:96%"></div>
+    <div class="msg-skel-line" style="width:88%"></div>
+    <div class="msg-skel-line" style="width:61%"></div>
+  </div></div>
+  <div class="msg-skel is-right"><div class="msg-skel-bubble" style="width:24%"></div></div>
+  <div class="msg-skel"><div class="msg-skel-block" style="width:70%">
+    <div class="msg-skel-line" style="width:92%"></div>
+    <div class="msg-skel-line" style="width:44%"></div>
+  </div></div>`;
+
 class ChatPage extends HTMLElement {
   #initialized = false;
+  /** Which rail module owns this view: 'sessions' on SESSIONS_PATH, otherwise
+   *  'agents' for a direct agent chat and 'orchestrator' for a routed one. */
+  #navModule = 'orchestrator';
   #sessionId = null;
   #contextId = null;
   #agentId = null;
@@ -32,16 +60,6 @@ class ChatPage extends HTMLElement {
   #lastUserContent = null;
   #sampleQueries = [];
   #sending = false;
-
-  /** The waiting human-in-the-loop card, when this turn paused for a decision. */
-  #hitlCard = null;
-
-  /**
-   * Serializes reconnects. Two decisions answered back to back each replay their
-   * own resume, and both write into the same transcript — chained rather than
-   * raced so they append in the order they were answered.
-   */
-  #resumeTail = Promise.resolve();
 
   /**
    * Aborted on disconnect — see orchestrator-page for the same reasoning: an
@@ -82,36 +100,39 @@ class ChatPage extends HTMLElement {
     this.#agentId = params.get("agent_id");
     this.#sessionId = params.get("session_id") || null;
     this.#contextId = params.get("context_id");
-    this.#agentLabel = params.get("agent_name") || "Agent";
-    this.#hitlCard = null;
+
+    // A session opened from the Sessions module belongs to that module however
+    // it was routed — its list holds every agent's chats.
+    const inSessions = location.pathname.replace(/\.html$/, '').replace(/\/+$/, '') === SESSIONS_PATH;
+    // Every Sessions row names its agent, so the fallback only covers a
+    // hand-typed url — and an unrouted session there is the orchestrator's.
+    this.#agentLabel = params.get("agent_name") || (inSessions ? "Orchestrator" : "Agent");
+    this.#navModule = inSessions ? "sessions" : (this.#agentId ? "agents" : "orchestrator");
 
     if (this.#agentId) document.title = `Nasiko — Chat with ${this.#agentLabel}`;
 
-    // chat.html is not in the nav, so the rail has no way to work out which
+    // Neither chat route is in the nav, so the rail has no way to work out which
     // module it belongs to — without this, opening a session leaves the rail
-    // with nothing selected. Same split as the module nav below: no agent_id
-    // means this is an orchestrator session.
-    document.querySelector("app-header")
-      ?.setAttribute("active-module", this.#agentId ? "agents" : "orchestrator");
+    // with nothing selected.
+    document.querySelector("app-header")?.setAttribute("active-module", this.#navModule);
+
+    // Landing on the Sessions route itself, before a session is chosen: the
+    // newest chat opens in a moment. Deliberately NOT #render() — its welcome
+    // state is an agent avatar, "Ask me anything" and a composer, which on this
+    // route reads as the orchestrator page. This one reads sessions; starting a
+    // new one is the orchestrator's job, and the empty state links there.
+    if (inSessions && !this.#sessionId) {
+      this.#renderSessionsLanding();
+      this.#openFirstSession();
+      return;
+    }
 
     this.#render();
     this.#bindEvents();
 
     if (this.#sessionId) {
       const messagesEl = this.querySelector("#messages");
-      messagesEl.innerHTML = `
-        <div class="msg-skel is-right"><div class="msg-skel-bubble" style="width:38%"></div></div>
-        <div class="msg-skel"><div class="msg-skel-block" style="width:78%">
-          <div class="msg-skel-line" style="width:96%"></div>
-          <div class="msg-skel-line" style="width:88%"></div>
-          <div class="msg-skel-line" style="width:61%"></div>
-        </div></div>
-        <div class="msg-skel is-right"><div class="msg-skel-bubble" style="width:24%"></div></div>
-        <div class="msg-skel"><div class="msg-skel-block" style="width:70%">
-          <div class="msg-skel-line" style="width:92%"></div>
-          <div class="msg-skel-line" style="width:44%"></div>
-        </div></div>
-      `;
+      messagesEl.innerHTML = TRANSCRIPT_SKELETON;
       this.#loadMessages(messagesEl);
     } else if (this.#agentId) {
       this.#loadSampleQueries();
@@ -123,12 +144,69 @@ class ChatPage extends HTMLElement {
     this.#abort.abort();
   }
 
+  /** The Sessions route's own view: its module nav (the session list) beside a
+   *  transcript slot, and nothing that invites a new chat — see #enter. */
+  #renderSessionsLanding() {
+    this.innerHTML = `
+      <app-module-nav module="sessions"></app-module-nav>
+      <div class="messages" id="messages">${TRANSCRIPT_SKELETON}</div>`;
+  }
+
+  /** SESSIONS_PATH with no `session_id`: land on the newest chat — the same
+   *  first row the module nav beside it renders, since both read the one
+   *  `/chat/sessions` ordering. replaceState rather than a navigation: the
+   *  session is which view of this page is open, not a step in history, and
+   *  #enter() repaints it from there. */
+  async #openFirstSession() {
+    let first = null;
+    let failed = false;
+    try {
+      const res = await call('fetchSessions', '', 1);
+      first = (res?.data || [])[0] || null;
+    } catch { failed = true; }
+    // Navigated away, or a row was clicked, while the list was in flight.
+    if (!this.isConnected || this.#sessionId) return;
+    if (!first?.session_id) { this.#renderSessionsEmpty(failed); return; }
+    const params = new URLSearchParams({ session_id: first.session_id });
+    if (first.agent_id) params.set('agent_id', first.agent_id);
+    params.set('agent_name', first.agent_name || 'Orchestrator');
+    history.replaceState(null, '', `${SESSIONS_PATH}?${params}`);
+    this.#enter();
+  }
+
+  /** Nothing to open. `failed` keeps the two apart: telling someone they have
+   *  no sessions because a request wobbled is a lie, and the fix is a retry,
+   *  not a new chat. */
+  #renderSessionsEmpty(failed) {
+    const messagesEl = this.querySelector('#messages');
+    if (!messagesEl) return;
+    messagesEl.innerHTML = `
+      <div class="welcome-state">
+        <app-empty-state
+          title="${failed ? 'Failed to load sessions' : 'No sessions yet'}"
+          description="${failed
+            ? 'Something went wrong while loading your chat sessions.'
+            : 'Every chat, across every agent, is listed here. Pick an agent to start one.'}"
+          icon='${failed ? icons.xCircle() : icons.send()}'>
+          <app-button variant="${failed ? 'secondary' : 'dark'}" size="sm" id="btn-sessions-empty"
+            >${failed ? 'Retry' : 'Start a chat'}</app-button>
+        </app-empty-state>
+      </div>`;
+    this.querySelector('#btn-sessions-empty')?.addEventListener('click', () => {
+      // The agent hub, not a blank orchestrator chat: a chat starts by choosing
+      // who it is with, and that page is where every agent is listed.
+      if (!failed) { routerNavigate('/agents'); return; }
+      this.#renderSessionsLanding();
+      this.#openFirstSession();
+    });
+  }
+
   #render() {
     const initial = this.#agentLabel.charAt(0).toUpperCase();
     const agentCardUrl = this.#agentId ? `/agent-card?id=${encodeURIComponent(this.#agentId)}` : null;
 
     this.innerHTML = `
-      ${this.#agentId ? '' : '<app-module-nav module="orchestrator"></app-module-nav>'}
+      ${this.#navModule === 'agents' ? '' : `<app-module-nav module="${this.#navModule}"></app-module-nav>`}
       <div class="chat-header">
         <div class="chat-header-avatar" aria-hidden="true">${initial}</div>
         <div class="chat-header-info">
@@ -250,12 +328,6 @@ class ChatPage extends HTMLElement {
       }
       this.#sendMessage(content);
     });
-
-    // The card resolves the row itself; what the page owns is what happens
-    // next. Cancelling triggers no resume at all — the request is withdrawn,
-    // so there is nothing to reconnect to and the composer simply frees up.
-    this.addEventListener("hitl-resolved", (e) => this.#resume(e.detail.id));
-    this.addEventListener("hitl-canceled", () => this.#syncComposer());
   }
 
   async #sendMessage(content) {
@@ -304,10 +376,13 @@ class ChatPage extends HTMLElement {
         const nameParam = params.get("agent_name")
           ? `&agent_name=${encodeURIComponent(params.get("agent_name"))}`
           : "";
+        // location.pathname, not a literal `/chat`: this page also serves the
+        // Sessions route, and hardcoding the other one moved the user out of
+        // the module they started the chat in.
         history.replaceState(
           null,
           "",
-          `/chat?agent_id=${this.#agentId}&session_id=${this.#sessionId}${nameParam}`,
+          `${location.pathname}?agent_id=${this.#agentId}&session_id=${this.#sessionId}${nameParam}`,
         );
       }
 
@@ -368,10 +443,7 @@ class ChatPage extends HTMLElement {
       }
 
       pendingRow.remove();
-      const { text: reply, traceId, usage, aborted, paused, contentEl } = await this.#readA2aStream(res, messagesEl);
-      // Paused, not finished: there is no reply to store yet, and the resumed
-      // one is persisted by #resume when it arrives.
-      if (paused) return;
+      const { text: reply, traceId, usage, aborted, contentEl } = await this.#readA2aStream(res, messagesEl);
       // An aborted stream returns normally (it is a cancellation, not a
       // failure), so this guard is what stops a half-received reply from being
       // written to the server as if the agent had finished saying it.
@@ -395,76 +467,8 @@ class ChatPage extends HTMLElement {
       this.#updateRetryButtons(messagesEl);
     } finally {
       this.#sending = false;
-      this.#syncComposer();
+      chatInput.setLoading(false);
     }
-  }
-
-  /**
-   * Mount the waiting card at the end of `container`.
-   *
-   * `rows` is one stream frame, or every pending row for the session on load —
-   * the card pages through them so only one decision is on screen at a time.
-   */
-  #mountHitl(container, rows, { track = true } = {}) {
-    const list = Array.isArray(rows) ? rows : [rows];
-    const card = document.createElement("hitl-card");
-    // A direct-chat frame carries no `agent` field — there is exactly one agent
-    // in the conversation and the page already knows its name (§11.2).
-    card.actor = list[0]?.agent || this.#agentLabel;
-    card.rows = list;
-    container.appendChild(card);
-    // Already-decided rows replayed from history are not `track`ed: the
-    // composer follows the row still waiting, and a receipt is not one.
-    if (track) this.#hitlCard = card;
-    return card;
-  }
-
-  /**
-   * Close the composer while the card is waiting, and say why.
-   *
-   * Every pause kind is answered in the card — buttons for an approval, the
-   * card's own field for a question — so a live composer beside it would only
-   * offer a way to start a second turn while the agent is still paused.
-   */
-  #syncComposer({ streaming = false } = {}) {
-    const chatInput = this.querySelector("#chat-input");
-    if (!chatInput) return;
-    const card = this.#hitlCard;
-    chatInput.setAttribute("placeholder", card?.composerHint || "Type a message...");
-    chatInput.setLoading(streaming || Boolean(card?.blocksComposer));
-  }
-
-  /**
-   * Attach to what the resume actually produced.
-   *
-   * Resolving only records the decision — delivery to the paused agent is
-   * asynchronous and tied to no browser connection — so reconnecting is the
-   * only way to see the resumed events, and it ends in either the reply or the
-   * next pause in the chain. Reading it back through #readA2aStream is what
-   * makes a chain of pauses work without any extra code: a resumed stream that
-   * pauses again mounts the next card the same way the first one did.
-   */
-  #resume(id) {
-    const messagesEl = this.querySelector("#messages");
-    this.#resumeTail = this.#resumeTail.then(async () => {
-      this.#syncComposer({ streaming: true });
-      try {
-        const res = await reconnectAfterHitl(id, { signal: this.#abort.signal });
-        const { text, aborted, paused } = await this.#readA2aStream(res, messagesEl);
-        if (aborted || paused || !text) return;
-        // No persist here: the resumed turn is the server's to record — the
-        // HITL dispatcher writes the reply itself (`persist_resume_reply`,
-        // oss/server/src/hitl/mod.rs). Writing it from here too stored every
-        // resumed reply twice, so the transcript showed it twice on reload.
-        // Unlike the normal send path, where the direct-agent branch of
-        // a2a_dispatch persists nothing and this page owns the write.
-        this.#updateRetryButtons(messagesEl);
-      } catch (err) {
-        if (!isAbort(err)) this.#appendMsg(messagesEl, "assistant", `Error: ${userMessage(err)}`);
-      } finally {
-        this.#syncComposer();
-      }
-    });
   }
 
   async #loadMessages(messagesEl) {
@@ -477,22 +481,8 @@ class ChatPage extends HTMLElement {
       const result = await res.json();
       const msgs = result.data || result;
       messagesEl.innerHTML = '';
-      // Rows already decided are part of the conversation: a question someone
-      // answered, and what they answered. Without them a reloaded session
-      // showed the agent acting on an answer nobody can see — so they are
-      // replayed in place, by when they were asked, between the messages.
-      const replay = decidedRows(result.hitl);
-      const flushHitl = (before) => {
-        while (replay.length && (before === null || askedAt(replay[0]) <= before)) {
-          const row = document.createElement('div');
-          row.className = 'msg-row is-assistant';
-          messagesEl.appendChild(row);
-          this.#mountHitl(row, [replay.shift()], { track: false });
-        }
-      };
       if (Array.isArray(msgs) && msgs.length) {
         for (const m of msgs) {
-          flushHitl(Date.parse(m.timestamp) || 0);
           this.#appendMsg(messagesEl, m.role, m.content, {
             usage: usageFromMessage(m),
             traceId: m.trace_id,
@@ -502,19 +492,6 @@ class ChatPage extends HTMLElement {
         }
         this.#updateRetryButtons(messagesEl);
       }
-      flushHitl(null);
-      // A pause outlives the connection it arrived on, so the live SSE frame
-      // alone would lose it on a reload. The session's own `hitl` array is the
-      // surface that puts it back (§4.1).
-      const waiting = pendingRows(result.hitl);
-      if (waiting.length) {
-        const row = document.createElement('div');
-        row.className = 'msg-row is-assistant';
-        messagesEl.appendChild(row);
-        this.#mountHitl(row, waiting);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-      this.#syncComposer();
     } catch { messagesEl.innerHTML = ''; }
   }
 
@@ -638,16 +615,6 @@ class ChatPage extends HTMLElement {
         showContent(`<span style="color:var(--color-error)">${escHtml(message)}</span>`);
       },
     });
-
-    // Paused for a human. The stream closing with no reply is the expected
-    // shape here, not a failure, so the turn's outcome is the card — and
-    // nothing is written to the transcript as if the agent had answered.
-    if (out.hitl) {
-      stepsEl.awaitInput();
-      typingEl.remove();
-      this.#mountHitl(streamArea, out.hitl);
-      return { text: "", traceId: out.traceId, usage: out.usage, aborted: out.aborted, paused: true };
-    }
 
     // Finalize
     stepsEl.finish();
