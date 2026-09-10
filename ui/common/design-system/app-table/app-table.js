@@ -20,12 +20,6 @@
  * @attr {string} search-placeholder - Placeholder for the search input.
  * @attr {string} detail - Present: clicking a row opens a detail modal.
  * @attr {string} empty-message - Body text when there are no rows and no query.
- * @attr {boolean} loading - Hold the skeleton: the owner has not got rows yet
- *   and will hand them over later. Present suppresses the fetch entirely, so a
- *   table waiting on data upstream never flashes its empty state first;
- *   removing it fetches. Every other data component in the design system has
- *   this, and a caller who reasonably assumed this one did too was writing an
- *   argument that landed in the next slot along.
  * @prop {Array} columns - Optional column definitions; see below. A column
  *   may set `numeric: true` — right-aligns its header and cells and, while
  *   loading, draws a short right-aligned skeleton bar instead of a wide
@@ -33,13 +27,7 @@
  * @prop {Function} dataFn - The fetcher, if not named via `data-fn`.
  * @fires loading-start - Before each fetch — bubbles.
  * @fires loading-end - After each fetch — bubbles.
- * @note Columns are inferred from the data when `columns` is unset — keys become
- *       humanised labels and all-numeric columns right-align. Cells with no
- *       `render` are displayed through `autoFormat` (utils/units.js): a
- *       fractional number is shown to two decimals and an ISO-8601 string as
- *       local time, with the exact value kept in the cell's tooltip. This is
- *       the only formatting a generated surface can get, since `columns` is a
- *       property and the DSL reaches attributes only.
+ * @note Columns are inferred from the first row's keys when `columns` is unset.
  *       Sorting is client-side over the current page and cycles
  *       unsorted → ascending → descending → unsorted, so the server's own
  *       ordering is reachable again after a sort.
@@ -48,7 +36,6 @@ import { icons } from '../../utils/icons.js';
 import { createEventTracker, debounce } from '../../utils/data-component-utils.js';
 import { resolveOptional as resolveDataSource } from '../../core/data-sources.js';
 import { escAttr, escHtml } from '../../utils/escape.js';
-import { autoFormat } from '../../utils/units.js';
 import '../app-button/app-button.js';
 import '../app-input/app-input.js';
 import '../app-modal/app-modal.js';
@@ -95,52 +82,6 @@ export function pageWindow(current, total, span = 1) {
   return out;
 }
 
-/**
- * Column definitions for data nobody described.
- *
- * Exported for the same reason `pageWindow` is: app-table.test.mjs checks it
- * directly, and it is the whole of what a generated surface gets — a Weave
- * dashboard writes `AppTable(rowsQ, 20, ...)` and can never set `columns`,
- * because that is a property and the DSL only reaches attributes.
- *
- * - `numeric`, from the values: a column is right-aligned when every non-null
- *   value in it is a number, which is what the alignment actually claims.
- *   Sampling the whole page rather than the first row matters — `avg_latency_ms`
- *   is null on the first row of most of these responses.
- * - `label`, from the key. `avg_cost_per_operation` is a header nobody would
- *   write by hand. An all-caps run is left alone, so `agent_id` reads
- *   "Agent id" but `p95_ms` keeps its p95.
- */
-export function inferColumns(rows) {
-  const first = rows?.[0];
-  if (!first || typeof first !== 'object') return null;
-  return Object.keys(first).map((key) => {
-    let sawNumber = false;
-    let numeric = true;
-    for (const row of rows) {
-      const v = row?.[key];
-      if (v === null || v === undefined || v === '') continue;
-      if (typeof v === 'number' && Number.isFinite(v)) sawNumber = true;
-      else { numeric = false; break; }
-    }
-    return { key, label: humanize(key), numeric: numeric && sawNumber };
-  });
-}
-
-/** `avg_cost_per_operation` -> "Avg cost per operation". */
-export function humanize(key) {
-  const words = String(key)
-    .replace(/[_-]+/g, ' ')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (!words.length) return String(key);
-  const [head, ...rest] = words;
-  const cap = (w) => (w === w.toUpperCase() ? w : w[0].toUpperCase() + w.slice(1));
-  return [cap(head), ...rest].join(' ');
-}
-
 export class AppTable extends HTMLElement {
   #data = [];
   #sortedData = [];
@@ -180,7 +121,7 @@ export class AppTable extends HTMLElement {
 
   static get observedAttributes() {
     return ['limit', 'data-fn', 'search-placeholder', 'search', 'detail',
-            'empty-message', 'pagination', 'loading'];
+            'empty-message', 'pagination'];
   }
 
   connectedCallback() {
@@ -192,11 +133,7 @@ export class AppTable extends HTMLElement {
     // the element is created, which is after this callback has run. Waiting
     // lets the skeleton pass draw the real header and column widths, so rows
     // never move between the loading state and loaded data.
-    // `loading` held on the element means the owner is still fetching and will
-    // hand rows over later; fetching now would race that and paint an empty
-    // table first. Draw the skeleton and wait for the attribute to come off.
-    if (this.hasAttribute('loading')) queueMicrotask(() => this.#showSkeletons());
-    else queueMicrotask(() => this.refresh());
+    queueMicrotask(() => this.refresh());
   }
 
   disconnectedCallback() {
@@ -313,10 +250,6 @@ export class AppTable extends HTMLElement {
    *   on page 3 otherwise leaves an empty body under a hidden pager.
    */
   async refresh({ resetPage = false } = {}) {
-    // The owner is still fetching. Anything that calls refresh() in the
-    // meantime — a sort, a page change, a re-entrant attribute write — must
-    // not paint an empty table over the skeleton.
-    if (this.hasAttribute('loading')) { this.#showSkeletons(); return; }
     if (resetPage) this.#currentPage = 1;
     // Re-resolved on *every* refresh, not cached from connectedCallback: a
     // page-scoped `override()` swaps the registry entry without touching this
@@ -376,7 +309,6 @@ export class AppTable extends HTMLElement {
       this.#showError('Failed to load data. Please try again.');
     } finally {
       if (scroll) scroll.classList.remove('is-loading');
-      this.removeAttribute('aria-busy');
       this.dispatchEvent(new CustomEvent('loading-end', { bubbles: true, detail: { message: 'Data loaded' } }));
     }
   }
@@ -396,7 +328,6 @@ export class AppTable extends HTMLElement {
     const thead = this.querySelector('.thead');
     const tbody = this.querySelector('.tbody');
     if (!thead || !tbody) return;
-    this.setAttribute('aria-busy', 'true');
     const cols = this.columns || Array.from({ length: 4 }, () => ({}));
     if (!this.#data.length) {
       this.#renderColgroup(this.columns);
@@ -452,7 +383,9 @@ export class AppTable extends HTMLElement {
       return;
     }
 
-    const cols = this.columns ? this.columns : inferColumns(this.#data);
+    const cols = this.columns
+      ? this.columns
+      : Object.keys(this.#data[0]).map(k => ({ key: k, label: k }));
 
     // Rebuild colgroup on every render to stay consistent across sort/re-renders
     this.#renderColgroup(cols);
@@ -477,19 +410,9 @@ export class AppTable extends HTMLElement {
     tbody.innerHTML = displayData.map((row, i) => `
       <tr${this.#showDetail ? ` class="is-clickable" data-row-index="${i}"` : ''}>${cols.map(col => {
         const raw = row[col.key];
-        // A column with its own `render` owns its formatting completely. Every
-        // other column is displayed through autoFormat, which is the only
-        // formatting a generated surface can reach: `columns` is a property,
-        // so nothing in the Weave DSL can set a renderer, and without this a
-        // cost renders as 0.023456789012 and a bucket as 2026-09-09T14:00:00Z.
-        const shown = col.render ? null : autoFormat(raw);
-        // The tooltip holds the unshortened value, but only where there is one
-        // — `title="null"` on every gap in the data is worse than no tooltip.
-        const exact = raw === null || raw === undefined || String(raw) === shown
-          ? '' : ` title="${escAttr(raw)}"`;
         const cell = col.render
           ? col.render(raw, row)
-          : `<span${exact}>${escHtml(shown)}</span>`;
+          : `<span title="${escAttr(raw)}">${escHtml(raw)}</span>`;
         // `is-plain` mirrors the header marker for label-less (row-action)
         // columns, so CSS can pin the action cell and its header together.
         const plain = !String(col.label ?? col.key).trim() ? ' is-plain' : '';
@@ -680,13 +603,6 @@ export class AppTable extends HTMLElement {
         this.dataFn = resolveDataSource(newValue) || null;
         this.#currentPage = 1;
         this.refresh();
-        break;
-      case 'loading':
-        // Held: draw the skeleton the element already owns. Released: fetch.
-        // The skeleton is the same one #fetch draws, so the two states cannot
-        // drift apart.
-        if (newValue === null) this.refresh();
-        else this.#showSkeletons();
         break;
       case 'search-placeholder':
         this.searchPlaceholder = newValue;

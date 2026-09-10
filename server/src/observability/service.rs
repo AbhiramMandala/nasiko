@@ -641,10 +641,6 @@ pub struct FinopsDashboardData {
     pub token_usage: FinopsTokenUsage,
     pub kpis: FinopsKpis,
     pub attributions: FinopsAttributions,
-    /// Pre-computed spend split for the selected window: top-5 agents by spend
-    /// plus an "Others" catchall, ready to feed a pie/donut chart without any
-    /// client-side aggregation.
-    pub spend_by_agent: SpendByAgentBreakdown,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -678,11 +674,7 @@ pub struct AgentFinopsRow {
     /// Prompt tokens written to provider cache (Anthropic cache creation).
     pub cache_creation_tokens: u64,
     pub total_tokens: u64,
-    /// p50 trace-level latency for this agent in the window.
     pub avg_latency_ms: Option<f64>,
-    pub avg_latency_p95_ms: Option<f64>,
-    pub avg_latency_p99_ms: Option<f64>,
-    pub tool_call_count: u64,
     pub version: Option<String>,
     /// Replica-hours this agent consumed in the dashboard window.
     pub container_hours: f64,
@@ -731,14 +723,7 @@ pub struct FinopsKpis {
     pub total_spend: KpiValue,
     pub total_tokens: KpiValue,
     pub cost_per_operation: KpiValue,
-    /// Fleet-wide p50 latency (label kept for UI backward compat).
     pub avg_latency_ms: KpiValue,
-    pub total_agents: KpiValue,
-    pub active_agents: KpiValue,
-    pub total_operations: KpiValue,
-    pub total_tool_calls: KpiValue,
-    pub latency_p95_ms: KpiValue,
-    pub latency_p99_ms: KpiValue,
 }
 
 // ─── Spend over time ────────────────────────────────────────────────────────────
@@ -749,16 +734,9 @@ pub struct SpendTimeseriesPoint {
     pub bucket_start: String,
     pub spend_usd: f64,
     pub operations: usize,
-    /// Total tool calls across all agents in this bucket.
-    pub tool_calls: u64,
     /// Highest-spend agent in this bucket, for the hover breakdown.
     pub top_agent_name: Option<String>,
     pub top_agent_spend_usd: Option<f64>,
-    /// Fleet-wide latency percentiles across all traces in this bucket.
-    /// `None` when no traces carry a latency measurement.
-    pub p50_latency_ms: Option<f64>,
-    pub p95_latency_ms: Option<f64>,
-    pub p99_latency_ms: Option<f64>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -817,22 +795,6 @@ pub struct SpendHourPoint {
 pub struct AgentSpendSlice {
     pub agent_name: String,
     pub spend_usd: f64,
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct SpendPieSlice {
-    pub agent_name: String,
-    pub spend_usd: f64,
-    /// Percentage of total window spend, rounded to 2dp.
-    pub pct: f64,
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct SpendByAgentBreakdown {
-    /// Top-5 agents by spend, followed by an "Others" entry when there are
-    /// more than 5 agents. Empty when there is no spend in the window.
-    pub slices: Vec<SpendPieSlice>,
-    pub total_spend_usd: f64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -988,7 +950,6 @@ impl ObservabilityService {
     /// OSS: returns all agents (NoopAuthorizer). EE adds RBAC at a higher layer.
     async fn get_agent_names(
         &self,
-        owner_id: Option<uuid::Uuid>,
     ) -> Result<Vec<(uuid::Uuid, String, String, String)>, ObservabilityError> {
         // Live agents only (deleted_at IS NULL): a soft-deleted agent's name is
         // free to be re-registered by a re-upload, and leaving the dead rows in
@@ -1001,11 +962,8 @@ impl ObservabilityService {
         // not row-keyed.
         sqlx::query_as::<_, (uuid::Uuid, String, String, String)>(
             "SELECT id, name, COALESCE(display_name, name), version FROM agents \
-             WHERE deleted_at IS NULL \
-               AND ($1::UUID IS NULL OR owner_id = $1) \
-             ORDER BY name",
+             WHERE deleted_at IS NULL ORDER BY name",
         )
-        .bind(owner_id)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))
@@ -1153,7 +1111,7 @@ impl ObservabilityService {
         }
 
         // 2. Build agent_id → name lookup for the agent_id column.
-        let agents = self.get_agent_names(None).await.unwrap_or_default();
+        let agents = self.get_agent_names().await.unwrap_or_default();
         let total = agents.len();
         let agent_name_by_id: std::collections::HashMap<uuid::Uuid, String> = agents
             .into_iter()
@@ -1574,13 +1532,9 @@ impl ObservabilityService {
         provider: Option<&str>,
         // User UUIDs to scope results to (EE org-unit filter). `None` = no filter.
         user_ids: Option<&[uuid::Uuid]>,
-        // When `Some`, restricts the agent list to agents owned by this user UUID.
-        owner_id: Option<&str>,
         view: &str,
     ) -> Result<FinopsDashboardResponse, ObservabilityError> {
-        let parsed_owner_id = owner_id
-            .and_then(|s| s.parse::<uuid::Uuid>().ok());
-        let all_agents = self.get_agent_names(parsed_owner_id).await?;
+        let all_agents = self.get_agent_names().await?;
         let agents: Vec<_> = match agent_name {
             Some(name) => all_agents
                 .into_iter()
@@ -1629,10 +1583,7 @@ impl ObservabilityService {
             cache_read_tokens: i64,
             cache_creation_tokens: i64,
             total_cost: f64,
-            tool_call_count: i64,
             p50_latency: Option<f64>,
-            p95_latency: Option<f64>,
-            p99_latency: Option<f64>,
         }
 
         let agent_filter: Option<&str> = agent_name;
@@ -1656,10 +1607,7 @@ impl ObservabilityService {
                       COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
                       COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
                       COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
-                      COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count,
-                      percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50_latency,
-                      percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p95_latency,
-                      percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99_latency
+                      percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50_latency
                FROM trace_usage
                WHERE started_at >= $1 AND started_at < $2
                  AND ($3::TEXT IS NULL OR agent_name = $3)
@@ -1749,13 +1697,6 @@ impl ObservabilityService {
         let mut prev_total_ops = 0usize;
         let mut prev_latency_samples: Vec<f64> = Vec::new();
         let mut latency_samples: Vec<f64> = Vec::new();
-        let mut latency_samples_p95: Vec<f64> = Vec::new();
-        let mut latency_samples_p99: Vec<f64> = Vec::new();
-        let mut prev_latency_samples_p95: Vec<f64> = Vec::new();
-        let mut prev_latency_samples_p99: Vec<f64> = Vec::new();
-        let mut grand_tool_calls = 0u64;
-        let mut prev_grand_tool_calls = 0u64;
-        let mut prev_active = 0usize;
 
         for (agent_uuid, name, display_name, version) in &agents {
             let cur = current_by_name.get(name.as_str());
@@ -1768,10 +1709,7 @@ impl ObservabilityService {
             let cache_read = cur.map(|c| c.cache_read_tokens as u64).unwrap_or(0);
             let cache_creation = cur.map(|c| c.cache_creation_tokens as u64).unwrap_or(0);
             let cost = cur.map(|c| c.total_cost).unwrap_or(0.0);
-            let tool_calls = cur.map(|c| c.tool_call_count as u64).unwrap_or(0);
             let p50 = cur.and_then(|c| c.p50_latency);
-            let p95 = cur.and_then(|c| c.p95_latency);
-            let p99 = cur.and_then(|c| c.p99_latency);
 
             if operations > 0 {
                 active += 1;
@@ -1787,22 +1725,19 @@ impl ObservabilityService {
             grand_cache_read += cache_read;
             grand_cache_creation += cache_creation;
             grand_cost += cost;
-            grand_tool_calls += tool_calls;
             total_ops += operations;
             total_ops_24h += ops_24h;
-            if let Some(l) = p50 { latency_samples.push(l); }
-            if let Some(l) = p95 { latency_samples_p95.push(l); }
-            if let Some(l) = p99 { latency_samples_p99.push(l); }
+            if let Some(l) = p50 {
+                latency_samples.push(l);
+            }
 
             if let Some(p) = prev {
                 prev_grand_cost += p.total_cost;
                 prev_grand_total_tokens += (p.input_tokens + p.output_tokens) as u64;
                 prev_total_ops += p.operations as usize;
-                prev_grand_tool_calls += p.tool_call_count as u64;
-                if p.operations > 0 { prev_active += 1; }
-                if let Some(l) = p.p50_latency { prev_latency_samples.push(l); }
-                if let Some(l) = p.p95_latency { prev_latency_samples_p95.push(l); }
-                if let Some(l) = p.p99_latency { prev_latency_samples_p99.push(l); }
+                if let Some(l) = p.p50_latency {
+                    prev_latency_samples.push(l);
+                }
             }
 
             agent_rows.push(AgentFinopsRow {
@@ -1818,9 +1753,6 @@ impl ObservabilityService {
                 cache_creation_tokens: cache_creation,
                 total_tokens: input + output,
                 avg_latency_ms: p50,
-                avg_latency_p95_ms: p95,
-                avg_latency_p99_ms: p99,
-                tool_call_count: tool_calls,
                 version: Some(version.clone()),
                 container_hours: round6(hours_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
             });
@@ -1858,41 +1790,6 @@ impl ObservabilityService {
                 avg_latency(&latency_samples),
                 avg_latency(&prev_latency_samples),
             ),
-            // previous = 0 → change_pct = None (headcount, not window-relative)
-            total_agents: KpiValue::new(total_agents as f64, 0.0),
-            active_agents: KpiValue::new(active as f64, prev_active as f64),
-            total_operations: KpiValue::new(total_ops as f64, prev_total_ops as f64),
-            total_tool_calls: KpiValue::new(grand_tool_calls as f64, prev_grand_tool_calls as f64),
-            latency_p95_ms: KpiValue::new(
-                avg_latency(&latency_samples_p95),
-                avg_latency(&prev_latency_samples_p95),
-            ),
-            latency_p99_ms: KpiValue::new(
-                avg_latency(&latency_samples_p99),
-                avg_latency(&prev_latency_samples_p99),
-            ),
-        };
-
-        const TOP_N: usize = 5;
-        let spend_by_agent = {
-            let total = round6(grand_cost);
-            let mut sorted = agent_rows.clone();
-            sorted.sort_by(|a, b| b.total_cost.partial_cmp(&a.total_cost).unwrap_or(std::cmp::Ordering::Equal));
-            let pct = |v: f64| if total > 0.0 { (v / total * 10_000.0).round() / 100.0 } else { 0.0 };
-            let mut slices: Vec<SpendPieSlice> = sorted.iter().take(TOP_N).map(|r| SpendPieSlice {
-                agent_name: r.agent_name.clone(),
-                spend_usd: round6(r.total_cost),
-                pct: pct(r.total_cost),
-            }).collect();
-            let others: f64 = sorted.iter().skip(TOP_N).map(|r| r.total_cost).sum();
-            if others > 0.0 {
-                slices.push(SpendPieSlice {
-                    agent_name: "Others".into(),
-                    spend_usd: round6(others),
-                    pct: pct(others),
-                });
-            }
-            SpendByAgentBreakdown { slices, total_spend_usd: total }
         };
 
         let attributions = if view == "workflow" {
@@ -1932,7 +1829,6 @@ impl ObservabilityService {
                 },
                 kpis,
                 attributions,
-                spend_by_agent,
             },
             status_code: 200,
             message: "FinOps dashboard data retrieved successfully".into(),
@@ -1961,27 +1857,17 @@ impl ObservabilityService {
             bucket_start: DateTime<Utc>,
             spend_usd: f64,
             operations: i64,
-            tool_calls: i64,
             top_agent_name: Option<String>,
             top_agent_spend_usd: Option<f64>,
-            p50_latency_ms: Option<f64>,
-            p95_latency_ms: Option<f64>,
-            p99_latency_ms: Option<f64>,
         }
 
-        // CTEs:
-        //  • buckets  — per-(bucket, agent) spend + op count
-        //  • ranked   — top-spender per bucket for the hover label
-        //  • latency  — p50/p95/p99 over all traces in each bucket
-        //               (computed directly from raw rows, not from per-agent
-        //               aggregates, so the percentiles are exact)
+        // CTE: per-(bucket, agent) aggregation, then pick the top-spender per bucket.
         let query = format!(
             r#"WITH buckets AS (
                    SELECT date_trunc('{trunc}', started_at) AS bucket_start,
                           agent_name,
                           SUM(cost_usd) AS agent_spend,
-                          COUNT(*)::BIGINT AS ops,
-                          COALESCE(SUM(tool_call_count), 0)::BIGINT AS agent_tool_calls
+                          COUNT(*)::BIGINT AS ops
                    FROM trace_usage
                    WHERE started_at >= $1 AND started_at < $2
                      AND ($3::TEXT IS NULL OR agent_name = $3)
@@ -1992,33 +1878,15 @@ impl ObservabilityService {
                ranked AS (
                    SELECT *, ROW_NUMBER() OVER (PARTITION BY bucket_start ORDER BY agent_spend DESC) AS rn
                    FROM buckets
-               ),
-               latency AS (
-                   SELECT date_trunc('{trunc}', started_at) AS bucket_start,
-                          percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50,
-                          percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p95,
-                          percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99
-                   FROM trace_usage
-                   WHERE started_at >= $1 AND started_at < $2
-                     AND latency_ms IS NOT NULL
-                     AND ($3::TEXT IS NULL OR agent_name = $3)
-                     AND ($4::TEXT IS NULL OR model = $4)
-                     AND ($5::TEXT IS NULL OR provider = $5)
-                   GROUP BY bucket_start
                )
-               SELECT r.bucket_start,
-                      SUM(r.agent_spend)::FLOAT8 AS spend_usd,
-                      SUM(r.ops)::BIGINT AS operations,
-                      SUM(r.agent_tool_calls)::BIGINT AS tool_calls,
-                      MAX(CASE WHEN r.rn = 1 THEN r.agent_name END) AS top_agent_name,
-                      MAX(CASE WHEN r.rn = 1 THEN r.agent_spend END)::FLOAT8 AS top_agent_spend_usd,
-                      l.p50 AS p50_latency_ms,
-                      l.p95 AS p95_latency_ms,
-                      l.p99 AS p99_latency_ms
-               FROM ranked r
-               LEFT JOIN latency l ON l.bucket_start = r.bucket_start
-               GROUP BY r.bucket_start, l.p50, l.p95, l.p99
-               ORDER BY r.bucket_start"#
+               SELECT bucket_start,
+                      SUM(agent_spend)::FLOAT8 AS spend_usd,
+                      SUM(ops)::BIGINT AS operations,
+                      MAX(CASE WHEN rn = 1 THEN agent_name END) AS top_agent_name,
+                      MAX(CASE WHEN rn = 1 THEN agent_spend END)::FLOAT8 AS top_agent_spend_usd
+               FROM ranked
+               GROUP BY bucket_start
+               ORDER BY bucket_start"#
         );
 
         let rows: Vec<BucketRow> = sqlx::query_as(&query)
@@ -2040,12 +1908,8 @@ impl ObservabilityService {
                         bucket_start: fmt_ts(r.bucket_start),
                         spend_usd: round6(r.spend_usd),
                         operations: r.operations as usize,
-                        tool_calls: r.tool_calls.max(0) as u64,
                         top_agent_name: r.top_agent_name,
                         top_agent_spend_usd: r.top_agent_spend_usd.map(round6),
-                        p50_latency_ms: r.p50_latency_ms,
-                        p95_latency_ms: r.p95_latency_ms,
-                        p99_latency_ms: r.p99_latency_ms,
                     })
                     .collect(),
             },
@@ -2191,7 +2055,7 @@ impl ObservabilityService {
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
         // Resolve display names from the agents table.
-        let all_agents = self.get_agent_names(None).await.unwrap_or_default();
+        let all_agents = self.get_agent_names().await.unwrap_or_default();
         let display_by_name: HashMap<&str, &str> = all_agents
             .iter()
             .map(|(_, name, display, _)| (name.as_str(), display.as_str()))
@@ -2439,7 +2303,7 @@ impl ObservabilityService {
             let dashboard = self
                 .get_finops_dashboard(
                     "", None, None, None, start_time, end_time, agent_name, model, provider, None,
-                    None, "agent",
+                    "agent",
                 )
                 .await?;
             let mut rows = dashboard.data.agents;
@@ -2716,15 +2580,8 @@ fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse 
                 total_tokens: KpiValue::new(0.0, 0.0),
                 cost_per_operation: KpiValue::new(0.0, 0.0),
                 avg_latency_ms: KpiValue::new(0.0, 0.0),
-                total_agents: KpiValue::new(0.0, 0.0),
-                active_agents: KpiValue::new(0.0, 0.0),
-                total_operations: KpiValue::new(0.0, 0.0),
-                total_tool_calls: KpiValue::new(0.0, 0.0),
-                latency_p95_ms: KpiValue::new(0.0, 0.0),
-                latency_p99_ms: KpiValue::new(0.0, 0.0),
             },
             attributions: FinopsAttributions::Agent { rows: vec![] },
-            spend_by_agent: SpendByAgentBreakdown { slices: vec![], total_spend_usd: 0.0 },
         },
         status_code: 200,
         message: "FinOps dashboard data retrieved successfully".into(),
@@ -2892,9 +2749,6 @@ mod tests {
             cache_creation_tokens: 0,
             total_tokens: tokens,
             avg_latency_ms: latency,
-            avg_latency_p95_ms: None,
-            avg_latency_p99_ms: None,
-            tool_call_count: 0,
             version: None,
             container_hours: 0.0,
         }

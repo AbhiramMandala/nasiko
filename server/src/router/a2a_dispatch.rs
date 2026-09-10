@@ -1076,11 +1076,18 @@ async fn agent_stream(
     let flow_id = flow_ctx.flow_id.clone();
     state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
 
+    // Carry the A2A context_id so the LLM gateway keys its decision cache on the
+    // conversation, not this turn's trace id — same reason as the orchestrator
+    // branch above and `agent_proxy.rs`. Without it `derive_boundary_signals`
+    // falls back to the per-turn flow_id, so every turn of one conversation looks
+    // like a new conversation and the sticky decision is never reused.
+    //
     // Re-opens on conflict — see the orchestrator branch above: a repeat request
     // under one traceparent must not inherit the previous one's `completed`.
+    let flow_metadata = serde_json::json!({ "context_id": context_id });
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, $3, $4, $5, 'running', '{}'::jsonb)
+           VALUES ($1, $2, $3, $4, $5, 'running', $6)
            ON CONFLICT (flow_id) DO UPDATE
               SET status = 'running', completed_at = NULL"#,
     )
@@ -1089,6 +1096,7 @@ async fn agent_stream(
     .bind(agent.id)
     .bind(&agent.name)
     .bind(query)
+    .bind(&flow_metadata)
     .execute(&state.db)
     .await;
     // Participant record — load-bearing for MCP gateway / LLM router auth

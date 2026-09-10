@@ -203,6 +203,7 @@ pub fn router() -> Router<AppState> {
     upload::router()
         .merge(deployments::router())
         .merge(update::router())
+        .merge(llm_config::router())
     // `grants::router()` is deliberately NOT merged here: EE's `build_ee_app`
     // builds on top of this router and mounts its own richer grants router
     // (team/department grants + the live, CLI-consumed request shapes in
@@ -222,7 +223,7 @@ pub fn degradable_router() -> Router<AppState> {
 }
 
 pub fn user_routes() -> Router<AppState> {
-    upload::user_routes().merge(llm_config::router())
+    upload::user_routes()
 }
 
 #[cfg(test)]

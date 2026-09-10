@@ -122,7 +122,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         otel_sample_ratio: "0.0".into(),
         otel_collector_endpoint: "http://localhost:4318".into(),
         otel_capture_content: false,
-        coding_agent_otlp_endpoint: None,
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         // Off for benches so they never reach out to a provider or to Portkey.
@@ -132,6 +131,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         flow_max_fan_out: 20,
         flow_max_tokens: 1_000_000,
         flow_timeout_secs: 120,
+        hitl_request_ttl_days: 7,
         github_client_id: None,
         github_client_secret: None,
         router_shortlist_threshold: 15,

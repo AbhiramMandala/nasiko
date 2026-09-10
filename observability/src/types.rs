@@ -304,7 +304,6 @@ pub struct TraceUsageRow {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
-    pub tool_call_count: u32,
     pub cost_usd: f64,
     pub prompt_cost_usd: f64,
     pub completion_cost_usd: f64,

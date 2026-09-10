@@ -328,7 +328,7 @@ async fn process_job(
                 .await
             }
             Some(resume) => match fetch_resume_state(db, execution_id).await {
-                Ok((step_results, tokens_used, output_generation)) => {
+                Ok((step_results, tokens_used, cost_used, output_generation)) => {
                     executor::run_maf_from(
                         http_client,
                         db,
@@ -339,6 +339,7 @@ async fn process_job(
                         llm,
                         step_results,
                         tokens_used,
+                        cost_used,
                         output_generation,
                         resume.step_index as usize,
                         resume.task_id,
@@ -376,21 +377,24 @@ async fn process_job(
 }
 
 /// Loads the durable state a resume needs from `maf_executions`: `step_results` (every step's
-/// plan is embedded in it — see `run_maf_from`'s doc comment), the running token total, and the
-/// planner's `output_generation` guideline (both new in `oss/migrations/0014_maf_hitl.sql`).
+/// plan is embedded in it — see `run_maf_from`'s doc comment), the running token/cost totals, and
+/// the planner's `output_generation` guideline (`oss/migrations/0016_maf_hitl.sql`,
+/// `0012_maf_finops.sql`). Without `cost_usd` here, a resumed execution's FinOps total would reset
+/// to whatever the post-resume steps alone cost, silently losing every pre-pause step's spend.
 async fn fetch_resume_state(
     db: &PgPool,
     execution_id: Uuid,
-) -> Result<(Vec<StepResult>, i64, String), String> {
+) -> Result<(Vec<StepResult>, i64, f64, String), String> {
     #[derive(sqlx::FromRow)]
     struct ResumeStateRow {
         step_results: Option<String>,
         tokens_used: i64,
+        cost_usd: f64,
         output_generation: Option<String>,
     }
 
     let row = sqlx::query_as::<_, ResumeStateRow>(
-        "SELECT step_results::text AS step_results, tokens_used, output_generation \
+        "SELECT step_results::text AS step_results, tokens_used, cost_usd, output_generation \
          FROM maf_executions WHERE id = $1",
     )
     .bind(execution_id)
@@ -407,6 +411,7 @@ async fn fetch_resume_state(
     Ok((
         step_results,
         row.tokens_used,
+        row.cost_usd,
         row.output_generation.unwrap_or_default(),
     ))
 }
@@ -438,13 +443,15 @@ async fn finish_job(
                        output = $1,
                        step_results = $2::jsonb,
                        tokens_used = $3,
+                       cost_usd = $4,
                        completed_at = now(),
                        duration_ms = EXTRACT(EPOCH FROM (now() - started_at))::BIGINT * 1000
-                   WHERE id = $4"#,
+                   WHERE id = $5"#,
             )
             .bind(&result.output)
             .bind(&step_json_str)
             .bind(result.tokens_used)
+            .bind(result.cost_usd)
             .bind(execution_id)
             .execute(db)
             .await;

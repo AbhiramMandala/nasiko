@@ -1,5 +1,5 @@
 //! Postgres persistence for `hitl_requests` (migration `0007_hitl.sql` +
-//! `0012_hitl_auth_required.sql`).
+//! `0014_hitl_auth_required.sql`).
 //!
 //! `oss/mcp-gateway` calls `create_pending_auth_required` from
 //! `protocol::handle_auth_required` and `create_pending_tool_approval` from
