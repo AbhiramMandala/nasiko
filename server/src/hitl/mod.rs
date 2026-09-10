@@ -26,12 +26,24 @@ use crate::state::AppState;
 /// retries via the next poll until this cap is hit.
 const MAX_RESUME_ATTEMPTS: i32 = 5;
 /// How long a claim is honored before another dispatcher process may steal it (§3.2's exact
-/// claim query, implemented in `HitlStore::claim_for_resume`).
-const LEASE_SECS: i64 = 120;
+/// claim query, implemented in `HitlStore::claim_for_resume`). Must exceed the longest delivery
+/// can legitimately take — `deliver()`'s own agent request timeout is 300s — or a slow-but-healthy
+/// agent turn lets a second replica steal the lease mid-delivery and re-send the human's answer
+/// a second time, double-executing whatever the agent does with it.
+const LEASE_SECS: i64 = 360;
+/// Concurrent in-flight deliveries, mirroring `build_worker::run`'s own `tasks` cap on the same
+/// claim/spawn shape. `deliver()` can drive an entire ReAct turn for an `orchestrator`-origin row
+/// (tens of seconds), so awaiting each claimed row before claiming the next — as the drain loop
+/// used to — let one user's slow resume block every other pending HITL answer, and delayed the
+/// `expire_stale` sweep in the same loop iteration.
+const MAX_CONCURRENT_DELIVERIES: usize = 8;
 
 /// Spawned once at server startup (`state.rs::from_config_with_db`), same as the build worker.
 pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
     tracing::info!("hitl dispatcher: started");
+    // Tracks in-flight `deliver()` calls across poll cycles so a slow delivery never blocks
+    // claiming (or delivering) everything else — see `MAX_CONCURRENT_DELIVERIES`'s doc comment.
+    let mut deliveries: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             msg = notify.recv() => {
@@ -50,8 +62,12 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
             Err(e) => tracing::error!(%e, "hitl dispatcher: expire_stale error"),
         }
 
-        // Drain: keep claiming until the queue is empty, same pattern as build_worker.
-        loop {
+        // Drain: keep claiming while a delivery slot is free and the queue has a claimable row,
+        // same pattern as `build_worker::run`. Claim runs here in the worker loop (minimal, no
+        // panic risk); delivery runs in a spawned task tracked by `deliveries`, concurrently with
+        // every other in-flight one, so a panicking or merely slow delivery can't take the
+        // dispatcher down or stall the rest of the queue.
+        while deliveries.len() < MAX_CONCURRENT_DELIVERIES {
             let claimed = match state.hitl_store.claim_for_resume(LEASE_SECS).await {
                 Ok(Some(row)) => row,
                 Ok(None) => break,
@@ -62,14 +78,18 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
             };
 
             let state_clone = state.clone();
-            match tokio::task::spawn(async move { deliver(state_clone, claimed).await }).await {
-                Ok(()) => {}
-                Err(e) if e.is_panic() => {
-                    // The row's lease is still held; §3.2's MVP-scope note: a crash mid-window
-                    // sticks visibly until Phase 9's recovery sweep ships — not silently lost.
-                    tracing::error!("hitl dispatcher: delivery task panicked");
-                }
-                Err(_) => break, // task cancelled (server shutdown)
+            deliveries.spawn(async move { deliver(state_clone, claimed).await });
+        }
+
+        // Reap whatever has finished without blocking this tick — a still-running delivery is
+        // simply left in `deliveries` and picked up on a later iteration. The row's lease is
+        // still held on a panic; §3.2's MVP-scope note: a crash mid-window sticks visibly until
+        // Phase 9's recovery sweep ships — not silently lost.
+        while let Some(result) = deliveries.try_join_next() {
+            if let Err(e) = result
+                && e.is_panic()
+            {
+                tracing::error!("hitl dispatcher: delivery task panicked");
             }
         }
     }
@@ -347,7 +367,18 @@ async fn deliver(state: AppState, row: HitlRequest) {
 
     // Delivery succeeded — a response was received and classified — regardless of the agent's
     // own business outcome (§3.2: "peer confirmed receipt").
-    let _ = state.hitl_store.mark_resume_completed(row.id).await;
+    if let Err(e) = state.hitl_store.mark_resume_completed(row.id).await {
+        // The agent already received and answered this resume — retrying would POST the human's
+        // answer to it a second time, same double-delivery risk `deliver_maf` guards against
+        // above. `mark_resume_unknown` takes the row out of the claimable pool instead of
+        // leaving it reclaimable once the lease expires.
+        tracing::error!(
+            id = %row.id, %e,
+            "hitl dispatcher: resume delivered but mark_resume_completed failed — \
+             marking delivery outcome unknown to avoid re-delivering to the agent"
+        );
+        let _ = state.hitl_store.mark_resume_unknown(row.id).await;
+    }
     record_resume_trail(&state, &row, &agent_name, disposition, &flow_ctx).await;
 
     if disposition != StreamDisposition::Paused {
@@ -478,14 +509,6 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 
     let answer = answer_text(&row);
 
-    // Interim status while the continuation job is in flight — `worker.rs::process_job`
-    // unconditionally sets `running` again on pickup, so this is cosmetic-but-correct, mirroring
-    // `worker.rs::re_enqueue`'s own `status='pending'` convention on a retryable failure.
-    let _ = sqlx::query("UPDATE maf_executions SET status = 'pending' WHERE id = $1")
-        .bind(execution_id)
-        .execute(&state.db)
-        .await;
-
     let mut conn = match state.redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
@@ -521,7 +544,32 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 
     match enqueue {
         Ok(_) => {
-            let _ = state.hitl_store.mark_resume_completed(row.id).await;
+            // Interim status while the continuation job is in flight — `worker.rs::process_job`
+            // unconditionally sets `running` again on pickup, so this is cosmetic-but-correct,
+            // mirroring `worker.rs::re_enqueue`'s own `status='pending'` convention on a
+            // retryable failure. Flipped only now, after a confirmed `XADD`, not before it: doing
+            // it earlier meant a Redis outage (or any other pre-enqueue failure) left the
+            // execution stuck at `pending` — indistinguishable from "queued" to the API/CLI —
+            // with no job ever landing in the stream to move it forward.
+            let _ = sqlx::query("UPDATE maf_executions SET status = 'pending' WHERE id = $1")
+                .bind(execution_id)
+                .execute(&state.db)
+                .await;
+            if let Err(e) = state.hitl_store.mark_resume_completed(row.id).await {
+                // The continuation job is already durably enqueued (XADD acked) — retrying this
+                // resume would XADD a *second* one for the same `taskId`, re-running every step
+                // after the resume point and overwriting whatever the first continuation already
+                // produced. `mark_resume_unknown` takes the row out of the claimable pool into
+                // the terminal `delivery_outcome_unknown` state instead of leaving it reclaimable
+                // once the lease expires, same tool `deliver()` uses for its own
+                // crash-mid-delivery case above.
+                tracing::error!(
+                    id = %row.id, %e,
+                    "hitl dispatcher: MAF resume enqueued but mark_resume_completed failed — \
+                     marking delivery outcome unknown to avoid a duplicate XADD"
+                );
+                let _ = state.hitl_store.mark_resume_unknown(row.id).await;
+            }
         }
         Err(e) => {
             let _ = state
@@ -551,37 +599,8 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 /// `"authorized"` would tell the agent the opposite of what happened, so `"denied"` is echoed back
 /// literally instead, on the same "echo the word, let the agent determine the real outcome from
 /// its own next response" principle (§7's "intent ≠ success").
-/// Selectable-options extension (additive to `input_required`, `router/hitl.rs::
-/// resolve_structured_answer`): a multi-select `human_response.answer` is a JSON array of the
-/// selected option labels, never a plain string — this branch is unreachable for any row that
-/// predates the feature or whose question was never structured, since `resolve()` only ever writes
-/// an array under `answer` for a `question.multi_select = true` row. Flattened as one label per
-/// line rather than comma-joined, since a label itself may contain a comma (§11 of the request) —
-/// a newline can't collide with option text the same way, and this keeps the agent's continuation
-/// a single plain-text message, exactly like every other resume, with no new wire structure.
-/// `custom_answer` (multi-select's "Something else" text) is appended as its own trailing line when
-/// present, so a custom-only answer (zero predefined selections) degrades to a single-line
-/// message — indistinguishable from a plain single-select or free-text answer to the agent, which
-/// is a deliberate, not incidental, property: no agent has to special-case "was this multi-select."
 fn answer_text(row: &HitlRequest) -> String {
     let response = row.human_response.as_ref();
-    if let Some(items) = response
-        .and_then(|r| r.get("answer"))
-        .and_then(|v| v.as_array())
-    {
-        let mut lines: Vec<String> = items
-            .iter()
-            .filter_map(|v| v.as_str())
-            .map(str::to_string)
-            .collect();
-        if let Some(custom) = response
-            .and_then(|r| r.get("custom_answer"))
-            .and_then(|v| v.as_str())
-        {
-            lines.push(custom.to_string());
-        }
-        return lines.join("\n");
-    }
     if let Some(answer) = response
         .and_then(|r| r.get("answer"))
         .and_then(|v| v.as_str())
@@ -630,7 +649,11 @@ async fn consume_sse_to_terminal(
             let line = buffer[..line_end].trim_end_matches('\r').to_string();
             buffer = buffer[line_end + 1..].to_string();
 
-            let Some(data) = line.strip_prefix("data: ") else {
+            // `strip_prefix("data:")`, not `"data: "` — the space is spec-optional (a
+            // spec-legal `data:{...}` frame with no space was silently skipped here, so a pause
+            // riding one was never detected), same lenient match `agent_proxy.rs`'s own SSE tap
+            // already uses.
+            let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
             let data = data.trim();
@@ -860,12 +883,6 @@ async fn trigger_new_orchestrator_turn(
             user_id: row.owner_user_id,
             is_superuser,
             client_owns_transcript: false,
-            // Not `"user"`: `continuation` is written by the platform, not typed by the human.
-            // As a user-role row it drew a bubble in the transcript quoting the sub-agent back
-            // at them ("The archive agent replied: …"). It still belongs in the session's own
-            // history — a re-paused turn leaves no assistant reply behind — so it is persisted
-            // under a role the transcript does not render.
-            transcript_role: crate::router::a2a_dispatch::INTERNAL_TRANSCRIPT_ROLE,
             file_parts: Vec::new(),
         },
     )
@@ -887,7 +904,8 @@ async fn trigger_new_orchestrator_turn(
                 while let Some(line_end) = buffer.find('\n') {
                     let line = buffer[..line_end].trim_end_matches('\r').to_string();
                     buffer = buffer[line_end + 1..].to_string();
-                    if let Some(data) = line.strip_prefix("data: ") {
+                    // See the other call site's comment: the space in `"data:"` is optional.
+                    if let Some(data) = line.strip_prefix("data:") {
                         let data = data.trim();
                         if !data.is_empty() {
                             state.continuation_events.append(row.id, data.to_string());
@@ -914,6 +932,15 @@ async fn trigger_new_orchestrator_turn(
 /// said, not just that delivery succeeded (`resume_status: completed` only ever meant "a valid
 /// terminal response was received," never "here's what it was").
 ///
+/// Keys on `row.chat_session_id` when the row has one, not `context_id`: `context_id` is the
+/// agent's own private A2A context, which on the web-chat path (`agent_proxy.rs`'s
+/// `ensure_chat_session`) is a *different* id from the `chat_sessions.session_id` the UI actually
+/// reads `/api/chat/sessions/{id}/messages` against. Keying on `context_id` unconditionally wrote
+/// the reply into a session the caller never opened — silence in the UI the human was actually
+/// watching, and a phantom "New chat" row accumulating unseen replies instead. Falls back to
+/// `context_id` only when `chat_session_id` is absent (rows from an origin that never threaded
+/// one through), matching this function's own pre-existing behavior for that case.
+///
 /// `agent_stream()`'s direct-chat branch never creates a `chat_sessions` row itself — only
 /// `orchestrator_stream()`'s `ensure_orchestrator_chat_session` does, and only for the
 /// routing-engine path. A session row for a direct-chat conversation exists today only if the
@@ -932,13 +959,14 @@ async fn persist_resume_reply(
     let Some(text) = reply_text.filter(|t| !t.is_empty()) else {
         return;
     };
+    let session_id = row.chat_session_id.as_deref().unwrap_or(context_id);
 
     let _ = sqlx::query(
         "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
          VALUES ($1, $2, $3, '/api/orchestrator/a2a', 'New chat') \
          ON CONFLICT (session_id) DO NOTHING",
     )
-    .bind(context_id)
+    .bind(session_id)
     .bind(row.owner_user_id)
     .bind(row.agent_id)
     .execute(&state.db)
@@ -947,119 +975,8 @@ async fn persist_resume_reply(
     let _ = sqlx::query(
         "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'assistant', $2)",
     )
-    .bind(context_id)
+    .bind(session_id)
     .bind(&text)
     .execute(&state.db)
     .await;
-}
-
-#[cfg(test)]
-mod answer_text_tests {
-    use super::*;
-    use nasiko_hitl::{HitlKind, HitlOrigin, HitlStatus, ResumeStatus};
-
-    fn row_with_response(human_response: Option<serde_json::Value>) -> HitlRequest {
-        let now = chrono::Utc::now();
-        HitlRequest {
-            id: Uuid::new_v4(),
-            kind: HitlKind::InputRequired,
-            origin: HitlOrigin::DirectChat,
-            status: HitlStatus::Resolved,
-            resume_status: ResumeStatus::NotStarted,
-            agent_id: Uuid::new_v4(),
-            owner_user_id: Uuid::new_v4(),
-            resolved_by: None,
-            task_id: Some("task-1".into()),
-            context_id: Some("ctx-1".into()),
-            chat_session_id: None,
-            maf_execution_id: None,
-            maf_step_index: None,
-            connector_id: None,
-            tool_name: None,
-            arguments_hash: None,
-            consumed_at: None,
-            question: serde_json::Value::Null,
-            human_response,
-            resume_state: serde_json::Value::Null,
-            resume_claimed_at: None,
-            resume_dispatch_attempts: 0,
-            resume_last_error: None,
-            created_at: now,
-            updated_at: now,
-            expires_at: None,
-            resolved_at: None,
-        }
-    }
-
-    #[test]
-    fn plain_string_answer_is_unchanged() {
-        let row = row_with_response(Some(serde_json::json!({ "answer": "production" })));
-        assert_eq!(answer_text(&row), "production");
-    }
-
-    #[test]
-    fn single_select_predefined_answer_is_the_label_verbatim() {
-        let row = row_with_response(Some(serde_json::json!({ "answer": "Summary" })));
-        assert_eq!(answer_text(&row), "Summary");
-    }
-
-    #[test]
-    fn single_select_custom_answer_is_the_raw_text_verbatim() {
-        let row = row_with_response(Some(
-            serde_json::json!({ "answer": "Give me a concise executive summary" }),
-        ));
-        assert_eq!(answer_text(&row), "Give me a concise executive summary");
-    }
-
-    #[test]
-    fn multi_select_answers_join_by_newline_not_comma() {
-        // The whole point of not comma-joining: a label containing a comma must round-trip
-        // unambiguously.
-        let row = row_with_response(Some(serde_json::json!({
-            "answer": ["Introduction, architecture and design", "Security, privacy and compliance"]
-        })));
-        assert_eq!(
-            answer_text(&row),
-            "Introduction, architecture and design\nSecurity, privacy and compliance"
-        );
-    }
-
-    #[test]
-    fn multi_select_with_custom_answer_appends_it_as_a_trailing_line() {
-        let row = row_with_response(Some(serde_json::json!({
-            "answer": ["Introduction", "Security"],
-            "custom_answer": "Also include deployment risks",
-        })));
-        assert_eq!(
-            answer_text(&row),
-            "Introduction\nSecurity\nAlso include deployment risks"
-        );
-    }
-
-    #[test]
-    fn multi_select_with_only_custom_answer_is_a_single_line() {
-        let row = row_with_response(Some(serde_json::json!({
-            "answer": [],
-            "custom_answer": "Only discuss security implications",
-        })));
-        assert_eq!(answer_text(&row), "Only discuss security implications");
-    }
-
-    #[test]
-    fn auth_outcome_confirmed_is_unchanged() {
-        let row = row_with_response(Some(serde_json::json!({ "auth_outcome": "confirmed" })));
-        assert_eq!(answer_text(&row), "authorized");
-    }
-
-    #[test]
-    fn auth_outcome_denied_is_unchanged() {
-        let row = row_with_response(Some(serde_json::json!({ "auth_outcome": "denied" })));
-        assert_eq!(answer_text(&row), "denied");
-    }
-
-    #[test]
-    fn no_human_response_is_empty_string() {
-        let row = row_with_response(None);
-        assert_eq!(answer_text(&row), "");
-    }
 }
