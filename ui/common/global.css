@@ -129,10 +129,34 @@ main.app-shell {
      content is the white card floating on the ink backdrop. app-header
      renders both bars; body padding carves out their space. */
   body {
+    /* The shell is fixed to the viewport and the card inside it scrolls — the
+       app-shell model, not the document model. Nothing here used to have a
+       *height*: body, the card and the page were all sized with `min-height`
+       ("at least a screenful, taller if needed"), and a box with no definite
+       height cannot be a scrollport, so growth propagated to the document and
+       the whole page scrolled — chrome and all.
+
+       `height`, not `min-height`, is the whole change. Note what it removes:
+       the card below no longer needs
+       `calc(100dvh - var(--shell-topbar-height) - var(--s-12))`, because the
+       flex chain now produces that height on its own.
+
+       Desktop only. Below 1024px there is no card and no rail, and a fixed
+       100dvh body there fights the mobile URL bar and disables pull-to-refresh;
+       the document stays the scroller at that width, which is correct for a
+       single-column layout. */
+    height: 100dvh;
+    overflow: hidden;
     padding-top: var(--shell-topbar-height);
     /* Gutter + rail: the rail is fixed at left:var(--shell-gutter), so the
        content plane starts past both it and the gutter it floats in. */
     padding-left: calc(var(--shell-gutter) + var(--app-sidebar-width));
+    /* Space the Weave dock takes when its drawer is open — <weave-dock> sets
+       the property on <html> and removes it on close, so the content card
+       shrinks rather than being covered by the conversation about it. Not
+       transitioned: animating body padding reflows the whole document every
+       frame, and the drawer has no slide of its own to match. */
+    padding-right: var(--app-dock-width, 0px);
   }
 
   body > main, .app-layout > main {
@@ -177,7 +201,18 @@ main.app-shell {
        out of the edge instead of reading as a floating panel. Top stays 0: the
        card butts the topbar by design. */
     margin: 0 var(--shell-gutter) var(--shell-gutter);
-    min-height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
+    /* The card is the scroller. `min-height: 0` is the load-bearing line: a flex
+       item's automatic minimum size is its content, so without it the card
+       refuses to shrink below a tall page and its own `overflow` never engages
+       — which is exactly how the document ended up scrolling instead.
+
+       This rule matches a router-mounted `main#outlet` AND a standalone
+       document's page element, so both shapes get the same scroller. That
+       symmetry is deliberate: an app-shell that only existed on the SPA path is
+       the same class of split that produced NAS-303 and NAS-368. */
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     box-shadow: 0 8px 16px rgba(100, 116, 139, 0.12);
   }
 

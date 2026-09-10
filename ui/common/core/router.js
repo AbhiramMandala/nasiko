@@ -27,7 +27,7 @@
  * It is applied imperatively rather than declared in CSS on purpose: a
  * non-`none` `view-transition-name` makes the element a stacking context *and*
  * a containing block for fixed-position descendants, and pages host
- * fixed-position UI (`app-tooltip`, `auto-complete`) that would then be
+ * fixed-position UI (`app-tooltip`, `app-combobox`) that would then be
  * positioned against the page instead of the viewport. Scoped to the
  * transition, that side effect never outlives the animation.
  */
@@ -89,6 +89,9 @@ export class Router {
   #currentPage = null;
   /** @type {string|null} */
   #currentPattern = null;
+  /** Path this router was on before the navigation being handled, so
+   *  route-persistence can save the scroll position of the page being left. */
+  #previousPath = null;
   /** @type {boolean} */
   #started = false;
   /** @type {Set<string>} Paths that should NOT be intercepted (login, OAuth, etc.) */
@@ -329,10 +332,18 @@ export class Router {
     // Emit loading-start for the loading bar
     document.dispatchEvent(new CustomEvent('loading-start', { bubbles: true }));
 
-    // Emit route-change so shell components can update active states
+    // Emit route-change so shell components can update active states.
+    //
+    // `previousPath` is what route-persistence.js has always read (:177) to know
+    // whose scroll position to save, and it was never sent — so saving never ran
+    // and restoring was a silent no-op. It went unnoticed because the document
+    // was the scroller and the browser restored that by itself. Now that the
+    // card is the scroller the browser cannot, so the field has to be real.
+    const previousPath = this.#previousPath;
+    this.#previousPath = location.pathname;
     document.dispatchEvent(new CustomEvent('route-change', {
       bubbles: true,
-      detail: { path: location.pathname, pattern: route.pattern, params },
+      detail: { path: location.pathname, previousPath, pattern: route.pattern, params },
     }));
 
     // Update document title
