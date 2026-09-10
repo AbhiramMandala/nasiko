@@ -88,7 +88,7 @@ class AgentsPage extends HTMLElement {
     this.querySelector("#agents-grid").innerHTML = `
       <div class="empty-wrap">
         <app-empty-state
-          title="Couldn't load agents"
+          heading="Couldn't load agents"
           description="Something went wrong loading the agent catalog."
           icon='${icons.alertTriangle("", 40)}'>
           <app-button id="agents-retry" variant="primary">Retry</app-button>
@@ -213,7 +213,7 @@ class AgentsPage extends HTMLElement {
       grid.innerHTML = `
         <div class="empty-wrap">
           <app-empty-state
-            title="No agents found"
+            heading="No agents found"
             description="Try adjusting your search or filter criteria."
             icon='${icons.layers("", 40)}'>
             <app-button variant="primary" href="/add-agent">Import agent</app-button>
