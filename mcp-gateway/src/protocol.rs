@@ -163,6 +163,21 @@ pub async fn handle_tools_call(
                 router::unusable_reason_for_prefix(tool_name, &resolved.unusable_connectors)
                 && info.reason == ConnectorUnusable::AuthRequired
             {
+                // `unusable_connectors` is built from user-level (Layer 1) access only, so this
+                // branch used to fire before the Layer-2 per-agent gate below ever ran. A
+                // connector the admin disabled FOR THIS AGENT (`perms.is_connector_enabled`
+                // false) still reached `handle_auth_required`, which discloses the connector's
+                // name/UUID to the agent and files a pending `auth_required` row asking the
+                // human to re-authenticate a connector this agent isn't even permitted to use —
+                // disclosure plus a spurious notification, even though `perms.decide` below
+                // would still correctly block the actual call.
+                if !perms.is_connector_enabled(connector_id) {
+                    return err(
+                        req_id,
+                        codes::TOOL_BLOCKED,
+                        format!("Tool '{tool_name}' is blocked or disabled for this agent."),
+                    );
+                }
                 return handle_auth_required(
                     state,
                     user_id,
