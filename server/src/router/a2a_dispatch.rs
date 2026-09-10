@@ -590,24 +590,6 @@ async fn orchestrator_stream(
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
-                        OrchestratorEvent::SubData { via_agent, data } => {
-                            // Relay the nested agent's own structured step
-                            // (already tagged with its own `type`, e.g.
-                            // weave's `agent_invoke`/`agent_result` for its
-                            // sub-agents) instead of leaving it collapsed
-                            // inside the single opaque ToolCall/ToolResult
-                            // above — this is what lets the UI show a called
-                            // orchestrator's own sub-agent spawn/finish.
-                            // `via_agent` is added for attribution only;
-                            // every other field is exactly what the nested
-                            // agent sent, unmodified.
-                            let mut payload = data;
-                            if let Some(obj) = payload.as_object_mut() {
-                                obj.entry("via_agent").or_insert_with(|| json!(via_agent));
-                            }
-                            let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(payload));
-                            yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
-                        }
                         OrchestratorEvent::PolicyRejected { agent, reason, turn } => {
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
                                 "type": "policy_rejected",
@@ -770,15 +752,8 @@ async fn orchestrator_stream(
 /// concrete, running agent row. Callers MUST authorize on the returned `id`
 /// before using it — this function does no access control of its own.
 async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDispatchError> {
-    // Excludes `is_internal` agents unconditionally, including for the owning
-    // superuser — this is the platform's only generic A2A entry point, and an
-    // internal agent (e.g. Weave's dashboard-generator) must be reachable
-    // exclusively through its own dedicated route (`ee/server/src/weave_surface.rs`),
-    // never here, or the superuser-ACL-bypass would leak it into ordinary chat
-    // history/usage tracking.
     sqlx::query_as::<_, AgentRow>(
-        "SELECT id, name, status FROM agents \
-         WHERE (id::text = $1 OR name = $1) AND status = 'running' AND NOT is_internal",
+        "SELECT id, name, status FROM agents WHERE (id::text = $1 OR name = $1) AND status = 'running'",
     )
     .bind(target)
     .fetch_optional(&state.db)
@@ -824,11 +799,18 @@ async fn agent_stream(
     let flow_id = flow_ctx.flow_id.clone();
     state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
 
+    // Carry the A2A context_id so the LLM gateway keys its decision cache on the
+    // conversation, not this turn's trace id — same reason as the orchestrator
+    // branch above and `agent_proxy.rs`. Without it `derive_boundary_signals`
+    // falls back to the per-turn flow_id, so every turn of one conversation looks
+    // like a new conversation and the sticky decision is never reused.
+    //
     // Re-opens on conflict — see the orchestrator branch above: a repeat request
     // under one traceparent must not inherit the previous one's `completed`.
+    let flow_metadata = serde_json::json!({ "context_id": context_id });
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, $3, $4, $5, 'running', '{}'::jsonb)
+           VALUES ($1, $2, $3, $4, $5, 'running', $6)
            ON CONFLICT (flow_id) DO UPDATE
               SET status = 'running', completed_at = NULL"#,
     )
@@ -837,6 +819,7 @@ async fn agent_stream(
     .bind(agent.id)
     .bind(&agent.name)
     .bind(query)
+    .bind(&flow_metadata)
     .execute(&state.db)
     .await;
     // Participant record — load-bearing for MCP gateway / LLM router auth
@@ -884,11 +867,6 @@ async fn agent_stream(
             .post(&endpoint)
             .header("A2A-Version", "1.0")
             .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
-            // Agent turns can legitimately run past the shared client's default
-            // 60s timeout (long tool calls, multi-step orchestration); override
-            // per-request instead of raising the global default for every caller
-            // of `state.http_client`.
-            .timeout(std::time::Duration::from_secs(600))
     };
 
     let response = build_agent_req()
