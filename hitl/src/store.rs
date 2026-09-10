@@ -463,8 +463,18 @@ impl HitlStore for PgHitlStore {
         chat_session_id: &str,
         owner_user_id: Uuid,
     ) -> Result<Vec<HitlRequest>, HitlError> {
+        // `LIMIT 200`, unlike `chat_messages`'s own paginated fetch alongside this call
+        // (`chat/routes.rs::list_messages`) — a long-running session accumulating thousands of
+        // resolved HITL rows over time would otherwise make this array grow without bound on
+        // every single page load of that session, unlike the messages themselves. 200 is a
+        // generous cap for what is, per row, one human decision in one conversation — the inner
+        // query takes the most recent 200 by `created_at`, then the outer re-sorts them oldest
+        // first to preserve this method's documented ordering.
         let rows: Vec<HitlRequestRow> = sqlx::query_as(
-            "SELECT * FROM hitl_requests WHERE chat_session_id = $1 AND owner_user_id = $2 ORDER BY created_at",
+            "SELECT * FROM (
+                 SELECT * FROM hitl_requests WHERE chat_session_id = $1 AND owner_user_id = $2
+                  ORDER BY created_at DESC LIMIT 200
+             ) recent ORDER BY created_at ASC",
         )
         .bind(chat_session_id)
         .bind(owner_user_id)

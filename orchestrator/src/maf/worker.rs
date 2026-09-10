@@ -478,7 +478,9 @@ async fn finish_job(
                     mark_failed(
                         db,
                         execution_id,
-                        &format!("paused at step {step_index} but failed to record the HITL request: {e}"),
+                        &format!(
+                            "paused at step {step_index} but failed to record the HITL request: {e}"
+                        ),
                     )
                     .await;
                     ack(conn, msg_id).await;
@@ -553,15 +555,11 @@ async fn create_hitl_request(
         paused.step_index,
         paused.question.clone(),
     );
-    hitl_store
-        .create(req)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            let err = format!("failed to persist HITL pause: {e}");
-            error!("MAF execution {execution_id}: {err}");
-            err
-        })
+    hitl_store.create(req).await.map(|_| ()).map_err(|e| {
+        let err = format!("failed to persist HITL pause: {e}");
+        error!("MAF execution {execution_id}: {err}");
+        err
+    })
 }
 
 async fn mark_failed(db: &PgPool, execution_id: Uuid, error: &str) {
