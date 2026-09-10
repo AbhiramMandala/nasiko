@@ -311,24 +311,35 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // `agent_proxy.rs`'s convention of stamping the sticky key onto `flows.metadata`. It is NOT
     // what makes retry-matching work — that's `session_traces` below, and `session_traces.session_id`
     // has a hard FK to `chat_sessions(session_id)` (`0004_observability.sql`), which `context_id`
-    // can never satisfy. `nasiko_mcp_gateway::session::resolve_context_id` resolves a tools/call's
-    // session by looking up `session_traces` for the CALLING trace_id, falling back to the trace_id
-    // itself only when no row exists. Every resume mints a brand-new `flow_ctx.flow_id`, so without
-    // a session_traces row mapping it to something STABLE, `resolve_tool_approval_retry`'s
-    // once/session-scope grant lookup keys on a trace_id that's different on every single resume,
-    // never matching the original ask's own resolved context — every resumed retry of a tool the
-    // human just approved gets asked again, forever (confirmed live: approving the same
-    // tool_approval repeatedly, every retry still comes back `ask_required`, and the earlier
-    // `session_id = context_id` version of this INSERT was silently failing its FK check on every
-    // single call — `context_id` is never a real chat session, so it never once succeeded).
-    // `row.chat_session_id` is the real, existing `chat_sessions` row every mirror in this chain
-    // carries forward (`NewHitlRequest::orchestrator`/`persist_direct_chat_pause`) — mapping every
-    // resume's fresh flow_id to THAT is what actually lets retries resolve to the SAME session the
-    // original ask did. Skipped when absent (direct_chat/agent_proxy rows aren't guaranteed one):
-    // no stable id to map to, so falling back to today's re-ask behavior is the only honest option.
-    // Not genuinely optional: this is what authorizes the resumed agent's own downstream `/api/mcp`
-    // calls for the life of this resume (`ResumeFlowCloser`'s own doc comment) — a failure here
-    // means every one of those calls 403s with "traceparent does not resolve to a live flow".
+    // can never satisfy for an `Orchestrator`-origin row: there, `context_id` is the sub-agent's
+    // own per-dispatch A2A context, minted fresh by `trigger_new_orchestrator_turn` on every
+    // resume — never a real chat session. `nasiko_mcp_gateway::session::resolve_context_id`
+    // resolves a tools/call's session by looking up `session_traces` for the CALLING trace_id,
+    // falling back to the trace_id itself only when no row exists. Every resume mints a brand-new
+    // `flow_ctx.flow_id`, so without a session_traces row mapping it to something STABLE,
+    // `resolve_tool_approval_retry`'s once/session-scope grant lookup keys on a trace_id that's
+    // different on every single resume, never matching the original ask's own resolved context —
+    // every resumed retry of a tool the human just approved gets asked again, forever (confirmed
+    // live: approving the same tool_approval repeatedly, every retry still comes back
+    // `ask_required`, and the earlier `session_id = context_id` version of this INSERT was
+    // silently failing its FK check on every single orchestrator resume).
+    //
+    // `row.chat_session_id` is the real, existing `chat_sessions` row every `Orchestrator`-origin
+    // mirror in this chain carries forward (`NewHitlRequest::orchestrator`/
+    // `persist_direct_chat_pause`) — mapping that resume's fresh flow_id to THAT is what lets
+    // retries resolve to the SAME session the original ask did. `AgentProxy`/`DirectChat` rows
+    // carry no separate `chat_session_id` at all: for those there's no distinct
+    // orchestrator-level session, so `context_id` already IS the stable id — confirmed live the
+    // hard way: an earlier version of this fix *skipped* the insert below whenever
+    // `chat_session_id` was absent (reasoning "no stable id to map to" for those origins), and a
+    // multi-round `agent_proxy` approval immediately showed why that's wrong: round 1's
+    // `context_id` was a real `ses_...` `chat_sessions` row, but with no session_traces row
+    // written for it, round 2's `resolve_context_id` couldn't find round 1's trace and fell back
+    // to a raw, unstable trace id instead — which is what round 2's own `context_id` then carried
+    // forward, drifting further from the real session on every subsequent round. Falling back to
+    // `context_id` here (rather than skipping the insert) is what keeps `AgentProxy`/`DirectChat`
+    // pinned to the same real session on every resume, exactly as it did before this fix existed.
+    let stable_session_id = row.chat_session_id.as_deref().unwrap_or(&context_id);
     if let Err(e) = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, $3, $4, $5, 'running', $6)
@@ -357,21 +368,20 @@ async fn deliver(state: AppState, row: HitlRequest) {
         flow_id: flow_ctx.flow_id.clone(),
     };
     crate::flows::record_participant(&state.db, &flow_ctx.flow_id, row.agent_id).await;
-    if let Some(chat_session_id) = row.chat_session_id.as_deref()
-        && let Err(e) = sqlx::query(
-            "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (session_id, trace_id) DO NOTHING",
-        )
-        .bind(chat_session_id)
-        .bind(&flow_ctx.flow_id)
-        .bind(row.agent_id)
-        .bind(&agent_name)
-        .execute(&state.db)
-        .await
+    if let Err(e) = sqlx::query(
+        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (session_id, trace_id) DO NOTHING",
+    )
+    .bind(stable_session_id)
+    .bind(&flow_ctx.flow_id)
+    .bind(row.agent_id)
+    .bind(&agent_name)
+    .execute(&state.db)
+    .await
     {
         tracing::warn!(
-            error = %e, %chat_session_id, flow_id = %flow_ctx.flow_id,
+            error = %e, %stable_session_id, flow_id = %flow_ctx.flow_id,
             "hitl resume: session_traces record failed — tool-approval retry matching for this resume may re-ask"
         );
     }

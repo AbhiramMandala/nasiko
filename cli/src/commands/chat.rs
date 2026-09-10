@@ -224,6 +224,24 @@ fn print_resume_hint(is_cp: bool, session: Option<&str>, target_label: &str) {
 /// id this turn belongs to: the one passed in, or — on a first turn — the id
 /// the server minted and echoed back as the response's `contextId`.
 fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<Option<String>> {
+    // A first turn arrives with no session yet — minted here, client-side, rather than left
+    // `None` and delegated to the server: this same logical message can trigger *multiple*
+    // separate HTTP attempts below (the method/role retry loop, for an agent that rejects the
+    // first one), and the server mints a brand-new `ses_...` on any request that arrives with no
+    // `contextId` — so leaving this `None` across retries silently created two unrelated
+    // `chat_sessions` rows for one message (confirmed live: 30ms apart, same agent). Whichever
+    // attempt the agent actually processes ends up on a different session than the one further
+    // HITL resumes/retries key off, so a tool-approval retry can never match the original ask and
+    // re-asks forever — not fixable server-side, since by the time the server sees the *second*
+    // attempt it has no way to know it's a retry of the same logical message, not a genuinely new
+    // one. Minting one id up front and reusing it on every attempt (including retries) closes
+    // that gap: the server's own `INSERT ... ON CONFLICT (session_id) DO NOTHING` makes every
+    // attempt but the first a no-op against the same row.
+    let effective_session_id = session_id.map_or_else(
+        || format!("ses_{}", uuid::Uuid::new_v4().simple()),
+        String::from,
+    );
+    let session_id = Some(effective_session_id.as_str());
     // Agents in this repo disagree on the streaming method name depending on
     // which `a2a-sdk` version they're pinned to: newer ones accept the
     // gRPC-style `SendStreamingMessage` (confirmed against a real deployed
