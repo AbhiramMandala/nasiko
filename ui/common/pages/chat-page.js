@@ -121,10 +121,14 @@ class ChatPage extends HTMLElement {
     this.#agentId = params.get("agent_id");
     this.#sessionId = params.get("session_id") || null;
     this.#contextId = params.get("context_id");
-    // TODO(frontend): reconcile with development's inSessions/#navModule nav-highlighting
-    // addition here (see the merge commit that deferred this hunk) - this branch's
-    // #hitlCard init is kept as-is for now, development's addition was not applied.
-    this.#agentLabel = params.get("agent_name") || "Agent";
+
+    // A session opened from the Sessions module belongs to that module however
+    // it was routed — its list holds every agent's chats.
+    const inSessions = location.pathname.replace(/\.html$/, '').replace(/\/+$/, '') === SESSIONS_PATH;
+    // Every Sessions row names its agent, so the fallback only covers a
+    // hand-typed url — and an unrouted session there is the orchestrator's.
+    this.#agentLabel = params.get("agent_name") || (inSessions ? "Orchestrator" : "Agent");
+    this.#navModule = inSessions ? "sessions" : (this.#agentId ? "agents" : "orchestrator");
     this.#hitlCard = null;
 
     if (this.#agentId) document.title = `Nasiko — Chat with ${this.#agentLabel}`;
