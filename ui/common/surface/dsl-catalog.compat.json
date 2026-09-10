@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "19d86fc56076",
+  "catalogVersion": "46fb1a5e0c20",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 29,
@@ -350,8 +350,8 @@
         "label",
         "segmented",
         "average-line",
-        "flush-top",
-        "format-y2"
+        "format-y2",
+        "flush-top"
       ],
       "attributes": {
         "type": {
@@ -413,7 +413,7 @@
         },
         "label": {
           "type": "string",
-          "description": "Accessible name for the plot. Falls back to the type. (The three attributes below were added after the catalog first shipped and sit last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
+          "description": "Accessible name for the plot. Falls back to the type. (The four attributes below were added after the catalog first shipped and sit last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
         },
         "segmented": {
           "type": "boolean",
@@ -437,7 +437,11 @@
             "duration"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `duration`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
+        },
+        "flush-top": {
+          "type": "boolean",
+          "description": "The plot's own canvas-painted background (see `plotBackground`) normally rounds all four corners, like any other surface card. Set this when another element sits directly above the chart with no gap (the day grid on the concentration panel) and the two should read as one continuous card: it squares the top two corners off, leaving only the bottom two rounded. Applies to the loading skeleton and empty state too (app-chart.css) — those are plain divs shown instead of the canvas, not something `plotBackground` paints, so they need their own override rather than inheriting this one."
         }
       },
       "slots": [],
@@ -1703,6 +1707,7 @@
     "/build",
     "/builds",
     "/chat",
+    "/chats",
     "/design-system",
     "/executions",
     "/flow",

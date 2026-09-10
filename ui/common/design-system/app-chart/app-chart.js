@@ -88,7 +88,7 @@
  * @attr {string} empty-text - Shown when `data` is empty (default "No data")
  * @attr {boolean} loading - Shimmer placeholder instead of the plot
  * @attr {string} label - Accessible name for the plot. Falls back to the type.
- *   (The three attributes below were added after the catalog first shipped and sit
+ *   (The four attributes below were added after the catalog first shipped and sit
  *   last on purpose: the DSL passes attributes positionally in @attr order, so a
  *   new one must append — see catalog-compat.mjs.)
  * @attr {boolean} segmented - `bar` only: the concentration presentation — every
@@ -96,6 +96,8 @@
  *   `stacked` is implied. Pair with `average-line` for the reference rule.
  * @attr {boolean} average-line - `bar` only: dashed horizontal rule at the mean
  *   of the column totals, labelled "avg".
+ * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
+ *   `number` (default) | `currency` | `percent` | `compact`
  * @attr {boolean} flush-top - The plot's own canvas-painted background (see
  *   `plotBackground`) normally rounds all four corners, like any other
  *   surface card. Set this when another element sits directly above the
@@ -105,8 +107,6 @@
  *   empty state too (app-chart.css) — those are plain divs shown instead of
  *   the canvas, not something `plotBackground` paints, so they need their
  *   own override rather than inheriting this one.
- * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
- *   `number` (default) | `currency` | `percent` | `compact` | `duration`
  * @prop {object|Array} data - Canvas forms take Chart.js shape:
  *   `{ labels: string[], datasets: [{ label, data }] }`, where a dataset may
  *   also carry `axis: 'y2'` (bind to the right-hand scale — line only),

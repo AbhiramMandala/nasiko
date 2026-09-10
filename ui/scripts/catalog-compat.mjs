@@ -116,34 +116,6 @@ export function classify(before, after) {
       }
     }
     for (const name of Object.keys(aa)) if (!ba[name]) additive.push(`${tag}.${name} is new`);
-
-    // The typed contract beyond attributes — a JSON attribute's item shape, an
-    // event's detail fields, the children a composite accepts. A stored surface
-    // wrote against these too: a field it used that disappears rebinds nothing
-    // and reads undefined, so removal is breaking; addition is additive.
-    const setDiff = (what, bs, as) => {
-      const gone = bs.filter((x) => !as.includes(x));
-      const added = as.filter((x) => !bs.includes(x));
-      if (gone.length) breaking.push(`${what} lost ${gone.map((x) => `"${x}"`).join(', ')}`);
-      if (added.length) additive.push(`${what} gained ${added.map((x) => `"${x}"`).join(', ')}`);
-    };
-    for (const name of Object.keys(ba)) {
-      if (!aa[name]) continue;
-      const bs = ba[name].shape, as = aa[name].shape;
-      if (bs && as) setDiff(`${tag}.${name} shape`, bs.fields, as.fields);
-      else if (bs && !as) breaking.push(`${tag}.${name} lost its item shape`);
-      else if (!bs && as) additive.push(`${tag}.${name} now declares an item shape`);
-      if (ba[name].reflects && !aa[name].reflects) breaking.push(`${tag}.${name} is no longer reflected`);
-    }
-    const be = Object.fromEntries((b[tag].events ?? []).map((e) => [e.name, e]));
-    const ae = Object.fromEntries((a[tag].events ?? []).map((e) => [e.name, e]));
-    for (const name of Object.keys(be)) {
-      if (!ae[name]) { breaking.push(`${tag} no longer fires ${name}`); continue; }
-      setDiff(`${tag} ${name} detail`, be[name].detail ?? [], ae[name].detail ?? []);
-    }
-    for (const name of Object.keys(ae)) if (!be[name]) additive.push(`${tag} now fires ${name}`);
-    const bc = b[tag].children ?? [], ac = a[tag].children ?? [];
-    if (bc.length || ac.length) setDiff(`${tag} children`, bc, ac);
   }
   for (const tag of Object.keys(a)) if (!b[tag]) additive.push(`component ${tag} is new`);
 

@@ -31,11 +31,14 @@ const BASE_ROUTES = [
   { path: '/add-agent-github',tag: 'add-agent-github-page',    module: '/common/pages/add-agent-github-page.js',    title: 'Nasiko — Import from GitHub' },
   { path: '/agent-card',      tag: 'agent-card-page',          module: '/common/pages/agent-card-page.js',          title: 'Nasiko — Agent' },
   { path: '/chat',            tag: 'chat-page',                module: '/common/pages/chat-page.js',                title: 'Nasiko — Chat' },
+  // Same page, second entry point: the Sessions module. Its module nav lists
+  // every agent's chats and it opens the newest one when the url names none.
+  { path: '/chats',           tag: 'chat-page',                module: '/common/pages/chat-page.js',                title: 'Nasiko — Sessions' },
   { path: '/workflows',       tag: 'workflows-page',           module: '/common/pages/workflows-page.js',            title: 'Nasiko — Workflows' },
   { path: '/workflow-new',    tag: 'workflow-new-page',         module: '/common/pages/workflow-new-page.js',        title: 'Nasiko — New Workflow' },
   { path: '/workflow',        tag: 'workflow-detail-page',      module: '/common/pages/workflow-detail-page.js',     title: 'Nasiko — Workflow' },
   { path: '/executions',      tag: 'executions-page',          module: '/common/pages/executions-page.js',          title: 'Nasiko — Executions' },
-  { path: '/sessions',        tag: 'sessions-page',            module: '/common/pages/sessions-page.js',            title: 'Nasiko — Sessions' },
+  { path: '/sessions',        tag: 'sessions-page',            module: '/common/pages/sessions-page.js',            title: 'Nasiko — Execution history' },
   { path: '/session-trace',   tag: 'session-trace-page',       module: '/common/pages/session-trace-page.js',       title: 'Nasiko — Session Trace' },
   { path: '/observability-session', tag: 'observability-session-page', module: '/common/pages/observability-session-page.js', title: 'Nasiko — Session' },
   { path: '/mcp',             tag: 'mcp-page',                 module: '/common/pages/mcp-page.js',                 title: 'Nasiko — MCP Gateway' },

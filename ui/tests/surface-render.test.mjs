@@ -137,8 +137,6 @@ act = Action([@Set($v, 1)])`);
   assert.equal(btn.fired.length, 1);
   assert.deepEqual(btn.fired[0].action.steps.map((s) => s.kind), ['set']);
 
-  // 12 nulls, not 11: app-select's `fit-content` appended a positional ahead of
-  // the action slot. Arity here has to track the catalog's @attr order.
   const sel = draw(`root = AppSelect(null, null, "Range", null, null, null, null, null, null, null, null, null, act)
 act = Action([@Set($v, 1)])`);
   assert.deepEqual(Object.keys(sel.el.listeners), ['change'], 'a component with its own change event means that');
