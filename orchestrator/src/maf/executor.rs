@@ -1245,7 +1245,7 @@ async fn post_a2a_request<T: serde::Serialize + ?Sized>(
         let r = client
             .post(&url_jsonrpc)
             .header("X-User-Id", user_id)
-            .header("A2A-Version", "1.0")
+            .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", traceparent)
             .json(body)
             .timeout(std::time::Duration::from_secs(300))
@@ -1256,7 +1256,7 @@ async fn post_a2a_request<T: serde::Serialize + ?Sized>(
             client
                 .post(&url_root)
                 .header("X-User-Id", user_id)
-                .header("A2A-Version", "1.0")
+                .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
                 .header("traceparent", traceparent)
                 .json(body)
                 .timeout(std::time::Duration::from_secs(300))

@@ -9,6 +9,12 @@ pub use a2a::{
     new_context_id, new_message_id, new_task_id,
 };
 
+/// The `A2A-Version` header value every outbound A2A call in this codebase sends — ten call sites
+/// across six crates hardcoded the literal `"1.0"` independently (found in review); this is the
+/// shared source of truth. Consistent with the existing convention, so its absence wasn't a
+/// regression, but a future protocol bump only needs one edit with this in place.
+pub const A2A_VERSION_HEADER_VALUE: &str = "1.0";
+
 // ─── Part constructors ──────────────────────────────────────────────────────
 
 pub fn text_part(s: impl Into<String>) -> Part {
@@ -422,6 +428,34 @@ pub fn classify_sse_event(event: &serde_json::Value) -> Vec<SseEvent> {
                     kind,
                     message: awaiting_human_message(task),
                     metadata: awaiting_human_metadata(task),
+                });
+            }
+            SseTaskState::Working | SseTaskState::Other => {}
+        }
+        return out;
+    }
+    // Flat A2A 0.3.x Task: no `task` wrapper at all — `result` itself IS the task
+    // (`{"id":..., "kind": "task", "status": {...}}`), exactly what `a2a-lf` 0.3.0 and the
+    // python/langgraph SDKs emit for a non-streaming pause. Mirrors `classify_stream_disposition`'s
+    // `.or_else(|| result.get("task")).unwrap_or(result)` fallback — without it this shape produces
+    // zero events and a sub-agent's pause is silently handed back to the caller as a normal result.
+    if result.get("kind").and_then(|k| k.as_str()) == Some("task") {
+        match task_state(result) {
+            SseTaskState::Completed => {
+                out.push(SseEvent::Completed {
+                    snapshot_text: extract_text(result),
+                });
+            }
+            SseTaskState::Failed => {
+                out.push(SseEvent::Failed {
+                    reason: failure_reason(result),
+                });
+            }
+            SseTaskState::AwaitingHuman(kind) => {
+                out.push(SseEvent::AwaitingHuman {
+                    kind,
+                    message: awaiting_human_message(result),
+                    metadata: awaiting_human_metadata(result),
                 });
             }
             SseTaskState::Working | SseTaskState::Other => {}
@@ -1373,6 +1407,41 @@ mod sse_event_tests {
         assert!(
             !events.iter().any(|e| matches!(e, SseEvent::StatusText(_))),
             "an auth-required pause must never also/instead classify as StatusText"
+        );
+    }
+
+    // Regression: the flat A2A 0.3.x Task shape (`a2a-lf` 0.3.0, python/langgraph SDKs) has no
+    // `task` wrapper at all — the task IS `result`. This previously produced zero events, so a
+    // sub-agent's pause was silently handed back to the orchestrating LLM as a successful result.
+    #[test]
+    fn flat_task_shape_input_required_classifies_as_awaiting_human() {
+        let ev = json!({"result": {
+            "id": "t1", "contextId": "c1", "kind": "task",
+            "status": {"state": "input-required",
+                       "message": {"role": "agent", "parts": [{"text": "Which repo?"}]}}
+        }});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::InputRequired,
+                message: "Which repo?".into(),
+                metadata: serde_json::Value::Null,
+            }]
+        );
+    }
+
+    #[test]
+    fn flat_task_shape_completed_carries_snapshot_text() {
+        let ev = json!({"result": {
+            "id": "t1", "contextId": "c1", "kind": "task",
+            "status": {"state": "completed",
+                       "message": {"role": "agent", "parts": [{"text": "done"}]}}
+        }});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::Completed {
+                snapshot_text: Some("done".into())
+            }]
         );
     }
 
