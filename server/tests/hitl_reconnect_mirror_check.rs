@@ -175,19 +175,17 @@ async fn reconnect_with_the_real_mcp_tool_rows_id_follows_the_mirror() {
 
     let mut real_id = None;
     for line in raw.lines() {
-        if let Some(data) = line.strip_prefix("data: ") {
-            if let Ok(parsed) = serde_json::from_str::<Value>(data) {
-                if let Some(parts) = parsed
-                    .pointer("/statusUpdate/status/message/parts")
-                    .and_then(|p| p.as_array())
+        if let Some(data) = line.strip_prefix("data: ")
+            && let Ok(parsed) = serde_json::from_str::<Value>(data)
+            && let Some(parts) = parsed
+                .pointer("/statusUpdate/status/message/parts")
+                .and_then(|p| p.as_array())
+        {
+            for part in parts {
+                if let Some(d) = part.get("data")
+                    && d.get("type").and_then(|v| v.as_str()) == Some("hitl")
                 {
-                    for part in parts {
-                        if let Some(d) = part.get("data") {
-                            if d.get("type").and_then(|v| v.as_str()) == Some("hitl") {
-                                real_id = d.get("id").and_then(|v| v.as_str()).map(String::from);
-                            }
-                        }
-                    }
+                    real_id = d.get("id").and_then(|v| v.as_str()).map(String::from);
                 }
             }
         }
