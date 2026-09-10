@@ -122,15 +122,11 @@
  *   red, matching `app-stat-card`. Rising spend is therefore
  *   `{ delta: '\u219112%', trend: 'down' }`: the arrow says which way the number
  *   moved, `trend` says whether that is good news.
- * @note X-axis labels that are all ISO-8601 are rendered as local dates or
- *   times — clock times within a single day, dates across a longer span. A
- *   label set with any non-date in it is left exactly as given.
  * @fires — none.
  */
 import { Chart } from '../../vendor/chart.esm.js';
 import { escHtml, escAttr } from '../../utils/escape.js';
 import { onThemeChange } from '../../utils/theme.js';
-import { fmtDateTime, isIsoDateTime } from '../../utils/units.js';
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-chart.css', import.meta.url));
 
@@ -452,35 +448,6 @@ const averageLine = {
   },
 };
 
-/**
- * Axis labels for a series whose x values are timestamps.
- *
- * Every timeseries this app charts arrives as ISO-8601 in UTC —
- * `bucket_start: "2026-09-09T14:00:00Z"` — and a generated surface binds it
- * straight through, because the DSL has no date formatter and `@builtins` is
- * arithmetic only. Left alone, the x axis is a row of 20-character UTC
- * strings: unreadable, and wrong for the reader, since 14:00Z is not 14:00
- * where they are.
- *
- * The granularity is chosen from the set rather than fixed, because the same
- * endpoint answers both shapes: `bucket=hour` inside one day wants clock
- * times, `bucket=day` across a month wants dates, and a run that crosses a
- * midnight needs both. A set with even one non-date in it is left completely
- * alone — a half-converted axis is worse than an unconverted one.
- *
- * @param {Array<unknown>} labels
- * @returns {Array<unknown>} the same array when these are not dates
- */
-export function timeAxisLabels(labels) {
-  const present = labels.filter((l) => l !== null && l !== undefined && l !== '');
-  if (!present.length || !present.every((l) => isIsoDateTime(l))) return labels;
-  const timed = present.some((l) => /[T ]\d{2}:\d{2}/.test(String(l)));
-  if (!timed) return labels.map((l) => (l ? fmtDateTime(l, 'date') : l));
-  const days = new Set(present.map((l) => new Date(String(l).trim()).toDateString()));
-  const mode = days.size === 1 ? 'time' : 'datetime';
-  return labels.map((l) => (l ? fmtDateTime(l, mode) : l));
-}
-
 /** @returns {(n: number) => string} */
 function formatter(el, attr = 'format') {
   const kind = el.getAttribute(attr) || 'number';
@@ -572,34 +539,6 @@ export class AppChart extends HTMLElement {
       : this.#rows().length === 0;
   }
 
-  /**
-   * Loading placeholder for the two canvas forms (line/bar/donut). A row of
-   * bars with varied heights — each its own element, each pulsing on its
-   * own timing — reads as "a chart is coming" instead of one flat rectangle
-   * that could be standing in for anything.
-   */
-  #barsSkeletonHtml(box) {
-    const heights = [55, 82, 38, 68, 92, 50, 74];
-    const bar = (h, i) => `<div class="chart-skel-bar" style="height:${h}%;animation-delay:${(i * 0.1).toFixed(1)}s"></div>`;
-    return `<div class="chart-skeleton" ${box}>${heights.map(bar).join('')}</div>`;
-  }
-
-  /**
-   * Loading placeholder for the two row forms (hbar/progress). They are
-   * ranked lists, not plots — a label, a track and a value per row — so the
-   * placeholder is a few rows in the real `.chart-rows` grid instead of a
-   * rectangle shaped like a chart this form never draws.
-   */
-  #rowsSkeletonHtml() {
-    const row = () => `
-      <div class="chart-row">
-        <span class="chart-row-skel-label"></span>
-        <span class="chart-row-track"><span class="chart-row-fill is-skeleton"></span></span>
-        <span class="chart-row-skel-value"></span>
-      </div>`;
-    return `<div class="chart-rows">${Array.from({ length: 4 }, row).join('')}</div>`;
-  }
-
   render() {
     this.#destroyChart();
 
@@ -610,9 +549,7 @@ export class AppChart extends HTMLElement {
 
     if (this.hasAttribute('loading')) {
       this.setAttribute('aria-busy', 'true');
-      this.innerHTML = CANVAS_TYPES.has(this.#type())
-        ? this.#barsSkeletonHtml(box)
-        : this.#rowsSkeletonHtml();
+      this.innerHTML = `<div class="chart-skeleton" ${box}></div>`;
       return;
     }
     this.removeAttribute('aria-busy');
@@ -634,7 +571,7 @@ export class AppChart extends HTMLElement {
     const fmt = formatter(this);
     const fmt2 = formatter(this, 'format-y2');
     const sets = this.#datasets();
-    const labels = timeAxisLabels(this.#data.labels || []);
+    const labels = this.#data.labels || [];
     const showLegend = this.#showLegend(type, sets.length);
     const hasY2 = type === 'line' && sets.some((s) => s.axis === 'y2');
     const segmented = type === 'bar' && this.hasAttribute('segmented');
