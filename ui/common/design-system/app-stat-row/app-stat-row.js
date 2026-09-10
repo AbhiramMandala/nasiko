@@ -11,11 +11,22 @@
  * here, so a page's own sheet must not re-declare them.
  *
  * @element app-stat-row
- * @attr {string} items - JSON array of metric objects: `{ label, value, sub, pct }`.
+ * @attr {string} items - JSON array of metric objects:
+ *   `{ label, value, sub, pct, format?, subFormat?, currency? }`.
  *   `sub` is the caption under the value; `pct` (a number) draws a severity meter
  *   and is omitted for metrics that have no ceiling. There is deliberately no
  *   per-metric colour: a value is a value, and the one that was tinted gold was
  *   drift, not meaning.
+ *
+ *   `format` is per metric, not per strip, because a strip is precisely where
+ *   a dollar figure sits next to a token count next to a latency — one
+ *   attribute for all of them would be wrong for most of them. It takes the
+ *   same names as `app-stat-card`'s (`currency`, `compact`, `duration`,
+ *   `bytes`, `date`, …) and `currency` overrides the ISO code for that one
+ *   metric. Omit it and the value is formatted by shape: a fractional number
+ *   to two decimals, an ISO-8601 string as local time, a pre-built string
+ *   verbatim. `sub` takes `subFormat` and the same treatment, so a caption
+ *   that is just a number does not undo the work.
  * @attr {number} loading - Number of skeleton cells to reserve while data loads
  *   (default: 4). The skeleton lives here so it cannot drift from the real
  *   geometry. Present-but-empty means the default.
@@ -23,6 +34,7 @@
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-stat-row.css', import.meta.url));
 import { escHtml, escAttr } from '/common/utils/escape.js';
+import { applyFormat } from '/common/utils/units.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -87,13 +99,20 @@ export class AppStatRow extends HTMLElement {
     // `pct` is opt-in per metric: a container count has no ceiling, so a bar
     // under it would invent one. Only a real number draws a meter.
     const pct = typeof item.pct === 'number' && Number.isFinite(item.pct) ? item.pct : null;
+    // Formatted here rather than by the caller: a generated surface builds
+    // this array in the DSL, which has no formatter, so a raw 0.023456789012
+    // would go straight to the screen. A page that has already formatted its
+    // value hands over a string that no rule matches, and is untouched.
+    const opts = { currency: item.currency || 'USD' };
     const value = item.value === null || item.value === undefined || item.value === ''
-      ? '—' : String(item.value);
+      ? '—' : applyFormat(item.value, item.format, opts);
+    const sub = item.sub === null || item.sub === undefined || item.sub === ''
+      ? '' : applyFormat(item.sub, item.subFormat, opts);
     return `
       <div class="stat">
         <div class="stat-label">${escHtml(String(item.label ?? ''))}</div>
         <div class="stat-value">${escHtml(value)}</div>
-        ${item.sub ? `<div class="stat-sub">${escHtml(String(item.sub))}</div>` : ''}
+        ${sub ? `<div class="stat-sub">${escHtml(sub)}</div>` : ''}
         ${pct === null ? '' : meterHtml(pct)}
       </div>`;
   }

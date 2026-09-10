@@ -161,7 +161,7 @@
       }
     },
     "fetchUsageSummary": {
-      "description": "Overall usage summary. No arguments. Real backend: GET /usage/summary.",
+      "description": "The CALLER'S OWN usage summary over a fixed 30-day window \u2014 not the fleet's (oss/server/src/usage/routes.rs:68). No arguments. For fleet totals use fetchTokenopsDashboard's data.summary. Real backend: GET /usage/summary.",
       "responseShape": {
         "request_count": "number",
         "total_input_tokens": "number",
@@ -173,7 +173,7 @@
       }
     },
     "fetchUsageHistory": {
-      "description": "Usage history over the last N days. Real backend: GET /usage/history?days=N.",
+      "description": "The CALLER'S OWN usage per day over the last N days \u2014 not the fleet's (oss/server/src/usage/routes.rs:131). For a fleet spend series use fetchSpendTimeseries. Real backend: GET /usage/history?days=N.",
       "argHints": {
         "days": "number, default 7"
       },
@@ -187,7 +187,7 @@
       ]
     },
     "fetchUsageByAgent": {
-      "description": "Paginated usage rows grouped by agent, with search. Real backend: GET /usage/by-agent.",
+      "description": "The CALLER'S OWN usage, grouped by agent \u2014 not the fleet's. The SQL filters on the session user (oss/server/src/usage/routes.rs:256) and looks back a fixed 30 days (routes.rs:243, default_days at routes.rs:32; the frontend never sends `days`, so no range filter reaches it). On a deployment where the agents run under other identities this returns zero rows while the fleet dashboard is full, which reads as a broken table. For a FLEET-WIDE per-agent table use fetchTokenopsDashboard's data.attributions.rows instead. Real backend: GET /usage/by-agent.",
       "argHints": {
         "query": "string, optional search",
         "page": "number, 1-based",
@@ -210,7 +210,7 @@
       }
     },
     "fetchUsageByModel": {
-      "description": "Paginated usage rows grouped by model, with search. Real backend: GET /usage/by-model.",
+      "description": "The CALLER'S OWN usage, grouped by provider/model \u2014 not the fleet's. Same caller filter and same fixed 30-day window as fetchUsageByAgent (oss/server/src/usage/routes.rs). There is no fleet-wide by-model source in scope today; do not present this as one. Real backend: GET /usage/by-model.",
       "argHints": {
         "query": "string, optional search",
         "page": "number, 1-based",

@@ -118,6 +118,42 @@ export function materialize(statements, componentIndex, ctx = {}) {
     else symbols.set(id, ast);
   }
 
+  /**
+   * Statements whose data is currently a failed fetch rather than a real result.
+   *
+   * The query manager knows which Query statements are failing. What a component
+   * needs to know is whether IT is downstream of one — `spendChart` reads
+   * `spendQ.points`, so a failure on `spendQ` is a failure of the chart. That is
+   * a transitive question, so it is answered here once, statically, over the
+   * same symbol table the orphan walk uses.
+   *
+   * Without it the two states are indistinguishable at the component: a failed
+   * fetch falls back to the declared default, usually `[]`, and the component
+   * renders its empty state — telling the user nothing exists when the truth is
+   * that it could not be loaded.
+   */
+  function degradedStatements() {
+    const failedQueries = ctx.failedQueries;
+    if (!failedQueries?.size) return new Set();
+
+    const out = new Set();
+    for (const name of symbols.keys()) {
+      // Depth-first over this statement's references. `seen` is per statement
+      // and also the cycle guard — a DSL cycle is possible and must not hang.
+      const seen = new Set([name]);
+      const queue = [name];
+      while (queue.length) {
+        const at = queue.pop();
+        if (failedQueries.has(at)) { out.add(name); break; }
+        walkAstRefs(symbols.get(at), (_kind, ref) => {
+          if (!seen.has(ref) && symbols.has(ref)) { seen.add(ref); queue.push(ref); }
+        });
+      }
+    }
+    return out;
+  }
+  const degraded = degradedStatements();
+
   const unresolved = [];
   const diagnostics = [];
   /** @type {Array<{statementId: string, source: string, args: unknown[], select: string|null}>} */
@@ -188,14 +224,17 @@ export function materialize(statements, componentIndex, ctx = {}) {
       case 'Null': return null;
 
       case 'StateRef': {
-        // A per-fire binding first. `$event` is the live value the component
-        // just produced, and it belongs to one Action run — putting it in the
-        // store would leave the last thing anyone typed sitting there as
-        // durable state for every later expression to read.
-        const bound = lookupScope(scope, node.n);
-        if (bound.found) return bound.value;
-
-        // Then the store, then the statement that declared it. That fallback
+        // `$event` (and only `$event`) is never in the store — it is the live
+        // value of whatever DOM event just fired the Action being evaluated,
+        // injected by the action runner as a scope entry rather than a store
+        // write, because it must not persist past this one evaluation. The
+        // scope chain already exists for `@Each`'s loop variable, so this is
+        // that same mechanism, checked first and only for a name it actually
+        // carries — an ordinary `$state` name is never placed in scope, so
+        // this adds nothing to the lookup for every other case.
+        const local = lookupScope(scope, node.n);
+        if (local.found) return local.value;
+        // The store first, then the statement that declared it. That fallback
         // is what makes the *first* paint of a turn correct: `$days = 7` and
         // `historyQ = Query("fetchUsageHistory", [$days], [])` arrive in the
         // same chunk, and the query has to fetch 7 rather than fetch null and
@@ -374,7 +413,12 @@ export function materialize(statements, componentIndex, ctx = {}) {
 
     const props = {};
     let children = null;
-    let data = null;
+    // `undefined` means the component's data argument was not written at all;
+    // `null` means it was written and evaluated to nothing — a Query whose
+    // default is null, or a `$state` slot nobody filled. The renderer has to
+    // tell those apart: the first is a table wired to a data-fn, the second is
+    // a table that will render a blank body and say nothing about why.
+    let data;
     let text = null;
     let action = null;
 
@@ -411,6 +455,27 @@ export function materialize(statements, componentIndex, ctx = {}) {
           + 'Action([@Set($q, $event)])',
         statementId,
       );
+    }
+
+    // A component downstream of a failed fetch must not claim the data is
+    // absent. Set through whichever empty-state attribute this component
+    // actually declares, read off the catalog rather than a hardcoded list, so
+    // a new component with an empty state is covered the day it is added.
+    // Only when the generator has not written one itself — an author who chose
+    // the wording keeps it, and overriding a deliberate string would be worse
+    // than the default it replaced.
+    if (degraded.has(statementId)) {
+      const attrs = entry.def.attributes ?? {};
+      for (const name of ['empty-text', 'empty-message']) {
+        // A *sentence* the generator chose is kept — that is the author's
+        // wording and overriding it would be worse than the default. Anything
+        // else is not a message: `false` lands here whenever an argument slips
+        // one slot, and "false" printed where a table's rows should be is the
+        // single most confusing thing this surface can render.
+        if (name in attrs && typeof props[name] !== 'string') {
+          props[name] = 'Could not load this data — the request failed.';
+        }
+      }
     }
 
     return {

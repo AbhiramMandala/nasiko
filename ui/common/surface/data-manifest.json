@@ -102,7 +102,7 @@
         "name": "fetchUsageSummary",
         "callStyle": "none",
         "route": "/usage/summary",
-        "description": "Overall usage summary. No arguments. Real backend: GET /usage/summary.",
+        "description": "The CALLER'S OWN usage summary over a fixed 30-day window — not the fleet's (oss/server/src/usage/routes.rs:68). No arguments. For fleet totals use fetchTokenopsDashboard's data.summary. Real backend: GET /usage/summary.",
         "argsShape": {},
         "responseShape": {
           "request_count": "number",
@@ -118,7 +118,7 @@
         "name": "fetchUsageHistory",
         "callStyle": "positional",
         "route": "/usage/history",
-        "description": "Usage history over the last N days. Real backend: GET /usage/history?days=N.",
+        "description": "The CALLER'S OWN usage per day over the last N days — not the fleet's (oss/server/src/usage/routes.rs:131). For a fleet spend series use fetchSpendTimeseries. Real backend: GET /usage/history?days=N.",
         "argsShape": {
           "days": "number, default 7"
         },
@@ -135,7 +135,7 @@
         "name": "fetchUsageByAgent",
         "callStyle": "positional",
         "route": "/usage/by-agent",
-        "description": "Paginated usage rows grouped by agent, with search. Real backend: GET /usage/by-agent.",
+        "description": "The CALLER'S OWN usage, grouped by agent — not the fleet's. The SQL filters on the session user (oss/server/src/usage/routes.rs:256) and looks back a fixed 30 days (routes.rs:243, default_days at routes.rs:32; the frontend never sends `days`, so no range filter reaches it). On a deployment where the agents run under other identities this returns zero rows while the fleet dashboard is full, which reads as a broken table. For a FLEET-WIDE per-agent table use fetchTokenopsDashboard's data.attributions.rows instead. Real backend: GET /usage/by-agent.",
         "argsShape": {
           "query": "string, optional search",
           "page": "number, 1-based",
@@ -161,7 +161,7 @@
         "name": "fetchUsageByModel",
         "callStyle": "positional",
         "route": "/usage/by-model",
-        "description": "Paginated usage rows grouped by model, with search. Real backend: GET /usage/by-model.",
+        "description": "The CALLER'S OWN usage, grouped by provider/model — not the fleet's. Same caller filter and same fixed 30-day window as fetchUsageByAgent (oss/server/src/usage/routes.rs). There is no fleet-wide by-model source in scope today; do not present this as one. Real backend: GET /usage/by-model.",
         "argsShape": {
           "query": "string, optional search",
           "page": "number, 1-based",
@@ -193,7 +193,8 @@
           "startTime": "ISO 8601 string, optional",
           "endTime": "ISO 8601 string, optional",
           "agentId": "string, optional",
-          "model": "string, optional"
+          "model": "string, optional",
+          "provider": "optional"
         },
         "responseShape": {
           "data": {
@@ -216,7 +217,8 @@
         "argsShape": {
           "date": "\"YYYY-MM-DD\", required — a calendar day, not a range",
           "agentId": "string, optional",
-          "model": "string, optional"
+          "model": "string, optional",
+          "provider": "optional"
         },
         "responseShape": {
           "data": {

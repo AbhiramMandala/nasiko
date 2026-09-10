@@ -137,7 +137,15 @@ act = Action([@Set($v, 1)])`);
   assert.equal(btn.fired.length, 1);
   assert.deepEqual(btn.fired[0].action.steps.map((s) => s.kind), ['set']);
 
-  const sel = draw(`root = AppSelect(null, null, "Range", null, null, null, null, null, null, null, null, act)
+  // Twelve nulls, not eleven: `fit-content` was added to app-select after this
+  // test was written, and `action` is a synthetic slot that is always last —
+  // so every attribute added to an interactive component pushes the action
+  // argument one place right. The catalog is the only thing that says where
+  // that is, which is the point of reading the arity off it here rather than
+  // hard-counting nulls a second time. See NAS-627.
+  const selectArity = catalog.components['app-select'].paramOrder.length - 1;
+  const pad = Array.from({ length: selectArity - 3 }, () => 'null').join(', ');
+  const sel = draw(`root = AppSelect(null, null, "Range", ${pad}, act)
 act = Action([@Set($v, 1)])`);
   assert.deepEqual(Object.keys(sel.el.listeners), ['change'], 'a component with its own change event means that');
 });
