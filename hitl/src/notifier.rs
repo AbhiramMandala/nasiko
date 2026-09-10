@@ -22,6 +22,16 @@ use uuid::Uuid;
 use crate::dispatcher::{NotifyError, ResumeNotifier};
 use crate::types::{HitlKind, HitlRequest};
 
+/// `flows.title` for the row `traceparent_for_context` registers — named here instead of inline
+/// in the SQL text (nit from review).
+const FLOW_TITLE: &str = "HITL resume nudge";
+/// `flows.status` value meaning "live, authorized to call back into the platform" — see
+/// `mcp/handlers/gateway.rs`'s `flow_user` check. Named here instead of inline in the SQL text
+/// (nit from review) — `flows.status` is a bare `TEXT` column with no CHECK constraint or shared
+/// enum type anywhere in the codebase yet, so this is scoped to this file's own two call sites,
+/// not a claim that every `'running'` literal elsewhere should reference it.
+const FLOW_STATUS_RUNNING: &str = "running";
+
 pub struct RuntimeResumeNotifier {
     db: PgPool,
     runtime: Arc<dyn ContainerRuntime>,
@@ -160,12 +170,14 @@ impl RuntimeResumeNotifier {
         // not silently swallowed (found in review).
         if let Err(e) = sqlx::query(
             r#"INSERT INTO flows (flow_id, user_id, root_agent_id, title, status)
-               VALUES ($1, $2, $3, 'HITL resume nudge', 'running')
-               ON CONFLICT (flow_id) DO UPDATE SET status = 'running'"#,
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (flow_id) DO UPDATE SET status = $5"#,
         )
         .bind(&trace_id)
         .bind(owner_user_id)
         .bind(agent_id)
+        .bind(FLOW_TITLE)
+        .bind(FLOW_STATUS_RUNNING)
         .execute(&self.db)
         .await
         {

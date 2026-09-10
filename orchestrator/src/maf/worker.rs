@@ -467,11 +467,11 @@ async fn finish_job(
             // `step_results`/`tokens_used` were already persisted by the executor at the moment
             // it detected the pause (`execute_step`/`continue_paused_step`'s own
             // `persist_progress` call) — only the execution-level status still needs flipping.
-            let _ =
-                sqlx::query("UPDATE maf_executions SET status = 'awaiting_human' WHERE id = $1")
-                    .bind(execution_id)
-                    .execute(db)
-                    .await;
+            let _ = sqlx::query("UPDATE maf_executions SET status = $1 WHERE id = $2")
+                .bind(nasiko_types::maf::AWAITING_HUMAN)
+                .bind(execution_id)
+                .execute(db)
+                .await;
             let step_index = paused.step_index;
             match create_hitl_request(hitl_store, execution_id, user_id, maf_def, &paused).await {
                 Ok(()) => {

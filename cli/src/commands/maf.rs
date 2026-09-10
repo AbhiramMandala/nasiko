@@ -541,7 +541,7 @@ fn poll_execution(client: &Client, exec_id: &str) -> Result<()> {
             }
             return Ok(());
         }
-        if status == "awaiting_human" {
+        if status == nasiko_types::maf::AWAITING_HUMAN {
             // Not a terminal state (the execution resumes once a human answers), but polling
             // further is pointless: nothing changes until that happens, so burning the rest of
             // the ~5-minute budget here just delayed telling the caller what actually needs to

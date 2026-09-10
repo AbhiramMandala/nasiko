@@ -275,7 +275,7 @@ async fn execute_step(
     let raw_response = match call_result {
         Ok(AgentCallOutcome::Completed(text)) => text,
         Ok(AgentCallOutcome::Paused { task_id, raw_data }) => {
-            step_results[i].status = "awaiting_human".to_string();
+            step_results[i].status = nasiko_types::maf::AWAITING_HUMAN.to_string();
             step_results[i].prompt = actual_prompt;
             persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
             return StepLoopOutcome::AwaitingHuman(build_paused_step(
