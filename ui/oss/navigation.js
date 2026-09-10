@@ -21,6 +21,7 @@
 
 import '/common/services/data-functions.js';
 import { call, registerAll, resolveOptional } from '/common/core/data-sources.js';
+import { ensureViews, hasSavedViews } from '/common/state/weave-views.js';
 
 // rail: true → shown as a rail module icon; everything else is reachable
 // through the module tree navs and the ⌘F nav search.
@@ -57,6 +58,12 @@ const BASE_ITEMS = () => [
   { title: "Secrets", url: "/secrets", icon: "lock", module: "settings" },
   { title: "Settings", url: "/settings", icon: "settings", rail: true, module: "settings" },
 ];
+
+// Rail entry for the views Weave generated and the user chose to keep. Absent
+// until the first save, because a rail icon leading to an empty shelf is a
+// promise the product has not made yet — <app-header> re-reads the nav on
+// `nav-refresh`, which generated-view-page fires the moment one is saved.
+const CUSTOM_VIEWS_ITEM = { title: "Custom Views", url: "/custom-views", icon: "layers", rail: true };
 
 // In-card module tree navs (app-module-nav). Items are either page links
 // ({label, url}) or in-page sections ({label, section} → the page handles
@@ -223,6 +230,13 @@ const extensionContext = async () => {
 
 const fetchNavigation = async () => {
   const base = BASE_ITEMS();
+  // The saved list lives on the server, so the rail cannot know whether the
+  // Custom views entry belongs until it has been fetched. `ensureViews` does it
+  // once per load and never rejects; on the OSS build it answers 404, the list
+  // stays empty and the entry simply never appears — which is correct, because
+  // the routes it leads to are not there either.
+  await ensureViews();
+  if (hasSavedViews()) base.push(CUSTOM_VIEWS_ITEM);
   const ext = await extension();
   if (!ext.items) return base;
   try {
