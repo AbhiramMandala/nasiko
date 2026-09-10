@@ -185,11 +185,21 @@ export async function readA2aStream(res, handlers = {}) {
 
   const handleArtifactUpdate = (au) => {
     const text = textOfParts(au.artifact?.parts);
-    if (text) {
-      if (au.append) out.text += text;
-      else out.text = text;
-      emitReply();
+    // `append: false` opens a fresh artifact, and that is a reset even when the
+    // frame carries no text — which is exactly how a turn starts (the first
+    // chunk is empty, every chunk after it appends). Skipping empty frames
+    // wholesale left the PREVIOUS turn's reply sitting in the accumulator, and
+    // a resumed HITL turn — whose buffer replays the sub-agent's own reply and
+    // then the orchestrator's — appended the second onto the first and printed
+    // both in one bubble. Reloading the page showed one, because the transcript
+    // stores only the final reply.
+    if (au.append) {
+      if (!text) return;
+      out.text += text;
+    } else {
+      out.text = text;
     }
+    if (out.text) emitReply();
   };
 
   const handleFrame = (evt) => {

@@ -733,47 +733,8 @@ const MAX_OPTION_LABEL_LEN: usize = 200;
 const MAX_OPTION_DESCRIPTION_LEN: usize = 2000;
 const MAX_QUESTION_HEADER_LEN: usize = 200;
 
-/// Build the `hitl_requests.question` JSONB from an already-extracted message + `metadata` blob
-/// (the External Agent Contract's optional `auth_url`/`provider`/`expected_input`, plus the
-/// optional selectable-options extension — `header`/`options`/`multi_select`/
-/// `allow_custom_input`, see `hoist_structured_options`). Well-known keys are hoisted to the top
-/// level; the full `metadata` blob is also kept verbatim underneath for anything else the agent
-/// attached, since Nasiko does not know a given agent's metadata shape in advance beyond those
-/// keys.
-///
-/// Exposed separately from [`build_pause_question`] (which parses this same shape out of a raw
-/// wire payload) for a caller that already has `message`/`metadata` as their own typed fields —
-/// the orchestrator's `AwaitingHuman` handling (`a2a_dispatch.rs`), whose `pause: PauseInfo` was
-/// extracted earlier in `oss/react-agent`. Both must build byte-identical shapes, options
-/// extension included: a consumer reading `question.auth_url` (or `question.options`) should find
-/// it on every origin's row, not just the ones built straight from a raw payload — two rows in one
-/// paused chain carrying different schemas was a confirmed-live bug this split exists to prevent.
-/// `task_id` is correlation-only (log context for `hoist_structured_options`'s drop warnings) —
-/// pass `None` when the caller has none handy; it never affects the resulting `question`.
-pub fn build_question(
-    message: &str,
-    metadata: Option<serde_json::Value>,
-    task_id: Option<&str>,
-) -> serde_json::Value {
-    let mut question = serde_json::json!({ "message": message });
-    if let Some(metadata) = metadata
-        && let Some(obj) = question.as_object_mut()
-    {
-        if let Some(metadata_obj) = metadata.as_object() {
-            for key in WELL_KNOWN_QUESTION_KEYS {
-                if let Some(value) = metadata_obj.get(*key) {
-                    obj.insert((*key).to_string(), value.clone());
-                }
-            }
-            hoist_structured_options(obj, metadata_obj, task_id);
-        }
-        obj.insert("metadata".to_string(), metadata);
-    }
-    question
-}
-
 /// Build the `hitl_requests.question` JSONB from a `Paused` payload: the message text, plus
-/// whatever `metadata` the agent attached. See [`build_question`] for the hoisting rules.
+/// whatever `metadata` the agent attached. See [`pause_question`] for the hoisting rules.
 pub fn build_pause_question(data: &str) -> serde_json::Value {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
         return serde_json::json!({ "message": "" });
@@ -808,7 +769,38 @@ pub fn build_pause_question(data: &str) -> serde_json::Value {
     // its own fallback) is what resume actually addresses.
     let task_id = status_update.get("taskId").and_then(|v| v.as_str());
 
-    build_question(&message, metadata, task_id)
+    pause_question(&message, metadata, task_id)
+}
+
+/// [`build_pause_question`] for a caller that already holds the decoded pause.
+///
+/// The orchestrator reaches a sub-agent's pause as a typed `PauseInfo` (message + metadata),
+/// never as the raw SSE payload, so it cannot call `build_pause_question` — and hand-rolling
+/// `{message, metadata}` there left every hoisted key buried in `metadata`, where no client
+/// looks: an orchestrator-origin selectable-options question arrived with no `question.options`
+/// and rendered as a plain text box, and an `auth_required` one with no `question.auth_url` had
+/// nowhere to send the human. Both origins go through this now, so `question` has one shape
+/// regardless of which path minted it, and `options` is validated exactly once either way.
+pub fn pause_question(
+    message: &str,
+    metadata: Option<serde_json::Value>,
+    task_id: Option<&str>,
+) -> serde_json::Value {
+    let mut question = serde_json::json!({ "message": message });
+    if let Some(metadata) = metadata
+        && let Some(obj) = question.as_object_mut()
+    {
+        if let Some(metadata_obj) = metadata.as_object() {
+            for key in WELL_KNOWN_QUESTION_KEYS {
+                if let Some(value) = metadata_obj.get(*key) {
+                    obj.insert((*key).to_string(), value.clone());
+                }
+            }
+            hoist_structured_options(obj, metadata_obj, task_id);
+        }
+        obj.insert("metadata".to_string(), metadata);
+    }
+    question
 }
 
 /// Hoists the selectable-options extension (`header`/`options`/`multi_select`/
@@ -969,6 +961,44 @@ mod pause_parsing_tests {
         );
         // The full metadata blob is still kept underneath, unmodified.
         assert_eq!(question["metadata"]["provider"], "github");
+    }
+
+    /// The orchestrator holds a decoded `PauseInfo`, not the raw payload, so it persists its
+    /// pause through `pause_question` instead. It must land on the identical shape — it did not,
+    /// and every orchestrator-origin options question rendered as a plain text box because
+    /// `question.options` was buried one level down in `metadata`.
+    #[test]
+    fn pause_question_hoists_the_same_keys_as_the_raw_payload_path() {
+        let metadata = serde_json::json!({
+            "auth_url": "https://github.com/login/oauth/authorize?client_id=abc",
+            "provider": "github",
+            "options": [{"label": "Summary"}, {"label": "Detailed"}],
+            "multi_select": true,
+            "allow_custom_input": true,
+        });
+        let question = pause_question("Pick the sections", Some(metadata), Some("t1"));
+
+        assert_eq!(question["message"], "Pick the sections");
+        assert_eq!(question["provider"], "github");
+        assert_eq!(
+            question["auth_url"],
+            "https://github.com/login/oauth/authorize?client_id=abc"
+        );
+        assert_eq!(question["options"][1]["label"], "Detailed");
+        assert_eq!(question["multi_select"], true);
+        assert_eq!(question["allow_custom_input"], true);
+        // And the raw-payload path is this function plus parsing, not a second implementation.
+        assert_eq!(
+            build_pause_question(AUTH_REQUIRED_PAYLOAD),
+            pause_question(
+                "Please authorize with GitHub",
+                Some(serde_json::json!({
+                    "provider": "github",
+                    "auth_url": "https://github.com/login/oauth/authorize?client_id=abc"
+                })),
+                Some("t1"),
+            )
+        );
     }
 
     #[test]

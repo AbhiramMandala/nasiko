@@ -912,6 +912,12 @@ async fn trigger_new_orchestrator_turn(
             user_id: row.owner_user_id,
             is_superuser,
             client_owns_transcript: false,
+            // Not `"user"`: `continuation` is written by the platform, not typed by the human.
+            // As a user-role row it drew a bubble in the transcript quoting the sub-agent back
+            // at them ("The archive agent replied: …"). It still belongs in the session's own
+            // history — a re-paused turn leaves no assistant reply behind — so it is persisted
+            // under a role the transcript does not render.
+            transcript_role: crate::router::a2a_dispatch::INTERNAL_TRANSCRIPT_ROLE,
             file_parts: Vec::new(),
         },
     )

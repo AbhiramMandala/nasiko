@@ -716,12 +716,18 @@ async fn list_messages(
         .and_then(|(ts, id)| id.parse::<Uuid>().ok().map(|u| (ts, u)))
         .or(params.after.map(|ts| (ts, Uuid::from_u128(u128::MAX))));
 
+    // `role <> 'system'` on every branch: a HITL resume records its continuation ("The archive
+    // agent replied: …") so the next turn's reasoning still has it (`INTERNAL_TRANSCRIPT_ROLE`,
+    // `router/a2a_dispatch.rs`), but nobody said it — shown in a transcript it reads as a message
+    // the human typed. Filtered in SQL rather than after the fetch so page sizes and cursors stay
+    // consistent with what the client actually receives.
+    //
     // Fetch DESC in all cases except `after`; reverse in Rust so client always sees ASC.
     let (msg_result, fetched_asc): (Result<Vec<ChatMessage>, _>, bool) = match (before, after) {
         (_, Some((after_ts, after_id))) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND (timestamp, id) > ($2, $3)
+                   WHERE session_id = $1 AND role <> 'system' AND (timestamp, id) > ($2, $3)
                    ORDER BY timestamp ASC, id ASC
                    LIMIT $4"#,
             )
@@ -736,7 +742,7 @@ async fn list_messages(
         (Some((before_ts, before_id)), None) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND (timestamp, id) < ($2, $3)
+                   WHERE session_id = $1 AND role <> 'system' AND (timestamp, id) < ($2, $3)
                    ORDER BY timestamp DESC, id DESC
                    LIMIT $4"#,
             )
@@ -751,7 +757,7 @@ async fn list_messages(
         (None, None) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1
+                   WHERE session_id = $1 AND role <> 'system'
                    ORDER BY timestamp DESC, id DESC
                    LIMIT $2"#,
             )

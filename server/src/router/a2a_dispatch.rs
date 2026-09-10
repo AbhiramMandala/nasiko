@@ -223,6 +223,7 @@ pub async fn a2a_dispatch_handler(
                 user_id,
                 is_superuser: claims.is_superuser,
                 client_owns_transcript: session_id.is_some(),
+                transcript_role: "user",
                 file_parts: vec![],
             },
         )
@@ -337,6 +338,12 @@ async fn reconnect_stream(
 
 // ─── Orchestrator Path ───────────────────────────────────────────────────────
 
+/// The `chat_messages.role` for a row the platform wrote rather than a person — right now only
+/// the HITL resume's continuation. `list_messages` filters it out of the transcript, so it never
+/// reaches a chat bubble, while `SessionHistory::fetch` (which reads the table directly) still
+/// carries it into the next turn's reasoning.
+pub(crate) const INTERNAL_TRANSCRIPT_ROLE: &str = "system";
+
 /// One orchestrator-routed turn. Grouped into a struct because the caller
 /// count crossed clippy's argument threshold, and these travel together.
 ///
@@ -354,6 +361,14 @@ pub(crate) struct OrchestratorTurn<'a> {
     pub(crate) is_superuser: bool,
     /// Caller persists its own turns (web UI) — the server must not also.
     pub(crate) client_owns_transcript: bool,
+    /// The `chat_messages.role` `raw_text` is stored under. `"user"` for a real turn; the HITL
+    /// resume passes `"system"`, because its `raw_text` is a continuation the platform wrote
+    /// ("The archive agent replied: …") and not something the human said. Stored as `"user"` it
+    /// drew a user bubble in the transcript quoting the sub-agent back at them, and fed the next
+    /// turn a fake user line. It is still persisted — the resumed step has to stay in the
+    /// session's own history, especially when the turn re-pauses and no assistant reply follows
+    /// — just under a role the transcript does not show.
+    pub(crate) transcript_role: &'a str,
     /// File parts uploaded with the request (multipart upload path).
     pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
 }
@@ -370,6 +385,7 @@ pub(crate) async fn orchestrator_stream(
         user_id,
         is_superuser,
         client_owns_transcript,
+        transcript_role,
         file_parts,
     } = turn;
     // Orchestrator-routed chats never had a `chat_sessions` row, unlike
@@ -385,8 +401,15 @@ pub(crate) async fn orchestrator_stream(
     // turn's fetch would read this already-history-laden row back out and
     // glue *another* copy of it in front of the next message, compounding
     // turn over turn instead of growing linearly with real conversation.
-    ensure_orchestrator_chat_session(state, context_id, user_id, raw_text, client_owns_transcript)
-        .await;
+    ensure_orchestrator_chat_session(
+        state,
+        context_id,
+        user_id,
+        raw_text,
+        transcript_role,
+        client_owns_transcript,
+    )
+    .await;
 
     let all_agents = AgentSelector::fetch_active_agents(&state.db)
         .await
@@ -437,6 +460,7 @@ pub(crate) async fn orchestrator_stream(
                     name: s.name.clone(),
                     description: s.description.clone(),
                     tags: summary.tags.clone(),
+                    examples: s.examples.clone(),
                 })
                 .collect(),
         });
@@ -797,14 +821,17 @@ pub(crate) async fn orchestrator_stream(
                             // never expiring.
                             let persisted = match Uuid::parse_str(&agent_id) {
                                 Ok(sub_agent_id) => {
-                                    // `build_question`, not an inline `json!` — direct chat and
+                                    // `pause_question`, not an inline `json!` — direct chat and
                                     // the orchestrator's own follow-up pauses (`hitl/mod.rs`) both
-                                    // go through it, hoisting `auth_url`/`provider`/
-                                    // `expected_input` (and the selectable-options extension) to
-                                    // the top level; building this row's `question` by hand
-                                    // instead meant a consumer reading `question.auth_url` got the
-                                    // OAuth link on one row in a paused chain but not another.
-                                    let question = a2a::build_question(
+                                    // go through it (via `build_pause_question`), hoisting
+                                    // `auth_url`/`provider`/`expected_input` (and the
+                                    // selectable-options extension) to the top level; building
+                                    // this row's `question` by hand instead meant a consumer
+                                    // reading `question.auth_url` got the OAuth link on one row
+                                    // in a paused chain but not another, and every
+                                    // orchestrator-origin options question rendered as a plain
+                                    // text box.
+                                    let question = a2a::pause_question(
                                         &pause.message,
                                         (!pause.metadata.is_null()).then(|| pause.metadata.clone()),
                                         Some(pause.task_id.as_str()),
@@ -1623,6 +1650,7 @@ pub async fn a2a_upload_handler(
             // Fresh context id, minted here — no client-side session owns
             // this transcript, so the server persists the turn.
             client_owns_transcript: false,
+            transcript_role: "user",
             file_parts: collected_files,
         },
     )
@@ -1654,6 +1682,7 @@ async fn ensure_orchestrator_chat_session(
     context_id: &str,
     user_id: Uuid,
     query: &str,
+    role: &str,
     client_owns_transcript: bool,
 ) {
     let title = {
@@ -1686,13 +1715,13 @@ async fn ensure_orchestrator_chat_session(
         return;
     }
 
-    let _ = sqlx::query(
-        "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'user', $2)",
-    )
-    .bind(context_id)
-    .bind(query)
-    .execute(&state.db)
-    .await;
+    let _ =
+        sqlx::query("INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)")
+            .bind(context_id)
+            .bind(role)
+            .bind(query)
+            .execute(&state.db)
+            .await;
 }
 
 pub(crate) async fn resolve_endpoint(

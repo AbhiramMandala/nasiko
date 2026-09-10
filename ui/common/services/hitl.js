@@ -220,14 +220,20 @@ export function answeredSummary(row) {
  * no options with a usable label means "plain question", not "broken card".
  */
 export function structuredOptions(question) {
-  const options = (Array.isArray(question?.options) ? question.options : [])
+  // Read the top level first, then `metadata`. The server hoists this block out
+  // of the agent's own metadata onto `question` at pause time — but a row whose
+  // origin missed that hoist, and every row already written before it did, still
+  // carries `options` one level down and is still perfectly answerable. Reading
+  // only the hoisted position rendered those as a plain text box, silently.
+  const src = (Array.isArray(question?.options) ? question : question?.metadata) || {};
+  const options = (Array.isArray(src.options) ? src.options : [])
     .filter((o) => o && typeof o.label === 'string' && o.label.trim() !== '');
   if (!options.length) return null;
   return {
-    header: question.header || null,
+    header: src.header || null,
     options,
-    multiSelect: question.multi_select === true,
-    allowCustom: question.allow_custom_input === true,
+    multiSelect: src.multi_select === true,
+    allowCustom: src.allow_custom_input === true,
   };
 }
 
