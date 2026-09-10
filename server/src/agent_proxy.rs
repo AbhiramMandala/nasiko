@@ -371,16 +371,40 @@ pub async fn agent_proxy(
         // below, so tap the SSE chunks on their way to the client and persist
         // the collected assistant text when the stream ends (Drop also covers
         // a client disconnect mid-stream).
-        let mut tap = SseReplyTap::new(
+        let tap = SseReplyTap::new(
             state.db.clone(),
+            state.hitl_store.clone(),
             persist_info.as_ref().map(|i| i.session_id.clone()),
+            agent_id,
             flow_ctx.flow_id.clone(),
+            claims.sub.parse::<Uuid>().ok(),
         );
-        let body = Body::from_stream(stream.inspect(move |chunk| {
-            if let Ok(bytes) = chunk {
-                tap.collector.feed(bytes);
-            }
-        }));
+        // `stream::unfold`, not `take_while`: `take_while`'s predicate only runs when a
+        // NEW upstream chunk arrives, so an agent that emits the pausing event and then
+        // goes quiet — never sends anything further, never closes the connection
+        // (documented live behavior of some a2a-sdk agents) — would never re-evaluate the
+        // predicate, and the relay would hang forever: exactly the `nasiko chat -a` hang
+        // this change claims to fix, just moved one event later. `unfold` decides to stop
+        // right after the chunk that fed the pause is yielded, driven by the *client's*
+        // next read of the response body (via hyper/axum), not by another upstream poll —
+        // so ending the stream never depends on the agent sending or closing anything else.
+        let boxed: std::pin::Pin<
+            Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>,
+        > = Box::pin(stream);
+        let body = Body::from_stream(futures::stream::unfold(
+            (boxed, tap, false),
+            |(mut stream, mut tap, done)| async move {
+                if done {
+                    return None;
+                }
+                let chunk_result = stream.next().await?;
+                if let Ok(bytes) = &chunk_result {
+                    tap.collector.feed(bytes);
+                }
+                let now_done = tap.collector.is_paused();
+                Some((chunk_result, (stream, tap, now_done)))
+            },
+        ));
         return builder.body(body).map_err(|e| {
             tracing::error!(error = %e, %agent_id, "agent proxy: failed to build streamed response");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -392,30 +416,100 @@ pub async fn agent_proxy(
         StatusCode::BAD_GATEWAY
     })?;
 
-    // Persist agent reply fire-and-forget.
+    // A non-streaming reply can pause too — same check `agent_stream()`'s own non-streaming
+    // branch runs, so this proxy doesn't flatten a pause into a bogus "assistant reply" just
+    // because the agent happened to answer as plain JSON.
+    //
+    // Tracked synchronously (the classification below is already synchronous) so the
+    // `complete_flow` call further down can skip a flow that just paused: `persist_direct_chat_pause`
+    // sets `flows.status = 'paused'` from inside the spawned task below, and calling
+    // `complete_flow` (sets `'completed'`) unconditionally right after racing that same update —
+    // `completed` usually won since it's the shorter path — made a paused flow read as finished in
+    // the UI, with the resumed hop unattributable to it.
+    let mut is_paused = false;
+
     if let Some(ref info) = persist_info
         && let Ok(rpc_val) = serde_json::from_slice::<serde_json::Value>(&bytes)
-        && let Some(agent_text) = extract_agent_reply_text(&rpc_val)
     {
-        let db = state.db.clone();
-        let session_id = info.session_id.clone();
-        tokio::spawn(async move {
-            let _ = sqlx::query(
-                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
-            )
-            .bind(&session_id)
-            .bind("assistant")
-            .bind(&agent_text)
-            .execute(&db)
-            .await;
-        });
+        let raw_body = rpc_val.to_string();
+        if nasiko_types::a2a::classify_stream_disposition(&raw_body)
+            == nasiko_types::a2a::StreamDisposition::Paused
+        {
+            is_paused = true;
+            if let Ok(owner_user_id) = claims.sub.parse::<Uuid>() {
+                let db = state.db.clone();
+                let hitl_store = state.hitl_store.clone();
+                let session_id = info.session_id.clone();
+                let flow_id = flow_ctx.flow_id.clone();
+                tokio::spawn(async move {
+                    let question = crate::router::a2a_dispatch::build_pause_question(&raw_body);
+                    let message_text = question
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let fallback_task_id = Uuid::new_v4().to_string();
+
+                    // `session_id` here IS the `chat_sessions.session_id` `ensure_chat_session`
+                    // above unconditionally upserted (`persist_info.session_id`, threaded through
+                    // from there) — passed through as the real `chat_session_id` so a proxy-origin
+                    // pause is findable via `GET /api/chat/sessions/{id}/messages` like every other
+                    // origin's, not only via the global `/api/hitl/pending` list.
+                    if crate::router::a2a_dispatch::persist_direct_chat_pause(
+                        &hitl_store,
+                        &db,
+                        nasiko_hitl::HitlOrigin::AgentProxy,
+                        agent_id,
+                        owner_user_id,
+                        &session_id,
+                        &fallback_task_id,
+                        Some(&session_id),
+                        &flow_id,
+                        &raw_body,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        tracing::error!(%session_id, "agent proxy: failed to persist HITL pause");
+                    }
+                    if !message_text.is_empty() {
+                        let _ = sqlx::query(
+                            "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+                        )
+                        .bind(&session_id)
+                        .bind("assistant")
+                        .bind(&message_text)
+                        .execute(&db)
+                        .await;
+                    }
+                });
+            } else {
+                tracing::error!(session_id = %info.session_id, "agent proxy: HITL pause detected but caller's user id didn't parse — pause not persisted");
+            }
+        } else if let Some(agent_text) = extract_agent_reply_text(&rpc_val) {
+            let db = state.db.clone();
+            let session_id = info.session_id.clone();
+            tokio::spawn(async move {
+                let _ = sqlx::query(
+                    "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+                )
+                .bind(&session_id)
+                .bind("assistant")
+                .bind(&agent_text)
+                .execute(&db)
+                .await;
+            });
+        }
     }
 
-    // The response body is fully buffered — the flow's work is done. Without
-    // this the direct-chat path's rows stayed 'running' forever, which would
-    // poison the LLM router's active-flow attribution fallback (it only looks
-    // at running flows).
-    complete_flow(&state.db, &flow_ctx.flow_id);
+    // The response body is fully buffered — the flow's work is done, unless it just paused (see
+    // `is_paused`'s doc comment above), in which case `persist_direct_chat_pause` owns the flow's
+    // terminal-for-now status instead. Without this at all the direct-chat path's rows stayed
+    // 'running' forever, which would poison the LLM router's active-flow attribution fallback (it
+    // only looks at running flows).
+    if !is_paused {
+        complete_flow(&state.db, &flow_ctx.flow_id);
+    }
 
     builder.body(Body::from(bytes)).map_err(|e| {
         tracing::error!(error = %e, %agent_id, "agent proxy: failed to build response");
@@ -642,7 +736,7 @@ fn extract_agent_reply_text(rpc: &serde_json::Value) -> Option<String> {
 
 /// Reply text of a (possibly task-wrapped) A2A result value: the final
 /// artifact text, or the terminal status message as a fallback.
-fn task_reply_text(result: &serde_json::Value) -> Option<String> {
+pub(crate) fn task_reply_text(result: &serde_json::Value) -> Option<String> {
     // Older a2a-sdk wraps the Task under result.task
     let task = result.get("task").unwrap_or(result);
 
@@ -687,6 +781,10 @@ struct SseReplyText {
     line_buf: Vec<u8>,
     artifact_text: String,
     terminal_text: Option<String>,
+    /// Set the moment a `Paused`-classified event is fed — the raw `data:` payload, kept for
+    /// `pause_kind`/`build_pause_question`/`paused_task_id` to read. Once set, stays set: a
+    /// pause is a terminal disposition for this stream, not something a later chunk un-does.
+    pause_data: Option<String>,
 }
 
 impl SseReplyText {
@@ -698,9 +796,16 @@ impl SseReplyText {
             let Some(data) = line.trim().strip_prefix("data:") else {
                 continue;
             };
-            let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
+            let data = data.trim();
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(data) else {
                 continue;
             };
+            if self.pause_data.is_none()
+                && nasiko_types::a2a::classify_stream_disposition(data)
+                    == nasiko_types::a2a::StreamDisposition::Paused
+            {
+                self.pause_data = Some(data.to_string());
+            }
             let result = event.get("result").unwrap_or(&event);
             if let Some(text) = artifact_chunk_text(result) {
                 self.artifact_text.push_str(&text);
@@ -712,6 +817,10 @@ impl SseReplyText {
         }
     }
 
+    fn is_paused(&self) -> bool {
+        self.pause_data.is_some()
+    }
+
     fn finish(&mut self) -> Option<String> {
         if !self.artifact_text.is_empty() {
             return Some(std::mem::take(&mut self.artifact_text));
@@ -721,7 +830,7 @@ impl SseReplyText {
 }
 
 /// Artifact chunk text of one SSE event, in either event dialect.
-fn artifact_chunk_text(result: &serde_json::Value) -> Option<String> {
+pub(crate) fn artifact_chunk_text(result: &serde_json::Value) -> Option<String> {
     let artifact = result.pointer("/artifactUpdate/artifact").or_else(|| {
         (result.get("kind").and_then(|k| k.as_str()) == Some("artifact-update"))
             .then(|| result.get("artifact"))
@@ -736,7 +845,7 @@ fn artifact_chunk_text(result: &serde_json::Value) -> Option<String> {
 }
 
 /// Text of a bare message event (`{"message": {"parts": [...]}}`).
-fn message_parts_text(result: &serde_json::Value) -> Option<String> {
+pub(crate) fn message_parts_text(result: &serde_json::Value) -> Option<String> {
     let parts = result.pointer("/message/parts")?.as_array()?;
     let text: String = parts
         .iter()
@@ -745,25 +854,53 @@ fn message_parts_text(result: &serde_json::Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// Persists the collected streamed reply as the session's assistant message
-/// when dropped — which happens when the response stream ends, whether the
-/// stream completed or the client disconnected.
+/// Persists the collected streamed reply as the session's assistant message when dropped —
+/// which happens when the response stream ends, whether the stream completed, was truncated on
+/// a detected pause (`take_while` in the caller stops pulling further chunks once
+/// `collector.is_paused()`; this still fires normally, same as any other end of stream), or the
+/// client disconnected.
+///
+/// On a pause, this proxy — unlike `agent_stream()` — has no prior bookkeeping of its own for
+/// this call (no synthetic task id was ever minted; the raw request/response just gets forwarded
+/// byte-for-byte), so persisting the `hitl_requests` row happens here too, at the same point the
+/// reply would otherwise have been persisted.
 struct SseReplyTap {
     db: sqlx::PgPool,
+    hitl_store: std::sync::Arc<dyn nasiko_hitl::HitlStore>,
     /// Chat session to persist the collected reply into — absent for proxied
     /// requests that carry no user message.
     session_id: Option<String>,
-    /// The flow this request opened — completed when the stream ends.
+    agent_id: Uuid,
+    /// The `flows` row this call registered — needed so a detected pause can flip it to
+    /// `'paused'` the same way the direct-chat path (`a2a_dispatch.rs::persist_direct_chat_pause`)
+    /// already does, and so completion can close it out otherwise (`complete_flow`); this proxy
+    /// previously never touched `flows` again after opening it, leaving the row stuck at
+    /// `'running'` forever.
     flow_id: String,
+    /// `None` if `claims.sub` didn't parse as a UUID, or if there was no `persist_info` to
+    /// correlate a pause to a user in the first place. Guarded rather than unwrapped: the
+    /// `hitl_requests` row creation is skipped without a real owner, but the stream is still
+    /// correctly truncated either way.
+    owner_user_id: Option<Uuid>,
     collector: SseReplyText,
 }
 
 impl SseReplyTap {
-    fn new(db: sqlx::PgPool, session_id: Option<String>, flow_id: String) -> Self {
+    fn new(
+        db: sqlx::PgPool,
+        hitl_store: std::sync::Arc<dyn nasiko_hitl::HitlStore>,
+        session_id: Option<String>,
+        agent_id: Uuid,
+        flow_id: String,
+        owner_user_id: Option<Uuid>,
+    ) -> Self {
         Self {
             db,
+            hitl_store,
             session_id,
+            agent_id,
             flow_id,
+            owner_user_id,
             collector: SseReplyText::default(),
         }
     }
@@ -775,6 +912,66 @@ impl Drop for SseReplyTap {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
+
+        if let Some(pause_data) = self.collector.pause_data.take() {
+            let db = self.db.clone();
+            let hitl_store = self.hitl_store.clone();
+            let session_id = self.session_id.take();
+            let agent_id = self.agent_id;
+            let flow_id = std::mem::take(&mut self.flow_id);
+            let owner_user_id = self.owner_user_id;
+            handle.spawn(async move {
+                let question = crate::router::a2a_dispatch::build_pause_question(&pause_data);
+                let message_text = question
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                // No Nasiko-synthetic task id exists for this proxy to fall back to (see the
+                // struct doc comment) — a fresh one if the payload itself carries none is the
+                // best available substitute, same spirit as `agent_stream()`'s own fallback.
+                let fallback_task_id = Uuid::new_v4().to_string();
+
+                match (&session_id, owner_user_id) {
+                    (Some(session_id), Some(owner_user_id)) => {
+                        // See the other call site's comment: `session_id` here IS the
+                        // `chat_sessions.session_id` row, so it's the real `chat_session_id` too.
+                        if crate::router::a2a_dispatch::persist_direct_chat_pause(
+                            &hitl_store,
+                            &db,
+                            nasiko_hitl::HitlOrigin::AgentProxy,
+                            agent_id,
+                            owner_user_id,
+                            session_id,
+                            &fallback_task_id,
+                            Some(session_id.as_str()),
+                            &flow_id,
+                            &pause_data,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            tracing::error!(%session_id, "agent proxy: failed to persist HITL pause");
+                        }
+                        if !message_text.is_empty() {
+                            let _ = sqlx::query(
+                                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+                            )
+                            .bind(session_id)
+                            .bind("assistant")
+                            .bind(&message_text)
+                            .execute(&db)
+                            .await;
+                        }
+                    }
+                    _ => {
+                        tracing::error!(%flow_id, "agent proxy: HITL pause detected but no session/caller user id to correlate — pause not persisted");
+                    }
+                }
+            });
+            return;
+        }
+
         let db = self.db.clone();
         let session_id = self.session_id.take();
         let text = self.collector.finish();
