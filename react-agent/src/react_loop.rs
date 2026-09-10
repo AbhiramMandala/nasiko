@@ -406,6 +406,18 @@ impl Orchestrator {
     /// Returns a receiver; the orchestration runs in the background.
     /// `file_parts` are pre-serialized A2A Part JSON values from the user's
     /// upload — forwarded to whichever agent the orchestrator selects.
+    ///
+    /// The in-memory context this streams against is write-only from the caller's perspective:
+    /// `context` below is a clone handed to the spawned task, and every `push_tool_result`/
+    /// `push_assistant` inside `run_stream_inner` mutates that clone, which is simply dropped when
+    /// the task ends — `self.context` on this `Orchestrator` is never updated by a streaming turn,
+    /// including the record that a sub-agent paused awaiting a human (found in review). This is
+    /// currently safe only because the one caller that resumes after a streaming pause
+    /// (`trigger_new_orchestrator_turn`, `oss/server/src/hitl/mod.rs`) rebuilds its own context
+    /// from `SessionHistory::fetch` rather than trusting this `Orchestrator`'s in-memory state — do
+    /// not add a caller that relies on `self.context` reflecting a prior `run_stream` call's
+    /// effects without first making this shared (e.g. `Arc<Mutex<ContextManager>>`) rather than
+    /// cloned.
     pub fn run_stream(
         &mut self,
         user_query: &str,
