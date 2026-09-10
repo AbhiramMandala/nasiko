@@ -501,7 +501,7 @@ async fn session_scope_approval_lets_a_second_call_succeed_without_reapproval() 
         std::sync::Arc::new(AllowAllAuthorizer),
     )
     .await;
-    let connector_id = Uuid::new_v4();
+    let connector_id = db.seed_connector("session-scope-approval").await;
     let trace_id = "a2f7651916cd43dd8448eb211c8031a6";
     let session_id = "ses_session_scope";
     db.seed_session_trace(session_id, trace_id).await;
@@ -850,7 +850,7 @@ async fn batch_multi_execute_session_grant_lets_the_same_slug_succeed_repeatedly
         std::sync::Arc::new(AllowAllAuthorizer),
     )
     .await;
-    let gmail_cid = Uuid::new_v4();
+    let gmail_cid = db.seed_connector("batch-session-grant-gmail").await;
     let trace_id = "e6f7651916cd43dd8448eb211c8031aa";
     let session_id = "ses_batch_session";
     db.seed_session_trace(session_id, trace_id).await;

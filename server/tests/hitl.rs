@@ -34,6 +34,20 @@ async fn seed_agent(server: &common::TestServer, owner_id: Uuid, name: &str) -> 
     .unwrap()
 }
 
+/// Seeds a minimal, real `mcp_connectors` row and returns its id — a session-scope approval
+/// (`scope=session`) calls `create_session_grant`, whose `connector_id` gained a real FK to this
+/// table (`0018_mcp_session_tool_grants_fk.sql`); a synthetic `Uuid::new_v4()` connector id (fine
+/// for `hitl_requests.connector_id`, which has no FK) now violates that constraint.
+async fn seed_connector(server: &common::TestServer, name: &str) -> Uuid {
+    sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO mcp_connectors (provider_type, name) VALUES ('mcp_server', $1) RETURNING id",
+    )
+    .bind(name)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
 /// Insert a pending `hitl_requests` row directly (bypassing `nasiko_hitl::repo`,
 /// which the HTTP layer under test also calls into — inserting independently
 /// here keeps this an actual test of the HTTP surface, not a round-trip
@@ -365,7 +379,7 @@ async fn approve_with_session_scope_creates_a_session_grant() {
     let server = common::TestServer::start().await;
     let owner = seed_user(&server, "hitl-owner-7").await;
     let agent_id = seed_agent(&server, owner, "hitl-test-agent-7").await;
-    let connector_id = Uuid::new_v4();
+    let connector_id = seed_connector(&server, "session-scope-connector-7").await;
     let request_id = seed_pending_tool_approval(
         &server,
         agent_id,

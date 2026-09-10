@@ -151,79 +151,13 @@ async fn different_connector_creates_a_distinct_pending_row() {
     );
 }
 
-// ─── M5: list_pending_for / authorize_hitl_action / resolve ────────────────
-
-#[tokio::test]
-async fn list_pending_for_returns_only_the_owners_pending_rows() {
-    let db = TestDb::new("hitl_test").await;
-    let other_user_id = db.seed_user().await;
-
-    let mine =
-        repo::create_pending_auth_required(&db.pool, db.new_auth_required(Uuid::new_v4(), "ctx-1"))
-            .await
-            .expect("create pending row for the owner");
-
-    // A different owner's row must never show up in this user's inbox.
-    let mut someone_elses = db.new_auth_required(Uuid::new_v4(), "ctx-2");
-    someone_elses.owner_user_id = other_user_id;
-    repo::create_pending_auth_required(&db.pool, someone_elses)
-        .await
-        .expect("create pending row for a different owner");
-
-    let inbox = repo::list_pending_for(&db.pool, db.owner_user_id)
-        .await
-        .expect("list_pending_for");
-
-    assert_eq!(
-        inbox.len(),
-        1,
-        "must see only this owner's pending row: {inbox:?}"
-    );
-    assert_eq!(inbox[0].id, mine.id);
-}
-
-#[tokio::test]
-async fn list_pending_for_excludes_resolved_rows() {
-    let db = TestDb::new("hitl_test").await;
-    let created = repo::create_pending_tool_approval(
-        &db.pool,
-        db.new_tool_approval(Uuid::new_v4(), "GITHUB_DELETE_REPO", "ctx-1"),
-    )
-    .await
-    .expect("create pending tool_approval");
-
-    repo::resolve(
-        &db.pool,
-        created.id,
-        ResolveDecision::Approve,
-        db.owner_user_id,
-        serde_json::json!({"decision": "approve"}),
-    )
-    .await
-    .expect("resolve")
-    .expect("row was pending");
-
-    let inbox = repo::list_pending_for(&db.pool, db.owner_user_id)
-        .await
-        .expect("list_pending_for");
-    assert!(
-        inbox.is_empty(),
-        "a resolved row must not appear in the pending inbox: {inbox:?}"
-    );
-}
-
-#[tokio::test]
-async fn authorize_hitl_action_denies_a_different_owner() {
-    let db = TestDb::new("hitl_test").await;
-    let other_user_id = db.seed_user().await;
-    let request =
-        repo::create_pending_auth_required(&db.pool, db.new_auth_required(Uuid::new_v4(), "ctx-1"))
-            .await
-            .expect("create pending row");
-
-    assert!(repo::authorize_hitl_action(&request, db.owner_user_id));
-    assert!(!repo::authorize_hitl_action(&request, other_user_id));
-}
+// ─── M5: resolve ────────────────────────────────────────────────────────────
+//
+// `repo::list_pending_for`/`repo::authorize_hitl_action` (and their tests, formerly here) were
+// removed — dead code with no callers outside their own tests. Production code exclusively uses
+// `HitlStore::list_pending_for` (`store.rs`, mirror-filtered, superuser-aware, covered by the
+// `/api/hitl/pending` integration tests in `oss/server/tests/`) and `authz::authorize_hitl_action`
+// (covered by `oss/hitl/src/authz.rs`'s own unit tests).
 
 #[tokio::test]
 async fn resolve_approve_transitions_tool_approval_to_resolved_with_audit_fields() {
@@ -617,7 +551,7 @@ async fn concurrent_claims_of_the_same_approval_exactly_one_wins() {
 #[tokio::test]
 async fn session_grant_is_visible_to_has_active_session_grant() {
     let db = TestDb::new("hitl_test").await;
-    let connector_id = Uuid::new_v4();
+    let connector_id = db.seed_connector("session-grant-visible").await;
     let resolved = db
         .resolved_tool_approval(
             connector_id,
@@ -675,7 +609,7 @@ async fn session_grant_is_visible_to_has_active_session_grant() {
 #[tokio::test]
 async fn session_grant_does_not_match_a_different_tool_or_conversation() {
     let db = TestDb::new("hitl_test").await;
-    let connector_id = Uuid::new_v4();
+    let connector_id = db.seed_connector("session-grant-mismatch").await;
     repo::create_session_grant(
         &db.pool,
         NewSessionGrant {
@@ -719,7 +653,7 @@ async fn session_grant_does_not_match_a_different_tool_or_conversation() {
 #[tokio::test]
 async fn expired_session_grant_is_not_active() {
     let db = TestDb::new("hitl_test").await;
-    let connector_id = Uuid::new_v4();
+    let connector_id = db.seed_connector("session-grant-expired").await;
 
     // Insert an already-expired grant directly — create_session_grant always
     // computes a future expiry, so an expired row can only be exercised by
@@ -816,7 +750,7 @@ async fn claim_resolved_tool_approval_never_claims_a_different_users_approval() 
 async fn has_active_session_grant_never_matches_a_different_users_grant() {
     let db = TestDb::new("hitl_test").await;
     let other_user = db.seed_user().await;
-    let connector_id = Uuid::new_v4();
+    let connector_id = db.seed_connector("session-grant-cross-user").await;
 
     repo::create_session_grant(
         &db.pool,

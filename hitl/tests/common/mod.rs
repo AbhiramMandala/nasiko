@@ -82,4 +82,20 @@ impl TestDb {
             owner_user_id,
         }
     }
+
+    /// Seeds a minimal, real `mcp_connectors` row and returns its id — needed by any test that
+    /// inserts into `mcp_session_tool_grants`, whose `connector_id` column gained a real FK to
+    /// this table (`0018_mcp_session_tool_grants_fk.sql`); a synthetic `Uuid::new_v4()` connector
+    /// id (the previous pattern in these tests) now violates that constraint.
+    #[allow(dead_code)] // only repo.rs's session-grant tests construct this
+    pub async fn seed_connector(&self, prefix: &str) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO mcp_connectors (provider_type, name) VALUES ('mcp_server', $1) \
+             RETURNING id",
+        )
+        .bind(format!("{prefix}-connector-{}", Uuid::new_v4().simple()))
+        .fetch_one(&self.pool)
+        .await
+        .expect("seed connector")
+    }
 }
