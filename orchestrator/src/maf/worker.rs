@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use futures::FutureExt;
 use nasiko_hitl::{HitlStore, NewHitlRequest};
 use nasiko_observability::ObservabilityProvider;
 use sqlx::PgPool;
@@ -167,12 +168,22 @@ fn parse_job(fields: &[redis::Value]) -> Option<Job> {
         i += 2;
     }
 
+    // A fresh run's message never carries any of these three fields — `None` is the normal case.
+    // But `deliver_maf`'s XADD always sends all three together for a continuation, so seeing *some*
+    // of them present with even one failing to parse means this message was meant to be a resume,
+    // not a fresh run. Falling through to `None` here previously downgraded it into a fresh run
+    // from step 0 instead — silently discarding the human's answer and re-invoking every
+    // already-succeeded step. Reject the whole job instead, matching the caller's existing
+    // malformed-message handling (ACK + discard) rather than mis-executing it.
+    let any_resume_field_present =
+        resume_step_index.is_some() || resume_task_id.is_some() || resume_answer.is_some();
     let resume = match (resume_step_index, resume_task_id, resume_answer) {
         (Some(step_index), Some(task_id), Some(answer)) => Some(ResumeFields {
             step_index,
             task_id,
             answer,
         }),
+        _ if any_resume_field_present => return None,
         _ => None,
     };
 
@@ -294,22 +305,18 @@ async fn process_job(
         }
     };
 
-    let outcome = match job.resume {
-        None => {
-            executor::run_maf(
-                http_client,
-                db,
-                observability,
-                execution_id,
-                user_id,
-                &maf_def,
-                llm,
-            )
-            .await
-        }
-        Some(resume) => match fetch_resume_state(db, execution_id).await {
-            Ok((step_results, tokens_used, output_generation)) => {
-                executor::run_maf_from(
+    // Caught rather than left to unwind past `process_job`: this call is awaited inline in
+    // `run()`'s own loop, not in a spawned task, so an uncaught panic here (an out-of-bounds
+    // index reached some other way, a future bug) would take the whole MAF worker down with it —
+    // every execution stuck until the process restarts, not just this one. `AssertUnwindSafe` is
+    // safe here: nothing on this stack is shared mutable state another task could observe
+    // half-updated after a panic — everything panic could interrupt is either `Copy` (`db`,
+    // `execution_id`, `user_id`), a fresh owned value about to be dropped and replaced with an
+    // `Err`, or (`&mut conn`, held by the caller) untouched by the executor itself.
+    let outcome = std::panic::AssertUnwindSafe(async {
+        match job.resume {
+            None => {
+                executor::run_maf(
                     http_client,
                     db,
                     observability,
@@ -317,19 +324,39 @@ async fn process_job(
                     user_id,
                     &maf_def,
                     llm,
-                    step_results,
-                    tokens_used,
-                    output_generation,
-                    resume.step_index as usize,
-                    resume.task_id,
-                    execution_id.to_string(),
-                    resume.answer,
                 )
                 .await
             }
-            Err(e) => Err(format!("failed to load resume state: {e}")),
-        },
-    };
+            Some(resume) => match fetch_resume_state(db, execution_id).await {
+                Ok((step_results, tokens_used, output_generation)) => {
+                    executor::run_maf_from(
+                        http_client,
+                        db,
+                        observability,
+                        execution_id,
+                        user_id,
+                        &maf_def,
+                        llm,
+                        step_results,
+                        tokens_used,
+                        output_generation,
+                        resume.step_index as usize,
+                        resume.task_id,
+                        execution_id.to_string(),
+                        resume.answer,
+                    )
+                    .await
+                }
+                Err(e) => Err(format!("failed to load resume state: {e}")),
+            },
+        }
+    })
+    .catch_unwind()
+    .await
+    .unwrap_or_else(|_| {
+        error!("MAF execution {execution_id}: executor panicked");
+        Err("MAF executor panicked".to_string())
+    });
 
     finish_job(
         outcome,
@@ -433,14 +460,33 @@ async fn finish_job(
                     .bind(execution_id)
                     .execute(db)
                     .await;
-            create_hitl_request(hitl_store, execution_id, user_id, maf_def, &paused).await;
-            // Done for now — no retry, no re-enqueue. The row waits for
-            // `POST /api/hitl/{id}/resolve` to trigger a continuation job.
-            ack(conn, msg_id).await;
-            info!(
-                "MAF execution {execution_id} paused at step {} awaiting a human",
-                paused.step_index
-            );
+            let step_index = paused.step_index;
+            match create_hitl_request(hitl_store, execution_id, user_id, maf_def, &paused).await {
+                Ok(()) => {
+                    // Done for now — no retry, no re-enqueue. The row waits for
+                    // `POST /api/hitl/{id}/resolve` to trigger a continuation job.
+                    ack(conn, msg_id).await;
+                    info!(
+                        "MAF execution {execution_id} paused at step {step_index} awaiting a human"
+                    );
+                }
+                Err(e) => {
+                    // No `hitl_requests` row exists for a human to ever resolve — leaving the
+                    // execution at `awaiting_human` would strand it forever with nothing pointing
+                    // back to it once this message is ACKed. Fail it outright instead: visible
+                    // and re-runnable, unlike a silent, permanently unresolvable pause.
+                    mark_failed(
+                        db,
+                        execution_id,
+                        &format!("paused at step {step_index} but failed to record the HITL request: {e}"),
+                    )
+                    .await;
+                    ack(conn, msg_id).await;
+                    warn!(
+                        "MAF execution {execution_id} paused at step {step_index} but HITL request creation failed, marked failed: {e}"
+                    );
+                }
+            }
         }
         Err(e) => {
             // A resumed job's failure is never retried by restarting from step 0 — that would
@@ -475,19 +521,27 @@ async fn finish_job(
 
 /// Creates the `hitl_requests` row a paused step surfaces to a human, resolved via the generic
 /// `POST /api/hitl/{id}/resolve` (`oss/server/src/router/hitl.rs` — already origin-agnostic).
+///
+/// Returns `Err` rather than only logging on failure: the caller (`finish_job`) has already set
+/// `maf_executions.status = 'awaiting_human'` and is about to ACK the Redis message regardless —
+/// if this row never gets created, the execution is stuck in that status forever with nothing a
+/// human can ever resolve, and no later sweep catches it (the message is gone from the stream).
+/// The caller uses a failed create to fail the execution outright instead, which is at least
+/// visible and re-runnable, rather than silently unresolvable.
 async fn create_hitl_request(
     hitl_store: &Arc<dyn HitlStore>,
     execution_id: Uuid,
     user_id: Uuid,
     maf_def: &MafDefinition,
     paused: &PausedStep,
-) {
+) -> Result<(), String> {
     let Some(step) = maf_def.steps.get(paused.step_index as usize) else {
-        error!(
-            "MAF execution {execution_id}: paused step index {} out of range, cannot record the HITL pause",
+        let err = format!(
+            "paused step index {} out of range, cannot record the HITL pause",
             paused.step_index
         );
-        return;
+        error!("MAF execution {execution_id}: {err}");
+        return Err(err);
     };
     let req = NewHitlRequest::maf(
         paused.kind,
@@ -499,9 +553,15 @@ async fn create_hitl_request(
         paused.step_index,
         paused.question.clone(),
     );
-    if let Err(e) = hitl_store.create(req).await {
-        error!("MAF execution {execution_id}: failed to persist HITL pause: {e}");
-    }
+    hitl_store
+        .create(req)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            let err = format!("failed to persist HITL pause: {e}");
+            error!("MAF execution {execution_id}: {err}");
+            err
+        })
 }
 
 async fn mark_failed(db: &PgPool, execution_id: Uuid, error: &str) {

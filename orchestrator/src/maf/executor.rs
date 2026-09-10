@@ -115,6 +115,21 @@ pub async fn run_maf_from(
     resume_context_id: String,
     injected_answer: String,
 ) -> Result<StepOutcome, String> {
+    // `resume_index` comes from `hitl_requests.maf_step_index`, off the same DB row
+    // `worker.rs::create_hitl_request` already bounds-checks against `maf_def.steps` before
+    // ever persisting it — but that check happens once, on a different (and possibly
+    // since-corrupted) in-memory snapshot. Re-checked here against the actual `maf_def`/
+    // `step_results` this call received: an out-of-range index would otherwise panic on the
+    // slice below (or the `maf_def.steps[resume_index]` index just past it), taking down this
+    // whole worker task with no `catch_unwind` around it.
+    if resume_index >= maf_def.steps.len() || resume_index >= step_results.len() {
+        return Err(format!(
+            "resume step index {resume_index} out of range ({} steps, {} step_results)",
+            maf_def.steps.len(),
+            step_results.len()
+        ));
+    }
+
     let mut total_tokens = tokens_used_so_far;
     let plans: Vec<StepPlan> = step_results
         .iter()
