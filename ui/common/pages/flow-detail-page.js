@@ -1,5 +1,6 @@
 import { icons } from '/common/utils/icons.js';
 import '/common/design-system/app-badge/app-badge.js';
+import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 
@@ -32,21 +33,61 @@ class FlowDetailPage extends HTMLElement {
     if (!flowId) {
       this.innerHTML = `${this.#toolbar()}
         <app-empty-state
-          title="No flow selected"
+          heading="No flow selected"
           description="Open a flow from the list to inspect its trace."
           icon='${icons.activity("", 40)}'></app-empty-state>`;
       return;
     }
-    this.innerHTML = `${this.#toolbar()}<app-skeleton height="200px"></app-skeleton>`;
+    this.innerHTML = `${this.#toolbar()}${this.#loadingBodyHtml()}`;
     this.#load(flowId);
   }
 
+  /**
+   * Placeholder for the body while the flow trace loads. The real layout
+   * below is a 5-tile KPI strip followed by a list of step rows, so the
+   * loading state shimmers as those same shapes instead of one slab.
+   */
+  #loadingBodyHtml() {
+    const kpi = (labelWidth) => `
+        <div class="kpi">
+          <div class="kpi-label"><app-skeleton height="10px" style="width:${labelWidth};"></app-skeleton></div>
+          <div class="kpi-value"><app-skeleton height="14px" style="width:70%;"></app-skeleton></div>
+        </div>`;
+    const stepRow = () => '<app-skeleton height="48px" radius="md" style="margin-bottom:var(--s-8);"></app-skeleton>';
+    return `
+      <div class="kpi-strip">${['4ch', '7ch', '6ch', '6ch', '4ch'].map(kpi).join('')}</div>
+      <div class="section-head">
+        <h2 class="section-title">Steps</h2>
+      </div>
+      <div class="steps">${Array.from({ length: 3 }, stepRow).join('')}</div>`;
+  }
+
   async #load(flowId) {
-    const data = await call('fetchFlowDetail', flowId);
+    let data;
+    try {
+      data = await call('fetchFlowDetail', flowId);
+    } catch (e) {
+      // Previously uncaught: a rejected fetch left #loadingBodyHtml()'s
+      // skeleton on screen forever instead of showing anything. Kept
+      // separate from the "flow not found" case below — one says the flow
+      // is gone, this says the request itself failed and offers a retry.
+      console.error('FlowDetailPage: failed to load flow:', e);
+      this.innerHTML = `${this.#toolbar()}
+        <div class="empty-wrap">
+          <app-empty-state
+            heading="Couldn't load this flow"
+            description="Something went wrong fetching this trace."
+            icon='${icons.alertTriangle("", 40)}'>
+            <app-button id="flow-retry" variant="primary">Retry</app-button>
+          </app-empty-state>
+        </div>`;
+      this.querySelector('#flow-retry')?.addEventListener('click', () => this.#load(flowId));
+      return;
+    }
     if (!data) {
       this.innerHTML = `${this.#toolbar()}
         <app-empty-state
-          title="Flow not found"
+          heading="Flow not found"
           description="This flow may have expired or been removed."
           icon='${icons.faceFrown("", 40)}'></app-empty-state>`;
       return;
@@ -103,7 +144,7 @@ class FlowDetailPage extends HTMLElement {
     if (!steps.length) {
       container.innerHTML = `
         <app-empty-state
-          title="No steps recorded"
+          heading="No steps recorded"
           description="No agent calls were recorded for this flow."
           icon='${icons.activity("", 40)}'></app-empty-state>`;
       return;

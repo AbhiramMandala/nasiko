@@ -84,7 +84,7 @@ class YourAgentsPage extends HTMLElement {
 
     // <app-tabs strip>: the counts are data-driven, so this page renders the
     // buttons and the component owns the tablist semantics and the indicator.
-    this.querySelector("#status-tabs").addEventListener("tab-change", (e) => {
+    this.querySelector("#status-tabs").addEventListener("tabs-change", (e) => {
       this.#statusFilter = e.detail.key;
       // Dropped when it is the default, so the common URL stays clean.
       setSearchParams({ tab: e.detail.key === "all" ? null : e.detail.key });
@@ -97,7 +97,16 @@ class YourAgentsPage extends HTMLElement {
   }
 
   async #load() {
-    const result = await call('fetchContainers', "", 1, 100);
+    let result;
+    try {
+      result = await call('fetchContainers', "", 1, 100);
+    } catch (e) {
+      // Left the #shell()'s <app-card loading> skeletons on screen forever
+      // otherwise — nothing downstream of this ever ran to replace them.
+      console.error('YourAgentsPage: failed to load agents:', e);
+      this.#renderLoadFailure();
+      return;
+    }
     this.#agents = result.data || [];
 
     // Fetch upload info so we can show upload source (GitHub/Upload) on all
@@ -120,6 +129,20 @@ class YourAgentsPage extends HTMLElement {
     this.#schedulePoll();
   }
 
+  #renderLoadFailure() {
+    this.querySelector("#status-tabs").innerHTML = "";
+    this.querySelector("#agents-grid").innerHTML = `
+      <div class="empty-wrap">
+        <app-empty-state
+          heading="Couldn't load agents"
+          description="Something went wrong loading your deployed agents."
+          icon='${icons.alertTriangle("", 40)}'>
+          <app-button id="agents-retry" variant="primary">Retry</app-button>
+        </app-empty-state>
+      </div>`;
+    this.querySelector("#agents-retry")?.addEventListener("click", () => this.#load());
+  }
+
   #schedulePoll() {
     clearTimeout(this.#pollTimer);
     const hasSettingUp = this.#agents.some(
@@ -131,7 +154,18 @@ class YourAgentsPage extends HTMLElement {
   }
 
   async #pollSettingUp() {
-    const result = await call('fetchContainers', "", 1, 100);
+    let result;
+    try {
+      result = await call('fetchContainers', "", 1, 100);
+    } catch (e) {
+      // A transient failure here used to just stop the loop cold — nothing
+      // called #schedulePoll() again, so a still-deploying agent's card
+      // silently froze until the next full page load. Reschedule instead so
+      // a blip recovers on its own next tick.
+      console.error('YourAgentsPage: poll failed, will retry:', e);
+      this.#schedulePoll();
+      return;
+    }
     const freshAgents = result.data || [];
     const freshMap = new Map();
     for (const a of freshAgents) freshMap.set(a.id, a);
@@ -186,12 +220,12 @@ class YourAgentsPage extends HTMLElement {
       ? ""
       : isRunning
         ? `
-        <app-button slot="footer" variant="tertiary" size="sm" icon-only data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh()}</app-button>
-        <app-button slot="footer" variant="tertiary" size="sm" icon-only data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square()}</app-button>
-        <app-button slot="footer" variant="ghost-danger" size="sm" icon-only class="card-delete" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash()}</app-button>`
+        <app-button data-slot="footer" variant="tertiary" size="sm" icon-only data-action="restart" data-name="${escAttr(a.name)}" aria-label="Restart ${escAttr(name)}" title="Restart">${icons.refresh()}</app-button>
+        <app-button data-slot="footer" variant="tertiary" size="sm" icon-only data-action="stop" data-name="${escAttr(a.name)}" aria-label="Stop ${escAttr(name)}" title="Stop">${icons.square()}</app-button>
+        <app-button data-slot="footer" variant="ghost-danger" size="sm" icon-only class="card-delete" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash()}</app-button>`
         : `
-        <app-button slot="footer" variant="primary" size="sm" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play()} Deploy</app-button>
-        <app-button slot="footer" variant="ghost-danger" size="sm" icon-only class="card-delete" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash()}</app-button>`;
+        <app-button data-slot="footer" variant="primary" size="sm" data-action="deploy" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" data-image="${escAttr(a.image || "")}">${icons.play()} Deploy</app-button>
+        <app-button data-slot="footer" variant="ghost-danger" size="sm" icon-only class="card-delete" data-action="delete" data-id="${escAttr(a.id)}" data-name="${escAttr(a.name)}" aria-label="Delete ${escAttr(name)}" title="Delete ${escAttr(name)}">${icons.trash()}</app-button>`;
 
     // `status` alone drives the card's status dot and its error/deploying
     // bodies — the page passes the state, the component paints it. The source
@@ -209,8 +243,8 @@ class YourAgentsPage extends HTMLElement {
       ${!isError && !isPending && a.description ? `description="${escAttr(a.description)}"` : ""}
       ${tags.length ? `tags="${escAttr(JSON.stringify(tags))}"` : ""}
     >
-      ${sourceLabel ? `<app-badge slot="actions" class="agent-card-source" variant="neutral">${escHtml(sourceLabel)}</app-badge>` : ""}
-      ${isError ? `<a slot="footer" data-action="view-logs" href="/flows?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
+      ${sourceLabel ? `<app-badge data-slot="actions" class="agent-card-source" variant="neutral">${escHtml(sourceLabel)}</app-badge>` : ""}
+      ${isError ? `<a data-slot="footer" data-action="view-logs" href="/flows?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a>` : ""}
       ${footerButtonsHtml}
     </app-card>
   `;
@@ -343,7 +377,7 @@ class YourAgentsPage extends HTMLElement {
       grid.innerHTML = `
         <div class="empty-wrap">
           <app-empty-state
-            title="No agents deployed"
+            heading="No agents deployed"
             description="Deploy your first agent from the catalog or add a new one."
             icon='${icons.layers("", 40)}'>
             <app-button variant="primary" href="/agents">Browse agents</app-button>
@@ -357,7 +391,7 @@ class YourAgentsPage extends HTMLElement {
       grid.innerHTML = `
         <div class="empty-wrap">
           <app-empty-state
-            title="No matching agents"
+            heading="No matching agents"
             description="Try adjusting your search or filter criteria."
             icon='${icons.search("", 40)}'>
           </app-empty-state>

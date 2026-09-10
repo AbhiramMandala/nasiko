@@ -413,10 +413,23 @@ class SettingsPage extends HTMLElement {
     // carries the SSO tab's derived, read-only status fields (provider_kind,
     // oidc_configured, scim_enabled, directory_sync_enabled — see
     // sso_settings.rs's get_oidc_settings).
-    const [s, oidc] = await Promise.all([
-      call('fetchSettings'),
-      callOptional('fetchOidcSettings'),
-    ]);
+    let s, oidc;
+    try {
+      [s, oidc] = await Promise.all([
+        call('fetchSettings'),
+        callOptional('fetchOidcSettings'),
+      ]);
+    } catch (e) {
+      // Nothing downstream ever ran to tell the user anything on a rejected
+      // fetch here — the form just stayed on its static HTML defaults with
+      // no loading indicator and no error, forever. There's no empty/loading
+      // concept for a settings form worth designing around, so this mirrors
+      // the toast-on-failure pattern the rest of this page already uses
+      // (e.g. the SCIM token actions below) rather than inventing a new one.
+      console.error('SettingsPage: failed to load settings:', e);
+      showToast('Failed to load settings. Please refresh and try again.');
+      return;
+    }
     if (!s) return;
     this.#settings = { ...s, ...(oidc ?? {}) };
     this.querySelectorAll('[data-field]').forEach(el => {

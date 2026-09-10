@@ -53,7 +53,7 @@ class AgentsPage extends HTMLElement {
 
     // <app-tabs strip> owns the tablist semantics and the sliding indicator;
     // the tab set itself is data-driven, so this page renders the buttons.
-    this.querySelector("#category-tabs").addEventListener("tab-change", (e) => {
+    this.querySelector("#category-tabs").addEventListener("tabs-change", (e) => {
       this.#activeCategory = e.detail.key;
       storeCategory(e.detail.key);
       this.#renderFilter();
@@ -66,12 +66,35 @@ class AgentsPage extends HTMLElement {
   }
 
   async #loadAgents() {
-    const result = await call('fetchAgents', "", 1, 100);
+    let result;
+    try {
+      result = await call('fetchAgents', "", 1, 100);
+    } catch (e) {
+      // Without this, a rejected fetch left the tab/grid skeletons drawn in
+      // #shell() on screen forever — nothing ever replaced them.
+      console.error('AgentsPage: failed to load agents:', e);
+      this.#renderLoadFailure();
+      return;
+    }
     this.#agents = result.data || [];
     await this.#loadPinnedTabs();
     this.#dropStaleCategory();
     this.#renderFilter();
     this.#renderGrid();
+  }
+
+  #renderLoadFailure() {
+    this.querySelector("#category-tabs").innerHTML = "";
+    this.querySelector("#agents-grid").innerHTML = `
+      <div class="empty-wrap">
+        <app-empty-state
+          heading="Couldn't load agents"
+          description="Something went wrong loading the agent catalog."
+          icon='${icons.alertTriangle("", 40)}'>
+          <app-button id="agents-retry" variant="primary">Retry</app-button>
+        </app-empty-state>
+      </div>`;
+    this.querySelector("#agents-retry")?.addEventListener("click", () => this.#loadAgents());
   }
 
   /** Admin-pinned tab list (Settings → `catalog_tabs`, comma-separated tags). */
@@ -190,7 +213,7 @@ class AgentsPage extends HTMLElement {
       grid.innerHTML = `
         <div class="empty-wrap">
           <app-empty-state
-            title="No agents found"
+            heading="No agents found"
             description="Try adjusting your search or filter criteria."
             icon='${icons.layers("", 40)}'>
             <app-button variant="primary" href="/add-agent">Import agent</app-button>
