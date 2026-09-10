@@ -237,9 +237,11 @@ pub async fn resolve_display_row(
 /// enum columns) rather than deriving `sqlx::FromRow` directly on [`HitlRequest`] — this crate has
 /// no custom `sqlx::Type`/`Decode` impls for its enums (the wire/DB format is `TEXT`, not a native
 /// Postgres enum type), so decoding through `FromStr` here is both simpler and keeps a corrupt
-/// value a typed error instead of a decode panic.
+/// value a typed error instead of a decode panic. `pub(crate)` (not private): `repo.rs` shares
+/// this exact row shape and the `TryFrom` impl below rather than maintaining its own field-for-
+/// field-identical copy, which is what this crate had until the two were consolidated.
 #[derive(sqlx::FromRow)]
-struct HitlRequestRow {
+pub(crate) struct HitlRequestRow {
     id: Uuid,
     kind: String,
     origin: String,
@@ -691,6 +693,92 @@ impl HitlStore for PgHitlStore {
         .fetch_optional(&self.pool)
         .await?;
         row.map(HitlRequest::try_from).transpose()
+    }
+}
+
+#[cfg(test)]
+mod row_hydration_tests {
+    use super::*;
+    use crate::types::{HitlKind, HitlOrigin, HitlStatus, ResumeStatus};
+
+    fn valid_row() -> HitlRequestRow {
+        let now = Utc::now();
+        HitlRequestRow {
+            id: Uuid::new_v4(),
+            kind: "auth_required".to_string(),
+            origin: "mcp_tool".to_string(),
+            status: "pending".to_string(),
+            resume_status: "not_started".to_string(),
+            agent_id: Uuid::new_v4(),
+            owner_user_id: Uuid::new_v4(),
+            resolved_by: None,
+            task_id: None,
+            context_id: Some("ctx-1".to_string()),
+            chat_session_id: None,
+            maf_execution_id: None,
+            maf_step_index: None,
+            connector_id: Some(Uuid::new_v4()),
+            tool_name: None,
+            arguments_hash: None,
+            consumed_at: None,
+            question: serde_json::json!({"connector": "github"}),
+            human_response: None,
+            resume_state: serde_json::json!({}),
+            resume_claimed_at: None,
+            resume_dispatch_attempts: 0,
+            resume_last_error: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: Some(now + chrono::Duration::days(7)),
+            resolved_at: None,
+        }
+    }
+
+    fn valid_tool_approval_row() -> HitlRequestRow {
+        let mut row = valid_row();
+        row.kind = "tool_approval".to_string();
+        row.tool_name = Some("GITHUB_CREATE_ISSUE".to_string());
+        row
+    }
+
+    #[test]
+    fn valid_tool_approval_row_hydrates_into_domain_type() {
+        let row = valid_tool_approval_row();
+        let hitl = HitlRequest::try_from(row).expect("valid row must hydrate");
+        assert_eq!(hitl.kind, HitlKind::ToolApproval);
+        assert_eq!(hitl.origin, HitlOrigin::McpTool);
+        assert_eq!(hitl.tool_name.as_deref(), Some("GITHUB_CREATE_ISSUE"));
+        assert!(hitl.connector_id.is_some());
+        assert_eq!(hitl.context_id.as_deref(), Some("ctx-1"));
+    }
+
+    #[test]
+    fn valid_row_hydrates_into_domain_type() {
+        let row = valid_row();
+        let id = row.id;
+        let hitl = HitlRequest::try_from(row).expect("valid row must hydrate");
+        assert_eq!(hitl.id, id);
+        assert_eq!(hitl.kind, HitlKind::AuthRequired);
+        assert_eq!(hitl.origin, HitlOrigin::McpTool);
+        assert_eq!(hitl.status, HitlStatus::Pending);
+        assert_eq!(hitl.resume_status, ResumeStatus::NotStarted);
+        assert_eq!(hitl.context_id.as_deref(), Some("ctx-1"));
+    }
+
+    #[test]
+    fn unknown_kind_string_is_an_error_not_a_panic() {
+        let mut row = valid_row();
+        row.kind = "not_a_real_kind".to_string();
+        let err = HitlRequest::try_from(row).unwrap_err();
+        assert!(matches!(err, HitlError::CorruptRow(_)));
+    }
+
+    #[test]
+    fn unknown_status_string_is_an_error_not_a_panic() {
+        let mut row = valid_row();
+        row.status = "not_a_real_status".to_string();
+        let err = HitlRequest::try_from(row).unwrap_err();
+        assert!(matches!(err, HitlError::CorruptRow(_)));
     }
 }
 

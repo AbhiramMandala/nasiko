@@ -1,23 +1,26 @@
 //! Postgres persistence for `hitl_requests` (migration `0007_hitl.sql` +
 //! `0014_hitl_auth_required.sql`).
 //!
-//! `oss/mcp-gateway` calls `create_pending_auth_required` from
-//! `protocol::handle_auth_required` and `create_pending_tool_approval` from
-//! `protocol::create_tool_approval_id`. `oss/server/src/router/hitl.rs` (the
-//! `/api/hitl/*` resolve API, M5) calls `list_pending_for`,
-//! `authorize_hitl_action`, and `resolve` to make a persisted row actionable
-//! by a human. `resolve` itself never triggers a retry, a push, or a session
-//! grant — it only flips the row's own status; `claim_for_resume`/
-//! `finish_resume`/`recover_stuck_resumes` (M6) are the resume dispatcher's
-//! own claim/lease primitives, consumed by `crate::dispatcher`.
+//! `oss/mcp-gateway` calls `create_pending_auth_required`/`create_pending_auth_required_with_ttl`
+//! from `protocol::handle_auth_required` and `create_pending_tool_approval`/
+//! `create_pending_tool_approval_with_ttl` from `protocol::create_tool_approval_id`. `resolve`
+//! (used directly by tests, and indirectly via `HitlStore::resolve` in production — see
+//! `store.rs`) never triggers a retry, a push, or a session grant — it only flips the row's own
+//! status; `claim_for_resume`/`finish_resume`/`recover_stuck_resumes` (M6) are the resume
+//! dispatcher's own claim/lease primitives, consumed by `crate::dispatcher`. The `/api/hitl/*`
+//! human-facing API (`oss/server/src/router/hitl.rs`) goes entirely through the `HitlStore` trait
+//! (`store.rs`) and `authz::authorize_hitl_action` — `HitlRequestRow`/`HitlError`/
+//! `TryFrom<HitlRequestRow>` are shared with `store.rs` rather than duplicated here.
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::error::Result;
-use crate::types::{HitlKind, HitlOrigin, HitlRequest, HitlStatus, ResumeStatus};
+use crate::store::{HitlError, HitlRequestRow};
+use crate::types::{HitlRequest, HitlStatus, ResumeStatus};
+
+type Result<T> = std::result::Result<T, HitlError>;
 
 /// Default validity window for a pending request before it's considered
 /// expired — 7 days, per the plan's "Remaining Decisions". Used only when a caller doesn't supply
@@ -108,7 +111,7 @@ pub async fn create_pending_auth_required_with_ttl(
     .fetch_one(db)
     .await?;
 
-    row.try_into_domain()
+    row.try_into()
 }
 
 /// Everything needed to create a pending `kind=tool_approval`,
@@ -191,7 +194,7 @@ pub async fn create_pending_tool_approval_with_ttl(
     .fetch_one(db)
     .await?;
 
-    row.try_into_domain()
+    row.try_into()
 }
 
 /// Look up a request by id — read-only, used by the tests below and by
@@ -202,7 +205,7 @@ pub async fn get_by_id(db: &PgPool, id: Uuid) -> Result<Option<HitlRequest>> {
         .bind(id)
         .fetch_optional(db)
         .await?;
-    row.map(HitlRequestRow::try_into_domain).transpose()
+    row.map(HitlRequest::try_from).transpose()
 }
 
 /// The `direct_chat`/`agent_proxy`/`maf`/`orchestrator`-origin row (if any, still `pending`)
@@ -270,34 +273,7 @@ pub async fn find_linked_direct_chat_row(
     .bind(agent_id)
     .fetch_optional(db)
     .await?;
-    row.map(HitlRequestRow::try_into_domain).transpose()
-}
-
-/// `owner_user_id` is the sole authorization rule for every [`HitlKind`] — not
-/// a two-branch split by kind. A human's personal HITL inbox (`list_pending_for`)
-/// already scopes by this via its `WHERE` clause; this function is for a
-/// single-row action (resolve/reject) where the row is fetched by id first and
-/// the caller must independently confirm the actor may act on it.
-pub fn authorize_hitl_action(request: &HitlRequest, acting_user_id: Uuid) -> bool {
-    request.owner_user_id == acting_user_id
-}
-
-/// All pending requests owned by `owner_user_id`, newest first — a human's
-/// personal HITL inbox, regardless of `kind`/`origin`. Deliberately not
-/// MCP-specific: this is the generic read side the future shared resume
-/// dispatcher's HTTP surface (and the direct-chat/orchestrator/MAF origins)
-/// will use identically.
-pub async fn list_pending_for(db: &PgPool, owner_user_id: Uuid) -> Result<Vec<HitlRequest>> {
-    let rows = sqlx::query_as::<_, HitlRequestRow>(
-        "SELECT * FROM hitl_requests WHERE owner_user_id = $1 AND status = 'pending' \
-         ORDER BY created_at DESC",
-    )
-    .bind(owner_user_id)
-    .fetch_all(db)
-    .await?;
-    rows.into_iter()
-        .map(HitlRequestRow::try_into_domain)
-        .collect()
+    row.map(HitlRequest::try_from).transpose()
 }
 
 /// The human's decision on a pending request. Deliberately just these two —
@@ -354,7 +330,7 @@ pub async fn resolve(
     .bind(resolved_by)
     .fetch_optional(db)
     .await?;
-    row.map(HitlRequestRow::try_into_domain).transpose()
+    row.map(HitlRequest::try_from).transpose()
 }
 
 /// Auto-resolve every pending `auth_required`/`mcp_tool` row for this
@@ -400,7 +376,7 @@ pub async fn resolve_pending_auth_required_for_connector(
     .await?;
     let resolved: Vec<HitlRequest> = rows
         .into_iter()
-        .map(HitlRequestRow::try_into_domain)
+        .map(HitlRequest::try_from)
         .collect::<Result<_>>()?;
     for row in &resolved {
         if let Err(e) =
@@ -510,7 +486,7 @@ pub async fn claim_resolved_tool_approval(
     .bind(context_id)
     .fetch_optional(db)
     .await?;
-    row.map(HitlRequestRow::try_into_domain).transpose()
+    row.map(HitlRequest::try_from).transpose()
 }
 
 /// Resolve the stable chat-session identity a `tool_approval` session grant
@@ -676,6 +652,20 @@ pub async fn has_active_session_grant(
     Ok(found.is_some())
 }
 
+/// Deletes every `mcp_session_tool_grants` row past its own `expires_at` — this table had no
+/// periodic sweep at all (found in review), unlike `hitl_requests`'s own `expire_stale`.
+/// `create_session_grant` is deliberately non-idempotent (its own doc comment: a retried approval
+/// can create a second grant for the same tuple), so without this the table only ever grows.
+/// Called from the resume dispatcher's existing recovery tick (`crate::dispatcher::run`) — no new
+/// timer, same cadence `recover_stuck_resumes` already runs on. Returns the number of rows
+/// deleted, for the dispatcher's own logging.
+pub async fn sweep_expired_session_grants(db: &PgPool) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM mcp_session_tool_grants WHERE expires_at < now()")
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 /// Default lease/staleness window for a resume-dispatcher claim before it is
 /// considered abandoned — 2 minutes, per `0007_hitl.sql`'s own claim-SQL
 /// comment. Exposed so callers (the dispatcher's recovery sweep) don't need
@@ -728,7 +718,7 @@ pub async fn claim_for_resume(db: &PgPool) -> Result<Option<HitlRequest>> {
     )
     .fetch_optional(db)
     .await?;
-    row.map(HitlRequestRow::try_into_domain).transpose()
+    row.map(HitlRequest::try_from).transpose()
 }
 
 /// Record the definitive outcome of a claimed row's resume attempt(s) —
@@ -764,7 +754,7 @@ pub async fn finish_resume(
     .bind(last_error)
     .fetch_optional(db)
     .await?;
-    row.map(HitlRequestRow::try_into_domain).transpose()
+    row.map(HitlRequest::try_from).transpose()
 }
 
 /// Marks an `mcp_tool`-origin row as already delivered without ever sending
@@ -869,174 +859,17 @@ pub async fn requeue_resume(db: &PgPool, id: Uuid) -> Result<Option<HitlRequest>
     .bind(id)
     .fetch_optional(db)
     .await?;
-    row.map(HitlRequestRow::try_into_domain).transpose()
-}
-
-/// Raw `hitl_requests` row shape for `sqlx::FromRow` — `kind`/`origin`/
-/// `status`/`resume_status` are plain `TEXT` columns (backed by CHECK
-/// constraints, not a native Postgres enum type), so they decode as `String`
-/// here and get parsed into their domain enums in [`try_into_domain`].
-#[derive(sqlx::FromRow)]
-struct HitlRequestRow {
-    id: Uuid,
-    kind: String,
-    origin: String,
-    status: String,
-    resume_status: String,
-    agent_id: Uuid,
-    owner_user_id: Uuid,
-    resolved_by: Option<Uuid>,
-    task_id: Option<String>,
-    context_id: Option<String>,
-    chat_session_id: Option<String>,
-    maf_execution_id: Option<Uuid>,
-    maf_step_index: Option<i32>,
-    connector_id: Option<Uuid>,
-    tool_name: Option<String>,
-    arguments_hash: Option<String>,
-    consumed_at: Option<DateTime<Utc>>,
-    question: Value,
-    human_response: Option<Value>,
-    resume_state: Value,
-    resume_claimed_at: Option<DateTime<Utc>>,
-    resume_dispatch_attempts: i32,
-    resume_last_error: Option<String>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    expires_at: Option<DateTime<Utc>>,
-    resolved_at: Option<DateTime<Utc>>,
-}
-
-impl HitlRequestRow {
-    fn try_into_domain(self) -> Result<HitlRequest> {
-        Ok(HitlRequest {
-            id: self.id,
-            kind: self.kind.parse::<HitlKind>()?,
-            origin: self.origin.parse::<HitlOrigin>()?,
-            status: self.status.parse::<HitlStatus>()?,
-            resume_status: self.resume_status.parse::<ResumeStatus>()?,
-            agent_id: self.agent_id,
-            owner_user_id: self.owner_user_id,
-            resolved_by: self.resolved_by,
-            task_id: self.task_id,
-            context_id: self.context_id,
-            chat_session_id: self.chat_session_id,
-            maf_execution_id: self.maf_execution_id,
-            maf_step_index: self.maf_step_index,
-            connector_id: self.connector_id,
-            tool_name: self.tool_name,
-            arguments_hash: self.arguments_hash,
-            consumed_at: self.consumed_at,
-            question: self.question,
-            human_response: self.human_response,
-            resume_state: self.resume_state,
-            resume_claimed_at: self.resume_claimed_at,
-            resume_dispatch_attempts: self.resume_dispatch_attempts,
-            resume_last_error: self.resume_last_error,
-            created_at: self.created_at,
-            updated_at: self.updated_at,
-            expires_at: self.expires_at,
-            resolved_at: self.resolved_at,
-        })
-    }
+    row.map(HitlRequest::try_from).transpose()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn valid_row() -> HitlRequestRow {
-        let now = Utc::now();
-        HitlRequestRow {
-            id: Uuid::new_v4(),
-            kind: "auth_required".to_string(),
-            origin: "mcp_tool".to_string(),
-            status: "pending".to_string(),
-            resume_status: "not_started".to_string(),
-            agent_id: Uuid::new_v4(),
-            owner_user_id: Uuid::new_v4(),
-            resolved_by: None,
-            task_id: None,
-            context_id: Some("ctx-1".to_string()),
-            chat_session_id: None,
-            maf_execution_id: None,
-            maf_step_index: None,
-            connector_id: Some(Uuid::new_v4()),
-            tool_name: None,
-            arguments_hash: None,
-            consumed_at: None,
-            question: serde_json::json!({"connector": "github"}),
-            human_response: None,
-            resume_state: serde_json::json!({}),
-            resume_claimed_at: None,
-            resume_dispatch_attempts: 0,
-            resume_last_error: None,
-            created_at: now,
-            updated_at: now,
-            expires_at: Some(now + Duration::days(7)),
-            resolved_at: None,
-        }
-    }
-
-    fn valid_tool_approval_row() -> HitlRequestRow {
-        let mut row = valid_row();
-        row.kind = "tool_approval".to_string();
-        row.tool_name = Some("GITHUB_CREATE_ISSUE".to_string());
-        row
-    }
-
-    #[test]
-    fn valid_tool_approval_row_hydrates_into_domain_type() {
-        let row = valid_tool_approval_row();
-        let hitl = row.try_into_domain().expect("valid row must hydrate");
-        assert_eq!(hitl.kind, HitlKind::ToolApproval);
-        assert_eq!(hitl.origin, HitlOrigin::McpTool);
-        assert_eq!(hitl.tool_name.as_deref(), Some("GITHUB_CREATE_ISSUE"));
-        assert!(hitl.connector_id.is_some());
-        assert_eq!(hitl.context_id.as_deref(), Some("ctx-1"));
-    }
-
-    #[test]
-    fn valid_row_hydrates_into_domain_type() {
-        let row = valid_row();
-        let id = row.id;
-        let hitl = row.try_into_domain().expect("valid row must hydrate");
-        assert_eq!(hitl.id, id);
-        assert_eq!(hitl.kind, HitlKind::AuthRequired);
-        assert_eq!(hitl.origin, HitlOrigin::McpTool);
-        assert_eq!(hitl.status, HitlStatus::Pending);
-        assert_eq!(hitl.resume_status, ResumeStatus::NotStarted);
-        assert_eq!(hitl.context_id.as_deref(), Some("ctx-1"));
-    }
-
-    #[test]
-    fn unknown_kind_string_is_an_error_not_a_panic() {
-        let mut row = valid_row();
-        row.kind = "not_a_real_kind".to_string();
-        let err = row.try_into_domain().unwrap_err();
-        assert!(matches!(err, crate::error::HitlError::InvalidRow(_)));
-    }
-
-    #[test]
-    fn unknown_status_string_is_an_error_not_a_panic() {
-        let mut row = valid_row();
-        row.status = "not_a_real_status".to_string();
-        let err = row.try_into_domain().unwrap_err();
-        assert!(matches!(err, crate::error::HitlError::InvalidRow(_)));
-    }
-
-    fn valid_request() -> HitlRequest {
-        valid_row()
-            .try_into_domain()
-            .expect("valid row must hydrate")
-    }
-
-    #[test]
-    fn authorize_hitl_action_allows_only_the_owner() {
-        let request = valid_request();
-        assert!(authorize_hitl_action(&request, request.owner_user_id));
-        assert!(!authorize_hitl_action(&request, Uuid::new_v4()));
-    }
+    // Row-hydration tests (valid rows, unknown kind/status) now live in
+    // `store.rs::row_hydration_tests`, alongside the `HitlRequestRow`/`TryFrom` impl they test —
+    // both were duplicated here before the two were consolidated. `authorize_hitl_action`'s own
+    // test was removed along with the function itself (dead code, see its doc comment).
 
     #[test]
     fn resolve_decision_maps_to_the_expected_terminal_status() {

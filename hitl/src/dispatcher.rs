@@ -119,6 +119,14 @@ pub async fn run(db: PgPool, notifier: Arc<dyn ResumeNotifier>, config: Dispatch
                     ),
                     Err(e) => tracing::error!(%e, "resume dispatcher: recovery sweep failed"),
                 }
+                // Same tick, no new timer: `mcp_session_tool_grants` had no periodic sweep at all
+                // before this (found in review) — see `sweep_expired_session_grants`'s own doc
+                // comment for why that lets it grow unbounded.
+                match repo::sweep_expired_session_grants(&db).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(count = n, "resume dispatcher: swept expired session grants"),
+                    Err(e) => tracing::error!(%e, "resume dispatcher: session-grant sweep failed"),
+                }
             }
         }
 

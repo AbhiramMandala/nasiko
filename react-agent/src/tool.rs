@@ -41,6 +41,12 @@ pub enum A2aToolError {
     /// box — the concrete type survives `rig`'s type-erased `Result<String, ToolSetError>`
     /// because `Box<dyn std::error::Error>` supports downcasting, not because `rig` knows
     /// anything about this variant.
+    ///
+    /// `agent` is the display-folded name (`agent_display_name`), not the raw one — both
+    /// construction sites in this file agree on that (a raw/display mismatch was found in
+    /// review). Kept consistent with `OrchestratorEvent::AwaitingHuman`'s own `agent` field, since
+    /// `a2a_dispatch.rs`'s `flow_steps` keying needs the display form either way (see
+    /// `agent_display_name`'s own doc comment).
     #[error("agent '{agent}' is awaiting a human ({:?}: {})", pause.kind, pause.message)]
     AwaitingHuman {
         agent: String,
@@ -156,7 +162,7 @@ impl Tool for A2aTool {
                     Ok(SendOutcome::Text(text)) => Some(text),
                     Ok(SendOutcome::AwaitingHuman(pause)) => {
                         return Err(A2aToolError::AwaitingHuman {
-                            agent: self.agent.name.clone(),
+                            agent: Self::agent_display_name(&self.agent.name),
                             agent_id: self.agent.id.clone(),
                             pause,
                         });
@@ -237,7 +243,7 @@ impl Tool for A2aTool {
                                 .await;
                         }
                         return Err(A2aToolError::AwaitingHuman {
-                            agent: self.agent.name.clone(),
+                            agent: Self::agent_display_name(&self.agent.name),
                             agent_id: self.agent.id.clone(),
                             pause,
                         });
@@ -415,6 +421,41 @@ mod tests {
                 assert_eq!(pause.message, "Which repository?");
                 assert_eq!(pause.task_id, "task-321");
                 assert_eq!(pause.context_id, "ctx-654");
+            }
+            other => panic!("expected Err(AwaitingHuman), got {other:?}"),
+        }
+    }
+
+    /// `test_agent`'s name ("test-agent") happens to be a no-op under `agent_display_name`'s fold
+    /// (its only special character, `-`, maps to itself), so the test above can't tell a raw name
+    /// from a display-folded one apart. This one uses a name with a space specifically to catch
+    /// that regression: `A2aToolError::AwaitingHuman.agent` must carry the SAME display-folded
+    /// value `OrchestratorEvent::AwaitingHuman.agent` does (see `agent_display_name`'s own doc
+    /// comment on why the two must agree), not the raw registry name.
+    #[tokio::test]
+    async fn awaiting_human_agent_field_is_display_folded_not_raw() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_body(input_required_response_body())
+            .create_async()
+            .await;
+
+        let mut agent = test_agent(&server.url());
+        agent.name = "Weather Agent".to_string();
+        let tool = A2aTool::new(agent, Arc::new(A2aClient::new()));
+        let result = tool
+            .call(A2aToolArgs {
+                message: "hi".into(),
+                context_id: Some("sent-ctx".into()),
+            })
+            .await;
+
+        mock.assert_async().await;
+        match result {
+            Err(A2aToolError::AwaitingHuman { agent, .. }) => {
+                assert_eq!(agent, "Weather-Agent", "must be display-folded, not raw");
             }
             other => panic!("expected Err(AwaitingHuman), got {other:?}"),
         }
