@@ -978,12 +978,13 @@ async fn find_linked_direct_chat_row_finds_a_maf_origin_mirror() {
     .await
     .expect("seed maf-origin mirror row");
 
-    let linked = repo::find_linked_direct_chat_row(&db.pool, mcp_row.id, db.owner_user_id)
-        .await
-        .expect("find_linked_direct_chat_row must not error")
-        .expect(
-            "must find the maf-origin mirror — this is the regression this test guards against",
-        );
+    let linked =
+        repo::find_linked_direct_chat_row(&db.pool, mcp_row.id, db.owner_user_id, db.agent_id)
+            .await
+            .expect("find_linked_direct_chat_row must not error")
+            .expect(
+                "must find the maf-origin mirror — this is the regression this test guards against",
+            );
     assert_eq!(linked.id, mirror_id);
     assert_eq!(linked.origin, nasiko_hitl::HitlOrigin::Maf);
 }
@@ -1042,12 +1043,13 @@ async fn find_linked_direct_chat_row_finds_an_orchestrator_origin_mirror() {
     .await
     .expect("seed orchestrator-origin mirror row");
 
-    let linked = repo::find_linked_direct_chat_row(&db.pool, mcp_row.id, db.owner_user_id)
-        .await
-        .expect("find_linked_direct_chat_row must not error")
-        .expect(
-            "must find the orchestrator-origin mirror — this is the regression this test guards against",
-        );
+    let linked =
+        repo::find_linked_direct_chat_row(&db.pool, mcp_row.id, db.owner_user_id, db.agent_id)
+            .await
+            .expect("find_linked_direct_chat_row must not error")
+            .expect(
+                "must find the orchestrator-origin mirror — this is the regression this test guards against",
+            );
     assert_eq!(linked.id, mirror_id);
     assert_eq!(linked.origin, nasiko_hitl::HitlOrigin::Orchestrator);
 }
@@ -1110,11 +1112,72 @@ async fn find_linked_direct_chat_row_never_crosses_owners() {
 
     // The attacker resolves their OWN row — authorized, since they own it — but the lookup must
     // not hand back the victim's mirror just because the (agent-controlled) link matches.
-    let linked = repo::find_linked_direct_chat_row(&db.pool, attacker_row.id, db.owner_user_id)
-        .await
-        .expect("find_linked_direct_chat_row must not error");
+    let linked =
+        repo::find_linked_direct_chat_row(&db.pool, attacker_row.id, db.owner_user_id, db.agent_id)
+            .await
+            .expect("find_linked_direct_chat_row must not error");
     assert!(
         linked.is_none(),
         "must never return another user's row, even with a matching metadata.hitl_request_id link"
+    );
+}
+
+/// Same class of forged-link attack as `find_linked_direct_chat_row_never_crosses_owners`, but
+/// same owner, different agent: the two halves of one real pause always belong to the same agent
+/// (`resolve_display_row`'s own invariant, `store.rs`), so a link naming a different agent's row
+/// can only be forged or stale. Before the `agent_id` filter was added, this same-owner,
+/// cross-agent link matched and would have let one agent's pause be resolved and its output-stream
+/// access aliased via a completely different agent's mcp_tool row.
+#[tokio::test]
+async fn find_linked_direct_chat_row_never_crosses_agents() {
+    let db = TestDb::new("hitl_test").await;
+    let other_agent_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO agents (id, name, owner_id) VALUES ($1, $2, $3)")
+        .bind(other_agent_id)
+        .bind(format!("other-agent-{}", other_agent_id.simple()))
+        .bind(db.owner_user_id)
+        .execute(&db.pool)
+        .await
+        .expect("seed a second agent");
+
+    let this_agent_row = repo::create_pending_tool_approval(
+        &db.pool,
+        db.new_tool_approval(Uuid::new_v4(), "GITHUB_CREATE_AN_ISSUE", "ctx-this-agent"),
+    )
+    .await
+    .expect("create pending tool_approval for this agent");
+
+    // Same owner, but the mirror belongs to a DIFFERENT agent — only the metadata link ties it to
+    // `this_agent_row`, which a malicious or buggy agent fully controls.
+    sqlx::query(
+        r#"
+        INSERT INTO hitl_requests
+            (kind, origin, agent_id, owner_user_id, task_id, context_id, question, status, expires_at)
+        VALUES
+            ('auth_required', 'direct_chat', $1, $2, 'other-agent-task-1', 'other-agent-ctx-1', $3,
+             'pending', now() + interval '7 days')
+        "#,
+    )
+    .bind(other_agent_id)
+    .bind(db.owner_user_id)
+    .bind(serde_json::json!({
+        "message": "Tool(s) require user approval for this agent.",
+        "metadata": {"hitl_request_id": this_agent_row.id.to_string()},
+    }))
+    .execute(&db.pool)
+    .await
+    .expect("seed the other agent's mirror row, planted with this agent's row id");
+
+    let linked = repo::find_linked_direct_chat_row(
+        &db.pool,
+        this_agent_row.id,
+        db.owner_user_id,
+        db.agent_id,
+    )
+    .await
+    .expect("find_linked_direct_chat_row must not error");
+    assert!(
+        linked.is_none(),
+        "must never return another agent's row, even with a matching metadata.hitl_request_id link"
     );
 }

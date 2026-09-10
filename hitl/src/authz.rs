@@ -12,10 +12,10 @@ pub struct HitlIdentity {
     pub is_superuser: bool,
 }
 
-/// What the caller is trying to do to a `hitl_requests` row. Both variants currently authorize
-/// identically (§10: "one rule for every kind, not two") — kept distinct because a future,
-/// stricter split (e.g. view broader than resolve) is a one-line change here, not a call-site
-/// rewrite.
+/// What the caller is trying to do to a `hitl_requests` row. All three variants currently
+/// authorize identically (§10: "one rule for every kind, not two") — kept distinct because a
+/// future, stricter split (e.g. view broader than resolve) is a one-line change here, not a
+/// call-site rewrite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitlAction {
     View,
@@ -23,9 +23,22 @@ pub enum HitlAction {
     Cancel,
 }
 
+impl HitlAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            HitlAction::View => "view",
+            HitlAction::Resolve => "resolve",
+            HitlAction::Cancel => "cancel",
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum HitlAuthzError {
-    #[error("not authorized to {action:?} this HITL request")]
+    // `{action:?}` (Debug) rendered the Rust variant's own capitalization ("Resolve") straight
+    // into an API-facing error message — `as_str()` instead, matching every other enum-to-response
+    // conversion in this codebase (found in review).
+    #[error("not authorized to {} this HITL request", action.as_str())]
     Forbidden { action: HitlAction },
 }
 

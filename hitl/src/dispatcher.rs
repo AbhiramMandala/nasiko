@@ -81,6 +81,14 @@ impl Default for DispatcherConfig {
     }
 }
 
+/// Concurrent in-flight deliveries, mirroring `oss/server/src/hitl/mod.rs::run`'s own
+/// `MAX_CONCURRENT_DELIVERIES` on the same claim/spawn shape. Before this, `spawn(...).await`
+/// gave panic isolation but zero concurrency: one unreachable agent (`notifier.rs`'s 300s
+/// transport timeout x `max_attempts` retries x `retry_delay`) blocked the entire drain for
+/// minutes, and — since the `select!` in `run` sits outside the drain loop — blocked the recovery
+/// sweep along with it.
+const MAX_CONCURRENT_DELIVERIES: usize = 8;
+
 /// Main resume-dispatcher loop. Spawned once at server startup (mirrors
 /// `build_worker::run`'s own call site) and runs until the process exits —
 /// there is no shutdown channel because, unlike the build worker, there is no
@@ -96,6 +104,9 @@ pub async fn run(db: PgPool, notifier: Arc<dyn ResumeNotifier>, config: Dispatch
     recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     tracing::info!("resume dispatcher: started");
+    // Tracks in-flight `dispatch_one` calls across poll cycles so one slow/unreachable agent never
+    // blocks claiming or delivering anything else — see `MAX_CONCURRENT_DELIVERIES`'s doc comment.
+    let mut deliveries: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             _ = tokio::time::sleep(config.poll_interval) => {}
@@ -111,9 +122,11 @@ pub async fn run(db: PgPool, notifier: Arc<dyn ResumeNotifier>, config: Dispatch
             }
         }
 
-        // Drain: keep claiming until the queue is empty, exactly like
-        // build_worker's own drain loop.
-        loop {
+        // Drain: keep claiming while a delivery slot is free and the queue has a claimable row,
+        // same pattern as `build_worker::run`. Claim runs here in the loop itself (minimal, no
+        // panic risk); delivery runs in a spawned task tracked by `deliveries`, concurrently with
+        // every other in-flight one.
+        while deliveries.len() < MAX_CONCURRENT_DELIVERIES {
             let request = match repo::claim_for_resume(&db).await {
                 Ok(Some(r)) => r,
                 Ok(None) => break,
@@ -123,24 +136,25 @@ pub async fn run(db: PgPool, notifier: Arc<dyn ResumeNotifier>, config: Dispatch
                 }
             };
 
-            let request_id = request.id;
             let db = db.clone();
             let notifier = notifier.clone();
             let config = config.clone();
-            match tokio::task::spawn(async move {
+            deliveries.spawn(async move {
                 dispatch_one(&db, notifier.as_ref(), request, &config).await;
-            })
-            .await
+            });
+        }
+
+        // Reap whatever has finished without blocking this tick — a still-running delivery is
+        // simply left in `deliveries` and picked up on a later iteration, mirroring
+        // `oss/server/src/hitl/mod.rs::run`'s own non-blocking reap.
+        while let Some(result) = deliveries.try_join_next() {
+            if let Err(e) = result
+                && e.is_panic()
             {
-                Ok(()) => {}
-                Err(e) if e.is_panic() => {
-                    tracing::error!(
-                        id = %request_id,
-                        "resume dispatcher: task panicked — claim left unresolved, \
-                         the recovery sweep will quarantine it as delivery_outcome_unknown"
-                    );
-                }
-                Err(_) => return, // task cancelled — server shutting down
+                tracing::error!(
+                    "resume dispatcher: task panicked — claim left unresolved, \
+                     the recovery sweep will quarantine it as delivery_outcome_unknown"
+                );
             }
         }
     }

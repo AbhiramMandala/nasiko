@@ -28,6 +28,32 @@ pub enum ResolveOutcome {
     AlreadyDecided(HitlRequest),
 }
 
+/// Whether a resume-delivery failure is worth retrying, or should be recorded as terminally
+/// `failed` right now. Replaces a bare `max_attempts: i32` parameter to `HitlStore::mark_resume_failed`
+/// that every call site set to one of exactly two values — `0` (immediately terminal) or
+/// `MAX_RESUME_ATTEMPTS` (retryable under the cap) — with nothing naming either meaning at the
+/// call site itself (found in review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// Fail this row right now, regardless of `resume_dispatch_attempts` — nothing about retrying
+    /// would ever change the outcome (e.g. the row itself is malformed).
+    Permanent,
+    /// Retryable up to `max_attempts` total dispatch attempts — recorded as terminal `failed` only
+    /// once `resume_dispatch_attempts` reaches this cap.
+    Retryable { max_attempts: i32 },
+}
+
+impl FailureKind {
+    /// The `resume_dispatch_attempts` threshold at or above which `mark_resume_failed` flips
+    /// `resume_status` to `failed` — `0` for `Permanent` (any attempt count is already `>= 0`).
+    fn threshold(self) -> i32 {
+        match self {
+            FailureKind::Permanent => 0,
+            FailureKind::Retryable { max_attempts } => max_attempts,
+        }
+    }
+}
+
 /// Persistence + lifecycle operations for `hitl_requests` (§2/§3/§4/§5 of the HITL plan).
 /// Authorization is a separate concern — see [`crate::authorize_hitl_action`] — deliberately not
 /// a method on this trait, so a caller can never accidentally list/fetch without it (callers are
@@ -82,13 +108,13 @@ pub trait HitlStore: Send + Sync {
     /// business outcome (§3.2: "peer confirmed receipt").
     async fn mark_resume_completed(&self, id: Uuid) -> Result<(), HitlError>;
     /// Delivery failed before or during the attempt. Releases the lease for a retry unless
-    /// `resume_dispatch_attempts` has reached `max_attempts`, in which case `resume_status`
+    /// `resume_dispatch_attempts` has reached `failure`'s threshold, in which case `resume_status`
     /// becomes the terminal `failed`.
     async fn mark_resume_failed(
         &self,
         id: Uuid,
         error: &str,
-        max_attempts: i32,
+        failure: FailureKind,
     ) -> Result<(), HitlError>;
     /// Flips every `pending` row whose `expires_at` has passed to `expired`. Called once per
     /// dispatcher poll tick (`hitl/mod.rs::run`) — cheap, since `idx_hitl_pending_owner` already
@@ -594,7 +620,7 @@ impl HitlStore for PgHitlStore {
         &self,
         id: Uuid,
         error: &str,
-        max_attempts: i32,
+        failure: FailureKind,
     ) -> Result<(), HitlError> {
         sqlx::query(
             "UPDATE hitl_requests
@@ -605,7 +631,7 @@ impl HitlStore for PgHitlStore {
         )
         .bind(id)
         .bind(error)
-        .bind(max_attempts)
+        .bind(failure.threshold())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -733,7 +759,7 @@ mod resolve_display_row_tests {
             &self,
             _id: Uuid,
             _error: &str,
-            _max_attempts: i32,
+            _failure: FailureKind,
         ) -> Result<(), HitlError> {
             unimplemented!("not exercised by resolve_display_row")
         }

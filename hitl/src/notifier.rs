@@ -118,8 +118,15 @@ impl RuntimeResumeNotifier {
         agent_id: Uuid,
         owner_user_id: Uuid,
     ) -> String {
-        let is_raw_trace_id =
-            context_id.len() == 32 && context_id.chars().all(|c| c.is_ascii_hexdigit());
+        // Lowercase only, matching this function's own doc comment ("32 lowercase hex") and W3C
+        // traceparent's own requirement — `is_ascii_hexdigit()` alone also accepts `A-F`, which
+        // would embed an uppercase-hex `context_id` verbatim into the outbound `traceparent`
+        // header and into `flows.flow_id`, where the receiving side's parse/lookup won't match
+        // (found in review).
+        let is_raw_trace_id = context_id.len() == 32
+            && context_id
+                .chars()
+                .all(|c| matches!(c, '0'..='9' | 'a'..='f'));
         let trace_id = if is_raw_trace_id {
             context_id.to_string()
         } else {
@@ -141,24 +148,48 @@ impl RuntimeResumeNotifier {
             trace_id
         };
 
-        let _ = sqlx::query(
+        // Deliberately does NOT reset `completed_at` on conflict: this only fires when
+        // `is_raw_trace_id` reuses a `context_id` that already collided with a prior flow's own
+        // trace_id, and clearing `completed_at` back to null on an already-completed flow would
+        // resurrect a closed `/api/mcp` authorization window for that unrelated, already-finished
+        // flow (found in review) — `status = 'running'` alone is enough to authorize the retry this
+        // nudge is actually for.
+        // Not genuinely optional, unlike some other best-effort writes in this crate — a failure
+        // here is precisely what produces the "traceparent does not resolve to a live flow" 403
+        // this whole function exists to prevent (see the doc comment above), so it must be logged,
+        // not silently swallowed (found in review).
+        if let Err(e) = sqlx::query(
             r#"INSERT INTO flows (flow_id, user_id, root_agent_id, title, status)
                VALUES ($1, $2, $3, 'HITL resume nudge', 'running')
-               ON CONFLICT (flow_id) DO UPDATE SET status = 'running', completed_at = NULL"#,
+               ON CONFLICT (flow_id) DO UPDATE SET status = 'running'"#,
         )
         .bind(&trace_id)
         .bind(owner_user_id)
         .bind(agent_id)
         .execute(&self.db)
-        .await;
-        let _ = sqlx::query(
+        .await
+        {
+            tracing::warn!(
+                error = %e, %trace_id,
+                "failed to register resume-nudge flow — the agent's retry may 403 with \
+                 'traceparent does not resolve to a live flow'"
+            );
+        }
+        if let Err(e) = sqlx::query(
             "INSERT INTO flow_participants (flow_id, agent_id) VALUES ($1, $2)
              ON CONFLICT (flow_id, agent_id) DO NOTHING",
         )
         .bind(&trace_id)
         .bind(agent_id)
         .execute(&self.db)
-        .await;
+        .await
+        {
+            tracing::warn!(
+                error = %e, %trace_id,
+                "failed to register resume-nudge flow participant — the agent's retry may 403 \
+                 with 'traceparent does not resolve to a live flow'"
+            );
+        }
 
         let span_id: String = Uuid::new_v4().as_bytes()[..8]
             .iter()
@@ -194,7 +225,7 @@ impl ResumeNotifier for RuntimeResumeNotifier {
             .http_client
             .post(&endpoint)
             .timeout(Duration::from_secs(300))
-            .header("A2A-Version", "1.0")
+            .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", traceparent)
             .json(&body)
             .send()

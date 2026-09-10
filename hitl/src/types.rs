@@ -138,6 +138,194 @@ pub struct HitlRequest {
     pub resolved_at: Option<DateTime<Utc>>,
 }
 
+/// A validated, not-yet-persisted HITL request. Fields are private; the only way to build one
+/// is through the origin-specific smart constructors below, each of which only exposes the
+/// fields valid for that origin per the `hitl_requests` validity table (`0007_hitl.sql`) — an
+/// invalid field combination (e.g. a `maf_execution_id` on a `direct_chat` row) is simply
+/// unconstructable rather than checked at runtime.
+#[derive(Debug, Clone)]
+pub struct NewHitlRequest {
+    pub(crate) kind: HitlKind,
+    pub(crate) origin: HitlOrigin,
+    pub(crate) agent_id: Uuid,
+    pub(crate) owner_user_id: Uuid,
+    pub(crate) task_id: Option<String>,
+    pub(crate) context_id: Option<String>,
+    pub(crate) chat_session_id: Option<String>,
+    pub(crate) maf_execution_id: Option<Uuid>,
+    pub(crate) maf_step_index: Option<i32>,
+    pub(crate) connector_id: Option<Uuid>,
+    pub(crate) tool_name: Option<String>,
+    pub(crate) arguments_hash: Option<String>,
+    pub(crate) question: Value,
+}
+
+impl NewHitlRequest {
+    /// `origin = direct_chat` — `agent_stream()`'s direct-agent path.
+    pub fn direct_chat(
+        kind: HitlKind,
+        agent_id: Uuid,
+        owner_user_id: Uuid,
+        task_id: impl Into<String>,
+        context_id: impl Into<String>,
+        question: Value,
+    ) -> Self {
+        Self::conversational(
+            HitlOrigin::DirectChat,
+            kind,
+            agent_id,
+            owner_user_id,
+            task_id,
+            context_id,
+            None,
+            question,
+        )
+    }
+
+    /// `origin = agent_proxy` — `agent_proxy.rs`'s direct-agent path (Phase 5).
+    pub fn agent_proxy(
+        kind: HitlKind,
+        agent_id: Uuid,
+        owner_user_id: Uuid,
+        task_id: impl Into<String>,
+        context_id: impl Into<String>,
+        question: Value,
+    ) -> Self {
+        Self::conversational(
+            HitlOrigin::AgentProxy,
+            kind,
+            agent_id,
+            owner_user_id,
+            task_id,
+            context_id,
+            None,
+            question,
+        )
+    }
+
+    /// `origin = orchestrator` — a paused sub-agent call within a ReAct turn (Phase 7).
+    /// `chat_session_id` is the outer chat session the turn belongs to.
+    pub fn orchestrator(
+        kind: HitlKind,
+        agent_id: Uuid,
+        owner_user_id: Uuid,
+        task_id: impl Into<String>,
+        context_id: impl Into<String>,
+        chat_session_id: impl Into<String>,
+        question: Value,
+    ) -> Self {
+        Self::conversational(
+            HitlOrigin::Orchestrator,
+            kind,
+            agent_id,
+            owner_user_id,
+            task_id,
+            context_id,
+            Some(chat_session_id.into()),
+            question,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn conversational(
+        origin: HitlOrigin,
+        kind: HitlKind,
+        agent_id: Uuid,
+        owner_user_id: Uuid,
+        task_id: impl Into<String>,
+        context_id: impl Into<String>,
+        chat_session_id: Option<String>,
+        question: Value,
+    ) -> Self {
+        Self {
+            kind,
+            origin,
+            agent_id,
+            owner_user_id,
+            task_id: Some(task_id.into()),
+            context_id: Some(context_id.into()),
+            chat_session_id,
+            maf_execution_id: None,
+            maf_step_index: None,
+            connector_id: None,
+            tool_name: None,
+            arguments_hash: None,
+            question,
+        }
+    }
+
+    /// `origin = maf` — a paused step within a MAF execution (Phase 8).
+    #[allow(clippy::too_many_arguments)]
+    pub fn maf(
+        kind: HitlKind,
+        agent_id: Uuid,
+        owner_user_id: Uuid,
+        task_id: impl Into<String>,
+        context_id: impl Into<String>,
+        maf_execution_id: Uuid,
+        maf_step_index: i32,
+        question: Value,
+    ) -> Self {
+        Self {
+            kind,
+            origin: HitlOrigin::Maf,
+            agent_id,
+            owner_user_id,
+            task_id: Some(task_id.into()),
+            context_id: Some(context_id.into()),
+            chat_session_id: None,
+            maf_execution_id: Some(maf_execution_id),
+            maf_step_index: Some(maf_step_index),
+            connector_id: None,
+            tool_name: None,
+            arguments_hash: None,
+            question,
+        }
+    }
+
+    /// `origin = mcp_tool`, `kind = tool_approval` always — a blocked `tools/call` awaiting
+    /// human approval (Phase 6). No `task_id`: the paused thing is one HTTP request, not an
+    /// A2A task (§2.4). `arguments_hash` is audit/display-only, never part of the matching key.
+    pub fn mcp_tool(
+        agent_id: Uuid,
+        owner_user_id: Uuid,
+        context_id: impl Into<String>,
+        connector_id: Uuid,
+        tool_name: impl Into<String>,
+        arguments_hash: Option<String>,
+        question: Value,
+    ) -> Self {
+        Self {
+            kind: HitlKind::ToolApproval,
+            origin: HitlOrigin::McpTool,
+            agent_id,
+            owner_user_id,
+            task_id: None,
+            context_id: Some(context_id.into()),
+            chat_session_id: None,
+            maf_execution_id: None,
+            maf_step_index: None,
+            connector_id: Some(connector_id),
+            tool_name: Some(tool_name.into()),
+            arguments_hash,
+            question,
+        }
+    }
+
+    /// Attaches the owning chat session after construction, additively — every existing
+    /// constructor call site keeps compiling unchanged. `direct_chat()` has no
+    /// `chat_session_id` parameter of its own (unlike `orchestrator()`, which takes one because
+    /// its origin always has one); the web UI's chat session is known only at the call site in
+    /// `a2a_dispatch.rs`, chained on here instead of widening every constructor's arg list.
+    /// Accepts either a bare id or an `Option` so both a freshly-resolved session id and one
+    /// propagated verbatim from a prior row (sequential HITL, `hitl/mod.rs::deliver`) chain the
+    /// same way.
+    pub fn with_chat_session_id(mut self, id: impl Into<Option<String>>) -> Self {
+        self.chat_session_id = id.into();
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +511,107 @@ mod tests {
         let err = "not_a_real_status".parse::<HitlStatus>().unwrap_err();
         assert_eq!(err.enum_name, "HitlStatus");
         assert_eq!(err.value, "not_a_real_status");
+    }
+
+    // Per-origin constructor validity — mirrors 0007_hitl.sql's validity table (§4 of the HITL
+    // plan): each constructor must set exactly the fields valid for its origin and leave every
+    // other origin-specific field unset.
+    #[test]
+    fn direct_chat_constructor_sets_only_task_and_context() {
+        let req = NewHitlRequest::direct_chat(
+            HitlKind::InputRequired,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "task-1",
+            "ctx-1",
+            Value::Null,
+        );
+        assert_eq!(req.origin, HitlOrigin::DirectChat);
+        assert_eq!(req.task_id.as_deref(), Some("task-1"));
+        assert_eq!(req.context_id.as_deref(), Some("ctx-1"));
+        assert!(req.chat_session_id.is_none());
+        assert!(req.maf_execution_id.is_none());
+        assert!(req.maf_step_index.is_none());
+        assert!(req.connector_id.is_none());
+        assert!(req.tool_name.is_none());
+    }
+
+    #[test]
+    fn agent_proxy_constructor_matches_direct_chat_shape() {
+        let req = NewHitlRequest::agent_proxy(
+            HitlKind::AuthRequired,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "task-1",
+            "ctx-1",
+            Value::Null,
+        );
+        assert_eq!(req.origin, HitlOrigin::AgentProxy);
+        assert!(req.task_id.is_some());
+        assert!(req.context_id.is_some());
+        assert!(req.chat_session_id.is_none());
+    }
+
+    #[test]
+    fn orchestrator_constructor_sets_chat_session_id() {
+        let req = NewHitlRequest::orchestrator(
+            HitlKind::InputRequired,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "task-1",
+            "ctx-1",
+            "session-1",
+            Value::Null,
+        );
+        assert_eq!(req.origin, HitlOrigin::Orchestrator);
+        assert!(req.task_id.is_some());
+        assert!(req.context_id.is_some());
+        assert_eq!(req.chat_session_id.as_deref(), Some("session-1"));
+        assert!(req.maf_execution_id.is_none());
+    }
+
+    #[test]
+    fn maf_constructor_sets_execution_and_step_only() {
+        let exec_id = Uuid::new_v4();
+        let req = NewHitlRequest::maf(
+            HitlKind::AuthRequired,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "task-1",
+            "ctx-1",
+            exec_id,
+            3,
+            Value::Null,
+        );
+        assert_eq!(req.origin, HitlOrigin::Maf);
+        assert!(req.task_id.is_some());
+        assert!(req.context_id.is_some());
+        assert!(req.chat_session_id.is_none());
+        assert_eq!(req.maf_execution_id, Some(exec_id));
+        assert_eq!(req.maf_step_index, Some(3));
+        assert!(req.connector_id.is_none());
+    }
+
+    #[test]
+    fn mcp_tool_constructor_forces_tool_approval_kind_and_no_task_id() {
+        let connector_id = Uuid::new_v4();
+        let req = NewHitlRequest::mcp_tool(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "ctx-1",
+            connector_id,
+            "github_create_issue",
+            Some("sha256:abc".to_string()),
+            Value::Null,
+        );
+        assert_eq!(req.origin, HitlOrigin::McpTool);
+        assert_eq!(req.kind, HitlKind::ToolApproval);
+        assert!(req.task_id.is_none());
+        assert_eq!(req.context_id.as_deref(), Some("ctx-1"));
+        assert_eq!(req.connector_id, Some(connector_id));
+        assert_eq!(req.tool_name.as_deref(), Some("github_create_issue"));
+        assert_eq!(req.arguments_hash.as_deref(), Some("sha256:abc"));
+        assert!(req.maf_execution_id.is_none());
+        assert!(req.chat_session_id.is_none());
     }
 }

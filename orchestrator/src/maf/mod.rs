@@ -5,6 +5,12 @@ pub mod planner;
 pub mod types;
 mod worker;
 
+/// The Redis stream key this crate's worker consumes from — re-exported so every producer
+/// (`oss/server/src/maf.rs`, `oss/server/src/hitl/mod.rs`) binds to the same constant instead of
+/// hardcoding the literal a second and third time (found in review — see `worker::STREAM_KEY`'s
+/// own doc comment).
+pub use worker::STREAM_KEY;
+
 use std::sync::Arc;
 
 use nasiko_observability::ObservabilityProvider;

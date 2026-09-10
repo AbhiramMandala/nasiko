@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use nasiko_flow::FlowContext;
-use nasiko_hitl::{HitlOrigin, HitlRequest, NewHitlRequest};
+use nasiko_hitl::{FailureKind, HitlOrigin, HitlRequest, NewHitlRequest};
 use nasiko_types::a2a::StreamDisposition;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -25,6 +25,11 @@ use crate::state::AppState;
 /// (§3.2) — a pre-flight failure (connection refused, DNS, timeout) releases the lease and
 /// retries via the next poll until this cap is hit.
 const MAX_RESUME_ATTEMPTS: i32 = 5;
+/// Shorthand for every retryable `mark_resume_failed` call site below — see
+/// [`FailureKind`]'s own doc comment for why this replaced a bare `MAX_RESUME_ATTEMPTS` argument.
+const RETRYABLE: FailureKind = FailureKind::Retryable {
+    max_attempts: MAX_RESUME_ATTEMPTS,
+};
 /// How long a claim is honored before another dispatcher process may steal it (§3.2's exact
 /// claim query, implemented in `HitlStore::claim_for_resume`). Must exceed the longest delivery
 /// can legitimately take — `deliver()`'s own agent request timeout is 300s — or a slow-but-healthy
@@ -37,6 +42,39 @@ const LEASE_SECS: i64 = 360;
 /// used to — let one user's slow resume block every other pending HITL answer, and delayed the
 /// `expire_stale` sweep in the same loop iteration.
 const MAX_CONCURRENT_DELIVERIES: usize = 8;
+
+/// RAII close for the `flows` row `deliver()` opens for its own resume `flow_ctx` — same shape as
+/// `ContinuationGuard` above: created right after the row is inserted, so every exit path out of
+/// `deliver()` closes it, not just the ones an author remembered to. `record_resume_trail` closes
+/// the row with the precise disposition-derived status on the normal path; this guard's `Drop` is
+/// only ever a backstop for an early return that never reaches that point (a pre-flight HTTP
+/// failure, a non-2xx response, an unclassifiable reply) — the `WHERE status = 'running'` makes it
+/// a no-op once `record_resume_trail` has already closed the row. Without this, `flows.status =
+/// 'running'` (plus its `flow_participants` row) is exactly what authorizes the resumed agent to
+/// call `/api/mcp` with this traceparent (`mcp/handlers/gateway.rs`) — an early return used to
+/// leave that window open indefinitely.
+struct ResumeFlowCloser {
+    db: sqlx::PgPool,
+    flow_id: String,
+}
+
+impl Drop for ResumeFlowCloser {
+    fn drop(&mut self) {
+        let db = self.db.clone();
+        let flow_id = std::mem::take(&mut self.flow_id);
+        tokio::spawn(async move {
+            let _ = sqlx::query(
+                r#"UPDATE flows SET status = 'failed',
+                   duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
+                   completed_at = now()
+                   WHERE flow_id = $1 AND status = 'running'"#,
+            )
+            .bind(&flow_id)
+            .execute(&db)
+            .await;
+        });
+    }
+}
 
 /// Spawned once at server startup (`state.rs::from_config_with_db`), same as the build worker.
 pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
@@ -132,15 +170,19 @@ async fn deliver(state: AppState, row: HitlRequest) {
         row.origin,
         HitlOrigin::DirectChat | HitlOrigin::AgentProxy | HitlOrigin::Orchestrator
     ) {
-        // Unreachable today — nothing creates mcp_tool rows yet (Phase 7).
-        // Defensive, not a real path.
+        // Unreachable today — NOT because nothing creates `mcp_tool` rows (it does:
+        // `repo::create_pending_tool_approval`/`create_pending_auth_required`), but because this
+        // dispatcher's own `claim_for_resume` (`store.rs`) is scoped to exclude `origin =
+        // 'mcp_tool'` in the first place — `oss/hitl`'s own separate dispatcher claims those
+        // instead. Defensive, not a real path; stays correct only as long as that query's origin
+        // list is never widened to include `mcp_tool` without updating this arm too.
         tracing::warn!(id = %row.id, origin = ?row.origin, "hitl dispatcher: unsupported origin");
         let _ = state
             .hitl_store
             .mark_resume_failed(
                 row.id,
                 "origin not yet supported by the resume dispatcher",
-                0,
+                FailureKind::Permanent,
             )
             .await;
         return;
@@ -148,21 +190,41 @@ async fn deliver(state: AppState, row: HitlRequest) {
     let (Some(task_id), Some(context_id)) = (row.task_id.clone(), row.context_id.clone()) else {
         let _ = state
             .hitl_store
-            .mark_resume_failed(row.id, "row is missing task_id/context_id", 0)
+            .mark_resume_failed(
+                row.id,
+                "row is missing task_id/context_id",
+                FailureKind::Permanent,
+            )
             .await;
         return;
     };
 
-    let agent_name: Option<String> = sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
+    // `Err` (a transient DB blip) and `Ok(None)` (the agent row is genuinely gone) are distinct
+    // outcomes — collapsing them via `.ok().flatten()` used to record "agent no longer exists" for
+    // a momentary connection failure too, a false and undiagnosable reason for what's really a
+    // retryable transport problem.
+    let agent_name = match sqlx::query_scalar::<_, String>("SELECT name FROM agents WHERE id = $1")
         .bind(row.agent_id)
         .fetch_optional(&state.db)
         .await
-        .ok()
-        .flatten();
+    {
+        Ok(name) => name,
+        Err(e) => {
+            let _ = state
+                .hitl_store
+                .mark_resume_failed(
+                    row.id,
+                    &format!("database error resolving agent name: {e}"),
+                    RETRYABLE,
+                )
+                .await;
+            return;
+        }
+    };
     let Some(agent_name) = agent_name else {
         let _ = state
             .hitl_store
-            .mark_resume_failed(row.id, "agent no longer exists", MAX_RESUME_ATTEMPTS)
+            .mark_resume_failed(row.id, "agent no longer exists", RETRYABLE)
             .await;
         return;
     };
@@ -172,7 +234,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
         Err(e) => {
             let _ = state
                 .hitl_store
-                .mark_resume_failed(row.id, &e, MAX_RESUME_ATTEMPTS)
+                .mark_resume_failed(row.id, &e, RETRYABLE)
                 .await;
             return;
         }
@@ -192,7 +254,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
             .mark_resume_failed(
                 row.id,
                 &format!("flow guard rejected resume: {rejection}"),
-                MAX_RESUME_ATTEMPTS,
+                RETRYABLE,
             )
             .await;
         return;
@@ -207,7 +269,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
             .mark_resume_failed(
                 row.id,
                 &format!("flow guard rejected resume: {rejection}"),
-                MAX_RESUME_ATTEMPTS,
+                RETRYABLE,
             )
             .await;
         return;
@@ -242,7 +304,10 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // resume's fresh flow_id to THAT is what actually lets retries resolve to the SAME session the
     // original ask did. Skipped when absent (direct_chat/agent_proxy rows aren't guaranteed one):
     // no stable id to map to, so falling back to today's re-ask behavior is the only honest option.
-    let _ = sqlx::query(
+    // Not genuinely optional: this is what authorizes the resumed agent's own downstream `/api/mcp`
+    // calls for the life of this resume (`ResumeFlowCloser`'s own doc comment) — a failure here
+    // means every one of those calls 403s with "traceparent does not resolve to a live flow".
+    if let Err(e) = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, $3, $4, $5, 'running', $6)
            ON CONFLICT (flow_id) DO UPDATE
@@ -255,7 +320,20 @@ async fn deliver(state: AppState, row: HitlRequest) {
     .bind("HITL resume")
     .bind(serde_json::json!({ "context_id": context_id }))
     .execute(&state.db)
-    .await;
+    .await
+    {
+        tracing::warn!(
+            error = %e, id = %row.id, flow_id = %flow_ctx.flow_id,
+            "hitl resume: failed to register the resume flow — the agent's own MCP calls during \
+             this resume may 403"
+        );
+    }
+    // See `ResumeFlowCloser`'s own doc comment — must be created right after the insert above so
+    // every return between here and the end of this function closes the row it just opened.
+    let _flow_closer = ResumeFlowCloser {
+        db: state.db.clone(),
+        flow_id: flow_ctx.flow_id.clone(),
+    };
     crate::flows::record_participant(&state.db, &flow_ctx.flow_id, row.agent_id).await;
     if let Some(chat_session_id) = row.chat_session_id.as_deref()
         && let Err(e) = sqlx::query(
@@ -300,7 +378,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
             .http_client
             .post(&endpoint)
             .timeout(Duration::from_secs(300))
-            .header("A2A-Version", "1.0")
+            .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
             .json(body)
     };
@@ -311,11 +389,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
             // Pre-flight failure — never left Nasiko. Retried via the lease under the cap.
             let _ = state
                 .hitl_store
-                .mark_resume_failed(
-                    row.id,
-                    &format!("agent request failed: {e}"),
-                    MAX_RESUME_ATTEMPTS,
-                )
+                .mark_resume_failed(row.id, &format!("agent request failed: {e}"), RETRYABLE)
                 .await;
             return;
         }
@@ -327,7 +401,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
         let status = response.status();
         let _ = state
             .hitl_store
-            .mark_resume_failed(row.id, &format!("agent HTTP {status}"), MAX_RESUME_ATTEMPTS)
+            .mark_resume_failed(row.id, &format!("agent HTTP {status}"), RETRYABLE)
             .await;
         return;
     }
@@ -354,14 +428,23 @@ async fn deliver(state: AppState, row: HitlRequest) {
     };
 
     let Some((disposition, last_data, reply_text)) = outcome else {
-        let _ = state
-            .hitl_store
-            .mark_resume_failed(
-                row.id,
-                "agent response could not be classified",
-                MAX_RESUME_ATTEMPTS,
-            )
-            .await;
+        // By this point the HTTP response was already received (`response.status().is_success()`
+        // above already passed) — the agent has the resumed message and may already have acted on
+        // it before the transport broke mid-body (`consume_sse_to_terminal`'s `chunk.ok()?`) or
+        // the reply failed to parse (`consume_json_to_terminal`'s `response.json().await.ok()?`).
+        // Unlike the true pre-flight failures above (`build_req(...).send()` erroring, or a
+        // non-success status — neither ever got this far), retrying here would re-POST the human's
+        // answer to an agent that may have already consumed and acted on it once, double-executing
+        // it. Same reasoning as `mark_resume_completed`'s own failure handling just below:
+        // `mark_resume_unknown` takes the row out of the claimable pool instead of leaving it
+        // reclaimable once the lease expires.
+        tracing::error!(
+            id = %row.id,
+            "hitl dispatcher: agent response could not be classified after the request was \
+             already sent — marking delivery outcome unknown rather than retrying, to avoid \
+             re-delivering to the agent"
+        );
+        let _ = state.hitl_store.mark_resume_unknown(row.id).await;
         return;
     };
 
@@ -379,7 +462,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
         );
         let _ = state.hitl_store.mark_resume_unknown(row.id).await;
     }
-    record_resume_trail(&state, &row, &agent_name, disposition, &flow_ctx).await;
+    record_resume_trail(&state, disposition, &flow_ctx).await;
 
     if disposition != StreamDisposition::Paused {
         if row.origin == HitlOrigin::Orchestrator {
@@ -396,44 +479,78 @@ async fn deliver(state: AppState, row: HitlRequest) {
 
     if disposition == StreamDisposition::Paused {
         // Sequential HITL (§3.5): the resumed task paused again. New row, same task/context.
-        let data = last_data.as_deref().unwrap_or("{}");
+        // `last_data` is structurally guaranteed `Some` here — both `consume_sse_to_terminal` and
+        // `consume_json_to_terminal` only ever return a `Paused` disposition alongside the exact
+        // payload that produced it. Defaulting a genuinely missing payload to `{}` used to build a
+        // contentless approval card — an empty prompt shown to the human with a defaulted kind
+        // (found in review); skipping the follow-up pause and logging is strictly better than
+        // asking a human an empty question.
+        let Some(data) = last_data.as_deref() else {
+            tracing::error!(
+                id = %row.id,
+                "hitl dispatcher: Paused disposition with no last_data — this should be \
+                 impossible by construction; skipping the follow-up pause rather than showing the \
+                 human an empty question"
+            );
+            return;
+        };
         let question = build_pause_question(data);
         let kind = pause_kind(data);
         let new_row = match row.origin {
-            HitlOrigin::AgentProxy => NewHitlRequest::agent_proxy(
+            HitlOrigin::AgentProxy => Some(NewHitlRequest::agent_proxy(
                 kind,
                 row.agent_id,
                 row.owner_user_id,
                 task_id,
                 context_id,
                 question,
-            ),
-            // Guaranteed `Some` by construction (`NewHitlRequest::orchestrator` always sets it) —
-            // `unwrap_or_default()` only guards against a defensive impossibility, matching how
-            // `trigger_new_orchestrator_turn` treats the same field.
-            HitlOrigin::Orchestrator => NewHitlRequest::orchestrator(
-                kind,
-                row.agent_id,
-                row.owner_user_id,
-                task_id,
-                context_id,
-                row.chat_session_id.clone().unwrap_or_default(),
-                question,
-            ),
+            )),
+            HitlOrigin::Orchestrator => match row.chat_session_id.clone() {
+                Some(chat_session_id) => Some(NewHitlRequest::orchestrator(
+                    kind,
+                    row.agent_id,
+                    row.owner_user_id,
+                    task_id,
+                    context_id,
+                    chat_session_id,
+                    question,
+                )),
+                // Guaranteed `Some` by construction (`NewHitlRequest::orchestrator` always sets
+                // it) — but converting that impossibility into `unwrap_or_default()`'s `""` used
+                // to guarantee a *different*, real failure: `hitl_requests.chat_session_id` has an
+                // FK to `chat_sessions(session_id)`, so `create` below would fail outright on
+                // every single call if this branch were ever actually reached (found in review).
+                // An early, logged skip is strictly better than turning an unreachable case into a
+                // broken one.
+                None => {
+                    tracing::error!(
+                        id = %row.id,
+                        "hitl dispatcher: orchestrator-origin row has no chat_session_id — this \
+                         should be impossible by construction; skipping the follow-up pause \
+                         rather than writing a row that would violate the chat_sessions FK"
+                    );
+                    None
+                }
+            },
             // Propagate `chat_session_id` from the row that just resolved: it belongs to the
             // same web-chat session as the whole multi-turn exchange, and only the very first
             // pause in a chain has it threaded in from `a2a_dispatch.rs` — every later round in
             // the same chain is built here, not there, so this is the only place it can carry
             // forward from.
-            _ => NewHitlRequest::direct_chat(
-                kind,
-                row.agent_id,
-                row.owner_user_id,
-                task_id,
-                context_id,
-                question,
-            )
-            .with_chat_session_id(row.chat_session_id.clone()),
+            _ => Some(
+                NewHitlRequest::direct_chat(
+                    kind,
+                    row.agent_id,
+                    row.owner_user_id,
+                    task_id,
+                    context_id,
+                    question,
+                )
+                .with_chat_session_id(row.chat_session_id.clone()),
+            ),
+        };
+        let Some(new_row) = new_row else {
+            return;
         };
         match state.hitl_store.create(new_row).await {
             Ok(created) => {
@@ -473,35 +590,59 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
     let (Some(task_id), Some(execution_id)) = (row.task_id.clone(), row.maf_execution_id) else {
         let _ = state
             .hitl_store
-            .mark_resume_failed(row.id, "row is missing task_id/maf_execution_id", 0)
+            .mark_resume_failed(
+                row.id,
+                "row is missing task_id/maf_execution_id",
+                FailureKind::Permanent,
+            )
             .await;
         return;
     };
     let Some(step_index) = row.maf_step_index else {
         let _ = state
             .hitl_store
-            .mark_resume_failed(row.id, "row is missing maf_step_index", 0)
+            .mark_resume_failed(
+                row.id,
+                "row is missing maf_step_index",
+                FailureKind::Permanent,
+            )
             .await;
         return;
     };
 
     // The exact snapshot the original run started with — never the mutable `mafs.maf_json`,
     // which may have changed since (§2.3 #6). Persisted at `POST /maf/workflow/{id}/run` time
-    // (`oss/server/src/maf.rs::run_workflow`).
-    let maf_json: Option<String> =
-        sqlx::query_scalar("SELECT maf_json::text FROM maf_executions WHERE id = $1")
-            .bind(execution_id)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
+    // (`oss/server/src/maf.rs::run_workflow`). `Err` (transient DB blip) is kept distinct from
+    // `Ok(None)` (the execution/snapshot is genuinely gone) for the same reason as `deliver()`'s
+    // own agent-name lookup above — collapsing them mislabels a retryable connection failure as a
+    // permanent, false reason.
+    let maf_json = match sqlx::query_scalar::<_, String>(
+        "SELECT maf_json::text FROM maf_executions WHERE id = $1",
+    )
+    .bind(execution_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(json) => json,
+        Err(e) => {
+            let _ = state
+                .hitl_store
+                .mark_resume_failed(
+                    row.id,
+                    &format!("database error resolving maf execution snapshot: {e}"),
+                    RETRYABLE,
+                )
+                .await;
+            return;
+        }
+    };
     let Some(maf_json) = maf_json else {
         let _ = state
             .hitl_store
             .mark_resume_failed(
                 row.id,
                 "maf execution or its snapshot no longer exists",
-                MAX_RESUME_ATTEMPTS,
+                RETRYABLE,
             )
             .await;
         return;
@@ -514,18 +655,14 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
         Err(e) => {
             let _ = state
                 .hitl_store
-                .mark_resume_failed(
-                    row.id,
-                    &format!("redis connection failed: {e}"),
-                    MAX_RESUME_ATTEMPTS,
-                )
+                .mark_resume_failed(row.id, &format!("redis connection failed: {e}"), RETRYABLE)
                 .await;
             return;
         }
     };
 
     let enqueue: redis::RedisResult<String> = redis::cmd("XADD")
-        .arg("nasiko:maf:execute")
+        .arg(nasiko_orchestrator::maf::STREAM_KEY)
         .arg("*")
         .arg("execution_id")
         .arg(execution_id.to_string())
@@ -577,7 +714,7 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
                 .mark_resume_failed(
                     row.id,
                     &format!("failed to enqueue MAF resume job: {e}"),
-                    MAX_RESUME_ATTEMPTS,
+                    RETRYABLE,
                 )
                 .await;
         }
@@ -636,13 +773,30 @@ fn answer_text(row: &HitlRequest) -> String {
     {
         return answer.to_string();
     }
+    // Explicit match, not a `Some(_)` catch-all: `"confirmed"`/`"denied"` are the only two values
+    // anything in this codebase ever writes (`router/hitl.rs::resolve`'s two-click confirm/cancel
+    // flow, `repo::resolve_pending_auth_required_for_connector`'s bulk OAuth-reconnect path) — a
+    // `Some(_)` default of "authorized" told the agent it was authorized for ANY unrecognized
+    // future value, the wrong default direction for an authorization signal (found in review).
+    // `None` (missing `auth_outcome` entirely) previously built an A2A request with an empty text
+    // part instead of failing the resume; failing closed to "denied" here is safe either way — a
+    // human never actually said "go ahead" in either case.
     match response
         .and_then(|r| r.get("auth_outcome"))
         .and_then(|v| v.as_str())
     {
+        Some("confirmed") => "authorized".to_string(),
         Some("denied") => "denied".to_string(),
-        Some(_) => "authorized".to_string(),
-        None => String::new(),
+        Some(other) => {
+            tracing::warn!(auth_outcome = %other, "answer_text: unrecognized auth_outcome value, failing closed to denied");
+            "denied".to_string()
+        }
+        None => {
+            tracing::warn!(
+                "answer_text: auth_required row has no auth_outcome, failing closed to denied"
+            );
+            "denied".to_string()
+        }
     }
 }
 
@@ -776,63 +930,44 @@ async fn consume_json_to_terminal(
 /// deliberately not folded in here, since this function runs for every disposition and that one
 /// only makes sense for a real terminal reply. Still not duplicated here: OTel span content
 /// capture, token-usage summarization — presentation/telemetry polish, not correctness.
+///
+/// Closes out `deliver()`'s own `flows` row (`flow_ctx.flow_id`, opened right before this resume's
+/// agent call) with the precise disposition-derived terminal status — it does not insert a second
+/// row. An earlier version minted its own separate `flows` row for this and a second,
+/// `context_id`-keyed `session_traces` row alongside it; both were dead weight once `deliver()`
+/// itself started registering `flow_ctx.flow_id` as the live flow up front (the only thing MCP
+/// retry-matching actually reads), and the `session_traces` insert additionally violated
+/// `session_traces.session_id`'s FK to `chat_sessions(session_id)` on every single call —
+/// `context_id` is never a real chat session, so it silently failed under its own `let _ =` every
+/// time (`deliver()`'s own `session_traces` insert above, keyed on `row.chat_session_id`, is the
+/// one that actually works).
 async fn record_resume_trail(
     state: &AppState,
-    row: &HitlRequest,
-    agent_name: &str,
     disposition: StreamDisposition,
     flow_ctx: &FlowContext,
 ) {
-    let flow_id = Uuid::new_v4().to_string();
-
-    let _ = sqlx::query(
-        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, $3, $4, $5, 'running', '{}'::jsonb)
-           ON CONFLICT (flow_id) DO NOTHING"#,
-    )
-    .bind(&flow_id)
-    .bind(row.owner_user_id)
-    .bind(row.agent_id)
-    .bind(agent_name)
-    .bind("HITL resume")
-    .execute(&state.db)
-    .await;
-
-    // `flow_ctx.flow_id` — not the `flows` row's own `flow_id` above (a disconnected bookkeeping
-    // id in a different, dashed-UUID format that a real W3C trace id never takes) — because this
-    // must match the trace id actually forwarded in the `traceparent` header on the resume
-    // request. MCP's retry-approval matching (`resolve_tool_approval_retry`) reads that same
-    // trace id back out to resolve a stable session identity for the agent's own downstream tool
-    // calls; a mismatch here means that lookup can never succeed.
-    if let Some(context_id) = &row.context_id {
-        let _ = sqlx::query(
-            "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
-             VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (session_id, trace_id) DO NOTHING",
-        )
-        .bind(context_id)
-        .bind(&flow_ctx.flow_id)
-        .bind(row.agent_id)
-        .bind(agent_name)
-        .execute(&state.db)
-        .await;
-    }
-
     let status = match disposition {
         StreamDisposition::Completed | StreamDisposition::Continue => "completed",
         StreamDisposition::Failed => "failed",
         StreamDisposition::Paused => "paused",
     };
-    let _ = sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"UPDATE flows SET status = $2,
            duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
            completed_at = CASE WHEN $2 IN ('completed', 'failed') THEN now() ELSE completed_at END
            WHERE flow_id = $1"#,
     )
-    .bind(&flow_id)
+    .bind(&flow_ctx.flow_id)
     .bind(status)
     .execute(&state.db)
-    .await;
+    .await
+    {
+        // Not just cosmetic: a failure here leaves this flow's `status = 'running'`, which is
+        // exactly what keeps the resumed agent's traceparent authorized to call `/api/mcp`
+        // (`ResumeFlowCloser`'s own doc comment) — `_flow_closer`'s `Drop` fallback will still
+        // close it, but only once `deliver()` returns, so it's worth knowing this path failed.
+        tracing::warn!(error = %e, flow_id = %flow_ctx.flow_id, "record_resume_trail: failed to close the resume flow");
+    }
 }
 
 /// After an orchestrator-origin pause resumes successfully (not another pause), the sub-agent's
@@ -996,7 +1131,7 @@ async fn persist_resume_reply(
     };
     let session_id = row.chat_session_id.as_deref().unwrap_or(context_id);
 
-    let _ = sqlx::query(
+    if let Err(e) = sqlx::query(
         "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
          VALUES ($1, $2, $3, '/api/orchestrator/a2a', 'New chat') \
          ON CONFLICT (session_id) DO NOTHING",
@@ -1005,15 +1140,30 @@ async fn persist_resume_reply(
     .bind(row.owner_user_id)
     .bind(row.agent_id)
     .execute(&state.db)
-    .await;
+    .await
+    {
+        tracing::warn!(
+            error = %e, id = %row.id, %session_id,
+            "persist_resume_reply: failed to ensure chat_sessions row — the reply insert below \
+             will fail its FK if this session row doesn't already exist"
+        );
+    }
 
-    let _ = sqlx::query(
+    // The agent's actual reply text — not just optional bookkeeping. A failure here silently
+    // loses the one thing this function exists to persist, with nothing else to fall back on.
+    if let Err(e) = sqlx::query(
         "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, 'assistant', $2)",
     )
     .bind(session_id)
     .bind(&text)
     .execute(&state.db)
-    .await;
+    .await
+    {
+        tracing::error!(
+            error = %e, id = %row.id, %session_id,
+            "persist_resume_reply: failed to persist the agent's reply — it is now lost"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1121,8 +1271,25 @@ mod answer_text_tests {
     }
 
     #[test]
-    fn no_human_response_is_empty_string() {
+    fn unrecognized_auth_outcome_fails_closed_to_denied() {
+        let row = row_with_response(Some(serde_json::json!({ "auth_outcome": "expired" })));
+        assert_eq!(answer_text(&row), "denied");
+    }
+
+    #[test]
+    fn missing_auth_outcome_fails_closed_to_denied() {
+        let row = row_with_response(Some(serde_json::json!({})));
+        assert_eq!(answer_text(&row), "denied");
+    }
+
+    // Previously asserted the empty string here — that was the bug: a missing `human_response`
+    // used to build an A2A request with an empty text part rather than failing closed.
+    // `answer_text` can't tell "an `input_required` row with no answer yet" apart from "an
+    // `auth_required` row with no recognized `auth_outcome`" once `human_response` itself is
+    // `None`, so it fails closed to "denied" for both rather than sending nothing.
+    #[test]
+    fn no_human_response_fails_closed_to_denied() {
         let row = row_with_response(None);
-        assert_eq!(answer_text(&row), "");
+        assert_eq!(answer_text(&row), "denied");
     }
 }

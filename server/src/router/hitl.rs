@@ -1,6 +1,8 @@
 //! HITL human-facing API (`docs/HITL_IMPLEMENTATION_PLAN.md` §11): `GET /api/hitl/pending`,
 //! `GET /api/hitl/{id}`, `POST /api/hitl/{id}/resolve`, `POST /api/hitl/{id}/cancel`,
-//! `GET /api/hitl/{id}/stream`.
+//! `GET /api/hitl/{id}/stream`, `POST /api/hitl/{id}/requeue` (superuser-only operator
+//! remediation for a stuck `delivery_outcome_unknown` resume — see `requeue_resume`'s own doc
+//! comment).
 
 use std::convert::Infallible;
 use std::time::Duration;
@@ -35,6 +37,7 @@ pub fn router() -> Router<AppState> {
         .route("/hitl/{id}/resolve", post(resolve))
         .route("/hitl/{id}/cancel", post(cancel))
         .route("/hitl/{id}/stream", get(stream_one))
+        .route("/hitl/{id}/requeue", post(requeue_resume))
 }
 
 /// Covers every `HitlKind`'s resolve shape: `answer` for `input_required`, `auth_action` for
@@ -121,6 +124,33 @@ impl StructuredOptions {
     }
 }
 
+/// Maximum length, in bytes, for any single human-supplied free-text field on a resolve request
+/// (`answer`, each entry of a multi-select `answer`, `custom_answer`, `note`) — none of them had a
+/// bound before (found in review): `resolve_structured_answer` validates membership and emptiness
+/// but not size, and the plain `input_required` path had no check at all. Generous for genuine
+/// free text while still bounding `human_response` JSONB row growth and the size of what gets
+/// forwarded verbatim into an A2A message to the paused agent.
+const MAX_ANSWER_LEN: usize = 8192;
+
+/// Rejects a resolve request whose `answer`/`custom_answer`/`note` exceeds [`MAX_ANSWER_LEN`],
+/// before any of them reach a kind-specific branch — so every kind gets the same bound rather than
+/// each branch needing its own check.
+fn validate_resolve_payload_lengths(payload: &HitlResolveRequest) -> Result<(), &'static str> {
+    let too_long = |s: &str| s.len() > MAX_ANSWER_LEN;
+    let answer_too_long = match &payload.answer {
+        Some(HitlAnswer::Single(s)) => too_long(s),
+        Some(HitlAnswer::Multiple(items)) => items.iter().any(|s| too_long(s)),
+        None => false,
+    };
+    if answer_too_long
+        || payload.custom_answer.as_deref().is_some_and(too_long)
+        || payload.note.as_deref().is_some_and(too_long)
+    {
+        return Err("answer/custom_answer/note exceeds the maximum allowed length");
+    }
+    Ok(())
+}
+
 /// Validates and shapes a structured `input_required` answer into the exact `human_response` JSON
 /// to persist — the single-select and multi-select rules from §5/§6/§8/§9/§12 of the request. Never
 /// called for a plain (non-structured) question — see `resolve`'s branch on `StructuredOptions::parse`.
@@ -190,6 +220,29 @@ fn resolve_structured_answer(
     Ok(response)
 }
 
+/// Logs the real error server-side and returns the generic `{error, correlation_id}` body every
+/// caller in this router sends instead — an operator greps the logs for the id. `sqlx::Error`/
+/// `HitlError::Db` stringify to constraint names, table names, and sometimes column values — none
+/// of which belongs in an API response (found in review); the previous
+/// `(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())` shape leaked exactly that to every caller
+/// of this router, including the SSE error frame. Returns the bare JSON body (not a `Response`) so
+/// the SSE site (`stream_one`'s `async_stream::stream!` block) can wrap it in an `Event` instead of
+/// an HTTP response — the two call shapes can't share a return type, but they share this logging +
+/// body construction.
+fn internal_error_body(context: &'static str, error: impl std::fmt::Display) -> Value {
+    let correlation_id = Uuid::new_v4();
+    tracing::error!(%correlation_id, %error, context, "hitl: internal error");
+    json!({ "error": "internal error", "correlation_id": correlation_id })
+}
+
+fn internal_error(context: &'static str, error: impl std::fmt::Display) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(internal_error_body(context, error)),
+    )
+        .into_response()
+}
+
 fn identity(claims: &Claims) -> Result<HitlIdentity, (StatusCode, &'static str)> {
     let user_id = claims.user_uuid()?;
     Ok(HitlIdentity {
@@ -245,7 +298,7 @@ async fn list_pending(State(state): State<AppState>, claims: Claims) -> Response
     match state.hitl_store.list_pending_for(&identity).await {
         Ok(rows) => Json(json!({ "data": rows.iter().map(to_response).collect::<Vec<_>>() }))
             .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => internal_error("list_pending: store error", e),
     }
 }
 
@@ -257,7 +310,7 @@ async fn get_one(State(state): State<AppState>, claims: Claims, Path(id): Path<U
     let row = match state.hitl_store.get(id).await {
         Ok(Some(row)) => row,
         Ok(None) => return (StatusCode::NOT_FOUND, "hitl request not found").into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return internal_error("get_one: store error", e),
     };
     // §11 is explicit that this is 403, not the 404-for-view convention used elsewhere in this
     // codebase for named/enumerable resources — `hitl_requests` ids are opaque UUIDs.
@@ -283,10 +336,14 @@ async fn resolve(
     };
     let user_id = identity.user_id;
 
+    if let Err(msg) = validate_resolve_payload_lengths(&payload) {
+        return (StatusCode::BAD_REQUEST, msg).into_response();
+    }
+
     let row = match state.hitl_store.get(id).await {
         Ok(Some(row)) => row,
         Ok(None) => return (StatusCode::NOT_FOUND, "hitl request not found").into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return internal_error("resolve: store error fetching row", e),
     };
     if authorize_hitl_action(&identity, &row, HitlAction::Resolve).is_err() {
         return (
@@ -339,7 +396,7 @@ async fn resolve(
             .await
         {
             Ok(outcome) => outcome,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            Err(e) => return internal_error("resolve: tool_approval resolve failed", e),
         };
 
         let (row, already_resolved) = match outcome {
@@ -429,12 +486,11 @@ async fn resolve(
                                 .into_response();
                         }
                         Err(e) => {
-                            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-                                .into_response();
+                            return internal_error("resolve: auth_action=start, refetch failed", e);
                         }
                     },
                     Err(e) => {
-                        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                        return internal_error("resolve: record_auth_start failed", e);
                     }
                 };
                 return Json(to_response(&current)).into_response();
@@ -467,8 +523,17 @@ async fn resolve(
         // Plain (non-structured) `input_required` — already validated non-empty above; stored
         // verbatim, exactly as before this feature existed.
         let Some(HitlAnswer::Single(answer)) = &payload.answer else {
-            unreachable!(
-                "validated above: a plain input_required row always has a single-string answer here"
+            // Should be impossible given the validation above, but a panic on a live request
+            // costs a lot more than a logged 500 if a future change ever widens what reaches
+            // here (found in review) — this whole match, unlike `unreachable!()`, degrades.
+            tracing::error!(
+                id = %row.id,
+                "resolve: plain input_required reached the answer-building step without a \
+                 single-string answer — this should be impossible given the validation above"
+            );
+            return internal_error(
+                "resolve: input_required answer shape invariant violated",
+                "answer was not HitlAnswer::Single despite earlier validation",
             );
         };
         json!({ "answer": answer })
@@ -480,7 +545,7 @@ async fn resolve(
         .await
     {
         Ok(outcome) => outcome,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return internal_error("resolve: input_required/auth_required resolve failed", e),
     };
 
     let (row, already_resolved) = match outcome {
@@ -555,6 +620,7 @@ async fn grant_session_scope(state: &AppState, row: &HitlRequest) {
         &state.db,
         row.owner_user_id,
         row.agent_id,
+        &context_id,
     )
     .await
     {
@@ -630,6 +696,7 @@ async fn auto_resolve_linked_direct_chat_row(
         &state.db,
         mcp_row.id,
         mcp_row.owner_user_id,
+        mcp_row.agent_id,
     )
     .await
     {
@@ -693,7 +760,7 @@ async fn cancel(State(state): State<AppState>, claims: Claims, Path(id): Path<Uu
     let row = match state.hitl_store.get(id).await {
         Ok(Some(row)) => row,
         Ok(None) => return (StatusCode::NOT_FOUND, "hitl request not found").into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return internal_error("cancel: store error fetching row", e),
     };
     if authorize_hitl_action(&identity, &row, HitlAction::Cancel).is_err() {
         return (
@@ -705,7 +772,7 @@ async fn cancel(State(state): State<AppState>, claims: Claims, Path(id): Path<Uu
 
     let outcome = match state.hitl_store.cancel(id, identity.user_id).await {
         Ok(outcome) => outcome,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return internal_error("cancel: store error", e),
     };
 
     let (row, already_canceled) = match outcome {
@@ -731,6 +798,37 @@ async fn cancel(State(state): State<AppState>, claims: Claims, Path(id): Path<Uu
         obj.insert("already_canceled".to_string(), json!(already_canceled));
     }
     Json(body).into_response()
+}
+
+/// `POST /api/hitl/{id}/requeue` — the operator remediation path
+/// `nasiko_hitl::repo::recover_stuck_resumes`'s own doc comment says doesn't exist: a
+/// `delivery_outcome_unknown` row (the resume dispatcher died mid-attempt, so whether the agent
+/// actually received the answer is unknown) is otherwise stuck forever — `claim_for_resume` never
+/// re-selects it, by design, since a resume push isn't naturally idempotent. Superuser-only: this
+/// is an explicit "I've confirmed it's safe to retry" judgment call about a specific delivery, not
+/// a row-ownership action, so the row's own owner is not authorized to make it themselves.
+async fn requeue_resume(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> Response {
+    if !claims.is_superuser {
+        return (
+            StatusCode::FORBIDDEN,
+            "only a superuser may requeue a stuck resume",
+        )
+            .into_response();
+    }
+
+    match nasiko_hitl::repo::requeue_resume(&state.db, id).await {
+        Ok(Some(row)) => Json(to_response(&row)).into_response(),
+        Ok(None) => (
+            StatusCode::CONFLICT,
+            "row not found, or not in delivery_outcome_unknown",
+        )
+            .into_response(),
+        Err(e) => internal_error("requeue_resume: store error", e),
+    }
 }
 
 /// True once nothing further will ever happen to this row without a brand-new request from
@@ -768,7 +866,7 @@ async fn stream_one(
     let row = match state.hitl_store.get(id).await {
         Ok(Some(row)) => row,
         Ok(None) => return (StatusCode::NOT_FOUND, "hitl request not found").into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return internal_error("stream_one: store error fetching row", e),
     };
     if authorize_hitl_action(&identity, &row, HitlAction::View).is_err() {
         return (
@@ -792,9 +890,8 @@ async fn stream_one(
                     break;
                 }
                 Err(e) => {
-                    yield Ok(Event::default().event("error").data(
-                        json!({ "error": e.to_string() }).to_string(),
-                    ));
+                    let body = internal_error_body("stream_one: store error (in-stream)", e);
+                    yield Ok(Event::default().event("error").data(body.to_string()));
                     break;
                 }
             };
@@ -845,6 +942,55 @@ mod structured_answer_tests {
             multi_select: true,
             allow_custom_input: true,
         }
+    }
+
+    // ── payload length bound ─────────────────────────────────────────────────────────────
+
+    fn payload_with_answer(answer: Option<HitlAnswer>) -> HitlResolveRequest {
+        HitlResolveRequest {
+            answer,
+            custom_answer: None,
+            auth_action: None,
+            decision: None,
+            scope: None,
+            note: None,
+            message: None,
+        }
+    }
+
+    #[test]
+    fn validate_resolve_payload_lengths_accepts_a_normal_answer() {
+        let payload = payload_with_answer(Some(HitlAnswer::Single("a reasonable answer".into())));
+        assert!(validate_resolve_payload_lengths(&payload).is_ok());
+    }
+
+    #[test]
+    fn validate_resolve_payload_lengths_rejects_an_oversized_single_answer() {
+        let payload = payload_with_answer(Some(HitlAnswer::Single("a".repeat(MAX_ANSWER_LEN + 1))));
+        assert!(validate_resolve_payload_lengths(&payload).is_err());
+    }
+
+    #[test]
+    fn validate_resolve_payload_lengths_rejects_an_oversized_entry_in_a_multi_select_answer() {
+        let payload = payload_with_answer(Some(HitlAnswer::Multiple(vec![
+            "fine".to_string(),
+            "b".repeat(MAX_ANSWER_LEN + 1),
+        ])));
+        assert!(validate_resolve_payload_lengths(&payload).is_err());
+    }
+
+    #[test]
+    fn validate_resolve_payload_lengths_rejects_an_oversized_custom_answer() {
+        let mut payload = payload_with_answer(None);
+        payload.custom_answer = Some("c".repeat(MAX_ANSWER_LEN + 1));
+        assert!(validate_resolve_payload_lengths(&payload).is_err());
+    }
+
+    #[test]
+    fn validate_resolve_payload_lengths_rejects_an_oversized_note() {
+        let mut payload = payload_with_answer(None);
+        payload.note = Some("n".repeat(MAX_ANSWER_LEN + 1));
+        assert!(validate_resolve_payload_lengths(&payload).is_err());
     }
 
     #[test]

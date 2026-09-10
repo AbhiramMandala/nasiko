@@ -230,8 +230,10 @@ impl AppState {
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
 
         // Spawn the HITL resume dispatcher — same shape as the build worker above.
-        // Handles `direct_chat`/`agent_proxy`-origin rows (real A2A task resume); its own
-        // `claim_for_resume` is scoped to just those two origins.
+        // Handles `direct_chat`/`agent_proxy`/`maf`/`orchestrator`-origin rows (real A2A task
+        // resume, or an XADD continuation job for MAF); its own `claim_for_resume` is scoped to
+        // just those four origins. `mcp_tool` rows have their own separate dispatcher
+        // (`nasiko_hitl::dispatcher`, wired up elsewhere in this function).
         let hitl_state = state.clone();
         tokio::spawn(crate::hitl::run(hitl_state, hitl_resume_rx));
 
@@ -255,7 +257,19 @@ impl AppState {
         tokio::spawn(nasiko_hitl::dispatcher::run(
             state.db.clone(),
             resume_notifier,
-            nasiko_hitl::DispatcherConfig::default(),
+            nasiko_hitl::DispatcherConfig {
+                poll_interval: std::time::Duration::from_secs(
+                    state.config.hitl_resume_poll_interval_secs,
+                ),
+                recovery_interval: std::time::Duration::from_secs(
+                    state.config.hitl_resume_recovery_interval_secs,
+                ),
+                lease_minutes: state.config.hitl_resume_lease_minutes,
+                max_attempts: state.config.hitl_resume_max_attempts,
+                retry_delay: std::time::Duration::from_secs(
+                    state.config.hitl_resume_retry_delay_secs,
+                ),
+            },
         ));
 
         // Container-hours meter: records per-instance run sessions for billing

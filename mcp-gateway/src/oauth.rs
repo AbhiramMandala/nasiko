@@ -865,6 +865,7 @@ mod tests {
                 toolcount_ttl_seconds: 3600,
                 oauth_state_signing_key: "test".to_string(),
                 description_model: "gpt-4o-mini".to_string(),
+                hitl_request_ttl_days: 7,
             },
             providers: Providers {
                 composio: None,

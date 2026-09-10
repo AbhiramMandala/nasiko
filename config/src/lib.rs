@@ -92,6 +92,16 @@ pub struct Config {
     /// loop expires it. `oss/hitl`'s own store applies this at row-creation time — see
     /// `PgHitlStore::with_ttl_days`.
     pub hitl_request_ttl_days: i64,
+    /// `nasiko_hitl::dispatcher::DispatcherConfig`'s five tunables (the `mcp_tool`-origin resume
+    /// dispatcher, `oss/hitl/src/dispatcher.rs`) — every comparable tunable elsewhere in this
+    /// codebase goes through this single `Config` struct, and `hitl_request_ttl_days` right above
+    /// is the same feature's own TTL knob, so these were the odd ones out as compile-time
+    /// constants (found in review).
+    pub hitl_resume_poll_interval_secs: u64,
+    pub hitl_resume_recovery_interval_secs: u64,
+    pub hitl_resume_lease_minutes: i64,
+    pub hitl_resume_max_attempts: u32,
+    pub hitl_resume_retry_delay_secs: u64,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
@@ -340,6 +350,16 @@ impl Config {
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
             hitl_request_ttl_days: env_parse("HITL_REQUEST_TTL_DAYS", 7),
+            // Defaults match `nasiko_hitl::dispatcher::DispatcherConfig::default()` exactly, so
+            // an unset env var changes nothing.
+            hitl_resume_poll_interval_secs: env_parse("HITL_RESUME_POLL_INTERVAL_SECS", 5),
+            hitl_resume_recovery_interval_secs: env_parse(
+                "HITL_RESUME_RECOVERY_INTERVAL_SECS",
+                10 * 60,
+            ),
+            hitl_resume_lease_minutes: env_parse("HITL_RESUME_LEASE_MINUTES", 2),
+            hitl_resume_max_attempts: env_parse("HITL_RESUME_MAX_ATTEMPTS", 3),
+            hitl_resume_retry_delay_secs: env_parse("HITL_RESUME_RETRY_DELAY_SECS", 2),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")

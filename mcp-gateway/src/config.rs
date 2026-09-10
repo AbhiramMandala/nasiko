@@ -43,6 +43,14 @@ pub struct McpConfig {
     pub oauth_state_signing_key: String,
     /// Model for the description-backfill LLM fallback (`description_backfill.rs`).
     pub description_model: String,
+    /// How long a pending `mcp_tool`-origin `hitl_requests` row (an `auth_required`/
+    /// `tool_approval` pause this gateway creates) stays answerable before the dispatcher expires
+    /// it — `Config::hitl_request_ttl_days` (env: `HITL_REQUEST_TTL_DAYS`), the same knob every
+    /// other `HitlKind` already honors via `PgHitlStore::with_ttl_days`. Passed to
+    /// `nasiko_hitl::repo::create_pending_auth_required_with_ttl`/
+    /// `create_pending_tool_approval_with_ttl` rather than their fixed-7-day counterparts (found
+    /// in review: setting the env var used to have no effect on anything this gateway created).
+    pub hitl_request_ttl_days: i64,
 }
 
 impl McpConfig {
@@ -77,6 +85,7 @@ impl McpConfig {
                     "OAUTH_STATE_SIGNING_KEY or JWT_SECRET must be set for MCP OAuth state signing",
                 ),
             description_model: config.mcp_description_model.clone(),
+            hitl_request_ttl_days: config.hitl_request_ttl_days,
         }
     }
 
@@ -123,6 +132,7 @@ mod tests {
             toolcount_ttl_seconds: 3600,
             oauth_state_signing_key: "test".to_string(),
             description_model: "gpt-4o-mini".to_string(),
+            hitl_request_ttl_days: 7,
         }
     }
 

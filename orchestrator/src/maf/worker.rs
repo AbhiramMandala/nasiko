@@ -13,7 +13,12 @@ use super::{
     types::{MafDefinition, PausedStep, StepOutcome, StepResult},
 };
 
-const STREAM_KEY: &str = "nasiko:maf:execute";
+/// Redis stream this worker consumes from. `pub` (not just crate-visible) so every producer —
+/// `oss/server/src/maf.rs` (the initial run) and `oss/server/src/hitl/mod.rs` (a resume re-enqueue)
+/// — binds to this same constant rather than hardcoding the literal a second and third time; a
+/// drift between the two used to mean silently orphaned jobs, no compile error and no runtime
+/// error (found in review).
+pub const STREAM_KEY: &str = "nasiko:maf:execute";
 const GROUP_NAME: &str = "maf-workers";
 // Messages idle for longer than this are reclaimed on restart (10 minutes in ms)
 const RECLAIM_IDLE_MS: u64 = 600_000;

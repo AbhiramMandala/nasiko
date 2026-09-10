@@ -668,7 +668,7 @@ async fn handle_auth_required(
         ),
     });
 
-    match nasiko_hitl::repo::create_pending_auth_required(
+    match nasiko_hitl::repo::create_pending_auth_required_with_ttl(
         &state.db,
         nasiko_hitl::NewAuthRequired {
             agent_id,
@@ -677,6 +677,7 @@ async fn handle_auth_required(
             context_id,
             question,
         },
+        state.config.hitl_request_ttl_days,
     )
     .await
     {
@@ -731,7 +732,7 @@ async fn create_tool_approval_id(
         "message": format!("Tool '{tool_name}' requires user approval before it can run."),
     });
 
-    match nasiko_hitl::repo::create_pending_tool_approval(
+    match nasiko_hitl::repo::create_pending_tool_approval_with_ttl(
         &state.db,
         nasiko_hitl::NewToolApproval {
             agent_id,
@@ -741,6 +742,7 @@ async fn create_tool_approval_id(
             context_id,
             question,
         },
+        state.config.hitl_request_ttl_days,
     )
     .await
     {
@@ -799,7 +801,10 @@ async fn resolve_tool_approval_retry(
     // reasoning) — `once`-scope claiming below deliberately keeps using
     // `context_id` unchanged.
     let session_context_id = match nasiko_hitl::repo::resolve_stable_session_context(
-        &state.db, user_id, agent_id,
+        &state.db,
+        user_id,
+        agent_id,
+        &context_id,
     )
     .await
     {
@@ -958,6 +963,7 @@ mod tests {
                 toolcount_ttl_seconds: 3600,
                 oauth_state_signing_key: "test".to_string(),
                 description_model: "gpt-4o-mini".to_string(),
+                hitl_request_ttl_days: 7,
             },
             providers: Providers {
                 composio: None,

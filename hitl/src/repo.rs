@@ -20,7 +20,14 @@ use crate::error::Result;
 use crate::types::{HitlKind, HitlOrigin, HitlRequest, HitlStatus, ResumeStatus};
 
 /// Default validity window for a pending request before it's considered
-/// expired — 7 days, per the plan's "Remaining Decisions".
+/// expired — 7 days, per the plan's "Remaining Decisions". Used only when a caller doesn't supply
+/// its own `ttl_days` (`create_pending_auth_required`/`create_pending_tool_approval`, kept for
+/// existing callers and tests) — real production callers should use the `_with_ttl`
+/// variants with `Config::hitl_request_ttl_days` (env: `HITL_REQUEST_TTL_DAYS`) instead, matching
+/// `PgHitlStore::with_ttl_days`'s equivalent knob for every other `HitlKind`. Before the `_with_ttl`
+/// variants existed, setting that env var silently had no effect on any row this module created
+/// (found in review) — `mcp_tool`-origin rows always got exactly 7 days no matter what was
+/// configured.
 const DEFAULT_EXPIRY_DAYS: i64 = 7;
 
 /// Everything needed to create a pending `kind=auth_required`,
@@ -63,7 +70,18 @@ pub async fn create_pending_auth_required(
     db: &PgPool,
     req: NewAuthRequired,
 ) -> Result<HitlRequest> {
-    let expires_at = Utc::now() + Duration::days(DEFAULT_EXPIRY_DAYS);
+    create_pending_auth_required_with_ttl(db, req, DEFAULT_EXPIRY_DAYS).await
+}
+
+/// Same as [`create_pending_auth_required`], but with an explicit TTL — the real entry point for
+/// production callers, which should pass `Config::hitl_request_ttl_days` rather than relying on
+/// the fixed `DEFAULT_EXPIRY_DAYS` fallback.
+pub async fn create_pending_auth_required_with_ttl(
+    db: &PgPool,
+    req: NewAuthRequired,
+    ttl_days: i64,
+) -> Result<HitlRequest> {
+    let expires_at = Utc::now() + Duration::days(ttl_days);
     let row = sqlx::query_as::<_, HitlRequestRow>(
         r#"
         INSERT INTO hitl_requests
@@ -72,7 +90,12 @@ pub async fn create_pending_auth_required(
             ('auth_required', 'mcp_tool', $1, $2, $3, $4, $5, $6)
         ON CONFLICT (agent_id, connector_id, context_id)
             WHERE status = 'pending' AND kind = 'auth_required' AND origin = 'mcp_tool'
-            DO UPDATE SET updated_at = now()
+            -- Also refreshes `expires_at`, not just `updated_at`: without this, a connector that
+            -- stays broken past the original row's TTL expires (`expire_stale`) while still being
+            -- actively hit on every call, and each hit after that creates a brand-new row instead
+            -- of reusing this one (found in review) — every real re-hit should push the deadline
+            -- out exactly as far as a fresh row would get.
+            DO UPDATE SET updated_at = now(), expires_at = EXCLUDED.expires_at
         RETURNING *
         "#,
     )
@@ -130,7 +153,18 @@ pub async fn create_pending_tool_approval(
     db: &PgPool,
     req: NewToolApproval,
 ) -> Result<HitlRequest> {
-    let expires_at = Utc::now() + Duration::days(DEFAULT_EXPIRY_DAYS);
+    create_pending_tool_approval_with_ttl(db, req, DEFAULT_EXPIRY_DAYS).await
+}
+
+/// Same as [`create_pending_tool_approval`], but with an explicit TTL — the real entry point for
+/// production callers, which should pass `Config::hitl_request_ttl_days` rather than relying on
+/// the fixed `DEFAULT_EXPIRY_DAYS` fallback.
+pub async fn create_pending_tool_approval_with_ttl(
+    db: &PgPool,
+    req: NewToolApproval,
+    ttl_days: i64,
+) -> Result<HitlRequest> {
+    let expires_at = Utc::now() + Duration::days(ttl_days);
     let row = sqlx::query_as::<_, HitlRequestRow>(
         r#"
         INSERT INTO hitl_requests
@@ -139,7 +173,11 @@ pub async fn create_pending_tool_approval(
             ('tool_approval', 'mcp_tool', $1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (agent_id, connector_id, tool_name, context_id)
             WHERE status = 'pending' AND kind = 'tool_approval'
-            DO UPDATE SET updated_at = now()
+            -- Same fix as `create_pending_auth_required_with_ttl`'s identical `ON CONFLICT`: also
+            -- refresh `expires_at`, not just `updated_at`, so a repeatedly-retried tool call keeps
+            -- pushing its own deadline out instead of expiring mid-retry and then forking into a
+            -- brand-new row.
+            DO UPDATE SET updated_at = now(), expires_at = EXCLUDED.expires_at
         RETURNING *
         "#,
     )
@@ -202,10 +240,18 @@ pub async fn get_by_id(db: &PgPool, id: Uuid) -> Result<Option<HitlRequest>> {
 /// `ContinuationRegistry::alias`, `router/hitl.rs`) a way to read the resumed execution's output
 /// under the *other* user's identity. Same root cause and same fix shape as
 /// `resolve_display_row`'s own `caller_owner_id` check (`store.rs`).
+///
+/// `agent_id` is likewise required, matching `resolve_display_row`'s own check and its own
+/// reasoning: the two halves of one real pause always belong to the same agent, so a link naming a
+/// different agent's row can only be forged or stale. Without it, one agent's pause could be
+/// resolved and its `ContinuationRegistry::alias` output-stream access granted via a link to a
+/// different agent's row. `ORDER BY created_at DESC` makes the choice deterministic when duplicate
+/// mirrors exist, rather than picking whichever row the query planner happens to return first.
 pub async fn find_linked_direct_chat_row(
     db: &PgPool,
     mcp_row_id: Uuid,
     owner_user_id: Uuid,
+    agent_id: Uuid,
 ) -> Result<Option<HitlRequest>> {
     let row = sqlx::query_as::<_, HitlRequestRow>(
         r#"
@@ -213,12 +259,15 @@ pub async fn find_linked_direct_chat_row(
          WHERE origin IN ('direct_chat', 'agent_proxy', 'maf', 'orchestrator')
            AND status = 'pending'
            AND owner_user_id = $2
+           AND agent_id = $3
            AND question->'metadata'->>'hitl_request_id' = $1
+         ORDER BY created_at DESC
          LIMIT 1
         "#,
     )
     .bind(mcp_row_id.to_string())
     .bind(owner_user_id)
+    .bind(agent_id)
     .fetch_optional(db)
     .await?;
     row.map(HitlRequestRow::try_into_domain).transpose()
@@ -354,7 +403,9 @@ pub async fn resolve_pending_auth_required_for_connector(
         .map(HitlRequestRow::try_into_domain)
         .collect::<Result<_>>()?;
     for row in &resolved {
-        if let Err(e) = resolve_linked_direct_chat_mirror(db, row.id, owner_user_id).await {
+        if let Err(e) =
+            resolve_linked_direct_chat_mirror(db, row.id, owner_user_id, row.agent_id).await
+        {
             tracing::warn!(mcp_row_id = %row.id, error = %e, "failed to auto-resolve linked direct_chat mirror row");
         }
     }
@@ -372,12 +423,14 @@ async fn resolve_linked_direct_chat_mirror(
     db: &PgPool,
     mcp_row_id: Uuid,
     resolved_by: Uuid,
+    agent_id: Uuid,
 ) -> Result<()> {
     // The caller (`resolve_pending_auth_required_for_connector`) already scoped `mcp_row_id`'s own
     // `UPDATE ... WHERE owner_user_id = $1` to this same user, so `resolved_by` doubles as the real
     // mcp row's owner here — see `find_linked_direct_chat_row`'s own doc comment for why this must
     // never be skipped.
-    let Some(linked) = find_linked_direct_chat_row(db, mcp_row_id, resolved_by).await? else {
+    let Some(linked) = find_linked_direct_chat_row(db, mcp_row_id, resolved_by, agent_id).await?
+    else {
         return Ok(());
     };
     resolve(
@@ -468,32 +521,48 @@ pub async fn claim_resolved_tool_approval(
 /// This exists because the trace-derived `context_id` every other MCP HITL
 /// identity uses (`session::resolve_context_id` in `oss/mcp-gateway`) is a
 /// *per-message* value — a fresh distributed trace begins with every user
-/// message, so two calls a human would recognize as "the same conversation"
-/// can resolve to different context_ids. That's the right identity for a
-/// pending row itself (an `once`-scope claim is deliberately per-call, and
-/// stays on the old trace-derived context_id — this function changes nothing
-/// there), but it silently broke `session`-scope grants: matched by
-/// `(agent_id, connector_id, tool_name, context_id)`, a grant created against
-/// message 1's trace context could never match message 2's different trace
-/// context, so "Allow for Session" behaved almost exactly like "Allow Once."
+/// message. `resolve_context_id` already resolves it to the real
+/// `chat_sessions.session_id` via `session_traces` when that mapping exists
+/// (agent_proxy inserts one per forwarded message), so `current_context_id`
+/// is checked FIRST and trusted exactly when it already names a real session
+/// for this `(owner_user_id, agent_id)` pair — that is the exact conversation
+/// this call belongs to, not a guess.
 ///
-/// `(owner_user_id, agent_id)` is available both when a grant is created
-/// (from the resolved row itself) and when it's looked up (from the live
-/// call's own identity), so this lookup is what both sides now share.
-/// Deliberately "most recent session for this (user, agent) pair," not an
-/// exact trace match — a user with two concurrent chats against the same
-/// agent is a real but rare edge case, and picking the most recently active
-/// one is a safe default (worst case: an unnecessary re-ask, never an
-/// over-broad grant) that needs no new protocol field to disambiguate
-/// further. Returns `None` when no chat session exists at all (e.g. a raw
-/// MCP integration outside any chat) — callers fall back to the existing
-/// trace-derived context in that case, so this is a pure addition to what
-/// `session` scope can match, never a narrowing.
+/// Only when `current_context_id` does **not** resolve to a real session
+/// (the `session_traces` row hasn't landed yet, or this caller never goes
+/// through `agent_proxy` at all) does this fall back to "most recent session
+/// for this `(owner_user_id, agent_id)` pair" — a best-effort default for
+/// that narrower case, not the primary mechanism. Relying on the fallback
+/// alone let a grant approved in one active chat silently authorize a tool
+/// in a *different*, more-recently-touched chat with the same agent (found
+/// in review) — an over-broad grant, not just an unnecessary re-ask as the
+/// fallback's own tradeoff assumes. Returns `None` when no chat session
+/// exists at all (e.g. a raw MCP integration outside any chat) — callers
+/// fall back to the existing trace-derived context in that case, so this is
+/// a pure addition to what `session` scope can match, never a narrowing.
 pub async fn resolve_stable_session_context(
     db: &PgPool,
     owner_user_id: Uuid,
     agent_id: Uuid,
+    current_context_id: &str,
 ) -> Result<Option<String>> {
+    let is_current_a_real_session: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM chat_sessions
+             WHERE session_id = $1 AND user_id = $2 AND agent_id = $3 AND deleted_at IS NULL
+        )
+        "#,
+    )
+    .bind(current_context_id)
+    .bind(owner_user_id)
+    .bind(agent_id)
+    .fetch_one(db)
+    .await?;
+    if is_current_a_real_session {
+        return Ok(Some(current_context_id.to_string()));
+    }
+
     let session_id: Option<String> = sqlx::query_scalar(
         r#"
         SELECT session_id FROM chat_sessions
@@ -769,6 +838,38 @@ pub async fn recover_stuck_resumes(db: &PgPool, lease_minutes: i64) -> Result<u6
     .execute(db)
     .await?;
     Ok(result.rows_affected())
+}
+
+/// Manually reset one `delivery_outcome_unknown` row back to claimable — the operator remediation
+/// path `recover_stuck_resumes`'s own doc comment says doesn't exist: that sweep quarantines an
+/// abandoned claim into `delivery_outcome_unknown` precisely because a resume push isn't naturally
+/// idempotent, so `claim_for_resume` never re-selects it on its own (found in review — a process
+/// restart mid-delivery otherwise permanently loses the human's answer, with no requeue, no admin
+/// endpoint, and no way back short of a direct SQL edit).
+///
+/// Deliberately requires an explicit human decision per row (never automatic, never bulk) — the
+/// caller is asserting "I've confirmed the original nudge either never reached the agent or is
+/// safe to repeat," the same judgment call `recover_stuck_resumes`'s own doc comment says only a
+/// human can make. Resets both `resume_status` and `resume_claimed_at` so `claim_for_resume`'s
+/// `resume_status = 'not_started' AND resume_claimed_at IS NULL` filter can select it again, and
+/// clears `resume_last_error`/`resume_dispatch_attempts` so a subsequent `finish_resume` starts a
+/// fresh attempt count rather than accumulating across the two lifetimes. Scoped to
+/// `resume_status = 'delivery_outcome_unknown'` so it can never touch a row still legitimately
+/// claimed and in flight, or one already `completed`/`failed`.
+pub async fn requeue_resume(db: &PgPool, id: Uuid) -> Result<Option<HitlRequest>> {
+    let row = sqlx::query_as::<_, HitlRequestRow>(
+        r#"
+        UPDATE hitl_requests
+           SET resume_status = 'not_started', resume_claimed_at = NULL,
+               resume_dispatch_attempts = 0, resume_last_error = NULL
+         WHERE id = $1 AND resume_status = 'delivery_outcome_unknown'
+        RETURNING *
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    row.map(HitlRequestRow::try_into_domain).transpose()
 }
 
 /// Raw `hitl_requests` row shape for `sqlx::FromRow` — `kind`/`origin`/
