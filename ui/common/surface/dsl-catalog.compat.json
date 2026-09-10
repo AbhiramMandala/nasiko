@@ -423,10 +423,6 @@
           "type": "boolean",
           "description": "`bar` only: dashed horizontal rule at the mean of the column totals, labelled \"avg\"."
         },
-        "flush-top": {
-          "type": "boolean",
-          "description": "The plot's own canvas-painted background (see `plotBackground`) normally rounds all four corners, like any other surface card. Set this when another element sits directly above the chart with no gap (the day grid on the concentration panel) and the two should read as one continuous card: it squares the top two corners off, leaving only the bottom two rounded. Applies to the loading skeleton and empty state too (app-chart.css) — those are plain divs shown instead of the canvas, not something `plotBackground` paints, so they need their own override rather than inheriting this one."
-        },
         "format-y2": {
           "type": "enum",
           "values": [
@@ -437,7 +433,7 @@
             "duration"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `duration`"
         },
         "flush-top": {
           "type": "boolean",
