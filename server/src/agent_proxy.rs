@@ -180,6 +180,16 @@ pub async fn agent_proxy(
     // Persist the user message to chat_messages (fire-and-forget, mirrors CLI
     // behaviour). No trace_id column: session_traces (below) is the
     // authoritative session↔trace mapping now.
+    //
+    // Guarded by a short dedup window rather than a plain unconditional insert: per the
+    // `flows` re-open comment a few lines down, one logical turn can legitimately reach this
+    // handler more than once under the *same* traceparent — `nasiko chat`'s protocol-negotiation
+    // retry (method/role mismatches some agent SDKs reject) resends the identical message
+    // milliseconds later on a fresh HTTP request, which this middleware has no way to tell apart
+    // from a second, genuinely new send of the same text. Without this, that retry showed up as
+    // the same user bubble twice in both the CLI and the web UI's `chat_messages` history.
+    // Two seconds comfortably covers a retry (observed live at 15-40ms) while never matching a
+    // human re-sending the exact same text minutes apart.
     if let Some(ref info) = persist_info
         && !info.user_text.is_empty()
     {
@@ -195,10 +205,15 @@ pub async fn agent_proxy(
         let user_text = info.user_text.clone();
         tokio::spawn(async move {
             let _ = sqlx::query(
-                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+                "INSERT INTO chat_messages (session_id, role, content) \
+                 SELECT $1, 'user', $2 \
+                 WHERE NOT EXISTS ( \
+                     SELECT 1 FROM chat_messages \
+                     WHERE session_id = $1 AND role = 'user' AND content = $2 \
+                       AND timestamp > now() - interval '2 seconds' \
+                 )",
             )
             .bind(&session_id)
-            .bind("user")
             .bind(&user_text)
             .execute(&db)
             .await;

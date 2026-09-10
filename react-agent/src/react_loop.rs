@@ -564,7 +564,8 @@ impl Orchestrator {
 - Pass the user's own wording through when the request is itself the thing to relay — an exact
   phrase, a quoted string, a command, an identifier, a fixed test input. Paraphrasing it loses
   information the agent matches on, and the agent then answers a question the user never asked.
-- If no agent fits, tell the user directly."#
+- If no agent fits, tell the user directly.
+- When calling an agent tool, call it directly — do not first restate its message as your own chat reply. If that agent pauses to ask the user something, your own words would otherwise repeat the same question twice."#
         )
     }
 }
@@ -709,7 +710,8 @@ async fn run_stream_inner(
 - Pass the user's own wording through when the request is itself the thing to relay — an exact
   phrase, a quoted string, a command, an identifier, a fixed test input. Paraphrasing it loses
   information the agent matches on, and the agent then answers a question the user never asked.
-- If no agent fits, tell the user directly."#
+- If no agent fits, tell the user directly.
+- When calling an agent tool, call it directly — do not first restate its message as your own chat reply. If that agent pauses to ask the user something, your own words would otherwise repeat the same question twice."#
     );
 
     let mut context_compacted = false;

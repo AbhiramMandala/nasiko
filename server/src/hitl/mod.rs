@@ -339,7 +339,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // forward, drifting further from the real session on every subsequent round. Falling back to
     // `context_id` here (rather than skipping the insert) is what keeps `AgentProxy`/`DirectChat`
     // pinned to the same real session on every resume, exactly as it did before this fix existed.
-    let stable_session_id = row.chat_session_id.as_deref().unwrap_or(&context_id);
+    let stable_session_id = stable_session_id(&row).unwrap_or(&context_id);
     if let Err(e) = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, $3, $4, $5, 'running', $6)
@@ -787,7 +787,18 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 /// present, so a custom-only answer (zero predefined selections) degrades to a single-line
 /// message — indistinguishable from a plain single-select or free-text answer to the agent, which
 /// is a deliberate, not incidental, property: no agent has to special-case "was this multi-select."
-fn answer_text(row: &HitlRequest) -> String {
+/// The stable, `chat_sessions`-registered session identity for `row`, regardless of origin:
+/// `chat_session_id` for an `Orchestrator`-origin row (the top-level session — `context_id`
+/// there is the sub-agent's own unstable per-dispatch context, minted fresh on every resume, see
+/// `deliver()`'s own `stable_session_id` comment above), or `context_id` itself for
+/// `AgentProxy`/`DirectChat`, which have no separate orchestrator-level session and use it as
+/// the stable id directly. `None` only for an origin with neither set (defensive — not expected
+/// in practice for any row this is called on).
+pub(crate) fn stable_session_id(row: &HitlRequest) -> Option<&str> {
+    row.chat_session_id.as_deref().or(row.context_id.as_deref())
+}
+
+pub(crate) fn answer_text(row: &HitlRequest) -> String {
     let response = row.human_response.as_ref();
     if let Some(items) = response
         .and_then(|r| r.get("answer"))
