@@ -58,8 +58,19 @@ observability-session-page,
 resources-page,
 settings-page,
 tokenops-page,
-weave-page {
+weave-page,
+custom-views-page {
   display: block;
+  padding: var(--s-24) var(--s-32);
+}
+
+/* Flex column rather than block, so the canvas inside can claim the height left
+   over after the title band. main#outlet already stretches this box to the card
+   (global.css), so "left over" is a real number without naming a viewport
+   fraction — see the note on .canvas in generated-view-page.css. */
+generated-view-page {
+  display: flex;
+  flex-direction: column;
   padding: var(--s-24) var(--s-32);
 }
 
@@ -203,7 +214,8 @@ login-page {
   mcp-page,
   observability-session-page,
   resources-page,
-  settings-page {
+  settings-page,
+  custom-views-page {
     padding: var(--card-content-pad);
   }
 

@@ -54,8 +54,18 @@
     margin-block-end: var(--s-16);
   }
 
+  /* Fills the card, measured by the layout rather than by arithmetic.
+     min-height: 100vh was 180px too tall: 100vh is the whole window, and this
+     box starts 144px down it (52 topbar + 24 page padding + 52 band + 16) with
+     36px still to come below (24 page padding + 12 card margin). All of that is
+     added to the viewport height, so the page overscrolled by exactly that
+     180px. At 60vh the same 180px fitted inside the window and nothing showed.
+
+     flex: 1 0 auto, not flex: 1 — grow to fill, never shrink. `1` is
+     `1 1 0%`, which would let a canvas holding a 2000px dashboard shrink below
+     its content and clip it. Same reasoning as main#outlet > * in global.css. */
   .canvas {
-    min-height: 60vh;
+    flex: 1 0 auto;
     padding: var(--s-24);
     border-radius: var(--r-10);
     background-color: var(--bg-subtle);
@@ -88,8 +98,14 @@
   .generating__head { color: var(--color-text-main); }
   .generating__steps { margin: 0; padding-left: var(--s-16); }
 
-  /* Fullscreen-ish: the band stays, the canvas takes the viewport. */
-  :scope.is-expanded .canvas { min-height: calc(100dvh - var(--shell-topbar-height) - var(--s-80)); }
+  /* `is-expanded` used to give the canvas
+     calc(100dvh - var(--shell-topbar-height) - var(--s-80)) — the same class of
+     bug, 48px milder: it subtracted 132px of chrome where there is 180px, so
+     expanding overscrolled by 48px. Now that the canvas fills the card on its
+     own the rule has nothing left to add, so it is gone rather than corrected.
+     The expand button therefore has no visual effect at the moment: decide what
+     expanding should do (escape the card? hide the band and filters?) before
+     giving it a rule again. */
 
   /* ── Filters ──────────────────────────────────────────────────────────── */
   .filters {
