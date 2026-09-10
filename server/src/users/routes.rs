@@ -1122,6 +1122,7 @@ async fn accessible_agents_impl(db: &sqlx::PgPool, user_id: Uuid) -> axum::respo
         r#"SELECT DISTINCT a.id, a.name, a.description, a.status, a.owner_id, a.is_public
            FROM agents a
            WHERE a.deleted_at IS NULL
+             AND NOT a.is_internal
              AND (
                a.owner_id = $1
                OR a.is_public = true

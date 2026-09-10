@@ -1153,7 +1153,8 @@ async fn fetch_user_agents(
     user_id: Uuid,
 ) -> Result<Vec<AgentInfo>, sqlx::Error> {
     sqlx::query_as::<_, AgentInfo>(
-        "SELECT id, name, url, description FROM agents WHERE owner_id = $1 AND deleted_at IS NULL ORDER BY name",
+        "SELECT id, name, url, description FROM agents \
+         WHERE owner_id = $1 AND deleted_at IS NULL AND NOT is_internal ORDER BY name",
     )
     .bind(user_id)
     .fetch_all(db)

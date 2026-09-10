@@ -659,7 +659,8 @@ async fn list_all_builds(
         sqlx::query_as::<_, BuildRecord>(
             r#"SELECT b.* FROM agent_builds b
                LEFT JOIN agents a ON a.id = b.agent_id
-               WHERE ($1::text IS NULL OR b.status::text = $1)
+               WHERE (a.id IS NULL OR NOT a.is_internal)
+                 AND ($1::text IS NULL OR b.status::text = $1)
                  AND ($2::text IS NULL OR a.name ILIKE '%' || $2 || '%' OR b.version_tag ILIKE '%' || $2 || '%')
                ORDER BY b.created_at DESC
                LIMIT $3 OFFSET $4"#,

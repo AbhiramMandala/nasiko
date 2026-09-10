@@ -366,6 +366,7 @@ pub async fn windowed_agent_hours(
            WHERE s.started_at < $2
              AND COALESCE(s.ended_at, s.last_seen_at) > $1
              AND ($3::uuid IS NULL OR s.agent_id = $3)
+             AND (a.id IS NULL OR NOT a.is_internal)
            GROUP BY s.agent_id, a.id, a.display_name, a.name, a.deleted_at
            ORDER BY hours DESC"#,
     )
@@ -499,6 +500,7 @@ pub async fn windowed_hours_series_by_agent(
                  AND COALESCE(s.ended_at, s.last_seen_at) > b.bucket_start
                  AND ($4::uuid IS NULL OR s.agent_id = $4)
            LEFT JOIN agents a ON a.id = s.agent_id
+           WHERE a.id IS NULL OR NOT a.is_internal
            GROUP BY b.bucket_start, s.agent_id, a.id, a.display_name, a.name, a.deleted_at
            HAVING SUM(GREATEST(EXTRACT(EPOCH FROM (
                     LEAST(COALESCE(s.ended_at, s.last_seen_at),
