@@ -209,7 +209,7 @@ async fn resolve(
         let (row, already_resolved) = match outcome {
             ResolveOutcome::Applied(row) => {
                 if approve && scope == "session" {
-                    grant_session_scope(&state, &row, user_id).await;
+                    grant_session_scope(&state, &row).await;
                 }
                 // Unconditional on scope/decision — see `auto_resolve_linked_direct_chat_row`'s
                 // own doc comment for why a single approval action must resolve both rows.
@@ -219,10 +219,21 @@ async fn resolve(
                 let _ = state.hitl_resume_tx.try_send(());
                 (row, false)
             }
-            ResolveOutcome::AlreadyDecided(row) if row.status == HitlStatus::Expired => {
+            // `Expired`/`Canceled` both mean the row died WITHOUT ever being decided through
+            // this resolve mechanism — 409, not the idempotent-double-resolve 200 below, since
+            // there is no decision to be idempotent about and nothing will ever be delivered for
+            // it. `Resolved`/`Rejected` stay 200: both are legitimate decisions this same
+            // resolve() path already recorded, so a second call reporting the same outcome is a
+            // real idempotent no-op, not a caller being told their answer vanished.
+            ResolveOutcome::AlreadyDecided(row)
+                if matches!(row.status, HitlStatus::Expired | HitlStatus::Canceled) =>
+            {
                 return (
                     StatusCode::CONFLICT,
-                    "this HITL request expired before it was answered",
+                    format!(
+                        "this HITL request was {} before it was answered",
+                        row.status.as_str()
+                    ),
                 )
                     .into_response();
             }
@@ -324,12 +335,19 @@ async fn resolve(
             let _ = state.hitl_resume_tx.try_send(());
             (row, false)
         }
-        // §11: 409 for resolve-after-expired — distinct from the idempotent-double-resolve 200
-        // below, which is for a row someone (possibly this same caller) already answered.
-        ResolveOutcome::AlreadyDecided(row) if row.status == HitlStatus::Expired => {
+        // §11: 409 for resolve-after-expired-or-canceled — distinct from the
+        // idempotent-double-resolve 200 below, which is for a row someone (possibly this same
+        // caller) already answered. See the ToolApproval branch's own match above for why
+        // Canceled joins Expired here while Resolved/Rejected stay 200.
+        ResolveOutcome::AlreadyDecided(row)
+            if matches!(row.status, HitlStatus::Expired | HitlStatus::Canceled) =>
+        {
             return (
                 StatusCode::CONFLICT,
-                "this HITL request expired before it was answered",
+                format!(
+                    "this HITL request was {} before it was answered",
+                    row.status.as_str()
+                ),
             )
                 .into_response();
         }
@@ -350,7 +368,7 @@ async fn resolve(
 /// the resolution itself already succeeded and is the authoritative outcome; worst case the
 /// agent's retry finds no grant and gets asked again, which is safe (never silently
 /// over-permissive), just not maximally convenient.
-async fn grant_session_scope(state: &AppState, row: &HitlRequest, granted_by: Uuid) {
+async fn grant_session_scope(state: &AppState, row: &HitlRequest) {
     let (Some(connector_id), Some(tool_name), Some(context_id)) = (
         row.connector_id,
         row.tool_name.clone(),
@@ -394,7 +412,16 @@ async fn grant_session_scope(state: &AppState, row: &HitlRequest, granted_by: Uu
             connector_id,
             tool_name,
             context_id: session_context_id,
-            granted_by,
+            // `has_active_session_grant` (the MCP gateway's own retry-matching lookup) filters
+            // `granted_by = <the flow's real user>`, resolved off the traceparent — never the
+            // HTTP caller who happened to click resolve. `authorize_hitl_action` lets a
+            // superuser resolve another user's row, so binding the resolver's own id here (the
+            // function's previous `granted_by` parameter) wrote a grant that lookup could never
+            // match: the real user was re-prompted for the same tool on every subsequent
+            // message, forever. `row.owner_user_id` is the same value
+            // `resolve_stable_session_context` just above is already keyed on, and the same
+            // value `NewSessionGrant::granted_by`'s own doc comment names as the invariant.
+            granted_by: row.owner_user_id,
             hitl_request_id: Some(row.id),
         },
     )
