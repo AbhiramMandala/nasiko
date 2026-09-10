@@ -740,14 +740,29 @@ pub async fn skip_resume_for_mirrored_row(db: &PgPool, id: Uuid) -> Result<()> {
 /// and which a human must investigate — per `ResumeStatus`'s own doc
 /// comment, this state is "never auto-retried". Returns the number of rows
 /// quarantined, for the dispatcher's own logging.
+///
+/// Scoped to `origin = 'mcp_tool'`, matching `claim_for_resume` above exactly — this sweep exists
+/// to catch a claim made by THIS dispatcher (a standalone nudge, no `task_id`) that never
+/// finished, and `resume_claimed_at`/`resume_status` are columns every origin shares on the same
+/// `hitl_requests` table. `direct_chat`/`agent_proxy`/`orchestrator` rows are claimed by the
+/// OTHER dispatcher (`oss/server/src/hitl/mod.rs`) with its own multi-minute lease for a real A2A
+/// round-trip; at the default `lease_minutes = 2`, an unscoped sweep here would quarantine that
+/// dispatcher's legitimately in-flight claims out from under it mid-delivery.
+///
+/// `status IN ('resolved', 'rejected')`, not just `'resolved'` — `claim_for_resume` above claims
+/// both (a reject still needs its "denied" nudge delivered). A `rejected` row whose dispatcher
+/// died after claiming was previously invisible to this sweep (`status = 'resolved'` never
+/// matched) and to `claim_for_resume` (blocked by its own non-NULL `resume_claimed_at`) alike —
+/// stuck forever, with the agent never told it was denied.
 pub async fn recover_stuck_resumes(db: &PgPool, lease_minutes: i64) -> Result<u64> {
     let result = sqlx::query(
         r#"
         UPDATE hitl_requests
            SET resume_status = 'delivery_outcome_unknown'
-         WHERE status = 'resolved' AND resume_status = 'not_started'
+         WHERE status IN ('resolved', 'rejected') AND resume_status = 'not_started'
            AND resume_claimed_at IS NOT NULL
            AND resume_claimed_at < now() - make_interval(mins => $1::int)
+           AND origin = 'mcp_tool'
         "#,
     )
     .bind(lease_minutes as i32)

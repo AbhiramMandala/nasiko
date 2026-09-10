@@ -12,6 +12,7 @@
 //! It has to be a brand-new connection into the agent, exactly like this.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use nasiko_runtime::{ContainerId, ContainerRuntime};
 use serde_json::Value;
@@ -98,7 +99,25 @@ impl RuntimeResumeNotifier {
     /// `chat_sessions.session_id` (not a raw trace_id — `traceparent` requires exactly 32 hex
     /// chars, which a `session_id` never is), so a fresh trace_id is minted and mapped to it via
     /// `session_traces`, the same table `agent_proxy`'s normal request path populates.
-    async fn traceparent_for_context(&self, context_id: &str, agent_id: Uuid) -> String {
+    ///
+    /// Also registers `trace_id` as a live flow (`flows` + `flow_participants`) — a completely
+    /// separate lookup from `session_traces` above, and the one that actually gates whether the
+    /// resumed agent can call back into the platform at all. The MCP gateway's `flow_user` check
+    /// (`oss/server/src/mcp/handlers/gateway.rs`) resolves the caller's identity from exactly
+    /// those two tables for the trace_id named in an inbound `traceparent`, requiring
+    /// `flows.status = 'running'` plus a matching `flow_participants` row — neither of which
+    /// `session_traces` satisfies. Every other place that mints a traceparent for an outbound
+    /// call on a human's behalf registers both (`hitl/mod.rs::deliver`, `agent_proxy.rs`,
+    /// `a2a_dispatch.rs`); this notifier was the one exception. Without it, the very retry this
+    /// nudge exists to prompt — the agent re-attempting the tool call a human just approved —
+    /// 403s with "traceparent does not resolve to a live flow", so the approval never actually
+    /// takes effect.
+    async fn traceparent_for_context(
+        &self,
+        context_id: &str,
+        agent_id: Uuid,
+        owner_user_id: Uuid,
+    ) -> String {
         let is_raw_trace_id =
             context_id.len() == 32 && context_id.chars().all(|c| c.is_ascii_hexdigit());
         let trace_id = if is_raw_trace_id {
@@ -121,6 +140,26 @@ impl RuntimeResumeNotifier {
             }
             trace_id
         };
+
+        let _ = sqlx::query(
+            r#"INSERT INTO flows (flow_id, user_id, root_agent_id, title, status)
+               VALUES ($1, $2, $3, 'HITL resume nudge', 'running')
+               ON CONFLICT (flow_id) DO UPDATE SET status = 'running', completed_at = NULL"#,
+        )
+        .bind(&trace_id)
+        .bind(owner_user_id)
+        .bind(agent_id)
+        .execute(&self.db)
+        .await;
+        let _ = sqlx::query(
+            "INSERT INTO flow_participants (flow_id, agent_id) VALUES ($1, $2)
+             ON CONFLICT (flow_id, agent_id) DO NOTHING",
+        )
+        .bind(&trace_id)
+        .bind(agent_id)
+        .execute(&self.db)
+        .await;
+
         let span_id: String = Uuid::new_v4().as_bytes()[..8]
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -141,12 +180,20 @@ impl ResumeNotifier for RuntimeResumeNotifier {
         let message = build_resume_message(request);
         let body = nasiko_types::a2a::build_send_request(&message, Some(context_id));
         let traceparent = self
-            .traceparent_for_context(context_id, request.agent_id)
+            .traceparent_for_context(context_id, request.agent_id, request.owner_user_id)
             .await;
 
+        // 300s, not `http_client`'s shared 60s default — matches `hitl/mod.rs::deliver`'s own
+        // override for the equivalent "make an outbound A2A call on a human's behalf" work.
+        // Without it, a legitimately slow-but-healthy agent turn (well under the 300s the OTHER
+        // dispatcher tolerates for the same kind of call) reads as a transport failure here,
+        // retries the nudge up to `max_attempts` times, and since `claim_resolved_tool_approval`
+        // already consumed the row on the first (successful) delivery, the human ends up
+        // re-prompted for an action that already executed.
         let response = self
             .http_client
             .post(&endpoint)
+            .timeout(Duration::from_secs(300))
             .header("A2A-Version", "1.0")
             .header("traceparent", traceparent)
             .json(&body)
