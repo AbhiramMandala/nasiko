@@ -43,9 +43,12 @@
      good news), not by the tile. Five tinted tiles read as five status badges
      and pulled the eye off the figures, which are the point of the strip. */
   .kpi-chip {
+    height: 52px;
+    width: 52px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
+    justify-content: center;
     align-items: center;
     gap: 2px;
     padding: var(--s-8);
@@ -113,6 +116,23 @@
     .kpi-skel { animation: none; opacity: 0.6; }
   }
 
+  /* A failed dashboard fetch replaces the whole strip with this — same
+     tokens as app-table's own `.error`, so a load failure reads the same
+     wherever it shows up on this page. */
+  .kpi-error {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-16);
+    background: var(--bg-error);
+    color: var(--fg-error);
+    border: var(--bw-1) solid var(--border-error);
+    border-radius: var(--r-8);
+    padding: var(--s-16);
+    font-size: var(--font-size-sm);
+  }
+
   .page-head {
     display: flex;
     align-items: center;
@@ -174,17 +194,23 @@
     margin-bottom: var(--s-8);
   }
 
-  /* The day-drill endpoint takes one calendar date, independent of the KPI
-     strip's month/range window — this picks it. `conc-plot-col` stacks the
-     grid directly on top of the chart so the two read as one white card: the
-     chart draws its own plot background (`appChartPlotBg`, canvas-side, not
-     CSS), and the grid supplies the matching --bg-base above it, rounded on
-     the top corners only where the chart is rounded on the bottom. */
-  .conc-plot-col {
+  /* One white container for a panel's whole chart section — its header row
+     (day-grid, or the series legend) stacked directly on top of the plot, in
+     a single card rather than two abutting elements whose backgrounds have to
+     be kept in sync by hand. `flush-top` on the <app-chart> inside squares
+     the plot's own top corners so nothing rounds twice at the seam; the card
+     supplies the one outer radius everything reads by (both are --bg-base, so
+     the plot's own corners are invisible either way — this is about the seam
+     staying flat, not a colour match). Zero bottom padding lets the chart run
+     to the card's own bottom edge, same as the day-grid used to on its own. */
+  .chart-card {
     display: flex;
     flex-direction: column;
     flex: 1;
     min-width: 0;
+    background: var(--bg-base);
+    border-radius: var(--r-8);
+    padding: var(--s-12) var(--s-12) 0;
   }
 
   /* Fixed-size chips that WRAP, not a rigid 10-column grid — a grid's tracks
@@ -197,9 +223,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-8);
-    background: var(--bg-base);
-    border-radius: var(--r-8) var(--r-8) 0 0;
-    padding: var(--s-12) var(--s-12) 0;
   }
 
   .day-cell {
