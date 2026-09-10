@@ -362,11 +362,13 @@ class TokenopsPage extends HTMLElement {
           <div class="panel-head">
             <h2 class="panel-title">Spend over time</h2>
           </div>
-          <div class="panel-tools">
-            <ul class="series-legend" id="spend-legend" aria-label="Series"></ul>
+          <div class="chart-card">
+            <div class="panel-tools">
+              <ul class="series-legend" id="spend-legend" aria-label="Series"></ul>
+            </div>
+            <app-chart id="spend-plot" class="plot-slot" type="line" format="currency" format-y2="compact" height="300px"
+              flush-top legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
           </div>
-          <app-chart id="spend-plot" class="plot-slot" type="line" format="currency" format-y2="compact" height="300px"
-            legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
         </section>
 
         <section class="panel">
@@ -374,7 +376,7 @@ class TokenopsPage extends HTMLElement {
             <h2 class="panel-title">Spend concentration</h2>
           </div>
           <div class="conc-body">
-            <div class="conc-plot-col">
+            <div class="chart-card conc-plot-col">
               <div class="day-grid" id="day-grid" role="group" aria-label="Day"></div>
               <app-chart id="conc-plot" class="plot-slot" type="bar" segmented average-line flush-top legend="off" height="220px"
                 format="currency" label="Spend by hour of day"
@@ -417,13 +419,24 @@ class TokenopsPage extends HTMLElement {
 
     this.querySelector('#month-select').addEventListener('change', () => {
       // Clearing the range group's value deselects every segment: the month is
-      // now the window, and two lit controls would each claim to own it.
+      // now the window, and two lit controls would each claim to own it. The
+      // blank strip is deliberate, not a bug — a title explains it on hover
+      // rather than leaving it looking like a click that didn't take.
       this.#range = '';
-      this.querySelector('#range-seg').value = '';
+      const seg = this.querySelector('#range-seg');
+      seg.value = '';
+      seg.title = `Showing ${this.querySelector('#month-select').select
+        ?.selectedOptions[0]?.textContent ?? 'the selected month'} — pick a preset range to override.`;
+      // The day picker is keyed to a single date, not a window, so a month
+      // jump has to move it too or it keeps showing the OLD month's days
+      // (see the comment on #syncDayToSelectedMonth).
+      this.#syncDayToSelectedMonth();
+      this.#renderDayGrid();
       this.#load();
     });
     this.querySelector('#range-seg').addEventListener('change', (e) => {
       this.#range = e.target.value;
+      this.querySelector('#range-seg').removeAttribute('title');
       this.#load();
     });
     this.querySelector('#agent-select').addEventListener('change', (e) => {
@@ -769,6 +782,25 @@ class TokenopsPage extends HTMLElement {
    * Redrawn on every pick, not just re-flagged, because moving into a new
    * month can also change how many cells there are.
    */
+  /**
+   * Moves `#day` inside whatever month the KPI strip's month select just
+   * jumped to. `#day` drives the concentration panel's calendar independently
+   * of the KPI/chart window (its endpoint takes one date, not a range) — but
+   * "independent" only meant the range group shouldn't also own it, not that
+   * a month jump should leave it behind. Without this the grid kept showing
+   * last month's days after the window had already moved on.
+   * Lands on today when the newly picked month IS the current month (there is
+   * still a "today" to default to); the 1st otherwise, since a past month has
+   * no "today" of its own to land on.
+   */
+  #syncDayToSelectedMonth() {
+    const start = new Date(this.querySelector('#month-select').value);
+    const now = new Date();
+    const isCurrentMonth = start.getFullYear() === now.getFullYear()
+      && start.getMonth() === now.getMonth();
+    this.#day = isCurrentMonth ? localDateStr(now) : localDateStr(start);
+  }
+
   #renderDayGrid() {
     const grid = this.querySelector('#day-grid');
     if (!grid) return;
