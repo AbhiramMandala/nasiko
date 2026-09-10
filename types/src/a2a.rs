@@ -774,6 +774,23 @@ pub fn build_pause_question(data: &str) -> serde_json::Value {
     // its own fallback) is what resume actually addresses.
     let task_id = status_update.get("taskId").and_then(|v| v.as_str());
 
+    pause_question(&message, metadata, task_id)
+}
+
+/// [`build_pause_question`] for a caller that already holds the decoded pause.
+///
+/// The orchestrator reaches a sub-agent's pause as a typed `PauseInfo` (message + metadata),
+/// never as the raw SSE payload, so it cannot call `build_pause_question` — and hand-rolling
+/// `{message, metadata}` there left every hoisted key buried in `metadata`, where no client
+/// looks: an orchestrator-origin selectable-options question arrived with no `question.options`
+/// and rendered as a plain text box, and an `auth_required` one with no `question.auth_url` had
+/// nowhere to send the human. Both origins go through this now, so `question` has one shape
+/// regardless of which path minted it, and `options` is validated exactly once either way.
+pub fn pause_question(
+    message: &str,
+    metadata: Option<serde_json::Value>,
+    task_id: Option<&str>,
+) -> serde_json::Value {
     let mut question = serde_json::json!({ "message": message });
     if let Some(metadata) = metadata
         && let Some(obj) = question.as_object_mut()
@@ -949,6 +966,44 @@ mod pause_parsing_tests {
         );
         // The full metadata blob is still kept underneath, unmodified.
         assert_eq!(question["metadata"]["provider"], "github");
+    }
+
+    /// The orchestrator holds a decoded `PauseInfo`, not the raw payload, so it persists its
+    /// pause through `pause_question` instead. It must land on the identical shape — it did not,
+    /// and every orchestrator-origin options question rendered as a plain text box because
+    /// `question.options` was buried one level down in `metadata`.
+    #[test]
+    fn pause_question_hoists_the_same_keys_as_the_raw_payload_path() {
+        let metadata = serde_json::json!({
+            "auth_url": "https://github.com/login/oauth/authorize?client_id=abc",
+            "provider": "github",
+            "options": [{"label": "Summary"}, {"label": "Detailed"}],
+            "multi_select": true,
+            "allow_custom_input": true,
+        });
+        let question = pause_question("Pick the sections", Some(metadata), Some("t1"));
+
+        assert_eq!(question["message"], "Pick the sections");
+        assert_eq!(question["provider"], "github");
+        assert_eq!(
+            question["auth_url"],
+            "https://github.com/login/oauth/authorize?client_id=abc"
+        );
+        assert_eq!(question["options"][1]["label"], "Detailed");
+        assert_eq!(question["multi_select"], true);
+        assert_eq!(question["allow_custom_input"], true);
+        // And the raw-payload path is this function plus parsing, not a second implementation.
+        assert_eq!(
+            build_pause_question(AUTH_REQUIRED_PAYLOAD),
+            pause_question(
+                "Please authorize with GitHub",
+                Some(serde_json::json!({
+                    "provider": "github",
+                    "auth_url": "https://github.com/login/oauth/authorize?client_id=abc"
+                })),
+                Some("t1"),
+            )
+        );
     }
 
     #[test]

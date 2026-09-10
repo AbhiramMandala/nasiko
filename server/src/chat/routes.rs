@@ -716,12 +716,18 @@ async fn list_messages(
         .and_then(|(ts, id)| id.parse::<Uuid>().ok().map(|u| (ts, u)))
         .or(params.after.map(|ts| (ts, Uuid::from_u128(u128::MAX))));
 
+    // `role <> 'system'` on every branch: a HITL resume records its continuation ("The archive
+    // agent replied: …") so the next turn's reasoning still has it (`INTERNAL_TRANSCRIPT_ROLE`,
+    // `router/a2a_dispatch.rs`), but nobody said it — shown in a transcript it reads as a message
+    // the human typed. Filtered in SQL rather than after the fetch so page sizes and cursors stay
+    // consistent with what the client actually receives.
+    //
     // Fetch DESC in all cases except `after`; reverse in Rust so client always sees ASC.
     let (msg_result, fetched_asc): (Result<Vec<ChatMessage>, _>, bool) = match (before, after) {
         (_, Some((after_ts, after_id))) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND (timestamp, id) > ($2, $3)
+                   WHERE session_id = $1 AND role <> 'system' AND (timestamp, id) > ($2, $3)
                    ORDER BY timestamp ASC, id ASC
                    LIMIT $4"#,
             )
@@ -736,7 +742,7 @@ async fn list_messages(
         (Some((before_ts, before_id)), None) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND (timestamp, id) < ($2, $3)
+                   WHERE session_id = $1 AND role <> 'system' AND (timestamp, id) < ($2, $3)
                    ORDER BY timestamp DESC, id DESC
                    LIMIT $4"#,
             )
@@ -751,7 +757,7 @@ async fn list_messages(
         (None, None) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1
+                   WHERE session_id = $1 AND role <> 'system'
                    ORDER BY timestamp DESC, id DESC
                    LIMIT $2"#,
             )
@@ -790,11 +796,53 @@ async fn list_messages(
         None
     };
 
-    Json(CursorPage {
-        data: rows,
-        has_more,
-        next_cursor: out_next_cursor,
-        prev_cursor: out_prev_cursor,
+    // Session-load HITL discovery (docs/HITL_STATUS.md): every HITL request tied to this
+    // session, pending or already resolved, rides along with the message page instead of
+    // requiring a separate `GET /api/hitl/pending` call. Scoped by BOTH `chat_session_id` and
+    // `owner_user_id` inside the query (`list_for_chat_session`) — the second is redundant with
+    // the `owns` check above in the ordinary case, but costs nothing and means a future refactor
+    // of that check can't silently turn this into a cross-user leak on its own. Reuses
+    // `router::hitl::to_response` verbatim so this can never drift from — or accidentally leak
+    // more than — the one HITL DTO the rest of the API already exposes (`resume_state` etc. stay
+    // excluded because `HitlRequest` itself isn't `Serialize`).
+    let hitl_rows = match state
+        .hitl_store
+        .list_for_chat_session(&session_id, user_id)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(%e, session_id, "list_messages: hitl lookup failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    // Each row goes through `resolve_display_row` before `to_response` — a no-op for the
+    // ordinary case, but substitutes the real row's id/kind/question when this row is a mirror
+    // of a real `mcp_tool` block (see that function's doc comment): otherwise the frontend would
+    // see the mirror's own generic question and could "resolve" an id that grants no real
+    // permission.
+    let mut hitl: Vec<serde_json::Value> = Vec::with_capacity(hitl_rows.len());
+    for row in &hitl_rows {
+        let display =
+            nasiko_hitl::resolve_display_row(state.hitl_store.as_ref(), row, user_id).await;
+        hitl.push(crate::router::hitl::to_response(&display));
+    }
+
+    #[derive(serde::Serialize)]
+    struct MessagesResponse {
+        #[serde(flatten)]
+        page: CursorPage<ChatMessage>,
+        hitl: Vec<serde_json::Value>,
+    }
+
+    Json(MessagesResponse {
+        page: CursorPage {
+            data: rows,
+            has_more,
+            next_cursor: out_next_cursor,
+            prev_cursor: out_prev_cursor,
+        },
+        hitl,
     })
     .into_response()
 }

@@ -50,6 +50,7 @@ fn agent_card_summary_constructs_with_all_fields() {
         skills: vec![SkillSummary {
             name: "rust".to_string(),
             description: "Rust programming".to_string(),
+            examples: Vec::new(),
         }],
         tags: vec!["engineering".to_string()],
     };
@@ -66,6 +67,7 @@ fn agent_card_summary_round_trips_through_json() {
         skills: vec![SkillSummary {
             name: "s1".to_string(),
             description: "d1".to_string(),
+            examples: Vec::new(),
         }],
         tags: vec!["t1".to_string()],
     };
@@ -89,6 +91,7 @@ fn skill_summary_constructs() {
     let s = SkillSummary {
         name: "code-review".to_string(),
         description: "Reviews code for bugs".to_string(),
+        examples: Vec::new(),
     };
     assert_eq!(s.name, "code-review");
     assert_eq!(s.description, "Reviews code for bugs");
@@ -99,6 +102,7 @@ fn skill_summary_round_trips_through_json() {
     let original = SkillSummary {
         name: "summarize".to_string(),
         description: "Summarizes long documents".to_string(),
+        examples: Vec::new(),
     };
     let json = serde_json::to_string(&original).unwrap();
     let restored: SkillSummary = serde_json::from_str(&json).unwrap();
@@ -138,6 +142,7 @@ async fn select_agent_with_live_llm_returns_valid_selection() {
             skills: vec![SkillSummary {
                 name: "rust".to_string(),
                 description: "Rust programming".to_string(),
+                examples: Vec::new(),
             }],
             tags: vec!["engineering".to_string()],
         },
@@ -148,6 +153,7 @@ async fn select_agent_with_live_llm_returns_valid_selection() {
             skills: vec![SkillSummary {
                 name: "trading".to_string(),
                 description: "Financial analysis".to_string(),
+                examples: Vec::new(),
             }],
             tags: vec!["finance".to_string()],
         },

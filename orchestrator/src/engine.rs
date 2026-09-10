@@ -15,7 +15,7 @@ use crate::selector::AgentSelector;
 use crate::selector::ConversationMessage;
 use crate::session_history::SessionHistory;
 use crate::types::{AgentCard, RouteRequest, RouteResult, RouterLogEntry};
-use crate::vector_store::{EmbeddingCache, TextEmbeddingCache, VectorStore};
+use crate::vector_store::{EmbeddingCache, VectorStore};
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -31,14 +31,8 @@ pub struct RouterConfig {
     pub shortlist_threshold: usize,
     /// Max candidates passed into Stage 3 (LLM selector).
     pub shortlist_size: usize,
-    /// How many recent chat messages the PACMS context selector draws
-    /// candidates from (see `SessionHistory::fetch_pacms`).
-    pub history_pool_size: usize,
-    /// Token budget the PACMS selector fills conversation context up to.
-    pub history_token_budget: usize,
-    /// How many of the most-recent pooled messages are always kept
-    /// regardless of relevance/coverage score.
-    pub history_mandatory_recent: usize,
+    /// How many chat messages to include as conversation context.
+    pub max_history_messages: usize,
 }
 
 impl Default for RouterConfig {
@@ -46,9 +40,7 @@ impl Default for RouterConfig {
         Self {
             shortlist_threshold: 15,
             shortlist_size: 10,
-            history_pool_size: 150,
-            history_token_budget: 2000,
-            history_mandatory_recent: 3,
+            max_history_messages: 20,
         }
     }
 }
@@ -66,11 +58,6 @@ pub struct OssRoutingEngine {
     /// every incoming request. See `EmbeddingCache` docs for the invalidation
     /// strategy (TTL + content-hash).
     embedding_cache: EmbeddingCache,
-    /// Cache of PACMS candidate/query embeddings shared across `route()` calls.
-    /// PACMS's history pool overlaps heavily turn-to-turn within a session, so
-    /// without this `SessionHistory::fetch_pacms` would re-embed the same
-    /// messages on every call. See `TextEmbeddingCache` docs.
-    history_embedding_cache: TextEmbeddingCache,
 }
 
 impl OssRoutingEngine {
@@ -91,7 +78,6 @@ impl OssRoutingEngine {
             base_url,
             embedding_model,
             embedding_cache: Arc::new(DashMap::new()),
-            history_embedding_cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -99,9 +85,7 @@ impl OssRoutingEngine {
         let router_config = RouterConfig {
             shortlist_threshold: config.router_shortlist_threshold,
             shortlist_size: config.router_shortlist_size,
-            history_pool_size: config.pacms_history_pool_size,
-            history_token_budget: config.pacms_history_token_budget,
-            history_mandatory_recent: config.pacms_history_mandatory_recent,
+            max_history_messages: config.max_router_history_messages,
         };
         Self::new(
             router_config,
@@ -122,26 +106,10 @@ impl RoutingEngine for OssRoutingEngine {
     async fn route(&self, req: RouteRequest, pool: &PgPool) -> Result<RouteResult, RouterError> {
         let t0 = Instant::now();
 
-        // Fetch available agents + conversation history in parallel. History
-        // uses the PACMS selector (budget-aware, coverage-diversified) rather
-        // than plain recency truncation — see `SessionHistory::fetch_pacms`.
-        let history_store = VectorStore::for_embedding(
-            self.api_key.clone(),
-            self.base_url.clone(),
-            self.embedding_model.clone(),
-            Arc::clone(&self.history_embedding_cache),
-        );
+        // Fetch available agents + conversation history in parallel
         let (agents, history) = tokio::join!(
             agent_registry::get_agents_for_user(req.user_id, pool),
-            SessionHistory::fetch_pacms(
-                &req.session_id,
-                pool,
-                &history_store,
-                &req.query,
-                self.config.history_pool_size,
-                self.config.history_token_budget,
-                self.config.history_mandatory_recent,
-            ),
+            SessionHistory::fetch(&req.session_id, pool, self.config.max_history_messages),
         );
         let agents = agents?;
 
@@ -361,6 +329,8 @@ fn card_to_summary(a: &AgentCard) -> AgentCardSummary {
             .map(|s| crate::models::SkillSummary {
                 name: s.clone(),
                 description: s.clone(),
+                // This card carries skills as bare strings — no examples to carry.
+                examples: Vec::new(),
             })
             .collect(),
         tags: a.tags.clone(),

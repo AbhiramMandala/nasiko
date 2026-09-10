@@ -541,19 +541,22 @@ async fn hitl_resolve_resumes_sub_agent_then_triggers_new_orchestrator_turn() {
     assert_eq!(resume_status, "completed");
 
     // The continuation message itself must be visible in the resumed session's own history, not
-    // just the reply — it was persisted as an ordinary user-role turn (`client_owns_transcript:
-    // false`), the same mechanism every other orchestrator turn uses.
-    let continuation_persisted: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM chat_messages
-         WHERE session_id = $1 AND role = 'user' AND content LIKE '%PR opened at #42%')",
+    // just the reply — a turn that re-pauses leaves no assistant message behind, so this is the
+    // only record of the resumed step. It is persisted under `INTERNAL_TRANSCRIPT_ROLE`, never
+    // `user`: the platform wrote it, and as a user-role row the transcript drew a chat bubble
+    // quoting the sub-agent back at the human as if they had typed it.
+    let continuation_role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM chat_messages
+         WHERE session_id = $1 AND content LIKE '%PR opened at #42%'",
     )
     .bind(OUTER_CONTEXT_ID)
-    .fetch_one(&server.db)
+    .fetch_optional(&server.db)
     .await
     .unwrap();
-    assert!(
-        continuation_persisted,
-        "the continuation message must be persisted as a normal turn, not silently synthesized"
+    assert_eq!(
+        continuation_role.as_deref(),
+        Some("system"),
+        "the continuation must be persisted for history, but never as the human's own turn"
     );
 
     server.cleanup().await;

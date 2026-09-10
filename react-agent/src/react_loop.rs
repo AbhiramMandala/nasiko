@@ -497,7 +497,24 @@ impl Orchestrator {
                 let skills = a
                     .skills
                     .iter()
-                    .map(|s| format!("    - {}: {}", s.name, s.description))
+                    .map(|s| {
+                        // The skill's own documented inputs. Without them the model invents wording
+                        // for a skill that may only answer to an exact phrase — and the agent then
+                        // answers a question the user never asked.
+                        let examples = if s.examples.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                "\n      send exactly: {}",
+                                s.examples
+                                    .iter()
+                                    .map(|e| format!("\"{e}\""))
+                                    .collect::<Vec<_>>()
+                                    .join(" | ")
+                            )
+                        };
+                        format!("    - {}: {}{}", s.name, s.description, examples)
+                    })
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!(
@@ -532,6 +549,9 @@ impl Orchestrator {
 
 - Only relay facts from agent responses. Never fabricate.
 - Prefer the most specific agent for each sub-task.
+- Pass the user's own wording through when the request is itself the thing to relay — an exact
+  phrase, a quoted string, a command, an identifier, a fixed test input. Paraphrasing it loses
+  information the agent matches on, and the agent then answers a question the user never asked.
 - If no agent fits, tell the user directly."#
         )
     }
@@ -622,7 +642,24 @@ async fn run_stream_inner(
             let skills = a
                 .skills
                 .iter()
-                .map(|s| format!("    - {}: {}", s.name, s.description))
+                .map(|s| {
+                    // The skill's own documented inputs. Without them the model invents wording
+                    // for a skill that may only answer to an exact phrase — and the agent then
+                    // answers a question the user never asked.
+                    let examples = if s.examples.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "\n      send exactly: {}",
+                            s.examples
+                                .iter()
+                                .map(|e| format!("\"{e}\""))
+                                .collect::<Vec<_>>()
+                                .join(" | ")
+                        )
+                    };
+                    format!("    - {}: {}{}", s.name, s.description, examples)
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
             format!(
@@ -657,6 +694,9 @@ async fn run_stream_inner(
 
 - Only relay facts from agent responses. Never fabricate.
 - Prefer the most specific agent for each sub-task.
+- Pass the user's own wording through when the request is itself the thing to relay — an exact
+  phrase, a quoted string, a command, an identifier, a fixed test input. Paraphrasing it loses
+  information the agent matches on, and the agent then answers a question the user never asked.
 - If no agent fits, tell the user directly."#
     );
 
