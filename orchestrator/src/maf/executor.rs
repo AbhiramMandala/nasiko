@@ -139,6 +139,25 @@ pub async fn run_maf_from(
             step_results.len()
         ));
     }
+    // `plans` below is built 1:1 from `step_results`, but the loop after it walks `i` up to
+    // `maf_def.steps.len()`, not `plans.len()` — the check above only bounds `resume_index`
+    // itself, not the two collections against each other. `step_results`/`tokens_used_so_far`/
+    // `output_generation` come from `maf_executions` while `maf_def` comes from the separate
+    // `maf_json` snapshot column, and nothing cross-checks the two on the way in: a persisted
+    // `step_results` shorter than the snapshot's own step list (found in review) would pass the
+    // check above whenever `resume_index` still lands inside both, then panic on the direct
+    // `plans[i]` index the first time the loop's `i` reaches `plans.len()` (== `step_results.len()`
+    // here) — after `continue_paused_step` has already run and the human's just-delivered answer
+    // has already been consumed, so the crash (caught by `process_job`'s `catch_unwind`, but still
+    // a hard failure) discards it instead of failing before any of that work starts.
+    if step_results.len() != maf_def.steps.len() {
+        return Err(format!(
+            "step_results length ({}) does not match the maf_json snapshot's step count ({}) — \
+             refusing to resume rather than run past the shorter one",
+            step_results.len(),
+            maf_def.steps.len()
+        ));
+    }
 
     let mut total_tokens = tokens_used_so_far;
     let mut total_cost = cost_used_so_far;
@@ -1633,6 +1652,77 @@ mod tests {
             provider.calls.load(Ordering::SeqCst),
             10,
             "a token-less trace must exhaust all 10 attempts, same as never-found"
+        );
+    }
+
+    fn maf_step(step_index: i32) -> MafStep {
+        MafStep {
+            step_id: Uuid::new_v4(),
+            step_index,
+            agent_id: Uuid::new_v4(),
+            agent_name: format!("agent-{step_index}"),
+            agent_endpoint: "http://example.invalid".into(),
+            task_description: "do the thing".into(),
+        }
+    }
+
+    /// Security/robustness regression (found in review): `step_results` (from `maf_executions`)
+    /// and `maf_def.steps` (from the separate `maf_json` snapshot column) are never cross-checked
+    /// on the way in. The old guard only bounded `resume_index` itself against both collections,
+    /// so a `step_results` shorter than `maf_def.steps` — entirely possible since the two come
+    /// from different columns — would pass that check whenever `resume_index` still landed inside
+    /// both, then panic on a direct index (`plans[i]`) once the post-resume loop's `i` walked past
+    /// `step_results.len()`. This must return a clean `Err`, never panic, and must do so before
+    /// touching `db`/`client`/`observability`/`llm` at all — none of those are wired to anything
+    /// real below, so a panic or an actual I/O attempt both fail this test.
+    #[tokio::test]
+    async fn run_maf_from_rejects_a_step_results_length_mismatch_instead_of_panicking() {
+        let steps: Vec<MafStep> = (0..3).map(maf_step).collect();
+        let maf_def = MafDefinition {
+            description: None,
+            steps: steps.clone(),
+            output_generation: None,
+        };
+        // Only 2 of the 3 steps' results were persisted — the exact shape a truncated/corrupted
+        // `maf_executions.step_results` column would take relative to a 3-step `maf_json` snapshot.
+        let step_results: Vec<StepResult> = steps[..2].iter().map(pending_result).collect();
+
+        let client = reqwest::Client::new();
+        let db = PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
+            .expect("connect_lazy never actually connects");
+        let observability = MockProvider {
+            fail_calls: 0,
+            calls: Arc::new(AtomicUsize::new(0)),
+            trace: trace_with_no_tokens(),
+        };
+        let llm = LlmClient::new(reqwest::Client::new(), String::new(), None, String::new());
+
+        let result = run_maf_from(
+            &client,
+            &db,
+            &observability,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            &maf_def,
+            &llm,
+            step_results,
+            0,
+            0.0,
+            String::new(),
+            0, // resume_index: in range for both the 3 steps and the 2 step_results
+            "task-1".into(),
+            "ctx-1".into(),
+            "the human's answer".into(),
+        )
+        .await;
+
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("a length mismatch must be rejected, not silently succeed"),
+        };
+        assert!(
+            err.contains("does not match"),
+            "error should name the actual mismatch: {err}"
         );
     }
 }
