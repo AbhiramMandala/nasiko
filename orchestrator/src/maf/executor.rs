@@ -1,23 +1,39 @@
+use std::sync::Arc;
 use std::time::Instant;
 
+use nasiko_flow::{FlowContext, FlowGuard};
 use sqlx::PgPool;
+use tracing::Instrument as _;
 use uuid::Uuid;
 
-use super::llm::{ChatMessage, LlmClient};
+use super::llm::{ChatMessage, LlmClient, LlmUsage};
 use super::types::{ExecutionResult, MafDefinition, MafStep, StepResult};
 
 /// Times an awaited step and emits it as an `info` event — visible under the
 /// default `RUST_LOG=info` with no special filter — giving a per-call timing
 /// breakdown of a MAF run (planning, per-step LLM calls, the agent HTTP round
-/// trip) without touching the Tempo/observability path.
+/// trip) without needing an OTel exporter configured at all.
+///
+/// This is deliberately kept alongside the spans added by `run_maf`: spans go
+/// to Tempo and are the only way to see the trace tree, but they produce
+/// nothing in a deployment with no collector, which is the common local case.
 async fn timed<T>(
-    label: &str,
+    label: &'static str,
     execution_id: Uuid,
     step_index: Option<i32>,
     fut: impl std::future::Future<Output = T>,
 ) -> T {
     let start = Instant::now();
-    let result = fut.await;
+    // `otel.name` renames the span for OTel export, which is how a single
+    // helper can emit distinctly-named spans despite `info_span!` requiring a
+    // constant name.
+    let span = tracing::info_span!(
+        "maf.phase",
+        otel.name = label,
+        execution_id = %execution_id,
+        step_index = step_index,
+    );
+    let result = fut.instrument(span).await;
     tracing::info!(
         target: "nasiko_orchestrator::maf",
         execution_id = %execution_id,
@@ -29,27 +45,280 @@ async fn timed<T>(
     result
 }
 
+/// Runs one of MAF's own LLM calls: times it, records the GenAI usage
+/// attributes on its span, and reports the call to the platform.
+///
+/// MAF used to total these tokens up itself into a bare scalar on
+/// `maf_executions.tokens_used`. That number was never priced and never
+/// reached any platform surface, so MAF's own orchestration spend — four-plus
+/// LLM calls per run, on the platform's key — was both unbilled and invisible.
+/// Metering is the platform's job, so each call is now handed to **both** of
+/// the platform's ingestion paths and MAF stops keeping its own books:
+///
+/// * **`token_usage`** — the billing table behind `/api/usage/*`. `cost_usd`
+///   is deliberately left NULL: the `calculate_usage_cost_trigger` prices the
+///   row from `model_pricing`, exactly as it does for the LLM router's rows.
+///   This is the same direct-insert pattern `engine.rs` already uses to meter
+///   the routing engine from this crate.
+/// * **`gen_ai.usage.*` span attributes** — read by the trace-usage
+///   materializer into `trace_usage`, which is what the TokenOps/FinOps
+///   dashboard queries.
+///
+/// The two are separate tables read by separate screens, so recording both is
+/// not double counting.
+///
+/// Metering must never break a run: a failed usage write is logged and
+/// swallowed, matching `write_selector_token_usage` and the router's
+/// `spawn_log`.
+async fn metered_llm<T>(
+    phase: &'static str,
+    db: &PgPool,
+    execution_id: Uuid,
+    user_id: Uuid,
+    step_index: Option<i32>,
+    llm: &LlmClient,
+    fut: impl std::future::Future<Output = Result<(T, LlmUsage), String>>,
+) -> Result<(T, LlmUsage), String> {
+    let start = Instant::now();
+    // `otel.name` renames the span for OTel export, which is how one helper
+    // emits distinctly-named spans despite `info_span!` needing a constant
+    // name. The `gen_ai.*` fields start Empty and are recorded once the call
+    // returns — the attribute names are the ones `extract_token_attrs` and
+    // `extract_cache_token_attrs` look for, so the materializer picks them up.
+    let span = tracing::info_span!(
+        "maf.phase",
+        otel.name = phase,
+        otel.kind = "client",
+        gen_ai.operation.name = "chat",
+        gen_ai.system = llm.provider(),
+        execution_id = %execution_id,
+        step_index = step_index,
+        gen_ai.request.model = tracing::field::Empty,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.usage.cached_tokens = tracing::field::Empty,
+    );
+
+    let result = fut.instrument(span.clone()).await;
+
+    // An empty model means no request was actually made — `generate_step_prompt`
+    // short-circuits a placeholder-free template without calling the LLM. Such
+    // a phase has nothing to meter, and writing a zeroed row for it would add
+    // a junk entry to the billing table for every literal step.
+    if let Ok((_, usage)) = &result
+        && !usage.model.is_empty()
+    {
+        span.record("gen_ai.request.model", usage.model.as_str());
+        span.record("gen_ai.usage.input_tokens", usage.input_tokens);
+        span.record("gen_ai.usage.output_tokens", usage.output_tokens);
+        span.record("gen_ai.usage.cached_tokens", usage.cached_tokens);
+        write_token_usage(db, execution_id, user_id, phase, step_index, llm, usage).await;
+    }
+
+    tracing::info!(
+        target: "nasiko_orchestrator::maf",
+        execution_id = %execution_id,
+        step_index = step_index,
+        label = phase,
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        "maf step timing"
+    );
+    result
+}
+
+/// Insert one `token_usage` row for a MAF orchestration LLM call.
+///
+/// `session_id` is the execution id, which is also the A2A `contextId` MAF
+/// sends its step agents — so MAF's own spend and its agents' spend aggregate
+/// under one session, the same convention the LLM router follows by writing
+/// the flow id there.
+///
+/// `cost_usd` is not bound: leaving it NULL is what lets the DB trigger price
+/// the row. Writing a zero here would defeat it.
+async fn write_token_usage(
+    db: &PgPool,
+    execution_id: Uuid,
+    user_id: Uuid,
+    phase: &'static str,
+    step_index: Option<i32>,
+    llm: &LlmClient,
+    usage: &LlmUsage,
+) {
+    let metadata = serde_json::json!({
+        "key_source": "platform",
+        "component": "maf",
+        "phase": phase,
+        "execution_id": execution_id.to_string(),
+        "step_index": step_index,
+    });
+
+    let result = sqlx::query(
+        r#"INSERT INTO token_usage
+               (user_id, operation_type, session_id, provider, model,
+                input_tokens, output_tokens, total_tokens,
+                cached_tokens, cache_read_input_tokens,
+                latency_ms, streaming, metadata)
+           VALUES ($1, 'maf_orchestration', $2, $3, $4, $5, $6, $7, $8, $8, $9, false, $10)"#,
+    )
+    .bind(user_id)
+    .bind(execution_id.to_string())
+    .bind(llm.provider())
+    .bind(&usage.model)
+    .bind(usage.input_tokens as i32)
+    .bind(usage.output_tokens as i32)
+    .bind(usage.total_tokens as i32)
+    .bind(usage.cached_tokens as i32)
+    .bind(usage.latency_ms as i32)
+    .bind(metadata)
+    .execute(db)
+    .await;
+
+    if let Err(e) = result {
+        tracing::warn!(
+            execution_id = %execution_id,
+            phase,
+            error = %e,
+            "maf: token_usage write failed (non-fatal)"
+        );
+    }
+}
+
+/// Runs one MAF execution under a `maf.execution` span.
+///
+/// The span matters for more than tidiness. MAF previously emitted no spans at
+/// all, and forwarded each step a `traceparent` whose ids it derived locally
+/// from `(execution_id, step_index)` — see `build_traceparent`. Those ids were
+/// well-formed but named a span no exporter ever produced, so in Tempo each
+/// step's agent appeared as an orphan tree with no MAF node above it, and the
+/// run itself was invisible. Wrapping the run and each step in real spans
+/// makes a MAF execution one connected trace: the run, its planning and
+/// synthesis phases, each step, and each step agent's own spans beneath it.
 // 7 params is at clippy's default threshold; grouping them into a context
 // struct isn't worth it for this one call site (worker.rs).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_maf(
     client: &reqwest::Client,
     db: &PgPool,
+    flow_guard: &Arc<FlowGuard>,
     execution_id: Uuid,
     user_id: Uuid,
     maf_def: &MafDefinition,
     llm: &LlmClient,
     content: Option<&str>,
 ) -> Result<ExecutionResult, String> {
-    // Seed one "pending" entry per step and persist immediately, so the full
-    // step list is visible in the DB before the (possibly slow) planning LLM
-    // call even starts.
-    let mut step_results: Vec<StepResult> = maf_def.steps.iter().map(pending_result).collect();
-    // Agent-call spend is no longer priced on the execution path (see the
-    // per-step comment below); this column is kept written so its shape is
-    // unchanged, and the usage API serves the real figure.
+    // A MAF run is driven by a background worker, not a request, so there is
+    // no inbound traceparent to continue — this span is legitimately a root.
+    let span = tracing::info_span!(
+        "maf.execution",
+        otel.kind = "internal",
+        // `session.id` is how the platform finds a trace at all: the
+        // trace-usage materializer discovers work with the TraceQL
+        // `{span.session.id != ""}`, and `agent_session_query` expects it on
+        // the server's own dispatch spans. Without it this trace exists in
+        // Tempo but is invisible to every reader, so MAF's spend would never
+        // reach `trace_usage`.
+        //
+        // The value is the execution id, which is also the A2A `contextId`
+        // MAF sends its step agents — so the run and its agents group under
+        // one session rather than appearing as unrelated traces.
+        session.id = %execution_id,
+        execution_id = %execution_id,
+        user_id = %user_id,
+        step_count = maf_def.steps.len(),
+    );
+    run_maf_inner(
+        client,
+        db,
+        flow_guard,
+        execution_id,
+        user_id,
+        maf_def,
+        llm,
+        content,
+    )
+    .instrument(span)
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_maf_inner(
+    client: &reqwest::Client,
+    db: &PgPool,
+    flow_guard: &Arc<FlowGuard>,
+    execution_id: Uuid,
+    user_id: Uuid,
+    maf_def: &MafDefinition,
+    llm: &LlmClient,
+    content: Option<&str>,
+) -> Result<ExecutionResult, String> {
+    // Seed one entry per step and persist immediately, so the full step list
+    // is visible in the DB before the (possibly slow) planning LLM call even
+    // starts.
+    //
+    // On a retry this carries the previous attempt's completed steps forward
+    // instead of starting clean — see `resume_from`. A retry re-enqueues the
+    // same `execution_id`, so the earlier attempt's snapshot is still in the
+    // row and its finished work can be reused rather than repeated.
+    let prior = load_prior_results(db, execution_id).await;
+    let resumed = prior.iter().filter(|s| s.status == "success").count();
+    let mut step_results: Vec<StepResult> = resume_from(&maf_def.steps, &prior);
+    if resumed > 0 {
+        tracing::info!(
+            execution_id = %execution_id,
+            resumed_steps = resumed,
+            total_steps = maf_def.steps.len(),
+            "maf: resuming from a previous attempt"
+        );
+    }
+    // Progress writes carry 0 cost: the real figure is read back from the
+    // platform's priced `token_usage` rows once the run finishes (see
+    // `platform_spend`), because a call's cost isn't known until it has been
+    // made and metered.
     let total_cost = 0f64;
-    persist_progress(db, execution_id, &step_results, 0, total_cost).await;
+    // Carry the resumed steps' token figures into the running tally so the
+    // live number in the UI doesn't visibly drop at the start of a retry. The
+    // final value is re-read from `token_usage` regardless.
+    let resumed_tokens: i64 = step_results
+        .iter()
+        .filter(|s| s.status == "success")
+        .map(|s| s.tokens_used)
+        .sum();
+    persist_progress(db, execution_id, &step_results, resumed_tokens, total_cost).await;
+
+    // Register the execution as a platform session.
+    //
+    // `chat_sessions.session_id` is the A2A `contextId` — per its own schema
+    // comment, "the platform-wide session key shared by chat history, agent
+    // tasks, and observability". MAF already sends `execution_id` as the
+    // contextId to every step agent, so the run IS a session; it just never
+    // said so. `agent_proxy` upserts this row before forwarding any message,
+    // and MAF has to as well, because `session_traces.session_id` is a
+    // foreign key onto this table — without the row, the per-step trace index
+    // below cannot be written and the run's agent spend stays undiscoverable.
+    //
+    // `agent_id` is left NULL deliberately: a MAF run spans several agents
+    // and no single one owns the session.
+    let session_title = maf_def
+        .description
+        .clone()
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or_else(|| format!("MAF execution {execution_id}"));
+    if let Err(e) = sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, title)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (session_id) DO NOTHING",
+    )
+    .bind(execution_id.to_string())
+    .bind(user_id)
+    .bind(&session_title)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(
+            error = %e, execution_id = %execution_id,
+            "maf: could not register the execution as a session — its agent spend will not be discoverable"
+        );
+    }
 
     // Run-time data for this execution only, folded into step 0's task
     // description before planning — lets one saved workflow shape (e.g.
@@ -74,34 +343,59 @@ pub async fn run_maf(
     // Generates prompt templates (with <placeholders>), to_extract goals, and
     // the output_generation guideline from the task descriptions.
     // Planning happens on every execution (Python MAF parity).
-    let (step_plans, output_generation, plan_tokens) = timed(
+    let ((step_plans, output_generation), plan_usage) = metered_llm(
         "plan_execution",
+        db,
         execution_id,
+        user_id,
         None,
+        llm,
         plan_execution(&planning_steps, llm),
     )
     .await?;
-    let mut total_tokens = plan_tokens;
+    let mut total_tokens = plan_usage.total_tokens + resumed_tokens;
 
     // Fill in the prompt template / extraction goal now that planning is
     // done — steps stay "pending" until their turn in the loop below.
+    //
+    // Steps carried over from an earlier attempt keep the plan they actually
+    // ran under. Planning is re-run every attempt (Python MAF parity, and the
+    // guideline it returns is not persisted), but its output for an
+    // already-finished step describes a call that never happened — storing it
+    // would make the recorded template disagree with the recorded prompt.
     for (result, plan) in step_results.iter_mut().zip(step_plans.iter()) {
+        if result.status == "success" {
+            continue;
+        }
         result.prompt_template = plan.prompt.clone();
         result.to_extract = plan.to_extract.clone();
     }
     persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
 
     for (i, (step, plan)) in maf_def.steps.iter().zip(step_plans.iter()).enumerate() {
+        // Carried over from an earlier attempt. Skipping is not just an
+        // optimisation: agent calls are not idempotent, so re-running a step
+        // that already succeeded can repeat its side effects (a sent mail, a
+        // filed ticket) once per attempt. Its `extracted_info` is already in
+        // `step_results`, so `build_context` below still feeds it to the
+        // steps that follow.
+        if step_results[i].status == "success" {
+            continue;
+        }
+
         let context = build_context(&step_results[..i]);
 
         step_results[i].status = "running".to_string();
         persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
 
         // ── LLM call 2: fill <placeholders> with context from previous steps ─
-        let (actual_prompt, prompt_tokens) = match timed(
+        let (actual_prompt, prompt_usage) = match metered_llm(
             "generate_step_prompt",
+            db,
             execution_id,
+            user_id,
             Some(step.step_index),
+            llm,
             generate_step_prompt(&plan.prompt, &step.task_description, &context, llm),
         )
         .await
@@ -118,7 +412,48 @@ pub async fn run_maf(
 
         // ── Agent call ────────────────────────────────────────────────────────
         let start = Instant::now();
+
+        // The forwarded traceparent keeps the locally-derived, per-step trace
+        // id — deliberately, and NOT the id of the `maf.step` span below.
+        //
+        // It is tempting to forward the real span's ids so the agent's spans
+        // parent to an exported node. But every `maf.step` span is a child of
+        // the one `maf.execution` root, so they all share a single trace id,
+        // and two things depend on each step having its OWN:
+        //
+        //   1. Usage attribution. `trace_usage` is keyed by
+        //      `(trace_id, agent_name)`, so a workflow that uses one agent for
+        //      several steps would collapse into a single row — each step
+        //      would report the whole run's tokens, and the totals would
+        //      multiply them by the step count.
+        //   2. Authorization. This id is the `flows.flow_id` the MCP gateway
+        //      and LLM router check this step's agent against, and the
+        //      participant record below is written per (flow_id, agent_id).
+        //
+        // The trade-off is that an agent's spans form their own trace rather
+        // than nesting under the MAF span. `maf.trace_id` on the step span
+        // below records the link so a Tempo reader can hop across.
         let (traceparent, trace_id) = build_traceparent(execution_id, step.step_index);
+
+        // One real span per step. MAF previously emitted none at all, so a run
+        // was entirely invisible in Tempo; these give the run, its phases and
+        // its steps real exported nodes.
+        let step_span = tracing::info_span!(
+            "maf.step",
+            otel.kind = "client",
+            gen_ai.operation.name = "invoke_agent",
+            execution_id = %execution_id,
+            step_index = step.step_index,
+            agent.id = %step.agent_id,
+            agent.name = %step.agent_name,
+            // The trace the agent's own spans will land under.
+            maf.trace_id = %trace_id,
+        );
+
+        // Record the trace id before the call, not after it succeeds: an agent
+        // that burns tokens and then fails (or times out) still produced spans,
+        // and this is the only handle the usage API has to find them.
+        step_results[i].trace_id = Some(trace_id.clone());
 
         // Register this step as a flow so the LLM gateway sees it as IN-FLOW (not
         // inert) and its tier classifier can fire. The invariant the gateway relies
@@ -163,21 +498,178 @@ pub async fn run_maf(
             );
         }
 
-        let raw_response = match timed(
+        // Index this step's trace against the run so the platform can FIND it.
+        //
+        // The trace-usage materializer discovers work two ways: a TraceQL
+        // search for `{span.session.id != ""}`, unioned with this table. A
+        // step's trace contains only the agent's own spans — MAF's `maf.step`
+        // span lives on the execution trace, not this one — and agents that
+        // don't run the instrumentation patch never set `session.id`, which is
+        // exactly the gap this index exists to cover.
+        //
+        // Without this row a step's agent spend reaches Tempo and is never
+        // found, so `trace_usage` stays empty and the usage API can never
+        // resolve the step. `agent_proxy.rs` and `a2a_dispatch.rs` both write
+        // it; MAF did not, which is why it kept missing pieces of what the
+        // proxy does. Best-effort: a failed index only costs visibility.
+        if let Err(e) = sqlx::query(
+            "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (session_id, trace_id) DO NOTHING",
+        )
+        .bind(execution_id.to_string())
+        .bind(&trace_id)
+        .bind(step.agent_id)
+        .bind(&step.agent_name)
+        .execute(db)
+        .await
+        {
+            tracing::warn!(
+                error = %e, execution_id = %execution_id, %trace_id,
+                "maf: session trace index failed — this step's agent spend will not be discoverable"
+            );
+        }
+
+        // Resolve the agent's endpoint NOW rather than trusting the one frozen
+        // into `maf_json` when the workflow was saved.
+        //
+        // `step.agent_endpoint` is a snapshot from creation time, and Docker
+        // hands out a fresh random host port every time a container is
+        // recreated. So a saved workflow kept pointing at a port that had
+        // since moved, and every run failed with a connection error to a dead
+        // address — permanently, for the life of the workflow. This is the
+        // same staleness `agent_proxy.rs` documents and resolves for its own
+        // path; MAF simply never did the lookup.
+        //
+        // A missing snapshot on the agent row (`endpoint: None`, e.g. a k8s
+        // deploy that returned before the pod was Ready) falls back to the
+        // stored value rather than failing outright — matching the proxy's
+        // handling, and the only route by which an externally-registered
+        // agent still works.
+        let endpoint = match nasiko_agent_proxy::resolve(db, step.agent_id).await {
+            Ok(resolved) => resolved
+                .endpoint
+                .map(|e| format!("http://{}:{}", e.host, e.port))
+                .unwrap_or_else(|| step.agent_endpoint.clone()),
+            Err(e) => {
+                let err = format!(
+                    "step {} (agent '{}'): {e}",
+                    step.step_index, step.agent_name
+                );
+                step_results[i].status = "failed".to_string();
+                step_results[i].prompt = actual_prompt;
+                step_results[i].error = Some(err.clone());
+                persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
+                return Err(err);
+            }
+        };
+
+        // Cascade limits, enforced before the call goes out.
+        //
+        // MAF calls its step agents directly rather than through the server
+        // proxy, so it never passed the chokepoint where the platform applies
+        // FlowGuard — depth, fan-out, per-flow token budget, wall clock and
+        // cycle detection. Every other dispatch path is bounded by these;
+        // MAF was the one that wasn't, so a workflow could fan out or loop
+        // without limit. This applies the same guard instance the proxy and
+        // A2A dispatch use, received from the composition root.
+        //
+        // The context is scoped to the STEP, not the run. A run-level context
+        // would put the whole workflow under one `flow_timeout_secs` window
+        // (120s by default) and one fan-out budget, which would reject
+        // ordinary long or many-step workflows. Per-step also matches the
+        // `flows` row written just above and the window the MCP gateway
+        // authorises against, so all three agree on what "this step" means.
+        let flow_ctx = FlowContext {
+            flow_id: trace_id.clone(),
+            // The span id from the traceparent this step forwards, so the
+            // guard's view of the call and the agent's view agree.
+            parent_span_id: traceparent
+                .split('-')
+                .nth(2)
+                .unwrap_or_default()
+                .to_string(),
+        };
+        // The root is the CALLER, not the callee: `init_flow` seeds the call
+        // chain with this name, so naming the target here would make cycle
+        // detection reject the very first call to it. Mirrors the A2A
+        // dispatch path, which seeds "orchestrator".
+        flow_guard.init_flow(&flow_ctx, "maf").await;
+        if let Err(rejection) = flow_guard.check(&flow_ctx, &step.agent_name).await {
+            let err = format!(
+                "step {} (agent '{}') blocked by flow limits: {rejection}",
+                step.step_index, step.agent_name
+            );
+            step_results[i].status = "failed".to_string();
+            step_results[i].prompt = actual_prompt;
+            step_results[i].error = Some(err.clone());
+            persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
+            return Err(err);
+        }
+        if let Err(rejection) = flow_guard
+            .record_invocation(&flow_ctx, &step.agent_name)
+            .await
+        {
+            let err = format!(
+                "step {} (agent '{}') blocked by flow limits: {rejection}",
+                step.step_index, step.agent_name
+            );
+            step_results[i].status = "failed".to_string();
+            step_results[i].prompt = actual_prompt;
+            step_results[i].error = Some(err.clone());
+            persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
+            return Err(err);
+        }
+
+        let raw_response = timed(
             "call_agent",
             execution_id,
             Some(step.step_index),
             call_agent(
                 client,
-                &step.agent_endpoint,
+                &endpoint,
                 &execution_id.to_string(),
                 &user_id.to_string(),
                 &actual_prompt,
                 &traceparent,
             ),
         )
+        .instrument(step_span)
+        .await;
+
+        // Unwind the guard's call stack whether or not the call succeeded —
+        // `record_invocation` pushed onto it, so an early return here would
+        // leave the frame in place and make cycle detection reject a later,
+        // legitimate call to the same agent.
+        flow_guard.record_return(&flow_ctx).await;
+
+        // Close the flow now the agent call has returned.
+        //
+        // MAF was the only dispatch path that never did this — it only ever
+        // INSERTed. Two consequences it fixes: the MCP gateway authorises any
+        // caller presenting this trace id for as long as the row is `running`
+        // and younger than `flow_timeout_secs`, so leaving it open held the
+        // window open for the full 120s no matter when the call actually
+        // ended; and the rows accumulated permanently in `running`, polluting
+        // `/api/flows/*`. Closed on failure too — a failed step's window
+        // should shut at least as promptly as a successful one's.
+        if let Err(e) = sqlx::query(
+            r#"UPDATE flows SET status = 'completed',
+               duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
+               completed_at = now()
+               WHERE flow_id = $1"#,
+        )
+        .bind(&trace_id)
+        .execute(db)
         .await
         {
+            tracing::warn!(
+                error = %e, flow_id = %trace_id,
+                "maf: could not close flow — its authorization window stays open until it ages out"
+            );
+        }
+
+        let raw_response = match raw_response {
             Ok(v) => v,
             Err(e) => {
                 let err = format!(
@@ -201,10 +693,13 @@ pub async fn run_maf(
         );
 
         // ── LLM call 3: extract relevant info from agent response ─────────────
-        let (extracted, extract_tokens) = match timed(
+        let (extracted, extract_usage) = match metered_llm(
             "extract_info",
+            db,
             execution_id,
+            user_id,
             Some(step.step_index),
+            llm,
             extract_info(
                 &plan.prompt,
                 &actual_prompt,
@@ -228,7 +723,23 @@ pub async fn run_maf(
             }
         };
 
-        let llm_tokens = prompt_tokens + extract_tokens;
+        let llm_tokens = prompt_usage.total_tokens + extract_usage.total_tokens;
+
+        // Charge this step's reasoning against the flow's token budget. The
+        // budget is only meaningful if something reports spend into it, and
+        // this is the spend MAF knows synchronously. The step agent's own LLM
+        // calls are charged separately by whichever path serves them — they
+        // carry this same trace id, so they land against the same flow.
+        if llm_tokens > 0
+            && let Err(e) = flow_guard.record_tokens(&flow_ctx, llm_tokens as u64).await
+        {
+            tracing::warn!(
+                execution_id = %execution_id,
+                step_index = step.step_index,
+                error = %e,
+                "maf: flow token budget exceeded"
+            );
+        }
 
         // Agent-side token usage is deliberately NOT collected here. It exists
         // only as OTel span attributes, and agents batch-export spans every
@@ -279,10 +790,8 @@ pub async fn run_maf(
         step_results[i].tokens_used = step_tokens;
         // The agent-usage fields (input/output/cache/model/cost) stay at their
         // zero defaults in the stored row — they are served by the usage API,
-        // which reads them from `trace_usage` at request time. Recording the
-        // trace id is what makes that join possible without the caller having
-        // to re-derive it.
-        step_results[i].trace_id = Some(trace_id);
+        // which reads them from `trace_usage` keyed on the `trace_id` recorded
+        // above.
         step_results[i].latency_ms = latency_ms;
         step_results[i].context = Some(new_context);
         persist_progress(db, execution_id, &step_results, total_tokens, total_cost).await;
@@ -292,22 +801,135 @@ pub async fn run_maf(
     // Use the guidelines generated by the planner at runtime.
     let guidelines = &output_generation;
 
-    let (output, output_tokens) = timed(
+    let (output, output_usage) = metered_llm(
         "generate_final_output",
+        db,
         execution_id,
+        user_id,
         None,
+        llm,
         generate_final_output(&step_results, guidelines, llm),
     )
     .await
     .map_err(|e| format!("final output generation failed: {e}"))?;
-    total_tokens += output_tokens;
+    total_tokens += output_usage.total_tokens;
+
+    // Report what the platform recorded, not what MAF counted.
+    //
+    // Every LLM call above wrote a `token_usage` row, and the
+    // `calculate_usage_cost_trigger` priced it from `model_pricing`. Those
+    // rows are what the platform bills from, so reading them back is what
+    // makes the reported figure true by construction rather than a second
+    // tally that can drift from it.
+    //
+    // Safe to read here: `metered_llm` awaits each insert, so every row for
+    // this execution is committed. It is a plain read at the very end of the
+    // run, so it reintroduces none of the write-race the old detached
+    // backfill had.
+    let spend = platform_spend(db, execution_id).await;
+
+    // Restate the per-step figures from the same rows the total came from.
+    //
+    // Until now the execution total was platform-sourced while the step rows
+    // were MAF's own running tally — two sources for one quantity, free to
+    // drift (a metering write that failed lowers the total but not the steps).
+    // Overwriting them here means every token figure MAF reports, at every
+    // level, traces to the same `token_usage` rows the platform bills from.
+    //
+    // Note the steps still will not sum to the total, and correctly so:
+    // planning and final synthesis belong to the run, not to any step.
+    for result in step_results.iter_mut() {
+        if let Some((tokens, cost)) = spend.by_step.get(&result.step_index) {
+            result.tokens_used = *tokens;
+            result.cost_usd = *cost;
+        }
+    }
+
+    // MAF's own running tally survives only for the case where metering itself
+    // failed and the read came back empty — a stale number beats a zero that
+    // reads as "this run was free".
+    let tokens_used = if spend.total_tokens > 0 {
+        spend.total_tokens
+    } else {
+        total_tokens
+    };
 
     Ok(ExecutionResult {
         output,
         step_results,
-        tokens_used: total_tokens,
-        cost_usd: total_cost,
+        tokens_used,
+        cost_usd: spend.total_cost_usd,
     })
+}
+
+/// This execution's orchestration spend — tokens and USD — as recorded and
+/// priced by the platform.
+///
+/// Read back rather than accumulated in memory, so the number MAF reports is
+/// the same one the platform bills from. A locally-summed total can silently
+/// disagree with `token_usage` (a metering write that failed, a partially
+/// completed run, a retry that re-ran some steps); reading makes the two
+/// agree by construction, and there is exactly one source of truth.
+///
+/// Scope is MAF's own LLM calls only. Agent-side spend is metered separately
+/// against each step's own trace and served by
+/// `GET /api/maf/execution/{id}/usage`.
+///
+/// Returns zeroes on error — a missing figure must never fail a run, or turn
+/// a real failure into a different one.
+pub(super) async fn platform_spend(db: &PgPool, execution_id: Uuid) -> PlatformSpend {
+    /// `(step_index, tokens, cost_usd)` — step_index is NULL for run-level phases.
+    type SpendRow = (Option<i32>, Option<i64>, Option<f64>);
+
+    let result: Result<Vec<SpendRow>, sqlx::Error> = sqlx::query_as(
+        "SELECT (metadata->>'step_index')::int,
+                COALESCE(SUM(total_tokens), 0)::BIGINT,
+                COALESCE(SUM(cost_usd), 0)::DOUBLE PRECISION
+           FROM token_usage
+          WHERE operation_type = 'maf_orchestration'
+            AND session_id = $1
+          GROUP BY 1",
+    )
+    .bind(execution_id.to_string())
+    .fetch_all(db)
+    .await;
+
+    let rows = match result {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                execution_id = %execution_id,
+                error = %e,
+                "maf: could not read back platform-recorded spend (reporting 0)"
+            );
+            return PlatformSpend::default();
+        }
+    };
+
+    let mut spend = PlatformSpend::default();
+    for (step_index, tokens, cost) in rows {
+        let tokens = tokens.unwrap_or(0);
+        let cost = cost.unwrap_or(0.0);
+        spend.total_tokens += tokens;
+        spend.total_cost_usd += cost;
+        // A NULL step_index is a run-level phase (planning, final synthesis) —
+        // real spend that belongs to no single step, which is exactly why the
+        // execution total is larger than the sum of its steps.
+        if let Some(i) = step_index {
+            spend.by_step.insert(i, (tokens, cost));
+        }
+    }
+    spend
+}
+
+/// One execution's orchestration spend, split the way the platform recorded it.
+#[derive(Default)]
+pub(super) struct PlatformSpend {
+    pub total_tokens: i64,
+    pub total_cost_usd: f64,
+    /// `step_index -> (tokens, cost_usd)`. Excludes run-level phases, so these
+    /// deliberately do not sum to the total.
+    pub by_step: std::collections::HashMap<i32, (i64, f64)>,
 }
 
 /// Builds a placeholder "pending" entry for a step before planning/execution
@@ -336,6 +958,80 @@ fn pending_result(step: &MafStep) -> StepResult {
         context: None,
         obs_logs: serde_json::Value::Null,
     }
+}
+
+/// This execution's last persisted step snapshot, or an empty vec when there
+/// is none (first attempt) or it can't be read.
+///
+/// An unreadable or malformed snapshot is not an error: `resume_from` treats
+/// an empty prior as "start clean", which is exactly the old behaviour. A
+/// retry that re-runs everything is wasteful, never wrong.
+async fn load_prior_results(db: &PgPool, execution_id: Uuid) -> Vec<StepResult> {
+    let stored: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT step_results FROM maf_executions WHERE id = $1")
+            .bind(execution_id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None)
+            .flatten();
+
+    let Some(value) = stored else {
+        return Vec::new();
+    };
+    serde_json::from_value(value).unwrap_or_else(|e| {
+        tracing::warn!(
+            error = %e, execution_id = %execution_id,
+            "maf: previous step snapshot could not be parsed — restarting from the first step"
+        );
+        Vec::new()
+    })
+}
+
+/// Builds this attempt's starting step list, carrying forward the leading run
+/// of steps that already succeeded on a previous attempt.
+///
+/// Only a *prefix* is reused. Execution is sequential and aborts at the first
+/// failure, so successes always form one; taking only the prefix means a
+/// snapshot that somehow disagrees degrades into re-running more, never into
+/// running a step against context its predecessor never produced.
+///
+/// Falls back to a clean run whenever the snapshot doesn't describe this
+/// definition — a different step count, or the same position holding a
+/// different `step_id`. Reusing output across a changed definition would feed
+/// one step's result into another step's prompt.
+fn resume_from(steps: &[MafStep], prior: &[StepResult]) -> Vec<StepResult> {
+    let fresh = || steps.iter().map(pending_result).collect::<Vec<_>>();
+
+    if prior.len() != steps.len() {
+        return fresh();
+    }
+    if prior
+        .iter()
+        .zip(steps)
+        .any(|(old, s)| old.step_id != s.step_id)
+    {
+        return fresh();
+    }
+
+    let completed = prior
+        .iter()
+        .take_while(|old| old.status == "success")
+        .count();
+
+    steps
+        .iter()
+        .enumerate()
+        .map(|(i, step)| {
+            if i < completed {
+                prior[i].clone()
+            } else {
+                // Anything not carried over restarts clean, which also clears
+                // the failed step's stale `error` so the UI doesn't show last
+                // attempt's message while this one is running.
+                pending_result(step)
+            }
+        })
+        .collect()
 }
 
 /// Writes the current step progress snapshot to `maf_executions.step_results`.
@@ -373,7 +1069,7 @@ struct StepPlan {
 async fn plan_execution(
     steps: &[MafStep],
     llm: &LlmClient,
-) -> Result<(Vec<StepPlan>, String, i64), String> {
+) -> Result<((Vec<StepPlan>, String), LlmUsage), String> {
     let system = "You are a MAF (Multi-Agent Flow) step planner.\n\
                   Given a list of steps (each with a task description and the agent that will \
                   handle it), generate:\n\
@@ -434,7 +1130,7 @@ async fn plan_execution(
         "additionalProperties": false
     });
 
-    let (json, tokens) = llm
+    let (json, usage) = llm
         .chat_json_schema(
             vec![
                 ChatMessage::system(system),
@@ -480,7 +1176,7 @@ async fn plan_execution(
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    Ok((plans, output_generation, tokens))
+    Ok(((plans, output_generation), usage))
 }
 
 // ─── LLM call 2: prompt generator ────────────────────────────────────────────
@@ -490,10 +1186,12 @@ async fn generate_step_prompt(
     task_description: &str,
     context: &str,
     llm: &LlmClient,
-) -> Result<(String, i64), String> {
+) -> Result<(String, LlmUsage), String> {
     // No placeholders — send the template verbatim, no LLM call needed.
+    // Zeroed usage rather than a real one: nothing was spent, so no
+    // `token_usage` row should be written for this step's prompt phase.
     if !template.contains('<') {
-        return Ok((template.to_string(), 0));
+        return Ok((template.to_string(), LlmUsage::default()));
     }
 
     // When there are no prior step results, use the task description so the LLM can
@@ -558,7 +1256,7 @@ async fn generate_step_prompt(
         "additionalProperties": false
     });
 
-    let (json, tokens) = llm
+    let (json, usage) = llm
         .chat_json_schema(
             vec![
                 ChatMessage::system(system),
@@ -576,7 +1274,7 @@ async fn generate_step_prompt(
         .map(|s| s.to_string())
         .ok_or_else(|| "LLM prompt generation returned no 'prompt' field".to_string())?;
 
-    Ok((prompt, tokens))
+    Ok((prompt, usage))
 }
 
 // ─── LLM call 3: extractor ────────────────────────────────────────────────────
@@ -588,7 +1286,7 @@ async fn extract_info(
     goal: &str,
     context: &str,
     llm: &LlmClient,
-) -> Result<(String, i64), String> {
+) -> Result<(String, LlmUsage), String> {
     // System prompt matches Python's MAFExecutor._extract_info exactly.
     let system = "You are a Multi-Agent Flow (MAF) information extractor.\n\
                   Your task is to extract specific information from an agent's response based \
@@ -667,7 +1365,7 @@ async fn extract_info(
         "additionalProperties": false
     });
 
-    let (json, tokens) = llm
+    let (json, usage) = llm
         .chat_json_schema(
             vec![
                 ChatMessage::system(system),
@@ -685,7 +1383,7 @@ async fn extract_info(
         .map(|s| s.to_string())
         .ok_or_else(|| "LLM extraction returned no 'extracted_info' field".to_string())?;
 
-    Ok((extracted, tokens))
+    Ok((extracted, usage))
 }
 
 // ─── LLM call 4: final output synthesiser ────────────────────────────────────
@@ -694,7 +1392,7 @@ async fn generate_final_output(
     step_results: &[StepResult],
     guidelines: &str,
     llm: &LlmClient,
-) -> Result<(String, i64), String> {
+) -> Result<(String, LlmUsage), String> {
     // System prompt matches Python's MAFExecutor._create_final_output exactly.
     let system = "You are a Multi-Agent Flow (MAF) final output generator.\n\
                   Your task is to consolidate all information extracted from various agents \
@@ -763,7 +1461,7 @@ async fn generate_final_output(
         "additionalProperties": false
     });
 
-    let (json, tokens) = llm
+    let (json, usage) = llm
         .chat_json_schema(
             vec![
                 ChatMessage::system(system),
@@ -781,7 +1479,7 @@ async fn generate_final_output(
         .map(|s| s.to_string())
         .ok_or_else(|| "LLM final output returned no 'final_output' field".to_string())?;
 
-    Ok((output, tokens))
+    Ok((output, usage))
 }
 
 // ─── A2A agent call ───────────────────────────────────────────────────────────
@@ -967,4 +1665,126 @@ fn build_context(step_results: &[StepResult]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+
+    fn step(index: i32) -> MafStep {
+        MafStep {
+            step_id: Uuid::new_v4(),
+            step_index: index,
+            agent_id: Uuid::new_v4(),
+            agent_name: format!("agent-{index}"),
+            agent_endpoint: "http://localhost:1".to_string(),
+            task_description: format!("task {index}"),
+        }
+    }
+
+    /// A finished step as the previous attempt would have persisted it.
+    fn succeeded(step: &MafStep) -> StepResult {
+        StepResult {
+            status: "success".to_string(),
+            extracted_info: Some(format!("output {}", step.step_index)),
+            prompt: format!("prompt {}", step.step_index),
+            prompt_template: format!("template {}", step.step_index),
+            tokens_used: 100,
+            ..pending_result(step)
+        }
+    }
+
+    fn failed(step: &MafStep) -> StepResult {
+        StepResult {
+            status: "failed".to_string(),
+            error: Some("agent timed out".to_string()),
+            ..pending_result(step)
+        }
+    }
+
+    #[test]
+    fn first_attempt_starts_every_step_pending() {
+        let steps = vec![step(0), step(1)];
+        let merged = resume_from(&steps, &[]);
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().all(|s| s.status == "pending"));
+    }
+
+    #[test]
+    fn completed_prefix_is_carried_forward_and_the_rest_restarts() {
+        let steps = vec![step(0), step(1), step(2)];
+        let prior = vec![
+            succeeded(&steps[0]),
+            succeeded(&steps[1]),
+            failed(&steps[2]),
+        ];
+
+        let merged = resume_from(&steps, &prior);
+
+        // The two that finished keep their output, so `build_context` can
+        // still feed the step that failed.
+        assert_eq!(merged[0].status, "success");
+        assert_eq!(merged[1].extracted_info.as_deref(), Some("output 1"));
+        assert_eq!(merged[1].tokens_used, 100);
+        // The failed one restarts clean, without last attempt's error.
+        assert_eq!(merged[2].status, "pending");
+        assert_eq!(merged[2].error, None);
+    }
+
+    #[test]
+    fn a_run_that_failed_after_its_last_step_reruns_no_steps() {
+        // Every step succeeded and the failure came later (final synthesis).
+        // The retry should go straight to that synthesis.
+        let steps = vec![step(0), step(1)];
+        let prior = vec![succeeded(&steps[0]), succeeded(&steps[1])];
+
+        let merged = resume_from(&steps, &prior);
+
+        assert!(merged.iter().all(|s| s.status == "success"));
+    }
+
+    #[test]
+    fn only_the_leading_run_of_successes_is_reused() {
+        // A snapshot with a gap can't have come from a sequential run. Reusing
+        // step 2 would run it against context step 1 never produced, so the
+        // prefix rule stops at the gap.
+        let steps = vec![step(0), step(1), step(2)];
+        let prior = vec![
+            succeeded(&steps[0]),
+            failed(&steps[1]),
+            succeeded(&steps[2]),
+        ];
+
+        let merged = resume_from(&steps, &prior);
+
+        assert_eq!(merged[0].status, "success");
+        assert_eq!(merged[1].status, "pending");
+        assert_eq!(merged[2].status, "pending");
+    }
+
+    #[test]
+    fn a_snapshot_of_a_different_definition_is_discarded() {
+        let steps = vec![step(0), step(1)];
+        // Same length and positions, but step 1 is a different step entirely.
+        let other = step(1);
+        let prior = vec![succeeded(&steps[0]), succeeded(&other)];
+
+        let merged = resume_from(&steps, &prior);
+
+        assert!(
+            merged.iter().all(|s| s.status == "pending"),
+            "a mismatched snapshot must not seed any step"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_with_a_different_step_count_is_discarded() {
+        let steps = vec![step(0), step(1)];
+        let prior = vec![succeeded(&steps[0])];
+
+        let merged = resume_from(&steps, &prior);
+
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().all(|s| s.status == "pending"));
+    }
 }

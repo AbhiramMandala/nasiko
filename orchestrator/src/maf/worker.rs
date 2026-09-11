@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use nasiko_flow::FlowGuard;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -21,6 +24,7 @@ pub async fn run(
     db: PgPool,
     redis: redis::Client,
     http_client: reqwest::Client,
+    flow_guard: Arc<FlowGuard>,
     llm: LlmClient,
 ) {
     let consumer = consumer_name();
@@ -44,7 +48,7 @@ pub async fn run(
         .await;
 
     // Reclaim messages that were in-flight when the server last crashed
-    reclaim_pending(&mut conn, &db, &http_client, &llm, &consumer).await;
+    reclaim_pending(&mut conn, &db, &http_client, &flow_guard, &llm, &consumer).await;
 
     info!("MAF worker started, consumer={consumer}, stream={STREAM_KEY}");
 
@@ -70,7 +74,16 @@ pub async fn run(
             Ok(val) => {
                 for (msg_id, fields) in extract_messages(val) {
                     if let Some(job) = parse_job(&fields) {
-                        process_job(job, &msg_id, &mut conn, &db, &http_client, &llm).await;
+                        process_job(
+                            job,
+                            &msg_id,
+                            &mut conn,
+                            &db,
+                            &http_client,
+                            &flow_guard,
+                            &llm,
+                        )
+                        .await;
                     } else {
                         // Malformed message — ACK to remove from PEL so it doesn't retry forever
                         warn!("MAF worker: could not parse job from message {msg_id}, discarding");
@@ -184,6 +197,7 @@ async fn process_job(
     conn: &mut redis::aio::MultiplexedConnection,
     db: &PgPool,
     http_client: &reqwest::Client,
+    flow_guard: &Arc<FlowGuard>,
     llm: &LlmClient,
 ) {
     let execution_id = job.execution_id;
@@ -246,6 +260,7 @@ async fn process_job(
     match executor::run_maf(
         http_client,
         db,
+        flow_guard,
         execution_id,
         user_id,
         &maf_def,
@@ -312,15 +327,26 @@ async fn process_job(
 }
 
 async fn mark_failed(db: &PgPool, execution_id: Uuid, error: &str) {
+    // A failed run still spent real money — planning and any completed steps
+    // all made billed LLM calls before the failure. Recording 0 here would
+    // under-report spend on exactly the runs that are most likely to be
+    // retried, and the retries would compound it. The platform already has
+    // the priced rows; read them back the same way a successful run does.
+    let spend = executor::platform_spend(db, execution_id).await;
+
     let _ = sqlx::query(
         r#"UPDATE maf_executions
            SET status = 'failed',
                error = $1,
+               tokens_used = $2,
+               cost_usd = $3,
                completed_at = now(),
                duration_ms = EXTRACT(EPOCH FROM (now() - COALESCE(started_at, now())))::BIGINT * 1000
-           WHERE id = $2"#,
+           WHERE id = $4"#,
     )
     .bind(error)
+    .bind(spend.total_tokens)
+    .bind(spend.total_cost_usd)
     .bind(execution_id)
     .execute(db)
     .await;
@@ -363,6 +389,7 @@ async fn reclaim_pending(
     conn: &mut redis::aio::MultiplexedConnection,
     db: &PgPool,
     http_client: &reqwest::Client,
+    flow_guard: &Arc<FlowGuard>,
     llm: &LlmClient,
     consumer: &str,
 ) {
@@ -406,7 +433,7 @@ async fn reclaim_pending(
         };
         if let Some(job) = parse_job(&fields) {
             info!("Reclaiming crashed MAF execution {}", job.execution_id);
-            process_job(job, &msg_id, conn, db, http_client, llm).await;
+            process_job(job, &msg_id, conn, db, http_client, flow_guard, llm).await;
         }
     }
 }
