@@ -583,15 +583,46 @@ export class AppChart extends HTMLElement {
   }
 
   /**
-   * Loading placeholder for the two canvas forms (line/bar/donut). A row of
-   * bars with varied heights — each its own element, each pulsing on its
-   * own timing — reads as "a chart is coming" instead of one flat rectangle
-   * that could be standing in for anything.
+   * Loading placeholder for the column forms (bar/donut). A row of bars with
+   * varied heights — each its own element, each pulsing on its own timing —
+   * reads as "a chart is coming" instead of one flat rectangle that could be
+   * standing in for anything.
+   *
+   * The bar heights are percentages, so the box has to carry a DEFINITE
+   * height (see `#skeletonBox`) — a panel that sizes to its content (Overview
+   * lays its second row out with `align-items: start`) leaves the slot's
+   * height indefinite, percentages resolve to `auto`, and every bar collapses
+   * to nothing: a blank white card where the skeleton should be.
    */
   #barsSkeletonHtml(box) {
     const heights = [55, 82, 38, 68, 92, 50, 74];
     const bar = (h, i) => `<div class="chart-skel-bar" style="height:${h}%;animation-delay:${(i * 0.1).toFixed(1)}s"></div>`;
     return `<div class="chart-skeleton" ${box}>${heights.map(bar).join('')}</div>`;
+  }
+
+  /**
+   * Loading placeholder for `type="line"`. A row of bars is the wrong promise
+   * for a chart that resolves into a line, so this draws the line itself —
+   * one polyline on a `preserveAspectRatio="none"` viewBox, which stretches to
+   * whatever box the slot ends up with and needs no percentage heights at all.
+   */
+  #lineSkeletonHtml(box) {
+    return `<div class="chart-skeleton is-line" ${box}>
+      <svg viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points="0,30 14,18 28,24 42,9 57,20 71,6 85,15 100,4" vector-effect="non-scaling-stroke"></polyline>
+      </svg>
+    </div>`;
+  }
+
+  /**
+   * The skeleton reserves the plot's box as a DEFINITE height, not a floor:
+   * `.chart-skeleton` still grows (`flex: 1`) to fill a stretched panel, but
+   * the declared height is what the bar percentages resolve against, so they
+   * survive a panel that sizes to its content. The empty state keeps
+   * `min-height` — it is centred text that should be free to grow.
+   */
+  #skeletonBox() {
+    return `style="height:${escAttr(this.getAttribute('height') || '200px')}"`;
   }
 
   /**
@@ -620,9 +651,10 @@ export class AppChart extends HTMLElement {
 
     if (this.hasAttribute('loading')) {
       this.setAttribute('aria-busy', 'true');
-      this.innerHTML = CANVAS_TYPES.has(this.#type())
-        ? this.#barsSkeletonHtml(box)
-        : this.#rowsSkeletonHtml();
+      const type = this.#type();
+      if (!CANVAS_TYPES.has(type)) this.innerHTML = this.#rowsSkeletonHtml();
+      else if (type === 'line') this.innerHTML = this.#lineSkeletonHtml(this.#skeletonBox());
+      else this.innerHTML = this.#barsSkeletonHtml(this.#skeletonBox());
       return;
     }
     this.removeAttribute('aria-busy');

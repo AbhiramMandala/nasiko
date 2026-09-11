@@ -112,6 +112,10 @@ pub struct FinopsFilterParams {
     /// "agent" | "workflow" — which attribution source powers the response's
     /// `attributions` field (default "agent").
     pub view: Option<String>,
+    /// When `true`, restricts results to agents owned by the caller.
+    /// Ignored when `agent_id` is also set (already scoped to one agent).
+    #[serde(default)]
+    pub my_agent: bool,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -416,6 +420,7 @@ pub async fn get_finops_dashboard(
         };
 
     let user_ids = user_scope.map(|Extension(s)| s.0);
+    let owner_id = params.my_agent.then_some(claims.sub.as_str());
     match svc(&state)
         .get_finops_dashboard(
             &claims.sub,
@@ -428,6 +433,7 @@ pub async fn get_finops_dashboard(
             params.model.as_deref(),
             params.provider.as_deref(),
             user_ids.as_deref(),
+            owner_id,
             view,
         )
         .await

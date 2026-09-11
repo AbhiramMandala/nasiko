@@ -776,8 +776,6 @@ impl ObservabilityProvider for TempoLokiProvider {
 
         let mut total_input = 0u64;
         let mut total_output = 0u64;
-        let mut total_cache_read = 0u64;
-        let mut total_cache_creation = 0u64;
         let mut model_used: Option<String> = None;
         let mut latencies: Vec<u64> = Vec::new();
         let mut traces: Vec<TraceSummary> = Vec::new();
@@ -797,11 +795,8 @@ impl ObservabilityProvider for TempoLokiProvider {
             let root_span = root_span.clone();
 
             let (trace_input, trace_output, trace_model) = trace.token_totals();
-            let (trace_cache_read, trace_cache_creation) = trace.cache_token_totals();
             total_input += trace_input;
             total_output += trace_output;
-            total_cache_read += trace_cache_read;
-            total_cache_creation += trace_cache_creation;
             if model_used.is_none() {
                 model_used = trace_model.clone();
             }
@@ -849,8 +844,6 @@ impl ObservabilityProvider for TempoLokiProvider {
                 root_span,
                 input_tokens: trace_input,
                 output_tokens: trace_output,
-                cache_read_tokens: trace_cache_read,
-                cache_creation_tokens: trace_cache_creation,
                 model_used: trace_model,
                 duration_ms,
                 cost,
@@ -859,8 +852,6 @@ impl ObservabilityProvider for TempoLokiProvider {
             });
         }
 
-        let avg = (!latencies.is_empty())
-            .then(|| latencies.iter().sum::<u64>() as f64 / latencies.len() as f64);
         let (p50, p99) = latency_percentiles(latencies);
         let cost = self
             .cost(model_used.as_deref(), total_input, total_output)
@@ -871,12 +862,9 @@ impl ObservabilityProvider for TempoLokiProvider {
             traces,
             input_tokens: total_input,
             output_tokens: total_output,
-            cache_read_tokens: total_cache_read,
-            cache_creation_tokens: total_cache_creation,
             model_used,
             latency_ms_p50: p50,
             latency_ms_p99: p99,
-            latency_ms_avg: avg,
             cost,
         })
     }
@@ -1065,21 +1053,36 @@ impl ObservabilityProvider for TempoLokiProvider {
         let started_at = trace.started_at.unwrap_or_else(Utc::now);
         let latency_ms = trace.duration_ms.map(|d| d as i64);
 
-        // Group token-bearing spans by agent (service_name). Each agent that
-        // made LLM calls in this trace gets its own row — a multi-agent trace
-        // produces multiple rows instead of lumping everything under one agent.
+        // Group token-bearing and tool-call spans by agent (service_name).
+        // Each agent that made LLM calls or tool calls in this trace gets its
+        // own row — a multi-agent trace produces multiple rows.
         struct AgentAcc {
             input: u64,
             output: u64,
             cache_read: u64,
             cache_creation: u64,
             model: Option<String>,
+            tool_calls: u32,
         }
 
         let mut by_agent: HashMap<String, AgentAcc> = HashMap::new();
         for span in &trace.spans {
             let (inp, out, model) = extract_token_attrs(&span.attributes);
-            if inp == 0 && out == 0 {
+            // gen_ai.operation.name = "call_tool" (GenAI semconv) or
+            // openinference.span.kind = "TOOL" (OpenInference convention).
+            let is_tool_call = span
+                .attributes
+                .get("gen_ai.operation.name")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "call_tool")
+                .unwrap_or(false)
+                || span
+                    .attributes
+                    .get("openinference.span.kind")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.eq_ignore_ascii_case("tool"))
+                    .unwrap_or(false);
+            if inp == 0 && out == 0 && !is_tool_call {
                 continue;
             }
             let name = &span.service_name;
@@ -1093,6 +1096,7 @@ impl ObservabilityProvider for TempoLokiProvider {
                 cache_read: 0,
                 cache_creation: 0,
                 model: None,
+                tool_calls: 0,
             });
             acc.input += inp;
             acc.output += out;
@@ -1100,6 +1104,9 @@ impl ObservabilityProvider for TempoLokiProvider {
             acc.cache_creation += cc;
             if acc.model.is_none() {
                 acc.model = model;
+            }
+            if is_tool_call {
+                acc.tool_calls += 1;
             }
         }
 
@@ -1116,6 +1123,7 @@ impl ObservabilityProvider for TempoLokiProvider {
                 output_tokens: acc.output,
                 cache_read_tokens: acc.cache_read,
                 cache_creation_tokens: acc.cache_creation,
+                tool_call_count: acc.tool_calls,
                 cost_usd: cost.total_usd,
                 prompt_cost_usd: cost.prompt_usd,
                 completion_cost_usd: cost.completion_usd,
