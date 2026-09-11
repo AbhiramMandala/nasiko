@@ -8,6 +8,14 @@
   }
 
   @scope (app-tabs) {
+    /* Panels mode: the host is the panels' containing block, so it has to be a
+       block box. Left as the custom element's default `inline`, the strip and
+       the panels laid out against an inline box and the content stopped short
+       of the pane's width — and the pre-upgrade rule in styles/not-defined.css
+       already reserves it as a block, so upgrading reflowed it. */
+    :scope:not([strip]) { display: block; }
+    .panel { width: 100%; }
+
     /* Strip-only mode (`<app-tabs strip>`): the host itself is the strip, since
        the page renders the buttons as its direct children. */
     .strip,

@@ -54,6 +54,13 @@ const sessionLabel = (s) =>
   ((s.title && s.title !== 'New chat' ? s.title : s.last_message) || 'New chat')
     .replace(/\s+/g, ' ').trim().slice(0, 90);
 
+/// Resumes the session in chat. `agent_name` falls back to the orchestrator so
+/// the chat header names the router rather than a blank agent.
+const chatHref = (s) =>
+  `/chat?session_id=${encodeURIComponent(s.session_id)}`
+  + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
+  + `&agent_name=${encodeURIComponent(s.agent_name || 'Orchestrator')}`;
+
 /// Time-range presets, newest-first like the list itself. `ms: null` is "all
 /// time" — no cutoff, and the pager behaves exactly as it did before ranges
 /// existed.
@@ -117,14 +124,13 @@ class SessionsPage extends HTMLElement {
           <p class="sessions-subtitle">Review all queries across agents. Select a session to open its
             trace details.</p>
         </div>
-        <app-button variant="dark" size="md" id="btn-new">New chat</app-button>
       </div>
       <div class="sessions-toolbar">
-        <app-search id="sessions-search" size="md" placeholder="Search sessions"
+        <app-search id="sessions-search" size="sm" placeholder="Search sessions"
           aria-label="Search sessions"></app-search>
         <app-menu id="range-menu" align="end" label="Time range"
           items='${escAttr(JSON.stringify(RANGES.map(({ id, label }) => ({ id, label }))))}'
-        ><app-button variant="tertiary" size="md">
+        ><app-button variant="tertiary" size="sm">
           <span class="range-label">${escHtml(this.#rangeLabel())}</span>${icons.chevronDownSmall('', 16)}
         </app-button></app-menu>
       </div>
@@ -166,10 +172,15 @@ class SessionsPage extends HTMLElement {
         this.#deleteSession(del.dataset.sessionId);
         return;
       }
-      const traces = e.target.closest('.session-traces');
-      if (traces) {
+      // The chat CTA is an <app-button href>: the router's own anchor handler
+      // navigates it, so this only has to keep the row handler below off it.
+      if (e.target.closest('.session-open')) return;
+      // Anywhere else in the row — the title link included — opens the traces.
+      // The link carries the href so it stays a real, middle-clickable anchor.
+      const link = e.target.closest('tr')?.querySelector('.session-link');
+      if (link) {
         e.preventDefault();
-        routerNavigate(`/observability-session?session_id=${encodeURIComponent(traces.dataset.sessionId)}`);
+        routerNavigate(link.getAttribute('href'));
       }
     });
 
@@ -187,10 +198,7 @@ class SessionsPage extends HTMLElement {
         label: 'Sessions',
         width: '32%',
         render: (_v, s) => {
-          const agent = s.agent_name || 'Orchestrator';
-          const href = `/chat?session_id=${encodeURIComponent(s.session_id)}`
-            + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
-            + `&agent_name=${encodeURIComponent(agent)}`;
+          const href = `/observability-session?session_id=${encodeURIComponent(s.session_id)}`;
           // The design's status dot is not drawn: nothing in the platform
           // records a session's running/success/error state, and there is no
           // plan to add one. Title only.
@@ -221,12 +229,14 @@ class SessionsPage extends HTMLElement {
         key: 'session_id',
         label: '',
         width: '16%',
-        render: (v) => `
-          <button class="session-traces" type="button" data-session-id="${escAttr(v)}"
-            title="Open session" aria-label="Open this session's traces"
-          ><span>Open session</span>${icons.chevronRight('', 14)}</button>
-          <button class="session-delete" type="button" data-session-id="${escAttr(v)}"
-            title="Delete session" aria-label="Delete session">${icons.trash('', 14)}</button>`,
+        render: (v, s) => `
+          <app-button class="session-open" variant="ghost" size="sm"
+            href="${escAttr(chatHref(s))}"
+            title="Open session" aria-label="Open this session's chat"
+          >Open session${icons.chevronRight()}</app-button>
+          <app-button class="session-delete" variant="ghost-danger" size="sm" icon-only
+            data-session-id="${escAttr(v)}"
+            title="Delete session" aria-label="Delete session">${icons.trash()}</app-button>`,
       },
     ];
 

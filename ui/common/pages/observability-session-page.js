@@ -25,13 +25,11 @@ import '/common/design-system/app-stat-row/app-stat-row.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-tabs/app-tabs.js';
-import '/common/design-system/app-switch/app-switch.js';
 import '/common/design-system/app-menu/app-menu.js';
 import '/common/features/app-module-nav.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { call } from '../core/data-sources.js';
-import '/common/utils/back-link.js';
 
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -53,6 +51,10 @@ const cacheTokens = (o) => {
   if (o?.cache_read_tokens == null && o?.cache_creation_tokens == null) return null;
   return (o.cache_read_tokens ?? 0) + (o.cache_creation_tokens ?? 0);
 };
+/// Sum two counts that may be absent. Null only when neither side was served:
+/// a folded trace with no tokens must not erase the tokens already counted.
+const addCounts = (a, b) => (a == null && b == null ? null : (a ?? 0) + (b ?? 0));
+
 /// Dollars at 2dp, sub-cent amounts at 4dp. A fixed 2dp renders a $0.0010 turn
 /// as "$0.00", and a fixed 4dp renders a real session total as "$4.8200".
 const fmtUsd = (v) => {
@@ -69,7 +71,7 @@ class ObservabilitySessionPage extends HTMLElement {
   #initialized = false;
   #sessionId = '';
   #session = null;
-  /// One entry per trace, in order: {traceId, entry, question, answer, metrics}.
+  /// One entry per turn, in order: {traceId, traceIds, question, answer, metrics}.
   #turns = [];
   #turnIndex = 0;
   /// Fingerprint of what the turn strip currently shows, so the span poll does
@@ -80,7 +82,6 @@ class ObservabilitySessionPage extends HTMLElement {
   #spans = [];          // flattened {node, depth, traceId} for the current turn
   #span = null;         // currently-selected span's detail payload
   #selected = null;     // {traceId, spanId}
-  #rawAttributes = false;
   /// Span ids whose children are folded away in the trace tree.
   #collapsed = new Set();
   #tracesState = 'loading';  // loading | ready | empty | error
@@ -91,36 +92,28 @@ class ObservabilitySessionPage extends HTMLElement {
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
-    const params = new URLSearchParams(window.location.search);
-    this.#sessionId = params.get('session_id') || '';
-    this.#focusTraceId = params.get('trace_id') || '';
-
     this.innerHTML = `
       <app-module-nav module="observability"></app-module-nav>
       <div class="page-head">
-        <app-button variant="tertiary" size="sm" icon-only href="/sessions" data-back
+        <!-- A plain link, deliberately not a data-back popper: the module nav's
+             session rows lead back here, so every switch is a history entry and
+             popping one landed on the previous session. Back means the list. -->
+        <app-button variant="tertiary" size="sm" icon-only href="/sessions"
           aria-label="Back">${icons.arrowLeft()}</app-button>
         <!-- Starts as the id and is replaced by the session's title once the
              payload lands (#renderTitle). Not a URL param: that would only
              work when arriving from the list, never on a deep link. -->
-        <h1 class="page-title" id="page-title">${escHtml(this.#sessionId)}</h1>
-        <button type="button" class="id-chip" data-copy="${escAttr(this.#sessionId)}"
-          title="Copy session ID" aria-label="Copy session ID">
-          <span class="id-chip__text">${escHtml(this.#sessionId)}</span>
+        <h1 class="page-title" id="page-title"></h1>
+        <button type="button" class="id-chip" aria-label="Copy session ID">
+          <span class="id-chip__text"></span>
           <span class="id-chip__icon">${icons.copy('', 14)}</span>
         </button>
       </div>
       <app-stat-row id="kpi-strip" variant="chips" loading="6"></app-stat-row>
-      <section class="turn-strip" id="turn-strip" aria-label="Session turns">
-        <div class="pane-empty" aria-busy="true"><app-skeleton lines="3"></app-skeleton></div>
-      </section>
+      <section class="turn-strip" id="turn-strip" aria-label="Session turns"></section>
       <div class="panes">
-        <section class="pane" id="traces-pane" aria-label="Traces">
-          <div class="pane-empty" aria-busy="true"><app-skeleton lines="4"></app-skeleton></div>
-        </section>
-        <section class="pane" id="detail-pane" aria-label="Span detail">
-          <div class="pane-empty">Select a span to see its details</div>
-        </section>
+        <section class="pane" id="traces-pane" aria-label="Traces"></section>
+        <section class="pane" id="detail-pane" aria-label="Span detail"></section>
       </div>
     `;
 
@@ -150,10 +143,61 @@ class ObservabilitySessionPage extends HTMLElement {
       this.#goToTurn(Number(e.detail.id));
     });
 
+    // The module nav's session rows point at this same route, so the router
+    // keeps the page mounted and only fires `route-update` — without this,
+    // clicking a row moved the URL and left the old session on screen.
+    this.addEventListener('route-update', this.#onRouteUpdate);
+
+    this.#enter();
+  }
+
+  #onRouteUpdate = () => {
+    const params = new URLSearchParams(window.location.search);
+    if ((params.get('session_id') || '') === this.#sessionId
+      && (params.get('trace_id') || '') === this.#focusTraceId) return;
+    this.#enter();
+  };
+
+  /** Read the session out of the URL and build the page for it. Called on
+   *  mount and on every route-update that names a different session. */
+  #enter() {
+    const params = new URLSearchParams(window.location.search);
+    this.#sessionId = params.get('session_id') || '';
+    this.#focusTraceId = params.get('trace_id') || '';
+
+    // Every field below describes the session being left; carried over, the new
+    // session renders under the old turn strip, spans and KPIs.
+    clearTimeout(this.#pollTimer);
+    this.#session = null;
+    this.#turns = [];
+    this.#turnIndex = 0;
+    this.#renderedTurnKey = null;
+    this.#messages = [];
+    this.#spans = [];
+    this.#span = null;
+    this.#selected = null;
+    this.#collapsed.clear();
+    this.#tracesState = 'loading';
+
+    this.querySelector('#page-title').textContent = this.#sessionId;
+    const chip = this.querySelector('.page-head .id-chip');
+    chip.dataset.copy = this.#sessionId;
+    chip.querySelector('.id-chip__text').textContent = this.#sessionId;
+    const kpis = this.querySelector('#kpi-strip');
+    kpis.hidden = false;
+    kpis.setAttribute('loading', '6');
+    this.querySelector('#turn-strip').innerHTML =
+      '<div class="pane-empty" aria-busy="true"><app-skeleton lines="3"></app-skeleton></div>';
+    this.querySelector('#traces-pane').innerHTML =
+      '<div class="pane-empty" aria-busy="true"><app-skeleton lines="4"></app-skeleton></div>';
+    this.querySelector('#detail-pane').innerHTML =
+      '<div class="pane-empty">Select a span to see its details</div>';
+
     this.#load();
   }
 
   disconnectedCallback() {
+    this.removeEventListener('route-update', this.#onRouteUpdate);
     clearTimeout(this.#pollTimer);
   }
 
@@ -181,9 +225,11 @@ class ObservabilitySessionPage extends HTMLElement {
     let lastCount = this.#spans.length;
     let stable = 0;
 
+    const polling = this.#sessionId;
     const tick = async () => {
-      if (Date.now() > this.#pollDeadline) return;
+      if (Date.now() > this.#pollDeadline || this.#sessionId !== polling) return;
       await this.#loadSession();
+      if (this.#sessionId !== polling) return;
       const count = this.#spans.length;
       stable = count === lastCount ? stable + 1 : 0;
       lastCount = count;
@@ -227,11 +273,28 @@ class ObservabilitySessionPage extends HTMLElement {
     await this.#loadTurnTrace();
   }
 
-  /// Sessions that never went through chat have no title; the id the reader
-  /// navigated with stays as the heading rather than a blank one.
+  /// The session's own `title` is the chat title, which is auto-generated and
+  /// is usually the literal "New chat" — so the first user message stands in,
+  /// the same fallback the session list and the module nav apply. Sessions that
+  /// never went through chat have neither, and keep the id the reader navigated
+  /// with rather than a blank heading.
   #renderTitle() {
-    const title = this.#session?.title;
-    if (title) this.querySelector('#page-title').textContent = title;
+    const t = this.#session?.title;
+    const title = (t && t !== 'New chat' ? t : this.#firstQuestion()) || '';
+    const el = this.querySelector('#page-title');
+    if (!title) return;
+    el.textContent = title.replace(/\s+/g, ' ').trim().slice(0, 90);
+    // The heading is clipped to one line, so the untruncated text has to be
+    // reachable somewhere.
+    el.title = title;
+  }
+
+  /// The transcript is loaded before the session (#load), so this is available
+  /// on the first title render. Falls back to the first trace's root-span input
+  /// for BYO-key agents, whose messages carry no trace id.
+  #firstQuestion() {
+    const msg = this.#messages.find((m) => m.role === 'user')?.content;
+    return this.#plainText(msg || this.#session?.traces?.[0]?.root_span?.input?.value);
   }
 
   // ── KPI strip ────────────────────────────────────────────────────────────
@@ -263,9 +326,11 @@ class ObservabilitySessionPage extends HTMLElement {
   // ── Turns ────────────────────────────────────────────────────────────────
 
   /**
-   * One turn per trace. `chat_messages.trace_id` is what ties a turn's text to
-   * its spans; the pairing walks the transcript in order so a user row is
-   * matched with the assistant row that answered it.
+   * One turn per trace, except traces with no message of their own, which fold
+   * into the turn before them (HITL resumes and proxy-only hops).
+   * `chat_messages.trace_id` is what ties a turn's text to its spans; the
+   * pairing walks the transcript in order so a user row is matched with the
+   * assistant row that answered it.
    */
   #buildTurns() {
     const traces = this.#session?.traces ?? [];
@@ -278,15 +343,38 @@ class ObservabilitySessionPage extends HTMLElement {
       pendingUser = null;
     }
 
-    this.#turns = traces.map((entry) => {
+    this.#turns = [];
+    for (const entry of traces) {
       const root = entry.root_span ?? {};
       const pair = byTrace.get(entry.trace_id);
-      return {
+      // `||` not `??`: the server serializes "no content" as an empty
+      // string, which must fall through to the next source.
+      const question = this.#plainText(pair?.user?.content || root.input?.value);
+      const answer = this.#plainText(pair?.assistant?.content || root.output?.value);
+      const prev = this.#turns[this.#turns.length - 1];
+      // A trace carrying neither a question nor an answer is not a turn of its
+      // own — it is the rest of the turn before it (a HITL resume, a
+      // proxy-only hop). Fold it into that turn so the reader sees one chat
+      // entry with both traces under its root, not an empty second entry.
+      if (!question && !answer && prev) {
+        prev.traceIds.push(entry.trace_id);
+        prev.totalTokens = addCounts(prev.totalTokens, root.cumulative_token_count_total);
+        prev.inputTokens = addCounts(prev.inputTokens, root.input_tokens);
+        prev.outputTokens = addCounts(prev.outputTokens, root.output_tokens);
+        prev.cacheTokens = addCounts(prev.cacheTokens, cacheTokens(root));
+        prev.cost = addCounts(prev.cost, root.trace?.cost_summary?.total?.cost);
+        // Max, not sum: the folded trace usually overlaps the one it belongs
+        // to (same wall clock, different exporter), so summing double-counts.
+        prev.durationMs = root.latency_ms == null ? prev.durationMs
+          : Math.max(prev.durationMs ?? 0, root.latency_ms);
+        continue;
+      }
+      this.#turns.push({
         traceId: entry.trace_id,
-        // `||` not `??`: the server serializes "no content" as an empty
-        // string, which must fall through to the next source.
-        question: pair?.user?.content || root.input?.value || '',
-        answer: pair?.assistant?.content || root.output?.value || '',
+        /// Every trace shown under this turn, primary first.
+        traceIds: [entry.trace_id],
+        question,
+        answer,
         startTime: root.start_time,
         totalTokens: root.cumulative_token_count_total,
         // The trace's own counts first — they cover BYO-key agents too. The
@@ -297,13 +385,13 @@ class ObservabilitySessionPage extends HTMLElement {
         cacheTokens: cacheTokens(root),
         cost: root.trace?.cost_summary?.total?.cost ?? null,
         durationMs: root.latency_ms ?? pair?.assistant?.duration_ms ?? null,
-      };
-    });
+      });
+    }
 
     // ?trace_id= (from a chat's "Detailed trace") opens on that turn. Only on
     // the first build — a poll must not yank the reader back.
     if (this.#focusTraceId) {
-      const i = this.#turns.findIndex((t) => t.traceId === this.#focusTraceId);
+      const i = this.#turns.findIndex((t) => t.traceIds.includes(this.#focusTraceId));
       if (i >= 0) this.#turnIndex = i;
       this.#focusTraceId = '';
     }
@@ -356,26 +444,31 @@ class ObservabilitySessionPage extends HTMLElement {
         >${icons.chevronUp('', 14)}</button>
         <app-menu id="turn-menu" align="center" label="Jump to a turn"
           items='${escAttr(JSON.stringify(items))}'
-        ><app-button variant="tertiary" size="md" title="Jump to a turn"
-          >${escHtml(`${this.#turnIndex + 1}/${total}`)}</app-button></app-menu>
+        ><button type="button" class="turn-count" title="Jump to a turn"
+          ><span class="turn-count-current">${this.#turnIndex + 1}</span>/${total}</button></app-menu>
         <button type="button" class="turn-step" data-step="1"
           ${this.#turnIndex === total - 1 ? 'disabled' : ''} aria-label="Next turn"
         >${icons.chevronDown('', 14)}</button>
       </div>
       <div class="turn-body">
         <div class="turn-line">
-          <span class="turn-glyph" aria-hidden="true">${icons.info('', 16)}</span>
+          <span class="turn-glyph" aria-hidden="true">${icons.helpCircle('', 16)}</span>
           <!-- .turn-text is a column: #applyClamps inserts its "Show more"
                button as the clamped block's next sibling, and directly inside
                the row-flex .turn-line that puts it beside the text. -->
           <div class="turn-text">
             <!-- Literal user input: escaped, never parsed as markdown, and
-                 pre-wrap so a pasted stack trace keeps its lines. -->
-            <div class="turn-question msg-clamp">${escHtml(turn.question || 'No question recorded for this turn')}</div>
+                 pre-wrap so a pasted stack trace keeps its lines. Blank lines
+                 are dropped *here only*: the preview is two lines tall, and a
+                 question whose second line is the paragraph break spent one of
+                 them on whitespace — a one-line question with a gap under it.
+                 The detail pane below keeps the text as written. -->
+            <div class="turn-question msg-clamp">${escHtml(
+              (turn.question || 'No question recorded for this turn').replace(/\n\s*\n/g, '\n'))}</div>
           </div>
         </div>
         <div class="turn-line">
-          <span class="turn-glyph" aria-hidden="true">${icons.send('', 16)}</span>
+          <span class="turn-glyph" aria-hidden="true">${icons.message('', 16)}</span>
           <div class="turn-text">
             <!-- Agent replies are markdown, as they are in the chat transcript
                  this text comes from. Rendering the source verbatim put "##"
@@ -419,11 +512,12 @@ class ObservabilitySessionPage extends HTMLElement {
       this.#renderTraces();
       return;
     }
-    let detail;
+    let details;
     try {
-      detail = await call('fetchObservabilityTrace', turn.traceId);
+      details = await Promise.all(
+        turn.traceIds.map((id) => call('fetchObservabilityTrace', id)));
     } catch (e) {
-      console.warn(`Trace ${turn.traceId} fetch failed:`, e);
+      console.warn(`Trace ${turn.traceIds.join(', ')} fetch failed:`, e);
       this.#tracesState = 'error';
       this.#renderTracesPlaceholder(
         'Traces unavailable',
@@ -436,8 +530,10 @@ class ObservabilitySessionPage extends HTMLElement {
     // happened to start the trace (`a2a.dispatch`, `request`, …), which says
     // nothing about the chat message that caused it — so the query the reader
     // asked sits at the top and every span hangs beneath it, matching
-    // `NAM → dept  session.run` in the design.
-    const roots = detail?.spans ?? [];
+    // `NAM → dept  session.run` in the design. A turn that folded in a
+    // message-less trace roots that trace's spans here too.
+    const roots = details.flatMap((detail, i) =>
+      (detail?.spans ?? []).map((node) => ({ node, traceId: turn.traceIds[i] })));
     const turnRoot = {
       span_id: TURN_ROOT_ID,
       name: this.#sessionId,
@@ -445,17 +541,20 @@ class ObservabilitySessionPage extends HTMLElement {
       // Wall-clock for the whole turn, not the sum of its parts: spans overlap.
       latency_ms: turn.durationMs ?? null,
       // One errored span anywhere under the turn makes the turn an error.
-      status_code: roots.some((r) => this.#subtreeHasError(r)) ? 'ERROR' : 'OK',
-      children: roots,
+      status_code: roots.some((r) => this.#subtreeHasError(r.node)) ? 'ERROR' : 'OK',
+      children: roots.map((r) => r.node),
     };
 
     const flat = [];
-    const walk = (node, depth) => {
-      flat.push({ node, depth, traceId: turn.traceId });
+    const walk = (node, depth, traceId) => {
+      flat.push({ node, depth, traceId });
       if (this.#collapsed.has(node.span_id)) return;
-      (node.children || []).forEach((c) => walk(c, depth + 1));
+      (node.children || []).forEach((c) => walk(c, depth + 1, traceId));
     };
-    walk(turnRoot, 0);
+    flat.push({ node: turnRoot, depth: 0, traceId: turn.traceId });
+    if (!this.#collapsed.has(TURN_ROOT_ID)) {
+      roots.forEach(({ node, traceId }) => walk(node, 1, traceId));
+    }
     this.#spans = flat;
     this.#renderTraces();
     if (!flat.length) return;
@@ -493,7 +592,7 @@ class ObservabilitySessionPage extends HTMLElement {
     const traceId = this.#turn()?.traceId;
     return `<h2 class="pane-title">Traces${traceId ? `
       <button type="button" class="id-chip" data-copy="${escAttr(traceId)}"
-        title="Copy trace ID" aria-label="Copy trace ID">
+        aria-label="Copy trace ID">
         <span class="id-chip__text">${escHtml(traceId)}</span>
         <span class="id-chip__icon">${icons.copy('', 14)}</span>
       </button>` : ''}</h2>`;
@@ -623,31 +722,21 @@ class ObservabilitySessionPage extends HTMLElement {
       <div class="detail-head">
         <h3>${escHtml(s.name)}</h3>
         <app-badge variant="info">${escHtml(s.span_kind || 'internal')}</app-badge>
-        <app-switch id="raw-toggle" size="sm" label="View raw attributes"
-          ${this.#rawAttributes ? 'checked' : ''}></app-switch>
       </div>
       ${provider || model ? `<div class="detail-origin">
         ${provider ? `<span><b>Provider:</b> ${escHtml(provider)}</span>` : ''}
         ${model ? `<span><b>Model:</b> ${escHtml(model)}</span>` : ''}
       </div>` : ''}
-      ${this.#rawAttributes
-        ? `<pre class="raw-json">${escHtml(JSON.stringify(attrs, null, 2))}</pre>`
-        : `<app-tabs>
-            <div data-tab="input" data-label="Input">${this.#inputTabHtml()}</div>
-            <div data-tab="usage" data-label="Usage">${this.#usageTabHtml()}</div>
-            <div data-tab="events" data-label="Metadata &amp; events">${this.#eventsTabHtml()}</div>
-          </app-tabs>
-          ${this.#outputHtml()}`}
+      <app-tabs>
+        <div data-tab="input" data-label="Input">${this.#inputTabHtml()}</div>
+        <div data-tab="usage" data-label="Usage">${this.#usageTabHtml()}</div>
+        <div data-tab="events" data-label="Metadata &amp; events">${this.#eventsTabHtml()}</div>
+        <div data-tab="raw" data-label="Raw attributes"><pre class="raw-json">${
+          escHtml(JSON.stringify(attrs, null, 2))}</pre></div>
+      </app-tabs>
+      ${this.#outputHtml()}
     `;
-    // Bound to the element, not delegated on the page. app-switch re-renders
-    // inside its own change handler, so by the time a delegated listener runs
-    // the <input> that fired has been detached and `closest()` finds nothing —
-    // the toggle looked wired and did nothing at all.
-    pane.querySelector('#raw-toggle')?.addEventListener('change', (e) => {
-      this.#rawAttributes = !!e.currentTarget.checked;
-      this.#renderDetail();
-    });
-    // Both panels are rendered up front — app-tabs owns the switch, so there is
+    // Every panel is rendered up front — app-tabs owns the switch, so there is
     // no re-render to hang the clamp pass off. #applyClamps measures, and a
     // hidden panel measures as zero, so only the visible one gets a toggle.
     this.#applyClamps(pane);
@@ -740,6 +829,19 @@ class ObservabilitySessionPage extends HTMLElement {
         ? events.map((ev) => `<pre class="raw-json">${escHtml(JSON.stringify(ev, null, 2))}</pre>`).join('')
         : '<div class="pane-empty">No events recorded for this span</div>'}
     `;
+  }
+
+  /**
+   * Trace root input/output carry the raw agent payload, which for HITL turns
+   * is a serialized GenAI message array rather than prose. Flatten it to the
+   * text a reader expects; anything that isn't a message envelope (ordinary
+   * chat content included) falls through unchanged.
+   */
+  #plainText(raw) {
+    if (!raw) return '';
+    const text = this.#extractMessages(null, raw)
+      .map((m) => m.content).filter(Boolean).join('\n\n').trim();
+    return text || String(raw);
   }
 
   /** Messages may live in OTel genai attributes or in the raw input/output value. */

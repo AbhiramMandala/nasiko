@@ -54,6 +54,11 @@
      take the same slot without table chrome around it. */
   .session-list { display: block; }
 
+  /* The whole row navigates to the session's traces (delegated on the list),
+     so the pointer has to read that way anywhere in the row — not only over
+     the title link. */
+  .session-list tbody tr:has(.session-link) { cursor: pointer; }
+
   /* ── Session cell ────────────────────────────────────────────────────────
      The whole cell is one link — app-table renders the row, so the navigable
      target has to live in the cell rather than on the <tr>. `min-height` keeps
@@ -62,8 +67,6 @@
     display: flex;
     align-items: center;
     gap: var(--s-8);
-    min-height: 40px;
-    color: inherit;
     text-decoration: none;
   }
 
@@ -80,7 +83,6 @@
     display: block;
     max-width: 38ch;
     font-size: var(--font-size-sm);
-    font-weight: 600;
     color: var(--color-text-main);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -88,61 +90,18 @@
   }
 
   /* ── Row actions ─────────────────────────────────────────────────────────
-     Two selectors deep, on purpose: app-table's own `.td` rules are scoped to a
-     root closer to the cell than this page is, so a single-class rule here
-     loses on @scope proximity however it is written. */
-  .session-list button.session-traces {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-4);
-    height: var(--control-h-sm);
-    padding: 0 var(--s-12);
-    border: 1px solid transparent;
-    border-radius: var(--r-8);
-    background: var(--color-bg-base);
-    color: var(--color-text-main);
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    cursor: pointer;
-    line-height: 1;
-    transition: border-color 0.15s;
-
-    &:hover { border-color: var(--color-border); }
-
-    &:focus-visible {
-      outline: none;
-      box-shadow: 0 0 0 2px var(--color-primary-ring);
-    }
-  }
-
-  .session-list button.session-delete {
+     app-button carries the styling; the page only adds the gap and the
+     hover-reveal on delete. Two selectors deep, on purpose: app-table's own
+     `.td` rules are scoped to a root closer to the cell than this page is, so a
+     single-class rule here loses on @scope proximity however it is written. */
+  .session-list app-button.session-delete {
     opacity: 0;
-    background: none;
-    border: none;
-    padding: 0;
-    border-radius: var(--r-4);
-    cursor: pointer;
-    color: var(--color-text-muted);
-    line-height: 1;
-    width: var(--control-h-sm);
-    height: var(--control-h-sm);
-    display: inline-grid;
-    place-items: center;
-    vertical-align: middle;
     margin-left: var(--s-4);
-
-    &:hover {
-      color: var(--color-error);
-      background: var(--color-error-bg);
-    }
-
-    &:focus-visible {
-      opacity: 1;
-      outline: none;
-      box-shadow: 0 0 0 2px var(--color-primary-ring);
-    }
+    vertical-align: middle;
+    transition: opacity 0.15s;
   }
-  .session-list tr:hover button.session-delete { opacity: 1; }
+  .session-list tr:hover app-button.session-delete,
+  .session-list app-button.session-delete:focus-within { opacity: 1; }
 
   /* ── Pager ─────────────────────────────────────────────────────────────── */
   .sessions-more {
@@ -157,5 +116,8 @@
   .sessions-count {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
+  }
+  #sessions-table .table .tbody > tr .td{
+    padding: 6px 16px;
   }
 }

@@ -13,12 +13,20 @@
     margin-bottom: var(--s-24);
   }
 
+  /* The title is now a session title, not an id — long ones must clip to one
+     line rather than wrap or shove the id chip off the row. `min-width: 0` is
+     what makes the ellipsis work at all: a flex item's default `min-width:
+     auto` refuses to shrink below its text, so `overflow: hidden` would never
+     engage. `flex: none` on the chip keeps the title the only thing that
+     gives. */
   .page-title {
     font-family: var(--font-display);
     font-size: var(--font-size-2xl);
     font-weight: 500;
     letter-spacing: 0.16px;
     margin: 0;
+    min-width: 0;
+    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -62,7 +70,7 @@
   .pane {
     border: 1px solid var(--color-border);
     border-radius: var(--r-12);
-    background: var(--color-bg-surface);
+    background: var(--bg-group);
     padding: var(--s-16);
     display: flex;
     flex-direction: column;
@@ -99,8 +107,6 @@
     font-weight: 400;
     cursor: pointer;
 
-    &:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
-
     &:focus-visible {
       outline: none;
       box-shadow: 0 0 0 2px var(--color-primary-ring);
@@ -109,7 +115,7 @@
 
   /* The header chip is the row's right-hand end; the pane-title one is already
      placed by that row's space-between. */
-  .page-head .id-chip { margin-left: auto; }
+  .page-head .id-chip { margin-left: auto; flex: none; }
 
   .id-chip__text {
     overflow: hidden;
@@ -214,12 +220,19 @@
     align-items: flex-start;
   }
 
-  /* Clamped shorter than the span payloads below: this strip sits above the
-     trace tree, and a long answer must not push it off the fold. Two classes
-     deep so it beats `.msg-clamp`'s own 16em, which is declared later in this
-     sheet and would otherwise win on source order — while still losing to
+  /* Two lines, then Show more: this strip sits above the trace tree, and a long
+     answer must not push it off the fold. `lh` is the element's own line box, so
+     it stays exact whatever the line-height resolves to. Two classes deep so it
+     beats `.msg-clamp`'s own 16em, which is declared later in this sheet and
+     would otherwise win on source order — while still losing to
      `.msg-clamp.is-expanded`, so Show more keeps working. */
-  .turn-line .msg-clamp { max-height: 9em; }
+  .turn-line .msg-clamp {
+    max-height: 2lh;
+
+    /* The shared fade is 2.5em — taller than the clamp itself here, which
+       washed out both visible lines instead of softening the cut. */
+    &.is-clamped:not(.is-expanded)::after { height: 1lh; }
+  }
 
   /* Literal user input — newlines are content, not formatting. */
   .turn-question {
@@ -358,10 +371,10 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: var(--s-12);
+    gap:  var(--s-12);
     width: 100%;
     text-align: left;
-    padding: var(--s-12);
+    padding: var(--s-4);
     border: 1px solid transparent;
     border-radius: var(--r-8);
     cursor: pointer;
@@ -369,10 +382,9 @@
     color: var(--color-text-main);
     background: transparent;
 
-    &:hover { background: var(--bg-surface-hover); }
 
     &.is-selected {
-      background: var(--color-bg-base);
+      background: var(--yellow-100);
       border-color: var(--fg-brand-highlight, var(--yellow-400));
     }
   }
@@ -434,10 +446,6 @@
     }
   }
 
-  /* The raw-attributes toggle is the pane's own control, not part of the
-     span's identity — it takes the far end of the head row. */
-  .detail-head app-switch { margin-left: auto; flex: none; }
-
   /* Provider and model, read off the span's GenAI attributes. */
   .detail-origin {
     display: flex;
@@ -475,11 +483,16 @@
     color: var(--color-text-main);
   }
 
+  /* No inline padding: `--color-bg-base` resolves to `--bg-group`, the pane's
+     own background (tokens/colors.css:198), so this "well" is invisible and its
+     16px side padding only inset the message text from the tab strip and the
+     Model line above it. The block is the full width of its panel; the text now
+     starts at the same edge. */
   .msg-block {
     background: var(--color-bg-base);
     border: 1px solid transparent;
     border-radius: var(--r-8);
-    padding: var(--s-12) var(--s-16);
+    padding: var(--s-12) 0;
     margin-bottom: var(--s-12);
     font-size: var(--font-size-sm);
     display: flex;
@@ -508,12 +521,13 @@
     padding: var(--s-16);
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
-    overflow-x: auto;
-    /* Long attribute values wrap instead of clipping flush at the well edge */
+    /* Long attribute values wrap instead of clipping flush at the well edge —
+       which is also why there is no `overflow` here: the block never overflows
+       horizontally, and a `max-height` of its own put a second scrollbar inside
+       the pane's, so the Raw attributes tab had two nested scrollers. The pane
+       is the single scroll container. */
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    max-height: 400px;
-    overflow-y: auto;
   }
 
   .pane-empty {
@@ -521,5 +535,49 @@
     font-size: var(--font-size-sm);
     text-align: center;
     padding: var(--s-32) var(--s-16);
+  }
+   #kpi-strip .stat{
+    background-color: var(--bg-group);
+  }
+
+  #kpi-strip .stat .stat-label, #kpi-strip .stat .stat-value{
+    font-weight: 400;
+  }
+  #turn-metrics .stat{
+    background-color: var(--bg-base);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 2px 8px;
+  
+  }
+  #turn-metrics .stat .stat-label, #turn-metrics .stat .stat-value{
+   font-size: var(--font-size-xs);
+    font-weight: 400;
+  }
+  /* Bare text, not a button: the count reads as part of the strip; the
+     underline appears on hover as the only affordance it needs. */
+  button.turn-count {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    cursor: pointer;
+
+    & .turn-count-current {
+      color: var(--color-text-main);
+      text-underline-offset: 2px;
+    }
+
+    &:hover .turn-count-current {
+      text-decoration: underline;
+    }
+
+    &:focus-visible {
+      outline: none;
+      border-radius: var(--r-4);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
+    }
   }
 }
