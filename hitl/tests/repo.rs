@@ -151,6 +151,76 @@ async fn different_connector_creates_a_distinct_pending_row() {
     );
 }
 
+/// Security regression (`uq_hitl_pending_per_connector_auth`,
+/// `0023_hitl_mcp_pending_owner_scope.sql`): `context_id` falls back to the raw, agent-controlled
+/// trace id whenever no `session_traces` mapping exists, so two different users' calls can collide
+/// on the same `(agent, connector, context)` tuple without either doing anything wrong. Before the
+/// index (and this `ON CONFLICT` target) included `owner_user_id`, the second user's create would
+/// silently `DO UPDATE` and return the FIRST user's row.
+#[tokio::test]
+async fn create_pending_auth_required_with_the_same_context_id_different_owner_does_not_collide() {
+    let db = TestDb::new("hitl_test").await;
+    let other_owner = db.seed_user().await;
+    let connector_id = Uuid::new_v4();
+
+    let a = repo::create_pending_auth_required(
+        &db.pool,
+        db.new_auth_required(connector_id, "ctx-shared-owner-test"),
+    )
+    .await
+    .expect("owner A's create");
+
+    let b = repo::create_pending_auth_required(
+        &db.pool,
+        NewAuthRequired {
+            owner_user_id: other_owner,
+            ..db.new_auth_required(connector_id, "ctx-shared-owner-test")
+        },
+    )
+    .await
+    .expect("owner B's create must succeed as its own row, not error out finding owner A's");
+
+    assert_ne!(
+        a.id, b.id,
+        "two different owners must never collapse onto the same pending row just because they \
+         share an (agent, connector, context) tuple"
+    );
+    assert_eq!(b.owner_user_id, other_owner);
+}
+
+/// Same regression as `create_pending_auth_required_with_the_same_context_id_different_owner_does_not_collide`,
+/// for `uq_hitl_pending_per_tool_call`/`create_pending_tool_approval`.
+#[tokio::test]
+async fn create_pending_tool_approval_with_the_same_context_id_different_owner_does_not_collide() {
+    let db = TestDb::new("hitl_test").await;
+    let other_owner = db.seed_user().await;
+    let connector_id = Uuid::new_v4();
+
+    let a = repo::create_pending_tool_approval(
+        &db.pool,
+        db.new_tool_approval(connector_id, "GITHUB_CREATE_ISSUE", "ctx-shared-owner-test"),
+    )
+    .await
+    .expect("owner A's create");
+
+    let b = repo::create_pending_tool_approval(
+        &db.pool,
+        NewToolApproval {
+            owner_user_id: other_owner,
+            ..db.new_tool_approval(connector_id, "GITHUB_CREATE_ISSUE", "ctx-shared-owner-test")
+        },
+    )
+    .await
+    .expect("owner B's create must succeed as its own row, not error out finding owner A's");
+
+    assert_ne!(
+        a.id, b.id,
+        "two different owners must never collapse onto the same pending row just because they \
+         share an (agent, connector, tool, context) tuple"
+    );
+    assert_eq!(b.owner_user_id, other_owner);
+}
+
 // ─── M5: resolve ────────────────────────────────────────────────────────────
 //
 // `repo::list_pending_for`/`repo::authorize_hitl_action` (and their tests, formerly here) were

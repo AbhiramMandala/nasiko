@@ -15,17 +15,23 @@
 //! Two tiers: when `session::resolve_context_id` has already resolved the
 //! call's own trace to a real `chat_sessions.session_id` (via a
 //! `session_traces` row — what a real deployment always has once
-//! `agent_proxy` has forwarded at least one message), that exact session is
-//! trusted directly — this is what actually prevents a grant approved in one
-//! active chat from leaking into a different, more-recently-touched chat
-//! with the same agent (`session_grant_never_leaks_across_concurrent_chats_...`
-//! below exercises this tier explicitly, including the adversarial
-//! `updated_at` ordering that the naive "most recent" heuristic alone gets
-//! wrong). Only when the trace has no `session_traces` mapping at all does
-//! this fall back to "most recent session for this (user, agent) pair" —
-//! `session_grant_spans_multiple_messages_...` below exercises that fallback
-//! tier, since `handle_tools_call` in these tests never goes through
-//! `agent_proxy` and so never produces a real `session_traces` row itself.
+//! `agent_proxy`/`a2a_dispatch.rs` has forwarded at least one message), that
+//! exact session is trusted directly — this is what actually prevents a
+//! grant approved in one active chat from leaking into a different, more-
+//! recently-touched chat with the same agent
+//! (`session_grant_never_leaks_across_concurrent_chats_...` below exercises
+//! this tier explicitly, including the adversarial `updated_at` ordering
+//! that a naive "most recent" heuristic alone gets wrong). Only when the
+//! trace has no `session_traces` mapping at all does this fall back to "the
+//! only chat session for this (user, agent) pair, if there is exactly one" —
+//! never a most-recent guess among two or more, which is exactly what used
+//! to leak (`session_grant_spans_messages_in_the_only_chat_for_the_agent`
+//! exercises the safe single-candidate case,
+//! `session_grant_is_not_attributed_to_a_more_recent_concurrent_chat_with_no_trace_resolution`
+//! exercises the ambiguous one) — `handle_tools_call` in these tests never
+//! goes through `agent_proxy`/`a2a_dispatch.rs`, so it never produces a real
+//! `session_traces` row itself, which is exactly what puts every test below
+//! that doesn't seed one into this fallback tier.
 //!
 //!   cargo test -p nasiko-server --test mcp_session_grant_stability -- --test-threads=1
 
@@ -241,17 +247,26 @@ async fn seed_session_trace(
         .unwrap();
 }
 
-/// Exercises the fallback tier only ("most recent session for this user+agent") — none of these
-/// calls goes through `agent_proxy`, so no `session_traces` row ever maps any of these traces to a
-/// real session, and `resolve_stable_session_context`'s trace-resolved primary tier never fires.
-/// This is why the "different chat" assertion at the end only holds given the ordering this test
-/// pins (chat B created, with a newer `updated_at`, only after the grant already exists) — it is
-/// a property of the fallback heuristic, not proof that a grant can never leak across two chats
-/// that are *both* already active. See `session_grant_never_leaks_across_concurrent_chats_even_when_the_other_is_more_recently_active`
-/// below for that stronger, trace-resolved guarantee.
+/// `resolve_stable_session_context` used to fall back to "most recent session for this
+/// user+agent" *unconditionally* whenever the current call's trace didn't resolve to a real
+/// session via `session_traces` — which let a grant approved in one active chat silently
+/// authorize a tool in a *different*, more-recently-touched chat with the same agent (found in
+/// review — this test previously asserted the opposite of what the code did: it named itself
+/// after the safe outcome and passed only because it pinned chat B's `updated_at` to arrive
+/// *after* the grant already existed, an ordering that can never exercise the bug — see
+/// `session_grant_is_not_attributed_to_a_more_recent_concurrent_chat_with_no_trace_resolution`
+/// below for the ordering that actually does, which is what the fallback is now guarded against).
+///
+/// The fallback is conditioned on being unambiguous: with only ONE chat session for this
+/// `(user, agent)` pair, there is nothing to guess wrong, so a grant still correctly spans
+/// messages 1 and 2 even with no trace mapping at all — none of these calls goes through
+/// `agent_proxy`, so no `session_traces` row ever exists for them. See
+/// `session_grant_never_leaks_across_concurrent_chats_even_when_the_other_is_more_recently_active`
+/// below for the production-shaped case, where `session_traces` genuinely maps every message to
+/// its real chat even with multiple concurrent chats against the same agent.
 #[tokio::test]
 #[serial]
-async fn session_grant_spans_multiple_messages_in_the_same_chat_but_not_a_different_one() {
+async fn session_grant_spans_messages_in_the_only_chat_for_the_agent() {
     let server = common::TestServer::start().await;
     let (admin_id, admin_uuid) = init_admin(&server).await;
 
@@ -259,7 +274,8 @@ async fn session_grant_spans_multiple_messages_in_the_same_chat_but_not_a_differ
     let connector_id = seed_connector(&server, admin_uuid, &backend_url).await;
     let agent_id = seed_agent(&server, admin_uuid, "session-grant-test-agent").await;
 
-    // "Chat A" — the conversation the human is actually approving in.
+    // "Chat A" — the conversation the human is actually approving in, and (for now) the only
+    // chat session that exists for this (user, agent) pair.
     let chat_a = "ses_chat_a_session_stability_test";
     seed_chat_session(
         &server,
@@ -322,9 +338,9 @@ async fn session_grant_spans_multiple_messages_in_the_same_chat_but_not_a_differ
         "resolved"
     );
 
-    // ── Message 2, same chat, a totally different trace ─────────────────────
-    // The whole point of the bug: message 2 is a fresh distributed trace, so
-    // if the grant were still keyed by trace context, this would ask again.
+    // ── Message 2, a fresh trace, while chat A is still the only chat for this agent ─────────────
+    // No `session_traces` mapping exists, but there is exactly one chat session to attribute this
+    // call to — unambiguous, so the grant correctly spans this message too.
     let msg2_trace = traceparent("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     let res2 = handle_tools_call(
         &state,
@@ -338,36 +354,117 @@ async fn session_grant_spans_multiple_messages_in_the_same_chat_but_not_a_differ
     .await;
     assert!(
         res2.get("error").is_none(),
-        "message 2 in the SAME chat must proceed without asking again — the session grant \
-         must span messages, not just the one trace it was created against: {res2}"
-    );
-
-    // ── A different chat session (agent unchanged) ──────────────────────────
-    // Newer `updated_at` than chat A, so it's now "the most recent session"
-    // for this (user, agent) pair — the grant, created for chat A, must not
-    // leak into it.
-    let chat_b = "ses_chat_b_session_stability_test";
-    seed_chat_session(&server, chat_b, admin_uuid, agent_id, chrono::Utc::now()).await;
-
-    let msg3_trace = traceparent("ccccccccccccccccccccccccccccccc9");
-    let res3 = handle_tools_call(
-        &state,
-        admin_uuid,
-        &json!(3),
-        &json!({ "name": tool, "arguments": {} }),
-        &resolved,
-        &perms,
-        Some(&msg3_trace),
-    )
-    .await;
-    assert_eq!(
-        res3["error"]["code"],
-        json!(codes::TOOL_ASK),
-        "a different chat session must ask again — the session grant must not leak across \
-         conversations: {res3}"
+        "message 2 must proceed without asking again — with only one chat session for this \
+         agent, there is no ambiguity to guess wrong: {res2}"
     );
 
     server.cleanup().await;
+}
+
+/// The actual regression: chat B must already exist, and already be more recently active, BEFORE
+/// the human ever approves anything in chat A — the ordering the misleading version of this test
+/// (see the comment on `session_grant_spans_messages_in_the_only_chat_for_the_agent` above) never
+/// exercised. No `session_traces` row exists for any of these calls, so this is the fallback tier
+/// under the exact condition the old "most recent session" heuristic got wrong: two real,
+/// concurrently active chats for the same agent, at write time, not just at a later lookup.
+#[tokio::test]
+#[serial]
+async fn session_grant_is_not_attributed_to_a_more_recent_concurrent_chat_with_no_trace_resolution()
+{
+    let server = common::TestServer::start().await;
+    let (admin_id, admin_uuid) = init_admin(&server).await;
+
+    let backend_url = start_stub_mcp_server_ok().await;
+    let connector_id = seed_connector(&server, admin_uuid, &backend_url).await;
+    let agent_id = seed_agent(&server, admin_uuid, "concurrent-no-trace-test-agent").await;
+
+    // Chat B is already the most recently active session for (user, agent) BEFORE chat A's
+    // approval ever happens — the exact ordering that defeated the old "most recent" heuristic.
+    let chat_b = "ses_chat_b_no_trace_concurrent_test";
+    seed_chat_session(&server, chat_b, admin_uuid, agent_id, chrono::Utc::now()).await;
+    let chat_a = "ses_chat_a_no_trace_concurrent_test";
+    seed_chat_session(
+        &server,
+        chat_a,
+        admin_uuid,
+        agent_id,
+        chrono::Utc::now() - chrono::Duration::minutes(10),
+    )
+    .await;
+
+    let state = mcp_state(server.db.clone());
+    let perms = PermissionContext {
+        agent_id,
+        enabled_connectors: [connector_id].into_iter().collect(),
+        rules: vec![PermissionRule {
+            connector_id,
+            tool_pattern: "list_repos".into(),
+            stance: Stance::Ask,
+        }],
+        hash: "h".into(),
+    };
+    let resolved = mcp_session(connector_id, &backend_url);
+    let tool = format!(
+        "{}__list_repos",
+        nasiko_mcp_gateway::types::connector_prefix(connector_id)
+    );
+
+    // No `session_traces` row is seeded for this trace — the call cannot be attributed to either
+    // chat by anything other than the ambiguous "most recent" guess this fix removes.
+    let msg1_trace = traceparent("d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1");
+    let res1 = handle_tools_call(
+        &state,
+        admin_uuid,
+        &json!(1),
+        &json!({ "name": tool, "arguments": {} }),
+        &resolved,
+        &perms,
+        Some(&msg1_trace),
+    )
+    .await;
+    let hitl_id = res1["error"]["data"]["hitl_request_id"]
+        .as_str()
+        .expect("hitl_request_id present");
+
+    let req = server
+        .client
+        .post(server.url(&format!("/api/hitl/{hitl_id}/resolve")));
+    common::as_superuser(req, &admin_id, "admin")
+        .json(&json!({"decision": "approve", "scope": "session"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .expect("resolve must succeed");
+
+    let (row_context_id,): (String,) = sqlx::query_as(
+        "SELECT context_id FROM mcp_session_tool_grants WHERE agent_id = $1 AND connector_id = $2",
+    )
+    .bind(agent_id)
+    .bind(connector_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_ne!(
+        row_context_id, chat_b,
+        "the grant must never be attributed to chat B just because it was the more recently \
+         active session — with no way to tell which chat this call actually belongs to, it must \
+         not guess at all"
+    );
+    assert_eq!(
+        row_context_id,
+        msg1_trace_id(&msg1_trace),
+        "with no session resolvable at all, the grant must fall back to the literal per-message \
+         trace context, not any chat_sessions row"
+    );
+
+    server.cleanup().await;
+}
+
+/// Pulls the raw trace id back out of a `traceparent` header value (`00-<trace_id>-<span_id>-01`)
+/// — the exact value `session::resolve_context_id` returns when no `session_traces` row maps it.
+fn msg1_trace_id(traceparent: &str) -> &str {
+    traceparent.split('-').nth(1).expect("valid traceparent")
 }
 
 /// The stronger guarantee `session_grant_spans_multiple_messages_...` above can't prove: two chats

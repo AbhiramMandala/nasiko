@@ -251,6 +251,65 @@ async fn duplicate_pending_tool_approval_is_idempotent_and_distinct_tools_never_
     assert_ne!(first.id, different_tool.id);
 }
 
+/// Security regression (`uq_hitl_pending_per_tool_call`, `0023_hitl_mcp_pending_owner_scope.sql`):
+/// `context_id` for an `mcp_tool` row falls back to the raw, agent-controlled trace id whenever no
+/// `session_traces` mapping exists, so two different users' calls can collide on the exact same
+/// `(agent, connector, tool, context)` tuple without either of them doing anything wrong. Before
+/// the index (and `find_existing_pending`'s matching lookup) included `owner_user_id`, the second
+/// user's `create()` would silently `DO UPDATE` and return the FIRST user's pending row — this
+/// user's own tool call would never get recorded at all, and they'd be handed someone else's
+/// `hitl_request_id`.
+#[tokio::test]
+#[ignore = "requires PostgreSQL (DATABASE_URL)"]
+async fn duplicate_pending_tool_approval_with_the_same_context_id_different_owner_does_not_collide()
+{
+    let pool = pool().await;
+    let store = PgHitlStore::new(pool.clone());
+    let agent = fixture_agent(&pool, fixture_user(&pool).await).await;
+    let owner_a = fixture_user(&pool).await;
+    let owner_b = fixture_user(&pool).await;
+    let connector_id = Uuid::new_v4();
+    // Same raw context_id for both users — exactly what an agent-controlled trace id colliding
+    // (forced or coincidental) would look like from the store's point of view.
+    let shared_ctx = format!("ctx-{}", Uuid::new_v4());
+
+    let row_a = store
+        .create(NewHitlRequest::mcp_tool(
+            agent,
+            owner_a,
+            shared_ctx.clone(),
+            connector_id,
+            "github_create_issue",
+            None,
+            json!({"tool_name": "github_create_issue"}),
+        ))
+        .await
+        .expect("owner A's create");
+
+    let row_b = store
+        .create(NewHitlRequest::mcp_tool(
+            agent,
+            owner_b,
+            shared_ctx,
+            connector_id,
+            "github_create_issue",
+            None,
+            json!({"tool_name": "github_create_issue"}),
+        ))
+        .await
+        .expect("owner B's create must succeed as its own row, not error out finding owner A's");
+
+    assert_ne!(
+        row_a.id, row_b.id,
+        "two different owners' calls must never collapse onto the same pending row just because \
+         they share an (agent, connector, tool, context) tuple"
+    );
+    assert_eq!(
+        row_b.owner_user_id, owner_b,
+        "owner B's row must be owned by owner B"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires PostgreSQL (DATABASE_URL)"]
 async fn resolve_once_then_twice_is_idempotent_not_an_error() {

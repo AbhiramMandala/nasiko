@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::authz::HitlIdentity;
-use crate::types::{HitlOrigin, HitlRequest, HitlStatus, NewHitlRequest};
+use crate::types::{HitlKind, HitlOrigin, HitlRequest, HitlStatus, NewHitlRequest};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HitlError {
@@ -342,31 +342,56 @@ impl PgHitlStore {
     }
 
     /// Re-fetch the pending row a unique-violation on `create` must have collided with — either
-    /// the `uq_hitl_pending_per_task` or `uq_hitl_pending_per_tool_call` index (§5).
+    /// `uq_hitl_pending_per_task`, `uq_hitl_pending_per_tool_call`, or
+    /// `uq_hitl_pending_per_connector_auth` (§5).
     ///
-    /// The non-`McpTool` branch is scoped by `owner_user_id`/`agent_id` in addition to
-    /// `task_id`, matching `uq_hitl_pending_per_task` (0019_hitl_task_id_scope.sql) — `task_id`
-    /// is populated from agent-controlled A2A response data, not a Nasiko-minted id, so it must
-    /// never be trusted alone as a database-wide key: without this scoping, a non-random or
-    /// malicious agent's `taskId` could collide two different users' pauses onto the same row.
+    /// Every branch is scoped by `owner_user_id` in addition to whatever the index's own matching
+    /// columns are, matching `uq_hitl_pending_per_task`/`uq_hitl_pending_per_tool_call`/
+    /// `uq_hitl_pending_per_connector_auth` themselves (`0019_hitl_task_id_scope.sql`,
+    /// `0023_hitl_mcp_pending_owner_scope.sql`) — `task_id` and `context_id` (the McpTool
+    /// branches' own matching value, which falls back to a raw trace id when no `session_traces`
+    /// mapping exists) are both populated from agent-controlled data, never a Nasiko-minted id, so
+    /// neither may be trusted alone as a database-wide key: without this scoping, a non-random or
+    /// malicious agent's `taskId`/trace id could collide two different users' pauses onto the same
+    /// row, and this recovery path would hand the wrong user's row back as if it were their own.
+    ///
+    /// The two McpTool branches are also kept kind-specific rather than one query covering both:
+    /// `tool_approval` rows match on `tool_name` (part of `uq_hitl_pending_per_tool_call`'s own
+    /// key), `auth_required` rows have no `tool_name` at all (`uq_hitl_pending_per_connector_auth`
+    /// is a connector-level guard, not a per-tool one) — a single query using one column set for
+    /// both would either miss a real `auth_required` collision (falling through to a raw
+    /// constraint-violation error instead of returning the existing row) or match too loosely.
     async fn find_existing_pending(
         &self,
         req: &NewHitlRequest,
     ) -> Result<Option<HitlRequest>, HitlError> {
-        let row: Option<HitlRequestRow> = if req.origin == HitlOrigin::McpTool {
-            sqlx::query_as(
+        let row: Option<HitlRequestRow> = match (req.origin, req.kind) {
+            (HitlOrigin::McpTool, HitlKind::ToolApproval) => sqlx::query_as(
                 "SELECT * FROM hitl_requests
                  WHERE status = 'pending' AND kind = 'tool_approval'
-                   AND agent_id = $1 AND connector_id = $2 AND tool_name = $3 AND context_id = $4",
+                   AND owner_user_id = $1 AND agent_id = $2 AND connector_id = $3
+                   AND tool_name = $4 AND context_id = $5",
             )
+            .bind(req.owner_user_id)
             .bind(req.agent_id)
             .bind(req.connector_id)
             .bind(&req.tool_name)
             .bind(&req.context_id)
             .fetch_optional(&self.pool)
-            .await?
-        } else {
-            sqlx::query_as(
+            .await?,
+            (HitlOrigin::McpTool, _) => sqlx::query_as(
+                "SELECT * FROM hitl_requests
+                 WHERE status = 'pending' AND kind = 'auth_required' AND origin = 'mcp_tool'
+                   AND owner_user_id = $1 AND agent_id = $2 AND connector_id = $3
+                   AND context_id = $4",
+            )
+            .bind(req.owner_user_id)
+            .bind(req.agent_id)
+            .bind(req.connector_id)
+            .bind(&req.context_id)
+            .fetch_optional(&self.pool)
+            .await?,
+            _ => sqlx::query_as(
                 "SELECT * FROM hitl_requests
                  WHERE status = 'pending' AND owner_user_id = $1 AND agent_id = $2 AND task_id = $3",
             )
@@ -374,7 +399,7 @@ impl PgHitlStore {
             .bind(req.agent_id)
             .bind(&req.task_id)
             .fetch_optional(&self.pool)
-            .await?
+            .await?,
         };
         row.map(HitlRequest::try_from).transpose()
     }

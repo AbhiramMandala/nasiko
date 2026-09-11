@@ -882,6 +882,23 @@ async fn send_message(
         return StatusCode::NOT_FOUND.into_response();
     }
 
+    // Whitelisted, not just filtered on read (found in review): `list_messages` hides
+    // `role = 'system'` rows from the transcript on the assumption that nothing client-supplied
+    // can carry that role, and `SessionHistory::fetch` (`oss/orchestrator`) applies no such filter
+    // when building the next turn's LLM prompt — an unvalidated `role` here would let a caller
+    // plant an invisible system-role instruction that still reaches the model. See
+    // `CHAT_MESSAGE_ROLE_USER`/`CHAT_MESSAGE_ROLE_ASSISTANT`'s own doc comment for why `"system"`
+    // itself is excluded even though it's a real value in this column.
+    if body.role != CHAT_MESSAGE_ROLE_USER && body.role != CHAT_MESSAGE_ROLE_ASSISTANT {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "role must be \"{CHAT_MESSAGE_ROLE_USER}\" or \"{CHAT_MESSAGE_ROLE_ASSISTANT}\""
+            ),
+        )
+            .into_response();
+    }
+
     // Dedupe: a client sending the same file_id twice would otherwise cause
     // `claimed != file_ids.len()` to false-positive (the UPDATE affects each
     // distinct row once, but `ANY($2)` with a duplicate doesn't double-count

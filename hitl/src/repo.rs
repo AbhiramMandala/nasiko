@@ -66,11 +66,11 @@ pub struct NewAuthRequired {
 }
 
 /// Create a pending `auth_required`/`mcp_tool` request, or — if one already
-/// exists for this exact `(agent_id, connector_id, context_id)` — return that
-/// existing row unchanged (only `updated_at` is bumped). Idempotent by
-/// construction via `uq_hitl_pending_per_connector_auth`: safe to call once
-/// per failed tool call against the same unusable connector without ever
-/// creating a duplicate pending row.
+/// exists for this exact `(owner_user_id, agent_id, connector_id, context_id)`
+/// — return that existing row unchanged (only `updated_at` is bumped).
+/// Idempotent by construction via `uq_hitl_pending_per_connector_auth`: safe
+/// to call once per failed tool call against the same unusable connector
+/// without ever creating a duplicate pending row.
 pub async fn create_pending_auth_required(
     db: &PgPool,
     req: NewAuthRequired,
@@ -93,7 +93,14 @@ pub async fn create_pending_auth_required_with_ttl(
             (kind, origin, agent_id, owner_user_id, connector_id, context_id, question, expires_at)
         VALUES
             ('auth_required', 'mcp_tool', $1, $2, $3, $4, $5, $6)
-        ON CONFLICT (agent_id, connector_id, context_id)
+        -- `owner_user_id` is part of the conflict target, not just the row content (security
+        -- review, migration 0023): `context_id` falls back to the raw, agent-controlled trace id
+        -- when no `session_traces` mapping exists — without `owner_user_id` here, two different
+        -- users whose calls happened to collide on the same (agent, connector, context) tuple
+        -- would silently `DO UPDATE` and `RETURNING *` each other's row, handing one user's
+        -- pending auth-required row back to the other's request. Same class of bug
+        -- `0019_hitl_task_id_scope.sql` closed for `uq_hitl_pending_per_task`.
+        ON CONFLICT (owner_user_id, agent_id, connector_id, context_id)
             WHERE status = 'pending' AND kind = 'auth_required' AND origin = 'mcp_tool'
             -- Also refreshes `expires_at`, not just `updated_at`: without this, a connector that
             -- stays broken past the original row's TTL expires (`expire_stale`) while still being
@@ -149,11 +156,11 @@ pub struct NewToolApproval {
 }
 
 /// Create a pending `tool_approval` request, or — if one already exists for
-/// this exact `(agent_id, connector_id, tool_name, context_id)` — return
-/// that existing row unchanged (only `updated_at` is bumped). Idempotent by
-/// construction via `uq_hitl_pending_per_tool_call` (`0007_hitl.sql`): safe
-/// to call once per `Stance::Ask` decision without ever creating a duplicate
-/// pending row for the same tool/conversation.
+/// this exact `(owner_user_id, agent_id, connector_id, tool_name, context_id)`
+/// — return that existing row unchanged (only `updated_at` is bumped).
+/// Idempotent by construction via `uq_hitl_pending_per_tool_call`
+/// (`0007_hitl.sql`): safe to call once per `Stance::Ask` decision without
+/// ever creating a duplicate pending row for the same tool/conversation.
 pub async fn create_pending_tool_approval(
     db: &PgPool,
     req: NewToolApproval,
@@ -176,7 +183,12 @@ pub async fn create_pending_tool_approval_with_ttl(
             (kind, origin, agent_id, owner_user_id, connector_id, tool_name, context_id, question, expires_at)
         VALUES
             ('tool_approval', 'mcp_tool', $1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (agent_id, connector_id, tool_name, context_id)
+        -- `owner_user_id` is part of the conflict target, not just the row content — same
+        -- security fix, same reasoning, as `create_pending_auth_required_with_ttl`'s identical
+        -- `ON CONFLICT` above (migration 0023): without it, a forced or coincidental collision on
+        -- (agent, connector, tool, context) between two different users' calls would silently
+        -- `DO UPDATE` and return one user's pending tool-approval row to the other's request.
+        ON CONFLICT (owner_user_id, agent_id, connector_id, tool_name, context_id)
             WHERE status = 'pending' AND kind = 'tool_approval'
             -- Same fix as `create_pending_auth_required_with_ttl`'s identical `ON CONFLICT`: also
             -- refresh `expires_at`, not just `updated_at`, so a repeatedly-retried tool call keeps
@@ -532,33 +544,38 @@ pub async fn claim_resolved_tool_approval(
 /// message. `resolve_context_id` already resolves it to the real
 /// `chat_sessions.session_id` via `session_traces` when that mapping exists
 /// (agent_proxy inserts one per forwarded message), so `current_context_id`
-/// is checked FIRST and trusted exactly when it already names a real session
-/// for this `(owner_user_id, agent_id)` pair — that is the exact conversation
-/// this call belongs to, not a guess.
+/// is trusted exactly when it already names a real session for this
+/// `(owner_user_id, agent_id)` pair — that is the exact conversation this
+/// call belongs to, not a guess.
 ///
-/// Only when `current_context_id` does **not** resolve to a real session
-/// (the `session_traces` row hasn't landed yet, or this caller never goes
-/// through `agent_proxy` at all) does this fall back to "most recent session
-/// for this `(owner_user_id, agent_id)` pair" — a best-effort default for
-/// that narrower case, not the primary mechanism. Relying on the fallback
-/// alone let a grant approved in one active chat silently authorize a tool
-/// in a *different*, more-recently-touched chat with the same agent (found
-/// in review) — an over-broad grant, not just an unnecessary re-ask as the
-/// fallback's own tradeoff assumes. Returns `None` when no chat session
-/// exists at all (e.g. a raw MCP integration outside any chat) — callers
-/// fall back to the existing trace-derived context in that case, so this is
-/// a pure addition to what `session` scope can match, never a narrowing.
+/// When `current_context_id` does **not** resolve to a real session, this used to fall back to
+/// "most recent session for this `(owner_user_id, agent_id)` pair" unconditionally — which let a
+/// grant approved in one active chat silently authorize a tool in a *different*, more-recently-
+/// touched chat with the same agent: an over-broad grant, not the unnecessary-re-ask the
+/// fallback's own tradeoff assumed (found in review — twice; the fallback survived the first fix
+/// that added the primary tier above, because that fix narrowed how often the fallback fires
+/// without removing what it does when it does fire).
 ///
-/// The primary-tier lookup matches `agent_id = $3 OR agent_id IS NULL`
-/// because `ensure_orchestrator_chat_session` inserts orchestrator-routed
-/// chat sessions with `agent_id = NULL` (the session fronts every sub-agent,
-/// not one) — matching on `agent_id = $3` alone made this probe always miss
-/// for an orchestrator conversation, which fell through to the
-/// direct-chat-only fallback below and wrote the grant against whatever
-/// direct chat with this agent the user happened to have open, not the
-/// orchestrator conversation the approval actually came from (found in
-/// review — the exact over-broad-grant failure mode this function exists to
-/// close, surviving for orchestrator chats specifically).
+/// The fallback now only ever fires when it is **unambiguous**: exactly one `chat_sessions` row
+/// exists for this `(owner_user_id, agent_id)` pair. With a single candidate there is nothing to
+/// guess — "most recent" and "only" are the same session, so returning it carries none of the
+/// original risk. With zero or two-or-more candidates this returns `None` rather than picking one:
+/// zero means there is nothing to key by, and two-or-more is exactly the ambiguous case that used
+/// to guess wrong. Both callers (`router/hitl.rs`'s grant write, `mcp-gateway/src/protocol.rs`'s
+/// grant lookup) already fall back to the raw, per-message `context_id` on `None`, which narrows
+/// the grant/lookup to that literal trace rather than mapping it onto some other conversation —
+/// worst case an extra re-ask, never a wrong-chat authorization.
+///
+/// The primary-tier lookup matches `agent_id = $3 OR agent_id IS NULL` because
+/// `ensure_orchestrator_chat_session` inserts orchestrator-routed chat sessions with `agent_id =
+/// NULL` (the session fronts every sub-agent, not one) — matching on `agent_id = $3` alone made
+/// this probe always miss for an orchestrator conversation, which used to fall through to a
+/// direct-chat-only fallback and write the grant against whatever direct chat with this agent the
+/// user happened to have open, not the orchestrator conversation the approval actually came from
+/// (found in review — the same over-broad-grant failure mode, surviving for orchestrator chats
+/// specifically until this lookup covered them too). The unambiguous-fallback query below applies
+/// the identical relaxation for the same reason — an orchestrator session with no competing
+/// candidate is exactly as safe to return as a direct-chat one.
 pub async fn resolve_stable_session_context(
     db: &PgPool,
     owner_user_id: Uuid,
@@ -583,19 +600,24 @@ pub async fn resolve_stable_session_context(
         return Ok(Some(current_context_id.to_string()));
     }
 
-    let session_id: Option<String> = sqlx::query_scalar(
+    // `LIMIT 2`, not 1: this only needs to distinguish "exactly one" from "more than one", never
+    // which one is most recent — there is no safe way to break a tie between two-or-more
+    // candidates, so a second row is enough to know this must return `None`.
+    let candidates: Vec<String> = sqlx::query_scalar(
         r#"
         SELECT session_id FROM chat_sessions
-         WHERE user_id = $1 AND agent_id = $2 AND deleted_at IS NULL
-         ORDER BY updated_at DESC
-         LIMIT 1
+         WHERE user_id = $1 AND (agent_id = $2 OR agent_id IS NULL) AND deleted_at IS NULL
+         LIMIT 2
         "#,
     )
     .bind(owner_user_id)
     .bind(agent_id)
-    .fetch_optional(db)
+    .fetch_all(db)
     .await?;
-    Ok(session_id)
+    Ok(match <[String; 1]>::try_from(candidates) {
+        Ok([only]) => Some(only),
+        Err(_) => None,
+    })
 }
 
 /// Default validity window for an "allow for this session" grant — 24 hours,
