@@ -398,6 +398,8 @@ async function checkCatalogReachable() {
 
 if (!offline) await checkCatalogReachable();
 
+/** Cases whose recording was refused because the generator answered nothing. */
+const skipped = [];
 let failed = 0;
 for (const kase of cases) {
   const path = resolve(FIXTURES, `${kase.id}.dsl`);
@@ -425,7 +427,19 @@ for (const kase of cases) {
     failed++;
     continue;
   }
-  if (record) writeFileSync(path, text);
+  // An empty answer is never a recording worth keeping. It means the generator
+  // could not answer — no model credential, no skill registered, a refused
+  // connection — and none of those are a sample of anything. Writing it
+  // destroys a good fixture and replaces it with a file that then fails the
+  // offline run for a reason that has nothing to do with the generation.
+  //
+  // Learned the hard way: a blank AWS_BEARER_TOKEN_BEDROCK in .env.docker
+  // emptied all eleven in one command, including the prose-only cases that
+  // touch neither the catalog nor the DSL.
+  if (record) {
+    if (text.trim()) writeFileSync(path, text);
+    else skipped.push(kase.id);
+  }
 
   const { fail, advisory, runtime, r } = check(kase, text);
 
@@ -474,8 +488,28 @@ const mode = offline ? 'replayed' : 'live';
 // things — failing the recipe on a sample turns that into whack-a-mole, and
 // worse, it stops before you can look at what it just wrote. What it wrote is
 // the point. The committed fixtures are what gate CI, through --offline.
+// Every case answering nothing is not a bad sample, it is a broken setup —
+// the generator is not generating. Said separately and first, because the
+// per-case failures underneath all read as "the model wrote nothing useful"
+// and none of them names the actual cause.
+if (record && skipped.length === cases.length) {
+  console.error(`\neval: all ${cases.length} came back empty — nothing was recorded, your fixtures are untouched.`);
+  console.error('The generator answered nothing at all, including the prose-only cases, which');
+  console.error('touch neither the catalog nor the DSL. That is a setup problem, not a model one:\n');
+  console.error('  - is AWS_BEARER_TOKEN_BEDROCK set where Weave can see it?');
+  console.error('    (in .env.docker for a container — .env is a different file and not read by it)');
+  console.error('  - is WEAVE_EXTRA_SKILLS registering examples.dynamic_ui.skill:build_skill?');
+  console.error('  - check the container log for the first request; it usually says which.');
+  process.exit(1);
+}
+
+if (record && skipped.length) {
+  console.error(`\neval: ${skipped.length} answered nothing and were NOT recorded — ${skipped.join(', ')}.`);
+  console.error('Those fixtures keep whatever they had. Re-run them once the cause is fixed.');
+}
+
 if (record && failed) {
-  console.error(`\neval: recorded ${cases.length}; ${failed} would fail as a baseline.`);
+  console.error(`\neval: recorded ${cases.length - skipped.length}; ${failed} would fail as a baseline.`);
   console.error('Read them, then either fix the cause or re-record for a different sample.');
   console.error('CI judges the committed fixtures — run --offline before you commit.');
   process.exit(0);
