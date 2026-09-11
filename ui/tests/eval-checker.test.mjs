@@ -127,8 +127,19 @@ test('prose is separated from DSL, both directions', () => {
 test('every case names a scope source the manifest actually allows', () => {
   // The harness cannot be stricter than the backend, or it fails runs that are
   // correct; it cannot be looser, or it passes runs that are broken.
-  assert.equal(ALLOWED_SOURCES.size, 5);
-  assert.ok(ALLOWED_SOURCES.has('fetchUsageSummary'));
+  //
+  // Asserted as agreement with the manifest, not as a count. The count was 5
+  // and the manifest moved to 7, so this test passed while the harness it
+  // guards was rejecting a source the model had been told it could use —
+  // a literal pinning the wrong side of the very drift it exists to catch.
+  const manifest = JSON.parse(
+    readFileSync(new URL('../common/surface/data-manifest.json', import.meta.url), 'utf8'),
+  );
+  const declared = new Set(
+    Object.values(manifest.scopes ?? {}).flat().map((x) => (typeof x === 'string' ? x : x.name)),
+  );
+  assert.deepEqual([...ALLOWED_SOURCES].sort(), [...declared].sort());
+  assert.ok(declared.size > 0, 'a manifest with no sources in scope is a generator bug');
   assert.ok(CASES.length >= 8, 'a handful of prompts is not a baseline');
   assert.equal(new Set(CASES.map((c) => c.id)).size, CASES.length, 'ids are the fixture filenames');
 });
