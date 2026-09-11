@@ -319,6 +319,11 @@ async function generate(prompt) {
 
   let text = '';
   let generatorCatalog = null;
+  // The stream says why it produced nothing, and this used to drop it on the
+  // floor: everything that was not a dsl-chunk was skipped, so an agent that
+  // failed outright reported as "answered with nothing at all" and the actual
+  // message — an executor failure, a refused model call — never left the wire.
+  const failures = [];
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -336,11 +341,24 @@ async function generate(prompt) {
         try { generatorCatalog = JSON.parse(data).catalogVersion ?? null; } catch { /* reported below */ }
         continue;
       }
+      if (event === 'fail') {
+        try {
+          const f = JSON.parse(data);
+          failures.push(f.message ? `${f.code ?? 'fail'}: ${f.message}` : JSON.stringify(f));
+        } catch { failures.push(data); }
+        continue;
+      }
       if (event !== 'dsl-chunk') continue;
       try { text += JSON.parse(data).text ?? ''; } catch { /* a truncated frame is the client's problem too */ }
     }
   }
-  return { text, generatorCatalog };
+  // A failure frame with no DSL behind it is the whole answer, so it is raised
+  // rather than returned — the per-case "no root, 0 queries" lines underneath
+  // describe the symptom and this is the cause.
+  if (!text.trim() && failures.length) {
+    throw new Error(`the generator failed — ${failures.join('; ')}`);
+  }
+  return { text, generatorCatalog, failures };
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
@@ -544,11 +562,16 @@ const mode = offline ? 'replayed' : 'live';
 if (record && skipped.length === cases.length) {
   console.error(`\neval: all ${cases.length} came back empty — nothing was recorded, your fixtures are untouched.`);
   console.error('The generator answered nothing at all, including the prose-only cases, which');
-  console.error('touch neither the catalog nor the DSL. That is a setup problem, not a model one:\n');
-  console.error('  - is AWS_BEARER_TOKEN_BEDROCK set where Weave can see it?');
-  console.error('    (in .env.docker for a container — .env is a different file and not read by it)');
-  console.error('  - is WEAVE_EXTRA_SKILLS registering examples.dynamic_ui.skill:build_skill?');
-  console.error('  - check the container log for the first request; it usually says which.');
+  console.error('touch neither the catalog nor the DSL. That is a setup problem, not a model one.\n');
+  console.error('Weave runs as an agent the control plane deploys, so its environment comes');
+  console.error('from ee/server/.env by way of oss/server/src/seed.rs — not from any file in');
+  console.error('the Weave repo. Check, in this order:\n');
+  console.error('  1. docker logs $(docker ps -qf name=weave) — the agent says why on the');
+  console.error('     first request, and it is usually a model credential.');
+  console.error('  2. AWS_BEARER_TOKEN_BEDROCK in ee/server/.env — the seed forwards it,');
+  console.error('     so a stale or rotated key here is silence there.');
+  console.error('  3. WEAVE_FORCE_PULL=1 then restart, if the env changed since the agent');
+  console.error('     was last deployed — a running container keeps the env it started with.');
   process.exit(1);
 }
 
