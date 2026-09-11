@@ -768,7 +768,10 @@ class TokenopsPage extends HTMLElement {
     }
     if (id !== this.#loadId) return;
     const data = resp?.data ?? resp ?? {};
-    this.#agents = data.agents || [];
+    // `data.agents` comes back already filtered by `agent_id`, so adopting it
+    // while an agent is selected would leave that agent as the dropdown's only
+    // option — no way back to any other agent. Keep the last unfiltered list.
+    if (!this.#agentFilter) this.#agents = data.agents || [];
     this.#summary = data.summary || {};
     this.#kpis = data.kpis || null;
     const rawRows = data.attributions?.rows ?? data.agents ?? [];
