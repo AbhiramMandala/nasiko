@@ -383,7 +383,7 @@ async fn process_job(
 
 /// Loads the durable state a resume needs from `maf_executions`: `step_results` (every step's
 /// plan is embedded in it — see `run_maf_from`'s doc comment), the running token/cost totals, and
-/// the planner's `output_generation` guideline (`oss/migrations/0016_maf_hitl.sql`,
+/// the planner's `output_generation` guideline (`oss/migrations/0018_maf_hitl.sql`,
 /// `0012_maf_finops.sql`). Without `cost_usd` here, a resumed execution's FinOps total would reset
 /// to whatever the post-resume steps alone cost, silently losing every pre-pause step's spend.
 async fn fetch_resume_state(

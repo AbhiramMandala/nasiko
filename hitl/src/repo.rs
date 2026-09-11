@@ -1,5 +1,5 @@
 //! Postgres persistence for `hitl_requests` (migration `0007_hitl.sql` +
-//! `0014_hitl_auth_required.sql`).
+//! `0016_hitl_auth_required.sql`).
 //!
 //! `oss/mcp-gateway` calls `create_pending_auth_required`/`create_pending_auth_required_with_ttl`
 //! from `protocol::handle_auth_required` and `create_pending_tool_approval`/
@@ -436,6 +436,19 @@ async fn resolve_linked_direct_chat_mirror(
         serde_json::json!({"auth_outcome": AUTH_OUTCOME_CONFIRMED}),
     )
     .await?;
+    // `linked` is the real resume now — never let the `mcp_tool` dispatcher also fire
+    // `mcp_row_id`'s own task_id-less nudge on top of it. Same call
+    // `router/hitl.rs::auto_resolve_linked_direct_chat_row` makes for the single-row resolve
+    // path; missing it here left this bulk path's `mcp_tool` row at
+    // `resume_status = 'not_started'`, so `repo::claim_for_resume` picked it up and
+    // `RuntimeResumeNotifier` fired a context-free nudge racing the mirror's own, real,
+    // task_id-bearing resume (found in review).
+    if let Err(e) = skip_resume_for_mirrored_row(db, mcp_row_id).await {
+        tracing::warn!(
+            error = %e, %mcp_row_id,
+            "failed to skip the mirrored mcp_tool row's own resume — it may still race the linked row's resume"
+        );
+    }
     Ok(())
 }
 

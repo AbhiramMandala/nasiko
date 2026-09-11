@@ -913,6 +913,21 @@ async fn resolve_pending_auth_required_for_connector_auto_resolves_a_linked_dire
             .and_then(|v| v["auth_outcome"].as_str()),
         Some("confirmed")
     );
+
+    // The mirror is the real, task_id-bearing resume now — the `mcp_tool` row's own resume must
+    // be skipped, exactly like the single-row `router/hitl.rs::auto_resolve_linked_direct_chat_row`
+    // path already does, or `repo::claim_for_resume` picks it up and fires a redundant,
+    // context-free nudge racing the mirror's resume (found in review).
+    let mcp_row_resume_status: String =
+        sqlx::query_scalar("SELECT resume_status FROM hitl_requests WHERE id = $1")
+            .bind(mcp_row.id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("fetch mcp_tool row");
+    assert_eq!(
+        mcp_row_resume_status, "skipped",
+        "the mcp_tool row's own resume must be skipped once its mirror is resolved instead"
+    );
 }
 
 /// Regression: `find_linked_direct_chat_row` was scoped to `origin IN ('direct_chat',

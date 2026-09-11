@@ -1,4 +1,4 @@
--- Fixes two gaps in 0015_mcp_session_tool_grants.sql, found in review:
+-- Fixes two gaps in 0017_mcp_session_tool_grants.sql, found in review:
 --
 -- 1. `connector_id` had no FK, unlike every other `connector_id` column in this schema
 --    (`mcp_connectors(id) ON DELETE CASCADE` is the established convention — see 0003_mcp.sql).

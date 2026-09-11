@@ -971,10 +971,23 @@ async fn close_resumed_flow_step(state: &AppState, row: &HitlRequest, agent_name
     };
     // `flow_steps.agent_name` holds the display-folded form, never the raw registry name here.
     let display_name = nasiko_react_agent::A2aTool::agent_display_name(agent_name);
+    // Narrowed to the single most recently paused row, matching `orchestrator_stream`'s own
+    // `AwaitingHuman` close-out (`a2a_dispatch.rs`'s `ORDER BY step_order DESC LIMIT 1` subquery)
+    // — `step_order` alone can't serve here since it only orders steps *within* one flow_id, and
+    // this session's `session_traces` mapping can span several. `created_at DESC` is the
+    // equivalent global ordering across flow_ids. Without this limit, an orchestrator session
+    // that delegates twice to the same sub-agent with both calls paused had answering the first
+    // one flip *both* `awaiting_human` rows to `resumed`, falsely reporting a still-paused step
+    // as resumed in the flow timeline (found in review).
     if let Err(e) = sqlx::query(
         "UPDATE flow_steps SET status = 'resumed'
-          WHERE status = 'awaiting_human' AND agent_name = $2
-            AND flow_id IN (SELECT trace_id FROM session_traces WHERE session_id = $1)",
+          WHERE id = (
+              SELECT id FROM flow_steps
+               WHERE status = 'awaiting_human' AND agent_name = $2
+                 AND flow_id IN (SELECT trace_id FROM session_traces WHERE session_id = $1)
+               ORDER BY created_at DESC
+               LIMIT 1
+          )",
     )
     .bind(chat_session_id)
     .bind(&display_name)

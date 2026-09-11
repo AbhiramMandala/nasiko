@@ -758,6 +758,20 @@ pub fn paused_task_id(data: &str, fallback: &str) -> String {
         // Task-wrapped dialect: the task object's own id field is `id`, not `taskId` — already
         // covered by this existing fallback, unchanged.
         .or_else(|| result.pointer("/task/id"))
+        .or_else(|| {
+            // Flat A2A 0.3.x Task: no `task` wrapper at all, so `result` IS the task and its own
+            // id field is `id`, not `taskId` — the same shape `classify_sse_event`'s flat-Task
+            // arm recognizes, gated identically (`kind == "task"`, or a kind-less payload that
+            // still carries `status.state`) so the two functions can never disagree again about
+            // which bytes are a flat Task. Missing this meant a flat-Task pause was correctly
+            // classified as `Paused` but resumed onto the caller's synthetic fallback id instead
+            // of the agent's real task, opening a brand-new task instead of continuing the
+            // paused one (found in review — same defect family as the flat-Task classifier gap).
+            let kind = result.get("kind").and_then(|k| k.as_str());
+            let is_flat_task = kind == Some("task")
+                || (kind.is_none() && result.pointer("/status/state").is_some());
+            is_flat_task.then(|| result.get("id")).flatten()
+        })
         .and_then(|v| v.as_str())
         .map(String::from)
         .unwrap_or_else(|| fallback.to_string())
@@ -978,6 +992,35 @@ mod pause_parsing_tests {
     fn paused_task_id_falls_back_on_unparseable_payload() {
         let extracted = paused_task_id("not json", "fallback-id");
         assert_eq!(extracted, "fallback-id");
+    }
+
+    /// Flat A2A 0.3.x Task, `kind`-tagged — no `task` wrapper, `result` IS the task, whose own id
+    /// field is `id`, not `taskId`. Same fixture shape `both_classifiers_agree_on_every_pause_dialect`
+    /// (`oss/types/tests/stream_disposition.rs`) uses to pin the classifiers; this pins the third
+    /// function that reads the identical bytes and, before this fix, silently discarded the real id.
+    #[test]
+    fn paused_task_id_extracts_a_flat_tasks_own_id_field() {
+        let data =
+            r#"{"result": {"id": "t1", "kind": "task", "status": {"state": "input-required"}}}"#;
+        assert_eq!(paused_task_id(data, "fallback-id"), "t1");
+    }
+
+    /// Same shape, no `kind` discriminator at all — the exact divergence `classify_sse_event`'s
+    /// flat-Task arm was widened to close; `paused_task_id` had the identical gap one function over.
+    #[test]
+    fn paused_task_id_extracts_a_flat_kindless_tasks_own_id_field() {
+        let data = r#"{"result": {"id": "t1", "status": {"state": "input-required"}}}"#;
+        assert_eq!(paused_task_id(data, "fallback-id"), "t1");
+    }
+
+    /// A legacy kind-tagged `status-update` (no `task`/`taskId`/flat-Task `id` semantics) must
+    /// keep falling back — it is not a task snapshot, so grabbing a bare top-level `id` here would
+    /// be wrong even if one happened to be present.
+    #[test]
+    fn paused_task_id_does_not_treat_a_legacy_status_update_as_a_flat_task() {
+        let data = r#"{"result": {"id": "not-a-task-id", "kind": "status-update",
+                          "status": {"state": "working"}}}"#;
+        assert_eq!(paused_task_id(data, "fallback-id"), "fallback-id");
     }
 
     #[test]

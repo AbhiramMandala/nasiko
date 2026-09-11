@@ -36,7 +36,7 @@ async fn seed_agent(server: &common::TestServer, owner_id: Uuid, name: &str) -> 
 
 /// Seeds a minimal, real `mcp_connectors` row and returns its id — a session-scope approval
 /// (`scope=session`) calls `create_session_grant`, whose `connector_id` gained a real FK to this
-/// table (`0018_mcp_session_tool_grants_fk.sql`); a synthetic `Uuid::new_v4()` connector id (fine
+/// table (`0020_mcp_session_tool_grants_fk.sql`); a synthetic `Uuid::new_v4()` connector id (fine
 /// for `hitl_requests.connector_id`, which has no FK) now violates that constraint.
 ///
 /// `url` is not optional padding: `source_kind` defaults to `external_url`, and

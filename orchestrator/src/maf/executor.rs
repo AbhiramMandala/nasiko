@@ -619,7 +619,7 @@ async fn register_flow(
 
 /// Persists the planner's synthesis guideline (LLM call 1's output) so a resumed run's final
 /// output generation (`finish_run`) can reuse it — see the migration comment in
-/// `oss/migrations/0016_maf_hitl.sql` for why this can't just be re-derived on resume.
+/// `oss/migrations/0018_maf_hitl.sql` for why this can't just be re-derived on resume.
 async fn persist_output_generation(db: &PgPool, execution_id: Uuid, output_generation: &str) {
     let _ = sqlx::query("UPDATE maf_executions SET output_generation = $1 WHERE id = $2")
         .bind(output_generation)

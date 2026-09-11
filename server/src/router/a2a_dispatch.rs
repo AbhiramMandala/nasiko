@@ -280,6 +280,20 @@ async fn reconnect_stream(
             A2aDispatchError::InvalidRequest("no such HITL request to reconnect to".into())
         })?;
 
+    // Authorize before any row-state check below can leak a distinguishable error message for a
+    // row this caller doesn't own — origin, pending-vs-resolved, and continuation-existence were
+    // all checked before this, so a caller could enumerate arbitrary UUIDs and learn another
+    // user's HITL row's origin and lifecycle state purely from which error came back, without
+    // ever passing authorization (found in review). Ownership can't change any of these rows'
+    // state, so checking it first changes no legitimate caller's outcome.
+    let identity = nasiko_hitl::HitlIdentity {
+        user_id,
+        is_superuser,
+    };
+    nasiko_hitl::authorize_hitl_action(&identity, &row, nasiko_hitl::HitlAction::View).map_err(
+        |_| A2aDispatchError::Forbidden("not authorized to reconnect to this execution".into()),
+    )?;
+
     // `deliver_maf()` (`hitl/mod.rs`) hands off to the MAF worker over Redis and never touches
     // `continuation_events` at all — a MAF-origin row here would otherwise `watch()` a buffer
     // nothing ever appends to or terminates, hanging the connection forever with no error. Reject
@@ -313,14 +327,6 @@ async fn reconnect_stream(
                 .into(),
         ));
     }
-
-    let identity = nasiko_hitl::HitlIdentity {
-        user_id,
-        is_superuser,
-    };
-    nasiko_hitl::authorize_hitl_action(&identity, &row, nasiko_hitl::HitlAction::View).map_err(
-        |_| A2aDispatchError::Forbidden("not authorized to reconnect to this execution".into()),
-    )?;
 
     // A real `mcp_tool` row's id is aliased onto its mirror's buffer by
     // `auto_resolve_linked_direct_chat_row` (`router/hitl.rs`,
