@@ -99,6 +99,77 @@ export function walkAstRefs(node, visit) {
   }
 }
 
+/**
+ * Flatten a `Member` chain into the statement it reads from and the fields it
+ * walks: `dashQ.data.kpis.total_spend` → `{ base: 'dashQ', fields: [...] }`.
+ *
+ * `null` when the chain doesn't bottom out in a plain statement reference —
+ * `@Sum(rows).length` and `$state.x` are both real and neither is a read off
+ * a Query.
+ *
+ * @param {object} node a `Member` node
+ */
+export function memberPath(node) {
+  const fields = [];
+  let cur = node;
+  while (cur && cur.k === 'Member') { fields.unshift(cur.field); cur = cur.obj; }
+  return cur && cur.k === 'Ref' && fields.length ? { base: cur.n, fields } : null;
+}
+
+/**
+ * The first field along `fields` that `placeholder` does not carry, or `null`
+ * when it carries all of them.
+ *
+ * An array stops the walk rather than failing it. `rows.cost` on a `[]`
+ * default is the array-pluck form and is correct — the element shape simply
+ * isn't knowable from an empty array, so claiming the field is missing would
+ * be a guess, and a wrong one on every table in the product.
+ *
+ * Everything else that can't carry a field counts as missing: `null`, and any
+ * scalar. Reading `.current` off `0` yields null just as surely as reading it
+ * off `{}` does.
+ *
+ * @returns {string|null} the dotted path up to and including the missing field
+ */
+export function firstUncoveredField(placeholder, fields) {
+  let cur = placeholder;
+  for (let i = 0; i < fields.length; i++) {
+    if (Array.isArray(cur)) return null;
+    if (cur === null || cur === undefined || typeof cur !== 'object') {
+      return fields.slice(0, i + 1).join('.');
+    }
+    if (!Object.prototype.hasOwnProperty.call(cur, fields[i])) {
+      return fields.slice(0, i + 1).join('.');
+    }
+    cur = cur[fields[i]];
+  }
+  return null;
+}
+
+/** Every node in an AST, parents before children. */
+function walkAstNodes(node, visit) {
+  if (!node || typeof node !== 'object' || !node.k) return;
+  visit(node);
+  switch (node.k) {
+    case 'BinOp': walkAstNodes(node.left, visit); walkAstNodes(node.right, visit); return;
+    case 'UnaryOp': walkAstNodes(node.operand, visit); return;
+    case 'Ternary':
+      walkAstNodes(node.cond, visit);
+      walkAstNodes(node.then, visit);
+      walkAstNodes(node.else, visit);
+      return;
+    case 'Member': walkAstNodes(node.obj, visit); return;
+    case 'Index': walkAstNodes(node.obj, visit); walkAstNodes(node.index, visit); return;
+    case 'Arr': for (const e of node.els) walkAstNodes(e, visit); return;
+    case 'Obj': for (const [, v] of node.entries) walkAstNodes(v, visit); return;
+    case 'Comp':
+    case 'BuiltinCall':
+      for (const a of node.args) walkAstNodes(a, visit);
+      return;
+    default:
+  }
+}
+
 export function materialize(statements, componentIndex, ctx = {}) {
   // `undefined`, not `null`. "No store" must mean "nothing is set", so a
   // `$state` falls through to the statement that declared it. Answering null
@@ -169,6 +240,15 @@ export function materialize(statements, componentIndex, ctx = {}) {
   /** Statements already warned about a whole-response default — a Query
    *  referenced twice is evaluated twice, and one mistake is one message. */
   const warnedDefault = new Set();
+  /**
+   * Each Query's placeholder, keyed by statement — the value a component
+   * receives *before* the fetch lands, after any dot-path repair below.
+   *
+   * Kept so the pass at the end can check what the DSL reads off it. A field
+   * the placeholder does not cover is a field that is `null` for as long as
+   * the request takes, and forever if the request returns nothing.
+   */
+  const queryDefaults = new Map();
   const stateNames = new Set();
   const visiting = new Set();
 
@@ -570,6 +650,8 @@ export function materialize(statements, componentIndex, ctx = {}) {
           }
         }
 
+        queryDefaults.set(statementId, usable);
+
         // Resolved value if the manager has one, otherwise the declared
         // default — which is why a dashboard shows zeroes rather than blanks
         // while its first fetch is in flight.
@@ -694,6 +776,52 @@ export function materialize(statements, componentIndex, ctx = {}) {
     for (const name of orphans) {
       note('orphaned_statement',
         `"${name}" is defined but nothing references it, so it never reaches the surface`, name);
+    }
+  }
+
+  /**
+   * Fields the DSL reads that the Query's own default does not carry.
+   *
+   * The default is what a component receives until the fetch lands, and on an
+   * empty deployment it is what it receives permanently. A field the default
+   * misses is therefore a blank on screen, and the two shapes that blank takes
+   * are both worse than a zero:
+   *
+   *   value: q.summary.total_operations   → app-stat-card's "—" placeholder
+   *   value: q.a.active + " / " + q.a.tot → the literal " / "
+   *
+   * The second is why this is checked here rather than left to each component
+   * to guard. A composed value is a truthy string, so `|| '—'` never fires and
+   * the card renders a bare slash. No fallback can see inside a concatenation;
+   * the only place the miss is still visible is the AST.
+   *
+   * Advisory, not fatal: the surface renders, and the real fetch usually fills
+   * it in. It fails no eval case on its own — but it is now something an eval
+   * case *can* assert on, which a screenshot was not.
+   *
+   * Only once the stream is done, for the same reason orphans are: mid-flight
+   * a Query statement routinely has not arrived yet.
+   */
+  if (ctx.complete && queryDefaults.size) {
+    const said = new Set();
+    for (const [name, ast] of symbols) {
+      walkAstNodes(ast, (node) => {
+        if (node.k !== 'Member') return;
+        const read = memberPath(node);
+        if (!read || !queryDefaults.has(read.base)) return;
+        const missing = firstUncoveredField(queryDefaults.get(read.base), read.fields);
+        if (!missing) return;
+        const key = `${read.base}.${missing}`;
+        if (said.has(key)) return;
+        said.add(key);
+        note(
+          'default_misses_a_read_field',
+          `${name} reads ${read.base}.${read.fields.join('.')}, but ${read.base}'s default `
+            + `does not cover "${missing}" — that reads as blank until the fetch lands, and `
+            + 'stays blank if it returns nothing. Give the default every field the DSL reads.',
+          name,
+        );
+      });
     }
   }
 

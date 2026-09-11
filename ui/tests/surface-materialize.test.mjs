@@ -26,6 +26,72 @@ const tree = (n, d = 0) => (!n ? '' : `${'  '.repeat(d)}${n.tag}\n${(n.children 
 
 // ── arithmetic and coercion ─────────────────────────────────────────────────
 
+test('a component downstream of a failed query says so, not "No data"', () => {
+  // A failed fetch falls back to the declared default, so by value alone it is
+  // identical to a genuinely empty result — and the component then asserts
+  // nothing exists. Observed live: "Spend over time / No data" for a
+  // fetchSpendTimeseries that had returned a malformed body.
+  const dsl = [
+    'root = AppStack([chart, table], "md")',
+    'spendQ = Query("fetchSpendTimeseries", [], {points: []}, "data.points")',
+    'chart = AppChart({labels: spendQ.bucket_start, datasets: []}, "line")',
+    'okQ = Query("fetchUsageByAgent", [null, 1, 50], [], "data")',
+    'table = AppTable(okQ, 20, "pages", false)',
+  ].join('\n');
+
+  const failed = run(dsl, { complete: true, failedQueries: new Set(['spendQ']) });
+  const [chart, table] = failed.root.children;
+  assert.match(chart.props['empty-text'], /Could not load/);
+  // The transitive step is the point: the failure is on spendQ, the message
+  // lands on the chart that reads it.
+  assert.equal(table.props['empty-message'], undefined, 'a healthy query is untouched');
+
+  // And with nothing failing, neither is touched — an empty result still reads
+  // as empty, which is true.
+  const healthy = run(dsl, { complete: true });
+  assert.equal(healthy.root.children[0].props['empty-text'], undefined);
+});
+
+test('a hand-written empty message survives a failed query', () => {
+  // Overriding wording the author chose would be a worse default than the one
+  // it replaced.
+  const out = run([
+    'root = AppStack([chart], "md")',
+    'spendQ = Query("fetchSpendTimeseries", [], {points: []}, "data.points")',
+    // empty-text is the 9th positional argument (paramOrder), not the 6th —
+    // getting that wrong puts the string in center-value, which is exactly the
+    // silent-rebinding hazard the catalog's written-out paramOrder exists for.
+    'chart = AppChart({labels: spendQ.bucket_start, datasets: []}, "line", false, "currency", "USD", null, null, null, "No spend in the last 7 days")',
+  ].join('\n'), { complete: true, failedQueries: new Set(['spendQ']) });
+  assert.equal(out.root.children[0].props['empty-text'], 'No spend in the last 7 days');
+});
+
+
+test('a root restatement that drops a child is caught, not silent', () => {
+  // agent.yaml rule 7 forbids writing `root` twice, and justifies it with
+  // "anything that was only reachable through the first root ... never renders,
+  // with no error shown anywhere". That justification is obsolete: the orphan
+  // walk reports exactly this, fatally. The rule is what stops the generator
+  // ever changing a layout on a revision turn, so the safety it claims to buy
+  // is worth pinning — if this assertion ever fails, restating root becomes
+  // unsafe again and the prompt rule has to come back.
+  const out = run([
+    'root = AppStack([heading, kpis, spendChart], "md")',
+    'heading = AppText("Cost", "title")',
+    'kpis = AppStatRow([{label: "Spend", value: 0}])',
+    'spendChart = AppChart({labels: [], datasets: []}, "line")',
+    'root = AppStack([heading, kpis], "md")',
+  ].join('\n'), { complete: true });
+
+  const orphans = out.diagnostics.filter((d) => d.code === 'orphaned_statement');
+  assert.equal(orphans.length, 1);
+  assert.match(orphans[0].message, /spendChart/);
+  // And the surviving root is the second one — same-name-replaces, which is
+  // what makes a revision turn able to change the layout at all.
+  assert.equal(out.root.children.length, 2);
+});
+
+
 test('divide and modulo by zero are 0, never Infinity or NaN', () => {
   assert.equal(val('1 / 0'), 0);
   assert.equal(val('5 % 0'), 0);
@@ -444,4 +510,78 @@ test('a button with an Action is not an editable control', () => {
 test('an input with no Action is left alone', () => {
   const out = run('root = AppSearch(null, null, null, null, "Filter", null)');
   assert.equal(out.diagnostics.some((x) => x.code === 'uncontrolled_input'), false);
+});
+
+// ── a Query default that does not cover what the DSL reads ──────────────────
+
+const misses = (dsl) => run(dsl, { complete: true }).diagnostics
+  .filter((d) => d.code === 'default_misses_a_read_field')
+  .map((d) => d.message);
+
+test('a field the default misses is named, not left to render as an em-dash', () => {
+  // The exact shape from the empty-database dashboard: total_cost had a
+  // default (so it showed $0) and total_operations did not (so it showed —).
+  const out = misses([
+    'root = AppStatCard("Operations", q.summary.total_operations)',
+    'q = Query("fetchTokenopsDashboard", [{}], {summary: {total_cost: 0}}, "data")',
+  ].join('\n'));
+  assert.equal(out.length, 1, out.join(' | '));
+  assert.match(out[0], /summary\.total_operations/);
+  assert.match(out[0], /does not cover "summary\.total_operations"/);
+});
+
+test('a covered field says nothing', () => {
+  assert.deepEqual(misses([
+    'root = AppStatCard("Cost", q.summary.total_cost)',
+    'q = Query("fetchTokenopsDashboard", [{}], {summary: {total_cost: 0}}, "data")',
+  ].join('\n')), []);
+});
+
+test('a concatenated ratio is caught, which no component fallback can be', () => {
+  // `app-stat-card`'s `|| '—'` cannot fire here: " / " is a truthy string, so
+  // the card renders a bare slash. The AST is the only place the miss shows.
+  const out = misses([
+    'root = AppStatCard("Agents", q.s.active_agents + " / " + q.s.total_agents)',
+    'q = Query("fetchTokenopsDashboard", [{}], {s: {}}, "data")',
+  ].join('\n'));
+  assert.equal(out.length, 2, out.join(' | '));
+  assert.ok(out.some((m) => /"s\.active_agents"/.test(m)));
+  assert.ok(out.some((m) => /"s\.total_agents"/.test(m)));
+});
+
+test('array pluck is not a missing field', () => {
+  // `rows.spend_usd` on a `[]` default is the taught array-pluck form. The
+  // element shape is unknowable from an empty array, so flagging it would be
+  // a guess — and a wrong one on every table in the product.
+  assert.deepEqual(misses([
+    'root = AppChart({labels: rows.bucket_start, datasets: []}, "line")',
+    'rows = Query("fetchSpendTimeseries", [{}], [], "data.points")',
+  ].join('\n')), []);
+});
+
+test('the repaired default is what gets checked, not the one that was written', () => {
+  // The envelope repair runs first, so a default that was the whole response
+  // is checked at the level the dot-path leaves it — otherwise every repaired
+  // Query would report a second, bogus miss.
+  assert.deepEqual(misses([
+    'root = AppStatCard("Cost", q.total_cost)',
+    'q = Query("fetchTokenopsDashboard", [{}], {data: {total_cost: 0}}, "data")',
+  ].join('\n')), []);
+});
+
+test('nothing is said mid-stream, when the Query may not have arrived', () => {
+  const dsl = [
+    'root = AppStatCard("Operations", q.summary.total_operations)',
+    'q = Query("fetchTokenopsDashboard", [{}], {summary: {}}, "data")',
+  ].join('\n');
+  const partial = run(dsl, {}).diagnostics.filter((d) => d.code === 'default_misses_a_read_field');
+  assert.equal(partial.length, 0);
+  assert.equal(misses(dsl).length, 1);
+});
+
+test('a read off a non-Query statement is left alone', () => {
+  assert.deepEqual(misses([
+    'root = AppStatCard("x", shape.missing)',
+    'shape = {present: 1}',
+  ].join('\n')), []);
 });

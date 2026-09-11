@@ -62,6 +62,7 @@ const SEVERITY = {
   orphaned_statement: ['fatal', 'the model built something and never put it on the page'],
   uncontrolled_input: ['fatal', 'the box empties as the user types — its Action repaints and its value is not read back from state'],
   default_is_whole_response: ['advisory', 'the pre-fetch placeholder is the wrong shape; the real value arrives correct'],
+  default_misses_a_read_field: ['advisory', 'the field is blank until the fetch lands, and stays blank if it returns nothing'],
 
   // ── render.js ─────────────────────────────────────────────────────────────
   component_threw: ['fatal', "the component's own code failed mid-render"],
