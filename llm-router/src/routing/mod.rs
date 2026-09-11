@@ -406,12 +406,35 @@ async fn small_talk_model(registry: &dyn TierRegistry, inputs: &RouteInputs<'_>)
 
 /// Best-effort plain text of the latest `user` message — the classifier's `query` input.
 /// Walks messages in reverse so the most recent user turn wins; `None` if there is none.
+///
+/// The A2A dispatch path (`a2a_dispatch.rs`) glues conversation history into a single
+/// string via `SessionHistory::with_current_query`, producing messages shaped like:
+///
+/// ```text
+/// user: hello
+/// assistant: Hello! How can I help?
+///
+/// Current message: refactor this function
+/// ```
+///
+/// When the agent forwards that blob as a single `user` message to the LLM router,
+/// the salience gate and classifier would see the entire transcript instead of just the
+/// current turn. Detect the `\n\nCurrent message: ` marker and extract only the tail.
 pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
-    messages
+    let text = messages
         .iter()
         .rev()
         .find(|m| m.role == "user")
-        .and_then(|m| m.text())
+        .and_then(|m| m.text())?;
+
+    // Strip history prefix injected by `SessionHistory::with_current_query`.
+    if let Some(pos) = text.find("\n\nCurrent message: ") {
+        let current = &text[pos + "\n\nCurrent message: ".len()..];
+        if !current.is_empty() {
+            return Some(current.to_string());
+        }
+    }
+    Some(text)
 }
 
 #[cfg(test)]
@@ -800,5 +823,43 @@ mod tests {
         ];
         assert_eq!(latest_user_query(&messages).as_deref(), Some("second"));
         assert_eq!(latest_user_query(&[msg("system", "only")]), None);
+    }
+
+    #[test]
+    fn latest_user_query_strips_packed_history() {
+        let msg = |role: &str, content: &str| Message {
+            role: role.into(),
+            content: Some(Value::String(content.into())),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            extra: Map::new(),
+        };
+        // The A2A dispatch packs history via `SessionHistory::with_current_query`:
+        //   "user: hello\nassistant: Hi!\n\nCurrent message: refactor this"
+        let packed = "user: hello\nassistant: Hi there!\n\nCurrent message: refactor this function";
+        let messages = vec![msg("user", packed)];
+        assert_eq!(
+            latest_user_query(&messages).as_deref(),
+            Some("refactor this function")
+        );
+    }
+
+    #[test]
+    fn latest_user_query_returns_full_text_without_marker() {
+        let msg = |role: &str, content: &str| Message {
+            role: role.into(),
+            content: Some(Value::String(content.into())),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            extra: Map::new(),
+        };
+        // A normal message without history packing is returned as-is.
+        let messages = vec![msg("user", "just a plain query")];
+        assert_eq!(
+            latest_user_query(&messages).as_deref(),
+            Some("just a plain query")
+        );
     }
 }
