@@ -163,7 +163,13 @@ async fn deliver(state: AppState, row: HitlRequest) {
             attempts = row.resume_dispatch_attempts,
             "hitl dispatcher: giving up after repeated crash-interrupted attempts"
         );
-        let _ = state.hitl_store.mark_resume_unknown(row.id).await;
+        if let Err(e) = state.hitl_store.mark_resume_unknown(row.id).await {
+            tracing::error!(
+                id = %row.id, %e,
+                "hitl dispatcher: mark_resume_unknown itself failed — row stays reclaimable \
+                 once its lease expires, reopening the double-delivery this call exists to prevent"
+            );
+        }
         return;
     }
     if row.origin == HitlOrigin::Maf {
@@ -447,7 +453,13 @@ async fn deliver(state: AppState, row: HitlRequest) {
              already sent — marking delivery outcome unknown rather than retrying, to avoid \
              re-delivering to the agent"
         );
-        let _ = state.hitl_store.mark_resume_unknown(row.id).await;
+        if let Err(e) = state.hitl_store.mark_resume_unknown(row.id).await {
+            tracing::error!(
+                id = %row.id, %e,
+                "hitl dispatcher: mark_resume_unknown itself failed — row stays reclaimable \
+                 once its lease expires, reopening the double-delivery this call exists to prevent"
+            );
+        }
         return;
     };
 
@@ -463,7 +475,13 @@ async fn deliver(state: AppState, row: HitlRequest) {
             "hitl dispatcher: resume delivered but mark_resume_completed failed — \
              marking delivery outcome unknown to avoid re-delivering to the agent"
         );
-        let _ = state.hitl_store.mark_resume_unknown(row.id).await;
+        if let Err(e) = state.hitl_store.mark_resume_unknown(row.id).await {
+            tracing::error!(
+                id = %row.id, %e,
+                "hitl dispatcher: mark_resume_unknown itself failed — row stays reclaimable \
+                 once its lease expires, reopening the double-delivery this call exists to prevent"
+            );
+        }
     }
     record_resume_trail(&state, disposition, &flow_ctx).await;
 
@@ -708,7 +726,14 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
                     "hitl dispatcher: MAF resume enqueued but mark_resume_completed failed — \
                      marking delivery outcome unknown to avoid a duplicate XADD"
                 );
-                let _ = state.hitl_store.mark_resume_unknown(row.id).await;
+                if let Err(e) = state.hitl_store.mark_resume_unknown(row.id).await {
+                    tracing::error!(
+                        id = %row.id, %e,
+                        "hitl dispatcher: mark_resume_unknown itself failed — row stays \
+                         reclaimable once its lease expires, reopening the double-XADD risk \
+                         this call exists to prevent"
+                    );
+                }
             }
         }
         Err(e) => {

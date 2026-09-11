@@ -535,6 +535,17 @@ pub async fn claim_resolved_tool_approval(
 /// exists at all (e.g. a raw MCP integration outside any chat) — callers
 /// fall back to the existing trace-derived context in that case, so this is
 /// a pure addition to what `session` scope can match, never a narrowing.
+///
+/// The primary-tier lookup matches `agent_id = $3 OR agent_id IS NULL`
+/// because `ensure_orchestrator_chat_session` inserts orchestrator-routed
+/// chat sessions with `agent_id = NULL` (the session fronts every sub-agent,
+/// not one) — matching on `agent_id = $3` alone made this probe always miss
+/// for an orchestrator conversation, which fell through to the
+/// direct-chat-only fallback below and wrote the grant against whatever
+/// direct chat with this agent the user happened to have open, not the
+/// orchestrator conversation the approval actually came from (found in
+/// review — the exact over-broad-grant failure mode this function exists to
+/// close, surviving for orchestrator chats specifically).
 pub async fn resolve_stable_session_context(
     db: &PgPool,
     owner_user_id: Uuid,
@@ -545,7 +556,8 @@ pub async fn resolve_stable_session_context(
         r#"
         SELECT EXISTS(
             SELECT 1 FROM chat_sessions
-             WHERE session_id = $1 AND user_id = $2 AND agent_id = $3 AND deleted_at IS NULL
+             WHERE session_id = $1 AND user_id = $2
+               AND (agent_id = $3 OR agent_id IS NULL) AND deleted_at IS NULL
         )
         "#,
     )

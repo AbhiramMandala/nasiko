@@ -579,6 +579,145 @@ async fn session_grant_row_is_keyed_by_the_chat_session_id_not_the_trace_id() {
     server.cleanup().await;
 }
 
+/// Orchestrator-routed chat sessions are inserted with `chat_sessions.agent_id
+/// = NULL` (`ensure_orchestrator_chat_session` — the session fronts every
+/// sub-agent the orchestrator delegates to, not one) so the primary tier's
+/// original `agent_id = $3` probe always missed for them, falling through to
+/// "most recent direct chat with this agent" and writing the grant against
+/// whichever unrelated direct chat happened to be more recently active
+/// (found in review — the same over-broad-grant failure mode
+/// `session_grant_never_leaks_across_concurrent_chats_...` above proves is
+/// closed for two *direct* chats, surviving specifically for an orchestrator
+/// conversation). This seeds exactly that shape — an orchestrator chat
+/// (`agent_id = NULL`) and a more-recently-active direct chat with the same
+/// agent — and asserts the grant lands on the orchestrator chat the human
+/// actually approved in, not the direct chat.
+#[tokio::test]
+#[serial]
+async fn session_grant_from_an_orchestrator_chat_does_not_leak_into_a_direct_chat() {
+    let server = common::TestServer::start().await;
+    let (admin_id, admin_uuid) = init_admin(&server).await;
+
+    let backend_url = start_stub_mcp_server_ok().await;
+    let connector_id = seed_connector(&server, admin_uuid, &backend_url).await;
+    let agent_id = seed_agent(&server, admin_uuid, "orchestrator-grant-test-agent").await;
+
+    // The direct chat is already the most recently active session for
+    // (user, agent) before the orchestrator approval ever happens — the same
+    // adversarial ordering the concurrent-chats test above pins.
+    let direct_chat = "ses_direct_chat_orchestrator_leak_test";
+    seed_chat_session(
+        &server,
+        direct_chat,
+        admin_uuid,
+        agent_id,
+        chrono::Utc::now(),
+    )
+    .await;
+
+    // The orchestrator chat: `agent_id = NULL`, exactly what
+    // `ensure_orchestrator_chat_session` inserts.
+    let orch_chat = "ses_orchestrator_chat_leak_test";
+    seed_chat_session(
+        &server,
+        orch_chat,
+        admin_uuid,
+        agent_id,
+        chrono::Utc::now() - chrono::Duration::minutes(10),
+    )
+    .await;
+    sqlx::query("UPDATE chat_sessions SET agent_id = NULL WHERE session_id = $1")
+        .bind(orch_chat)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let state = mcp_state(server.db.clone());
+    let perms = PermissionContext {
+        agent_id,
+        enabled_connectors: [connector_id].into_iter().collect(),
+        rules: vec![PermissionRule {
+            connector_id,
+            tool_pattern: "list_repos".into(),
+            stance: Stance::Ask,
+        }],
+        hash: "h".into(),
+    };
+    let resolved = mcp_session(connector_id, &backend_url);
+    let tool = format!(
+        "{}__list_repos",
+        nasiko_mcp_gateway::types::connector_prefix(connector_id)
+    );
+
+    // Message 1, in the orchestrator chat, mapped to it via a real
+    // session_traces row exactly like `agent_proxy` writes when the
+    // orchestrator forwards a call to this sub-agent.
+    let msg1_trace = "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c";
+    seed_session_trace(&server, orch_chat, msg1_trace, agent_id).await;
+    let res1 = handle_tools_call(
+        &state,
+        admin_uuid,
+        &json!(1),
+        &json!({ "name": tool, "arguments": {} }),
+        &resolved,
+        &perms,
+        Some(&traceparent(msg1_trace)),
+    )
+    .await;
+    let hitl_id = res1["error"]["data"]["hitl_request_id"]
+        .as_str()
+        .expect("hitl_request_id present");
+
+    let req = server
+        .client
+        .post(server.url(&format!("/api/hitl/{hitl_id}/resolve")));
+    common::as_superuser(req, &admin_id, "admin")
+        .json(&json!({"decision": "approve", "scope": "session"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .expect("resolve must succeed");
+
+    let (row_context_id,): (String,) = sqlx::query_as(
+        "SELECT context_id FROM mcp_session_tool_grants WHERE agent_id = $1 AND connector_id = $2",
+    )
+    .bind(agent_id)
+    .bind(connector_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        row_context_id, orch_chat,
+        "the grant must be keyed by the orchestrator chat actually approved in — not the \
+         unrelated direct chat, which was merely the more recently active session with this \
+         agent at approval time"
+    );
+
+    // A second message in the direct chat, never previously touched, must
+    // still ask — the orchestrator-chat grant must not have leaked into it.
+    let msg2_trace = "2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c";
+    seed_session_trace(&server, direct_chat, msg2_trace, agent_id).await;
+    let res2 = handle_tools_call(
+        &state,
+        admin_uuid,
+        &json!(2),
+        &json!({ "name": tool, "arguments": {} }),
+        &resolved,
+        &perms,
+        Some(&traceparent(msg2_trace)),
+    )
+    .await;
+    assert_eq!(
+        res2["error"]["code"],
+        json!(codes::TOOL_ASK),
+        "the direct chat must ask again — a grant approved in the orchestrator chat must never \
+         authorize the direct chat: {res2}"
+    );
+
+    server.cleanup().await;
+}
+
 /// Direct-chat's own HITL kinds (`input_required`/`auth_required`) never
 /// touch `mcp_session_tool_grants` or `chat_sessions.updated_at` lookups at
 /// all — `grant_session_scope` only ever runs for `tool_approval` rows. This
