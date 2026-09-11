@@ -476,10 +476,11 @@
             "number",
             "currency",
             "percent",
-            "compact"
+            "compact",
+            "duration"
           ],
           "default": "number",
-          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact`"
+          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)"
         },
         "currency": {
           "type": "string",
@@ -530,10 +531,11 @@
             "number",
             "currency",
             "percent",
-            "compact"
+            "compact",
+            "duration"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`|`duration`"
         },
         "flush-top": {
           "type": "boolean",
@@ -2689,6 +2691,7 @@
     "/mcp",
     "/mcp-detail",
     "/observability-session",
+    "/orchestrator",
     "/resources",
     "/secrets",
     "/session-trace",
