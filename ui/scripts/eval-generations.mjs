@@ -249,20 +249,73 @@ export function check(kase, text) {
   return { fail, advisory, runtime, r };
 }
 
-/** Read one generation off the live endpoint, concatenating its dsl-chunks. */
+/**
+ * Where generation is reached, and as whom.
+ *
+ * Weave is no longer a process this script talks to. It is a deployed agent —
+ * a normal `agents` row with `is_internal = true`, seeded by the control plane
+ * from WEAVE_AGENT_IMAGE — and `ee/server/src/weave_surface.rs` is the only
+ * way in: it resolves that agent, speaks A2A `message/stream` to it, and
+ * translates the frames back into the same SSE contract this script already
+ * reads. So the wire format below is unchanged; only the host and the auth
+ * moved.
+ *
+ * Which means the old shared secret is gone. `/api/weave/surface` is behind
+ * `require_auth` like any other control-plane route, so this logs in as a real
+ * user. A platform capability every logged-in user gets, not a resource with
+ * its own key.
+ */
+const CP_BASE = process.env.NASIKO_CP_BASE_URL || 'http://localhost:8082';
+
+let cachedToken = null;
+
+/** A bearer token for the control plane, fetched once per run. */
+async function login() {
+  if (cachedToken) return cachedToken;
+  const username = process.env.NASIKO_ADMIN_USERNAME;
+  const password = process.env.NASIKO_ADMIN_PASSWORD;
+  if (!username || !password) {
+    throw new Error('NASIKO_ADMIN_USERNAME / NASIKO_ADMIN_PASSWORD are not set in this shell');
+  }
+  const res = await fetch(`${CP_BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) {
+    throw new Error(`login to ${CP_BASE} returned ${res.status} — are the admin credentials right?`);
+  }
+  cachedToken = (await res.json()).token;
+  if (!cachedToken) throw new Error(`login to ${CP_BASE} returned no token`);
+  return cachedToken;
+}
+
+/** Read one generation off the control plane, concatenating its dsl-chunks. */
 async function generate(prompt) {
-  const base = process.env.WEAVE_BASE_URL || 'http://localhost:8801';
-  const token = process.env.WEAVE_INTERNAL_TOKEN || '';
+  const base = CP_BASE;
+  const token = await login();
   const res = await fetch(`${base}/api/weave/surface`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       accept: 'text/event-stream',
-      ...(token ? { 'x-weave-internal-token': token } : {}),
+      authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ prompt, context: { catalogVersion: catalog.catalogVersion } }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} from ${base} — is Weave running, and is the token set?`);
+  // 503 is the route's own "no running agent by that name" — worth separating
+  // from a transport failure, because the fix is a deployment, not a retry.
+  if (res.status === 503) {
+    throw new Error(
+      'the control plane has no running weave agent — set WEAVE_AGENT_IMAGE in '
+      + 'ee/server/.env and restart it, then check `docker ps` for the container it seeds');
+  }
+  if (res.status === 404) {
+    throw new Error(
+      `${base} has no /api/weave/surface route — that route is EE-only, so this `
+      + 'has to be the EE server (`just run`), not the OSS one');
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status} from ${base}/api/weave/surface`);
 
   let text = '';
   let generatorCatalog = null;
@@ -324,28 +377,26 @@ if (offline) {
   }
 }
 
-// The token lives in the Weave repo's .env and this script runs from this one,
-// so "I sourced it" and "this process can see it" are different statements.
-// Checked once here rather than per case, because the same message ten times
-// is noise around the one line that matters.
-if (!offline && !process.env.WEAVE_INTERNAL_TOKEN) {
-  console.error('eval: WEAVE_INTERNAL_TOKEN is not set in this shell.\n');
+// Credentials for the control plane, checked once rather than per case.
+if (!offline && !(process.env.NASIKO_ADMIN_USERNAME && process.env.NASIKO_ADMIN_PASSWORD)) {
+  console.error('eval: NASIKO_ADMIN_USERNAME / NASIKO_ADMIN_PASSWORD are not set in this shell.\n');
   console.error('  set -a && source ~/Documents/GitHub/Weave/.env && set +a\n');
-  console.error('Weave also has to be running, and reachable at WEAVE_BASE_URL');
-  console.error('(default http://localhost:8801):');
-  console.error('  uvicorn   uvicorn weave.server.app:app --port 8801');
-  console.error('  docker    docker run --env-file .env.docker -p 8801:8801 <image>');
+  console.error('Generation goes through the control plane now, not straight at Weave:');
+  console.error(`  ${process.env.NASIKO_CP_BASE_URL || 'http://localhost:8082'}/api/weave/surface`);
+  console.error('so it needs a login, not the old WEAVE_INTERNAL_TOKEN. Weave itself is a');
+  console.error('deployed agent the control plane seeds from WEAVE_AGENT_IMAGE — there is');
+  console.error('nothing to start by hand.');
   process.exit(1);
 }
 
 /**
- * Weave has to be looking at THIS repo's catalog, not its bundled fallback.
+ * The agent has to be looking at THIS repo's catalog, not its bundled fallback.
  *
  * Checked before spending eleven model calls, because the failure is quiet at
  * both ends. Weave's catalog.py falls back to the copy inside the image when
- * WEAVE_CATALOG_URL will not resolve, and in a container `localhost` is the
- * container — so a URL that works for `uvicorn` silently stops working under
- * `docker run`, with nothing on screen to say so.
+ * WEAVE_CATALOG_URL will not resolve, and the agent runs in a container where
+ * `localhost` is the container — so the control plane has to hand it a URL
+ * that resolves from in there, and nothing says so when it doesn't.
  *
  * The per-case guard below compares catalog versions and catches this when
  * the bundled copy is stale. It cannot catch it when the bundle happens to be
@@ -355,13 +406,12 @@ if (!offline && !process.env.WEAVE_INTERNAL_TOKEN) {
  * of equality, which does not have that hole.
  */
 async function checkCatalogReachable() {
-  const url = process.env.WEAVE_CATALOG_URL;
-  if (!url) {
-    console.error('eval: WEAVE_CATALOG_URL is not set in this shell.\n');
-    console.error('Weave would fall back to the catalog bundled in its image, and every');
-    console.error('result would be judged against a vocabulary it never saw.');
-    process.exit(1);
-  }
+  // Not this shell's variable any more — the control plane passes it to the
+  // agent container it seeds (oss/server/src/seed.rs). Checked here anyway,
+  // because what has to be true is the same: something is serving this
+  // catalog, at a URL the agent can resolve.
+  const url = process.env.WEAVE_CATALOG_URL
+    || `${CP_BASE}/common/surface/dsl-catalog.json`;
   // Fetched from here, not from inside Weave — so this proves the URL serves a
   // catalog, not that Weave can reach it. A host.docker.internal URL is not
   // resolvable from this process at all, which is the common and correct case;
@@ -381,16 +431,15 @@ async function checkCatalogReachable() {
       console.error('The control plane is running an older build of this repo — restart it.');
       process.exit(1);
     }
-    console.log(`eval: catalog ${served} served at ${hostUrl}${viaDockerHost ? ' (Weave reaches it as host.docker.internal)' : ''}`);
+    console.log(`eval: catalog ${served} served at ${hostUrl}${viaDockerHost ? ' (the agent reaches it as host.docker.internal)' : ''}`);
   } catch (err) {
-    console.error(`eval: WEAVE_CATALOG_URL (${url}) did not answer — ${err.message}.\n`);
+    console.error(`eval: the catalog at ${url} did not answer — ${err.message}.\n`);
+    console.error('Start the control plane with `just run`. It binds CP_BIND from');
+    console.error('ee/server/.env, and both this check and the seeded agent read from it,');
+    console.error('so the port there is the one that has to be right.');
     if (viaDockerHost) {
-      console.error(`Tried ${hostUrl} from here. Check the control plane is up and on that port;`);
-      console.error('inside the container the host.docker.internal form is the one that matters.');
-    } else {
-      console.error('Start the control plane (`just run`, which binds CP_BIND, 0.0.0.0:9090 by');
-      console.error('default). If Weave runs in Docker, this must be host.docker.internal, not');
-      console.error('localhost — localhost there is the container.');
+      console.error(`\n(Tried ${hostUrl} from here — host.docker.internal only resolves`);
+      console.error('inside the container, which is where it has to work.)');
     }
     process.exit(1);
   }

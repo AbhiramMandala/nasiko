@@ -334,13 +334,44 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
             env.insert(key.into(), val);
         }
     }
-    if let Ok(domain) = std::env::var("CP_DOMAIN")
-        && !domain.is_empty()
-    {
-        env.insert(
-            "WEAVE_CATALOG_URL".into(),
-            format!("https://{domain}/common/surface/dsl-catalog.json"),
-        );
+    // Where the agent reaches this control plane from inside its container.
+    //
+    // Two facts make this awkward and neither is optional. `localhost` in
+    // there is the container, so a loopback URL silently resolves to nothing;
+    // and when it resolves to nothing, weave's catalog.py falls back to the
+    // catalog bundled in its image rather than failing — a generation against
+    // a vocabulary nobody chose, which reads as a model ignoring the prompt.
+    //
+    // CP_DOMAIN covers deployment and nothing covered local development,
+    // where CP_DOMAIN is unset by design. WEAVE_CP_URL is that gap: set it to
+    // whatever the container can reach this server at — on Docker Desktop
+    // that is http://host.docker.internal:<CP_BIND port>.
+    let cp_url = std::env::var("WEAVE_CP_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            std::env::var("CP_DOMAIN")
+                .ok()
+                .filter(|d| !d.trim().is_empty())
+                .map(|d| format!("https://{d}"))
+        });
+    match cp_url {
+        Some(url) => {
+            let base = url.trim_end_matches('/');
+            env.insert(
+                "WEAVE_CATALOG_URL".into(),
+                format!("{base}/common/surface/dsl-catalog.json"),
+            );
+            // The same base backs the generated dashboards' own data calls.
+            env.insert("NASIKO_CP_BASE_URL".into(), base.to_string());
+        }
+        None => {
+            warn!(
+                agent = %agent_name,
+                "neither WEAVE_CP_URL nor CP_DOMAIN is set — the weave agent will fall back to \
+                 the catalog bundled in its image, and generate against a stale vocabulary"
+            );
+        }
     }
 
     let mut spec = crate::agents::build_agent_spec(
