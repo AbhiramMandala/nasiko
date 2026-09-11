@@ -203,6 +203,26 @@
     animation: skel-pulse 1.5s ease-in-out infinite;
   }
 
+  /* `type="line"` skeleton: the polyline stretches with the box (the viewBox
+     is `preserveAspectRatio="none"`), and `vector-effect: non-scaling-stroke`
+     keeps the stroke 2px however far it is stretched. Centred with padding
+     rather than bars' `flex-end`, since a line occupies the whole plot. */
+  .chart-skeleton.is-line { align-items: stretch; }
+
+  .chart-skeleton.is-line svg {
+    width: 100%;
+    height: 100%;
+    animation: skel-pulse 1.5s ease-in-out infinite;
+  }
+
+  .chart-skeleton.is-line polyline {
+    fill: none;
+    stroke: var(--color-border);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
   /* `flush-top` squares the plot's own top corners so it sits flush under
      another card-like element (see `appChartPlotBg` in app-chart.js) — but
      that plugin only paints the canvas. The skeleton and empty state are
@@ -235,6 +255,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .chart-skel-bar,
+    .chart-skeleton.is-line svg,
     .chart-row-skel-label,
     .chart-row-skel-value,
     .chart-row-fill.is-skeleton { animation: none; opacity: 0.6; }

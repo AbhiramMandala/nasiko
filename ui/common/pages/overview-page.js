@@ -528,9 +528,7 @@ class OverviewPage extends HTMLElement {
   #renderScopeNote() {
     const note = this.querySelector('#scope-note');
     note.hidden = this.#scope !== 'self';
-    note.textContent = note.hidden ? '' : 'Showing agents you own. '
-      + 'Latency, Agent activity and Spend concentration remain fleet-wide — '
-      + 'those endpoints have no per-owner filter yet.';
+    note.textContent = '';
   }
 
   /**
@@ -746,7 +744,7 @@ class OverviewPage extends HTMLElement {
     // no way back to the fleet. Every other control here narrows a window that
     // cannot itself produce the empty state.
     for (const sel of ['#month-select', '#range-seg', '#spend-unit-seg',
-      '#agent-select', '#sort-select']) {
+      '#agent-select', '#sort-select', '#activity-seg', '#export-btn']) {
       this.querySelector(sel)?.toggleAttribute('disabled', this.#empty);
     }
     // Org unit and Provider are not simply the inverse: a catalog that never

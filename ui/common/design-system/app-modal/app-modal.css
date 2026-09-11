@@ -1,4 +1,13 @@
 @scope (app-modal) {
+    /* The host is a wrapper around a top-layer <dialog>, never a box of its own.
+       confirmDialog() appends it to <body>, where global.css's content-card rule
+       paints any unrecognised body child as the white page card (flex:1, surface
+       background, shadow) — so opening a confirm split the shell into two
+       half-height cards and the page looked broken behind the modal. Generating
+       no box also drops a phantom flex/grid item on the pages that declare
+       <app-modal> inline. */
+    :scope { display: contents; }
+
     .app-modal {
       width: min(600px, calc(100% - 2 * var(--s-24)));
       overflow: hidden;

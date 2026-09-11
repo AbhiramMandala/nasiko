@@ -79,7 +79,8 @@
  * @attr {string} height - Plot height, any CSS length (default `200px`). Canvas forms only.
  *   A floor, not a fixed size: when the host is laid out taller (a flex panel
  *   that runs to its floor), the plot, skeleton and empty state fill it.
- * @attr {string} format - Value formatting: `number` (default) | `currency` | `percent` | `compact`
+ * @attr {string} format - Value formatting: `number` (default) | `currency` | `percent` |
+ *   `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)
  * @attr {string} currency - ISO code for `format="currency"` (default `USD`)
  * @attr {string} center-value - `donut` only: the figure drawn in the hole
  * @attr {string} center-label - `donut` only: the caption under it
@@ -497,6 +498,15 @@ function formatter(el, attr = 'format') {
     return (n) => (Math.abs(n) < 10 && n !== Math.round(n) ? cents : whole).format(n);
   }
   if (kind === 'percent') return (n) => `${Math.round(n)}%`;
+  // Milliseconds in, the unit a person reads out. A latency axis labelled
+  // 1,000 / 2,000 / 3,000 makes the reader do the division on every glance;
+  // the same axis labelled 1s / 2s / 3s does not. Sub-second stays in ms
+  // because "0.4s" hides a digit the tooltip has room for.
+  if (kind === 'duration') {
+    return (n) => (Math.abs(n) < 1000
+      ? `${Math.round(n)}ms`
+      : `${Number((n / 1000).toFixed(1))}s`);
+  }
   if (kind === 'compact') {
     const f = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
     return (n) => f.format(n);
@@ -573,15 +583,46 @@ export class AppChart extends HTMLElement {
   }
 
   /**
-   * Loading placeholder for the two canvas forms (line/bar/donut). A row of
-   * bars with varied heights — each its own element, each pulsing on its
-   * own timing — reads as "a chart is coming" instead of one flat rectangle
-   * that could be standing in for anything.
+   * Loading placeholder for the column forms (bar/donut). A row of bars with
+   * varied heights — each its own element, each pulsing on its own timing —
+   * reads as "a chart is coming" instead of one flat rectangle that could be
+   * standing in for anything.
+   *
+   * The bar heights are percentages, so the box has to carry a DEFINITE
+   * height (see `#skeletonBox`) — a panel that sizes to its content (Overview
+   * lays its second row out with `align-items: start`) leaves the slot's
+   * height indefinite, percentages resolve to `auto`, and every bar collapses
+   * to nothing: a blank white card where the skeleton should be.
    */
   #barsSkeletonHtml(box) {
     const heights = [55, 82, 38, 68, 92, 50, 74];
     const bar = (h, i) => `<div class="chart-skel-bar" style="height:${h}%;animation-delay:${(i * 0.1).toFixed(1)}s"></div>`;
     return `<div class="chart-skeleton" ${box}>${heights.map(bar).join('')}</div>`;
+  }
+
+  /**
+   * Loading placeholder for `type="line"`. A row of bars is the wrong promise
+   * for a chart that resolves into a line, so this draws the line itself —
+   * one polyline on a `preserveAspectRatio="none"` viewBox, which stretches to
+   * whatever box the slot ends up with and needs no percentage heights at all.
+   */
+  #lineSkeletonHtml(box) {
+    return `<div class="chart-skeleton is-line" ${box}>
+      <svg viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points="0,30 14,18 28,24 42,9 57,20 71,6 85,15 100,4" vector-effect="non-scaling-stroke"></polyline>
+      </svg>
+    </div>`;
+  }
+
+  /**
+   * The skeleton reserves the plot's box as a DEFINITE height, not a floor:
+   * `.chart-skeleton` still grows (`flex: 1`) to fill a stretched panel, but
+   * the declared height is what the bar percentages resolve against, so they
+   * survive a panel that sizes to its content. The empty state keeps
+   * `min-height` — it is centred text that should be free to grow.
+   */
+  #skeletonBox() {
+    return `style="height:${escAttr(this.getAttribute('height') || '200px')}"`;
   }
 
   /**
@@ -610,9 +651,10 @@ export class AppChart extends HTMLElement {
 
     if (this.hasAttribute('loading')) {
       this.setAttribute('aria-busy', 'true');
-      this.innerHTML = CANVAS_TYPES.has(this.#type())
-        ? this.#barsSkeletonHtml(box)
-        : this.#rowsSkeletonHtml();
+      const type = this.#type();
+      if (!CANVAS_TYPES.has(type)) this.innerHTML = this.#rowsSkeletonHtml();
+      else if (type === 'line') this.innerHTML = this.#lineSkeletonHtml(this.#skeletonBox());
+      else this.innerHTML = this.#barsSkeletonHtml(this.#skeletonBox());
       return;
     }
     this.removeAttribute('aria-busy');
@@ -692,7 +734,21 @@ export class AppChart extends HTMLElement {
           legend: showLegend
             ? { position: type === 'donut' ? 'right' : 'bottom', align: 'start',
                 // 28px between the series entries, per the design's legend row.
-                labels: { usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, padding: 28 } }
+                labels: { usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, padding: 28,
+                  // The segmented form draws its bars transparent and lets the
+                  // pillBars plugin paint from `_slot` — so Chart.js's default
+                  // swatch, which reads `backgroundColor`, came out invisible
+                  // and the legend was labels with no dots. Read `_slot` here
+                  // too. (The concentration panel never hit this because it
+                  // sets `legend="off"` and hand-rolls its own row.)
+                  ...(segmented ? { generateLabels: (chart) => chart.data.datasets.map((ds, i) => ({
+                    text: ds.label,
+                    fillStyle: ds._slot,
+                    strokeStyle: ds._slot,
+                    pointStyle: 'circle',
+                    hidden: !chart.isDatasetVisible(i),
+                    datasetIndex: i,
+                  })) } : {}) } }
             : { display: false },
           // The native canvas tooltip cannot do the design's card — bold date
           // title, label left / value right, an anomaly note line — so it is
