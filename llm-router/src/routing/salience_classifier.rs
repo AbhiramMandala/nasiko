@@ -8,18 +8,24 @@
 //! two apart means the model can be scored, tested, and retrained without touching gate
 //! wiring.
 //!
-//! The weights are produced offline by `scripts/salience/train.py`; training never happens
-//! in Rust. The trained model for this build is **embedded in the binary** (see
-//! [`embedded_model`]), so the gate has no runtime file dependency. The feature extraction
-//! here is hand-mirrored in `scripts/salience/features.py` and parity-tested against it, so
-//! the two must always be changed together.
+//! Training never happens in Rust: the weights are fitted offline and land here as a JSON
+//! artifact, embedded in the binary (see [`embedded_model`]) so the gate has no runtime
+//! file dependency. Each weights file records how it was produced in its `provenance`
+//! object — training timestamp, training-data hash, L2, and the feature-engine source it
+//! was fitted against.
+//!
+//! **Changing the feature engine invalidates the weights.** Any edit to tokenization,
+//! hashing, n-gram ranges, or the dense features changes what a given query maps to, while
+//! the embedded weights still encode the *old* mapping — which degrades the model silently,
+//! with no compile error and no test failure beyond the behavioural ones below. Refit and
+//! re-embed alongside any such change.
 //!
 //! **Input contract.** [`score`] takes the query text only, matching
 //! `SalienceGate::is_substantive(&self, query: &str)` — no conversation-history parameter,
 //! per the decision to keep this pass query-only.
 
-/// Number of hashed feature buckets (the hashing-trick dimensionality). See
-/// `scripts/salience/REPORT.md` for how this was chosen.
+/// Number of hashed feature buckets (the hashing-trick dimensionality). Must match the
+/// `num_buckets` declared by the weights file, which [`load_model_from_json_str`] enforces.
 pub const NUM_BUCKETS: usize = 1 << 16;
 
 /// Dense (non-hashed) hand-picked features, in the fixed order `dense_features` produces
@@ -180,7 +186,7 @@ fn char_ngrams(text: &str, min_n: usize, max_n: usize) -> Vec<String> {
 /// opposite signs partially cancel as the hashing trick intends, rather than being merged
 /// under one arbitrary sign. The sum is then divided by `sqrt(total gram count)`, which
 /// dampens (does not eliminate) how much sheer message length can inflate the logit,
-/// tempering the length-as-signal risk the "rambling, no task" case in `scripts/salience/REPORT.md`
+/// tempering the length-as-signal risk the "rambling, no task" case
 /// Phase 4's CI table calls out. A single term repeated many times still grows its own
 /// bucket faster than the global normalizer shrinks it (see
 /// `hashed_features_normalization_dampens_repetition_growth`), so length-invariance is not
@@ -262,7 +268,7 @@ pub struct LoadedModel {
     pub trained_at: String,
 }
 
-/// On-disk shape of a trained weights file, matching `scripts/salience/train.py`'s
+/// On-disk shape of a trained weights file, matching the training pipeline's
 /// `weights_export` dict exactly. Deliberately a separate type from [`Weights`]: this one
 /// is the untrusted wire format (sparse, string-keyed, unvalidated dimensions); [`Weights`]
 /// is the validated, dense, ready-to-score in-memory form. `#[serde(deny_unknown_fields)]`
@@ -352,8 +358,8 @@ fn load_model_from_json_str(raw: &str) -> Result<LoadedModel, String> {
 ///
 /// Embedding it (rather than reading a path at startup) is what lets the gate be on by
 /// default with no deployment step: there is no file to ship alongside the binary, no path
-/// to configure, and no startup I/O that can fail in production. `scripts/salience/train.py`
-/// writes straight to this asset, so retraining plus a rebuild is the whole update path.
+/// to configure, and no startup I/O that can fail in production. Retraining means replacing
+/// this asset and rebuilding.
 /// Operators can still override it at runtime with `SALIENCE_WEIGHTS_PATH`, which is the
 /// escape hatch for testing a candidate model without a rebuild.
 const EMBEDDED_WEIGHTS_JSON: &str = include_str!("../../assets/salience_weights.json");
@@ -719,101 +725,6 @@ mod tests {
         let a = score("hello there", &weights);
         let b = score("hello there", &weights);
         assert_eq!(a, b);
-    }
-
-    /// Not a correctness assertion. Reads every `text` field out of the real training
-    /// dataset and dumps hashed/dense
-    /// features for each, consumed by `scripts/salience/check_parity_full_dataset.py` to
-    /// verify parity against the actual 3000 texts used for training, not just the 14
-    /// hand-picked fixtures in `dump_parity_fixtures` below (those already caught one
-    /// real bug — this checks for others on the real distribution of input, not curated
-    /// examples). Reads an external file, unlike every other test in this module, so it
-    /// is deliberately not part of the hermetic unit-test contract — same non-assertion,
-    /// dev-tool character as `dump_parity_fixtures`.
-    ///
-    /// `#[ignore]`d because it needs the training dataset, which is not in the repo (it is
-    /// a ~1 MB training input, not a build artifact). Point `SALIENCE_DATASET_PATH` at a
-    /// local copy and run:
-    /// `SALIENCE_DATASET_PATH=/path/to/salience_v3_splits.json cargo test -p nasiko-llm-router --lib routing::salience_classifier::tests::dump_dataset_parity_fixtures -- --exact --ignored --nocapture`
-    #[test]
-    #[ignore = "needs SALIENCE_DATASET_PATH pointing at a local copy of the training dataset"]
-    fn dump_dataset_parity_fixtures() {
-        let dataset_path = std::path::PathBuf::from(
-            std::env::var("SALIENCE_DATASET_PATH")
-                .expect("set SALIENCE_DATASET_PATH to a local salience_v3_splits.json"),
-        );
-        let raw = std::fs::read_to_string(&dataset_path)
-            .unwrap_or_else(|e| panic!("failed to read {dataset_path:?}: {e}"));
-        let parsed: serde_json::Value =
-            serde_json::from_str(&raw).expect("dataset file is not valid JSON");
-
-        let mut texts: Vec<String> = Vec::new();
-        for split in ["train", "val", "test"] {
-            let items = parsed[split]
-                .as_array()
-                .unwrap_or_else(|| panic!("dataset missing '{split}' array"));
-            for item in items {
-                let text = item["text"]
-                    .as_str()
-                    .unwrap_or_else(|| panic!("item missing string 'text' field: {item:?}"));
-                texts.push(text.to_string());
-            }
-        }
-
-        let mut out = Vec::with_capacity(texts.len());
-        for q in &texts {
-            let hashed: std::collections::BTreeMap<usize, f64> =
-                hashed_features(q).into_iter().collect();
-            let dense = dense_features(q);
-            out.push(serde_json::json!({
-                "query": q,
-                "hashed": hashed,
-                "dense": dense,
-            }));
-        }
-        println!("===DATASET_PARITY_JSON_START===");
-        println!("{}", serde_json::to_string(&out).unwrap());
-        println!("===DATASET_PARITY_JSON_END===");
-    }
-
-    /// Not a correctness assertion. Dumps hashed/dense features for a fixed set of
-    /// fixture queries as JSON, consumed by `scripts/salience/check_parity.py` to prove
-    /// the hand-mirrored Python training pipeline computes byte-identical features to
-    /// this Rust implementation, rather than assuming it does. Run with:
-    /// `cargo test -p nasiko-llm-router --lib routing::salience_classifier::tests::dump_parity_fixtures -- --exact --nocapture`
-    /// and the checker extracts the JSON between the marker lines.
-    #[test]
-    fn dump_parity_fixtures() {
-        let fixtures = [
-            "hi",
-            "hello there",
-            "Can you refactor this function to use async/await?",
-            "Hola, can you help me debug this?",
-            "你好，请帮我调试这个",
-            "Привет, помоги мне",
-            "مرحبا، ساعدني",
-            "नमस्ते, मेरी मदद करो",
-            "🎉🔥",
-            "???",
-            "",
-            "   ",
-            "2024 is the year",
-            &"debug ".repeat(10),
-        ];
-        let mut out = Vec::new();
-        for q in fixtures {
-            let hashed: std::collections::BTreeMap<usize, f64> =
-                hashed_features(q).into_iter().collect();
-            let dense = dense_features(q);
-            out.push(serde_json::json!({
-                "query": q,
-                "hashed": hashed,
-                "dense": dense,
-            }));
-        }
-        println!("===PARITY_JSON_START===");
-        println!("{}", serde_json::to_string(&out).unwrap());
-        println!("===PARITY_JSON_END===");
     }
 
     #[test]

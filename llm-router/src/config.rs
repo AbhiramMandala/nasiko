@@ -71,8 +71,8 @@ pub struct GatewayConfig {
     /// without pinning. Enabled by default. When `false`, the router classifies at every
     /// fireable boundary (behaviour before the gate existed).
     pub salience_gate_enabled: bool,
-    /// Optional override: path to a trained weights JSON (`scripts/salience/train.py`'s
-    /// output schema) to load *instead of* the model embedded in the binary. Empty (the
+    /// Optional override: path to a trained weights JSON (same schema as the embedded
+    /// asset) to load *instead of* the model embedded in the binary. Empty (the
     /// default) ⇒ use the embedded model, which needs no deployment step. Exists so a
     /// candidate model can be trialled without a rebuild; a load failure falls back to
     /// classifying every boundary, never to an outage.
