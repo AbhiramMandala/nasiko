@@ -18,7 +18,7 @@ const styles = await loadCss(new URL('./llm-router-page.css', import.meta.url));
 import { icons } from '../utils/icons.js';
 import { showToast } from '../utils/toast.js';
 import { confirmDialog } from '../design-system/app-modal/app-modal.js';
-import '/common/design-system/app-action-menu/app-action-menu.js';
+import '/common/design-system/app-menu/app-menu.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-card/app-card.js';
 import '/common/design-system/app-checkbox/app-checkbox.js';
@@ -54,7 +54,7 @@ class LlmRouterPage extends HTMLElement {
     this.#initialized = true;
     this.addEventListener('click', (e) => this.#onClick(e));
     this.addEventListener('change', (e) => this.#onChange(e));
-    this.addEventListener('action-select', (e) => this.#onMenuAction(e));
+    this.addEventListener('menu-select', (e) => this.#onMenuAction(e));
     this.#load();
   }
 
@@ -159,10 +159,10 @@ class LlmRouterPage extends HTMLElement {
           return `
           <app-card card-title="${escAttr(c.name)}" role="button" tabindex="0"
             data-action="edit-config" data-id="${escAttr(c.id)}">
-            <app-action-menu slot="actions" trigger-title="Config actions" items='${JSON.stringify(menuItems).replace(/'/g, '&#39;')}'>
+            <app-menu data-slot="actions" align="end" trigger-label="Config actions" items='${JSON.stringify(menuItems).replace(/'/g, '&#39;')}'>
               ${icons.moreVertical?.('', 16) ?? `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>`}
-            </app-action-menu>
-            <div slot="body">
+            </app-menu>
+            <div data-slot="body">
               <div class="config-meta">
                 ${c.is_default
                   ? '<span class="badge badge--brand"><span class="badge__dot"></span>Default</span>'
@@ -193,9 +193,9 @@ class LlmRouterPage extends HTMLElement {
     return `
       <app-card card-title="${escAttr(this.#cap(p.provider))}" role="button" tabindex="0"
         data-action="new-config" data-provider="${escAttr(p.provider)}">
-        <span slot="leading" class="provider-glyph">${escHtml((p.provider || '?')[0])}</span>
-        <span slot="actions" class="provider-add">${icons.plus('', 15)}</span>
-        <div slot="body" class="provider-chips">
+        <span data-slot="leading" class="provider-glyph">${escHtml((p.provider || '?')[0])}</span>
+        <span data-slot="actions" class="provider-add">${icons.plus('', 15)}</span>
+        <div data-slot="body" class="provider-chips">
           <span class="badge badge--muted">Requires API key</span>
           <span class="badge badge--muted is-mono">${count} models</span>
         </div>

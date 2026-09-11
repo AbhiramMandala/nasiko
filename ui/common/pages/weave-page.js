@@ -84,7 +84,7 @@ class WeavePage extends HTMLElement {
       <div class="panes">
         <section class="pane pane--surface" aria-label="Generated surface">
           <weave-surface id="surface" endpoint="/weave/surface"></weave-surface>
-          <app-empty-state id="empty" title="Nothing generated yet"
+          <app-empty-state id="empty" heading="Nothing generated yet"
             description="Describe what you want to see, or pick one of the suggestions above."></app-empty-state>
         </section>
 

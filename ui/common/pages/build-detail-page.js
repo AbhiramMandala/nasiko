@@ -52,18 +52,36 @@ class BuildDetailPage extends HTMLElement {
     if (!this.#buildId) {
       this.innerHTML = `${this.#toolbar()}
         <app-empty-state
-          title="No build selected"
+          heading="No build selected"
           description="Open a build from the list to inspect it."
           icon='${icons.briefcase("", 40)}'></app-empty-state>`;
       return;
     }
-    this.innerHTML = `${this.#toolbar()}<app-skeleton height="300px"></app-skeleton>`;
+    this.innerHTML = `${this.#toolbar()}${this.#loadingBodyHtml()}`;
     this.#load();
   }
 
   disconnectedCallback() {
     this.#evtSource?.close();
     this.#evtSource = null;
+  }
+
+  /**
+   * Placeholder for the body while the build record loads. The real layout
+   * below is three differently-shaped pieces — a KPI strip, a details
+   * table, and a log viewer — so the loading state shimmers as three
+   * pieces too, instead of one slab that doesn't resemble any of them.
+   * The KPI strip reuses <app-stat-row>'s own `loading` skeleton rather
+   * than a hand-rolled one, so it can't drift from the real geometry.
+   */
+  #loadingBodyHtml() {
+    const detailRow = () => '<div class="detail-row"><app-skeleton height="12px" style="width:5ch;"></app-skeleton><app-skeleton height="12px" style="width:60%;"></app-skeleton></div>';
+    return `
+      <app-stat-row loading="3"></app-stat-row>
+      <h2 class="section-title">Details</h2>
+      <div class="detail-rows">${Array.from({ length: 4 }, detailRow).join('')}</div>
+      <h2 class="section-title">Build log</h2>
+      <app-skeleton height="160px" radius="md"></app-skeleton>`;
   }
 
   async #load() {
@@ -75,7 +93,7 @@ class BuildDetailPage extends HTMLElement {
     if (!build) {
       this.innerHTML = `${this.#toolbar()}
         <app-empty-state
-          title="Build not found"
+          heading="Build not found"
           description="This build may have been pruned or the ID is wrong."
           icon='${icons.faceFrown("", 40)}'></app-empty-state>`;
       return;

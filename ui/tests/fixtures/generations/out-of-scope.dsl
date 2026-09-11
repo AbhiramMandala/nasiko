@@ -1,11 +1,9 @@
-I appreciate the request, but I need to let you know that the data sources available to me are limited to TokenOps usage metrics — agent costs, token consumption, latency, and operational data. There's no AWS billing data source connected yet in the Nasiko platform.
+I appreciate the request, but I'm unable to build that dashboard right now. The data sources available to me are for TokenOps platform usage (agent token consumption, latency, operations, and container hours), not AWS billing by service.
 
-The available sources track:
-- **Agent-level costs** (from `fetchTokenopsDashboard`)
-- **Overall usage summary** (from `fetchUsageSummary`)
-- **Historical usage** (from `fetchUsageHistory`)
-- **Usage by agent and model** (from `fetchUsageByAgent`, `fetchUsageByModel`)
+What I *can* show you:
+- **TokenOps spend and operations** — total cost, request volume, and trends over time
+- **Cost breakdown by agent** — which agents are consuming the most tokens/budget
+- **Cost breakdown by model** — spending by LLM provider and model
+- **Spend timeseries** — hourly or daily cost curves to spot usage patterns
 
-If you'd like, I can build you a **TokenOps cost dashboard** showing spend by agent or model instead, which would give you visibility into your agent infrastructure costs. Or if AWS billing data becomes available as a data source, I can create that breakdown for you then.
-
-Which would be more helpful right now?
+If you'd like to see any of those instead, just say the word — or if AWS billing data becomes available as a data source, I'll be ready to build that dashboard for you.

@@ -590,6 +590,24 @@ async fn orchestrator_stream(
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
+                        OrchestratorEvent::SubData { via_agent, data } => {
+                            // Relay the nested agent's own structured step
+                            // (already tagged with its own `type`, e.g.
+                            // weave's `agent_invoke`/`agent_result` for its
+                            // sub-agents) instead of leaving it collapsed
+                            // inside the single opaque ToolCall/ToolResult
+                            // above — this is what lets the UI show a called
+                            // orchestrator's own sub-agent spawn/finish.
+                            // `via_agent` is added for attribution only;
+                            // every other field is exactly what the nested
+                            // agent sent, unmodified.
+                            let mut payload = data;
+                            if let Some(obj) = payload.as_object_mut() {
+                                obj.entry("via_agent").or_insert_with(|| json!(via_agent));
+                            }
+                            let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(payload));
+                            yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
+                        }
                         OrchestratorEvent::PolicyRejected { agent, reason, turn } => {
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
                                 "type": "policy_rejected",
@@ -752,8 +770,15 @@ async fn orchestrator_stream(
 /// concrete, running agent row. Callers MUST authorize on the returned `id`
 /// before using it — this function does no access control of its own.
 async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDispatchError> {
+    // Excludes `is_internal` agents unconditionally, including for the owning
+    // superuser — this is the platform's only generic A2A entry point, and an
+    // internal agent (e.g. Weave's dashboard-generator) must be reachable
+    // exclusively through its own dedicated route (`ee/server/src/weave_surface.rs`),
+    // never here, or the superuser-ACL-bypass would leak it into ordinary chat
+    // history/usage tracking.
     sqlx::query_as::<_, AgentRow>(
-        "SELECT id, name, status FROM agents WHERE (id::text = $1 OR name = $1) AND status = 'running'",
+        "SELECT id, name, status FROM agents \
+         WHERE (id::text = $1 OR name = $1) AND status = 'running' AND NOT is_internal",
     )
     .bind(target)
     .fetch_optional(&state.db)
@@ -867,6 +892,11 @@ async fn agent_stream(
             .post(&endpoint)
             .header("A2A-Version", "1.0")
             .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
+            // Agent turns can legitimately run past the shared client's default
+            // 60s timeout (long tool calls, multi-step orchestration); override
+            // per-request instead of raising the global default for every caller
+            // of `state.http_client`.
+            .timeout(std::time::Duration::from_secs(600))
     };
 
     let response = build_agent_req()

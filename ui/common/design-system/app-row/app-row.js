@@ -8,6 +8,8 @@
  * @attr {string} padding - Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`
  * @attr {boolean} wrap - Allow items to wrap to next line
  * @note Horizontal flex row. For vertical use `<app-stack>`.
+ * @slot default - Any children; the container only lays them out.
+ * @children *
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-row.css', import.meta.url));

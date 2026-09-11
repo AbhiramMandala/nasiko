@@ -21,10 +21,10 @@ import '/common/design-system/app-stat-row/app-stat-row.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-tabs/app-tabs.js';
-import { escAttr, escHtml } from '/common/utils/escape.js';
+import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
 import '/common/utils/back-link.js';
-import '/common/features/agent-steps.js';
+
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -40,12 +40,10 @@ class ObservabilitySessionPage extends HTMLElement {
   #focusTraceId = '';        // ?trace_id= — preselect this trace's root span
   #pollTimer = null;
   #pollDeadline = 0;
-  #connected = false;
 
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
-    this.#connected = true;
     const params = new URLSearchParams(window.location.search);
     this.#sessionId = params.get('session_id') || '';
     this.#focusTraceId = params.get('trace_id') || '';
@@ -85,18 +83,7 @@ class ObservabilitySessionPage extends HTMLElement {
           copyBtn.innerHTML = icons.check('', 14);
           setTimeout(() => { copyBtn.innerHTML = icons.copy('', 14); }, 1500);
         }
-        return;
       }
-      if (e.target.closest('button, a')) return;
-      const message = e.target.closest('.msg-assistant[data-trace-id]');
-      if (message) this.#focusChatTrace(message);
-    });
-    this.querySelector('#chat-pane').addEventListener('keydown', (e) => {
-      if (!['Enter', ' '].includes(e.key)) return;
-      const message = e.target.closest('.msg-assistant[data-trace-id]');
-      if (!message) return;
-      e.preventDefault();
-      this.#focusChatTrace(message);
     });
     this.querySelector('#traces-pane').addEventListener('click', (e) => {
       const row = e.target.closest('.span-row');
@@ -106,7 +93,6 @@ class ObservabilitySessionPage extends HTMLElement {
   }
 
   disconnectedCallback() {
-    this.#connected = false;
     clearTimeout(this.#pollTimer);
   }
 
@@ -119,18 +105,25 @@ class ObservabilitySessionPage extends HTMLElement {
    * Agents export spans through a batching OTel exporter, so a trace opened
    * straight after a chat holds only the control plane's own `a2a.dispatch`
    * span — the agent's `a2a.execute` and `ChatCompletion` spans land a few
-   * seconds later. Re-fetch for the full export window instead of treating a
-   * temporarily stable span count as proof that the trace is complete.
+   * seconds later. Re-fetch until the tree stops growing (or the window
+   * closes) instead of showing that half-built trace and never updating.
    */
   #startPolling() {
     const INTERVAL_MS = 2000;
     const WINDOW_MS = 30_000;
+    const STABLE_TICKS = 3;
+
     this.#pollDeadline = Date.now() + WINDOW_MS;
+    let lastCount = this.#spans.length;
+    let stable = 0;
 
     const tick = async () => {
       if (Date.now() > this.#pollDeadline) return;
-      await Promise.all([this.#loadSession(), this.#loadChat()]);
-      if (!this.#connected) return;
+      await this.#loadSession();
+      const count = this.#spans.length;
+      stable = count === lastCount ? stable + 1 : 0;
+      lastCount = count;
+      if (stable >= STABLE_TICKS) return;
       this.#pollTimer = setTimeout(tick, INTERVAL_MS);
     };
     this.#pollTimer = setTimeout(tick, INTERVAL_MS);
@@ -168,62 +161,38 @@ class ObservabilitySessionPage extends HTMLElement {
       return;
     }
     strip.hidden = false;
-    this.querySelector('.page-title').textContent = s.agent_name || this.#sessionId;
-    const complete = s.metrics_complete !== false && !s.pagination?.has_next_page;
     strip.items = [
-      { label: 'Traces count', value: s.num_traces == null ? '—' : `${s.num_traces}${s.pagination?.has_next_page ? '+' : ''}` },
-      { label: 'Total tokens', value: complete && s.token_usage?.total != null ? s.token_usage.total.toLocaleString() : '—' },
-      { label: 'Total cost', value: complete && s.cost_summary?.total?.cost != null ? `$ ${s.cost_summary.total.cost.toFixed(3)}` : '—' },
-      { label: 'Latency P50', value: complete && s.latency_p50 != null ? `${(s.latency_p50 / 1000).toFixed(1)} s` : '—' },
-      { label: 'Latency P99', value: complete && s.latency_p99 != null ? `${(s.latency_p99 / 1000).toFixed(1)} s` : '—' },
+      { label: 'Traces count', value: s.num_traces ?? 0 },
+      { label: 'Total tokens', value: (s.token_usage?.total ?? 0).toLocaleString() },
+      { label: 'Total cost', value: `$ ${(s.cost_summary?.total?.cost ?? 0).toFixed(3)}` },
+      { label: 'Latency P50', value: `${((s.latency_p50 ?? 0) / 1000).toFixed(1)} s` },
+      { label: 'Latency P99', value: `${((s.latency_p99 ?? 0) / 1000).toFixed(1)} s` },
     ];
     // The chat pane loads in parallel and often wins the race, rendering its
     // chips before #session exists; refresh them once the totals are in.
     this.#renderChatMeta();
-    this.#renderChatTurnMeta();
   }
 
   #renderChatMeta() {
     const meta = this.querySelector('.chat-meta');
     if (!meta) return;
     const s = this.#session;
-    const complete = s?.metrics_complete !== false && !s?.pagination?.has_next_page;
     // `?? 0` used to render every absent metric as a confident 0 / $ 0.00 /
     // 0.0 s. When the trace backend is unconfigured or hasn't ingested the
     // session yet these are *unknown*, and asserting a zero cost is worse than
     // admitting we don't know — an em dash is the convention elsewhere.
     const num = (v, fmt) => (v == null ? '—' : fmt(v));
     meta.innerHTML = `
-      <app-badge variant="neutral">${icons.layers('', 12)} ${num(complete ? s?.token_usage?.total : null, (v) => v.toLocaleString())}</app-badge>
-      <app-badge variant="neutral">${num(complete ? s?.cost_summary?.total?.cost : null, (v) => `$ ${v.toFixed(2)}`)}</app-badge>
-      <app-badge variant="neutral">${icons.clock('', 12)} ${num(complete ? s?.latency_p50 : null, (v) => `${(v / 1000).toFixed(1)} s`)}</app-badge>
+      <app-badge variant="neutral">${icons.layers('', 12)} ${num(s?.token_usage?.total, (v) => v.toLocaleString())}</app-badge>
+      <app-badge variant="neutral">${num(s?.cost_summary?.total?.cost, (v) => `$ ${v.toFixed(2)}`)}</app-badge>
+      <app-badge variant="neutral">${icons.clock('', 12)} ${num(s?.latency_p50, (v) => `${(v / 1000).toFixed(1)} s`)}</app-badge>
     `;
-  }
-
-  #renderChatTurnMeta() {
-    const traces = new Map((this.#session?.traces ?? []).map((trace) => [trace.trace_id, trace]));
-    this.querySelectorAll('.chat-turn-meta[data-trace-id]').forEach((meta) => {
-      const root = traces.get(meta.dataset.traceId)?.root_span;
-      if (!root) {
-        meta.hidden = true;
-        return;
-      }
-      const tokens = root.cumulative_token_count_total;
-      const cost = root.trace?.cost_summary?.total?.cost;
-      meta.hidden = false;
-      meta.innerHTML = `
-        <span class="chip">${icons.layers('', 12)} ${tokens == null ? '—' : `${Number(tokens).toLocaleString()} tokens`}</span>
-        <span class="chip" title="Estimated cost">${this.#fmtTurnCost(cost)}</span>
-        <span class="chip">${icons.clock('', 12)} ${this.#fmtLatency(root.latency_ms)}</span>
-      `;
-    });
   }
 
   /** Expand each trace of the session into a flattened, indented span list. */
   async #loadTraces() {
     const traces = this.#session?.traces ?? [];
     const flat = [];
-    const seen = new Set();
     for (const entry of traces) {
       const traceId = entry.trace_id;
       let detail;
@@ -235,9 +204,6 @@ class ObservabilitySessionPage extends HTMLElement {
       }
       const roots = detail?.spans ?? [];
       const walk = (node, depth) => {
-        const key = `${traceId}:${node.span_id}`;
-        if (seen.has(key)) return;
-        seen.add(key);
         flat.push({ node, depth, traceId });
         (node.children || []).forEach((c) => walk(c, depth + 1));
       };
@@ -267,7 +233,7 @@ class ObservabilitySessionPage extends HTMLElement {
   #renderTracesPlaceholder(title, description, icon) {
     this.querySelector('#traces-pane').innerHTML = `
       <h2 class="pane-title">Traces</h2>
-      <app-empty-state title="${escHtml(title)}" description="${escHtml(description)}"
+      <app-empty-state heading="${escHtml(title)}" description="${escHtml(description)}"
         icon='${icon}'></app-empty-state>
     `;
     this.#syncPanes();
@@ -316,17 +282,6 @@ class ObservabilitySessionPage extends HTMLElement {
       row.classList.toggle('is-selected',
         row.dataset.spanId === this.#selected?.spanId && row.dataset.traceId === this.#selected?.traceId);
     });
-    this.querySelectorAll('.msg-assistant[data-trace-id]').forEach((message) => {
-      message.classList.toggle('is-trace-selected', message.dataset.traceId === this.#selected?.traceId);
-    });
-  }
-
-  #focusChatTrace(message) {
-    const traceId = message.dataset.traceId;
-    if (!traceId) return;
-    this.#focusTraceId = traceId;
-    const root = this.#spans.find((entry) => entry.traceId === traceId && entry.depth === 0);
-    if (root) this.#selectSpan(root.traceId, root.node.span_id);
   }
 
   async #selectSpan(traceId, spanId) {
@@ -397,7 +352,6 @@ class ObservabilitySessionPage extends HTMLElement {
     // matching how this repo handles A2A payload drift. `||` not `??`: the
     // server serializes "no content" as an empty string, which must fall through.
     const attrs = s.attributes ?? {};
-    const isTool = attrs.gen_ai?.operation?.name === 'execute_tool' || attrs.tool?.name;
     const inputMsgs = this.#extractMessages(
       attrs.llm?.input_messages,
       s.input?.value || attrs.gen_ai?.input?.messages || s.input_content,
@@ -418,20 +372,9 @@ class ObservabilitySessionPage extends HTMLElement {
             </div>`).join('')
         : `<div class="pane-empty">${emptyText}</div>`}
     `;
-    const toolSummary = isTool ? `
-      <div class="detail-section-title">Tool execution</div>
-      <div class="msg-block">
-        <div class="msg-content">${escHtml([
-          `Tool: ${attrs.tool?.name || 'unknown'}`,
-          `Status: ${attrs.tool?.status || s.status_code || 'unknown'}`,
-          `Duration: ${s.latency_ms == null ? 'unknown' : this.#fmtLatency(s.latency_ms)}`,
-          attrs.tool?.call?.id ? `Call ID: ${attrs.tool.call.id}` : '',
-        ].filter(Boolean).join('\n'))}</div>
-      </div>` : '';
     return `
-      ${toolSummary}
-      ${section(isTool ? 'Arguments' : 'Input messages', inputMsgs, isTool ? 'No arguments captured' : 'No input message available')}
-      ${section(isTool ? (attrs.tool?.status === 'failed' ? 'Error' : 'Result') : 'Output messages', outputMsgs, isTool ? 'No result captured' : 'No output message available')}
+      ${section('Input messages', inputMsgs, 'No input message available')}
+      ${section('Output messages', outputMsgs, 'No output message available')}
     `;
   }
 
@@ -495,14 +438,11 @@ class ObservabilitySessionPage extends HTMLElement {
       messages = resp?.data ?? [];
     } catch {
       // Observability sessions don't always map to a chat session.
-      // Keep a transcript already shown if a later polling read is transiently
-      // unavailable; an empty state would falsely imply the messages vanished.
-      if (this.#chatState === 'ready') return;
     }
     if (!messages.length) {
       this.#chatState = 'empty';
       pane.innerHTML = `${this.#chatPaneTitle()}
-        <app-empty-state title="No transcript"
+        <app-empty-state heading="No transcript"
           description="This session has no stored chat messages."
           icon='${icons.document()}'></app-empty-state>`;
       this.#syncPanes();
@@ -512,25 +452,13 @@ class ObservabilitySessionPage extends HTMLElement {
     pane.innerHTML = `
       ${this.#chatPaneTitle()}
       <div class="chat-card">
-        ${messages.map((m, index) => m.role === 'user'
+        ${messages.map((m) => m.role === 'user'
           // User turns are literal input — escaped, never parsed as markdown.
           ? `<div class="msg-user"><div class="msg-clamp">${escHtml(m.content)}</div></div>`
-          : `<div class="msg-assistant" data-message-index="${index}"
-              ${m.trace_id ? `data-trace-id="${escAttr(m.trace_id)}" role="button" tabindex="0" title="View this turn's trace"` : ''}>
-              <div class="msg-clamp md-body">${renderMarkdown(m.content ?? '')}</div>
-              ${m.trace_id ? `<div class="chat-turn-meta" data-trace-id="${escAttr(m.trace_id)}" hidden></div>` : ''}
-            </div>`).join('')}
+          : `<div class="msg-assistant"><div class="msg-clamp md-body">${renderMarkdown(m.content ?? '')}</div></div>`).join('')}
         <div class="chat-meta"></div>
       </div>
     `;
-    for (const element of pane.querySelectorAll('.msg-assistant[data-message-index]')) {
-      const toolCalls = messages[Number(element.dataset.messageIndex)]?.metadata?.coding_agent?.tool_calls;
-      if (!Array.isArray(toolCalls)) continue;
-      const steps = document.createElement('agent-steps');
-      element.prepend(steps);
-      steps.loadToolCalls(toolCalls);
-    }
-    this.#renderChatTurnMeta();
     this.#renderChatMeta();
     this.#applyClamps(pane);
     this.#syncPanes();
@@ -557,7 +485,6 @@ class ObservabilitySessionPage extends HTMLElement {
   }
 
   #spanIcon(node) {
-    if (node.attributes?.gen_ai?.operation?.name === 'execute_tool') return icons.terminal('', 14);
     if (node.name?.toLowerCase().includes('chatcompletion') || node.model) return icons.cube('', 14);
     if (node.name?.toLowerCase().startsWith('tool')) return icons.terminal('', 14);
     return icons.trace('', 14);
@@ -570,16 +497,6 @@ class ObservabilitySessionPage extends HTMLElement {
   #fmtLatency(ms) {
     if (ms == null) return '—';
     return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`;
-  }
-
-  #fmtTurnCost(value) {
-    if (value == null) return '—';
-    const cost = Number(value);
-    if (cost === 0) return '$0';
-    if (cost > 0 && cost < 0.001) return '&lt; $0.001';
-    if (cost < 0.01) return `$${cost.toFixed(4).replace(/0+$/, '')}`;
-    if (cost < 1) return `$${cost.toFixed(3)}`;
-    return `$${cost.toFixed(2)}`;
   }
 
   #fmtDate(iso) {

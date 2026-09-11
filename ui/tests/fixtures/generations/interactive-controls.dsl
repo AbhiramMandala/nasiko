@@ -1,19 +1,23 @@
 Sure — building that now.
-
-root = AppStack([header, controlRow, statsSection, agentTable], "md")
-header = AppText("Cost dashboard", "title")
-$dateWindow = 7
+root = AppStack([heading, controlsRow, kpisSection, agentTable], "md")
+heading = AppText("Cost dashboard", "title")
+$range = "7d"
 $searchQuery = ""
-controlRow = AppRow([searchBox, sevenDayBtn, thirtyDayBtn], "md")
-searchBox = AppSearch("md", null, false, false, "Search agents...", $searchQuery, null, null, null, null, null, updateSearch)
-updateSearch = Action([@Set($searchQuery, $event), @Run(agentData)])
-sevenDayBtn = AppButton("7 days", $dateWindow == 7 ? "primary" : "secondary", null, null, null, null, null, null, null, null, selectSeven)
-thirtyDayBtn = AppButton("30 days", $dateWindow == 30 ? "primary" : "secondary", null, null, null, null, null, null, null, null, selectThirty)
-selectSeven = Action([@Set($dateWindow, 7), @Run(dashboardData)])
-selectThirty = Action([@Set($dateWindow, 30), @Run(dashboardData)])
-dashboardData = Query("fetchTokenopsDashboard", null, {summary: {total_cost: 0, total_operations: 0, operations_last_24h: 0, average_cost: 0, active_agents: 0, total_agents: 0, total_container_hours: 0}, agents: [], token_usage: {}})
-statsSection = AppStatRow([{label: "Total cost", value: "$" + @Round(dashboardData.summary.total_cost, 2), sub: "all time"}, {label: "Total operations", value: dashboardData.summary.total_operations}, {label: "Last 24h ops", value: dashboardData.summary.operations_last_24h}, {label: "Active agents", value: dashboardData.summary.active_agents}])
-agentData = Query("fetchUsageByAgent", [$searchQuery, 1, 50], [], "data")
-agentTable = AppTable(agentData, 50, "pages", true)
+controlsRow = AppRow([searchBox, rangeButtons], "md")
+searchBox = AppSearch("md", null, false, false, "Search agents...", $searchQuery, null, null, null, null, null, handleSearch)
+handleSearch = Action([@Set($searchQuery, $event), @Run(agentRows)])
+rangeButtons = AppRow([btn24h, btn7d, btn30d], "sm")
+btn24h = AppButton("24h", $range == "24h" ? "primary" : "secondary", null, null, null, null, null, null, null, null, select24h)
+btn7d = AppButton("7d", $range == "7d" ? "primary" : "secondary", null, null, null, null, null, null, null, null, select7d)
+btn30d = AppButton("30d", $range == "30d" ? "primary" : "secondary", null, null, null, null, null, null, null, null, select30d)
+select24h = Action([@Set($range, "24h"), @Run(dashboardQ)])
+select7d = Action([@Set($range, "7d"), @Run(dashboardQ)])
+select30d = Action([@Set($range, "30d"), @Run(dashboardQ)])
+kpisSection = AppStack([kpiHeading, kpis], "xs")
+kpiHeading = AppText("Summary", "subtitle")
+dashboardQ = Query("fetchTokenopsDashboard", [{range: $range}], {kpis: {total_spend: {current: 0, previous: 0, change_pct: null}, total_tokens: {current: 0, previous: 0, change_pct: null}, cost_per_operation: {current: 0, previous: 0, change_pct: null}, avg_latency_ms: {current: null, previous: null, change_pct: null}}, attributions: {rows: []}, agents: []}, "data.kpis")
+kpis = AppStatRow([{label: "Total spend", value: dashboardQ.total_spend.current, sub: "USD", delta: dashboardQ.total_spend.current - dashboardQ.total_spend.previous, trend: dashboardQ.total_spend.change_pct != null ? (dashboardQ.total_spend.change_pct > 0 ? "up" : dashboardQ.total_spend.change_pct < 0 ? "down" : "neutral") : "neutral"}, {label: "Total tokens", value: dashboardQ.total_tokens.current, delta: dashboardQ.total_tokens.current - dashboardQ.total_tokens.previous, trend: dashboardQ.total_tokens.change_pct != null ? (dashboardQ.total_tokens.change_pct > 0 ? "up" : dashboardQ.total_tokens.change_pct < 0 ? "down" : "neutral") : "neutral"}, {label: "Cost per op", value: @Round(dashboardQ.cost_per_operation.current, 4), delta: @Round(dashboardQ.cost_per_operation.current - dashboardQ.cost_per_operation.previous, 4), trend: dashboardQ.cost_per_operation.change_pct != null ? (dashboardQ.cost_per_operation.change_pct > 0 ? "up" : dashboardQ.cost_per_operation.change_pct < 0 ? "down" : "neutral") : "neutral"}])
+agentTable = AppTable(agentRows, 20, "pages", true)
+agentRows = Query("fetchTokenopsDashboard", [{range: $range}], {attributions: {rows: []}}, "data.attributions.rows")
 
-Here's your cost dashboard with time-window buttons, agent search, KPI stats, and a paginated table — let me know if you'd like to adjust the metrics, add a chart, or refine the layout!
+Here's your cost dashboard with KPI summaries, a time-window selector, and a searchable agent table — let me know if you'd like to adjust the layout, add filters, or change what metrics are displayed!

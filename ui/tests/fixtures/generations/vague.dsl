@@ -1,10 +1,9 @@
 Sure — building that now.
 
-root = AppStack([heading, summary, agentBreakdown], "md")
+root = AppStack([heading, kpis, agentTable], "md")
 heading = AppText("Cost overview", "title")
-summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0, avg_latency_ms: null})
-summary = AppStatRow([{label: "Total cost", value: "$" + @Round(summaryQ.total_cost_usd, 2), sub: "all time"}, {label: "Requests", value: @Count(summaryQ.request_count ? [summaryQ.request_count] : [])}])
-agentDataQ = Query("fetchTokenopsDashboard", [], {agents: []}, "data.agents")
-agentBreakdown = AppTable(agentDataQ, 20, "pages", false)
+dashboardQ = Query("fetchTokenopsDashboard", [{range: "7d"}], {kpis: {total_spend: {current: 0, previous: 0, change_pct: null}, total_tokens: {current: 0, previous: 0, change_pct: null}, cost_per_operation: {current: 0, previous: 0, change_pct: null}}, attributions: {rows: []}}, "data")
+kpis = AppStatRow([{label: "Total spend", value: "$" + @Round(dashboardQ.kpis.total_spend.current, 2), delta: @Round(dashboardQ.kpis.total_spend.current - dashboardQ.kpis.total_spend.previous, 2), trend: dashboardQ.kpis.total_spend.change_pct > 0 ? "up" : dashboardQ.kpis.total_spend.change_pct < 0 ? "down" : "neutral"}, {label: "Total tokens", value: @Round(dashboardQ.kpis.total_tokens.current, 0), delta: @Round(dashboardQ.kpis.total_tokens.current - dashboardQ.kpis.total_tokens.previous, 0), trend: dashboardQ.kpis.total_tokens.change_pct > 0 ? "up" : dashboardQ.kpis.total_tokens.change_pct < 0 ? "down" : "neutral"}, {label: "Cost per op", value: "$" + @Round(dashboardQ.kpis.cost_per_operation.current, 4), delta: @Round(dashboardQ.kpis.cost_per_operation.current - dashboardQ.kpis.cost_per_operation.previous, 4), trend: dashboardQ.kpis.cost_per_operation.change_pct > 0 ? "up" : dashboardQ.kpis.cost_per_operation.change_pct < 0 ? "down" : "neutral"}])
+agentTable = AppTable(dashboardQ.attributions.rows, 20, "pages", false)
 
-Here's your cost overview with the total spend, request count, and a breakdown by agent — let me know if you'd like to see trends over time, filter by a specific period, or drill into any agent's details!
+Here's your cost overview for the last 7 days — showing total spend, token usage, and a breakdown by agent. Let me know if you'd like to adjust the time range or see different metrics!

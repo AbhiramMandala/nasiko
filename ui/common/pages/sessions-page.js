@@ -139,8 +139,7 @@ class SessionsPage extends HTMLElement {
           const agent = s.agent_name || 'Orchestrator';
           const href = `/chat?session_id=${encodeURIComponent(s.session_id)}`
             + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
-            + `&agent_name=${encodeURIComponent(agent)}`
-            + (s.is_coding_agent ? '&read_only=1' : '');
+            + `&agent_name=${encodeURIComponent(agent)}`;
           const msgs = s.message_count
             ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
           const preview = s.last_message
@@ -241,7 +240,7 @@ class SessionsPage extends HTMLElement {
         return;
       }
       this.#renderState(`<app-empty-state
-        title="Failed to load sessions"
+        heading="Failed to load sessions"
         description="Something went wrong while loading your chat sessions."
         icon='${icons.xCircle()}'>
         <app-button variant="secondary" size="sm" id="btn-retry">Retry</app-button>
@@ -268,7 +267,7 @@ class SessionsPage extends HTMLElement {
       table ? table.refresh() : this.#mountTable();
     } else if (this.#hasAgents === false) {
       this.#renderState(`<app-empty-state
-        title="No agents to run yet"
+        heading="No agents to run yet"
         description="Chat routes every query to a deployed agent. Import one and its queries, traces and token counts show up here."
         icon='${icons.plus()}'>
         <app-button variant="dark" id="btn-empty-import">Import agent</app-button>
@@ -277,7 +276,7 @@ class SessionsPage extends HTMLElement {
         () => routerNavigate('/add-agent'));
     } else {
       this.#renderState(`<app-empty-state
-        title="No sessions yet"
+        heading="No sessions yet"
         description="Ask the orchestrator a question and every query, trace and token count shows up here."
         icon='${icons.send()}'>
         <app-button variant="dark" id="btn-empty-chat">Start a Chat</app-button>

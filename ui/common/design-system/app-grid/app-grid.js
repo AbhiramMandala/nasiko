@@ -6,6 +6,8 @@
  * @attr {string} min-width - Minimum column width for auto-fit layouts (e.g. `280px`)
  * @attr {string} gap - Gap between cells: `xs` | `sm` | `md` (default) | `lg` | `xl`
  * @attr {string} padding - Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`
+ * @slot default - Any children; the container only lays them out.
+ * @children *
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-grid.css', import.meta.url));

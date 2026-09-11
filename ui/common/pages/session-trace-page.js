@@ -25,7 +25,7 @@ class SessionTracePage extends HTMLElement {
     const traceId = new URLSearchParams(location.search).get('trace_id')
       || this.getAttribute('trace-id');
     if (!traceId) {
-      this.innerHTML = `<app-empty-state title="No trace ID specified"
+      this.innerHTML = `<app-empty-state heading="No trace ID specified"
         description="Open a trace from a session to inspect it."
         icon='${icons.faceFrown("", 40)}'></app-empty-state>`;
       return;
@@ -58,7 +58,7 @@ class SessionTracePage extends HTMLElement {
         <h1>${escHtml(traceId)}</h1>
       </div>
       <app-empty-state
-        title="This trace isn't linked to a session yet"
+        heading="This trace isn't linked to a session yet"
         description="Agent spans reach the trace backend a few seconds after a reply finishes. Try refreshing in a moment, or open the session from Execution history."
         icon='${icons.faceFrown("", 40)}'></app-empty-state>
     `;

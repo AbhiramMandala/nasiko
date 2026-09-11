@@ -36,17 +36,6 @@ const GRANT_TYPES = [
   { key: 'agent', label: 'Agent', eeOnly: false },
 ];
 
-/**
- * A tool's configured stance, defaulting to `allow`.
- *
- * With no matching rule the gateway allows the call, so an unset tool really is
- * `allow` — and normalising here is what stops a round-trip from downgrading
- * `ask` to `allow`: every click re-saves the connector's whole rule set, so any
- * stance this function does not preserve is silently erased from the others.
- */
-const STANCES = new Set(['allow', 'ask', 'block']);
-const stanceOf = (tool) => (STANCES.has(tool?.stance) ? tool.stance : 'allow');
-
 class AgentCardPage extends HTMLElement {
   #initialized = false;
   #agent = null;
@@ -82,7 +71,7 @@ class AgentCardPage extends HTMLElement {
       this.innerHTML = `
         <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--s-16);min-height:60vh;text-align:center;">
           <app-empty-state
-            title="No agent selected"
+            heading="No agent selected"
             description="Open an agent from the hub to see its card, settings, and logs.">
           </app-empty-state>
           <a href="/agents" style="color:var(--fg-brand);font-size:var(--font-size-sm);font-weight:600;">Browse the agent hub</a>
@@ -90,8 +79,47 @@ class AgentCardPage extends HTMLElement {
       return;
     }
     this.addEventListener('click', (e) => this.#onActionClick(e));
-    this.innerHTML = '<app-skeleton height="400px" style="max-width:900px;margin:0 auto;"></app-skeleton>';
+    this.innerHTML = this.#loadingShellHtml();
     this.#load();
+  }
+
+  /**
+   * Loading placeholder shown between mount and the first successful fetch.
+   * Mirrors the real #render() shape below (title, tags, stat cards, detail
+   * cards) instead of one flat rectangle: each piece shimmers on its own, so
+   * the page reads as "several things are loading" rather than "one grey
+   * slab is loading" — and the page doesn't jump size once data arrives.
+   */
+  #loadingShellHtml() {
+    const statCell = () => '<div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>';
+    const detailCard = () => '<div class="acp-details-card"><app-skeleton lines="4"></app-skeleton></div>';
+    return `
+      <div class="acp-page">
+        <div class="acp-topbar">
+          <app-skeleton height="28px" style="width:80px;"></app-skeleton>
+        </div>
+        <div class="acp-title-row">
+          <h1 class="acp-name"><app-skeleton lines="1" style="width:12ch;"></app-skeleton></h1>
+        </div>
+        <div class="acp-badge-row">
+          <span class="acp-tag"><app-skeleton height="12px" radius="full" style="width:5ch;"></app-skeleton></span>
+          <span class="acp-tag"><app-skeleton height="12px" radius="full" style="width:8ch;"></app-skeleton></span>
+        </div>
+        <p class="acp-description"><app-skeleton lines="2"></app-skeleton></p>
+        <div class="acp-stats-grid">${Array.from({ length: 4 }, statCell).join('')}</div>
+        <div class="acp-details-row">${Array.from({ length: 2 }, detailCard).join('')}</div>
+      </div>`;
+  }
+
+  /**
+   * `count` independent row-shaped placeholders instead of one tall block.
+   * Used for the tab panels whose real content is a short list or table
+   * (access grants, versions, MCP connectors) so each row shimmers on its
+   * own, matching the rows that will actually replace them.
+   */
+  #rowSkeletonHtml(count, height = '40px') {
+    const row = () => `<app-skeleton height="${height}" radius="md" style="margin-bottom:var(--s-8);"></app-skeleton>`;
+    return Array.from({ length: count }, row).join('');
   }
 
   async #load() {
@@ -315,7 +343,7 @@ class AgentCardPage extends HTMLElement {
 
   // app-tabs owns the strip and panel visibility; we only lazy-load on entry.
   #wireTabs() {
-    this.querySelector('app-tabs').addEventListener('tab-change', (e) => {
+    this.querySelector('app-tabs').addEventListener('tabs-change', (e) => {
       const key = e.detail.key;
       if (key === 'logs' && !this.#logsLoaded) this.#loadLogs();
       if (key === 'settings' && !this.#secretsLoaded) {
@@ -385,7 +413,7 @@ class AgentCardPage extends HTMLElement {
   #accessPanelHtml() {
     return `
         <div class="acp-panel" data-tab="access" data-label="Access &amp; security">
-          <div id="acp-access-body"><app-skeleton height="240px"></app-skeleton></div>
+          <div id="acp-access-body">${this.#rowSkeletonHtml(4)}</div>
         </div>`;
   }
 
@@ -403,7 +431,7 @@ class AgentCardPage extends HTMLElement {
               </div>
               <app-button variant="primary" size="md" data-action="reupload">${icons.upload()} Re-upload</app-button>
             </div>
-            <div id="acp-versions-body"><app-skeleton height="200px"></app-skeleton></div>
+            <div id="acp-versions-body">${this.#rowSkeletonHtml(3)}</div>
           </section>
         </div>`;
   }
@@ -417,7 +445,7 @@ class AgentCardPage extends HTMLElement {
       this.#versions = (resp?.data ?? resp) || [];
     } catch (e) {
       el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
-        title="Version history unavailable"
+        heading="Version history unavailable"
         description="${escAttr(e.message)}"
         icon="${escAttr(icons.layers('', 32))}"></app-empty-state></div>`;
       return;
@@ -434,7 +462,7 @@ class AgentCardPage extends HTMLElement {
 
     if (!this.#versions.length) {
       el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
-        title="No versions recorded"
+        heading="No versions recorded"
         description="Versions appear here once this agent has been built through upload, push or re-upload."
         icon="${escAttr(icons.layers('', 32))}"></app-empty-state></div>`;
       return;
@@ -1200,10 +1228,8 @@ class AgentCardPage extends HTMLElement {
         <div class="acp-panel" data-tab="configure" data-label="Configure">
           <section class="acp-section">
             <h2 class="acp-section-title">MCP</h2>
-            <p class="acp-section-sub">MCP servers this agent may use. Set each tool to allow, ask
-              or block. <strong>Ask</strong> pauses the agent mid-task and asks you to approve
-              that call before it runs.</p>
-            <div id="acp-mcp-list"><app-skeleton height="160px"></app-skeleton></div>
+            <p class="acp-section-sub">MCP servers this agent may use. Allow or block each tool individually.</p>
+            <div id="acp-mcp-list">${this.#rowSkeletonHtml(2, '64px')}</div>
           </section>
           <section class="acp-section">
             <h2 class="acp-section-title">LLM router</h2>
@@ -1242,7 +1268,7 @@ class AgentCardPage extends HTMLElement {
     if (!list) return;
     if (!this.#connectors.length) {
       list.innerHTML = `<app-empty-state
-        title="No MCP servers available"
+        heading="No MCP servers available"
         description="Connect servers on the MCP page to make their tools available here."
         icon="${escAttr(icons.server('', 32))}"></app-empty-state>`;
       return;
@@ -1254,13 +1280,10 @@ class AgentCardPage extends HTMLElement {
   #connectorCardHtml(c) {
     const name = c.display_name || c.name || 'Connector';
     const tools = this.#connectorTools.get(c.connector_id) || [];
-    const asks = tools.filter((t) => stanceOf(t) === 'ask').length;
-    const allowed = tools.filter((t) => stanceOf(t) === 'allow').length;
+    const allowed = tools.filter((t) => t.stance !== 'block').length;
     const summary = c.enabled === false
       ? 'Disabled'
-      : !tools.length ? 'No tools synced yet'
-      : asks ? `${allowed} of ${tools.length} tools allowed · ${asks} ask first`
-      : `${allowed} of ${tools.length} tools allowed`;
+      : tools.length ? `${allowed} of ${tools.length} tools allowed` : 'No tools synced yet';
     const open = this.#openConnectors.has(c.connector_id);
     const logo = c.logo_url
       ? `<img class="acp-mcp-logo" src="${escAttr(c.logo_url)}" alt="" />`
@@ -1296,11 +1319,10 @@ class AgentCardPage extends HTMLElement {
         ${note}
         ${tools.map((t, i) => {
           const group = `stance-${c.connector_id}-${i}`;
-          const current = stanceOf(t);
-          const opt = (stance, label, title) => `
-            <label title="${escAttr(title)}">
+          const opt = (stance, label, on) => `
+            <label>
               <input type="radio" name="${escAttr(group)}" value="${stance}"
-                data-tool-index="${i}" ${current === stance ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+                data-tool-index="${i}" ${on ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
               ${label}
             </label>`;
           return `
@@ -1308,9 +1330,8 @@ class AgentCardPage extends HTMLElement {
             <span class="acp-mcp-tool-name">${escHtml(t.name)}</span>
             <span class="acp-mcp-tool-desc">${escHtml(t.description || '')}</span>
             <fieldset class="seg-ctrl acp-stance" aria-label="Tool access for ${escAttr(t.name)}">
-              ${opt('allow', 'Allow', 'Runs without asking')}
-              ${opt('ask', 'Ask', 'Pauses and asks you to approve each call')}
-              ${opt('block', 'Block', 'Never runs')}
+              ${opt('allow', 'Allow', t.stance !== 'block')}
+              ${opt('block', 'Block', t.stance === 'block')}
             </fieldset>
           </div>`;
         }).join('')}
@@ -1359,7 +1380,7 @@ class AgentCardPage extends HTMLElement {
       const rules = tools.map((t) => ({
         connector_id: connectorId,
         tool_pattern: t.name,
-        stance: stanceOf(t),
+        stance: t.stance === 'block' ? 'block' : 'allow',
       }));
       await call('saveAgentMcpToolRules', this.#agent.id, rules);
     } catch (e) {
@@ -1457,7 +1478,7 @@ class AgentCardPage extends HTMLElement {
     // indistinguishable from a hung page.
     const unavailable = (description) => {
       el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
-        title="Metrics unavailable"
+        heading="Metrics unavailable"
         description="${escAttr(description)}"
         icon="${escAttr(icons.trace('', 32))}"></app-empty-state></div>`;
     };
@@ -1485,7 +1506,7 @@ class AgentCardPage extends HTMLElement {
       el.innerHTML = `
         <div class="acp-stats-empty">
           <app-empty-state
-            title="No usage data yet"
+            heading="No usage data yet"
             description="Stats will appear after the first request to this agent."
             icon="${escAttr(icons.trace('', 32))}">
           </app-empty-state>
@@ -1533,7 +1554,7 @@ class AgentCardPage extends HTMLElement {
       // mid-session. Either way there is nothing to show — say so rather than
       // leaving skeletons spinning forever.
       el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
-        title="Usage unavailable"
+        heading="Usage unavailable"
         description="Container resource usage could not be read for this agent."
         icon="${escAttr(icons.cube('', 32))}"></app-empty-state></div>`;
       return;
@@ -1543,7 +1564,7 @@ class AgentCardPage extends HTMLElement {
     // — scaled to zero or never deployed. Not an error.
     if (!usage) {
       el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
-        title="Not running"
+        heading="Not running"
         description="This agent has no running container, so there is nothing to measure."
         icon="${escAttr(icons.cube('', 32))}"></app-empty-state></div>`;
       return;
@@ -1657,7 +1678,7 @@ class AgentCardPage extends HTMLElement {
         viewer.innerHTML = `
           <div class="acp-logs-empty">
             <app-empty-state
-              title="No logs available"
+              heading="No logs available"
               description="This agent has not produced any log output yet.">
             </app-empty-state>
           </div>`;
@@ -1684,7 +1705,7 @@ class AgentCardPage extends HTMLElement {
       viewer.innerHTML = `
         <div class="acp-logs-empty">
           <app-empty-state
-            title="Failed to load logs"
+            heading="Failed to load logs"
             description="Could not fetch logs for this agent. The agent may not be running.">
           </app-empty-state>
         </div>`;

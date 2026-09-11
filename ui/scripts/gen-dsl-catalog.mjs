@@ -82,6 +82,9 @@ for (const [tag, def] of Object.entries(catalog.components)) {
       problems.push(`${tag}: dslExcludeAttributes names "${name}", which is not an attribute of ${tag}.`);
     }
   }
+  if (ov.itemActionsAttr && !def.attributes?.[ov.itemActionsAttr]) {
+    problems.push(`${tag}: itemActionsAttr names "${ov.itemActionsAttr}", which is not an attribute of ${tag}.`);
+  }
 
   const attributes = {};
   for (const [name, spec] of Object.entries(def.attributes || {})) {
@@ -152,7 +155,10 @@ for (const [tag, def] of Object.entries(catalog.components)) {
   // A model composes trees nobody reviews. Left unchecked it produces icon
   // buttons with no name and inputs with no label perfectly happily, and the
   // result passes a sighted glance. This is the floor under that.
-  const NAME_ATTRS = ['label', 'aria-label', 'alt'];
+  // `heading` counts: a dialog's heading IS its accessible name (app-modal and
+  // app-sheet wire it through aria-labelledby), and CONVENTIONS.md §2 reserves
+  // the word for exactly that role.
+  const NAME_ATTRS = ['label', 'aria-label', 'alt', 'heading'];
   const named = NAME_ATTRS.filter((n) => attributes[n]);
   // `nameFallback` is declared, not inferred. A first attempt derived it — any
   // component whose only naming attribute is `aria-label` and that has a
@@ -203,10 +209,14 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     ...(requiresName && { requiresName: true, nameFrom }),
     attributes,
     slots: def.slots ?? [],
+    ...(def.children && { children: def.children }),
+    ...(def.childAttributes && { childAttributes: def.childAttributes }),
     events: def.events ?? [],
     ...(ov.dataProp && { dataProp: ov.dataProp }),
     ...(ov.dataAsFetcher && { dataAsFetcher: true }),
     ...(ov.actionEvent && { actionEvent: ov.actionEvent }),
+    ...(ov.itemActionsAttr && { itemActionsAttr: ov.itemActionsAttr }),
+    ...(ov.needsOpenCall && { needsOpenCall: true }),
     ...(ov.note && { note: ov.note }),
   };
 }

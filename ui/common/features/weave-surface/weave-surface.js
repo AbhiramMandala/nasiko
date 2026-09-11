@@ -55,7 +55,7 @@ import { createSurfaceSession } from '/common/surface/surface-stream.js';
  * attributes that go nowhere. This is that place — the one seam between the
  * runtime and the rest of the app already promises to own "a vocabulary."
  */
-import '/common/design-system/app-action-menu/app-action-menu.js';
+import '/common/design-system/app-menu/app-menu.js';
 import '/common/design-system/app-avatar/app-avatar.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
@@ -83,48 +83,9 @@ import '/common/design-system/app-tag/app-tag.js';
 import '/common/design-system/app-text/app-text.js';
 import '/common/design-system/app-toolbar/app-toolbar.js';
 
+import { loadCatalog, loadSeverities, withSeverity } from '/common/surface/catalog-load.js';
+
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
-
-/** The generated vocabulary. Fetched once for the whole app. */
-let catalogPromise = null;
-function loadCatalog() {
-  catalogPromise ??= fetch(new URL('/common/surface/dsl-catalog.json', document.baseURI))
-    .then((res) => {
-      if (!res.ok) throw new Error(`dsl-catalog.json: ${res.status}`);
-      return res.json();
-    });
-  return catalogPromise;
-}
-
-/**
- * How seriously to take each diagnostic code, from the generated manifest.
- *
- * The runtime deliberately does not carry this: a module that reports a problem
- * should not also be ranking it, and the ranking is a product decision that
- * changes without the code changing. Stamped on here, once, so a host has the
- * distinction without every consumer re-deriving it — the page paints a lost
- * chart differently from a dropped connection, which was impossible while every
- * diagnostic arrived as an undifferentiated warning.
- *
- * A code the manifest does not know is treated as fatal: `gen-diagnostics
- * --check` should have caught it, so if one gets here the loud answer is right.
- * A failed fetch leaves the field undefined rather than guessing.
- */
-let severityPromise = null;
-let severityMap = null;
-function loadSeverities() {
-  severityPromise ??= fetch(new URL('/common/surface/diagnostics.json', document.baseURI))
-    .then((res) => (res.ok ? res.json() : null))
-    .then((json) => { severityMap = json?.diagnostics ?? null; })
-    .catch(() => { severityMap = null; });
-  return severityPromise;
-}
-
-/** @param {{code?: string}[]} diagnostics */
-function withSeverity(diagnostics) {
-  if (!severityMap) return diagnostics;
-  return diagnostics.map((d) => ({ ...d, severity: severityMap[d.code]?.severity ?? 'fatal' }));
-}
 
 class WeaveSurface extends HTMLElement {
   #initialized = false;
@@ -191,6 +152,32 @@ class WeaveSurface extends HTMLElement {
       });
       return { status: 'failed', surface: '', catalogVersion: null };
     }
+  }
+
+  /**
+   * Render a surface that already exists, with no request.
+   *
+   * Reopening a saved view is not a generation. Asking the model to rebuild it
+   * would cost tokens, take seconds and hand back a different dashboard from
+   * the one that was saved — so the stored DSL is drawn as-is.
+   *
+   * Still a live surface, not a picture: Queries fetch, Actions fire, `$state`
+   * works. Only the generation is skipped.
+   *
+   * `catalogVersion` is the one the DSL was generated against, and it is
+   * checked. A view saved before a design-system change can have had its
+   * positional arguments rebound underneath it, and the host hears about that
+   * through the same `catalog_version_mismatch` diagnostic a live turn raises.
+   *
+   * @param {string} dsl
+   * @param {{catalogVersion?: string|null}} [opts]
+   */
+  async show(dsl, { catalogVersion = null } = {}) {
+    const session = await this.#ensureSession();
+    // A turn still streaming would overwrite what we are about to draw.
+    this.#abort?.abort();
+    this.#abort = null;
+    return session.show(dsl, { catalogVersion });
   }
 
   /** The raw DSL of the last turn that produced a surface. */

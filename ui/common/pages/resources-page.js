@@ -103,7 +103,7 @@ class ResourcesPage extends HTMLElement {
       this.querySelector('#groups').innerHTML = `
         <section class="pane">
           <app-empty-state
-            title="Resource stats unavailable"
+            heading="Resource stats unavailable"
             description="${escHtml(this.#error)}"
           ></app-empty-state>
         </section>`;

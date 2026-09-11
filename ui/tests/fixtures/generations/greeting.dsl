@@ -1,15 +1,27 @@
-I'm a dashboard builder for the Nasiko platform — I can create interactive data surfaces for you.
+I'm a TokenOps dashboard builder for the Nasiko platform. I can create interactive dashboards that display your usage data, costs, and operational metrics.
 
-Here's what I can do:
+Here's what I can help you with:
 
-**Build dashboards** that show real data from your token usage, agent performance, model costs, and operational metrics. I can fetch live numbers and present them as cards, tables, charts, and trends.
+**Data visualization:**
+- Cost and spend trends over time
+- Usage breakdowns by agent, model, or workflow
+- Token consumption (prompt, completion, cache)
+- Latency and performance metrics
+- Custom charts and tables with filtering and pagination
 
-**Make them interactive** — toggle between views, filter by agent or model, search tables, adjust date ranges, and see fresh data load when you change parameters.
+**Interactivity:**
+- Date range and time window selection
+- Search and filter controls
+- Toggle between different views (cost vs. operations, agents vs. workflows)
+- Data export and drill-down capabilities
 
-**Arrange information clearly** — I organize metrics, charts, and tables using a compact DSL that I write and revise. Tell me what you need to see, and I'll build it for you.
+**Real data sources I can connect to:**
+- Overall usage summaries
+- Historical trends (7, 30-day windows)
+- Per-agent and per-model breakdowns with pagination
+- FinOps dashboards with KPI strips and deltas
+- Spend timeseries and calendar-day hourly curves
 
-**Connect to your data sources** — I can query usage summaries, historical trends, agent breakdowns, model comparisons, and dashboard KPIs directly from your backend.
+Just describe what you'd like to see — "show me cost by agent for the last 30 days," "build me a spend dashboard with KPIs," or "I need a table of usage by model" — and I'll build it for you. You can also ask me to adjust, add, or remove components once it's live.
 
-**Refine on the fly** — if something isn't quite right, just ask me to adjust it — move things around, swap in a different chart, add a filter, change the colors, whatever you need.
-
-What would you like to see first?
+What would you like to build?

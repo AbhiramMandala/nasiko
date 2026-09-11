@@ -61,11 +61,38 @@ class McpDetailPage extends HTMLElement {
     this.#initialized = true;
     this.#connectorId = new URLSearchParams(location.search).get('id');
     if (!this.#connectorId) {
-      this.innerHTML = `<app-empty-state title="No connector specified" icon='${icons.alertTriangle('', 40)}'></app-empty-state>`;
+      this.innerHTML = `<app-empty-state heading="No connector specified" icon='${icons.alertTriangle('', 40)}'></app-empty-state>`;
       return;
     }
-    this.innerHTML = '<app-skeleton height="400px" style="max-width:900px;margin:0 auto;"></app-skeleton>';
+    this.innerHTML = this.#loadingShellHtml();
     this.#load();
+  }
+
+  /**
+   * Loading placeholder shown before the connector detail loads. Mirrors the
+   * real #render() header (back button, title, description) plus a
+   * meta-grid shape, so several small pieces shimmer instead of one flat
+   * rectangle standing in for the whole page.
+   */
+  #loadingShellHtml() {
+    const metaCell = () => `
+        <div class="mdp-meta-item">
+          <app-skeleton height="10px" style="width:6ch;"></app-skeleton>
+          <app-skeleton height="14px" style="width:70%;margin-top:var(--s-4);"></app-skeleton>
+        </div>`;
+    return `
+      <div class="mdp-topbar">
+        <app-skeleton height="28px" style="width:80px;"></app-skeleton>
+      </div>
+      <div class="mdp-header">
+        <div class="mdp-title-row">
+          <h1 class="mdp-name"><app-skeleton lines="1" style="width:14ch;"></app-skeleton></h1>
+        </div>
+        <p class="mdp-description"><app-skeleton lines="2"></app-skeleton></p>
+      </div>
+      <app-grid class="mdp-meta-grid" min-width="280px" gap="md">
+        ${Array.from({ length: 4 }, metaCell).join('')}
+      </app-grid>`;
   }
 
   async #load() {
@@ -76,7 +103,7 @@ class McpDetailPage extends HTMLElement {
       this.#connector = null;
     }
     if (!this.#connector?.name && !this.#connector?.display_name) {
-      this.innerHTML = `<app-empty-state title="Connector not found" description="It may have been deleted, or you no longer have access to it." icon='${icons.alertTriangle('', 40)}'></app-empty-state>`;
+      this.innerHTML = `<app-empty-state heading="Connector not found" description="It may have been deleted, or you no longer have access to it." icon='${icons.alertTriangle('', 40)}'></app-empty-state>`;
       return;
     }
     document.title = 'Nasiko - ' + (this.#connector.display_name || this.#connector.name);
@@ -150,7 +177,7 @@ class McpDetailPage extends HTMLElement {
 
   #wireTabs() {
     let logsLoaded = false;
-    this.querySelector('app-tabs').addEventListener('tab-change', (e) => {
+    this.querySelector('app-tabs').addEventListener('tabs-change', (e) => {
       if (e.detail.key === 'logs' && !logsLoaded) {
         logsLoaded = true;
         this.#loadLogs();

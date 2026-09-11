@@ -16,6 +16,7 @@ import { resolveOptional } from '/common/core/data-sources.js';
 import { dismissSplash } from '/common/features/app-splash.js';
 import { initErrorBoundary } from '/common/core/error-boundary.js';
 import { initRouteIntegration } from '/common/core/route-persistence.js';
+import { mountWeaveDock } from '/common/features/weave-dock/weave-dock.js';
 
 // ── Base route table ────────────────────────────────────────────────────
 // Each route maps a clean URL to a lazy-loaded page component.
@@ -23,8 +24,7 @@ import { initRouteIntegration } from '/common/core/route-persistence.js';
 // `tag` is the custom element tag name created in the outlet.
 
 const BASE_ROUTES = [
-  { path: '/',                tag: 'overview-page',            module: '/common/pages/overview-page.js',            title: 'Nasiko — Overview' },
-  { path: '/orchestrator',    tag: 'orchestrator-page',        module: '/common/pages/orchestrator-page.js',        title: 'Nasiko — Orchestrator' },
+  { path: '/',                tag: 'orchestrator-page',        module: '/common/pages/orchestrator-page.js',        title: 'Nasiko' },
   { path: '/agents',          tag: 'agents-page',              module: '/common/pages/agents-page.js',              title: 'Nasiko — Agents' },
   { path: '/your-agents',     tag: 'your-agents-page',         module: '/common/pages/your-agents-page.js',         title: 'Nasiko — Your Agents' },
   { path: '/add-agent',       tag: 'add-agent-page',           module: '/common/pages/add-agent-page.js',           title: 'Nasiko — Add Agent' },
@@ -55,6 +55,12 @@ const BASE_ROUTES = [
   { path: '/resources',       tag: 'resources-page',           module: '/common/pages/resources-page.js',           title: 'Nasiko — Resources' },
   { path: '/weave',           tag: 'weave-page',               module: '/common/pages/weave-page.js',               title: 'Nasiko — Weave' },
   { path: '/design-system',   tag: 'design-system-page',       module: '/common/pages/design-system-page.js',       title: 'Nasiko — Design System' },
+  // Weave's conversational output. `/view` is one generated screen (the page
+  // sets its own title from the view); `/custom-views` is the shelf of the ones
+  // the user saved. `/weave` above is untouched — it is the surface-runtime
+  // workbench, not the chat.
+  { path: '/view',            tag: 'generated-view-page',      module: '/common/pages/generated-view-page.js',      title: 'Nasiko — View' },
+  { path: '/custom-views',    tag: 'custom-views-page',        module: '/common/pages/custom-views-page.js',        title: 'Nasiko — Custom Views' },
 ];
 
 // ── Route extension seam (same pattern as nav-ext.js) ───────────────────
@@ -102,6 +108,11 @@ async function boot() {
 
   // Persist route state (scroll positions, deep-link context) across reloads
   initRouteIntegration();
+
+  // Weave's launcher + drawer. Mounted on <body>, outside the outlet, so a
+  // route swap — including the one the drawer itself triggers when it generates
+  // a view — never tears the conversation down.
+  mountWeaveDock();
 
   // Everything is wired — drop the splash screen and reveal the app
   dismissSplash();

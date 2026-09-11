@@ -42,9 +42,6 @@
      left here is the two things the card has no notion of, both slotted into
      its footer — which agents the sequence runs, and how the last run went. */
 
-  /* Keep the per-card menu inside the card's right edge */
-  app-action-menu .aam-menu { left: auto; right: 0; }
-
   .wf-agents {
     /* Pushes the status line to the footer's trailing edge; .card-foot is a
        flex row that otherwise packs both against it. The agent list is the one

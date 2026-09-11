@@ -22,6 +22,12 @@ export function installBrowserShim({ hostname = 'localhost', port = '9090', path
   globalThis.history = { state: null, replaceState() {}, pushState() {} };
   globalThis.sessionStorage = memoryStorage();
   globalThis.localStorage = memoryStorage();
+  // Not a DOM — an EventTarget wearing the name. State modules broadcast their
+  // changes on `document` because that is the one node every listener already
+  // shares; `dispatchEvent`/`addEventListener` is the whole of what they use,
+  // and Node has had both since 15. Anything reaching for `querySelector` here
+  // is a component, and components are tested in a browser.
+  globalThis.document = new EventTarget();
   return () => {
     delete globalThis.window.nasikoConfig;
   };

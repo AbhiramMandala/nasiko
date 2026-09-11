@@ -106,6 +106,38 @@
     font-family: var(--font-mono);
   }
 
+  /* Stages for the ported nasiko_ui components. */
+  .rz-stage {
+    height: 140px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    overflow: hidden;
+  }
+
+  .rz-stage app-resizable { height: 100%; }
+
+  .rz-pane {
+    padding: var(--s-12);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  .rz-pane:first-child { background: var(--color-bg-surface); }
+
+  .demo-mention {
+    color: var(--fg-brand-link);
+    cursor: default;
+  }
+
+  .demo-target {
+    padding: var(--s-12) var(--s-16);
+    border: 1px dashed var(--color-border);
+    border-radius: var(--r-8);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    user-select: none;
+  }
+
   .spec-src {
     margin-top: var(--s-12);
   }

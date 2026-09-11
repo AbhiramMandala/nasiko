@@ -60,7 +60,7 @@ class ExecutionsPage extends HTMLElement {
 
     // <app-tabs strip> flips aria-selected and slides the indicator; the page
     // keeps owning the single list area both tabs render into.
-    this.querySelector('.tabs').addEventListener('tab-change', (e) => {
+    this.querySelector('.tabs').addEventListener('tabs-change', (e) => {
       this.#tab = e.detail.key;
       this.#renderList();
     });
@@ -241,7 +241,7 @@ class ExecutionsPage extends HTMLElement {
 
   #emptyState({ icon, title, sub, action }) {
     return `
-      <app-empty-state title="${title}" description="${sub}" icon='${icon}'>
+      <app-empty-state heading="${title}" description="${sub}" icon='${icon}'>
         ${action}
       </app-empty-state>`;
   }

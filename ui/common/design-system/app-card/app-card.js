@@ -42,14 +42,14 @@
  * @attr {boolean} loading - Renders the shimmer placeholder instead of content. The
  *   skeleton lives here, not in the consuming page, so the card's geometry has exactly
  *   one definition and the loading and loaded states cannot drift apart.
- * @slot leading - A media box (an avatar, a provider glyph) at the leading edge
+ * @slot [data-slot="leading"] - A media box (an avatar, a provider glyph) at the leading edge
  *   of the title row, before the status dot.
- * @slot actions - Header controls (an action menu, an icon button) pinned to the
+ * @slot [data-slot="actions"] - Header controls (an action menu, an icon button) pinned to the
  *   trailing edge of the title row.
- * @slot body - Replaces the description/error/deploying body with the consumer's
+ * @slot [data-slot="body"] - Replaces the description/error/deploying body with the consumer's
  *   own content, for cards whose middle is not a paragraph (the LLM-router
  *   config card's tier rows, say).
- * @slot footer - Replaces the default Details/Chat pair (two `<app-button>`s) with the consumer's own
+ * @slot [data-slot="footer"] - Replaces the default Details/Chat pair (two `<app-button>`s) with the consumer's own
  *   actions (lifecycle buttons, a logs link). Captured once and cached: render()
  *   relocates these nodes and then rewrites innerHTML, so re-querying for them
  *   on a later render would find nothing and silently destroy them.
@@ -69,6 +69,7 @@ import { icons } from '../../utils/icons.js';
 import { escHtml, escAttr } from '../../utils/escape.js';
 import { navigate as routerNavigate } from '../../core/router.js';
 
+import { warnOnce } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Status → dot modifier. Lifted unchanged from agents-page.js. */
@@ -137,7 +138,13 @@ export class AppCard extends HTMLElement {
    *  rewrites innerHTML and a later query would find nothing. */
   #slotted(name) {
     if (!this.#slots.has(name)) {
-      this.#slots.set(name, [...this.querySelectorAll(`:scope > [slot="${name}"]`)]);
+      // `data-slot` is the marker (CONVENTIONS.md §3); `slot=` still works for
+      // one release. Both are collected so a page mid-migration renders whole.
+      const nodes = [...this.querySelectorAll(`:scope > [data-slot="${name}"], :scope > [slot="${name}"]`)];
+      if (nodes.some((n) => n.hasAttribute('slot') && !n.dataset.slot)) {
+        warnOnce(`app-card.slot=${name}`, `<app-card> child with slot="${name}" — use data-slot="${name}" (light DOM has no slot attribute).`);
+      }
+      this.#slots.set(name, nodes);
     }
     return this.#slots.get(name);
   }
