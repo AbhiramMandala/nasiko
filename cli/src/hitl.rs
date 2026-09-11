@@ -124,25 +124,35 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
                 .ok();
             serde_json::json!({ "auth_action": "confirm" })
         }
-        // "input_required" and any forward-compatible unknown kind: a plain question.
+        // "input_required" and any forward-compatible unknown kind: a plain question, or —
+        // when the agent's `ask_human` attached the selectable-options extension — a
+        // single/multi-select question with optional free-text custom input (mirrors
+        // `hitl-card.js`'s rendering; `StructuredOptions::parse`/`resolve_structured_answer`
+        // in `router/hitl.rs` are the shared source of truth this must stay wire-compatible
+        // with).
         _ => {
             let msg = message("message");
             println!();
-            term::print_box(
-                Some(&format!("⏸ {who}")),
-                if msg.is_empty() {
-                    "(needs your input)"
-                } else {
-                    msg
-                },
-                "33",
-            );
-            let answer = dialoguer::Input::<String>::new()
-                .with_prompt("\x1b[1;36m❯ you\x1b[0m")
-                .allow_empty(true)
-                .interact_text()
-                .unwrap_or_default();
-            serde_json::json!({ "answer": answer })
+            let panel_body = match (pause.question.get("header").and_then(|v| v.as_str()), msg) {
+                (Some(h), "") => h.to_string(),
+                (Some(h), m) => format!("{h}\n{m}"),
+                (None, "") => "(needs your input)".to_string(),
+                (None, m) => m.to_string(),
+            };
+            term::print_box(Some(&format!("⏸ {who}")), &panel_body, "33");
+
+            match StructuredOptions::parse(&pause.question) {
+                Some(opts) if opts.multi_select => prompt_multi_select(&opts),
+                Some(opts) => prompt_single_select(&opts),
+                None => {
+                    let answer = dialoguer::Input::<String>::new()
+                        .with_prompt("\x1b[1;36m❯ you\x1b[0m")
+                        .allow_empty(true)
+                        .interact_text()
+                        .unwrap_or_default();
+                    serde_json::json!({ "answer": answer })
+                }
+            }
         }
     };
 
@@ -159,4 +169,150 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
     }
     println!();
     Ok(())
+}
+
+/// A `question`'s selectable-options extension, parsed the same way
+/// `router/hitl.rs::StructuredOptions::parse` does server-side — `None` means this is a plain
+/// `input_required` question (every pre-extension row, and any row whose agent never set
+/// `options`), which must fall back to the bare free-text prompt exactly as before this
+/// extension existed.
+struct StructuredOptions {
+    labels: Vec<String>,
+    multi_select: bool,
+    allow_custom_input: bool,
+}
+
+impl StructuredOptions {
+    fn parse(question: &serde_json::Value) -> Option<Self> {
+        let options = question.get("options")?.as_array()?;
+        let labels: Vec<String> = options
+            .iter()
+            .filter_map(|o| o.get("label")?.as_str().map(str::to_string))
+            .collect();
+        if labels.is_empty() {
+            return None;
+        }
+        Some(Self {
+            labels,
+            multi_select: question
+                .get("multi_select")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            allow_custom_input: question
+                .get("allow_custom_input")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        })
+    }
+}
+
+/// Single-select: the offered labels, plus a trailing "Something else" choice when custom
+/// input is allowed — picking it opens a free-text prompt whose answer (not the literal
+/// "Something else" string) is what gets sent, matching `resolve_structured_answer`'s "a bare
+/// `answer` string, custom or predefined — membership in `opts.labels` is what distinguishes
+/// the two" contract.
+fn prompt_single_select(opts: &StructuredOptions) -> serde_json::Value {
+    let mut items = opts.labels.clone();
+    let custom_idx = opts.allow_custom_input.then(|| {
+        items.push("Something else…".to_string());
+        items.len() - 1
+    });
+
+    let choice = dialoguer::Select::new()
+        .with_prompt("Choose one")
+        .items(&items)
+        .default(0)
+        .interact()
+        .unwrap_or(0);
+
+    if custom_idx == Some(choice) {
+        let answer = dialoguer::Input::<String>::new()
+            .with_prompt("\x1b[1;36m❯ you\x1b[0m")
+            .allow_empty(true)
+            .interact_text()
+            .unwrap_or_default();
+        serde_json::json!({ "answer": answer })
+    } else {
+        serde_json::json!({ "answer": items[choice] })
+    }
+}
+
+/// Multi-select: checkboxes for the offered labels, plus — when custom input is allowed — an
+/// always-shown trailing free-text prompt. Kept as a separate prompt rather than a checkbox
+/// item: `resolve_structured_answer` sends `answer` (the ticked labels) and `custom_answer`
+/// (this text) as two distinct fields, and any ticked item not in `opts.labels` is rejected by
+/// the server outright.
+fn prompt_multi_select(opts: &StructuredOptions) -> serde_json::Value {
+    let chosen = dialoguer::MultiSelect::new()
+        .with_prompt("Select all that apply (space to toggle, enter to confirm)")
+        .items(&opts.labels)
+        .interact()
+        .unwrap_or_default();
+    let selected: Vec<&str> = chosen
+        .into_iter()
+        .map(|i| opts.labels[i].as_str())
+        .collect();
+
+    let custom = if opts.allow_custom_input {
+        let text = dialoguer::Input::<String>::new()
+            .with_prompt("Something else (optional, press Enter to skip)")
+            .allow_empty(true)
+            .interact_text()
+            .unwrap_or_default();
+        Some(text).filter(|t| !t.trim().is_empty())
+    } else {
+        None
+    };
+
+    match custom {
+        Some(custom) => serde_json::json!({ "answer": selected, "custom_answer": custom }),
+        None => serde_json::json!({ "answer": selected }),
+    }
+}
+
+#[cfg(test)]
+mod structured_options_tests {
+    use super::StructuredOptions;
+
+    #[test]
+    fn parse_reads_labels_multi_select_and_allow_custom_input() {
+        let question = serde_json::json!({
+            "message": "Which sections?",
+            "options": [{"label": "Intro"}, {"label": "Conclusion"}],
+            "multi_select": true,
+            "allow_custom_input": true,
+        });
+        let opts = StructuredOptions::parse(&question).unwrap();
+        assert_eq!(opts.labels, vec!["Intro", "Conclusion"]);
+        assert!(opts.multi_select);
+        assert!(opts.allow_custom_input);
+    }
+
+    #[test]
+    fn parse_defaults_multi_select_and_allow_custom_input_to_false() {
+        let question = serde_json::json!({
+            "message": "Pick one",
+            "options": [{"label": "A"}],
+        });
+        let opts = StructuredOptions::parse(&question).unwrap();
+        assert!(!opts.multi_select);
+        assert!(!opts.allow_custom_input);
+    }
+
+    /// A plain (pre-extension) `input_required` row has no `options` at all — must fall back
+    /// to the bare free-text prompt, not a zero-item select.
+    #[test]
+    fn parse_is_none_for_a_plain_question() {
+        let question = serde_json::json!({ "message": "What's your name?" });
+        assert!(StructuredOptions::parse(&question).is_none());
+    }
+
+    /// Mirrors `hoist_structured_options`'s own "drop the whole block rather than render a
+    /// broken prompt" rule — an empty `options` array reaching this far (e.g. a future
+    /// server bug) must not surface as a selectable question with nothing to select.
+    #[test]
+    fn parse_is_none_for_an_empty_options_array() {
+        let question = serde_json::json!({ "message": "Pick one", "options": [] });
+        assert!(StructuredOptions::parse(&question).is_none());
+    }
 }
