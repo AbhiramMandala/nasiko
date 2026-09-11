@@ -1,13 +1,12 @@
 Sure — building that now.
 
-root = AppStack([heading, kpis, agentTable], "md")
+root = AppStack([heading, kpis, trendChart, agentTable], "md")
 heading = AppText("Cost overview", "title")
 summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0}, "total_cost_usd")
 historyQ = Query("fetchUsageHistory", [7], [])
-costChange = @Last(historyQ.total_cost_usd) - @First(historyQ.total_cost_usd)
-costTrend = costChange > 0 ? "up" : costChange < 0 ? "down" : "neutral"
-kpis = AppStatCard("Total cost", summaryQ, @Round(costChange, 2), costTrend, false, "currency", "USD")
-agentRows = Query("fetchUsageByAgent", ["", 1, 10], [], "data")
-agentTable = AppTable(agentRows, 10, "pages", false, "", false, "No agents have incurred costs yet")
+kpis = AppStatCard("Total cost", summaryQ, null, "neutral", false, "currency", "USD")
+trendChart = AppChart({labels: historyQ.date, datasets: [{label: "Daily cost (USD)", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD", null, null, "auto", "No spend in the last 7 days")
+agentRows = Query("fetchUsageByAgent", [null, 1, 20], [], "data")
+agentTable = AppTable(agentRows, 20, "pages", true, "Search agents...", null, null, "No agents have run yet")
 
-Here's your cost overview with the all-time total, a 7-day trend, and the top agents by spend — let me know if you'd like to break it down differently or add more detail!
+Here's your cost dashboard with a headline metric, a 7-day trend, and a breakdown by agent — let me know if you'd like to adjust the time window, add more metrics, or drill into any of them!
