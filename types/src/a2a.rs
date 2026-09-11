@@ -436,10 +436,22 @@ pub fn classify_sse_event(event: &serde_json::Value) -> Vec<SseEvent> {
     }
     // Flat A2A 0.3.x Task: no `task` wrapper at all — `result` itself IS the task
     // (`{"id":..., "kind": "task", "status": {...}}`), exactly what `a2a-lf` 0.3.0 and the
-    // python/langgraph SDKs emit for a non-streaming pause. Mirrors `classify_stream_disposition`'s
-    // `.or_else(|| result.get("task")).unwrap_or(result)` fallback — without it this shape produces
-    // zero events and a sub-agent's pause is silently handed back to the caller as a normal result.
-    if result.get("kind").and_then(|k| k.as_str()) == Some("task") {
+    // python/langgraph SDKs emit for a non-streaming pause. Without this the shape produces zero
+    // events and a sub-agent's pause is silently handed back to the caller as a normal result.
+    //
+    // `kind` is required on a `Task` by the 0.3 spec, but it is only a discriminator — an emitter
+    // that omits it still describes a pause, and `classify_stream_disposition`'s equivalent
+    // fallback (`.unwrap_or(result)`) has no discriminator at all, so gating solely on `kind`
+    // left the two classifiers disagreeing about the same bytes (found in review, probed: a
+    // `kind`-less flat task returned `Paused` there and `[]` here). An absent `kind` plus a
+    // `status.state` is therefore treated as a task too.
+    //
+    // Deliberately `kind.is_none()`, not "any kind that isn't task": a legacy kind-tagged
+    // `status-update` also carries `status.state` and must keep falling through to
+    // `classify_status` below, which additionally extracts `StatusData` from a
+    // `working`/unknown-state payload's data parts — something this arm drops.
+    let kind = result.get("kind").and_then(|k| k.as_str());
+    if kind == Some("task") || (kind.is_none() && result.pointer("/status/state").is_some()) {
         match task_state(result) {
             SseTaskState::Completed => {
                 out.push(SseEvent::Completed {
@@ -463,7 +475,7 @@ pub fn classify_sse_event(event: &serde_json::Value) -> Vec<SseEvent> {
         return out;
     }
     // Legacy kind-tagged shape.
-    match result.get("kind").and_then(|k| k.as_str()) {
+    match kind {
         Some("artifact-update") => collect_artifact_text(result, &mut out),
         Some("status-update") => classify_status(result, &mut out),
         _ => {}
@@ -1427,6 +1439,42 @@ mod sse_event_tests {
                 message: "Which repo?".into(),
                 metadata: serde_json::Value::Null,
             }]
+        );
+    }
+
+    /// Same flat Task, minus the `kind` discriminator the 0.3 spec calls for. Gating the arm on
+    /// `kind` alone left this returning `[]` while `classify_stream_disposition` called the very
+    /// same bytes `Paused` (found in review) — a sub-agent's pause handed back to the
+    /// orchestrating LLM as a successful tool result.
+    #[test]
+    fn flat_task_without_a_kind_discriminator_still_classifies_as_awaiting_human() {
+        let ev = json!({"result": {
+            "id": "t1", "contextId": "c1",
+            "status": {"state": "input-required",
+                       "message": {"role": "agent", "parts": [{"text": "Which repo?"}]}}
+        }});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::AwaitingHuman {
+                kind: AwaitingHumanKind::InputRequired,
+                message: "Which repo?".into(),
+                metadata: serde_json::Value::Null,
+            }]
+        );
+    }
+
+    /// The guard on the arm above: a legacy kind-tagged `status-update` also carries
+    /// `status.state`, so a gate of "anything with a state is a task" would capture it here and
+    /// drop the `StatusData` parts only `classify_status` extracts.
+    #[test]
+    fn a_working_status_update_is_not_captured_by_the_flat_task_arm() {
+        let ev = json!({"result": {"kind": "status-update", "status": {
+            "state": "working",
+            "message": {"parts": [{"data": {"type": "tool_call"}}]}
+        }}});
+        assert_eq!(
+            classify_sse_event(&ev),
+            vec![SseEvent::StatusData(json!({"type": "tool_call"}))]
         );
     }
 

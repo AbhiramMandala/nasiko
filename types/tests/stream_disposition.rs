@@ -172,3 +172,64 @@ fn task_wrapped_non_streaming_snapshot_with_completed_is_completed() {
         StreamDisposition::Completed
     );
 }
+
+// ─── The two classifiers must agree ────────────────────────────────────────
+
+/// `classify_stream_disposition` (lifecycle) and `classify_sse_event` (content) navigate the same
+/// wire shapes and are the two halves of pause detection: the first decides whether a relay loop
+/// stops, the second is what actually mints the `SseEvent::AwaitingHuman` a `hitl_requests` row is
+/// built from. A payload one calls a pause and the other calls nothing is the bug that has now
+/// been found twice — the `task`-wrapped dialect the first time, the flat `kind`-less Task the
+/// second — so this pins the agreement itself rather than either side's output.
+///
+/// Both halves matter. Drop the flat-task arm from `classify_sse_event` and the pause cases fail;
+/// widen it to swallow legacy `status-update` and the last case fails instead.
+#[test]
+fn both_classifiers_agree_on_every_pause_dialect() {
+    let paused = [
+        // statusUpdate-wrapped (streaming)
+        json!({"result": {"statusUpdate": {"status": {"state": "input-required"}}}}),
+        // task-wrapped (v1.0 non-streaming snapshot)
+        json!({"result": {"task": {"kind": "task", "status": {"state": "input-required"}}}}),
+        // flat A2A 0.3 Task, with its `kind` discriminator
+        json!({"result": {"id": "t1", "kind": "task",
+                          "status": {"state": "input-required"}}}),
+        // flat A2A 0.3 Task with NO `kind` — the divergence this test exists for
+        json!({"result": {"id": "t1", "status": {"state": "input-required"}}}),
+        // same, auth-required rather than input-required
+        json!({"result": {"id": "t1", "status": {"state": "auth-required"}}}),
+    ];
+
+    for payload in paused {
+        assert_eq!(
+            classify_stream_disposition(&payload.to_string()),
+            StreamDisposition::Paused,
+            "disposition must be Paused for {payload}"
+        );
+        let events = nasiko_types::a2a::classify_sse_event(&payload);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, nasiko_types::a2a::SseEvent::AwaitingHuman { .. })),
+            "classify_sse_event saw no pause in {payload} — got {events:?}"
+        );
+    }
+
+    // The other direction: a legacy `status-update` still carrying live progress must NOT be
+    // captured by the flat-task arm, or its `StatusData` parts are silently dropped.
+    let working = json!({"result": {"kind": "status-update", "status": {
+        "state": "working",
+        "message": {"parts": [{"data": {"type": "tool_call", "agent": "archive"}}]}
+    }}});
+    assert_eq!(
+        classify_stream_disposition(&working.to_string()),
+        StreamDisposition::Continue
+    );
+    let events = nasiko_types::a2a::classify_sse_event(&working);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, nasiko_types::a2a::SseEvent::StatusData(_))),
+        "a working status-update must still yield its data parts — got {events:?}"
+    );
+}
