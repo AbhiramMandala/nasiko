@@ -102,7 +102,12 @@ body {
    itself, so page components sit on the white surface directly. Desktop gets
    the floating white card in the @media block below. */
 @media (max-width: 1023.98px) {
-  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(div):not(dialog) {
+  /* Allowlisted for the same reason the desktop card rule below is: a denylist
+     hands `flex: 1` to anything a browser extension appends to <body>, and on
+     this side that is worse — the injected element does not just take a share
+     of the height, it is told to grow into it. */
+  body:has(> app-header) > [data-page],
+  body:has(> app-header) > main {
     background: var(--color-bg-surface);
     flex: 1;
   }
@@ -167,7 +172,11 @@ main.app-shell {
     margin-inline: auto;
   }
 
-  body > :not(app-header):not(app-loading-bar):not(main) {
+  /* This is the rule that actually did the damage. `flex: 1` on every body
+     child that was not the header, the loading bar or main meant an injected
+     `<qb-toolbar>` grew to an equal share alongside the content: 376px each
+     out of 763. Allowlisted like the two above. */
+  body > [data-page] {
     flex: 1;
     min-width: 0;
   }
@@ -189,9 +198,27 @@ main.app-shell {
   }
 
   /* Content card — the page component floats as the single white r8 card on
-     the ink shell (floating chrome like toasts, dialogs, and the kb palette
-     are plain divs / dedicated tags and are opted out). */
-  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(main):not(div):not(dialog),
+     the ink shell.
+
+     An allowlist, and it has to be. This was a denylist — every body child
+     that was not app-header, app-loading-bar, app-nav-search, app-toast,
+     main, div or dialog became a white card — which quietly assumed we know
+     everything that will ever be a child of <body>. We do not. A QuillBot
+     install appends `<qb-toolbar>` on focusing any text box; body is a
+     100dvh flex column, so the toolbar became a flex item, took a white card
+     of its own and halved the page: measured on /tokenops, the content card
+     went 763px -> 376px the moment the composer was clicked. Grammarly,
+     password managers and translation extensions all inject the same way.
+
+     The elements that should be cards are ours and there are two shapes of
+     them: the router's `main#outlet`, and a standalone document's page
+     element. `data-page` marks the second — ui-lint's `page-document-marks-
+     its-page` rule keeps every page document carrying it, so a new page
+     fails the gate rather than losing its card silently.
+
+     Floating chrome needs no exemption now, which also means weave-dock's
+     `display: contents` is no longer load-bearing for this. */
+  body:has(> app-header) > [data-page],
   body:has(> app-header) > main {
     background: var(--color-bg-surface);
     border: none;

@@ -34,6 +34,7 @@ import {
   editionOf,
   editionLayerOf,
   lintGlobs,
+  pageGlobs,
   privateElementNames,
   resolveMount,
   serviceBarrels,
@@ -116,6 +117,50 @@ function isComponentCss(rel) {
   return rel.startsWith('ui/common/design-system/') ||
          rel.startsWith('ui/common/features/') ||
          rel.startsWith('ui/common/pages/');
+}
+
+/** Elements that never have a closing tag, so they never open a level. */
+const VOID_ELEMENTS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img',
+  'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+
+/** Elements whose content is text, not markup — a `<` inside is not a tag. */
+const RAW_TEXT_ELEMENTS = new Set(['script', 'style']);
+
+/**
+ * The direct element children of `<body>`, as `{ tag, attrs, index }`.
+ *
+ * A real parser would be better and this file deliberately has no dependencies,
+ * so it counts depth over start and end tags instead. That is enough for what it
+ * reads: the page shells are hand-written, well-formed, and never build markup
+ * from a string. Comments are skipped and script/style bodies are jumped over,
+ * which are the only two places a stray `<` shows up in practice.
+ *
+ * @param {string} html
+ */
+function bodyChildren(html) {
+  const bodyTag = html.search(/<body\b/i);
+  if (bodyTag === -1) return [];
+  const start = html.indexOf('>', bodyTag) + 1;
+  const close = html.toLowerCase().indexOf('</body', start);
+  const body = html.slice(start, close === -1 ? html.length : close);
+  const out = [];
+  let depth = 0;
+  let skipTo = 0;
+  const token = /<!--[\s\S]*?-->|<(\/?)([a-zA-Z][\w-]*)([^>]*)>/g;
+  for (const m of body.matchAll(token)) {
+    if (m.index < skipTo || m[0].startsWith('<!--')) continue;
+    const [, closing, name, attrs] = m;
+    const tag = name.toLowerCase();
+    if (closing) { depth = Math.max(0, depth - 1); continue; }
+    if (depth === 0) out.push({ tag, attrs, index: start + m.index });
+    if (VOID_ELEMENTS.has(tag) || attrs.trimEnd().endsWith('/')) continue;
+    if (RAW_TEXT_ELEMENTS.has(tag)) {
+      const end = body.toLowerCase().indexOf(`</${tag}`, m.index);
+      if (end !== -1) { skipTo = end; continue; }
+    }
+    depth += 1;
+  }
+  return out;
 }
 
 
@@ -543,6 +588,34 @@ const rules = [
       return out;
     },
   },
+
+  {
+    id: 'page-document-marks-its-page',
+    enforce: 'zero',
+    pages: true,
+    why: 'global.css gives the page its white card by selecting `body:has(> app-header) > [data-page]`. That used ' +
+         'to be a denylist — every body child that was not the header, the loading bar, a div or a dialog — which ' +
+         'assumed we know everything that will ever be a child of <body>. We do not: a QuillBot install appends ' +
+         '<qb-toolbar> on focusing any text box, body is a 100dvh flex column, and the toolbar took a card and half ' +
+         'the height (the /tokenops card went 763px -> 376px). Grammarly, password managers and translation ' +
+         'extensions inject the same way. An allowlist fixes that and moves the cost: a page document that forgets ' +
+         'the mark loses its card silently, and nothing catches it until someone opens the page. This catches it.',
+    check({ rel, source }) {
+      const children = bodyChildren(source);
+      // No header means no shell: login and the standalone tenant pages paint
+      // their own background and were never cards.
+      if (!children.some((c) => c.tag === 'app-header')) return [];
+      if (children.some((c) => c.tag === 'main' || /\sdata-page(?=[\s=>/]|$)/.test(c.attrs))) return [];
+      const candidate = children.find((c) => c.tag.endsWith('-page'));
+      return [{
+        file: rel,
+        line: candidate ? lineOf(source, candidate.index) : 1,
+        message: candidate
+          ? `<${candidate.tag}> is the page element but has no data-page`
+          : 'no <main> and no body child marked data-page — this page gets no card',
+      }];
+    },
+  },
 ];
 
 // Declared per edition in edition.json. Empty where no edition declares one,
@@ -579,7 +652,28 @@ for (const pattern of SEARCH) {
     const source = readFileSync(resolve(REPO, rel), 'utf8');
     const isJs = /\.(js|mjs)$/.test(rel);
     for (const rule of rules) {
+      if (rule.pages) continue;
       for (const f of rule.check({ rel, source, isJs })) findings.get(rule.id).push(f);
+    }
+  }
+}
+
+// Page shells get their own pass. `sources.pages` is a wider set than
+// `sources.lint` — an edition can hold page HTML in a directory that was never
+// in the lint set — and feeding that wider set to every rule would surface
+// findings in markup nobody has looked at. So the pass is opt-in per rule.
+const pageRules = rules.filter((r) => r.pages);
+if (pageRules.length) {
+  const seen = new Set();
+  for (const pattern of pageGlobs()) {
+    for await (const entry of glob(pattern, { cwd: REPO })) {
+      const rel = entry.replace(/\\/g, '/');
+      if (SKIP(rel) || seen.has(rel)) continue;
+      seen.add(rel);
+      const source = readFileSync(resolve(REPO, rel), 'utf8');
+      for (const rule of pageRules) {
+        for (const f of rule.check({ rel, source, isJs: false })) findings.get(rule.id).push(f);
+      }
     }
   }
 }
