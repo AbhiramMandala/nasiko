@@ -18,7 +18,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::store::{HitlError, HitlRequestRow};
-use crate::types::{HitlRequest, HitlStatus, ResumeStatus};
+use crate::types::{
+    AUTH_OUTCOME_CONFIRMED, DECISION_APPROVE, HitlRequest, HitlStatus, ResumeStatus,
+};
 
 type Result<T> = std::result::Result<T, HitlError>;
 
@@ -375,7 +377,8 @@ pub async fn resolve_pending_auth_required_for_connector(
     owner_user_id: Uuid,
     connector_id: Uuid,
 ) -> Result<Vec<HitlRequest>> {
-    let human_response = serde_json::json!({"decision": "approve", "auth_outcome": "confirmed"});
+    let human_response =
+        serde_json::json!({"decision": DECISION_APPROVE, "auth_outcome": AUTH_OUTCOME_CONFIRMED});
     let rows = sqlx::query_as::<_, HitlRequestRow>(
         r#"
         UPDATE hitl_requests
@@ -430,7 +433,7 @@ async fn resolve_linked_direct_chat_mirror(
         linked.id,
         ResolveDecision::Approve,
         resolved_by,
-        serde_json::json!({"auth_outcome": "confirmed"}),
+        serde_json::json!({"auth_outcome": AUTH_OUTCOME_CONFIRMED}),
     )
     .await?;
     Ok(())

@@ -24,8 +24,9 @@ use uuid::Uuid;
 
 use nasiko_hitl::{
     AUTH_ACTION_CONFIRM, AUTH_ACTION_START, AUTH_OUTCOME_CONFIRMED, AUTH_OUTCOME_DENIED,
-    GRANT_SCOPE_ONCE, GRANT_SCOPE_SESSION, HitlAction, HitlIdentity, HitlKind, HitlRequest,
-    HitlStatus, ResolveDecision, ResolveOutcome, ResumeStatus, authorize_hitl_action,
+    DECISION_APPROVE, DECISION_REJECT, GRANT_SCOPE_ONCE, GRANT_SCOPE_SESSION, HitlAction,
+    HitlIdentity, HitlKind, HitlRequest, HitlStatus, ResolveDecision, ResolveOutcome, ResumeStatus,
+    authorize_hitl_action,
 };
 
 use crate::auth::Claims;
@@ -256,7 +257,7 @@ fn allowed_actions(kind: HitlKind) -> &'static [&'static str] {
     match kind {
         HitlKind::InputRequired => &["answer", "cancel"],
         HitlKind::AuthRequired => &[AUTH_ACTION_START, AUTH_ACTION_CONFIRM, "cancel"],
-        HitlKind::ToolApproval => &["approve", "reject", "cancel"],
+        HitlKind::ToolApproval => &[DECISION_APPROVE, DECISION_REJECT, "cancel"],
     }
 }
 
