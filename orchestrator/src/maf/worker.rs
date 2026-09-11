@@ -505,9 +505,9 @@ async fn finish_job(
         Err(e) => {
             // A resumed job's failure is never retried by restarting from step 0 — that would
             // silently redo already-succeeded steps' agent calls and discard the human's answer.
-            // Terminal failure here, not a re-enqueue, is the safe default (`docs/
-            // HITL_IMPLEMENTATION_PLAN.md` doesn't specify resume-retry semantics; hardening that
-            // is a Phase 9-shaped follow-up, not required for Phase 8).
+            // Terminal failure here, not a re-enqueue, is the safe default (resume-retry
+            // semantics aren't specified yet; hardening that is a follow-up, not required
+            // for this phase).
             if is_resume || new_attempt >= max_attempts {
                 mark_failed(db, execution_id, &e).await;
                 ack(conn, msg_id).await;

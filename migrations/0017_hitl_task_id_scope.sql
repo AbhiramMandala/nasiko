@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Scope the HITL pending-pause uniqueness/idempotency key by owner + agent, not by task_id
--- alone (security review, docs/HITL_PR342_CODE_REVIEW_FINDINGS.md).
+-- alone (security review).
 --
 -- `hitl_requests.task_id` is populated from the string the CALLED AGENT returns in its paused
 -- A2A response (`paused_task_id`), not a Nasiko-minted id — see `oss/server/src/router/

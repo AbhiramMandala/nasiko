@@ -239,7 +239,7 @@ async fn test_update_maf_name_via_put() {
     server.cleanup().await;
 }
 
-/// Regression for `docs/HITL_PR342_CODE_REVIEW_FINDINGS.md` #2: `update_maf` must persist each
+/// Regression: `update_maf` must persist each
 /// step's array POSITION as `step_index`, never the caller-supplied value verbatim — otherwise a
 /// client that sends reordered/non-sequential `step_index`s desyncs the stored steps from their
 /// `Vec` position, and the MAF executor's HITL resume path (`run_maf_from`) indexes that `Vec` by

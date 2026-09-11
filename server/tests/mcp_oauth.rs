@@ -389,8 +389,7 @@ async fn callback_round_trips_through_token_exchange() {
     server.cleanup().await;
 }
 
-/// **Definition of done for the OAuth auto-resolve gap** (see
-/// `docs/MCP_HITL_MERGE_HANDOFF.md` §6): a pending `auth_required` row for
+/// **Definition of done for the OAuth auto-resolve gap**: a pending `auth_required` row for
 /// this exact `(owner_user_id, connector_id)` must resolve itself the moment
 /// the real OAuth callback confirms the new credential works — no call to
 /// `POST /api/hitl/{id}/resolve` involved — and MCP's own resume dispatcher

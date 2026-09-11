@@ -224,8 +224,7 @@ pub async fn get_by_id(db: &PgPool, id: Uuid) -> Result<Option<HitlRequest>> {
 /// dispatcher sends a stateless, task-blind nudge that can never reach the
 /// *specific* chat task/MAF step/orchestrator turn a human is watching (found
 /// live: task-aware resume only exists on the `direct_chat`/`agent_proxy`/
-/// `maf`/`orchestrator` side — see docs/MCP_HITL_MERGE_HANDOFF.md's
-/// dual-origin writeup). The caller
+/// `maf`/`orchestrator` side). The caller
 /// (`router/hitl.rs::resolve`) uses this to auto-resolve the mirrored row in
 /// lockstep with the one the human actually clicked, so a single approval
 /// action both grants the real permission (this row) and resumes the

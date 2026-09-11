@@ -1,7 +1,7 @@
 //! End-to-end tests for the HITL resume dispatcher (`oss/server/src/hitl/mod.rs`) and the
 //! `POST /api/hitl/{id}/resolve` validation gate (`oss/server/src/router/hitl.rs`).
 //!
-//! Regression coverage for `docs/HITL_PR342_CODE_REVIEW_FINDINGS.md`:
+//! Regression coverage:
 //!   1. The resume dispatcher must route its outbound agent call through `FlowGuard`, the same
 //!      cascade-limit chokepoint every other inter-agent call goes through.
 //!   2. `POST /api/hitl/{id}/resolve` must reject an empty-string `answer` for `input_required`,

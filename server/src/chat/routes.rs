@@ -988,8 +988,7 @@ async fn send_message(
     // Best-effort AND time-bounded - a failure or a slow/not-yet-ready workspace
     // reader (the first turn after install can wait on a pod pull) must never
     // stall the user seeing their completed answer. On timeout the message is
-    // returned without chips; the files are still on disk for a later turn. See
-    // docs/WORKSPACE_FILE_ACCESS_PLAN.md.
+    // returned without chips; the files are still on disk for a later turn.
     if msg.role == "assistant" {
         let capture = tokio::time::timeout(
             CAPTURE_TIMEOUT,
@@ -1078,8 +1077,8 @@ fn reply_references_file(reply: &str, name: &str) -> bool {
 ///
 /// This is a download **convenience, not a privacy boundary**: on a shared
 /// container the agent can already read (and list on request) every file in
-/// `/workspace`, so real per-user isolation needs a per-session container (see
-/// docs/WORKSPACE_FILE_ACCESS_PLAN.md). Downloads are still ACL'd to the session
+/// `/workspace`, so real per-user isolation needs a per-session container.
+/// Downloads are still ACL'd to the session
 /// owner. Bytes stay in the PVC (`storage_uri` =
 /// `workspace://<owner>/<agent>/<relpath>`); `download_file` streams them,
 /// behind a contract Phase 2 can re-back with object storage unchanged.
