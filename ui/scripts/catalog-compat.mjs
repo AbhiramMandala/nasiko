@@ -32,6 +32,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -155,6 +156,60 @@ export function classify(before, after) {
   return { breaking, additive };
 }
 
+/**
+ * The version a catalog body hashes to — the same computation gen-dsl-catalog
+ * does, so the two can be compared.
+ *
+ * @param {{components: object, routes: string[]}} catalog
+ */
+function hashOf(catalog) {
+  return createHash('sha256')
+    .update(JSON.stringify({ components: catalog.components, routes: catalog.routes }))
+    .digest('hex')
+    .slice(0, 12);
+}
+
+/**
+ * Refuse a ledger whose stored version does not hash its own stored body.
+ *
+ * The ledger's whole job is to answer "what did we last accept". It can only
+ * do that if its label and its contents agree, and nothing checked that they
+ * did. They came apart once already: resolving the ds-parity merge conflict
+ * on this file kept a body recording `app-chart.format-y2` as accepting
+ * `duration` under a version whose catalog had dropped it. It stayed
+ * invisible for a week because the comparison below short-circuits on equal
+ * versions — an unrelated change moved the version, and the stale body then
+ * reported a breaking change that had never happened.
+ *
+ * A wrong answer from a ratchet is worse than no ratchet: this one would have
+ * waved through a real narrowing, or blocked a safe change until someone
+ * accepted a diff they did not understand. So it stops here instead.
+ *
+ * @param {object} baseline
+ */
+function verifyLedger(baseline) {
+  const actual = hashOf(baseline);
+  if (actual === baseline.catalogVersion) return;
+  console.error(`
+catalog-compat: the ledger does not match its own version.
+
+  dsl-catalog.compat.json says       ${baseline.catalogVersion}
+  but its recorded components hash   ${actual}
+
+The ledger records what was last accepted, and it cannot do that while its
+label and its contents disagree — every comparison against it is answering
+about a catalog that never existed. This is what a merge conflict resolved in
+favour of one side's body and the other side's version string looks like.
+
+Fix it by re-accepting from a catalog you trust:
+
+    node ui/scripts/gen-dsl-catalog.mjs && just catalog-accept
+
+and check the accepted diff, because it will include whatever the stale body
+was hiding.`);
+  process.exit(1);
+}
+
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedDirectly) {
   const current = JSON.parse(readFileSync(CURRENT, 'utf8'));
@@ -166,6 +221,7 @@ if (invokedDirectly) {
   }
 
   const baseline = JSON.parse(readFileSync(BASELINE, 'utf8'));
+  verifyLedger(baseline);
 
   if (process.argv.includes('--accept')) {
     const { breaking, additive } = classify(baseline, current);
