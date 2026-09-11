@@ -13,29 +13,58 @@ use nasiko_orchestrator::maf::{
     decomposer::DecomposerClient,
     llm::LlmClient,
     planner::{self, AgentInfo as PlannerAgentInfo},
-    types::{MafDefinition, MafStep},
+    types::{MafDefinition, MafStep, StepResult},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/maf/workflows", get(list_mafs).post(create_maf))
+/// MAF routes, split into two rate-limit classes because their costs differ by
+/// orders of magnitude — see the limiter definitions in `lib.rs`.
+///
+/// Both limiters are per-caller (`limit_by_user`), so one tenant cannot starve
+/// another. Layering them here rather than on the whole `protected` router
+/// keeps MAF's budget separate from unrelated endpoints.
+pub fn router(
+    run_limiter: crate::rate_limit::RateLimiter,
+    read_limiter: crate::rate_limit::RateLimiter,
+) -> Router<AppState> {
+    // Expensive: each of these fans out to multiple LLM calls (and, for a run,
+    // N agent HTTP calls on top). Left unlimited, one client could enqueue
+    // workflow runs in a loop and bill the deployment for all of it.
+    let expensive = Router::new()
         .route(
             "/maf/workflow/from-instruction",
             post(create_maf_from_instruction),
         )
         .route("/maf/generate", post(generate_maf))
+        .route("/maf/workflow/{id}/run", post(run_workflow))
+        .layer(axum::middleware::from_fn_with_state(
+            run_limiter,
+            crate::rate_limit::limit_by_user,
+        ));
+
+    // Cheap single-row reads plus CRUD. The budget here is deliberately loose:
+    // `/maf/execution/{id}` and `/maf/execution/{id}/usage` are both polled by
+    // the UI while a workflow runs, so a tight window would break normal use
+    // rather than abuse.
+    let standard = Router::new()
+        .route("/maf/workflows", get(list_mafs).post(create_maf))
         // Static segment "result" wins over {id} in matchit so this route is unambiguous
         .route("/maf/workflow/result/{exec_id}", get(get_result))
         .route(
             "/maf/workflow/{id}",
             get(get_maf).put(update_maf).delete(delete_maf),
         )
-        .route("/maf/workflow/{id}/run", post(run_workflow))
         .route("/maf/workflow/{id}/executions", get(list_executions))
         .route("/maf/executions", get(list_all_executions))
         .route("/maf/execution/{id}", get(get_execution))
+        .route("/maf/execution/{id}/usage", get(get_execution_usage))
+        .layer(axum::middleware::from_fn_with_state(
+            read_limiter,
+            crate::rate_limit::limit_by_user,
+        ));
+
+    expensive.merge(standard)
 }
 
 // ─── Shared helpers ────────────────────────────────────────────────────────
@@ -419,12 +448,17 @@ async fn create_maf_from_steps(
         if step.task_description.trim().is_empty() {
             return bad_request(&format!("step {idx}: task_description is required"));
         }
+        // The task description is user-authored prose, so it stays out of
+        // `info!` — these lines ship to Loki, where anyone with dashboard
+        // access can read them. Length is the part that's useful for
+        // diagnosing a routing miss; the text itself is available at `debug`.
         tracing::info!(
             step = idx,
-            task_description = %step.task_description,
+            task_description_len = step.task_description.len(),
             has_explicit_agent = step.agent_id.is_some(),
             "maf create: resolving step"
         );
+        tracing::debug!(step = idx, task_description = %step.task_description);
         let step_start = std::time::Instant::now();
 
         let (agent_id, agent_name, agent_endpoint) = if let Some(aid) = step.agent_id {
@@ -615,12 +649,22 @@ async fn create_maf_from_instruction(
         state.config.decomposer_api_key.clone(),
     );
 
-    tracing::info!(instruction = %req.instruction, "maf create: decomposing instruction");
+    // Same reasoning as the per-step log in `create_maf_from_steps`: the raw
+    // instruction is user content and does not belong in `info!`.
+    tracing::info!(
+        instruction_len = req.instruction.len(),
+        "maf create: decomposing instruction"
+    );
+    tracing::debug!(instruction = %req.instruction, "maf create: instruction text");
     let decompose_start = std::time::Instant::now();
     let sub_queries = match decomposer.decompose(&req.instruction).await {
         Ok(qs) => qs,
         Err(e) => {
-            tracing::info!(
+            // A failed dependency is a warning, not routine info. The error
+            // carries the decomposer's response body, which can echo the
+            // submitted query back — so it stays at `warn` where it is
+            // actionable, rather than being emitted on every request.
+            tracing::warn!(
                 elapsed_ms = decompose_start.elapsed().as_millis() as u64,
                 error = %e,
                 "maf create: decomposer failed"
@@ -630,9 +674,10 @@ async fn create_maf_from_instruction(
     };
     tracing::info!(
         elapsed_ms = decompose_start.elapsed().as_millis() as u64,
-        sub_queries = ?sub_queries,
+        sub_query_count = sub_queries.len(),
         "maf create: decomposer returned sub-queries"
     );
+    tracing::debug!(sub_queries = ?sub_queries, "maf create: sub-query text");
 
     let steps = sub_queries
         .into_iter()
@@ -907,6 +952,41 @@ async fn run_workflow(
         Err(e) => return internal_err(e),
     };
 
+    // Re-check agent access at run time, not just at create/update time.
+    //
+    // `create_maf`/`update_maf` already gate every step's agent, but those
+    // checks are only true as of the moment the workflow was saved. A grant
+    // can be revoked, an agent's `is_public` flag flipped off, or the agent
+    // soft-deleted at any point afterwards — and the saved workflow would keep
+    // invoking it, because the run path never looked again. That turns a
+    // stored workflow into a durable capability that outlives the permission
+    // it was built on.
+    //
+    // Checked here rather than in the worker so the caller gets a synchronous
+    // 403 instead of an execution row that fails asynchronously. Agent ids are
+    // de-duplicated: a workflow may use the same agent in several steps, and
+    // each check is a DB round trip.
+    match serde_json::from_str::<MafDefinition>(&maf.maf_json) {
+        Ok(def) => {
+            let mut checked: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+            for step in &def.steps {
+                if !checked.insert(step.agent_id) {
+                    continue;
+                }
+                if !crate::acl::can_access_agent(&state, &claims, step.agent_id).await {
+                    return forbidden(&format!(
+                        "step {}: agent '{}' is no longer accessible to you",
+                        step.step_index, step.agent_name
+                    ));
+                }
+            }
+        }
+        // A workflow row whose JSON no longer parses can't be run at all, and
+        // failing closed here is what keeps the ACL check from being
+        // bypassable by storing malformed JSON.
+        Err(e) => return bad_request(&format!("workflow definition is invalid: {e}")),
+    }
+
     let max_attempts: i32 = std::env::var("MAF_MAX_ATTEMPTS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -1127,6 +1207,252 @@ async fn get_execution(
         Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),
     }
+}
+
+// ─── 10. GET /maf/execution/{id}/usage ────────────────────────────────────
+//
+// Agent-side token and cost figures for one execution.
+//
+// These are deliberately NOT gathered while the workflow runs — see
+// `nasiko_orchestrator::maf::executor::run_maf`. Agents flush their
+// `gen_ai.usage` spans on a batch timer (~5s), so reading them inline meant
+// every step sat idle for up to 10s producing a number that nothing in the
+// run consumes. Instead each step records the trace id it ran under, the
+// trace-usage materializer folds those spans into `trace_usage`, and this
+// endpoint joins the two back together on demand.
+//
+// The consequence a caller must handle: usage lands *after* the execution
+// does. `complete` reports whether there is anything left to wait for, so the
+// UI can poll this endpoint on its own schedule and fill the numbers in when
+// they arrive.
+
+/// One step's agent usage, summed over every agent that reported spans under
+/// that step's trace.
+///
+/// A MAF step is a single agent call, but that agent may itself fan out to
+/// sub-agents on the same trace, and `trace_usage` stores one row per
+/// `(trace_id, agent_name)`. Summing is what makes the figure the *step's*
+/// true cost rather than just the entry agent's.
+#[derive(sqlx::FromRow)]
+struct TraceUsageRollup {
+    trace_id: String,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+    cost_usd: f64,
+    /// Only set when every agent on the trace reported the same model —
+    /// otherwise there is no single honest answer, so it stays null rather
+    /// than arbitrarily picking one.
+    model: Option<String>,
+}
+
+#[derive(Serialize)]
+struct StepUsage {
+    step_index: i32,
+    agent_name: String,
+    /// Null for a step that never got as far as its agent call.
+    trace_id: Option<String>,
+    /// False when this step's spans have not been materialized yet. Every
+    /// figure below is zero in that case — a zero on an unresolved step means
+    /// "not known yet", NOT "cost nothing". Callers must not sum across
+    /// unresolved steps and present the result as a total.
+    resolved: bool,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+    model: Option<String>,
+    cost_usd: f64,
+    /// MAF's own planning / placeholder-fill / extraction tokens for this
+    /// step. Unlike the agent figures these *are* metered inline and stored on
+    /// the execution, so they are correct the moment the step finishes.
+    maf_tokens: i64,
+    latency_ms: i64,
+}
+
+#[derive(Serialize)]
+struct UsageTotals {
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+    /// input + output across resolved steps only.
+    agent_tokens: i64,
+    /// MAF's own reasoning tokens across all steps, plus planning and final
+    /// synthesis — i.e. `maf_executions.tokens_used`.
+    maf_tokens: i64,
+    cost_usd: f64,
+}
+
+#[derive(Serialize)]
+struct ExecutionUsageResponse {
+    execution_id: Uuid,
+    /// The execution's own status, so a caller polling only this endpoint can
+    /// tell a still-running workflow from a finished one.
+    status: String,
+    /// Nothing further to wait for: either every step resolved, or the
+    /// execution finished long enough ago that anything still missing is not
+    /// coming (an agent that made no LLM calls at all never produces a
+    /// `trace_usage` row, so this must be bounded by time, not just by count).
+    complete: bool,
+    /// False when the trace-usage materializer isn't running on this
+    /// deployment — either no observability backend is configured
+    /// (`TEMPO_URL` unset) or the sync is switched off
+    /// (`TRACE_USAGE_SYNC_SECS=0`). Agent usage never arrives in that case and
+    /// every step stays unresolved forever, so this distinguishes "this
+    /// deployment doesn't collect it" from "not ready yet" — without it a
+    /// polling client could not tell the two apart.
+    usage_available: bool,
+    unresolved_steps: usize,
+    steps: Vec<StepUsage>,
+    totals: UsageTotals,
+}
+
+async fn get_execution_usage(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    claims: Claims,
+) -> impl IntoResponse {
+    let user_id = match parse_user_id(&claims) {
+        Some(u) => u,
+        None => return unauthorized(),
+    };
+
+    let row = match fetch_exec(&state.db, id).await {
+        Ok(Some(row)) if row.user_id == user_id => row,
+        Ok(Some(_)) => return forbidden("not owned by caller"),
+        Ok(None) => return not_found("execution"),
+        Err(e) => return internal_err(e),
+    };
+
+    let step_results: Vec<StepResult> = row
+        .step_results
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+
+    // One batched lookup for every step's trace, rather than a query per step.
+    let trace_ids: Vec<String> = step_results
+        .iter()
+        .filter_map(|s| s.trace_id.clone())
+        .collect();
+
+    let rollups: Vec<TraceUsageRollup> = if trace_ids.is_empty() {
+        Vec::new()
+    } else {
+        match sqlx::query_as::<_, TraceUsageRollup>(
+            r#"SELECT trace_id,
+                      COALESCE(SUM(input_tokens), 0)::BIGINT          AS input_tokens,
+                      COALESCE(SUM(output_tokens), 0)::BIGINT         AS output_tokens,
+                      COALESCE(SUM(cache_read_tokens), 0)::BIGINT     AS cache_read_tokens,
+                      COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
+                      COALESCE(SUM(cost_usd), 0)::DOUBLE PRECISION    AS cost_usd,
+                      CASE WHEN COUNT(DISTINCT model) = 1 THEN MIN(model) END AS model
+               FROM trace_usage
+               WHERE trace_id = ANY($1)
+               GROUP BY trace_id"#,
+        )
+        .bind(&trace_ids)
+        .fetch_all(&state.db)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => return internal_err(e),
+        }
+    };
+
+    let by_trace: std::collections::HashMap<&str, &TraceUsageRollup> =
+        rollups.iter().map(|r| (r.trace_id.as_str(), r)).collect();
+
+    let mut totals = UsageTotals {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        agent_tokens: 0,
+        maf_tokens: row.tokens_used,
+        cost_usd: 0.0,
+    };
+
+    let steps: Vec<StepUsage> = step_results
+        .iter()
+        .map(|s| {
+            let usage = s.trace_id.as_deref().and_then(|t| by_trace.get(t).copied());
+            match usage {
+                Some(u) => {
+                    totals.input_tokens += u.input_tokens;
+                    totals.output_tokens += u.output_tokens;
+                    totals.cache_read_tokens += u.cache_read_tokens;
+                    totals.cache_creation_tokens += u.cache_creation_tokens;
+                    totals.cost_usd += u.cost_usd;
+                    StepUsage {
+                        step_index: s.step_index,
+                        agent_name: s.agent_name.clone(),
+                        trace_id: s.trace_id.clone(),
+                        resolved: true,
+                        input_tokens: u.input_tokens,
+                        output_tokens: u.output_tokens,
+                        cache_read_tokens: u.cache_read_tokens,
+                        cache_creation_tokens: u.cache_creation_tokens,
+                        model: u.model.clone(),
+                        cost_usd: u.cost_usd,
+                        maf_tokens: s.tokens_used,
+                        latency_ms: s.latency_ms,
+                    }
+                }
+                None => StepUsage {
+                    step_index: s.step_index,
+                    agent_name: s.agent_name.clone(),
+                    trace_id: s.trace_id.clone(),
+                    resolved: false,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    model: None,
+                    cost_usd: 0.0,
+                    maf_tokens: s.tokens_used,
+                    latency_ms: s.latency_ms,
+                },
+            }
+        })
+        .collect();
+
+    totals.agent_tokens = totals.input_tokens + totals.output_tokens;
+
+    let unresolved_steps = steps.iter().filter(|s| !s.resolved).count();
+    // Must mirror the condition the materializer is actually spawned under
+    // (`state.rs`) — gating on the interval alone would report usage as
+    // "coming" on a deployment with no observability backend at all.
+    let usage_available =
+        state.config.observability_enabled && state.config.trace_usage_sync_secs > 0;
+    let terminal = matches!(row.status.as_str(), "success" | "failed");
+
+    // Two full materializer passes after the run ended is the point past
+    // which anything still missing isn't arriving — most often because the
+    // step's agent made no LLM calls, which produces no `trace_usage` row at
+    // all and would otherwise keep a polling client going forever.
+    let grace = chrono::Duration::seconds((state.config.trace_usage_sync_secs as i64) * 2);
+    let settled = row
+        .completed_at
+        .is_some_and(|finished| Utc::now() - finished > grace);
+
+    let complete = !usage_available || (terminal && (unresolved_steps == 0 || settled));
+
+    ok_json(
+        StatusCode::OK,
+        ExecutionUsageResponse {
+            execution_id: row.id,
+            status: row.status,
+            complete,
+            usage_available,
+            unresolved_steps,
+            steps,
+            totals,
+        },
+        "Execution usage retrieved successfully",
+    )
 }
 
 // ─── POST /maf/generate ───────────────────────────────────────────────────

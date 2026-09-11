@@ -160,6 +160,10 @@ where
             state.db.clone(),
             state.redis.clone(),
             state.http_client.clone(),
+            // The same guard the A2A dispatch and agent-proxy paths use, so a
+            // MAF step's agent call is bounded by exactly the cascade limits
+            // every other inter-agent call already is.
+            std::sync::Arc::new(state.flow_guard.clone()),
             llm_config,
         );
     } else {
@@ -243,6 +247,20 @@ where
     // the observability router (session/trace/span reads are cheap single
     // lookups and shouldn't share it).
     let finops_limiter = RateLimiter::new(20, Duration::from_secs(60));
+    // Starting a MAF run is the single most expensive authenticated action in
+    // the product: the executor makes 4 LLM calls minimum (plan, per-step
+    // placeholder fill, per-step extraction, final synthesis) plus one agent
+    // HTTP call per step, and each of those agents makes its own LLM calls.
+    // Nothing bounded it, so a client could enqueue runs in a loop and bill
+    // the deployment for the lot. `/maf/generate` and
+    // `/maf/workflow/from-instruction` share the budget: both are LLM-backed
+    // and neither is something a human does at speed.
+    let maf_run_limiter = RateLimiter::new(10, Duration::from_secs(60));
+    // MAF's read/CRUD surface. Loose on purpose — the UI polls
+    // `/maf/execution/{id}` and `/maf/execution/{id}/usage` every couple of
+    // seconds while a workflow runs, so this has to allow steady polling and
+    // only bounds the pathological case.
+    let maf_read_limiter = RateLimiter::new(120, Duration::from_secs(60));
 
     // Public A2A registry (agent discovery) — see registry_a2a.rs for why it
     // is unauthenticated; the global fixed window bounds enumeration abuse.
@@ -265,7 +283,7 @@ where
         .merge(build_routes)
         .merge(degradable_routes)
         .merge(chat::router())
-        .merge(maf::router())
+        .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
         .merge(llm_configs::router())
         .merge(settings::router())
