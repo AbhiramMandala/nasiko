@@ -324,6 +324,13 @@ pub struct DeploymentSpec {
     /// `writable` subdirectory path (`{owner_id}/{container_id}`) — see
     /// `writable`'s doc comment. Not read at all when `writable` is `false`.
     pub owner_id: uuid::Uuid,
+    /// Force a fresh registry pull even when the daemon already has an image
+    /// with this exact ref cached locally — the difference between "reuse
+    /// what's cached" and "get whatever the tag currently points to right
+    /// now" for a mutable tag like `:latest`. Every existing deploy path
+    /// defaults this to `false` (unchanged behavior: reuse the local cache).
+    /// `DockerRuntime` reads this; `KubeRuntime` does not use it yet.
+    pub force_pull: bool,
 }
 
 /// Validates a `--writable-path` mount target. Both backends consume the path
@@ -406,8 +413,8 @@ exec cat \"$t\"";
 /// on container (re)creation for Docker and on every pod start for Kubernetes.
 ///
 /// Per-user isolation is no longer a filesystem concern here: the server
-/// captures each turn's writes onto the assistant message, session-scoped, so
-/// there is no root-owned `u/` parent to
+/// captures each turn's writes onto the assistant message, session-scoped (see
+/// docs/WORKSPACE_FILE_ACCESS_PLAN.md), so there is no root-owned `u/` parent to
 /// build.
 ///
 /// Shared verbatim by `DockerRuntime`'s init helper and `KubeRuntime`'s writable

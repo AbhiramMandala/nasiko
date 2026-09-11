@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bollard::Docker;
+use bollard::auth::DockerCredentials;
 use bollard::container::LogsOptions;
 use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, ListContainersOptions, LogOutput,
@@ -57,6 +58,15 @@ pub struct DockerRuntimeConfig {
     /// When set, images that don't already include a registry host are pulled from here first.
     /// Default: `None` (use Docker's local cache / Docker Hub).
     pub registry_host: Option<String>,
+    /// Username for authenticating pulls of a private image (e.g. a private
+    /// Docker Hub repo). `None` (the default) means every pull is anonymous —
+    /// unchanged behavior for public images. Only meaningful together with
+    /// `registry_password`; bollard needs both or neither.
+    pub registry_username: Option<String>,
+    /// Password or access token paired with `registry_username`. Read once at
+    /// startup from server config — never logged, never echoed back in any
+    /// API response.
+    pub registry_password: Option<String>,
     /// Name of the single named Docker volume every `--writable` agent shares
     /// (each mounted at a different `volume-subpath`, keyed by `container_id` —
     /// see [`DeploymentSpec::writable`](crate::types::DeploymentSpec::writable)).
@@ -79,6 +89,8 @@ impl Default for DockerRuntimeConfig {
             operation_timeout: Duration::from_secs(30),
             build_timeout: Duration::from_secs(30 * 60),
             registry_host: None,
+            registry_username: None,
+            registry_password: None,
             agent_memory_volume: "nasiko-agent-memory".to_owned(),
             agent_memory_init_image: "alpine:3.21".to_owned(),
         }
@@ -154,6 +166,19 @@ impl DockerRuntime {
     /// Deterministic container name for an agent: `nasiko-agent-{container_id}`.
     fn container_name(id: &ContainerId) -> String {
         format!("nasiko-agent-{}", id.as_str())
+    }
+
+    /// Build the registry credentials for image pulls from config, when both
+    /// halves are set. `None` (either field unset) means anonymous pulls —
+    /// unchanged behavior for public images.
+    fn registry_credentials(&self) -> Option<DockerCredentials> {
+        let username = self.config.registry_username.clone()?;
+        let password = self.config.registry_password.clone()?;
+        Some(DockerCredentials {
+            username: Some(username),
+            password: Some(password),
+            ..Default::default()
+        })
     }
 
     /// Extract the agent ID from a container name, stripping the leading `/` that
@@ -670,13 +695,22 @@ async fn create_and_start(
     network: Option<&str>,
     timeout: Duration,
     registry_host: Option<&str>,
+    registry_credentials: Option<&DockerCredentials>,
     image_source: Option<&dyn ImageSource>,
     agent_memory_volume: &str,
     agent_memory_init_image: &str,
 ) -> Result<()> {
     let name = DockerRuntime::container_name(&spec.container_id);
 
-    ensure_image_present(client, &spec.image, registry_host, image_source).await?;
+    ensure_image_present(
+        client,
+        &spec.image,
+        registry_host,
+        registry_credentials,
+        image_source,
+        spec.force_pull,
+    )
+    .await?;
 
     if spec.writable {
         ensure_agent_memory_subdir(
@@ -804,7 +838,7 @@ async fn ensure_agent_memory_subdir(
     .map_err(map_bollard_err)?;
 
     if client.inspect_image(init_image).await.is_err() {
-        pull_image(client, init_image, None).await?;
+        pull_image(client, init_image, None, None).await?;
     }
 
     // Named per-agent (not a fixed name) so two different agents' first
@@ -996,7 +1030,7 @@ async fn ensure_workspace_reader(
     }
 
     if client.inspect_image(image).await.is_err() {
-        pull_image(client, image, None).await?;
+        pull_image(client, image, None, None).await?;
     }
 
     let config = Config {
@@ -1199,12 +1233,22 @@ fn parse_workspace_listing(stdout: &str, dir: &str) -> Vec<WorkspaceEntry> {
 /// present (local dev builds it via `docker build`), then a `docker load`
 /// from `image_source` when one is wired, and a registry pull as the last
 /// resort.
+///
+/// `force_pull` skips all of that and goes straight to the registry — the
+/// difference between "reuse whatever's cached" and "get what the tag
+/// currently points to right now," which matters for a mutable tag like
+/// `:latest` that the daemon may have cached from a now-stale earlier pull.
 async fn ensure_image_present(
     client: &Docker,
     image: &str,
     registry_host: Option<&str>,
+    registry_credentials: Option<&DockerCredentials>,
     image_source: Option<&dyn ImageSource>,
+    force_pull: bool,
 ) -> Result<()> {
+    if force_pull {
+        return pull_image(client, image, registry_host, registry_credentials).await;
+    }
     if client.inspect_image(image).await.is_ok() {
         return Ok(());
     }
@@ -1213,7 +1257,7 @@ async fn ensure_image_present(
     {
         return Ok(());
     }
-    pull_image(client, image, registry_host).await
+    pull_image(client, image, registry_host, registry_credentials).await
 }
 
 /// `docker load` the image from `source`. Every failure degrades to the pull
@@ -1251,7 +1295,12 @@ async fn load_image_from_source(client: &Docker, image: &str, source: &dyn Image
     loaded
 }
 
-async fn pull_image(client: &Docker, image: &str, registry_host: Option<&str>) -> Result<()> {
+async fn pull_image(
+    client: &Docker,
+    image: &str,
+    registry_host: Option<&str>,
+    registry_credentials: Option<&DockerCredentials>,
+) -> Result<()> {
     // Prefer the registry-qualified ref when a registry_host is configured.
     let pull_ref = match registry_host {
         Some(host) if !image.starts_with(host) => format!("{host}/{image}"),
@@ -1261,7 +1310,7 @@ async fn pull_image(client: &Docker, image: &str, registry_host: Option<&str>) -
         from_image: pull_ref.as_str(),
         ..Default::default()
     };
-    let mut stream = client.create_image(Some(opts), None, None);
+    let mut stream = client.create_image(Some(opts), None, registry_credentials.cloned());
     while let Some(res) = stream.next().await {
         if let Err(e) = res {
             return Err(RuntimeError::ImageNotFound(format!(
@@ -1378,6 +1427,7 @@ impl ContainerRuntime for DockerRuntime {
             .network_override
             .as_deref()
             .or(self.config.network.as_deref());
+        let registry_credentials = self.registry_credentials();
 
         match tokio::time::timeout(
             timeout,
@@ -1396,6 +1446,7 @@ impl ContainerRuntime for DockerRuntime {
                     self.config.network.as_deref(),
                     timeout,
                     self.config.registry_host.as_deref(),
+                    registry_credentials.as_ref(),
                     self.image_source.as_deref(),
                     &self.config.agent_memory_volume,
                     &self.config.agent_memory_init_image,
@@ -1420,7 +1471,12 @@ impl ContainerRuntime for DockerRuntime {
                     .is_none_or(|stored| stored != spec.env_vars);
 
                 if existing_image == spec.image && !env_changed {
-                    // Same image, same env: ensure the container is running (idempotent)
+                    // Same image, same env: ensure the container is running (idempotent).
+                    // `spec.force_pull` is NOT consulted here — this branch never touches
+                    // the image cache at all. A caller that wants a fresh pull of a mutable
+                    // tag (e.g. `:latest`) must destroy the container first (as the admin
+                    // restart-with-refresh path does), landing in the "not found" branch
+                    // above instead, where `ensure_image_present` actually runs.
                     let current_status = existing.state.as_ref().and_then(|s| s.status);
 
                     if current_status != Some(ContainerStateStatusEnum::RUNNING) {
@@ -1480,6 +1536,7 @@ impl ContainerRuntime for DockerRuntime {
                         self.config.network.as_deref(),
                         timeout,
                         self.config.registry_host.as_deref(),
+                        registry_credentials.as_ref(),
                         self.image_source.as_deref(),
                         &self.config.agent_memory_volume,
                         &self.config.agent_memory_init_image,
@@ -1995,6 +2052,7 @@ mod hardening_tests {
             writable: false,
             writable_path: None,
             owner_id: uuid::Uuid::nil(),
+            force_pull: false,
         }
     }
 
@@ -2049,6 +2107,7 @@ mod writable_tests {
             writable,
             writable_path: None,
             owner_id: TEST_OWNER,
+            force_pull: false,
         }
     }
 

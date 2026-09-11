@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post},
@@ -172,6 +172,7 @@ async fn deploy(
         writable,
         writable_path,
         owner_id,
+        force_pull: false,
     };
     // Only a name that already maps to a registered catalog agent has an
     // `agents` row to scope a pull credential to (see pull_credentials'
@@ -406,10 +407,22 @@ async fn start(
     }
 }
 
+#[derive(Deserialize, Default)]
+struct RestartQuery {
+    /// `?refresh=true` — force a fresh registry pull of this agent's image
+    /// before recreating the container, bypassing Docker's local cache. For
+    /// a mutable tag (e.g. `:latest`), this is what actually picks up a new
+    /// push instead of silently reusing whatever was pulled last time.
+    /// Defaults to `false` (existing behavior: reuse the cached image).
+    #[serde(default)]
+    refresh: bool,
+}
+
 async fn restart(
     State(state): State<AppState>,
     claims: Claims,
     Path(name): Path<String>,
+    Query(query): Query<RestartQuery>,
 ) -> impl IntoResponse {
     // Look up agent record to get image and owner. `agents` has no `port` column
     // (that lives on `agent_deployments.spec_ports`, used by the catalog-aware
@@ -538,6 +551,7 @@ async fn restart(
         writable_path,
         owner_id,
     );
+    spec.force_pull = query.refresh;
     crate::agents::attach_pull_credential(
         &state.db,
         &state.config.agent_runtime,

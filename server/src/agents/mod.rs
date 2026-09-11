@@ -160,22 +160,35 @@ pub(crate) fn build_agent_spec(
     name: &str,
     image: impl Into<String>,
     ports: Vec<u16>,
-    env: HashMap<String, String>,
+    mut env: HashMap<String, String>,
     default_memory: &str,
     max_replicas: u32,
     writable: bool,
     writable_path: Option<String>,
     owner_id: Uuid,
 ) -> DeploymentSpec {
+    let ports = if ports.is_empty() {
+        vec![DEFAULT_AGENT_PORT]
+    } else {
+        ports
+    };
+    // The container's exposed port (above) and the app-facing $PORT env var
+    // it needs to actually bind to are two different things — normalizing
+    // only the former left every caller responsible for remembering the
+    // latter on its own. `seed_agents_if_configured` did; `restart` (and
+    // upload/update/reconcile/import) didn't — confirmed live: a
+    // seed-deployed agent redeployed via the admin restart endpoint lost its
+    // $PORT env var, fell back to its OWN image's internal default instead
+    // of this platform's convention, and Docker's port mapping pointed at a
+    // socket nothing was listening on. `entry` (not a plain insert) respects
+    // a caller-supplied override instead of clobbering it.
+    env.entry("PORT".to_string())
+        .or_insert_with(|| ports[0].to_string());
     DeploymentSpec {
         container_id: ContainerId::from_uuid(agent_id),
         name: name.to_string(),
         image: image.into(),
-        ports: if ports.is_empty() {
-            vec![DEFAULT_AGENT_PORT]
-        } else {
-            ports
-        },
+        ports,
         env_vars: env,
         min_replicas: 1,
         max_replicas,
@@ -196,6 +209,7 @@ pub(crate) fn build_agent_spec(
         writable,
         writable_path,
         owner_id,
+        force_pull: false,
     }
 }
 
@@ -263,6 +277,71 @@ mod spec_tests {
         assert_eq!(a.container_id, b.container_id);
         // Empty ports → canonical 8000 (not 5000).
         assert_eq!(a.ports, vec![DEFAULT_AGENT_PORT]);
+    }
+
+    #[test]
+    fn sets_the_port_env_var_to_match_the_default_exposed_port() {
+        // Regression: this used to be every CALLER's job to remember. Only
+        // seed_agents_if_configured did; restart/upload/update/reconcile/
+        // import didn't — confirmed live, a seed-deployed agent restarted
+        // via the admin restart endpoint lost $PORT, fell back to its own
+        // image's internal default, and the platform's Docker port mapping
+        // (still pointed at DEFAULT_AGENT_PORT) reached nothing.
+        let id = Uuid::new_v4();
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![],
+            HashMap::new(),
+            "512Mi",
+            1,
+            false,
+            None,
+            Uuid::nil(),
+        );
+        assert_eq!(
+            s.env_vars.get("PORT"),
+            Some(&DEFAULT_AGENT_PORT.to_string())
+        );
+    }
+
+    #[test]
+    fn sets_the_port_env_var_to_match_an_explicit_port() {
+        let id = Uuid::new_v4();
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![9091],
+            HashMap::new(),
+            "512Mi",
+            1,
+            false,
+            None,
+            Uuid::nil(),
+        );
+        assert_eq!(s.env_vars.get("PORT"), Some(&"9091".to_string()));
+    }
+
+    #[test]
+    fn a_caller_supplied_port_env_var_is_never_overwritten() {
+        let id = Uuid::new_v4();
+        let mut env = HashMap::new();
+        env.insert("PORT".to_string(), "1234".to_string());
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![],
+            env,
+            "512Mi",
+            1,
+            false,
+            None,
+            Uuid::nil(),
+        );
+        assert_eq!(s.env_vars.get("PORT"), Some(&"1234".to_string()));
     }
 
     #[test]

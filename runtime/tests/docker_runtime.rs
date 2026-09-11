@@ -21,6 +21,8 @@ fn docker_runtime_config_default_values() {
     assert_eq!(cfg.operation_timeout, Duration::from_secs(30));
     assert_eq!(cfg.build_timeout, Duration::from_secs(30 * 60));
     assert!(cfg.registry_host.is_none());
+    assert!(cfg.registry_username.is_none());
+    assert!(cfg.registry_password.is_none());
     assert_eq!(cfg.agent_memory_volume, "nasiko-agent-memory");
     assert_eq!(cfg.agent_memory_init_image, "alpine:3.21");
 }
@@ -33,6 +35,8 @@ fn docker_runtime_config_custom_construction() {
         operation_timeout: Duration::from_secs(10),
         build_timeout: Duration::from_secs(600),
         registry_host: Some("localhost:5000".to_owned()),
+        registry_username: Some("registry-user".to_owned()),
+        registry_password: Some("registry-pass".to_owned()),
         agent_memory_volume: "custom-memory-volume".to_owned(),
         agent_memory_init_image: "busybox:1.36".to_owned(),
     };
@@ -40,6 +44,8 @@ fn docker_runtime_config_custom_construction() {
     assert_eq!(cfg.network.as_deref(), Some("my-net"));
     assert_eq!(cfg.operation_timeout, Duration::from_secs(10));
     assert_eq!(cfg.registry_host.as_deref(), Some("localhost:5000"));
+    assert_eq!(cfg.registry_username.as_deref(), Some("registry-user"));
+    assert_eq!(cfg.registry_password.as_deref(), Some("registry-pass"));
     assert_eq!(cfg.agent_memory_volume, "custom-memory-volume");
     assert_eq!(cfg.agent_memory_init_image, "busybox:1.36");
 }
@@ -76,6 +82,7 @@ fn test_spec() -> DeploymentSpec {
         writable: false,
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
+        force_pull: false,
     }
 }
 
@@ -236,6 +243,7 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
         writable: false,
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
+        force_pull: false,
     };
 
     // Deploy
@@ -305,6 +313,7 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
         writable: false,
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
+        force_pull: false,
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");
@@ -364,6 +373,7 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
         writable: false,
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
+        force_pull: false,
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");
@@ -432,6 +442,7 @@ async fn docker_runtime_writable_persists_across_redeploy_and_is_private_per_age
             writable: true,
             writable_path: None,
             owner_id: uuid::Uuid::nil(),
+            force_pull: false,
         }
     }
 
@@ -513,6 +524,7 @@ async fn docker_runtime_reads_workspace_files_even_after_the_agent_is_gone() {
         writable: true,
         writable_path: None,
         owner_id,
+        force_pull: false,
     };
     runtime.deploy(&spec).await.expect("deploy writable agent");
     let container = "nasiko-agent-test-workspace-reader";
@@ -634,6 +646,7 @@ async fn docker_runtime_workspace_read_refuses_symlink_escape() {
         writable: true,
         writable_path: None,
         owner_id: owner,
+        force_pull: false,
     };
 
     // Victim agent, holding a secret only its owner may download.

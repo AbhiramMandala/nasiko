@@ -215,6 +215,7 @@ fn minimal_spec() -> DeploymentSpec {
         writable: false,
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
+        force_pull: false,
     }
 }
 
@@ -257,6 +258,7 @@ fn deployment_spec_with_all_fields() {
         writable: true,
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
+        force_pull: false,
     };
 
     assert_eq!(spec.min_replicas, 2);
