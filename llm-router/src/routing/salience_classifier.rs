@@ -437,23 +437,19 @@ pub fn score(query: &str, weights: &Weights) -> f64 {
 mod tests {
     use super::*;
 
-    /// End-to-end check against the actual trained artifact — not a synthetic fixture.
-    /// Loads `scripts/salience/out/salience_weights.json` (produced by
-    /// `scripts/salience/train.py`) through the real [`load_model_from_file`] path and
-    /// checks it scores a clear small-talk query low and a clear task query high, proving
-    /// the loader + scorer combination works against what training actually produced, not
-    /// just against hand-written test JSON. Skips (doesn't fail) if the file isn't present
-    /// — it's a training artifact, not something every dev checkout is expected to have.
+    /// End-to-end check against the actual shipped artifact — not a synthetic fixture.
+    /// Loads `assets/salience_weights.json` through the real [`load_model_from_file`] path
+    /// and checks it scores a clear small-talk query low and a clear task query high,
+    /// proving the loader + scorer combination works against what training actually
+    /// produced, not just against hand-written test JSON.
+    ///
+    /// This asserts rather than skips: the weights are committed to the repo and embedded
+    /// in the binary, so their absence is a build-breaking error, not a dev-checkout
+    /// variation.
     #[test]
-    fn real_trained_weights_score_sensibly_if_present() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../scripts/salience/out/salience_weights.json");
-        if !path.exists() {
-            eprintln!(
-                "skipping: {path:?} not present (run scripts/salience/train.py to generate it)"
-            );
-            return;
-        }
+    fn real_trained_weights_score_sensibly() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/salience_weights.json");
         let model = load_model_from_file(&path).expect("real trained weights should load");
         let small_talk_score = score("hi", &model.weights);
         let task_score = score(
