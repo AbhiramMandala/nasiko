@@ -30,7 +30,13 @@ impl DecomposerClient {
     /// instruction unchanged as a single-element vec if the service reports
     /// nothing to split (empty `sub_queries`).
     pub async fn decompose(&self, query: &str) -> Result<Vec<String>, String> {
-        tracing::info!(query, "decomposer_client: decompose() start");
+        // `query` is raw user input — logged at `debug`, not `info`, so it
+        // isn't shipped to Loki on every workflow creation.
+        tracing::info!(
+            query_len = query.len(),
+            "decomposer_client: decompose() start"
+        );
+        tracing::debug!(query, "decomposer_client: query text");
         let start = std::time::Instant::now();
         let mut req = self.http.post(&self.url);
         if let Some(key) = &self.api_key {

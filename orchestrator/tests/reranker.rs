@@ -172,8 +172,7 @@ async fn with_history_and_live_store_returns_scored_results() {
 
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL required");
     let pool = sqlx::PgPool::connect(&db_url).await.unwrap();
-    let store =
-        Arc::new(VectorStore::build(agents.clone(), api_key, base_url, model, &pool).await);
+    let store = Arc::new(VectorStore::build(agents.clone(), api_key, base_url, model, &pool).await);
     let reranker = Reranker::new(store);
     let history = SessionHistory {
         messages: vec![ChatMessage {
