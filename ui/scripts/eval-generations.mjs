@@ -331,9 +331,72 @@ if (offline) {
 if (!offline && !process.env.WEAVE_INTERNAL_TOKEN) {
   console.error('eval: WEAVE_INTERNAL_TOKEN is not set in this shell.\n');
   console.error('  set -a && source ~/Documents/GitHub/Weave/.env && set +a\n');
-  console.error('Weave also has to be running — uvicorn on :8801, or set WEAVE_BASE_URL.');
+  console.error('Weave also has to be running, and reachable at WEAVE_BASE_URL');
+  console.error('(default http://localhost:8801):');
+  console.error('  uvicorn   uvicorn weave.server.app:app --port 8801');
+  console.error('  docker    docker run --env-file .env.docker -p 8801:8801 <image>');
   process.exit(1);
 }
+
+/**
+ * Weave has to be looking at THIS repo's catalog, not its bundled fallback.
+ *
+ * Checked before spending eleven model calls, because the failure is quiet at
+ * both ends. Weave's catalog.py falls back to the copy inside the image when
+ * WEAVE_CATALOG_URL will not resolve, and in a container `localhost` is the
+ * container — so a URL that works for `uvicorn` silently stops working under
+ * `docker run`, with nothing on screen to say so.
+ *
+ * The per-case guard below compares catalog versions and catches this when
+ * the bundled copy is stale. It cannot catch it when the bundle happens to be
+ * current, which is exactly the state the bundle is in right after someone
+ * syncs it — so the versions match, the run looks clean, and the generator
+ * never once talked to this control plane. This checks reachability instead
+ * of equality, which does not have that hole.
+ */
+async function checkCatalogReachable() {
+  const url = process.env.WEAVE_CATALOG_URL;
+  if (!url) {
+    console.error('eval: WEAVE_CATALOG_URL is not set in this shell.\n');
+    console.error('Weave would fall back to the catalog bundled in its image, and every');
+    console.error('result would be judged against a vocabulary it never saw.');
+    process.exit(1);
+  }
+  // Fetched from here, not from inside Weave — so this proves the URL serves a
+  // catalog, not that Weave can reach it. A host.docker.internal URL is not
+  // resolvable from this process at all, which is the common and correct case;
+  // it is reported rather than failed.
+  let hostUrl = url;
+  let viaDockerHost = false;
+  if (url.includes('host.docker.internal')) {
+    hostUrl = url.replace('host.docker.internal', 'localhost');
+    viaDockerHost = true;
+  }
+  try {
+    const res = await fetch(hostUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const served = (await res.json()).catalogVersion;
+    if (served !== catalog.catalogVersion) {
+      console.error(`eval: ${hostUrl} serves catalog ${served}, this checkout has ${catalog.catalogVersion}.`);
+      console.error('The control plane is running an older build of this repo — restart it.');
+      process.exit(1);
+    }
+    console.log(`eval: catalog ${served} served at ${hostUrl}${viaDockerHost ? ' (Weave reaches it as host.docker.internal)' : ''}`);
+  } catch (err) {
+    console.error(`eval: WEAVE_CATALOG_URL (${url}) did not answer — ${err.message}.\n`);
+    if (viaDockerHost) {
+      console.error(`Tried ${hostUrl} from here. Check the control plane is up and on that port;`);
+      console.error('inside the container the host.docker.internal form is the one that matters.');
+    } else {
+      console.error('Start the control plane (`just run`, which binds CP_BIND, 0.0.0.0:9090 by');
+      console.error('default). If Weave runs in Docker, this must be host.docker.internal, not');
+      console.error('localhost — localhost there is the container.');
+    }
+    process.exit(1);
+  }
+}
+
+if (!offline) await checkCatalogReachable();
 
 let failed = 0;
 for (const kase of cases) {
