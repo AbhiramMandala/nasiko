@@ -65,6 +65,17 @@ async fn seed_running_agent(db: &PgPool, owner: Uuid, name: &str, url: &str) -> 
     .expect("insert running agent")
 }
 
+/// Point a seeded agent at the stub's real URL. The stub can only start once `mcp_row_id` exists,
+/// and that row has to name the agent — so the agent is seeded first with a placeholder.
+async fn point_agent_at(db: &PgPool, agent_id: Uuid, url: &str) {
+    sqlx::query("UPDATE agents SET url = $1 WHERE id = $2")
+        .bind(url)
+        .bind(agent_id)
+        .execute(db)
+        .await
+        .expect("point agent at stub");
+}
+
 /// A stub agent that unconditionally replies with a single, plain-JSON
 /// `TASK_STATE_AUTH_REQUIRED` response — `Content-Type: application/json`
 /// (not `text/event-stream`) routes dispatch straight into the non-streaming
@@ -136,13 +147,17 @@ async fn resolving_the_mcp_row_auto_resolves_the_linked_direct_chat_row() {
     .await
     .unwrap();
 
-    let agent_placeholder_id: Uuid =
-        sqlx::query_scalar("INSERT INTO agents (name, owner_id) VALUES ($1, $2) RETURNING id")
-            .bind("dup-pause-mcp-row-owner")
-            .bind(admin_uuid)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
+    // Both halves of a mirror name the SAME agent in production: the gateway files the `mcp_tool`
+    // row against the calling agent, and it is that agent's own task that pauses.
+    // `find_linked_direct_chat_row` enforces it — a cross-agent link can only be forged or stale —
+    // so the agent is seeded first and the mcp row filed against it.
+    let chat_agent_id = seed_running_agent(
+        &server.db,
+        admin_uuid,
+        "dup-pause-chat-agent",
+        "http://placeholder.invalid",
+    )
+    .await;
 
     // The real MCP-origin row this pause is meant to mirror — created the
     // same way `protocol::create_tool_approval_id` does.
@@ -153,7 +168,7 @@ async fn resolving_the_mcp_row_auto_resolves_the_linked_direct_chat_row() {
                  'pending', now() + interval '7 days') \
          RETURNING id",
     )
-    .bind(agent_placeholder_id)
+    .bind(chat_agent_id)
     .bind(admin_uuid)
     .bind(connector_id)
     .fetch_one(&server.db)
@@ -166,8 +181,7 @@ async fn resolving_the_mcp_row_auto_resolves_the_linked_direct_chat_row() {
         "tool_slug": "GITHUB_LIST_REPOS",
     }))
     .await;
-    let chat_agent_id =
-        seed_running_agent(&server.db, admin_uuid, "dup-pause-chat-agent", &stub_url).await;
+    point_agent_at(&server.db, chat_agent_id, &stub_url).await;
 
     let req = server.client.post(server.url("/api/orchestrator/a2a"));
     let res = common::as_superuser(req, &admin_id, "admin")
@@ -256,13 +270,14 @@ async fn confirming_an_auth_required_mcp_row_auto_resolves_the_linked_direct_cha
     .await
     .unwrap();
 
-    let agent_placeholder_id: Uuid =
-        sqlx::query_scalar("INSERT INTO agents (name, owner_id) VALUES ($1, $2) RETURNING id")
-            .bind("dup-pause-auth-row-owner")
-            .bind(admin_uuid)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
+    // Same agent on both halves of the mirror — see the first test's own note.
+    let chat_agent_id = seed_running_agent(
+        &server.db,
+        admin_uuid,
+        "dup-pause-auth-chat-agent",
+        "http://placeholder.invalid",
+    )
+    .await;
 
     // A genuine broken-connector-credential row — `create_pending_auth_required`'s shape, not
     // `create_tool_approval_id`'s.
@@ -273,7 +288,7 @@ async fn confirming_an_auth_required_mcp_row_auto_resolves_the_linked_direct_cha
                  'pending', now() + interval '7 days') \
          RETURNING id",
     )
-    .bind(agent_placeholder_id)
+    .bind(chat_agent_id)
     .bind(admin_uuid)
     .bind(connector_id)
     .fetch_one(&server.db)
@@ -285,13 +300,7 @@ async fn confirming_an_auth_required_mcp_row_auto_resolves_the_linked_direct_cha
         "hitl_request_id": mcp_row_id.to_string(),
     }))
     .await;
-    let chat_agent_id = seed_running_agent(
-        &server.db,
-        admin_uuid,
-        "dup-pause-auth-chat-agent",
-        &stub_url,
-    )
-    .await;
+    point_agent_at(&server.db, chat_agent_id, &stub_url).await;
 
     let req = server.client.post(server.url("/api/orchestrator/a2a"));
     let res = common::as_superuser(req, &admin_id, "admin")

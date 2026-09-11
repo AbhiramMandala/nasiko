@@ -484,6 +484,9 @@ async fn deliver(state: AppState, row: HitlRequest) {
         }
     }
     record_resume_trail(&state, disposition, &flow_ctx).await;
+    // Unconditional on `disposition`: the agent received the answer, which is what ends the pause.
+    // A follow-up pause gets its own row and its own step in its own flow.
+    close_resumed_flow_step(&state, &row, &agent_name).await;
 
     if disposition != StreamDisposition::Paused {
         if row.origin == HitlOrigin::Orchestrator {
@@ -949,6 +952,41 @@ async fn consume_json_to_terminal(
     // branch uses — is enough here, unlike the streaming path above.
     let reply_text = nasiko_types::a2a::extract_text(body.get("result").unwrap_or(&body));
     Some((disposition, Some(data), reply_text))
+}
+
+/// Flip the `flow_steps` row this pause interrupted out of `awaiting_human` once the answer has
+/// reached the agent. `'resumed'`, not `completed`/`failed`: no `ToolResult` ever arrives for a
+/// paused step, so either would misreport the original call's own outcome. Only
+/// `orchestrator_stream` writes `awaiting_human` steps, hence the origin guard.
+///
+/// Keyed through `session_traces`, not this resume's `flow_ctx`: the paused step belongs to the
+/// turn that paused, and `deliver()` opens a fresh root flow, so the two ids never match.
+/// Owner-scoped for free — both columns reference `chat_sessions(session_id)`.
+async fn close_resumed_flow_step(state: &AppState, row: &HitlRequest, agent_name: &str) {
+    if row.origin != HitlOrigin::Orchestrator {
+        return;
+    }
+    let Some(chat_session_id) = row.chat_session_id.as_deref() else {
+        return;
+    };
+    // `flow_steps.agent_name` holds the display-folded form, never the raw registry name here.
+    let display_name = nasiko_react_agent::A2aTool::agent_display_name(agent_name);
+    if let Err(e) = sqlx::query(
+        "UPDATE flow_steps SET status = 'resumed'
+          WHERE status = 'awaiting_human' AND agent_name = $2
+            AND flow_id IN (SELECT trace_id FROM session_traces WHERE session_id = $1)",
+    )
+    .bind(chat_session_id)
+    .bind(&display_name)
+    .execute(&state.db)
+    .await
+    {
+        // Not swallowed: a row left `awaiting_human` stays stuck forever.
+        tracing::warn!(
+            id = %row.id, %chat_session_id, error = %e,
+            "hitl resume: failed to close the paused flow_steps row"
+        );
+    }
 }
 
 /// Minimal observable trail for the resumed call — required by the plan's own Governing

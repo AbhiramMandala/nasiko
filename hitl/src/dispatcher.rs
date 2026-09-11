@@ -44,6 +44,15 @@ pub enum NotifyError {
         /// transient and worth retrying.
         permanent: bool,
     },
+    /// The flow the agent's retry would have to authenticate against is older than the platform's
+    /// flow timeout, so `mcp/handlers/gateway.rs`'s `flow_user` will reject it no matter what this
+    /// nudge does. Permanent by construction: `flows.created_at` is fixed and only gets further
+    /// away.
+    #[error(
+        "context {context_id} names a flow that is no longer live, so the agent's retried tool \
+         call could not be authorized"
+    )]
+    FlowNotLive { context_id: String },
     #[error("transport error delivering resume notification: {0}")]
     Transport(#[from] reqwest::Error),
     #[error("peer rejected the resume notification: {0}")]
@@ -53,7 +62,7 @@ pub enum NotifyError {
 impl NotifyError {
     pub fn is_permanent(&self) -> bool {
         match self {
-            NotifyError::MissingContextId(_) => true,
+            NotifyError::MissingContextId(_) | NotifyError::FlowNotLive { .. } => true,
             NotifyError::EndpointResolution { permanent, .. } => *permanent,
             NotifyError::Transport(_) | NotifyError::PeerError(_) => false,
         }

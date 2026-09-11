@@ -253,6 +253,9 @@ impl AppState {
                 state.db.clone(),
                 state.runtime.clone(),
                 state.http_client.clone(),
+                // Same bound `gateway.rs`'s `flow_user` enforces on the agent's retry, so the
+                // nudge never registers a window the gateway will reject.
+                i64::from(state.config.flow_timeout_secs),
             ));
         tokio::spawn(nasiko_hitl::dispatcher::run(
             state.db.clone(),

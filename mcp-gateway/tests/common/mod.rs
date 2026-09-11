@@ -193,10 +193,17 @@ impl TestDb {
     /// gained a real FK to this table, `0018_mcp_session_tool_grants_fk.sql`); a synthetic
     /// `Uuid::new_v4()` connector id (fine for the in-memory `MCPServerConfig`/`ResolvedSession`
     /// these tests build, but not for a real grant row) now violates that constraint.
+    ///
+    /// `url` is not optional padding: `source_kind` defaults to `external_url`, and
+    /// `chk_connectors_provider_fields` (`0003_mcp.sql`) requires `url IS NOT NULL` for that
+    /// combination, so a `(provider_type, name)`-only insert fails the CHECK. Never dialed — the
+    /// real backend these tests talk to comes from the in-memory `MCPServerConfig` above; this row
+    /// exists only to satisfy the FK.
     #[allow(dead_code)] // only tool_approval.rs's session-scope tests construct this
     pub async fn seed_connector(&self, prefix: &str) -> Uuid {
         sqlx::query_scalar(
-            "INSERT INTO mcp_connectors (provider_type, name) VALUES ('mcp_server', $1) \
+            "INSERT INTO mcp_connectors (provider_type, name, url) \
+             VALUES ('mcp_server', $1, 'http://127.0.0.1:1/mcp') \
              RETURNING id",
         )
         .bind(format!("{prefix}-connector-{}", Uuid::new_v4().simple()))

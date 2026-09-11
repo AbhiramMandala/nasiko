@@ -290,6 +290,12 @@ async fn recover_stuck_resumes_ignores_unclaimed_rows() {
     assert_eq!(quarantined, 0);
 }
 
+/// Generous flow-timeout bound for these tests: the notifier refuses to nudge when the flow its
+/// context names is older than this (`NotifyError::FlowNotLive`), and fixtures here seed rows with
+/// `now()` timestamps, so any value comfortably above the test's own runtime keeps that guard out
+/// of the way of what each test is actually asserting.
+const TEST_FLOW_TIMEOUT_SECS: i64 = 3600;
+
 // ─── End-to-end: dispatcher::run + RuntimeResumeNotifier ───────────────────
 
 #[tokio::test]
@@ -319,6 +325,7 @@ async fn resolved_row_is_delivered_exactly_once_end_to_end() {
         db.pool.clone(),
         runtime.clone(),
         reqwest::Client::new(),
+        TEST_FLOW_TIMEOUT_SECS,
     ));
 
     let config = DispatcherConfig {
@@ -383,6 +390,7 @@ async fn peer_error_response_is_retried_then_marked_failed() {
         db.pool.clone(),
         runtime.clone(),
         reqwest::Client::new(),
+        TEST_FLOW_TIMEOUT_SECS,
     ));
 
     let config = DispatcherConfig {
@@ -450,6 +458,7 @@ async fn rejected_tool_approval_row_is_claimed_and_delivered() {
         db.pool.clone(),
         runtime.clone(),
         reqwest::Client::new(),
+        TEST_FLOW_TIMEOUT_SECS,
     ));
 
     let config = DispatcherConfig {
@@ -520,6 +529,7 @@ async fn resolved_row_delivery_carries_a_traceparent_matching_its_context_id() {
         db.pool.clone(),
         runtime.clone(),
         reqwest::Client::new(),
+        TEST_FLOW_TIMEOUT_SECS,
     ));
 
     let config = DispatcherConfig {
@@ -544,4 +554,151 @@ async fn resolved_row_delivery_carries_a_traceparent_matching_its_context_id() {
     // (a header mismatch in mockito is a silent non-match, not a request failure, so without
     // this the test would pass even if the traceparent were missing entirely).
     mock.assert_async().await;
+}
+
+// ─── BL4: the nudge must never register a window the gateway will reject ────
+
+/// The platform default, so these two tests exercise the real bound rather than an invented one.
+const GATEWAY_FLOW_TIMEOUT_SECS: i64 = 120;
+
+/// Seed a `flows` row for `flow_id` with an explicit age and status — stands in for the original
+/// tool call's own flow, which is what `is_raw_trace_id` collides with.
+async fn seed_flow(db: &TestDb, flow_id: &str, status: &str, age_secs: i64) {
+    sqlx::query(
+        "INSERT INTO flows (flow_id, user_id, root_agent_id, title, status, created_at)
+         VALUES ($1, $2, $3, 'original call', $4, now() - make_interval(secs => $5))",
+    )
+    .bind(flow_id)
+    .bind(db.owner_user_id)
+    .bind(db.agent_id)
+    .bind(status)
+    .bind(age_secs as f64)
+    .execute(&db.pool)
+    .await
+    .expect("seed flows row");
+}
+
+async fn flow_status(db: &TestDb, flow_id: &str) -> String {
+    sqlx::query_scalar("SELECT status FROM flows WHERE flow_id = $1")
+        .bind(flow_id)
+        .fetch_one(&db.pool)
+        .await
+        .expect("read flows.status")
+}
+
+/// A `context_id` that is itself a raw trace id collides with the original call's own `flows` row,
+/// whose `created_at` never moves. Once that row is older than the platform's flow timeout,
+/// `gateway.rs`'s `flow_user` will reject the agent's retry no matter what — so the nudge must
+/// fail loudly instead of being delivered as if healthy, and must NOT flip the dead flow back to
+/// `running` (which would re-open a closed `/api/mcp` window for every agent in it).
+#[tokio::test]
+async fn an_expired_flow_is_not_resurrected_and_the_nudge_fails_loudly() {
+    let db = TestDb::new("hitl_bl4_expired").await;
+    let trace_id = "0af7651916cd43dd8448eb211c80319c";
+    seed_flow(&db, trace_id, "completed", 10 * 60).await;
+    let request_id = db.seed_resolved_auth_required(trace_id).await;
+
+    let mut mock_server = mockito::Server::new_async().await;
+    // The agent must never be contacted: a nudge it cannot act on is worse than none.
+    let mock = mock_server.mock("POST", "/").expect(0).create_async().await;
+
+    let runtime = Arc::new(SimulatedRuntime::new(mock_server.url()));
+    runtime
+        .deploy(&agent_spec(ContainerId::from_uuid(db.agent_id)))
+        .await
+        .expect("seed the simulated runtime's endpoint");
+
+    let notifier = RuntimeResumeNotifier::new(
+        db.pool.clone(),
+        runtime.clone(),
+        reqwest::Client::new(),
+        GATEWAY_FLOW_TIMEOUT_SECS,
+    );
+    let request = repo::get_by_id(&db.pool, request_id)
+        .await
+        .expect("get_by_id")
+        .expect("row exists");
+
+    let err = nasiko_hitl::ResumeNotifier::notify(&notifier, &request)
+        .await
+        .expect_err("an expired flow must not be nudged");
+    assert!(
+        matches!(
+            err,
+            nasiko_hitl::dispatcher::NotifyError::FlowNotLive { .. }
+        ),
+        "expected FlowNotLive, got {err:?}"
+    );
+    assert!(
+        err.is_permanent(),
+        "a flow only gets older — retrying can never make this succeed"
+    );
+
+    mock.assert_async().await;
+    assert_eq!(
+        flow_status(&db, trace_id).await,
+        "completed",
+        "the dead flow must stay closed — flipping it back to running re-opens the /api/mcp \
+         window for every agent in its flow_participants"
+    );
+}
+
+/// The other half: a flow still inside the timeout is exactly the case this registration exists
+/// for, so it IS reopened and the nudge goes out.
+#[tokio::test]
+async fn a_still_live_flow_is_reopened_and_the_nudge_is_delivered() {
+    let db = TestDb::new("hitl_bl4_live").await;
+    let trace_id = "1bf7651916cd43dd8448eb211c80319d";
+    seed_flow(&db, trace_id, "completed", 5).await;
+    let request_id = db.seed_resolved_auth_required(trace_id).await;
+
+    let mut mock_server = mockito::Server::new_async().await;
+    let mock = mock_server
+        .mock("POST", "/")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jsonrpc":"2.0","id":"1","result":{"kind":"message"}}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let runtime = Arc::new(SimulatedRuntime::new(mock_server.url()));
+    runtime
+        .deploy(&agent_spec(ContainerId::from_uuid(db.agent_id)))
+        .await
+        .expect("seed the simulated runtime's endpoint");
+
+    let notifier = RuntimeResumeNotifier::new(
+        db.pool.clone(),
+        runtime.clone(),
+        reqwest::Client::new(),
+        GATEWAY_FLOW_TIMEOUT_SECS,
+    );
+    let request = repo::get_by_id(&db.pool, request_id)
+        .await
+        .expect("get_by_id")
+        .expect("row exists");
+
+    nasiko_hitl::ResumeNotifier::notify(&notifier, &request)
+        .await
+        .expect("a live flow must be nudged");
+
+    mock.assert_async().await;
+    assert_eq!(
+        flow_status(&db, trace_id).await,
+        "running",
+        "a flow still inside the timeout is reopened so the retry can authenticate"
+    );
+    let participant: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM flow_participants WHERE flow_id = $1 AND agent_id = $2",
+    )
+    .bind(trace_id)
+    .bind(db.agent_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        participant, 1,
+        "the nudged agent must be a flow participant"
+    );
 }

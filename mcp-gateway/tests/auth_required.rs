@@ -66,7 +66,10 @@ async fn auth_required_persists_hitl_row_and_returns_auth_required_code() {
     db.seed_session_trace(session_id, trace_id).await;
 
     let resolved = unusable_session(connector_id, ConnectorUnusable::AuthRequired, "github");
-    let perms = db.perms(&[], vec![]);
+    // Enabled for this agent: `handle_tools_call`'s Layer-2 gate (`protocol.rs`) returns
+    // TOOL_BLOCKED before `handle_auth_required` can run for a connector this agent may not use,
+    // so an empty set never reaches the code under test here.
+    let perms = db.perms(&[connector_id], vec![]);
     let tool = connector_tool_name(connector_id, "list_repos");
     let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
 
@@ -118,7 +121,8 @@ async fn auth_required_falls_back_to_raw_trace_id_when_no_session_trace_exists()
     let trace_id = "1bf7651916cd43dd8448eb211c80319d";
 
     let resolved = unusable_session(connector_id, ConnectorUnusable::AuthRequired, "github");
-    let perms = db.perms(&[], vec![]);
+    // Enabled for this agent — see the Layer-2 note in the test above.
+    let perms = db.perms(&[connector_id], vec![]);
     let tool = connector_tool_name(connector_id, "list_repos");
     let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
 
@@ -158,7 +162,11 @@ async fn repeated_calls_for_the_same_connector_and_conversation_reuse_the_same_h
     let trace_id = "2cf7651916cd43dd8448eb211c80319e";
 
     let resolved = unusable_session(connector_id, ConnectorUnusable::AuthRequired, "github");
-    let perms = db.perms(&[], vec![]);
+    // Enabled for this agent — see the Layer-2 note in the first test. Load-bearing here in a way
+    // it isn't there: with an empty set both calls returned TOOL_BLOCKED, whose error body carries
+    // no `data` at all, so the assertion below compared `Null == Null` and passed without a single
+    // `hitl_requests` row ever existing — green while proving nothing.
+    let perms = db.perms(&[connector_id], vec![]);
     let tool = connector_tool_name(connector_id, "list_repos");
     let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
 
@@ -183,8 +191,13 @@ async fn repeated_calls_for_the_same_connector_and_conversation_reuse_the_same_h
     )
     .await;
 
+    // Pinned before the equality below, which on its own is satisfied by two absent ids just as
+    // well as by two matching ones.
+    let first_id = first["error"]["data"]["hitl_request_id"]
+        .as_str()
+        .expect("the first call must persist a row and return its id");
     assert_eq!(
-        first["error"]["data"]["hitl_request_id"], second["error"]["data"]["hitl_request_id"],
+        first_id, second["error"]["data"]["hitl_request_id"],
         "a retried call against the same still-unusable connector must not create a second pending row"
     );
 }

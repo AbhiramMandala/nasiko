@@ -97,7 +97,10 @@ impl A2aTool {
     /// `agent_display`) and its pause-closing UPDATE (keyed on `AwaitingHuman.agent`, this
     /// function) must agree, or an agent whose name contains anything `tool_name` folds into `_`
     /// (a `.` or space or `/`) never matches and its step stays `running` forever after a pause.
-    fn agent_display_name(agent_name: &str) -> String {
+    ///
+    /// `pub` for a third consumer in another crate:
+    /// `oss/server/src/hitl/mod.rs::close_resumed_flow_step`, which only holds the raw name.
+    pub fn agent_display_name(agent_name: &str) -> String {
         agent_name.replace(['-', ' ', '.', '/', '_'], "-")
     }
 }

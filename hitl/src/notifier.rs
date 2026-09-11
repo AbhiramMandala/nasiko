@@ -36,6 +36,9 @@ pub struct RuntimeResumeNotifier {
     db: PgPool,
     runtime: Arc<dyn ContainerRuntime>,
     http_client: reqwest::Client,
+    /// Mirrors the platform's `NASIKO_FLOW_TIMEOUT_SECS`. Received, not re-read from the env, so
+    /// this agrees with the exact bound `gateway.rs`'s `flow_user` enforces on the agent's retry.
+    flow_timeout_secs: i64,
 }
 
 impl RuntimeResumeNotifier {
@@ -43,11 +46,13 @@ impl RuntimeResumeNotifier {
         db: PgPool,
         runtime: Arc<dyn ContainerRuntime>,
         http_client: reqwest::Client,
+        flow_timeout_secs: i64,
     ) -> Self {
         Self {
             db,
             runtime,
             http_client,
+            flow_timeout_secs,
         }
     }
 
@@ -130,7 +135,7 @@ impl RuntimeResumeNotifier {
         context_id: &str,
         agent_id: Uuid,
         owner_user_id: Uuid,
-    ) -> String {
+    ) -> Result<String, NotifyError> {
         // Lowercase only, matching this function's own doc comment ("32 lowercase hex") and W3C
         // traceparent's own requirement — `is_ascii_hexdigit()` alone also accepts `A-F`, which
         // would embed an uppercase-hex `context_id` verbatim into the outbound `traceparent`
@@ -161,34 +166,55 @@ impl RuntimeResumeNotifier {
             trace_id
         };
 
-        // Deliberately does NOT reset `completed_at` on conflict: this only fires when
-        // `is_raw_trace_id` reuses a `context_id` that already collided with a prior flow's own
-        // trace_id, and clearing `completed_at` back to null on an already-completed flow would
-        // resurrect a closed `/api/mcp` authorization window for that unrelated, already-finished
-        // flow (found in review) — `status = 'running'` alone is enough to authorize the retry this
-        // nudge is actually for.
-        // Not genuinely optional, unlike some other best-effort writes in this crate — a failure
-        // here is precisely what produces the "traceparent does not resolve to a live flow" 403
-        // this whole function exists to prevent (see the doc comment above), so it must be logged,
-        // not silently swallowed (found in review).
-        if let Err(e) = sqlx::query(
+        // On the fresh-trace-id path this is a plain INSERT, so `created_at` is now and the window
+        // is live. On the `is_raw_trace_id` path it collides with the ORIGINAL call's own flow row,
+        // whose `created_at` is fixed at that call — and `gateway.rs`'s `flow_user` requires
+        // `created_at > now() - flow_timeout_secs` as well as `status = 'running'`. Two things
+        // follow, both found in review:
+        //
+        //   * The `DO UPDATE` is scoped by that same age bound. Without it, flipping `status` back
+        //     to `running` re-opened a closed `/api/mcp` window for an unrelated, already-finished
+        //     flow — and for every agent in its `flow_participants`, not just the one being nudged.
+        //   * When the bound excludes the row, `ON CONFLICT DO UPDATE ... WHERE` updates nothing
+        //     and returns no row. That is not a no-op to shrug at: it means the retry this nudge
+        //     exists to prompt cannot be authorized, so the nudge must fail loudly rather than be
+        //     delivered as if healthy (the agent would 403 with "traceparent does not resolve to a
+        //     live flow" and the human's approval would silently do nothing).
+        let registered: Option<(String,)> = match sqlx::query_as(
             r#"INSERT INTO flows (flow_id, user_id, root_agent_id, title, status)
                VALUES ($1, $2, $3, $4, $5)
-               ON CONFLICT (flow_id) DO UPDATE SET status = $5"#,
+               ON CONFLICT (flow_id) DO UPDATE SET status = $5
+                 WHERE flows.created_at > now() - make_interval(secs => $6)
+               RETURNING flow_id"#,
         )
         .bind(&trace_id)
         .bind(owner_user_id)
         .bind(agent_id)
         .bind(FLOW_TITLE)
         .bind(FLOW_STATUS_RUNNING)
-        .execute(&self.db)
+        .bind(self.flow_timeout_secs as f64)
+        .fetch_optional(&self.db)
         .await
         {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e, %trace_id,
+                    "failed to register resume-nudge flow — the agent's retry may 403 with \
+                     'traceparent does not resolve to a live flow'"
+                );
+                None
+            }
+        };
+        if registered.is_none() {
             tracing::warn!(
-                error = %e, %trace_id,
-                "failed to register resume-nudge flow — the agent's retry may 403 with \
-                 'traceparent does not resolve to a live flow'"
+                %trace_id, %context_id, timeout_secs = self.flow_timeout_secs,
+                "resume nudge aborted: the flow this context names is older than the platform's \
+                 flow timeout, so the agent's retried tool call could not be authorized"
             );
+            return Err(NotifyError::FlowNotLive {
+                context_id: context_id.to_string(),
+            });
         }
         if let Err(e) = sqlx::query(
             "INSERT INTO flow_participants (flow_id, agent_id) VALUES ($1, $2)
@@ -210,7 +236,7 @@ impl RuntimeResumeNotifier {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        format!("00-{trace_id}-{span_id}-01")
+        Ok(format!("00-{trace_id}-{span_id}-01"))
     }
 }
 
@@ -227,7 +253,7 @@ impl ResumeNotifier for RuntimeResumeNotifier {
         let body = nasiko_types::a2a::build_send_request(&message, Some(context_id));
         let traceparent = self
             .traceparent_for_context(context_id, request.agent_id, request.owner_user_id)
-            .await;
+            .await?;
 
         // 300s, not `http_client`'s shared 60s default — matches `hitl/mod.rs::deliver`'s own
         // override for the equivalent "make an outbound A2A call on a human's behalf" work.

@@ -91,11 +91,16 @@ async fn resolve(server: &common::TestServer, user_id: Uuid, id: Uuid, body: Val
 }
 
 /// Poll `hitl_requests.resume_status` until it leaves `not_started`, or panic on timeout.
+///
+/// The budget has to cover a *retryable* failure running out its cap, not just one attempt:
+/// `mark_resume_failed` only flips to `failed` once `resume_dispatch_attempts` reaches
+/// `MAX_RESUME_ATTEMPTS` (5), and each retry waits for the dispatcher's 2s poll tick — so roughly
+/// 8s, not the 6s an earlier 40-iteration budget allowed.
 async fn wait_for_resume_outcome(
     server: &common::TestServer,
     id: Uuid,
 ) -> (String, Option<String>) {
-    for _ in 0..40 {
+    for _ in 0..120 {
         let row: (String, Option<String>) = sqlx::query_as(
             "SELECT resume_status, resume_last_error FROM hitl_requests WHERE id = $1",
         )
