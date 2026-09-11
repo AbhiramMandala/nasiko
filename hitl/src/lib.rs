@@ -18,5 +18,8 @@ pub use store::{
     FailureKind, HitlError, HitlStore, PgHitlStore, ResolveOutcome, resolve_display_row,
 };
 pub use types::{
-    HitlKind, HitlOrigin, HitlRequest, HitlStatus, NewHitlRequest, ParseEnumError, ResumeStatus,
+    AUTH_ACTION_CONFIRM, AUTH_ACTION_START, AUTH_OUTCOME_CONFIRMED, AUTH_OUTCOME_DENIED,
+    AUTH_REPLY_AUTHORIZED, DECISION_APPROVE, DECISION_REJECT, GRANT_SCOPE_ONCE,
+    GRANT_SCOPE_SESSION, HitlKind, HitlOrigin, HitlRequest, HitlStatus, NewHitlRequest,
+    ParseEnumError, ResumeStatus,
 };

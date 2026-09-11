@@ -23,8 +23,9 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use nasiko_hitl::{
-    HitlAction, HitlIdentity, HitlKind, HitlRequest, HitlStatus, ResolveOutcome, ResumeStatus,
-    authorize_hitl_action,
+    AUTH_ACTION_CONFIRM, AUTH_ACTION_START, AUTH_OUTCOME_CONFIRMED, AUTH_OUTCOME_DENIED,
+    GRANT_SCOPE_ONCE, GRANT_SCOPE_SESSION, HitlAction, HitlIdentity, HitlKind, HitlRequest,
+    HitlStatus, ResolveDecision, ResolveOutcome, ResumeStatus, authorize_hitl_action,
 };
 
 use crate::auth::Claims;
@@ -254,7 +255,7 @@ fn identity(claims: &Claims) -> Result<HitlIdentity, (StatusCode, &'static str)>
 fn allowed_actions(kind: HitlKind) -> &'static [&'static str] {
     match kind {
         HitlKind::InputRequired => &["answer", "cancel"],
-        HitlKind::AuthRequired => &["start_auth", "confirm_auth", "cancel"],
+        HitlKind::AuthRequired => &[AUTH_ACTION_START, AUTH_ACTION_CONFIRM, "cancel"],
         HitlKind::ToolApproval => &["approve", "reject", "cancel"],
     }
 }
@@ -356,10 +357,9 @@ async fn resolve(
     // `scope` only matters on `approve`; defaults to `once` when omitted, so an existing caller
     // that never sends it keeps single-use behavior unchanged.
     if row.kind == HitlKind::ToolApproval {
-        let approve = match payload.decision.as_deref() {
-            Some("approve") => true,
-            Some("reject") => false,
-            _ => {
+        let decision = match payload.decision.as_deref().and_then(ResolveDecision::parse) {
+            Some(d) => d,
+            None => {
                 return (
                     StatusCode::BAD_REQUEST,
                     "decision must be \"approve\" or \"reject\" for tool_approval",
@@ -367,9 +367,10 @@ async fn resolve(
                     .into_response();
             }
         };
+        let approve = decision == ResolveDecision::Approve;
         let scope = match payload.scope.as_deref() {
-            None | Some("once") => "once",
-            Some("session") => "session",
+            None | Some(GRANT_SCOPE_ONCE) => GRANT_SCOPE_ONCE,
+            Some(GRANT_SCOPE_SESSION) => GRANT_SCOPE_SESSION,
             Some(_) => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -379,13 +380,9 @@ async fn resolve(
             }
         };
 
-        let status = if approve {
-            HitlStatus::Resolved
-        } else {
-            HitlStatus::Rejected
-        };
+        let status = decision.target_status();
         let human_response = json!({
-            "decision": if approve { "approve" } else { "reject" },
+            "decision": decision.as_str(),
             "scope": if approve { Some(scope) } else { None },
             "note": payload.note,
         });
@@ -401,7 +398,7 @@ async fn resolve(
 
         let (row, already_resolved) = match outcome {
             ResolveOutcome::Applied(row) => {
-                if approve && scope == "session" {
+                if approve && scope == GRANT_SCOPE_SESSION {
                     grant_session_scope(&state, &row).await;
                 }
                 // Unconditional on scope/decision — see `auto_resolve_linked_direct_chat_row`'s
@@ -473,7 +470,7 @@ async fn resolve(
     // is rejected outright rather than silently sent to the agent as an unvalidated string.
     if row.kind == HitlKind::AuthRequired {
         match payload.auth_action.as_deref() {
-            Some("start") => {
+            Some(AUTH_ACTION_START) => {
                 let current = match state.hitl_store.record_auth_start(id).await {
                     Ok(Some(row)) => row,
                     // Already resolved/expired/canceled by the time this landed — report
@@ -495,7 +492,7 @@ async fn resolve(
                 };
                 return Json(to_response(&current)).into_response();
             }
-            Some("confirm") => {} // falls through to the normal resolve path below
+            Some(AUTH_ACTION_CONFIRM) => {} // falls through to the normal resolve path below
             _ => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -509,7 +506,7 @@ async fn resolve(
     let human_response = if row.kind == HitlKind::AuthRequired {
         // Only "confirm" reaches here (validated above). Intent, not proof — the agent's own
         // next response is what determines whether the external auth actually succeeded (§7).
-        json!({ "auth_outcome": "confirmed" })
+        json!({ "auth_outcome": AUTH_OUTCOME_CONFIRMED })
     } else if let Some(opts) = &structured_options {
         match resolve_structured_answer(
             opts,
@@ -582,41 +579,6 @@ async fn resolve(
         }
         ResolveOutcome::AlreadyDecided(row) => (row, true),
     };
-
-    // Persist the human's own answer as a `chat_messages` turn — resolving a pause otherwise
-    // left no trace in the session's own transcript at all: `hitl_requests.human_response` holds
-    // it, but nothing ever wrote it into the table the web UI's session view (and `nasiko
-    // sessions`/`history`) actually renders from, so a session with an answered pause silently
-    // jumped from the agent's question straight to whatever it said after resuming, with the
-    // human's own reply invisible. Only on a real resolution (`!already_resolved`), so a
-    // duplicate/idempotent resolve of an already-answered row can't append it twice. Guarded the
-    // same way `agent_proxy.rs`'s own user-message insert is (a short dedup window, not a plain
-    // unconditional insert): defensive here too, since a client could in principle retry this
-    // same POST. Fire-and-forget and silently a no-op for any origin with no
-    // `chat_sessions`-registered session at all (e.g. MAF) — this is specifically for the chat
-    // experience, not a correctness-critical write.
-    if !already_resolved && let Some(session_id) = crate::hitl::stable_session_id(&row) {
-        let answer = crate::hitl::answer_text(&row);
-        if !answer.is_empty() {
-            let db = state.db.clone();
-            let session_id = session_id.to_string();
-            tokio::spawn(async move {
-                let _ = sqlx::query(
-                    "INSERT INTO chat_messages (session_id, role, content) \
-                     SELECT $1, 'user', $2 \
-                     WHERE NOT EXISTS ( \
-                         SELECT 1 FROM chat_messages \
-                         WHERE session_id = $1 AND role = 'user' AND content = $2 \
-                           AND timestamp > now() - interval '2 seconds' \
-                     )",
-                )
-                .bind(&session_id)
-                .bind(&answer)
-                .execute(&db)
-                .await;
-            });
-        }
-    }
 
     let mut body = to_response(&row);
     if let Some(obj) = body.as_object_mut() {
@@ -749,7 +711,7 @@ async fn auto_resolve_linked_direct_chat_row(
         HitlStatus::Rejected
     };
     let human_response = json!({
-        "auth_outcome": if approved { "confirmed" } else { "denied" },
+        "auth_outcome": if approved { AUTH_OUTCOME_CONFIRMED } else { AUTH_OUTCOME_DENIED },
     });
 
     match state
@@ -873,7 +835,10 @@ fn is_terminal(row: &HitlRequest) -> bool {
     match row.status {
         HitlStatus::Pending | HitlStatus::Resolved => matches!(
             row.resume_status,
-            ResumeStatus::Completed | ResumeStatus::Failed | ResumeStatus::DeliveryOutcomeUnknown
+            ResumeStatus::Completed
+                | ResumeStatus::Failed
+                | ResumeStatus::DeliveryOutcomeUnknown
+                | ResumeStatus::Skipped
         ),
         HitlStatus::Rejected | HitlStatus::Expired | HitlStatus::Canceled => true,
     }

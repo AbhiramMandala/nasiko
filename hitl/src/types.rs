@@ -78,13 +78,40 @@ db_enum!(HitlStatus {
 // `NotStarted` (the lease lives on the row, mirroring `build_jobs.picked_at`).
 // `Completed` = peer confirmed receipt; `Failed` = attempts exhausted or non-retryable;
 // `DeliveryOutcomeUnknown` = lease expired mid-attempt, set by the recovery sweep, never
-// auto-retried.
+// auto-retried. `Skipped` = resume deliberately never attempted for this row (a mirrored
+// `mcp_tool` row whose real resume happens on its linked `direct_chat`/`agent_proxy` row instead
+// — see `repo::skip_resume_for_mirrored_row`'s own doc comment); distinct from `Completed`
+// because no delivery attempt was ever made.
 db_enum!(ResumeStatus {
     NotStarted => "not_started",
     Completed => "completed",
     Failed => "failed",
     DeliveryOutcomeUnknown => "delivery_outcome_unknown",
+    Skipped => "skipped",
 });
+
+/// Wire vocabulary for the `tool_approval`/`auth_required` resolve flows. These live outside
+/// `db_enum!` because none of them are their own DB column — `decision`/`scope`/`auth_action` are
+/// request-only fields on `HitlResolveRequest`, and `auth_outcome` is a key inside
+/// `human_response` JSONB, not a CHECK-backed column — but the values still need one canonical
+/// spelling shared by `oss/server/src/router/hitl.rs` (the resolve API), `oss/hitl/src/notifier.rs`
+/// (the resume message builder) and `oss/server/src/hitl/mod.rs` (the agent-facing reply text),
+/// which previously each hardcoded their own copies of these strings.
+pub const DECISION_APPROVE: &str = "approve";
+pub const DECISION_REJECT: &str = "reject";
+
+pub const GRANT_SCOPE_ONCE: &str = "once";
+pub const GRANT_SCOPE_SESSION: &str = "session";
+
+pub const AUTH_ACTION_START: &str = "start";
+pub const AUTH_ACTION_CONFIRM: &str = "confirm";
+
+pub const AUTH_OUTCOME_CONFIRMED: &str = "confirmed";
+pub const AUTH_OUTCOME_DENIED: &str = "denied";
+/// Not an outcome value — the literal reply text echoed to the agent for a successful
+/// `auth_required` resume. Named separately because a deterministic agent may match this word
+/// literally (see `oss/server/src/hitl/mod.rs::answer_text`'s own doc comment).
+pub const AUTH_REPLY_AUTHORIZED: &str = "authorized";
 
 /// Mirrors the `hitl_requests` table (migration `0007_hitl.sql`).
 ///
@@ -347,6 +374,7 @@ mod tests {
         "completed",
         "failed",
         "delivery_outcome_unknown",
+        "skipped",
     ];
 
     fn assert_round_trips<T>(variants: &[T])
@@ -420,6 +448,7 @@ mod tests {
             ResumeStatus::Completed,
             ResumeStatus::Failed,
             ResumeStatus::DeliveryOutcomeUnknown,
+            ResumeStatus::Skipped,
         ];
         assert_round_trips(&all);
         assert_matches_sql_check(&all, SQL_RESUME_STATUS_VALUES);
@@ -467,6 +496,7 @@ mod tests {
             ResumeStatus::Completed,
             ResumeStatus::Failed,
             ResumeStatus::DeliveryOutcomeUnknown,
+            ResumeStatus::Skipped,
         ]);
     }
 
@@ -491,12 +521,20 @@ mod tests {
         // against the enums), this parses each column's real CHECK (...) block out of the
         // migration file and compares it against those consts value-for-value, in order — so
         // the migration and the consts above can't silently drift apart in either direction.
-        let migration = include_str!("../../migrations/0007_hitl.sql");
-        for (column, expected) in [
-            ("kind", SQL_KIND_VALUES),
-            ("origin", SQL_ORIGIN_VALUES),
-            ("status", SQL_STATUS_VALUES),
-            ("resume_status", SQL_RESUME_STATUS_VALUES),
+        //
+        // `resume_status` reads from 0090, not 0007: sqlx hashes applied migration files, so a
+        // widened CHECK on an already-shipped column has to be re-expressed as a forward-only
+        // ALTER (0011_baseline_deltas.sql's own precedent) rather than edited in place — 0090 is
+        // the column's current source of truth, same as 0007 still is for the other three.
+        // Numbered well above this branch's own highest migration (deliberately, not a typo) to
+        // leave room for whatever lands on `development` before this merges.
+        let migration_0007 = include_str!("../../migrations/0007_hitl.sql");
+        let migration_0090 = include_str!("../../migrations/0090_hitl_resume_status_skipped.sql");
+        for (migration, column, expected) in [
+            (migration_0007, "kind", SQL_KIND_VALUES),
+            (migration_0007, "origin", SQL_ORIGIN_VALUES),
+            (migration_0007, "status", SQL_STATUS_VALUES),
+            (migration_0090, "resume_status", SQL_RESUME_STATUS_VALUES),
         ] {
             let actual = parse_check_values(migration, column);
             assert_eq!(

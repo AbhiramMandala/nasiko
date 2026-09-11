@@ -169,12 +169,18 @@ async fn unmatched_api_path_is_a_json_404_not_the_spa() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    assert!(ctype.contains("application/json"), "got content-type {ctype}");
+    assert!(
+        ctype.contains("application/json"),
+        "got content-type {ctype}"
+    );
 
     let body: Value = res.json().await.expect("body must parse as JSON");
     assert_eq!(body["status_code"], 404);
     assert!(
-        body["message"].as_str().unwrap_or("").contains("no-such-endpoint"),
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("no-such-endpoint"),
         "the message should name the path that missed: {body}"
     );
 

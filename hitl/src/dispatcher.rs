@@ -24,20 +24,40 @@ use uuid::Uuid;
 use crate::repo::{self, DEFAULT_RESUME_LEASE_MINUTES};
 use crate::types::{HitlRequest, ResumeStatus};
 
-/// Why a [`ResumeNotifier`] failed to deliver a resume push. Every variant is
-/// treated as retryable by the dispatcher's own in-process retry loop — there
-/// is no "permanent" vs "transient" split here, matching the fixed
-/// `max_attempts` budget applied uniformly regardless of cause.
+/// Why a [`ResumeNotifier`] failed to deliver a resume push.
+///
+/// [`NotifyError::is_permanent`] tells the dispatcher's retry loop whether another attempt could
+/// ever change the outcome — `MissingContextId` and a confirmed "no such agent" cannot, no matter
+/// how many times they're retried, so retrying them up to `max_attempts` (found in review) only
+/// delays recording the terminal `failed` status. A DB blip, a container that isn't up yet, and a
+/// transport/peer error are all worth retrying, since the next attempt might land differently.
 #[derive(Debug, thiserror::Error)]
 pub enum NotifyError {
     #[error("hitl request {0} has no context_id to resume against")]
     MissingContextId(Uuid),
     #[error("could not resolve a live endpoint for agent {agent_id}: {reason}")]
-    EndpointResolution { agent_id: Uuid, reason: String },
+    EndpointResolution {
+        agent_id: Uuid,
+        reason: String,
+        /// Set only when `reason` is definitionally unrecoverable (e.g. the agent row itself
+        /// doesn't exist) — a DB lookup failure or "no live/stored endpoint right now" is
+        /// transient and worth retrying.
+        permanent: bool,
+    },
     #[error("transport error delivering resume notification: {0}")]
     Transport(#[from] reqwest::Error),
     #[error("peer rejected the resume notification: {0}")]
     PeerError(String),
+}
+
+impl NotifyError {
+    pub fn is_permanent(&self) -> bool {
+        match self {
+            NotifyError::MissingContextId(_) => true,
+            NotifyError::EndpointResolution { permanent, .. } => *permanent,
+            NotifyError::Transport(_) | NotifyError::PeerError(_) => false,
+        }
+    }
 }
 
 /// Delivers a resolved [`HitlRequest`]'s decision into whatever is paused
@@ -201,15 +221,17 @@ async fn dispatch_one(
                 return;
             }
             Err(e) => {
+                let permanent = e.is_permanent();
                 let error = e.to_string();
                 tracing::warn!(
                     id = %request_id,
                     attempt = attempts,
                     max_attempts = config.max_attempts,
+                    permanent,
                     %error,
                     "resume dispatcher: delivery attempt failed"
                 );
-                if attempts >= config.max_attempts {
+                if permanent || attempts >= config.max_attempts {
                     break error;
                 }
                 tokio::time::sleep(config.retry_delay).await;
@@ -227,5 +249,40 @@ async fn dispatch_one(
     .await
     {
         tracing::error!(id = %request_id, %e, "resume dispatcher: failed to record failure");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_context_id_is_always_permanent() {
+        assert!(NotifyError::MissingContextId(Uuid::new_v4()).is_permanent());
+    }
+
+    #[test]
+    fn no_such_agent_is_permanent_but_other_endpoint_failures_are_not() {
+        assert!(
+            NotifyError::EndpointResolution {
+                agent_id: Uuid::new_v4(),
+                reason: "no such agent".to_string(),
+                permanent: true,
+            }
+            .is_permanent()
+        );
+        assert!(
+            !NotifyError::EndpointResolution {
+                agent_id: Uuid::new_v4(),
+                reason: "no live or stored endpoint".to_string(),
+                permanent: false,
+            }
+            .is_permanent()
+        );
+    }
+
+    #[test]
+    fn peer_and_transport_errors_are_never_permanent() {
+        assert!(!NotifyError::PeerError("http 503: unavailable".to_string()).is_permanent());
     }
 }

@@ -666,6 +666,26 @@ pub(crate) async fn orchestrator_stream(
                                 });
                             }
 
+                            // A ToolCall for an agent that still has an `awaiting_human` row from
+                            // an earlier pause in this same flow means that pause just resumed —
+                            // the human answered and the orchestrator is continuing (found in
+                            // review: nothing ever transitioned that row out of
+                            // `awaiting_human`, so it stayed stuck forever, permanently
+                            // undercounting `flow_steps` in any view that excludes it). Closing
+                            // every such row here (not just the most recent — a stuck earlier one
+                            // from a fire-and-forget UPDATE that silently failed should resolve
+                            // too) rather than a completion status: no ToolResult ever arrives for
+                            // an `awaiting_human` row, so `completed`/`failed` would misreport
+                            // whether the *original* call itself succeeded.
+                            let _ = sqlx::query(
+                                "UPDATE flow_steps SET status = 'resumed'
+                                 WHERE flow_id = $1 AND agent_name = $2 AND status = 'awaiting_human'",
+                            )
+                            .bind(&flow_id_cleanup)
+                            .bind(&agent)
+                            .execute(&db)
+                            .await;
+
                             let _ = sqlx::query(
                                 r#"INSERT INTO flow_steps (flow_id, step_order, depth, agent_name, caller_agent_name, input_summary, status, created_at)
                                    VALUES ($1, $2, 1, $3, 'orchestrator', $4, 'running', now())"#,

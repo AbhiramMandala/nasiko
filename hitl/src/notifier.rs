@@ -20,7 +20,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::dispatcher::{NotifyError, ResumeNotifier};
-use crate::types::{HitlKind, HitlRequest};
+use crate::types::{DECISION_APPROVE, HitlKind, HitlRequest};
 
 /// `flows.title` for the row `traceparent_for_context` registers — named here instead of inline
 /// in the SQL text (nit from review).
@@ -65,12 +65,14 @@ impl RuntimeResumeNotifier {
                 .map_err(|e| NotifyError::EndpointResolution {
                     agent_id,
                     reason: format!("db lookup failed: {e}"),
+                    permanent: false,
                 })?;
 
         let Some((transport_path, stored_url)) = row else {
             return Err(NotifyError::EndpointResolution {
                 agent_id,
                 reason: "no such agent".to_string(),
+                permanent: true,
             });
         };
 
@@ -93,6 +95,7 @@ impl RuntimeResumeNotifier {
         Err(NotifyError::EndpointResolution {
             agent_id,
             reason: "no live or stored endpoint".to_string(),
+            permanent: false,
         })
     }
 
@@ -293,7 +296,7 @@ fn build_resume_message(request: &HitlRequest) -> String {
                 .as_ref()
                 .and_then(|r| r.get("decision"))
                 .and_then(Value::as_str)
-                == Some("approve");
+                == Some(DECISION_APPROVE);
             if approved {
                 format!(
                     "The user approved your request to use `{label}`. You may retry the tool call now."

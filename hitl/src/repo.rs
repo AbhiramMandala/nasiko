@@ -288,10 +288,27 @@ pub enum ResolveDecision {
 }
 
 impl ResolveDecision {
-    fn target_status(self) -> HitlStatus {
+    pub fn target_status(self) -> HitlStatus {
         match self {
             Self::Approve => HitlStatus::Resolved,
             Self::Reject => HitlStatus::Rejected,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => crate::types::DECISION_APPROVE,
+            Self::Reject => crate::types::DECISION_REJECT,
+        }
+    }
+
+    /// Parses the `decision` field of `HitlResolveRequest` — the wire vocabulary is exactly
+    /// `crate::types::DECISION_APPROVE`/`DECISION_REJECT`, nothing else.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            crate::types::DECISION_APPROVE => Some(Self::Approve),
+            crate::types::DECISION_REJECT => Some(Self::Reject),
+            _ => None,
         }
     }
 }
@@ -757,10 +774,9 @@ pub async fn finish_resume(
     row.map(HitlRequest::try_from).transpose()
 }
 
-/// Marks an `mcp_tool`-origin row as already delivered without ever sending
-/// `RuntimeResumeNotifier`'s standalone nudge — for the case where resolving it
-/// also auto-resolved a linked `direct_chat`/`agent_proxy`/`maf`/`orchestrator`
-/// mirror row (`find_linked_direct_chat_row` + `auto_resolve_linked_direct_chat_row`,
+/// Marks an `mcp_tool`-origin row's resume as deliberately never attempted — for
+/// the case where resolving it also auto-resolved a linked `direct_chat`/`agent_proxy`/
+/// `maf`/`orchestrator` mirror row (`find_linked_direct_chat_row` + `auto_resolve_linked_direct_chat_row`,
 /// `oss/server/src/router/hitl.rs`). That mirror has its own real `task_id` and
 /// its own dispatcher (`oss/server/src/hitl/mod.rs`), which correctly resumes the
 /// paused A2A task; the `mcp_tool` row's own delivery is not just redundant in
@@ -772,6 +788,10 @@ pub async fn finish_resume(
 /// re-asked its own clarifying question with no memory of the original one, and
 /// every retry re-triggered exactly the same fork, forever.
 ///
+/// `ResumeStatus::Skipped`, not `Completed` — no delivery attempt is ever made for this
+/// row, so recording it as `completed` would misreport a successful delivery that never
+/// happened (found in review).
+///
 /// Sets both `resume_claimed_at` and `resume_status` in one step (rather than
 /// composing `claim_for_resume` + `finish_resume`) so `claim_for_resume`'s own
 /// `resume_status = 'not_started' AND resume_claimed_at IS NULL` filter can never
@@ -780,11 +800,12 @@ pub async fn skip_resume_for_mirrored_row(db: &PgPool, id: Uuid) -> Result<()> {
     sqlx::query(
         r#"
         UPDATE hitl_requests
-           SET resume_status = 'completed', resume_claimed_at = now()
+           SET resume_status = $2, resume_claimed_at = now()
          WHERE id = $1 AND resume_status = 'not_started' AND resume_claimed_at IS NULL
         "#,
     )
     .bind(id)
+    .bind(ResumeStatus::Skipped.as_str())
     .execute(db)
     .await?;
     Ok(())

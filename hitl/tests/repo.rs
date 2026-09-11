@@ -189,6 +189,57 @@ async fn resolve_approve_transitions_tool_approval_to_resolved_with_audit_fields
     );
 }
 
+/// `skip_resume_for_mirrored_row` marks an `mcp_tool` row's resume as terminal without ever
+/// attempting delivery, for the case where the real resume happens on its linked
+/// `direct_chat`/`agent_proxy` mirror instead — see that function's own doc comment. It must
+/// record `ResumeStatus::Skipped`, not `Completed`: no delivery attempt is ever made for this
+/// row, so `Completed` would misreport a successful delivery that never happened (found in
+/// review — previously the only test touching this function asserted on unrelated reply text and
+/// never checked `resume_status` at all, so the wrong value went uncaught for a full review
+/// round).
+#[tokio::test]
+async fn skip_resume_for_mirrored_row_marks_the_row_skipped_not_completed() {
+    let db = TestDb::new("hitl_test").await;
+    let created = repo::create_pending_tool_approval(
+        &db.pool,
+        db.new_tool_approval(Uuid::new_v4(), "GITHUB_CREATE_ISSUE", "ctx-1"),
+    )
+    .await
+    .expect("create pending tool_approval");
+
+    repo::skip_resume_for_mirrored_row(&db.pool, created.id)
+        .await
+        .expect("skip_resume_for_mirrored_row");
+
+    let row = repo::get_by_id(&db.pool, created.id)
+        .await
+        .expect("get_by_id")
+        .expect("row still exists");
+    assert_eq!(row.resume_status, nasiko_hitl::ResumeStatus::Skipped);
+    assert!(row.resume_claimed_at.is_some());
+
+    // Once skipped, `claim_for_resume` (the mcp_tool dispatcher's own claim, scoped to
+    // `resume_status = 'not_started'`) must never pick this row up — that's the entire point of
+    // marking it terminal instead of leaving it `not_started`.
+    repo::resolve(
+        &db.pool,
+        created.id,
+        ResolveDecision::Approve,
+        db.owner_user_id,
+        serde_json::json!({"decision": "approve"}),
+    )
+    .await
+    .expect("resolve")
+    .expect("row was pending");
+    let claimed = repo::claim_for_resume(&db.pool)
+        .await
+        .expect("claim_for_resume");
+    assert!(
+        claimed.is_none(),
+        "a skipped row must never be claimed for real delivery"
+    );
+}
+
 #[tokio::test]
 async fn resolve_reject_transitions_auth_required_to_rejected() {
     let db = TestDb::new("hitl_test").await;
