@@ -1987,6 +1987,12 @@ pub(crate) async fn persist_direct_chat_pause(
         None => None,
     };
     let new_row = match origin {
+        // `.with_chat_session_id` on BOTH arms: the id is computed and FK-validated above for every
+        // origin, and applying it to only one silently cost the proxy path two things (found in
+        // review) — the row missed `list_for_chat_session`, so a proxy pause never appeared on
+        // session load, and `deliver`'s `session_traces` insert is guarded on this being `Some`,
+        // so every MCP tool-approval retry after the resume resolved to a fresh trace id and
+        // re-asked the human to approve the same tool.
         nasiko_hitl::HitlOrigin::AgentProxy => nasiko_hitl::NewHitlRequest::agent_proxy(
             kind,
             agent_id_for_hitl,
@@ -1994,7 +2000,8 @@ pub(crate) async fn persist_direct_chat_pause(
             real_task_id,
             context_id.to_string(),
             question,
-        ),
+        )
+        .with_chat_session_id(chat_session_id),
         _ => nasiko_hitl::NewHitlRequest::direct_chat(
             kind,
             agent_id_for_hitl,

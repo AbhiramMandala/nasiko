@@ -994,3 +994,99 @@ async fn custom_input_is_rejected_when_the_question_disallows_it() {
 
     server.cleanup().await;
 }
+
+/// Raised in review (PR #383, `oss/hitl/src/authz.rs`): "an agent is uploaded by User A, shared
+/// across team/dept, User B wants to chat with this agent — this action will return 403".
+///
+/// It does not, because `hitl_requests.owner_user_id` is the user the paused execution is
+/// attributed to, never the agent's owner — every creation site binds the caller
+/// (`agent_proxy.rs`'s `claims.sub`, `a2a_dispatch.rs`/`worker.rs`'s `user_id`, the MCP gateway's
+/// traceparent-resolved flow user). Access to the *agent* is a separate check
+/// (`acl.rs::user_can_access_agent`), which is where grants are honoured.
+///
+/// Both directions are asserted together on purpose: the allow case alone would still pass if
+/// someone "fixed" this by widening the check to agent access, which would hand A the ability to
+/// answer B's question — and for `tool_approval` that means spending B's own connector
+/// credentials. The grant row is seeded even though `resolve` never reads it, so the fixture is
+/// the reviewer's actual scenario rather than two unrelated users.
+#[tokio::test]
+#[serial]
+async fn a_grantee_resolves_their_own_pause_on_someone_elses_agent_but_the_agent_owner_cannot() {
+    let server = common::TestServer::start().await;
+    let agent_owner = seed_user(&server, "hitl-agent-owner-shared").await;
+    let chatter = seed_user(&server, "hitl-grantee-shared").await;
+    let agent_id = seed_agent(&server, agent_owner, "hitl-shared-agent").await;
+
+    // A shares the agent with B, exactly as `nasiko-ee access grant` would.
+    sqlx::query(
+        "INSERT INTO agent_grants (agent_id, grant_type, grantee_id, granted_by) \
+         VALUES ($1, 'user', $2, $3)",
+    )
+    .bind(agent_id)
+    .bind(chatter.to_string())
+    .bind(agent_owner)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    // B chats with A's agent and it pauses: the row is attributed to B, on A's agent.
+    let request_id = seed_pending_input_required(
+        &server,
+        agent_id,
+        chatter,
+        "ctx-shared-agent",
+        json!({"message": "which repo?"}),
+    )
+    .await;
+
+    // The agent's owner must NOT be able to answer someone else's question on their own agent.
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &agent_owner.to_string(),
+        "hitl-agent-owner-shared",
+    )
+    .json(&json!({"answer": "nasiko-cloud-rs"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        403,
+        "owning the agent must not grant the right to answer another user's pause on it"
+    );
+
+    // B answers their own question and is allowed, despite not owning the agent.
+    let res = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
+        &chatter.to_string(),
+        "hitl-grantee-shared",
+    )
+    .json(&json!({"answer": "nasiko-cloud-rs"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "a grantee answering their OWN pause on a shared agent must succeed, not 403"
+    );
+
+    let (status, resolved_by): (String, Option<Uuid>) =
+        sqlx::query_as("SELECT status, resolved_by FROM hitl_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(status, "resolved");
+    assert_eq!(
+        resolved_by,
+        Some(chatter),
+        "the answer must be attributed to the grantee who gave it"
+    );
+
+    server.cleanup().await;
+}
