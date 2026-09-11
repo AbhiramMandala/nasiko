@@ -13,7 +13,8 @@ use chrono::{DateTime, Datelike, Duration, SecondsFormat, TimeZone, Utc};
 use futures::stream::{self, StreamExt};
 use nasiko_config::Config;
 use nasiko_observability::{
-    ObservabilityError, ObservabilityProvider, TimeBucket, extract_token_attrs,
+    ObservabilityError, ObservabilityProvider, TimeBucket, extract_cache_token_attrs,
+    extract_token_attrs,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -215,6 +216,17 @@ fn paginate<T>(rows: Vec<T>, limit: Option<i64>, offset: Option<i64>) -> Vec<T> 
     }
 }
 
+/// First present string attribute out of `keys`, in order. A fallback chain
+/// rather than a semconv-version check — the same shape the token extractors
+/// use, because agents in one fleet rarely run one instrumentation version.
+fn first_str_attr(attrs: &HashMap<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|k| attrs.get(*k))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
 fn encode_span_id(span_id: &str) -> String {
     base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
@@ -250,6 +262,11 @@ fn build_span_tree(
             input_tokens: input,
             output_tokens: output,
             model,
+            operation: first_str_attr(
+                &s.attributes,
+                &["gen_ai.operation.name", "rpc.method", "code.function"],
+            ),
+            provider: first_str_attr(&s.attributes, &["gen_ai.system", "gen_ai.provider.name"]),
             span_annotation_summaries: vec![],
             children: vec![],
         }
@@ -395,6 +412,9 @@ pub struct SessionDetailData {
 pub struct SessionDetail {
     pub id: String,
     pub session_id: String,
+    /// LLM-derived session name from `chat_sessions`. `None` for sessions that
+    /// never went through chat (CLI / direct A2A), where the id is the heading.
+    pub title: Option<String>,
     pub num_traces: usize,
     pub token_usage: TokenUsageSummary,
     pub cost_summary: FullCostSummary,
@@ -402,6 +422,11 @@ pub struct SessionDetail {
     /// The session page renders this KPI (`s.latency_p99`); it was silently
     /// `0.0 s` for every session while the field didn't exist in the response.
     pub latency_p99: Option<f64>,
+    /// Mean trace duration, which is what the KPI strip labels "Avg latency".
+    pub latency_avg: Option<f64>,
+    /// Prompt tokens served from / written to provider cache, over the session.
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
     pub traces: Vec<TraceEntry>,
     pub pagination: Pagination,
 }
@@ -433,6 +458,12 @@ pub struct RootSpanEntry {
     pub span_id: String,
     pub attributes: String,
     pub cumulative_token_count_total: u64,
+    /// Per-turn token split. `cumulative_token_count_total` is `input+output`;
+    /// the cache counts are tracked separately and are not folded into it.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
     pub latency_ms: f64,
     pub start_time: Option<String>,
     #[schema(value_type = Vec<Object>)]
@@ -534,6 +565,12 @@ pub struct SpanNode {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub model: Option<String>,
+    /// The greyed second label on a span row (`chat`, `git.clone`, …).
+    /// `None` when no attribute names one — the UI must not synthesise it
+    /// from the span name.
+    pub operation: Option<String>,
+    /// GenAI provider (`openai`, `anthropic`, …), for the row's glyph.
+    pub provider: Option<String>,
     #[schema(value_type = Vec<Object>)]
     pub span_annotation_summaries: Vec<Value>,
     // `no_recursion`: self-referential — without it utoipa's schema builder
@@ -582,7 +619,15 @@ pub struct SpanDetail {
     pub parent_id: Option<String>,
     pub latency_ms: Option<f64>,
     pub token_count_total: u64,
-    pub cost_summary: SimpleCostSummary,
+    /// GenAI provider and model, promoted out of the nested `attributes` blob
+    /// so the detail pane reads one field instead of walking a semconv tree.
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    /// Carries the prompt/completion split the Usage tab renders; the service
+    /// already computed it and used to sum it away before serializing.
+    pub cost_summary: FullCostSummary,
     pub input: ContentField,
     pub output: ContentField,
     #[schema(value_type = Object)]
@@ -1174,12 +1219,65 @@ impl ObservabilityService {
 
     // ── 2. session/{session_id} ──────────────────────────────────────────────
 
+    /// `(title, start, end)` for a session drill-down.
+    ///
+    /// The trace store is queried over a window, and this used to hardcode
+    /// `now() - 7d`: opening any session older than a week returned an empty
+    /// trace list. The session's own rows say when it actually ran —
+    /// `chat_sessions` for chat-originated sessions, `session_traces` (written
+    /// by agent_proxy for every forwarded query) for the rest — so take the
+    /// window from whichever exists, padded for clock skew between the control
+    /// plane and the agents' exporters.
+    ///
+    /// A session in neither table is unknown to us; the old 7-day window is
+    /// then as good a guess as any, and keeps the Tempo scan bounded.
+    async fn session_window(
+        &self,
+        session_id: &str,
+    ) -> (Option<String>, DateTime<Utc>, DateTime<Utc>) {
+        #[derive(sqlx::FromRow)]
+        struct WindowRow {
+            title: Option<String>,
+            lo: Option<DateTime<Utc>>,
+            hi: Option<DateTime<Utc>>,
+        }
+
+        // The aggregate subquery always yields one row, so the LEFT JOIN gives
+        // a row whether or not the session ever went through chat.
+        let row: Option<WindowRow> = sqlx::query_as(
+            r#"SELECT c.title,
+                      LEAST(c.created_at, t.lo) AS lo,
+                      GREATEST(c.updated_at, t.hi) AS hi
+                 FROM (SELECT MIN(created_at) AS lo, MAX(created_at) AS hi
+                         FROM session_traces WHERE session_id = $1) t
+                 LEFT JOIN chat_sessions c ON c.session_id = $1"#,
+        )
+        .bind(session_id)
+        .fetch_optional(&self.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(%session_id, error = %e, "session window lookup failed");
+            None
+        });
+
+        let now = Utc::now();
+        let skew = Duration::minutes(5);
+        match row {
+            Some(WindowRow {
+                title,
+                lo: Some(lo),
+                hi: Some(hi),
+            }) => (title, lo - skew, hi + skew),
+            Some(WindowRow { title, .. }) => (title, now - Duration::days(7), now),
+            None => (None, now - Duration::days(7), now),
+        }
+    }
+
     pub async fn get_session_details(
         &self,
         session_id: &str,
     ) -> Result<SessionDetailResponse, ObservabilityError> {
-        let end = Utc::now();
-        let start = end - Duration::days(7);
+        let (title, start, end) = self.session_window(session_id).await;
         let details = self.provider.get_session(session_id, start, end).await?;
 
         let trace_entries: Vec<TraceEntry> = details
@@ -1207,6 +1305,10 @@ impl ObservabilityService {
                         span_id: t.root_span.span_id.clone(),
                         attributes: serde_json::to_string(&flat_attrs).unwrap_or_default(),
                         cumulative_token_count_total: t.input_tokens + t.output_tokens,
+                        input_tokens: t.input_tokens,
+                        output_tokens: t.output_tokens,
+                        cache_read_tokens: t.cache_read_tokens,
+                        cache_creation_tokens: t.cache_creation_tokens,
                         latency_ms: round6(t.duration_ms.unwrap_or(0) as f64),
                         start_time: Some(fmt_ts(t.root_span.started_at)),
                         span_annotations: vec![],
@@ -1242,6 +1344,7 @@ impl ObservabilityService {
                 session: SessionDetail {
                     id: details.session_id.clone(),
                     session_id: details.session_id.clone(),
+                    title,
                     num_traces: details.traces.len(),
                     token_usage: TokenUsageSummary {
                         total: Some(total_tokens),
@@ -1262,6 +1365,9 @@ impl ObservabilityService {
                     },
                     latency_p50: details.latency_ms_p50,
                     latency_p99: details.latency_ms_p99,
+                    latency_avg: details.latency_ms_avg,
+                    cache_read_tokens: details.cache_read_tokens,
+                    cache_creation_tokens: details.cache_creation_tokens,
                     traces: trace_entries,
                     pagination: Pagination {
                         end_cursor,
@@ -1350,7 +1456,9 @@ impl ObservabilityService {
         let details = self.provider.get_span(trace_id, span_id).await?;
         let span = &details.span;
 
-        let (input_tokens, output_tokens, _) = extract_token_attrs(&span.attributes);
+        let (input_tokens, output_tokens, model) = extract_token_attrs(&span.attributes);
+        let (cache_read_tokens, cache_creation_tokens) =
+            extract_cache_token_attrs(&span.attributes);
 
         // Span kind: prefer openinference.span.kind (e.g. "LLM"), fallback to OTel kind
         let span_kind = span
@@ -1422,9 +1530,26 @@ impl ObservabilityService {
                     parent_id: span.parent_span_id.clone(),
                     latency_ms: span.duration_ms.map(|d| d as f64),
                     token_count_total: input_tokens + output_tokens,
-                    cost_summary: SimpleCostSummary {
-                        total: CostEntry {
-                            cost: Some(details.cost.total_usd),
+                    provider: first_str_attr(
+                        &span.attributes,
+                        &["gen_ai.system", "gen_ai.provider.name"],
+                    ),
+                    model: model
+                        .or_else(|| first_str_attr(&span.attributes, &["gen_ai.response.model"])),
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                    cost_summary: FullCostSummary {
+                        total: CostWithTokens {
+                            cost: details.cost.total_usd,
+                            tokens: input_tokens + output_tokens,
+                        },
+                        prompt: CostWithTokens {
+                            cost: details.cost.prompt_usd,
+                            tokens: input_tokens,
+                        },
+                        completion: CostWithTokens {
+                            cost: details.cost.completion_usd,
+                            tokens: output_tokens,
                         },
                     },
                     input: ContentField {
@@ -1438,7 +1563,14 @@ impl ObservabilityService {
                         parsed_value: output_parsed,
                     },
                     attributes: unflatten_attrs(&span.attributes),
-                    events: vec![],
+                    // Tempo already parses these (oss/observability/src/tempo.rs);
+                    // they used to be dropped on the floor here, which left the
+                    // "Metadata & events" tab with nothing to render.
+                    events: span
+                        .events
+                        .iter()
+                        .map(|e| serde_json::to_value(e).unwrap_or(Value::Null))
+                        .collect(),
                     span_annotations: vec![],
                     span_annotation_summaries: vec![],
                     document_retrieval_metrics: vec![],

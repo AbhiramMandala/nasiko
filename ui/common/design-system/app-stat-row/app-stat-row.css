@@ -102,4 +102,55 @@
   @media (prefers-reduced-motion: reduce) {
     .stat-skel { animation: none; opacity: 0.6; }
   }
+
+  /* ── variant="chips" ─────────────────────────────────────────────────────
+     Same cells, re-laid as pills. Everything the column form owns — the grid,
+     the hairlines, the mobile 2-up fold, the display face on the value — is
+     unset here rather than overridden piecemeal, so the two layouts cannot
+     half-apply to each other. */
+  :scope[variant="chips"] {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-8);
+    border-block: none;
+    padding: 0;
+  }
+
+  :scope[variant="chips"] .stat {
+    flex-direction: row;
+    align-items: baseline;
+    gap: var(--s-4);
+    padding: var(--s-4) var(--s-12);
+    border-left: none;
+    border-radius: var(--r-8);
+    background: var(--bg-subtle);
+    white-space: nowrap;
+  }
+
+  :scope[variant="chips"] .stat-label {
+    font-size: var(--font-size-sm);
+    margin-bottom: 0;
+
+    /* The pill reads as one phrase — "Total tokens: 1.2M" — so the separator
+       belongs to the layout, not to every call site's label string. */
+    &::after { content: ":"; }
+  }
+
+  :scope[variant="chips"] .stat-value {
+    font-family: inherit;
+    font-size: var(--font-size-sm);
+    letter-spacing: normal;
+  }
+
+  :scope[variant="chips"] .stat-sub,
+  :scope[variant="chips"] .meter { display: none; }
+
+  :scope[variant="chips"] .stat-skel--label { width: 64px; }
+  :scope[variant="chips"] .stat-skel--value { width: 40px; height: 0.85em; margin-top: 0; }
+
+  /* The mobile fold is a column-layout rule; chips already wrap. */
+  @media (max-width: 760px) {
+    :scope[variant="chips"] { grid-template-columns: none; gap: var(--s-8); }
+    :scope[variant="chips"] .stat:nth-child(2n) { border-left: none; padding-left: var(--s-12); }
+  }
 }

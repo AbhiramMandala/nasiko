@@ -21,7 +21,8 @@ pub use runtime_ext::InstrumentedRuntime;
 pub use tempo::TempoClient;
 pub use types::{
     AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, TokenUsage, TraceDetails,
-    TraceSummary, TraceUsageRow, extract_token_attrs, latency_percentiles,
+    TraceSummary, TraceUsageRow, extract_cache_token_attrs, extract_token_attrs,
+    latency_percentiles,
 };
 
 pub struct TelemetryConfig {

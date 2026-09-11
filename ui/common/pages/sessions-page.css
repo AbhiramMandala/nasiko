@@ -25,59 +25,63 @@
     text-wrap: pretty;
   }
 
-  /* The list is an <app-table>, which owns the search field, the header band,
-     the hairlines and the bordered scroller. This is a bare wrapper so the
-     empty/error state can take the same slot without table chrome around it. */
+  /* Search and the time range sit above the card, not in app-table's header:
+     the range is not a text filter, and the two read as one control row. */
+  .sessions-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    margin-bottom: var(--s-16);
+  }
+
+  .sessions-toolbar app-search {
+    flex: 0 1 380px;
+    min-width: 0;
+  }
+
+  /* Pushes the range control to the right edge, and keeps it there when a
+     second filter (status) joins it. */
+  .sessions-toolbar app-action-menu:first-of-type { margin-left: auto; }
+
+  @media (max-width: 640px) {
+    .sessions-toolbar { flex-wrap: wrap; }
+    .sessions-toolbar app-search { flex-basis: 100%; }
+    .sessions-toolbar app-action-menu:first-of-type { margin-left: 0; }
+  }
+
+  /* The list is an <app-table>, which owns the header band, the hairlines and
+     the bordered scroller. This is a bare wrapper so the empty/error state can
+     take the same slot without table chrome around it. */
   .session-list { display: block; }
 
   /* ── Session cell ────────────────────────────────────────────────────────
      The whole cell is one link — app-table renders the row, so the navigable
      target has to live in the cell rather than on the <tr>. `min-height` keeps
-     rows uniform: `.session-preview` only renders when the session has a
-     last_message, and without a floor the list alternated tall and short rows
-     depending on the data and read as broken rather than as a table. */
+     rows uniform whether or not the status dot has rendered. */
   a.session-link {
     display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: var(--s-4);
+    align-items: center;
+    gap: var(--s-8);
     min-height: 40px;
     color: inherit;
     text-decoration: none;
   }
 
-  .session-agent {
-    display: flex;
-    align-items: center;
-    gap: var(--s-8);
-    font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--color-text-main);
-  }
-
-  .session-msg-count {
-    font-size: var(--font-size-xs);
-    font-weight: 400;
-    color: var(--color-text-muted);
-  }
-
-  /* Its own truncation: `text-overflow` on the cell only clips the cell's own
-     inline content, not a nested block.
-
-     ponytail: `max-width` is what keeps the table inside its scroller, and it
+  /* ponytail: `max-width` is what keeps the table inside its scroller, and it
      belongs here rather than in app-table. A column `width` there is only a
-     hint — the default `table-layout: auto` lets one long preview widen this
+     hint — the default `table-layout: auto` lets one long title widen this
      column until Date and the action column are pushed off the right edge (and
      `.td.is-plain`'s sticky pin does not hold under `border-collapse: collapse`,
      so they do not come back). Making the declared widths binding component-wide
      is the real fix, but it clips headers on the EE tables whose widths sum
-     under 100%, so the bound stays local: cap the preview and this column
-     settles at its declared share. */
-  .session-preview {
+     under 100%, so the bound stays local: cap the title and this column settles
+     at its declared share. */
+  .session-title {
     display: block;
-    max-width: 30ch;
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    max-width: 38ch;
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-text-main);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
