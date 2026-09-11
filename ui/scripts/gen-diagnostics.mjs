@@ -77,6 +77,21 @@ const SEVERITY = {
   data_not_rows: ['fatal', 'the component renders blank'],
   missing_accessible_name: ['fatal', 'the renderer refuses the control outright'],
   unknown_slot: ['fatal', 'the child lands nowhere'],
+  children_have_nowhere_to_land: ['fatal', 'the child is dropped when the parent renders — it has no default slot'],
+
+  // ── repair.js / surface-stream.js ─────────────────────────────────────────
+  // The loop narrating itself. `runtime` on all three, and that is the whole
+  // classification argument: none of them is a verdict on the DSL. The
+  // diagnostics that ARE the verdict were already reported by the turn that
+  // produced them, and counting the machine's response to them a second time
+  // would double every fault in the telemetry.
+  //
+  // Reported at all — rather than kept quiet — because this spends a round
+  // trip nobody asked for and changes what is on screen. Something that acts
+  // on its own says so.
+  repair_started: ['runtime', 'the runtime is handing the last turn back to the generator to patch'],
+  repair_applied: ['runtime', 'the generator patched its own output; the diagnostics above are the pre-repair set'],
+  repair_no_better: ['runtime', 'the repair did not reduce the fault count, so the pre-repair surface was restored'],
 
   // ── queries.js ────────────────────────────────────────────────────────────
   query_failed: ['runtime', 'the data source failed; the DSL naming it is fine'],
@@ -187,14 +202,54 @@ if (problems.length) {
   process.exit(1);
 }
 
+/**
+ * Fatal codes the model cannot act on, and why.
+ *
+ * The surface runtime can hand its diagnostics back to the generator as a
+ * repair turn (common/surface/repair.js): the DSL is patchable by statement
+ * name, so fixing one is a line or two rather than a new dashboard. That only
+ * works for a mistake the model made and can see. The rest are ours.
+ *
+ * Listed as exceptions rather than opted into one by one, because the default
+ * is the safe direction: a fatal means the model wrote something wrong, and a
+ * new code that turns out not to be repairable costs one wasted turn, while a
+ * repairable one left off an allowlist stays broken forever. Every key is
+ * still checked against a real fatal code below, so this cannot rot.
+ */
+const NOT_REPAIRABLE = {
+  component_threw: "the component's own code threw — the message is a JS stack, not something a DSL edit addresses",
+  no_data_property: 'a catalog inconsistency; the DSL naming the component is correct',
+};
+
 const diagnostics = {};
 for (const code of [...codes.keys()].sort()) {
   const [severity, why] = SEVERITY[code];
-  diagnostics[code] = { severity, why, emitters: codes.get(code) };
+  diagnostics[code] = {
+    severity,
+    why,
+    // Only a fatal or an advisory says anything about the DSL at all.
+    ...(severity !== 'runtime' && !NOT_REPAIRABLE[code] && { repairable: true }),
+    ...(NOT_REPAIRABLE[code] && { notRepairable: NOT_REPAIRABLE[code] }),
+    emitters: codes.get(code),
+  };
 }
 
-const counts = { fatal: 0, advisory: 0, runtime: 0 };
-for (const d of Object.values(diagnostics)) counts[d.severity]++;
+for (const code of Object.keys(NOT_REPAIRABLE)) {
+  if (!codes.has(code)) {
+    console.error(`gen-diagnostics: NOT_REPAIRABLE names "${code}", which nothing emits.`);
+    process.exit(1);
+  }
+  if (SEVERITY[code][0] === 'runtime') {
+    console.error(`gen-diagnostics: NOT_REPAIRABLE names "${code}", which is runtime — no repair was ever offered.`);
+    process.exit(1);
+  }
+}
+
+const counts = { fatal: 0, advisory: 0, runtime: 0, repairable: 0 };
+for (const d of Object.values(diagnostics)) {
+  counts[d.severity]++;
+  if (d.repairable) counts.repairable++;
+}
 
 const payload = {
   _generated: 'by ui/scripts/gen-diagnostics.mjs from ui/common/surface/*.js — do not hand-edit',
@@ -204,6 +259,8 @@ const payload = {
     'corrected a real mistake and the surface is still right; `runtime` means the',
     'event says nothing about the DSL at all. A new code with no entry in this',
     "script's SEVERITY map fails generation rather than defaulting to anything.",
+    '`repairable` means the runtime can hand this one back to the generator as a',
+    'repair turn — see common/surface/repair.js.',
   ].join(' '),
   counts,
   diagnostics,
@@ -212,7 +269,8 @@ const payload = {
 const next = `${JSON.stringify(payload, null, 2)}\n`;
 const current = existsSync(OUT) ? readFileSync(OUT, 'utf8') : '';
 const summary = `${Object.keys(diagnostics).length} codes — `
-  + `${counts.fatal} fatal, ${counts.advisory} advisory, ${counts.runtime} runtime`;
+  + `${counts.fatal} fatal, ${counts.advisory} advisory, ${counts.runtime} runtime`
+  + `, ${counts.repairable} repairable`;
 
 if (process.argv.includes('--check')) {
   if (current !== next) {

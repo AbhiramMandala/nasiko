@@ -41,6 +41,8 @@ import { pruneUnreachable } from './gc.js';
 import { createQueryManager } from './queries.js';
 import { createActionRunner } from './actions.js';
 import { createSurfaceTelemetry } from './telemetry.js';
+import { repairableDiagnostics, buildRepairPrompt } from './repair.js';
+import { severities } from './catalog-load.js';
 
 /**
  * A catalog version this client can actually compare against.
@@ -121,6 +123,16 @@ export function createSurfaceSession(options) {
     routes = router,
     navigate = (path) => router.navigate(path),
     onTurn,
+    /**
+     * The automatic repair turn (repair.js). `rounds: 0` turns it off.
+     * `includeAdvisory` also hands back the corrected-but-wrong ones — off by
+     * default because an advisory means the surface on screen is already
+     * right, and a round trip to tidy a pre-fetch placeholder is not worth
+     * making every user wait for. The eval harness turns it on, because
+     * measuring those IS the point there.
+     */
+    repair = { rounds: 1, includeAdvisory: false },
+    severityTable = null,
     fetchImpl = globalThis.fetch?.bind(globalThis),
     schedule = (fn) => (globalThis.requestAnimationFrame ?? ((f) => setTimeout(f, 0)))(fn),
     // Resolved here rather than left undefined for render.js to fall back on.
@@ -155,10 +167,20 @@ export function createSurfaceSession(options) {
   let ended = false;
 
   const telemetry = createSurfaceTelemetry({ report: onTurn });
-  /** Every diagnostic, wherever it came from, is both shown and counted. */
+  /** This turn's diagnostics, for the repair pass. Reset by each runTurn. */
+  let turnDiagnostics = [];
+  /**
+   * Whether the turn in flight is an automatic repair rather than something a
+   * person asked for. A repair turn is machine-to-machine: its prose belongs
+   * in no chat log, because nobody asked the question and "I've fixed the tab
+   * labels" arriving unprompted reads as the assistant talking to itself.
+   */
+  let internalTurn = false;
+  /** Every diagnostic, wherever it came from, is shown, counted and collected. */
   const emitDiagnostics = (list) => {
     if (!list?.length) return;
     telemetry.record(list);
+    turnDiagnostics.push(...list);
     onDiagnostics?.(list);
   };
 
@@ -283,7 +305,7 @@ export function createSurfaceSession(options) {
     // one back is what stops half a sentence appearing as a chat message.
     const tail = prose[prose.length - 1];
     const settled = ended || !tail || !buffer.trimEnd().endsWith(tail) ? prose.length : prose.length - 1;
-    for (let i = proseEmitted; i < settled; i++) onMessage?.(prose[i]);
+    if (!internalTurn) for (let i = proseEmitted; i < settled; i++) onMessage?.(prose[i]);
     proseEmitted = Math.max(proseEmitted, settled);
 
     const out = walk();
@@ -332,7 +354,7 @@ export function createSurfaceSession(options) {
    * @param {{signal?: AbortSignal, context?: object}} [opts]
    * @returns {Promise<{status: string, surface: string, catalogVersion: string|null}>}
    */
-  async function send(prompt, opts = {}) {
+  async function runTurn(prompt, opts = {}) {
     // Seeded with the previous turn's pruned surface, not emptied. agent.yaml
     // rule 8 tells the generator that on a revision turn it must ONLY EMIT
     // STATEMENTS THAT ARE NEW OR ACTUALLY CHANGING — and materialize.js's own
@@ -366,7 +388,13 @@ export function createSurfaceSession(options) {
     let remoteCatalogVersion = null;
     let sawSurface = false;
 
-    telemetry.begin({ promptLength: String(prompt ?? '').length, catalogVersion: catalog.catalogVersion });
+    turnDiagnostics = [];
+    internalTurn = Boolean(opts.repairRound);
+    telemetry.begin({
+      promptLength: String(prompt ?? '').length,
+      catalogVersion: catalog.catalogVersion,
+      repairRound: opts.repairRound ?? 0,
+    });
     onStatus?.({ phase: 'requesting' });
 
     // Where the request goes.
@@ -570,7 +598,7 @@ export function createSurfaceSession(options) {
           return false;
 
         case 'message': // the generator answering rather than building
-          if (body.text) onMessage?.(body.text);
+          if (body.text && !internalTurn) onMessage?.(body.text);
           return false;
 
         case 'note':
@@ -612,6 +640,116 @@ export function createSurfaceSession(options) {
       rendered: Boolean(out.root),
     });
     return { status, surface: currentSurface, catalogVersion: remoteCatalogVersion };
+  }
+
+  /**
+   * Put a previous surface back after a repair that did not help.
+   *
+   * Deliberately NOT `show()`, which resets first. A rollback happens inside
+   * one conversation: the queries have their data and `$state` holds whatever
+   * the user has switched to since. Resetting would throw both away and make
+   * a failed repair cost strictly more than not attempting one — the person
+   * would watch their filter snap back to the default for no reason they can
+   * see. Only the tree is rebuilt.
+   *
+   * @param {string} dsl
+   */
+  function restoreSurface(dsl) {
+    buffer = String(dsl ?? '');
+    ended = true;
+    draw();
+    currentSurface = buffer;
+  }
+
+  /**
+   * One turn, and the repair turn the runtime may ask for after it.
+   *
+   * ## The loop
+   *
+   * Act, observe, repair. `runTurn` streams the DSL and renders it; the
+   * renderer reports, in machine-readable form, everything it found wrong;
+   * repair.js decides which of those the model could actually fix and writes
+   * the follow-up. The generator patches by statement name, so the second
+   * turn is one or two lines rather than another dashboard — that is what
+   * makes this affordable enough to run on every broken turn instead of
+   * offering the user a "retry" button that regenerates from scratch.
+   *
+   * ## The three stopping conditions, and why each one is here
+   *
+   * A self-correcting loop that cannot stop is worse than no loop, so each
+   * exit is deliberate rather than a limit someone picked:
+   *
+   *   1. **Nothing repairable.** The common case — no request is made at all.
+   *   2. **A bounded round count**, default one. A second round costs a second
+   *      wait for a person already looking at a dashboard, and by then the
+   *      model has been told what is wrong once. If it did not act on that,
+   *      telling it again is not new information.
+   *   3. **No improvement.** If the repair leaves as many problems as it
+   *      found, it did not work, and the surface it produced is not
+   *      trustworthy — so the pre-repair one is restored and the original
+   *      diagnostics stand. Without this the loop can make things worse,
+   *      which is the failure mode that makes people switch these off.
+   *
+   * Whatever happens is reported. `repair_applied` / `repair_no_better` are
+   * runtime diagnostics, not faults: they say what the machine did on its own,
+   * which is the minimum for something that spends a round trip unasked.
+   *
+   * @param {string} prompt
+   * @param {{signal?: AbortSignal, context?: object, repair?: object}} [opts]
+   */
+  async function send(prompt, opts = {}) {
+    const cfg = { rounds: 1, includeAdvisory: false, ...repair, ...(opts.repair || {}) };
+    let out = await runTurn(prompt, opts);
+
+    for (let round = 1; round <= (cfg.rounds ?? 0); round++) {
+      // Only a turn that finished and drew something can be repaired. A failed
+      // stream or a conversational answer has no surface to patch, and an
+      // aborted one means the user has already moved on.
+      if (out.status !== 'ok' || !lastOut?.root || opts.signal?.aborted) break;
+
+      const table = severityTable ?? severities();
+      const before = repairableDiagnostics(turnDiagnostics, table, cfg);
+      if (!before.length) break;
+      const repairPrompt = buildRepairPrompt(before);
+      if (!repairPrompt) break;
+
+      // What to put back if this makes things worse. Pure DSL — prose never
+      // reaches currentSurface.
+      const previous = currentSurface;
+      emitDiagnostics([{
+        source: 'repair',
+        code: 'repair_started',
+        message: `${before.length} problem(s) handed back to the generator`,
+      }]);
+
+      const repaired = await runTurn(repairPrompt, { ...opts, repairRound: round });
+      const after = repairableDiagnostics(turnDiagnostics, table, cfg);
+
+      if (repaired.status === 'ok' && after.length < before.length) {
+        emitDiagnostics([{
+          source: 'repair',
+          code: 'repair_applied',
+          message: `${before.length} → ${after.length} after one repair turn`,
+        }]);
+        out = repaired;
+        if (!after.length) break;
+        continue;
+      }
+
+      // Worse, or no better. Put the surface the user already had back, and
+      // let its own diagnostics stand: they describe what is on screen.
+      emitDiagnostics([{
+        source: 'repair',
+        code: 'repair_no_better',
+        message: repaired.status === 'ok'
+          ? `${before.length} → ${after.length}; the pre-repair surface was restored`
+          : `the repair turn ${repaired.status}; the pre-repair surface was restored`,
+      }]);
+      if (previous && previous !== currentSurface) restoreSurface(previous);
+      break;
+    }
+
+    return out;
   }
 
   return {

@@ -944,3 +944,130 @@ test('a reopened surface is still live, not a screenshot', async () => {
   assert.equal(container.children[0].children[0].textContent, 'after',
     'the Action ran and the surface repainted');
 });
+
+
+// ── The repair turn ─────────────────────────────────────────────────────────
+// After a turn that renders something broken, the runtime hands its own
+// diagnostics back to the generator and asks for a patch. What matters is not
+// that it can — it is that it stops: a loop with no brake is worse than no
+// loop, and the three exits below are the whole safety argument.
+
+const severityTable = JSON.parse(
+  readFileSync(new URL('../common/surface/diagnostics.json', import.meta.url), 'utf8')).diagnostics;
+
+/**
+ * A session that answers each request with the next canned stream.
+ * `session()` above replays one body forever, which cannot express "the
+ * repair turn said something different from the first turn".
+ */
+function repairSession(turns, { repair } = {}) {
+  const { doc, container } = recorder();
+  const messages = [];
+  const diagnostics = [];
+  const prompts = [];
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    severityTable,
+    ...(repair !== undefined && { repair }),
+    onMessage: (t) => messages.push(t),
+    onDiagnostics: (d) => diagnostics.push(...d),
+    call: async () => [],
+    fetchImpl: async (url, init) => {
+      prompts.push(JSON.parse(init.body).prompt);
+      return sse(turns[Math.min(prompts.length - 1, turns.length - 1)]);
+    },
+  });
+  return { s, container, messages, diagnostics, prompts };
+}
+
+const codesOf = (d) => d.map((x) => x.code);
+/** A surface whose AppTabs has no `label` — the real defect this came from. */
+const BROKEN = [
+  frame('surface', { surfaceId: 's1', catalogVersion: catalog.catalogVersion }, 1),
+  'event: dsl-chunk\ndata: {"text":"root = AppTabs([p], false, [{key: \\"a\\", label: \\"A\\"}], \\"a\\")\\n"}\n\n',
+  'event: dsl-chunk\ndata: {"text":"p = AppText(\\"panel\\")\\n"}\n\n',
+  frame('end', { status: 'ok' }, 4),
+];
+/** The same statement, named. */
+const FIXED = [
+  frame('surface', { surfaceId: 's1', catalogVersion: catalog.catalogVersion }, 1),
+  'event: dsl-chunk\ndata: {"text":"root = AppTabs([p], false, [{key: \\"a\\", label: \\"A\\"}], \\"a\\", null, \\"Views\\")\\n"}\n\n',
+  frame('end', { status: 'ok' }, 3),
+];
+
+test('a fatal the model can fix is handed straight back to it', async () => {
+  const { s, diagnostics, prompts } = repairSession([BROKEN, FIXED]);
+  await s.send('build me tabs');
+
+  assert.equal(prompts.length, 2, 'one generation, one repair');
+  assert.match(prompts[1], /has no name/, 'the runtime states what it found');
+  assert.match(prompts[1], /`root`/, 'and which statement it found it on');
+  assert.ok(codesOf(diagnostics).includes('missing_accessible_name'));
+  assert.ok(codesOf(diagnostics).includes('repair_applied'));
+});
+
+test('a clean turn costs no second request at all', async () => {
+  // The common case, and the one that decides whether this is affordable.
+  const { s, prompts, diagnostics } = repairSession([[
+    frame('surface', { surfaceId: 's1', catalogVersion: catalog.catalogVersion }, 1),
+    'event: dsl-chunk\ndata: {"text":"root = AppText(\\"All good\\")\\n"}\n\n',
+    frame('end', { status: 'ok' }, 3),
+  ]]);
+  await s.send('say hello');
+  assert.equal(prompts.length, 1);
+  assert.deepEqual(codesOf(diagnostics).filter((c) => c.startsWith('repair')), []);
+});
+
+test('a repair that fixes nothing restores the surface the user already had', async () => {
+  // The exit that matters. Without it the loop can leave the page worse than
+  // it found it, which is the failure that makes people switch these off.
+  const { s, container, diagnostics, prompts } = repairSession([BROKEN, BROKEN]);
+  await s.send('build me tabs');
+
+  assert.equal(prompts.length, 2, 'it tried once');
+  assert.ok(codesOf(diagnostics).includes('repair_no_better'));
+  assert.equal(container.children[0].tag, 'app-tabs', 'a surface is still on screen');
+  assert.equal(s.currentSurface.includes('AppTabs'), true);
+});
+
+test('it never runs more than the rounds it was given', async () => {
+  const { s, prompts } = repairSession([BROKEN, BROKEN, BROKEN, BROKEN]);
+  await s.send('build me tabs');
+  assert.equal(prompts.length, 2, 'default is one repair, not "until it works"');
+
+  const off = repairSession([BROKEN, FIXED], { repair: { rounds: 0 } });
+  await off.s.send('build me tabs');
+  assert.equal(off.prompts.length, 1, 'rounds: 0 turns the whole thing off');
+});
+
+test('the repair turn says nothing to the user', async () => {
+  // Machine-to-machine. Nobody asked the question, and an unprompted "I've
+  // fixed the tab labels" reads as the assistant talking to itself.
+  const chatty = [
+    frame('surface', { surfaceId: 's1', catalogVersion: catalog.catalogVersion }, 1),
+    'event: dsl-chunk\ndata: {"text":"Fixed that for you.\\n"}\n\n',
+    'event: dsl-chunk\ndata: {"text":"root = AppTabs([p], false, [{key: \\"a\\", label: \\"A\\"}], \\"a\\", null, \\"Views\\")\\n"}\n\n',
+    frame('end', { status: 'ok' }, 4),
+  ];
+  const { s, messages } = repairSession([BROKEN, chatty]);
+  await s.send('build me tabs');
+  assert.ok(!messages.some((m) => /Fixed that for you/.test(m)),
+    `the repair turn's prose leaked into the chat log: ${JSON.stringify(messages)}`);
+});
+
+test('a turn that drew nothing is not repaired', async () => {
+  // A conversational answer or a failed stream has no surface to patch, and
+  // asking it to fix one teaches it that it was supposed to build something.
+  const prose = [
+    frame('surface', { surfaceId: 's1', catalogVersion: catalog.catalogVersion }, 1),
+    frame('message', { text: 'I build TokenOps dashboards.' }, 2),
+    frame('end', { status: 'ok' }, 3),
+  ];
+  const { s, prompts } = repairSession([prose, FIXED]);
+  await s.send('what can you do?');
+  assert.equal(prompts.length, 1);
+});

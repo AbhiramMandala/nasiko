@@ -68,12 +68,18 @@ export function createSurfaceTelemetry({ report, now = () => Date.now() } = {}) 
     },
 
     /**
-     * @param {{promptLength?: number, catalogVersion?: string|null}} [meta]
+     * @param {{promptLength?: number, catalogVersion?: string|null,
+     *   repairRound?: number}} [meta] `repairRound` is 0 for the turn a person
+     *   asked for and 1+ for an automatic repair of it (surface/repair.js) —
+     *   without it the two are indistinguishable in the record, and "how often
+     *   does a first pass need repairing" is the number this whole mechanism
+     *   is judged by.
      */
     begin(meta = {}) {
       turn = {
         startedAt: now(),
         promptLength: meta.promptLength ?? 0,
+        repairRound: meta.repairRound ?? 0,
         catalogVersion: meta.catalogVersion ?? null,
         generatorCatalogVersion: null,
         surfaceId: null,
@@ -112,6 +118,7 @@ export function createSurfaceTelemetry({ report, now = () => Date.now() } = {}) 
         statements: outcome.statements ?? 0,
         rendered: Boolean(outcome.rendered),
         promptLength: turn.promptLength,
+        repairRound: turn.repairRound,
         catalogVersion: turn.catalogVersion,
         generatorCatalogVersion: turn.generatorCatalogVersion,
         diagnostics: summarize(turn.diagnostics),

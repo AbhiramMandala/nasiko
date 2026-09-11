@@ -54,6 +54,14 @@ export function loadSeverities() {
 }
 
 /**
+ * The loaded severity/repairable table, or null before {@link loadSeverities}
+ * resolves. The repair loop needs the whole entry, not just the severity
+ * `withSeverity` stamps on — `repairable` is what decides whether a diagnostic
+ * is worth a turn.
+ */
+export function severities() { return severityMap; }
+
+/**
  * Stamp each diagnostic with its severity and its plain-language `why`.
  *
  * `why` is the manifest's one-line answer to "what does this mean for the

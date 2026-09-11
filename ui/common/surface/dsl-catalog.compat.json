@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "13e08eea42d1",
+  "catalogVersion": "504af1d34a42",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 41,
@@ -363,6 +363,7 @@
       "element": "app-card",
       "summary": "`<app-card>` — THE card component.",
       "childrenParam": true,
+      "childrenSlot": "body",
       "paramOrder": [
         "children",
         "name",

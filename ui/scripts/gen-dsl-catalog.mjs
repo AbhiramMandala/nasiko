@@ -82,6 +82,9 @@ for (const [tag, def] of Object.entries(catalog.components)) {
       problems.push(`${tag}: dslExcludeAttributes names "${name}", which is not an attribute of ${tag}.`);
     }
   }
+  if (ov.itemActionsAttr && !def.attributes?.[ov.itemActionsAttr]) {
+    problems.push(`${tag}: itemActionsAttr names "${ov.itemActionsAttr}", which is not an attribute of ${tag}.`);
+  }
 
   const attributes = {};
   for (const [name, spec] of Object.entries(def.attributes || {})) {
@@ -186,6 +189,33 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     problems.push(`${tag}: ${firstArg.join(' and ')} all claim the first positional argument — pick one.`);
   }
 
+  // Where an UNSLOTTED child lands.
+  //
+  // `childrenParam` says the DSL may pass children; it does not say the
+  // component has anywhere to put them. Three take children and declare no
+  // `default` slot — app-card, app-banner, app-toolbar — and the first two
+  // rewrite innerHTML on render, so a child with no slot marker is silently
+  // destroyed. `AppCard([chart], "Cost")` built the chart, appended it, and
+  // the card wiped it: no error, no chart, and a summary sentence claiming
+  // otherwise. The prompt taught that exact line.
+  //
+  // So the landing place is declared, per component, and checked here against
+  // the slots the component actually documents. Where there is no honest
+  // answer it stays undeclared and the renderer reports rather than guesses —
+  // a child put in the wrong region is a different wrong from a child put
+  // nowhere, and only one of them is visible.
+  const slotNames = (def.slots ?? []).map((sl) => (typeof sl === 'string' ? sl : sl.name));
+  const hasDefaultSlot = slotNames.includes('default');
+  if (ov.childrenSlot) {
+    if (!ov.childrenParam) {
+      problems.push(`${tag}: childrenSlot is declared but the component takes no children.`);
+    } else if (hasDefaultSlot) {
+      problems.push(`${tag}: childrenSlot is declared but a "default" slot already takes them.`);
+    } else if (!slotNames.includes(ov.childrenSlot)) {
+      problems.push(`${tag}: childrenSlot "${ov.childrenSlot}" is not one of its slots (${slotNames.join(', ') || 'none'}).`);
+    }
+  }
+
   // The positional contract, written down. A leading children/data slot when
   // the override declares one, then the surviving attributes in catalog order.
   const leading = ov.childrenParam ? ['children'] : ov.dataParam ? ['data'] : ov.textParam ? ['text'] : [];
@@ -199,6 +229,7 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     element: def.element ?? tag,
     summary,
     ...(ov.childrenParam && { childrenParam: true }),
+    ...(ov.childrenSlot && { childrenSlot: ov.childrenSlot }),
     ...(ov.dataParam && { dataParam: true }),
     ...(ov.textParam && { textParam: true }),
     ...(ov.actionParam && { actionParam: true }),
@@ -212,6 +243,7 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     ...(ov.dataProp && { dataProp: ov.dataProp }),
     ...(ov.dataAsFetcher && { dataAsFetcher: true }),
     ...(ov.actionEvent && { actionEvent: ov.actionEvent }),
+    ...(ov.itemActionsAttr && { itemActionsAttr: ov.itemActionsAttr }),
     ...(ov.needsOpenCall && { needsOpenCall: true }),
     ...(ov.note && { note: ov.note }),
   };

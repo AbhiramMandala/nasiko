@@ -210,6 +210,12 @@ function buildNode(node, catalog, deps = {}) {
   }
 
   const el = doc.createElement(node.tag);
+  // Marks the generated tree, so a stylesheet can give it the defaults a
+  // hand-written page supplies in CSS without also reaching inside the
+  // components it is built from — app-table renders its own <app-input>, and
+  // a descendant selector cannot tell that one from the model's.
+  // See weave-surface.css.
+  el.setAttribute('data-weave', '');
   const attrs = def.attributes || {};
 
   if (def.needsOpenCall) deps._toOpen?.push(el);
@@ -230,6 +236,17 @@ function buildNode(node, catalog, deps = {}) {
       report('component_as_attribute',
         `${node.tag}.${key} takes a value and was given ${describeComponents(value)}`
         + (def.childrenParam ? '' : ` — ${node.tag} takes children through slots, not as an argument`));
+      continue;
+    }
+
+    // `app-action-menu`'s `items` is the one attribute in the catalog that can
+    // carry a per-item Action — the component itself only fires one
+    // `action-select` for the whole widget (`detail: {id}`), so nothing in the
+    // generic json-attribute path below can wire N different actions to N
+    // items. `itemActionsAttr` names which attribute this is, per component,
+    // so this stays catalog-driven rather than a hardcoded tag check.
+    if (def.itemActionsAttr === key) {
+      wireActionMenuItems(el, value, deps);
       continue;
     }
 
@@ -372,15 +389,70 @@ function buildNode(node, catalog, deps = {}) {
     }
   }
 
+  // ── Where an unslotted child lands ────────────────────────────────────
+  // A component that takes children does not necessarily have a default slot
+  // to put them in. Three do not — app-card, app-banner, app-toolbar — and
+  // the first two rewrite innerHTML when they render, so a child with no slot
+  // marker is appended and then destroyed. `AppCard([chart], "Cost")` built
+  // the chart, lost it, reported nothing, and left the model's own closing
+  // sentence describing a chart that is not on the page.
+  //
+  // `childrenSlot` is the catalog saying where they go, checked against the
+  // component's real slots at generation time (gen-dsl-catalog.mjs). Where
+  // the catalog does not say, this reports instead of guessing: putting a
+  // child in the wrong region and putting it nowhere are different failures,
+  // and only one of them is visible to the person who asked.
+  const slotNames = (def.slots || []).map((sl) => (typeof sl === 'string' ? sl : sl.name));
+  const fallbackSlot = slotNames.includes('default') ? null : def.childrenSlot || null;
+  const nowhereToLand = !slotNames.includes('default') && !def.childrenSlot;
+
   for (const child of node.children || []) {
     if (!child || child.type !== 'element') continue;
     const childEl = renderNode(child, catalog, deps);
     if (!childEl) continue;
     if (child.slot) applySlot(childEl, child.slot, def, node.tag, report);
+    else if (fallbackSlot) applySlot(childEl, fallbackSlot, def, node.tag, report);
+    else if (nowhereToLand) {
+      report('children_have_nowhere_to_land',
+        `${node.tag} has no default slot, so <${child.tag}> would be dropped when it renders`
+        + (slotNames.length
+          ? ` — name one with Slot("${slotNames[0]}", …); it has ${slotNames.join(', ')}`
+          : ' — it takes no children at all'));
+      continue;
+    }
     el.appendChild(childEl);
   }
 
   return el;
+}
+
+/**
+ * Wire `app-action-menu`'s `items` — an array of `{label, action}` (an
+ * explicit `id` is optional; the model is not taught to invent one, so a
+ * missing id is synthesized here). The component's own `items` attribute only
+ * understands `{id, label}`, and its own `action-select` event only ever
+ * carries the id back — so the per-item `Action` has to live somewhere else:
+ * a map built here, closed over the listener, keyed by the same id the
+ * cleaned attribute uses.
+ */
+function wireActionMenuItems(el, items, deps) {
+  const clean = [];
+  const actionsById = new Map();
+  let i = 0;
+  for (const item of Array.isArray(items) ? items : []) {
+    if (item && typeof item === 'object') {
+      const id = item.id != null ? String(item.id) : `item-${i}`;
+      const label = item.label != null ? String(item.label) : id;
+      clean.push({ id, label });
+      if (item.action && item.action.type === 'action') actionsById.set(id, item.action);
+    }
+    i++;
+  }
+  el.setAttribute('items', JSON.stringify(clean));
+  el.addEventListener('action-select', (e) => {
+    const action = actionsById.get(e.detail?.id);
+    if (action) deps.onAction?.(action, el, undefined);
+  });
 }
 
 /**

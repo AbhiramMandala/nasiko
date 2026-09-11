@@ -28,9 +28,29 @@ test('every code carries a rank, a reason and at least one emitter', () => {
 });
 
 test('the counts in the header match the body', () => {
-  const actual = { fatal: 0, advisory: 0, runtime: 0 };
-  for (const d of Object.values(diagnostics)) actual[d.severity]++;
+  const actual = { fatal: 0, advisory: 0, runtime: 0, repairable: 0 };
+  for (const d of Object.values(diagnostics)) {
+    actual[d.severity]++;
+    if (d.repairable) actual.repairable++;
+  }
   assert.deepEqual(actual, counts);
+});
+
+test('only a verdict on the DSL is ever handed back for repair', () => {
+  // A repair turn asks the model to fix its own output. A `runtime` code is
+  // not its output — a data source that 500s, a dropped stream, a host with
+  // no navigator — and asking it to repair one teaches it that the DSL was
+  // at fault when it was not.
+  for (const [code, d] of Object.entries(diagnostics)) {
+    if (d.severity !== 'runtime') continue;
+    assert.ok(!d.repairable, `${code} is runtime and marked repairable`);
+  }
+  // And the exceptions are stated, not implied: a fatal that is NOT
+  // repairable has to say why, so the list cannot quietly grow.
+  for (const [code, d] of Object.entries(diagnostics)) {
+    if (d.severity === 'runtime' || d.repairable) continue;
+    assert.ok(d.notRepairable, `${code} is a ${d.severity} that no repair is offered for, with no reason recorded`);
+  }
 });
 
 test('a code emitted from two modules records both, with each one\'s source', () => {

@@ -242,3 +242,65 @@ export function autoFormat(value) {
   }
   return String(value);
 }
+
+/**
+ * Axis labels for a series whose x values are timestamps.
+ *
+ * Every timeseries this app charts arrives as ISO-8601 in UTC —
+ * `bucket_start: "2026-09-09T14:00:00Z"` — and a generated surface binds it
+ * straight through, because the DSL has no date formatter and `@builtins` is
+ * arithmetic only. Left alone, the x axis is a row of 20-character UTC
+ * strings: unreadable, and wrong for the reader, since 14:00Z is not 14:00
+ * where they are.
+ *
+ * ## One rule: a tick shows only what varies
+ *
+ * Everything constant across the set is chrome. It costs width on every
+ * label, it is identical on every label, and so it distinguishes nothing —
+ * while the part that does distinguish gets less room. Applied in order:
+ *
+ *   - the same clock time on every point → the time is the bucket's
+ *     alignment, not an event. `bucket=day` returns "2026-09-04T00:00:00Z"
+ *     for a whole day, and "4 Sept, 5:30" states a clock time the data never
+ *     had — 5:30 is just where UTC midnight lands for this reader.
+ *   - all on one calendar day → the date is the panel's, not the tick's; show
+ *     clock times.
+ *   - all in one year → drop the year.
+ *
+ * Nothing here is a granularity setting, because the same endpoint answers
+ * both shapes and the caller does not know which it got: `bucket=hour` inside
+ * one day wants clock times, `bucket=day` across a month wants dates, and a
+ * run crossing a midnight needs both. The set says which it is.
+ *
+ * A set with even one non-date in it is left completely alone — a
+ * half-converted axis is worse than an unconverted one.
+ *
+ * @param {Array<unknown>} labels
+ * @returns {Array<unknown>} the same array when these are not dates
+ */
+export function timeAxisLabels(labels) {
+  const present = labels.filter((l) => l !== null && l !== undefined && l !== '');
+  if (!present.length || !present.every((l) => isIsoDateTime(l))) return labels;
+  const dates = present.map((l) => new Date(String(l).trim()));
+  const days = new Set(dates.map((d) => d.toDateString()));
+  const clocks = new Set(dates.map((d) => `${d.getHours()}:${d.getMinutes()}`));
+  const years = new Set(dates.map((d) => d.getFullYear()));
+  const timed = present.some((l) => /[T ]\d{2}:\d{2}/.test(String(l)))
+    && !(days.size > 1 && clocks.size === 1);
+
+  // All on one day: the date belongs in the panel title, not on every tick.
+  if (timed && days.size === 1) {
+    return labels.map((l) => (l ? fmtDateTime(l, 'time') : l));
+  }
+  const opts = {
+    month: 'short',
+    day: 'numeric',
+    ...(years.size > 1 && { year: 'numeric' }),
+    ...(timed && { hour: 'numeric', minute: '2-digit' }),
+  };
+  return labels.map((l) => {
+    if (!l) return l;
+    const d = new Date(String(l).trim());
+    return Number.isNaN(d.getTime()) ? l : d.toLocaleString(undefined, opts);
+  });
+}

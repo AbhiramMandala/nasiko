@@ -594,10 +594,11 @@
             "number",
             "currency",
             "percent",
-            "compact"
+            "compact",
+            "duration"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `duration`"
         },
         "flush-top": {
           "type": "boolean",

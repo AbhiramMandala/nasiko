@@ -1,10 +1,11 @@
 {
   "_generated": "by ui/scripts/gen-diagnostics.mjs from ui/common/surface/*.js — do not hand-edit",
-  "contract": "Every diagnostic the surface runtime can emit. `fatal` means the generation is wrong and an eval case carrying one fails; `advisory` means the runtime corrected a real mistake and the surface is still right; `runtime` means the event says nothing about the DSL at all. A new code with no entry in this script's SEVERITY map fails generation rather than defaulting to anything.",
+  "contract": "Every diagnostic the surface runtime can emit. `fatal` means the generation is wrong and an eval case carrying one fails; `advisory` means the runtime corrected a real mistake and the surface is still right; `runtime` means the event says nothing about the DSL at all. A new code with no entry in this script's SEVERITY map fails generation rather than defaulting to anything. `repairable` means the runtime can hand this one back to the generator as a repair turn — see common/surface/repair.js.",
   "counts": {
-    "fatal": 29,
+    "fatal": 30,
     "advisory": 4,
-    "runtime": 18
+    "runtime": 21,
+    "repairable": 32
   },
   "diagnostics": {
     "action_halted": {
@@ -30,6 +31,7 @@
     "bad_action_step": {
       "severity": "fatal",
       "why": "that step never runs",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -40,6 +42,7 @@
     "bad_each": {
       "severity": "fatal",
       "why": "@Each yields [] — the whole repeated section is missing",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -50,6 +53,7 @@
     "bad_mutation": {
       "severity": "fatal",
       "why": "the mutation can never fire",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -60,6 +64,7 @@
     "bad_query": {
       "severity": "fatal",
       "why": "no data reaches the component",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -70,6 +75,7 @@
     "bad_reset": {
       "severity": "fatal",
       "why": "@Reset names nothing",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/actions.js",
@@ -80,6 +86,7 @@
     "bad_run": {
       "severity": "fatal",
       "why": "@Run names nothing",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/actions.js",
@@ -90,6 +97,7 @@
     "bad_set": {
       "severity": "fatal",
       "why": "@Set has no target, so the filter never moves",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/actions.js",
@@ -100,6 +108,7 @@
     "bad_slot": {
       "severity": "fatal",
       "why": "the child is lost",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -110,6 +119,7 @@
     "bad_to_assistant": {
       "severity": "fatal",
       "why": "@ToAssistant has no message",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/actions.js",
@@ -137,9 +147,21 @@
         }
       ]
     },
+    "children_have_nowhere_to_land": {
+      "severity": "fatal",
+      "why": "the child is dropped when the parent renders — it has no default slot",
+      "repairable": true,
+      "emitters": [
+        {
+          "module": "common/surface/render.js",
+          "source": "render"
+        }
+      ]
+    },
     "component_as_attribute": {
       "severity": "fatal",
       "why": "a whole subtree went into a string slot and is gone from the page",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -150,6 +172,7 @@
     "component_threw": {
       "severity": "fatal",
       "why": "the component's own code failed mid-render",
+      "notRepairable": "the component's own code threw — the message is a JS stack, not something a DSL edit addresses",
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -160,6 +183,7 @@
     "cycle": {
       "severity": "fatal",
       "why": "the statement resolves to null, so the component is absent",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -170,6 +194,7 @@
     "data_not_rows": {
       "severity": "fatal",
       "why": "the component renders blank",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -180,6 +205,7 @@
     "default_is_whole_response": {
       "severity": "advisory",
       "why": "the pre-fetch placeholder is the wrong shape; the real value arrives correct",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -190,6 +216,7 @@
     "default_misses_a_read_field": {
       "severity": "advisory",
       "why": "the field is blank until the fetch lands, and stays blank if it returns nothing",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -200,6 +227,7 @@
     "denied_attribute": {
       "severity": "fatal",
       "why": "a surface may never set style/class/id — the prompt should have prevented it",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -210,6 +238,7 @@
     "enum_violation": {
       "severity": "fatal",
       "why": "falls back to the default, which is not the value asked for",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -220,6 +249,7 @@
     "excess_arguments": {
       "severity": "fatal",
       "why": "a non-null argument the model meant is discarded",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -230,6 +260,7 @@
     "excess_null_padding": {
       "severity": "advisory",
       "why": "the extras are all null — nothing was lost, only written",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -260,6 +291,7 @@
     "missing_accessible_name": {
       "severity": "fatal",
       "why": "the renderer refuses the control outright",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -290,6 +322,7 @@
     "no_data_property": {
       "severity": "fatal",
       "why": "a catalog inconsistency, not a generation one — and it breaks every use of that component",
+      "notRepairable": "a catalog inconsistency; the DSL naming the component is correct",
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -310,6 +343,7 @@
     "non_route_value": {
       "severity": "advisory",
       "why": "an argument one position out of step; the slot ends up unset either way",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -330,6 +364,7 @@
     "orphaned_statement": {
       "severity": "fatal",
       "why": "the model built something and never put it on the page",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -357,6 +392,36 @@
         }
       ]
     },
+    "repair_applied": {
+      "severity": "runtime",
+      "why": "the generator patched its own output; the diagnostics above are the pre-repair set",
+      "emitters": [
+        {
+          "module": "common/surface/surface-stream.js",
+          "source": "repair"
+        }
+      ]
+    },
+    "repair_no_better": {
+      "severity": "runtime",
+      "why": "the repair did not reduce the fault count, so the pre-repair surface was restored",
+      "emitters": [
+        {
+          "module": "common/surface/surface-stream.js",
+          "source": "repair"
+        }
+      ]
+    },
+    "repair_started": {
+      "severity": "runtime",
+      "why": "the runtime is handing the last turn back to the generator to patch",
+      "emitters": [
+        {
+          "module": "common/surface/surface-stream.js",
+          "source": "repair"
+        }
+      ]
+    },
     "request_failed": {
       "severity": "runtime",
       "why": "the request never left, or threw before any frame",
@@ -370,6 +435,7 @@
     "root_not_a_component": {
       "severity": "fatal",
       "why": "nothing renders at all",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -380,6 +446,7 @@
     "route_not_allowed": {
       "severity": "fatal",
       "why": "a link that goes nowhere",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/actions.js",
@@ -394,6 +461,7 @@
     "run_unknown": {
       "severity": "fatal",
       "why": "@Run points at a statement that is not a Query or Mutation",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/actions.js",
@@ -438,6 +506,7 @@
     "template_not_allowed": {
       "severity": "fatal",
       "why": "the grid reflows responsively instead of holding the ratio intended",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -448,6 +517,7 @@
     "uncontrolled_input": {
       "severity": "fatal",
       "why": "the box empties as the user types — its Action repaints and its value is not read back from state",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -458,6 +528,7 @@
     "unknown_attribute": {
       "severity": "fatal",
       "why": "the value is dropped, so what it was for is missing",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -468,6 +539,7 @@
     "unknown_builtin": {
       "severity": "fatal",
       "why": "the statement drops",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -478,6 +550,7 @@
     "unknown_component_type": {
       "severity": "fatal",
       "why": "nothing is rendered for it",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/materialize.js",
@@ -502,6 +575,7 @@
     "unknown_slot": {
       "severity": "fatal",
       "why": "the child lands nowhere",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/render.js",
@@ -512,6 +586,7 @@
     "unknown_step": {
       "severity": "fatal",
       "why": "not an Action step at all",
+      "repairable": true,
       "emitters": [
         {
           "module": "common/surface/actions.js",

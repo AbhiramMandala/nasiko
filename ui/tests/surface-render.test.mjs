@@ -55,6 +55,11 @@ function draw(dsl, opts = {}) {
   return { el: container.children[0], container, diagnostics, fired, materialized: out };
 }
 const codes = (d) => d.map((x) => x.code);
+/** Attributes the DSL actually asked for. Every generated node also carries
+ *  `data-weave`, the marker weave-surface.css scopes its defaults to — it is
+ *  the renderer's own, not something a statement can set or suppress. */
+const authored = (el) => Object.fromEntries(
+  Object.entries(el.attrs).filter(([k]) => k !== 'data-weave'));
 
 // ── attributes ──────────────────────────────────────────────────────────────
 
@@ -94,7 +99,7 @@ test('style and class can never be set from a surface', () => {
   const { doc } = recorder();
   const diagnostics = [];
   const el = renderNode(node, catalog, { doc, onDiagnostic: (d) => diagnostics.push(d) });
-  assert.deepEqual(el.attrs, {});
+  assert.deepEqual(authored(el), {});
   assert.deepEqual(codes(diagnostics), ['denied_attribute', 'denied_attribute']);
 });
 
@@ -410,7 +415,7 @@ test('AppText puts its text in the element, not in an attribute', () => {
   const { el } = draw('root = AppText("Spend is up 12% week over week")');
   assert.equal(el.tag, 'app-text');
   assert.equal(el.textContent, 'Spend is up 12% week over week');
-  assert.deepEqual(el.attrs, {}, 'body is the default — nothing to write');
+  assert.deepEqual(authored(el), {}, 'body is the default — nothing to write');
 });
 
 test('the role is the second positional, and it is a closed set', () => {
@@ -418,4 +423,50 @@ test('the role is the second positional, and it is a closed set', () => {
   const { el, diagnostics } = draw('root = AppText("Cost overview", "h1")');
   assert.ok(codes(diagnostics).includes('enum_violation'), codes(diagnostics).join(','));
   assert.equal(el.attrs.variant, 'body', 'falls back to the default rather than rendering unstyled');
+});
+
+// ── Where an unslotted child lands ──────────────────────────────────────────
+// A component that accepts children does not necessarily have anywhere to put
+// them. app-card, app-banner and app-toolbar declare no `default` slot, and
+// the first two rewrite innerHTML when they render — so an unmarked child is
+// appended by the renderer and destroyed by the component a moment later. The
+// page is missing a chart, the diagnostics are empty, and the model's closing
+// sentence says the chart is there.
+
+test('a card child lands in the body slot the catalog names for it', () => {
+  const { el, diagnostics } = draw('root = AppCard([c], "Cost by model")\nc = AppChart([], "donut")');
+  assert.deepEqual(codes(diagnostics), []);
+  assert.equal(el.children.length, 1, 'the chart is still in the card');
+  assert.equal(el.children[0].attrs['data-slot'], 'body',
+    'without the marker app-card wipes it on render');
+});
+
+test('an explicit Slot still wins over the catalog fallback', () => {
+  const { el, diagnostics } = draw(
+    'root = AppCard([s], "Agent")\ns = Slot("footer", b)\nb = AppButton("Open")');
+  assert.deepEqual(codes(diagnostics), []);
+  assert.equal(el.children[0].attrs['data-slot'], 'footer');
+});
+
+test('a child with nowhere to land is reported, not silently dropped', () => {
+  // app-toolbar has start/end and no default. Before this the child was
+  // appended unpositioned and nothing said so.
+  const { diagnostics } = draw('root = AppToolbar([b])\nb = AppButton("Export")');
+  assert.deepEqual(codes(diagnostics), ['children_have_nowhere_to_land']);
+  assert.match(diagnostics[0].message, /Slot\("start"/, 'the message names a slot that exists');
+});
+
+test('every component that takes children can say where they go', () => {
+  // The guarantee this rests on: for each `childrenParam` component the
+  // catalog either declares a `default` slot or a `childrenSlot`, or the
+  // renderer reports. No fourth case — a new component cannot quietly join
+  // the silent-loss group.
+  for (const [tag, def] of Object.entries(catalog.components)) {
+    if (!def.childrenParam) continue;
+    const slots = (def.slots || []).map((s) => (typeof s === 'string' ? s : s.name));
+    const lands = slots.includes('default') || Boolean(def.childrenSlot);
+    if (lands) continue;
+    assert.ok(slots.length > 0,
+      `${tag} takes children, has no default slot and no childrenSlot, and declares no slot at all`);
+  }
 });

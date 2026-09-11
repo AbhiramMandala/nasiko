@@ -95,3 +95,58 @@ test('applyFormat covers the catalog names and degrades instead of throwing', ()
   assert.equal(U.applyFormat(0.12345, 'not-a-format'), '0.12');
   assert.equal(U.applyFormat(null, 'currency'), '');
 });
+
+// ── Axis labels ─────────────────────────────────────────────────────────────
+// One rule, stated three ways: a tick shows only what varies. These assert the
+// SHAPE rather than the string, because they run in CI's UTC and on a laptop
+// that is not — and the zone is exactly what the first case is about.
+
+test('daily buckets lose the clock time they never had', () => {
+  // bucket=day returns UTC midnights. Rendered as a time they read "5:30" in
+  // IST — a clock time the data never carried, identical on every tick.
+  const out = U.timeAxisLabels([
+    '2026-09-04T00:00:00Z', '2026-09-05T00:00:00Z', '2026-09-06T00:00:00Z',
+  ]);
+  for (const label of out) {
+    assert.doesNotMatch(label, /\d{1,2}:\d{2}/, `"${label}" still carries a clock time`);
+  }
+  assert.equal(new Set(out).size, 3, 'the three buckets stay distinguishable');
+});
+
+test('hourly buckets inside one day keep their times and drop the date', () => {
+  const out = U.timeAxisLabels([
+    '2026-09-09T00:00:00Z', '2026-09-09T06:00:00Z', '2026-09-09T12:00:00Z',
+  ]);
+  for (const label of out) assert.match(label, /\d{1,2}:\d{2}/);
+  assert.equal(new Set(out).size, 3);
+});
+
+test('hourly buckets across several days keep both', () => {
+  const out = U.timeAxisLabels([
+    '2026-09-09T02:00:00Z', '2026-09-09T14:00:00Z', '2026-09-11T04:00:00Z',
+  ]);
+  for (const label of out) assert.match(label, /\d{1,2}:\d{2}/, 'the times differ, so they stay');
+  assert.equal(new Set(out).size, 3);
+});
+
+test('the year appears only when the span crosses one', () => {
+  const within = U.timeAxisLabels(['2026-09-04T00:00:00Z', '2026-09-05T00:00:00Z']);
+  for (const label of within) assert.doesNotMatch(label, /20\d{2}/, 'one year is chrome');
+  const across = U.timeAxisLabels(['2025-12-30T00:00:00Z', '2026-01-02T00:00:00Z']);
+  for (const label of across) assert.match(label, /20\d{2}/, 'two years is the point');
+});
+
+test('a label set with one non-date in it is left completely alone', () => {
+  // Half-converted is worse than unconverted: the reader cannot tell which
+  // column is which unit.
+  const input = ['2026-09-04T00:00:00Z', 'gpt-4'];
+  assert.deepEqual(U.timeAxisLabels(input), input);
+  assert.deepEqual(U.timeAxisLabels(['a', 'b']), ['a', 'b']);
+  assert.deepEqual(U.timeAxisLabels([]), []);
+});
+
+test('holes in the series survive as holes', () => {
+  const out = U.timeAxisLabels(['2026-09-04T00:00:00Z', null, '2026-09-06T00:00:00Z']);
+  assert.equal(out[1], null);
+  assert.equal(out.length, 3);
+});
