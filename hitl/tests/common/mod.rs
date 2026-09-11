@@ -24,6 +24,8 @@ pub struct TestDb {
     pub pool: PgPool,
     pub agent_id: Uuid,
     pub owner_user_id: Uuid,
+    /// Retained so `Drop` can remove the scratch database — see its own comment.
+    db_name: String,
 }
 
 impl TestDb {
@@ -80,6 +82,7 @@ impl TestDb {
             pool,
             agent_id,
             owner_user_id,
+            db_name,
         }
     }
 
@@ -103,5 +106,43 @@ impl TestDb {
         .fetch_one(&self.pool)
         .await
         .expect("seed connector")
+    }
+}
+
+/// Drop the scratch database when the fixture goes out of scope.
+///
+/// Without this every test leaked its database — a local Postgres had accumulated 1062 of them,
+/// and `CREATE DATABASE` degrades as `pg_database` grows, which is what turned a 5s test binary
+/// into a 27s one and started timing out poll loops. `oss/server/tests/common` has always dropped
+/// its own via an explicit `cleanup()`; these fixtures had no equivalent.
+///
+/// Done on a detached thread with its own runtime because `Drop` cannot await and the test's
+/// runtime may already be shutting down, and `join()`ed so the drop actually completes before the
+/// process exits. `WITH (FORCE)` terminates the pool's remaining backends — otherwise the open
+/// connections this fixture still holds would block the drop.
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        let url = pg_admin_url();
+        let name = std::mem::take(&mut self.db_name);
+        if name.is_empty() {
+            return;
+        }
+        let _ = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async {
+                if let Ok(admin) = PgPoolOptions::new().max_connections(1).connect(&url).await {
+                    let _ =
+                        sqlx::query(&format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"))
+                            .execute(&admin)
+                            .await;
+                }
+            });
+        })
+        .join();
     }
 }

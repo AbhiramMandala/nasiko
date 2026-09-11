@@ -733,10 +733,15 @@ pub async fn sweep_expired_session_grants(db: &PgPool) -> Result<u64> {
 }
 
 /// Default lease/staleness window for a resume-dispatcher claim before it is
-/// considered abandoned — 2 minutes, per `0007_hitl.sql`'s own claim-SQL
-/// comment. Exposed so callers (the dispatcher's recovery sweep) don't need
-/// to hardcode the same number twice.
-pub const DEFAULT_RESUME_LEASE_MINUTES: i64 = 2;
+/// considered abandoned. Exposed so callers (the dispatcher's recovery sweep) don't need to
+/// hardcode the same number twice.
+///
+/// Not `0007_hitl.sql`'s illustrative 2 minutes any more: `dispatch_one` holds its claim across
+/// every in-process retry, so a whole delivery can legitimately run ~15 minutes on the defaults and
+/// a 2-minute lease let the recovery sweep quarantine one still in flight (found in review). See
+/// `DispatcherConfig::effective_lease_minutes`, which derives the real floor and would otherwise
+/// have to override this on every default-constructed config.
+pub const DEFAULT_RESUME_LEASE_MINUTES: i64 = 16;
 
 /// Atomically claim exactly one row whose resolved decision has never been
 /// pushed anywhere yet, for the resume dispatcher (`crate::dispatcher`).

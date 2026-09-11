@@ -272,6 +272,14 @@ impl TestDb {
     /// this crate has no HTTP layer of its own, so the resolve step is
     /// driven directly through `nasiko_hitl::repo`, matching the `decision`/
     /// `scope` shape the real resolve handler writes into `human_response`.
+    ///
+    /// `decision` is serialised through `ResolveDecision::as_str()`, the same call the real
+    /// handler makes, rather than echoing this function's own `&str` argument. That difference is
+    /// the whole point: with the literal echoed back, this fixture was its own producer, so every
+    /// approve test passed no matter what spelling the *gateway* looked for
+    /// (`protocol.rs::resolve_tool_approval_retry`, which hardcoded `"approve"` until it was moved
+    /// to `DECISION_APPROVE`). Going through `as_str()` makes producer and consumer share one
+    /// definition, so a drift between them fails these tests instead of shipping.
     async fn resolve_tool_approval(
         &self,
         hitl_request_id: Uuid,
@@ -288,7 +296,7 @@ impl TestDb {
             hitl_request_id,
             resolve_decision,
             self.owner_user_id,
-            json!({ "decision": decision, "scope": scope }),
+            json!({ "decision": resolve_decision.as_str(), "scope": scope }),
         )
         .await
         .expect("resolve")

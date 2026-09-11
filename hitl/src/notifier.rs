@@ -32,6 +32,11 @@ const FLOW_TITLE: &str = "HITL resume nudge";
 /// not a claim that every `'running'` literal elsewhere should reference it.
 const FLOW_STATUS_RUNNING: &str = "running";
 
+/// Per-attempt timeout on the outbound nudge. Public because the claim lease has to outlast a whole
+/// delivery — `dispatcher::run` derives its floor from this — and a lease shorter than the work it
+/// covers lets the recovery sweep quarantine a delivery that is still in flight.
+pub const RESUME_REQUEST_TIMEOUT_SECS: u64 = 300;
+
 pub struct RuntimeResumeNotifier {
     db: PgPool,
     runtime: Arc<dyn ContainerRuntime>,
@@ -265,7 +270,7 @@ impl ResumeNotifier for RuntimeResumeNotifier {
         let response = self
             .http_client
             .post(&endpoint)
-            .timeout(Duration::from_secs(300))
+            .timeout(Duration::from_secs(RESUME_REQUEST_TIMEOUT_SECS))
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", traceparent)
             .json(&body)

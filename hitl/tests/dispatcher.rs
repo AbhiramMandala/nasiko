@@ -339,7 +339,7 @@ async fn resolved_row_is_delivered_exactly_once_end_to_end() {
     // generous but not infinite, so a real regression fails the test instead
     // of hanging the suite.
     let mut delivered = false;
-    for _ in 0..100 {
+    for _ in 0..200 {
         if db.resume_status_of(request_id).await == "completed" {
             delivered = true;
             break;
@@ -469,7 +469,7 @@ async fn rejected_tool_approval_row_is_claimed_and_delivered() {
     let handle = tokio::spawn(dispatcher::run(db.pool.clone(), notifier, config));
 
     let mut delivered = false;
-    for _ in 0..100 {
+    for _ in 0..200 {
         if db.resume_status_of(request_id).await == "completed" {
             delivered = true;
             break;
@@ -540,7 +540,7 @@ async fn resolved_row_delivery_carries_a_traceparent_matching_its_context_id() {
     let handle = tokio::spawn(dispatcher::run(db.pool.clone(), notifier, config));
 
     let mut delivered = false;
-    for _ in 0..100 {
+    for _ in 0..200 {
         if db.resume_status_of(request_id).await == "completed" {
             delivered = true;
             break;

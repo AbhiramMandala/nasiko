@@ -110,6 +110,31 @@ impl Default for DispatcherConfig {
     }
 }
 
+impl DispatcherConfig {
+    /// The claim lease actually used, which is never shorter than one whole delivery.
+    ///
+    /// `dispatch_one` holds its claim across every in-process retry, so the worst case is
+    /// `max_attempts` requests at `notifier::RESUME_REQUEST_TIMEOUT_SECS` each plus the backoffs
+    /// between them — roughly 15 minutes on the defaults. `lease_minutes` defaulted to 2, so the
+    /// recovery tick could land mid-delivery, flip the claim to `delivery_outcome_unknown`, and
+    /// leave the subsequent `finish_resume` (`WHERE resume_status = 'not_started'`) updating
+    /// nothing: a resume that actually succeeded recorded permanently as unknown, needing a
+    /// superuser requeue that re-delivers the nudge (found in review).
+    ///
+    /// Derived rather than documented because every input is independently env-tunable
+    /// (`HITL_RESUME_MAX_ATTEMPTS`, `HITL_RESUME_RETRY_DELAY_SECS`, `HITL_RESUME_LEASE_MINUTES`),
+    /// so a fixed default would go stale the moment one of them is raised. The sibling dispatcher
+    /// (`oss/server/src/hitl/mod.rs`'s `LEASE_SECS`) states the same invariant as a comment; this
+    /// enforces it.
+    fn effective_lease_minutes(&self) -> i64 {
+        let attempts = i64::from(self.max_attempts).max(1);
+        let secs = attempts * crate::notifier::RESUME_REQUEST_TIMEOUT_SECS as i64
+            + (attempts - 1) * self.retry_delay.as_secs() as i64;
+        // Round up, and never shorten a lease an operator deliberately set longer.
+        self.lease_minutes.max((secs + 59) / 60)
+    }
+}
+
 /// Concurrent in-flight deliveries, mirroring `oss/server/src/hitl/mod.rs::run`'s own
 /// `MAX_CONCURRENT_DELIVERIES` on the same claim/spawn shape. Before this, `spawn(...).await`
 /// gave panic isolation but zero concurrency: one unreachable agent (`notifier.rs`'s 300s
@@ -124,7 +149,17 @@ const MAX_CONCURRENT_DELIVERIES: usize = 8;
 /// sender whose drop should end the loop; the task is simply aborted with the
 /// rest of the process.
 pub async fn run(db: PgPool, notifier: Arc<dyn ResumeNotifier>, config: DispatcherConfig) {
-    if let Err(e) = repo::recover_stuck_resumes(&db, config.lease_minutes).await {
+    let lease_minutes = config.effective_lease_minutes();
+    if lease_minutes != config.lease_minutes {
+        tracing::warn!(
+            configured = config.lease_minutes,
+            effective = lease_minutes,
+            "resume dispatcher: HITL_RESUME_LEASE_MINUTES is shorter than one whole delivery \
+             (max_attempts x the notifier's per-request timeout); using the longer value so the \
+             recovery sweep cannot quarantine a delivery that is still in flight"
+        );
+    }
+    if let Err(e) = repo::recover_stuck_resumes(&db, lease_minutes).await {
         tracing::error!(%e, "resume dispatcher: startup recovery sweep failed");
     }
 
@@ -140,7 +175,7 @@ pub async fn run(db: PgPool, notifier: Arc<dyn ResumeNotifier>, config: Dispatch
         tokio::select! {
             _ = tokio::time::sleep(config.poll_interval) => {}
             _ = recovery_tick.tick() => {
-                match repo::recover_stuck_resumes(&db, config.lease_minutes).await {
+                match repo::recover_stuck_resumes(&db, lease_minutes).await {
                     Ok(0) => {}
                     Ok(n) => tracing::warn!(
                         count = n,
@@ -264,6 +299,49 @@ async fn dispatch_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lease must outlast a whole delivery, not one request — `dispatch_one` holds its claim
+    /// across every in-process retry. A shorter lease lets the recovery sweep quarantine a
+    /// delivery still in flight, and `finish_resume`'s `WHERE resume_status = 'not_started'` then
+    /// silently updates nothing, recording a successful resume as unknown.
+    #[test]
+    fn the_lease_always_covers_a_whole_delivery() {
+        let defaults = DispatcherConfig::default();
+        let worst_case_secs = i64::from(defaults.max_attempts)
+            * crate::notifier::RESUME_REQUEST_TIMEOUT_SECS as i64
+            + (i64::from(defaults.max_attempts) - 1) * defaults.retry_delay.as_secs() as i64;
+        assert!(
+            defaults.effective_lease_minutes() * 60 >= worst_case_secs,
+            "default lease {} min does not cover {worst_case_secs}s of delivery",
+            defaults.effective_lease_minutes()
+        );
+
+        // A too-short configured lease is raised, not obeyed — every input is env-tunable, so the
+        // floor has to be derived rather than trusted.
+        let starved = DispatcherConfig {
+            lease_minutes: 2,
+            ..DispatcherConfig::default()
+        };
+        assert_eq!(starved.effective_lease_minutes(), 16);
+
+        // Raising attempts moves the floor with it.
+        let chattier = DispatcherConfig {
+            lease_minutes: 2,
+            max_attempts: 6,
+            ..DispatcherConfig::default()
+        };
+        assert!(
+            chattier.effective_lease_minutes() > starved.effective_lease_minutes(),
+            "more attempts must demand a longer lease"
+        );
+
+        // An operator who deliberately set a longer lease keeps it.
+        let generous = DispatcherConfig {
+            lease_minutes: 120,
+            ..DispatcherConfig::default()
+        };
+        assert_eq!(generous.effective_lease_minutes(), 120);
+    }
 
     #[test]
     fn missing_context_id_is_always_permanent() {

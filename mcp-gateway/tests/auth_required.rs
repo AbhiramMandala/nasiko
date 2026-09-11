@@ -323,7 +323,9 @@ async fn composio_tool_call_failure_with_inactive_connection_triggers_auth_requi
         .create_async()
         .await;
 
-    let mut state = db.state;
+    // Cloned, not moved: `TestDb` now drops its scratch database in `Drop`, and moving a field
+    // out would forbid that impl from running.
+    let mut state = db.state.clone();
     state.providers.composio = Some(std::sync::Arc::new(ComposioProvider::new(
         reqwest::Client::new(),
         "test-composio-key".to_string(),
@@ -418,7 +420,9 @@ async fn composio_tool_call_failure_with_active_connection_passes_through_unchan
         .create_async()
         .await;
 
-    let mut state = db.state;
+    // Cloned, not moved: `TestDb` now drops its scratch database in `Drop`, and moving a field
+    // out would forbid that impl from running.
+    let mut state = db.state.clone();
     state.providers.composio = Some(std::sync::Arc::new(ComposioProvider::new(
         reqwest::Client::new(),
         "test-composio-key".to_string(),
