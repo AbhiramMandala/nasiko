@@ -287,7 +287,10 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_PRICING_BASE.to_string());
     let mut inserted = 0;
-    for (label, api_base) in super::catalog::priceable_providers(cfg) {
+    // Include DB-registered custom providers so a private gateway with a Portkey
+    // price book gets real prices; most have none, which is expected and harmless.
+    let custom = super::catalog::load_custom_providers(db).await;
+    for (label, api_base) in super::catalog::priceable_providers(cfg, &custom) {
         let slug = portkey_slug(&label, &api_base);
         let Some(book) = fetch_price_book(http, &pricing_base, &slug).await else {
             continue;

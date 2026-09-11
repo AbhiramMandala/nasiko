@@ -155,7 +155,6 @@ async fn chat_core(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
-        ctx.salience_gate.as_ref(),
         &RouteInputs {
             agent_id: &agent_id,
             provider: &resolved.provider,
@@ -478,6 +477,12 @@ mod tests {
                 agent_is_participant: true,
             }))
         }
+        async fn fetch_custom_provider(
+            &self,
+            _: &str,
+        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            Ok(None)
+        }
     }
 
     /// No-op tier registry: attribution now always resolves in these tests
@@ -512,7 +517,6 @@ mod tests {
             router_cache: Arc::new(crate::routing::NoopCache),
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
-            salience_gate: Arc::new(crate::routing::AllowAllGate),
         }
     }
 
@@ -800,7 +804,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_provider_is_internal_error() {
+    async fn unregistered_provider_is_bad_request() {
+        // A non-built-in provider with no active custom_providers row is a client
+        // error (400), resolved before any provider client is built — it must not
+        // fall through to the OpenAI key/base URL, nor surface as an opaque 500.
         let ctx = ctx_with("http://unused".into());
         let store = Store {
             config: Some(LLMConfig {
@@ -828,6 +835,6 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, GatewayError::Internal(_)));
+        assert!(matches!(err, GatewayError::BadRequest(_)));
     }
 }

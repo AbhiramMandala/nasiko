@@ -311,10 +311,10 @@ async fn translated_call(
         tier2_model: None,
         tier3_model: None,
         platform_paid: true,
-        is_coding_agent: false,
+        base_url: None,
     };
 
-    let provider = provider_for(backend.label(), http, cfg)
+    let provider = provider_for(&resolved, http, cfg)
         .map_err(|e| format!("provider_for({}): {e}", backend.label()))?;
     let ir_resp = provider
         .chat(&ir_req, &resolved)

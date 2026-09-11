@@ -19,14 +19,18 @@ use crate::ir::{
 };
 use crate::resolver::ResolvedConfig;
 
-/// Construct the provider client for a provider id. Used by the handler and the
-/// fallback executor. Unknown providers are a server-side gap (500).
+/// Construct the provider client for a resolved config. Used by the handler and the
+/// fallback executor. Built-in providers use their base URL from [`GatewayConfig`];
+/// a custom (DB-registered) provider is OpenAI-compatible and uses the base URL
+/// carried on the resolved config. A non-built-in provider with no `base_url` is a
+/// server-side gap (500) — the resolver populates it for every registered custom
+/// provider, so a missing one means the row was dropped mid-flight.
 pub fn provider_for(
-    provider: &str,
+    resolved: &ResolvedConfig,
     http: &reqwest::Client,
     cfg: &GatewayConfig,
 ) -> Result<Box<dyn ProviderClient>, GatewayError> {
-    match provider {
+    match resolved.provider.as_str() {
         "openai" => Ok(Box::new(OpenAiProvider::new(
             http.clone(),
             cfg.openai_api_base.clone(),
@@ -39,15 +43,16 @@ pub fn provider_for(
             http.clone(),
             cfg.gemini_api_base.clone(),
         ))),
-        "openrouter" => Ok(Box::new(OpenRouterProvider::new(
-            http.clone(),
-            cfg.openrouter_api_base.clone(),
-            cfg.openrouter_http_referer.clone(),
-            cfg.openrouter_x_title.clone(),
-        ))),
-        other => Err(GatewayError::Internal(format!(
-            "provider '{other}' is not supported yet"
-        ))),
+        other => match &resolved.base_url {
+            // Custom providers speak the OpenAI wire shape at their own base URL.
+            Some(base_url) => Ok(Box::new(OpenAiProvider::new(
+                http.clone(),
+                base_url.clone(),
+            ))),
+            None => Err(GatewayError::Internal(format!(
+                "provider '{other}' has no base URL (unregistered custom provider?)"
+            ))),
+        },
     }
 }
 
@@ -55,13 +60,11 @@ pub mod anthropic;
 pub mod fallback;
 pub mod gemini;
 pub mod openai;
-pub mod openrouter;
 pub(crate) mod sse;
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
 pub use openai::OpenAiProvider;
-pub use openrouter::OpenRouterProvider;
 
 /// Current unix time (seconds) for synthesized response `created` fields. Providers
 /// that don't return a creation timestamp (Anthropic, Gemini) stamp one here.
@@ -221,5 +224,39 @@ mod tests {
         let g: GatewayError = ProviderError::Transport("boom".into()).into();
         assert!(matches!(g, GatewayError::Upstream(_)));
         assert_eq!(g.status(), axum::http::StatusCode::BAD_GATEWAY);
+    }
+
+    fn resolved(provider: &str, base_url: Option<&str>) -> ResolvedConfig {
+        ResolvedConfig {
+            provider: provider.into(),
+            model: "m".into(),
+            litellm_model: format!("{provider}/m"),
+            api_key: "k".into(),
+            fallback_models: Vec::new(),
+            temperature: None,
+            max_tokens: None,
+            has_llm_config: false,
+            pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid: true,
+            base_url: base_url.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn provider_for_custom_builds_against_overridden_base_url() {
+        let http = reqwest::Client::new();
+        let cfg = GatewayConfig::default();
+        // A custom (non-built-in) provider with a base URL builds an OpenAI-compatible
+        // client against that URL.
+        assert!(provider_for(&resolved("my-gateway", Some("https://gw/v1")), &http, &cfg).is_ok());
+        // ...but with no base URL it is a server-side gap (the resolver should have
+        // populated it), surfaced as an Internal error rather than a mis-target.
+        assert!(matches!(
+            provider_for(&resolved("my-gateway", None), &http, &cfg),
+            Err(GatewayError::Internal(_))
+        ));
     }
 }

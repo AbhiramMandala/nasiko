@@ -150,6 +150,12 @@ mod tests {
                 agent_is_participant: true,
             }))
         }
+        async fn fetch_custom_provider(
+            &self,
+            _: &str,
+        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            Ok(None)
+        }
     }
 
     fn ctx_with(base: String) -> LlmRouterCtx {
@@ -169,7 +175,6 @@ mod tests {
             router_cache: Arc::new(crate::routing::NoopCache),
             tier_registry: Arc::new(crate::routing::registry::test_support::StubRegistry),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
-            salience_gate: Arc::new(crate::routing::AllowAllGate),
         }
     }
 

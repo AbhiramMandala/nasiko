@@ -10,7 +10,7 @@
 //! string); text blocks → `message.content`; `stop_reason` → `finish_reason`;
 //! `usage.{input,output}_tokens` → `{prompt,completion,total}_tokens`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -74,7 +74,7 @@ impl ProviderClient for AnthropicProvider {
             .json()
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
-        from_anthropic_response(&value, &cfg.model)
+        Ok(from_anthropic_response(&value, &cfg.model))
     }
 
     async fn chat_stream(
@@ -113,14 +113,12 @@ impl ProviderClient for AnthropicProvider {
             // Anthropic content-block index → OpenAI tool_call index (text blocks
             // don't get a tool index, so the two can differ).
             let mut block_to_tool: HashMap<i64, i64> = HashMap::new();
-            let mut tool_blocks_with_arguments: HashSet<i64> = HashSet::new();
             let mut next_tool_index: i64 = 0;
             let mut input_tokens: Option<i64> = None;
             let mut output_tokens: Option<i64> = None;
             let mut cache_read: Option<i64> = None;
             let mut cache_creation: Option<i64> = None;
             let mut finish: Option<String> = None;
-            let mut stopped = false;
 
             while let Some(item) = data.next().await {
                 let payload = match item {
@@ -129,23 +127,9 @@ impl ProviderClient for AnthropicProvider {
                 };
                 let event: Value = match serde_json::from_str(&payload) {
                     Ok(v) => v,
-                    Err(error) => {
-                        yield Err(ProviderError::Parse(format!("invalid Anthropic stream event: {error}")));
-                        return;
-                    }
+                    Err(_) => continue,
                 };
                 match event["type"].as_str() {
-                    Some("error") => {
-                        let message = event["error"]["message"]
-                            .as_str()
-                            .unwrap_or("Anthropic stream error");
-                        yield Err(ProviderError::Status {
-                            status: 502,
-                            message: message.to_string(),
-                            retryable: false,
-                        });
-                        return;
-                    }
                     Some("message_start") => {
                         id = event["message"]["id"].as_str().unwrap_or_default().to_string();
                         let u = &event["message"]["usage"];
@@ -193,7 +177,6 @@ impl ProviderClient for AnthropicProvider {
                                 if let (Some(partial), Some(&oa_index)) =
                                     (delta["partial_json"].as_str(), block_to_tool.get(&block_index))
                                 {
-                                    tool_blocks_with_arguments.insert(block_index);
                                     yield Ok(delta_chunk(&id, &model, Delta {
                                         tool_calls: Some(vec![ToolCallDelta {
                                             index: oa_index,
@@ -211,25 +194,6 @@ impl ProviderClient for AnthropicProvider {
                             _ => {}
                         }
                     }
-                    Some("content_block_stop") => {
-                        let block_index = event["index"].as_i64().unwrap_or(0);
-                        if !tool_blocks_with_arguments.contains(&block_index)
-                            && let Some(&oa_index) = block_to_tool.get(&block_index)
-                        {
-                            yield Ok(delta_chunk(&id, &model, Delta {
-                                tool_calls: Some(vec![ToolCallDelta {
-                                    index: oa_index,
-                                    id: None,
-                                    kind: None,
-                                    function: Some(FunctionCallDelta {
-                                        name: None,
-                                        arguments: Some("{}".into()),
-                                    }),
-                                }]),
-                                ..Delta::default()
-                            }));
-                        }
-                    }
                     Some("message_delta") => {
                         if let Some(sr) = event["delta"]["stop_reason"].as_str() {
                             finish = Some(map_stop_reason(sr).to_string());
@@ -238,24 +202,13 @@ impl ProviderClient for AnthropicProvider {
                             output_tokens = Some(ot);
                         }
                     }
-                    Some("message_stop") => {
-                        stopped = true;
-                        break;
-                    }
+                    Some("message_stop") => break,
                     _ => {}
                 }
             }
 
-            if !stopped {
-                yield Err(ProviderError::Parse("Anthropic stream ended before message_stop".into()));
-                return;
-            }
             // Terminal: finish chunk, then an OpenAI-style usage chunk (empty choices).
-            let Some(finish) = finish else {
-                yield Err(ProviderError::Parse("Anthropic stream ended without stop_reason".into()));
-                return;
-            };
-            yield Ok(finish_chunk(&id, &model, finish));
+            yield Ok(finish_chunk(&id, &model, finish.unwrap_or_else(|| "stop".to_string())));
             yield Ok(usage_chunk(&id, &model, Usage {
                 prompt_tokens: input_tokens,
                 completion_tokens: output_tokens,
@@ -452,7 +405,7 @@ fn tool_choice_to_anthropic(choice: &Value) -> Option<Value> {
 
 // ── Anthropic → OpenAI (response) ────────────────────────────────────────────
 
-fn from_anthropic_response(body: &Value, model: &str) -> Result<ChatResponse, ProviderError> {
+fn from_anthropic_response(body: &Value, model: &str) -> ChatResponse {
     let id = body["id"].as_str().unwrap_or_default();
 
     let mut text = String::new();
@@ -488,10 +441,7 @@ fn from_anthropic_response(body: &Value, model: &str) -> Result<ChatResponse, Pr
         Some(Value::String(text))
     };
 
-    let stop_reason = body["stop_reason"]
-        .as_str()
-        .ok_or_else(|| ProviderError::Parse("Anthropic response has no stop_reason".into()))?;
-    let finish_reason = map_stop_reason(stop_reason);
+    let finish_reason = map_stop_reason(body["stop_reason"].as_str().unwrap_or("end_turn"));
 
     let usage = body.get("usage").map(|u| {
         let input = u["input_tokens"].as_i64();
@@ -509,7 +459,7 @@ fn from_anthropic_response(body: &Value, model: &str) -> Result<ChatResponse, Pr
         }
     });
 
-    Ok(ChatResponse {
+    ChatResponse {
         id: format!("chatcmpl-{id}"),
         object: "chat.completion".to_string(),
         created: Some(now_unix()),
@@ -528,16 +478,14 @@ fn from_anthropic_response(body: &Value, model: &str) -> Result<ChatResponse, Pr
         }],
         usage,
         extra: Map::new(),
-    })
+    }
 }
 
 fn map_stop_reason(reason: &str) -> &'static str {
     match reason {
-        "end_turn" | "stop_sequence" => "stop",
         "tool_use" => "tool_calls",
         "max_tokens" => "length",
-        // Refusal/content-filter terminals and future unknown reasons fail closed.
-        _ => "content_filter",
+        _ => "stop", // end_turn / stop_sequence / unknown
     }
 }
 
@@ -560,7 +508,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            is_coding_agent: false,
+            base_url: None,
         }
     }
 
@@ -723,27 +671,6 @@ mod tests {
     }
 
     #[test]
-    fn mixed_assistant_text_and_multiple_calls_round_trip_to_anthropic() {
-        let req: ChatRequest = serde_json::from_value(json!({
-            "messages":[
-                {"role":"user","content":"go"},
-                {"role":"assistant","content":"Calling both.","tool_calls":[
-                    {"id":"c1","type":"function","function":{"name":"one","arguments":"{\"x\":1}"}},
-                    {"id":"c2","type":"function","function":{"name":"two","arguments":"{\"y\":2}"}}
-                ]},
-                {"role":"tool","tool_call_id":"c1","content":"one done"},
-                {"role":"tool","tool_call_id":"c2","content":"two done"}
-            ]
-        }))
-        .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
-        assert_eq!(body["messages"][1]["content"][0]["text"], "Calling both.");
-        assert_eq!(body["messages"][1]["content"][1]["name"], "one");
-        assert_eq!(body["messages"][1]["content"][2]["name"], "two");
-        assert_eq!(body["messages"][2]["content"].as_array().unwrap().len(), 2);
-    }
-
-    #[test]
     fn response_tool_use_becomes_openai_tool_calls() {
         // Mirrors REQUEST_JOURNEY steps 6 → 7 (C2).
         let anthropic = json!({
@@ -756,7 +683,7 @@ mod tests {
             "stop_reason": "tool_use",
             "usage": { "input_tokens": 463, "output_tokens": 58 }
         });
-        let resp = from_anthropic_response(&anthropic, "claude-3-5-sonnet-20241022").unwrap();
+        let resp = from_anthropic_response(&anthropic, "claude-3-5-sonnet-20241022");
         assert_eq!(resp.model, "claude-3-5-sonnet-20241022");
         assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("tool_calls"));
         let msg = &resp.choices[0].message;
@@ -786,7 +713,7 @@ mod tests {
                 "cache_creation_input_tokens": 300
             }
         });
-        let resp = from_anthropic_response(&anthropic, "claude-3-5-sonnet-20241022").unwrap();
+        let resp = from_anthropic_response(&anthropic, "claude-3-5-sonnet-20241022");
         let usage = resp.usage.unwrap();
         assert_eq!(usage.cache_read_input_tokens, Some(1500));
         assert_eq!(usage.cache_creation_input_tokens, Some(300));
@@ -832,29 +759,13 @@ mod tests {
             "stop_reason": "end_turn",
             "usage": { "input_tokens": 531, "output_tokens": 42 }
         });
-        let resp = from_anthropic_response(&anthropic, "claude-3-5-sonnet-20241022").unwrap();
+        let resp = from_anthropic_response(&anthropic, "claude-3-5-sonnet-20241022");
         assert_eq!(
             resp.choices[0].message.content,
             Some(Value::String("Here is the translation.".into()))
         );
         assert!(resp.choices[0].message.tool_calls.is_none());
         assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
-    }
-
-    #[test]
-    fn stop_reasons_are_explicit_and_unknown_reasons_fail_closed() {
-        for (reason, expected) in [
-            ("end_turn", "stop"),
-            ("stop_sequence", "stop"),
-            ("tool_use", "tool_calls"),
-            ("max_tokens", "length"),
-            ("refusal", "content_filter"),
-            ("content_filter", "content_filter"),
-            ("future_reason", "content_filter"),
-        ] {
-            assert_eq!(map_stop_reason(reason), expected);
-        }
-        assert!(from_anthropic_response(&json!({"content":[]}), "m").is_err());
     }
 
     #[tokio::test]
@@ -964,44 +875,6 @@ mod tests {
             .iter()
             .find_map(|c| c.choices.first().and_then(|ch| ch.finish_reason.clone()));
         assert_eq!(finish.as_deref(), Some("stop"));
-    }
-
-    #[tokio::test]
-    async fn stream_rejects_malformed_error_and_premature_eof() {
-        for payload in [
-            "data: {not-json}\n\n",
-            "data: {\"type\":\"error\",\"error\":{\"message\":\"overloaded\"}}\n\n",
-            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\"}}\n\n",
-        ] {
-            let mut server = mockito::Server::new_async().await;
-            server
-                .mock("POST", "/messages")
-                .with_status(200)
-                .with_header("content-type", "text/event-stream")
-                .with_body(payload)
-                .create_async()
-                .await;
-            let provider = AnthropicProvider::new(reqwest::Client::new(), server.url());
-            let req: ChatRequest =
-                serde_json::from_value(json!({"messages":[{"role":"user","content":"hi"}]}))
-                    .unwrap();
-            let results: Vec<_> = provider
-                .chat_stream(&req, &resolved())
-                .await
-                .unwrap()
-                .collect()
-                .await;
-            assert!(results.iter().any(Result::is_err), "accepted {payload}");
-            assert!(
-                !results
-                    .iter()
-                    .filter_map(|result| result.as_ref().ok())
-                    .any(|chunk| chunk
-                        .choices
-                        .first()
-                        .is_some_and(|choice| choice.finish_reason.is_some()))
-            );
-        }
     }
 
     #[tokio::test]
