@@ -776,6 +776,8 @@ impl ObservabilityProvider for TempoLokiProvider {
 
         let mut total_input = 0u64;
         let mut total_output = 0u64;
+        let mut total_cache_read = 0u64;
+        let mut total_cache_creation = 0u64;
         let mut model_used: Option<String> = None;
         let mut latencies: Vec<u64> = Vec::new();
         let mut traces: Vec<TraceSummary> = Vec::new();
@@ -795,8 +797,11 @@ impl ObservabilityProvider for TempoLokiProvider {
             let root_span = root_span.clone();
 
             let (trace_input, trace_output, trace_model) = trace.token_totals();
+            let (trace_cache_read, trace_cache_creation) = trace.cache_token_totals();
             total_input += trace_input;
             total_output += trace_output;
+            total_cache_read += trace_cache_read;
+            total_cache_creation += trace_cache_creation;
             if model_used.is_none() {
                 model_used = trace_model.clone();
             }
@@ -844,6 +849,8 @@ impl ObservabilityProvider for TempoLokiProvider {
                 root_span,
                 input_tokens: trace_input,
                 output_tokens: trace_output,
+                cache_read_tokens: trace_cache_read,
+                cache_creation_tokens: trace_cache_creation,
                 model_used: trace_model,
                 duration_ms,
                 cost,
@@ -852,6 +859,8 @@ impl ObservabilityProvider for TempoLokiProvider {
             });
         }
 
+        let avg = (!latencies.is_empty())
+            .then(|| latencies.iter().sum::<u64>() as f64 / latencies.len() as f64);
         let (p50, p99) = latency_percentiles(latencies);
         let cost = self
             .cost(model_used.as_deref(), total_input, total_output)
@@ -862,9 +871,12 @@ impl ObservabilityProvider for TempoLokiProvider {
             traces,
             input_tokens: total_input,
             output_tokens: total_output,
+            cache_read_tokens: total_cache_read,
+            cache_creation_tokens: total_cache_creation,
             model_used,
             latency_ms_p50: p50,
             latency_ms_p99: p99,
+            latency_ms_avg: avg,
             cost,
         })
     }

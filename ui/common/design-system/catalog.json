@@ -594,11 +594,10 @@
             "number",
             "currency",
             "percent",
-            "compact",
-            "duration"
+            "compact"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `duration`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
         },
         "flush-top": {
           "type": "boolean",
@@ -2558,6 +2557,13 @@
           "type": "number",
           "default": 4,
           "description": "Number of skeleton cells to reserve while data loads (default: 4). The skeleton lives here so it cannot drift from the real geometry. Present-but-empty means the default."
+        },
+        "variant": {
+          "type": "enum",
+          "values": [
+            "chips"
+          ],
+          "description": "`chips` lays the same metrics out as a wrapping row of `label: value` pills instead of hairline-separated columns — for strips that sit under a page title rather than heading a dashboard. Purely a layout change: same `items`, same cells, no second markup path. `pct` meters and `sub` captions are column-shaped and are not drawn in chips."
         }
       },
       "slots": [],
