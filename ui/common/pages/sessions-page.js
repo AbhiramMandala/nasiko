@@ -25,7 +25,7 @@ import '../design-system/app-button/app-button.js';
 import '../design-system/app-empty-state/app-empty-state.js';
 import '../design-system/app-table/app-table.js';
 import '../design-system/app-search/app-search.js';
-import '../design-system/app-action-menu/app-action-menu.js';
+import '../design-system/app-menu/app-menu.js';
 import '../features/app-module-nav.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
@@ -122,10 +122,11 @@ class SessionsPage extends HTMLElement {
       <div class="sessions-toolbar">
         <app-search id="sessions-search" size="md" placeholder="Search sessions"
           aria-label="Search sessions"></app-search>
-        <app-action-menu id="range-menu" variant="dark" label="${escAttr(this.#rangeLabel())}"
-          trigger-title="Time range"
+        <app-menu id="range-menu" align="end" label="Time range"
           items='${escAttr(JSON.stringify(RANGES.map(({ id, label }) => ({ id, label }))))}'
-        ></app-action-menu>
+        ><app-button variant="tertiary" size="md">
+          <span class="range-label">${escHtml(this.#rangeLabel())}</span>${icons.chevronDownSmall('', 16)}
+        </app-button></app-menu>
       </div>
       <div class="session-list" id="session-list"></div>
       <div class="sessions-more" id="sessions-more" hidden>
@@ -148,9 +149,11 @@ class SessionsPage extends HTMLElement {
       this.#renderPager();
     });
 
-    this.querySelector('#range-menu')?.addEventListener('action-select', (e) => {
+    this.querySelector('#range-menu')?.addEventListener('menu-select', (e) => {
       this.#range = e.detail.id;
-      e.currentTarget.setAttribute('label', this.#rangeLabel());
+      // The trigger doubles as the filter's current value; relabel the span
+      // rather than app-button's `label` setter, which would drop the chevron.
+      this.querySelector('.range-label').textContent = this.#rangeLabel();
       this.#syncList();
     });
 

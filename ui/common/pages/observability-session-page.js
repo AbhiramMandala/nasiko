@@ -26,7 +26,7 @@ import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-tabs/app-tabs.js';
 import '/common/design-system/app-switch/app-switch.js';
-import '/common/design-system/app-action-menu/app-action-menu.js';
+import '/common/design-system/app-menu/app-menu.js';
 import '/common/features/app-module-nav.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
@@ -145,7 +145,7 @@ class ObservabilitySessionPage extends HTMLElement {
       if (row) this.#selectSpan(row.dataset.traceId, row.dataset.spanId);
     });
 
-    this.addEventListener('action-select', (e) => {
+    this.addEventListener('menu-select', (e) => {
       if (e.target.id !== 'turn-menu') return;
       this.#goToTurn(Number(e.detail.id));
     });
@@ -354,9 +354,10 @@ class ObservabilitySessionPage extends HTMLElement {
         <button type="button" class="turn-step" data-step="-1"
           ${this.#turnIndex === 0 ? 'disabled' : ''} aria-label="Previous turn"
         >${icons.chevronUp('', 14)}</button>
-        <app-action-menu id="turn-menu" variant="dark"
-          label="${escAttr(`${this.#turnIndex + 1}/${total}`)}" trigger-title="Jump to a turn"
-          items='${escAttr(JSON.stringify(items))}'></app-action-menu>
+        <app-menu id="turn-menu" align="center" label="Jump to a turn"
+          items='${escAttr(JSON.stringify(items))}'
+        ><app-button variant="tertiary" size="md" title="Jump to a turn"
+          >${escHtml(`${this.#turnIndex + 1}/${total}`)}</app-button></app-menu>
         <button type="button" class="turn-step" data-step="1"
           ${this.#turnIndex === total - 1 ? 'disabled' : ''} aria-label="Next turn"
         >${icons.chevronDown('', 14)}</button>

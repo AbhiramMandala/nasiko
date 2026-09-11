@@ -41,12 +41,12 @@
 
   /* Pushes the range control to the right edge, and keeps it there when a
      second filter (status) joins it. */
-  .sessions-toolbar app-action-menu:first-of-type { margin-left: auto; }
+  .sessions-toolbar app-menu:first-of-type { margin-left: auto; }
 
   @media (max-width: 640px) {
     .sessions-toolbar { flex-wrap: wrap; }
     .sessions-toolbar app-search { flex-basis: 100%; }
-    .sessions-toolbar app-action-menu:first-of-type { margin-left: 0; }
+    .sessions-toolbar app-menu:first-of-type { margin-left: 0; }
   }
 
   /* The list is an <app-table>, which owns the header band, the hairlines and
