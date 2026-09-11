@@ -24,8 +24,7 @@ import { mountWeaveDock } from '/common/features/weave-dock/weave-dock.js';
 // `tag` is the custom element tag name created in the outlet.
 
 const BASE_ROUTES = [
-  { path: '/',                tag: 'overview-page',            module: '/common/pages/overview-page.js',            title: 'Nasiko — Overview' },
-  { path: '/orchestrator',    tag: 'orchestrator-page',        module: '/common/pages/orchestrator-page.js',        title: 'Nasiko — Orchestrator' },
+  { path: '/',                tag: 'orchestrator-page',        module: '/common/pages/orchestrator-page.js',        title: 'Nasiko' },
   { path: '/agents',          tag: 'agents-page',              module: '/common/pages/agents-page.js',              title: 'Nasiko — Agents' },
   { path: '/your-agents',     tag: 'your-agents-page',         module: '/common/pages/your-agents-page.js',         title: 'Nasiko — Your Agents' },
   { path: '/add-agent',       tag: 'add-agent-page',           module: '/common/pages/add-agent-page.js',           title: 'Nasiko — Add Agent' },

@@ -539,11 +539,10 @@
             "number",
             "currency",
             "percent",
-            "compact",
-            "duration"
+            "compact"
           ],
           "default": "number",
-          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)"
+          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact`"
         },
         "currency": {
           "type": "string",
@@ -594,11 +593,10 @@
             "number",
             "currency",
             "percent",
-            "compact",
-            "duration"
+            "compact"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`| `duration`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
         },
         "flush-top": {
           "type": "boolean",

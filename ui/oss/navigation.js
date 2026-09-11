@@ -32,8 +32,7 @@ const BASE_ITEMS = () => [
   // module → which MODULE_NAVS tree a page belongs to. The rail item carrying
   // the same key stays selected while any of its children is open, so a child
   // page never leaves the rail with nothing highlighted.
-  { title: "Overview", url: "/", icon: "layoutDashboard", rail: true },
-  { title: "Orchestrator", url: "/orchestrator", icon: "brain", rail: true, module: "orchestrator" },
+  { title: "Orchestrator", url: "/", icon: "brain", rail: true, module: "orchestrator" },
   // Not on the rail: workflows are the Orchestrator module's second group, and
   // a second rail icon into the same tree read as a separate module.
   { title: "Workflows", url: "/workflows", icon: "workflow", module: "orchestrator" },
@@ -76,7 +75,7 @@ const MODULE_NAVS = {
       // A group with a url and no items is a heading-level link (see
       // app-module-nav's #groupHtml) — the entry point sits above the session
       // list, not inside it.
-      { label: 'Orchestrate a task', url: '/orchestrator' },
+      { label: 'Orchestrate a task', url: '/' },
       { label: 'Workflows', items: [
         { label: 'All workflows', url: '/workflows' },
         { label: 'Executions', url: '/executions' },

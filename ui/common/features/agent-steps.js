@@ -33,6 +33,7 @@ const CLAMP_CHARS = 4000;
  *   const steps = document.createElement('agent-steps');
  *   steps.onEvent(dataPart);   // per `data` part in the SSE stream
  *   steps.finish();            // when the final answer starts / stream ends
+ *   steps.awaitInput();        // instead of finish(), when the turn paused for a human
  */
 class AgentSteps extends HTMLElement {
   #rows = new Map();      // key -> row element
@@ -483,6 +484,31 @@ class AgentSteps extends HTMLElement {
       if (!already) this.#addSection(row, 'Response', result, { markdown: true });
     }
     this.#settle(row, { success: d.success !== false });
+  }
+
+  /**
+   * The turn paused for a human instead of finishing.
+   *
+   * Not `finish()`: the work is genuinely unfinished, so the summary this would
+   * otherwise settle into ("Reasoned for 4.2s") would be a lie, and the rows
+   * stay expanded because they are the context for the decision the human is
+   * about to make. Marks itself finished so the caller's own `finish()` — which
+   * runs when the stream closes, right after the pause — is a no-op.
+   */
+  awaitInput() {
+    if (this.#finished) return;
+    this.#finished = true;
+    clearInterval(this.#ticker);
+    if (!this.#rows.size) {
+      // No activity to show. A bare question needs no timeline above it.
+      this.style.display = 'none';
+      return;
+    }
+    for (const row of this.#rows.values()) this.#settle(row);
+    this.querySelector('.steps-elapsed')?.remove();
+    const pulse = this.querySelector('.steps-pulse');
+    if (pulse) pulse.outerHTML = icons.alertTriangle('steps-check', 15);
+    this.#setLabel('Needs your input');
   }
 
   /**

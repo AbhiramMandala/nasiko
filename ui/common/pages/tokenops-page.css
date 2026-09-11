@@ -53,7 +53,7 @@
     gap: 2px;
     padding: var(--s-8);
     border-radius: var(--r-8);
-    background: var(--bg-group);
+    background: var(--bg-surface);
     color: var(--color-text-muted);
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
@@ -70,6 +70,20 @@
   .kpi-arrow { rotate: 0deg; }
   .dir-flat .kpi-arrow { rotate: 45deg; }
   .dir-down .kpi-arrow { rotate: 90deg; }
+
+  /* No prior period to compare against. The tile keeps its slot so the figures
+     stay on one left edge, but nothing is painted around a placeholder — four
+     empty grey squares across the strip read as broken chrome, not as
+     "no movement yet". */
+  .kpi-chip.is-empty {
+    background: none;
+    padding-inline: 0;
+    min-width: 26px;
+    color: var(--color-text-muted);
+    opacity: 0.55;
+  }
+
+  .kpi-none { font-size: var(--font-size-sm); }
 
   .kpi-value {
     font-family: var(--font-display);
@@ -162,7 +176,7 @@
   }
 
   .panel {
-    background: var(--bg-group);
+    background: var(--bg-surface);
     border-radius: var(--r-12);
     padding: var(--s-16);
     min-width: 0;
@@ -209,13 +223,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-8);
-    background: var(--bg-base);
-    border-radius: var(--r-8) var(--r-8) 0 0;
-    /* The bottom inset is the selected cell's ring reach (2px offset + 1px
-       ring), not decoration: without it the last row's ring overhangs the
-       grid box and the chart below — a later sibling — paints its own
-       background over the ring's bottom edge. */
-    padding: var(--s-12) var(--s-12) var(--s-4);
   }
 
   .day-cell {
@@ -310,17 +317,8 @@
     min-width: 0;
   }
 
-  /* The first-run copy takes the instrument's box, so a panel does not
-     collapse and re-expand when the first agent lands. */
-  app-empty-state {
-    flex: 1;
-    min-height: var(--plot-h, 252px);
-  }
-
   #spend-plot { --plot-h: 332px; }
   #conc-plot  { --plot-h: 252px; }
-  #spend-empty { --plot-h: 332px; }
-  #conc-empty  { --plot-h: 252px; }
 
   /* Caption under the concentration plot: the day's average $/hour — the
      same figure the dashed average-line rule draws, restated as text. */
@@ -399,16 +397,20 @@
      legend entry (dot + two lines), so the column never visibly reflows
      between "no data yet" and "here are four agents". Not `.kpi-skel`'s
      pulse: this is an empty *state*, not a load in progress, so it sits still. */
-  /* Loading, and a day with no spend at all, both leave the legend empty —
-     there is no agent to name. Drop the column entirely and let the chart
-     take the full width rather than leave a 140px hole beside it. */
-  .conc-legend:empty { display: none; }
-  .conc-body:has(.conc-legend:empty) { grid-template-columns: minmax(0, 1fr); }
-
-  /* Before the first drill-down resolves there is nothing to pick a day on
-     top of, so the panel is a single chart skeleton. `is-ready` is set once
-     and never cleared, so later day picks don't make the picker flicker. */
-  .conc-body:not(.is-ready) .day-grid { display: none; }
+  .conc-legend-skel {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-border);
+    grid-row: span 2;
+  }
+  .conc-name-skel, .conc-cost-skel {
+    height: 0.85em;
+    border-radius: var(--r-4);
+    background: var(--color-border);
+  }
+  .conc-name-skel { width: 70%; }
+  .conc-cost-skel { grid-column: 2; width: 45%; margin-top: var(--s-4); }
 
   /* ── Attributions ──────────────────────────────────────────────────────── */
   .section-head {
@@ -439,6 +441,8 @@
      tokenops-page.js (a real column property, not a position to keep in sync
      by hand) — this page only adds its own typographic choice on top: figures
      read as figures, in mono with tabular digits. */
+  app-table { margin-bottom: var(--s-32); }
+
   app-table .td.is-numeric {
     font-family: var(--font-mono);
     font-size: 13px;
@@ -446,41 +450,4 @@
   }
 
   .agent-name { font-weight: 500; }
-
-  /* app-select's own hook (background: var(--input-bg, var(--bg-input))) so the
-     visible .select-box is painted. Never target the inner <select>'s
-     generated id: that counter is per page-load, so ids only line up after a
-     hard refresh and drift on client-side navigation. */
-  app-select { --input-bg: var(--bg-base); }
-
-  /* A disabled strip beside a disabled select read darker than it: both paint
-     --bg-disabled, but app-select fades its whole control (`.is-disabled
-     { opacity: 0.5 }`) while app-segmented-control paints the token at full
-     strength. Matched here, per page, rather than in the component — every
-     other screen's disabled strip keeps the look it already ships with.
-     ponytail: move it into app-segmented-control.css if a third page wants it. */
-  app-segmented-control[disabled] { opacity: 0.5; }
-
-  /* The search field and the filter row live in two different DOM subtrees
-     (<app-table>'s internals vs page markup), so they only share a row if the
-     table stops being a box: `display: contents` hoists .search-field/.scroll
-     into this grid as siblings of .section-tools, then both are placed by hand
-     so search reads left and the filters sit right regardless of DOM order.
-     ponytail: CSS-only; give app-table a tools slot if a second page needs it. */
-  .section-attr-container {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    align-items: center;
-    gap: var(--s-16);
-    margin-bottom: var(--s-32);
-  }
-  .section-attr-container app-table,
-  .section-attr-container app-table .table-wrap { display: contents; }
-  .section-attr-container .search-field { grid-area: 1 / 1; }
-  .section-attr-container .section-tools { grid-area: 1 / 2; justify-self: end; }
-  .section-attr-container .scroll,
-  .section-attr-container .error,
-  /* First run: the copy stands in for the table, so it spans the same two
-     columns the rows do rather than sharing row 2 with the filters. */
-  .section-attr-container #table-empty { grid-column: 1 / -1; }
 }
