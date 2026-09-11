@@ -405,12 +405,12 @@ class TokenopsPage extends HTMLElement {
           <div class="panel-head">
             <h2 class="panel-title">Spend over time</h2>
           </div>
-          <div class="chart-card">
+          <div class="chart-card" id="spend-card">
             <div class="panel-tools">
               <ul class="series-legend" id="spend-legend" aria-label="Series"></ul>
             </div>
             <app-chart id="spend-plot" class="plot-slot" type="line" format="currency" format-y2="compact" height="300px"
-              legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
+              flush-top legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
           </div>
           <app-empty-state id="spend-empty" hidden
             title="Track your spend as it happens"
@@ -768,7 +768,10 @@ class TokenopsPage extends HTMLElement {
     }
     if (id !== this.#loadId) return;
     const data = resp?.data ?? resp ?? {};
-    this.#agents = data.agents || [];
+    // `data.agents` comes back already filtered by `agent_id`, so adopting it
+    // while an agent is selected would leave that agent as the dropdown's only
+    // option — no way back to any other agent. Keep the last unfiltered list.
+    if (!this.#agentFilter) this.#agents = data.agents || [];
     this.#summary = data.summary || {};
     this.#kpis = data.kpis || null;
     const rawRows = data.attributions?.rows ?? data.agents ?? [];
@@ -852,7 +855,7 @@ class TokenopsPage extends HTMLElement {
     // Server filter is left alone — it is disabled permanently either way
     // (INERT_FILTERS), and re-enabling it here would be a lie.
     for (const sel of ['#month-select', '#range-seg', '#agent-select', '#attr-seg',
-      '#sort-select']) {
+      '#sort-select', '#export-btn']) {
       this.querySelector(sel)?.toggleAttribute('disabled', this.#empty);
     }
     // The async filters are NOT simply the inverse: one whose catalog never
@@ -867,7 +870,10 @@ class TokenopsPage extends HTMLElement {
     // individually, so the grid is redrawn rather than toggled.
     this.#renderDayGrid();
     for (const [instrument, empty] of [
-      ['#spend-plot', '#spend-empty'],
+      // The card, not the plot: the plot's wrapper carries the white
+      // background, padding and the legend rail, so hiding only the plot
+      // leaves an empty white strip above the copy.
+      ['#spend-card', '#spend-empty'],
       ['#conc-plot', '#conc-empty'],
       ['#cost-table', '#table-empty'],
     ]) {
@@ -967,15 +973,13 @@ class TokenopsPage extends HTMLElement {
    * a month jump should leave it behind. Without this the grid kept showing
    * last month's days after the window had already moved on.
    * Lands on today when the newly picked month IS the current month (there is
-   * still a "today" to default to); the 1st otherwise, since a past month has
-   * no "today" of its own to land on.
+   * still a "today" to default to); that month's last day otherwise, via the
+   * same `monthAnchorDay()` the initial load uses — a past month's most
+   * recent day is its last one, not its first.
    */
   #syncDayToSelectedMonth() {
     const start = new Date(this.querySelector('#month-select').value);
-    const now = new Date();
-    const isCurrentMonth = start.getFullYear() === now.getFullYear()
-      && start.getMonth() === now.getMonth();
-    this.#day = isCurrentMonth ? localDateStr(now) : localDateStr(start);
+    this.#day = monthAnchorDay(start);
   }
 
   #renderDayGrid() {
