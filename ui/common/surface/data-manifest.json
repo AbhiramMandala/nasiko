@@ -16,7 +16,8 @@
           "model": "string, optional",
           "view": "\"agent\" | \"workflow\" — which shape attributions.rows comes back in",
           "provider": "string, optional — accepted but stubbed, no real filtering yet",
-          "orgUnit": "string, optional — accepted but stubbed, no real filtering yet"
+          "orgUnit": "string, optional — accepted but stubbed, no real filtering yet",
+          "myAgent": "optional"
         },
         "responseShape": {
           "data": {

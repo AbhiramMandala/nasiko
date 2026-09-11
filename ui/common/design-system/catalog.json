@@ -88,10 +88,6 @@
           "type": "string",
           "default": "Dismiss",
           "description": "Accessible name of the × button (default: `Dismiss`)."
-        },
-        "label": {
-          "type": "string",
-          "description": "Present: the trigger is a labelled pill (this text plus a chevron) instead of the icon button, and any inner HTML is ignored. This is the filter-dropdown form — set it to the current selection so the trigger reads \"Last 7 days\" rather than a static noun. Live: reassigning it after a pick relabels the trigger in place."
         }
       },
       "excludedFromCatalog": [
@@ -543,10 +539,11 @@
             "number",
             "currency",
             "percent",
-            "compact"
+            "compact",
+            "duration"
           ],
           "default": "number",
-          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact`"
+          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)"
         },
         "currency": {
           "type": "string",
@@ -2560,13 +2557,6 @@
           "type": "number",
           "default": 4,
           "description": "Number of skeleton cells to reserve while data loads (default: 4). The skeleton lives here so it cannot drift from the real geometry. Present-but-empty means the default."
-        },
-        "variant": {
-          "type": "enum",
-          "values": [
-            "chips"
-          ],
-          "description": "`chips` lays the same metrics out as a wrapping row of `label: value` pills instead of hairline-separated columns — for strips that sit under a page title rather than heading a dashboard. Purely a layout change: same `items`, same cells, no second markup path. `pct` meters and `sub` captions are column-shaped and are not drawn in chips."
         }
       },
       "slots": [],
