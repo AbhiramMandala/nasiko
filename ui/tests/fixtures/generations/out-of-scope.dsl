@@ -1,9 +1,11 @@
-I appreciate the request, but I'm unable to build that dashboard right now. The data sources available to me are for TokenOps platform usage (agent token consumption, latency, operations, and container hours), not AWS billing by service.
+I appreciate the request, but I need to let you know that the data sources available to me don't include AWS billing information. The sources I have access to are focused on TokenOps platform metrics — token usage, agent costs, operation counts, and latency — rather than AWS service-level billing.
 
-What I *can* show you:
-- **TokenOps spend and operations** — total cost, request volume, and trends over time
-- **Cost breakdown by agent** — which agents are consuming the most tokens/budget
-- **Cost breakdown by model** — spending by LLM provider and model
-- **Spend timeseries** — hourly or daily cost curves to spot usage patterns
+To build the dashboard you're asking for, I would need access to an AWS billing data source (like one that queries AWS Cost Explorer or a billing export). That's not currently connected to this platform.
 
-If you'd like to see any of those instead, just say the word — or if AWS billing data becomes available as a data source, I'll be ready to build that dashboard for you.
+If you'd like, I can help you with:
+- A TokenOps cost breakdown by agent or model
+- Token usage trends over time
+- Operation costs and efficiency metrics
+- Container hour consumption
+
+Would any of those be useful instead, or would you like to explore a different view of your TokenOps spending?

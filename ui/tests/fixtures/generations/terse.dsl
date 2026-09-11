@@ -1,8 +1,11 @@
 Sure — building that now.
-root = AppStack([heading, kpis, table], "md")
+root = AppStack([heading, kpis, timeseriesChart, agentTable], "md")
 heading = AppText("Spend overview", "title")
-summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0})
-kpis = AppStatRow([{label: "Total cost", value: summaryQ.total_cost_usd, sub: "all time"}, {label: "Requests", value: summaryQ.request_count}])
-historyRows = Query("fetchUsageHistory", [7], [])
-table = AppTable(historyRows, 7, "pages", false)
-Here's your spend dashboard with a 7-day history table — let me know if you'd like to add charts, filter by agent or model, or adjust the time window!
+dashboardQ = Query("fetchTokenopsDashboard", [{range: "7d"}], {kpis: {total_spend: {current: 0, previous: 0, change_pct: null}, total_tokens: {current: 0, previous: 0, change_pct: null}, cost_per_operation: {current: 0, previous: 0, change_pct: null}, avg_latency_ms: {current: null, previous: null, change_pct: null}}, summary: {total_cost: 0, total_operations: 0, active_agents: 0}, attributions: {rows: []}}, "data")
+kpis = AppStatRow([{label: "Total spend", value: "$" + @Round(dashboardQ.kpis.total_spend.current, 2), delta: dashboardQ.kpis.total_spend.change_pct, trend: dashboardQ.kpis.total_spend.change_pct > 0 ? "up" : dashboardQ.kpis.total_spend.change_pct < 0 ? "down" : "neutral"}, {label: "Total tokens", value: @Round(dashboardQ.kpis.total_tokens.current, 0), delta: dashboardQ.kpis.total_tokens.change_pct, trend: dashboardQ.kpis.total_tokens.change_pct > 0 ? "up" : dashboardQ.kpis.total_tokens.change_pct < 0 ? "down" : "neutral"}, {label: "Cost per operation", value: "$" + @Round(dashboardQ.kpis.cost_per_operation.current, 4), delta: dashboardQ.kpis.cost_per_operation.change_pct, trend: dashboardQ.kpis.cost_per_operation.change_pct > 0 ? "up" : dashboardQ.kpis.cost_per_operation.change_pct < 0 ? "down" : "neutral"}])
+timeseriesQ = Query("fetchSpendTimeseries", [{range: "7d"}], {data: {points: []}}, "data.points")
+timeseriesChart = AppChart({labels: timeseriesQ.bucket_start, datasets: [{label: "Spend (USD)", data: timeseriesQ.spend_usd}]}, "line", false, "currency", "USD", null, null, "auto", "7-day spend trend")
+agentRows = dashboardQ.attributions.rows
+agentTable = AppTable(@Sort(agentRows, "total_cost", "desc"), 20, "pages", false, null, null, "No agents have incurred spend in this period")
+
+Here's your spend dashboard with 7-day KPIs, a spend-over-time trend line, and a ranked table of agents by cost — let me know if you'd like to adjust the time window, add filters, or drill into specific agents!

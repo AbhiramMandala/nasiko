@@ -137,11 +137,22 @@ const SEVERITY = JSON.parse(
 /** Unknown means unclassified means fatal — the gate should have caught it. */
 const severityOf = (code) => SEVERITY[code]?.severity ?? 'fatal';
 
-/** Every source the scope allows. Anything else must not survive to the client. */
-export const ALLOWED_SOURCES = new Set([
-  'fetchTokenopsDashboard', 'fetchUsageSummary', 'fetchUsageHistory',
-  'fetchUsageByAgent', 'fetchUsageByModel',
-]);
+/**
+ * Every source the scope allows. Anything else must not survive to the client.
+ *
+ * Read from the generated manifest rather than kept by hand. The hand-kept
+ * version listed five and went stale the day NAS-582 widened the scope to
+ * seven, so a generation that correctly used fetchSpendTimeseries — a source
+ * the manifest offers and the model was told about — failed the eval for
+ * naming it. A checker that disagrees with the contract it is checking is
+ * worse than no checker: it teaches you to distrust a red.
+ */
+const MANIFEST = JSON.parse(
+  readFileSync(new URL('../common/surface/data-manifest.json', import.meta.url), 'utf8'),
+);
+export const ALLOWED_SOURCES = new Set(
+  Object.values(MANIFEST.scopes ?? {}).flat().map((s) => (typeof s === 'string' ? s : s.name)),
+);
 
 /** A recording element — the same shape the renderer tests use. */
 function makeEl(tag) {
