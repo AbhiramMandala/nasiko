@@ -91,8 +91,6 @@ async fn embeddings_core(
             provider,
             model,
             usage: resp.usage.clone(),
-            cached_tokens: None,
-            reasoning_tokens: None,
             latency_ms,
             streaming: false,
             finish_reason: None,
@@ -134,7 +132,6 @@ mod tests {
             Ok(Some(AgentConfigResult {
                 config: None,
                 agent_pinned_model: None,
-                is_coding_agent: false,
             }))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
@@ -172,6 +169,7 @@ mod tests {
             router_cache: Arc::new(crate::routing::NoopCache),
             tier_registry: Arc::new(crate::routing::registry::test_support::StubRegistry),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
+            salience_gate: Arc::new(crate::routing::AllowAllGate),
         }
     }
 
