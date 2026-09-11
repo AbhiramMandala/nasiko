@@ -1,9 +1,9 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "46fb1a5e0c20",
+  "catalogVersion": "86e15b880d81",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 29,
+  "componentCount": 41,
   "components": {
     "app-accordion": {
       "element": "app-accordion",
@@ -24,6 +24,7 @@
         },
         "open": {
           "type": "boolean",
+          "reflects": true,
           "description": "Expanded. Reflected, so it tracks user toggles."
         },
         "variant": {
@@ -53,35 +54,69 @@
       "events": [
         {
           "name": "accordion-toggle",
-          "description": "Opened or closed; `detail: { open: boolean }` — bubbles"
+          "description": "Opened or closed; `detail: { open: boolean }` — bubbles",
+          "detail": [
+            "open"
+          ]
         }
       ],
       "note": "Header text is the `label` attribute; the children are the body. Trailing header chips go through Slot(\"meta\")."
     },
-    "app-action-menu": {
-      "element": "app-action-menu",
-      "summary": "Icon button that opens a compact dropdown list of actions.",
+    "app-alert": {
+      "element": "app-alert",
+      "summary": "Says that something is wrong or needs attention, in place: a source that failed, a quota nearly spent, a filter that matched nothing when it should have matched something. Use it when the surface has to tell the reader something the numbers alone do not. For a notice with an action attached, AppBanner.",
       "paramOrder": [
-        "trigger-title",
-        "items"
+        "variant",
+        "heading",
+        "description",
+        "dismissible",
+        "dismiss-label"
       ],
       "attributes": {
-        "trigger-title": {
-          "type": "string",
-          "description": "Tooltip text for the trigger button"
+        "variant": {
+          "type": "enum",
+          "values": [
+            "normal",
+            "info",
+            "success",
+            "warning",
+            "destructive"
+          ],
+          "default": "normal",
+          "description": "`normal` (default) | `info` | `success` | `warning` | `destructive`"
         },
-        "items": {
-          "type": "json",
-          "description": "JSON array of `{ id, label }` action items"
+        "heading": {
+          "type": "string",
+          "description": "Bold first line. Required for an alert to mean anything."
+        },
+        "description": {
+          "type": "string",
+          "description": "Body text under the title."
+        },
+        "dismissible": {
+          "type": "boolean",
+          "description": "Appends a trailing × button. Clicking it collapses the alert in place and fires `alert-dismiss`; the element removes itself unless the event is cancelled."
+        },
+        "dismiss-label": {
+          "type": "string",
+          "default": "Dismiss",
+          "description": "Accessible name of the × button (default: `Dismiss`)."
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "icon",
+          "attribute": "data-slot"
+        }
+      ],
       "events": [
         {
-          "name": "action-select",
-          "description": "Item clicked; `detail: { id: string }` — bubbles"
+          "name": "alert-dismiss",
+          "description": "Cancelable. Fired after the collapse animation; the element removes itself unless `preventDefault()` is called.",
+          "cancelable": true
         }
-      ]
+      ],
+      "note": "Inline status callout. Title/description are attributes; `variant` picks the feedback tone."
     },
     "app-avatar": {
       "element": "app-avatar",
@@ -176,6 +211,64 @@
       "slots": [],
       "events": []
     },
+    "app-banner": {
+      "element": "app-banner",
+      "summary": "One statement across the top of a surface, built around a single action — “Spend is 20% over budget. Review agents.” Use it when the whole surface needs saying something; when one panel is wrong, AppAlert.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "orientation",
+        "heading",
+        "description",
+        "image",
+        "dismissible"
+      ],
+      "attributes": {
+        "orientation": {
+          "type": "enum",
+          "values": [
+            "horizontal",
+            "vertical"
+          ],
+          "default": "horizontal",
+          "description": "`horizontal` (default) | `vertical`"
+        },
+        "heading": {
+          "type": "string",
+          "description": "Heading text."
+        },
+        "description": {
+          "type": "string",
+          "description": "Body text under the heading."
+        },
+        "image": {
+          "type": "string",
+          "description": "src for a 24px leading image (a provider logo). Wins over the icon slot when both are present."
+        },
+        "dismissible": {
+          "type": "boolean",
+          "description": "Appends a trailing × button (horizontal only, as in the Flutter component). Fires `banner-close`; the element removes itself unless the event is cancelled."
+        }
+      },
+      "slots": [
+        {
+          "name": "icon",
+          "attribute": "data-slot"
+        },
+        {
+          "name": "action",
+          "attribute": "data-slot"
+        }
+      ],
+      "events": [
+        {
+          "name": "banner-close",
+          "description": "Cancelable. The element removes itself unless `preventDefault()` is called.",
+          "cancelable": true
+        }
+      ],
+      "note": "The child is the call to action (an app-button) and lands in the action slot; text is attributes."
+    },
     "app-button": {
       "element": "app-button",
       "summary": "Styled button with variants, sizes, loading spinner, and disabled state.",
@@ -213,6 +306,7 @@
             "danger-secondary",
             "ghost-danger"
           ],
+          "default": "primary",
           "description": "Visual style: `primary` (default, dark fill) | `secondary` (brand tint) | `tertiary` (white + hairline border; `outline` is an alias) | `ghost` | `danger` | `danger-secondary` | `ghost-danger` (red ink, no fill — the quiet destructive icon in a rail of icons) | `dark` (alias of `primary`, kept for existing call sites) | `icon`"
         },
         "size": {
@@ -301,6 +395,12 @@
         },
         "tags": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "label"
+            ],
+            "optional": []
+          },
           "description": "JSON array, either of strings (`[\"a\",\"b\"]`) or of `{ label }` objects, which is the form the replaced card took."
         },
         "href": {
@@ -315,19 +415,19 @@
       "slots": [
         {
           "name": "leading",
-          "attribute": "slot"
+          "attribute": "data-slot"
         },
         {
           "name": "actions",
-          "attribute": "slot"
+          "attribute": "data-slot"
         },
         {
           "name": "body",
-          "attribute": "slot"
+          "attribute": "data-slot"
         },
         {
           "name": "footer",
-          "attribute": "slot"
+          "attribute": "data-slot"
         }
       ],
       "events": []
@@ -363,6 +463,7 @@
             "hbar",
             "progress"
           ],
+          "default": "progress",
           "description": "`line` | `bar` | `donut` | `hbar` | `progress` (default `line`)"
         },
         "stacked": {
@@ -375,11 +476,10 @@
             "number",
             "currency",
             "percent",
-            "compact",
-            "duration"
+            "compact"
           ],
           "default": "number",
-          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)"
+          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact`"
         },
         "currency": {
           "type": "string",
@@ -401,6 +501,7 @@
             "on",
             "off"
           ],
+          "default": "auto",
           "description": "`auto` (default: on for donut and for 2+ series) | `on` | `off`"
         },
         "empty-text": {
@@ -429,11 +530,10 @@
             "number",
             "currency",
             "percent",
-            "compact",
-            "duration"
+            "compact"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`|`duration`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
         },
         "flush-top": {
           "type": "boolean",
@@ -483,7 +583,11 @@
       "events": [
         {
           "name": "chatbox-submit",
-          "description": "User submits; `detail: { value: string, files: [] }` — bubbles. The box goes into its loading state on submit; the owner calls `setLoading(false)` (or `setLoading(true)` then false) when the reply lands."
+          "description": "User submits; `detail: { value: string, files: [] }` — bubbles. The box goes into its loading state on submit; the owner calls `setLoading(false)` (or `setLoading(true)` then false) when the reply lands.",
+          "detail": [
+            "value",
+            "files"
+          ]
         }
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
@@ -581,6 +685,188 @@
       "slots": [],
       "events": []
     },
+    "app-combobox": {
+      "element": "app-combobox",
+      "summary": "A picker that filters as you type. Use it instead of AppSelect when the list is long enough that scrolling is worse than typing — every agent, every model. For a five-item range filter, AppSelect or AppSegmentedControl.",
+      "actionParam": true,
+      "paramOrder": [
+        "data-fn",
+        "options",
+        "placeholder",
+        "aria-label",
+        "size",
+        "disabled",
+        "min-chars",
+        "empty-text",
+        "name",
+        "value",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "aria-label"
+      ],
+      "attributes": {
+        "data-fn": {
+          "type": "dataSource",
+          "description": "Registered data-source name: `(query) => options`."
+        },
+        "options": {
+          "type": "json",
+          "shape": {
+            "fields": [
+              "label",
+              "value",
+              "description"
+            ],
+            "optional": []
+          },
+          "description": "JSON array of `\"value\"` or `{ label, value, description }`, filtered client-side when there is no `data-fn` / `filterFn`."
+        },
+        "placeholder": {
+          "type": "string",
+          "default": "Search",
+          "description": "Input placeholder (default: `Search`)."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Accessible name of the input. Falls back to the placeholder."
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "default": "md",
+          "description": "`md` (default, 36px) | `sm` (28px) — app-search's sizes."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "min-chars": {
+          "type": "number",
+          "default": 0,
+          "description": "Characters before suggestions are fetched (default 0)."
+        },
+        "empty-text": {
+          "type": "string",
+          "description": "Shown when nothing matches (default: `No results`)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner input for form submit."
+        },
+        "value": {
+          "type": "string",
+          "description": "Initial text."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "combobox-select",
+          "description": "`{ value, option }` when an option is picked. Bubbles.",
+          "detail": [
+            "value",
+            "option"
+          ]
+        },
+        {
+          "name": "input",
+          "description": "Native, bubbles from the inner input."
+        }
+      ],
+      "actionEvent": "combobox-select",
+      "note": "Suggestions come from `data-fn` (a registered read source, `(query) => options`) or a static `options` list. The Action receives { value, option }."
+    },
+    "app-date-field": {
+      "element": "app-date-field",
+      "summary": "One specific day, picked from a calendar. Use it when a source takes a date rather than a window — fetchSpendCalendarDay's `date`. For a rolling window use AppSegmentedControl with 24h / 7d / 30d.",
+      "actionParam": true,
+      "paramOrder": [
+        "value",
+        "min",
+        "max",
+        "label",
+        "hint",
+        "placeholder",
+        "state",
+        "required",
+        "disabled",
+        "size",
+        "name",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "value": {
+          "type": "string",
+          "reflects": true,
+          "description": "Selected date, `YYYY-MM-DD`. Reflected on pick."
+        },
+        "min": {
+          "type": "string",
+          "description": "Earliest selectable date, `YYYY-MM-DD`."
+        },
+        "max": {
+          "type": "string",
+          "description": "Latest selectable date, `YYYY-MM-DD`."
+        },
+        "label": {
+          "type": "string",
+          "description": "Label above the box."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Helper line below the box. Turns red in `state=\"error\"`."
+        },
+        "placeholder": {
+          "type": "string",
+          "description": "Shown when empty (default: `Select date`)."
+        },
+        "state": {
+          "type": "string",
+          "description": "`error` — red border. Omit for default."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Red `*` before the label."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "default": "md",
+          "description": "`md` (default, 32px) | `sm` (28px)"
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the hidden native input for form submit."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "change",
+          "description": "`{ value }` after the user picks a day. Bubbles.",
+          "detail": [
+            "value"
+          ]
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
     "app-divider": {
       "element": "app-divider",
       "summary": "Rule / separator — a line between two blocks of content, optionally labelled.",
@@ -626,11 +912,11 @@
       "element": "app-empty-state",
       "summary": "Placeholder shown when a list or view has no content yet.",
       "paramOrder": [
-        "title",
+        "heading",
         "description"
       ],
       "attributes": {
-        "title": {
+        "heading": {
           "type": "string",
           "description": "Bold heading text"
         },
@@ -642,7 +928,7 @@
       "slots": [
         {
           "name": "icon",
-          "attribute": "slot"
+          "attribute": "data-slot"
         },
         {
           "name": "default",
@@ -650,6 +936,52 @@
         }
       ],
       "events": []
+    },
+    "app-field": {
+      "element": "app-field",
+      "summary": "Wraps a control in a label, a description and an error line. Use it when a control needs more than the one-line label it already carries — a filter whose effect is worth explaining, or one the reader can get wrong.",
+      "childrenParam": true,
+      "paramOrder": [
+        "children",
+        "label",
+        "required",
+        "description",
+        "error",
+        "disabled"
+      ],
+      "attributes": {
+        "label": {
+          "type": "string",
+          "description": "Label text above the control."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Red `*` after the label."
+        },
+        "description": {
+          "type": "string",
+          "description": "Helper line under the control."
+        },
+        "error": {
+          "type": "string",
+          "description": "Error message; replaces the description and turns the line red. Also sets `state=\"error\"` on an `app-*` control in the slot."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Dims the label and helper (the control handles itself)."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "*"
+      ],
+      "events": [],
+      "note": "Wraps one control child with label/description/error. Not for app-input/app-select/app-search, which carry their own."
     },
     "app-grid": {
       "element": "app-grid",
@@ -697,7 +1029,15 @@
           "description": "Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`"
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "*"
+      ],
       "events": [],
       "note": "columns takes an integer OR a grid-template string. app-grid.js:20 turns a positive integer into repeat(n, 1fr) and passes anything else through verbatim into style.setProperty('--grid-columns', …), which is the only way to express a ratio — app-row has no per-child sizing at all. The template form is a closed set rather than free text for two reasons: the value reaches a CSS custom property unfiltered and the DSL is written by a model, and a ratio carries meaning, so five named proportions are a vocabulary while arbitrary fr pairs are noise. Omitting columns entirely is the responsive option — the CSS default is repeat(auto-fill, minmax(300px, 1fr)) and setting columns replaces it, so both the integer and template forms are deliberate desktop shapes."
     },
@@ -743,6 +1083,7 @@
             "md",
             "sm"
           ],
+          "default": "md",
           "description": "`md` (default, 32px) | `sm` (28px)"
         },
         "state": {
@@ -870,21 +1211,156 @@
       ],
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
+    "app-list": {
+      "element": "app-list",
+      "summary": "A few rows read downward rather than across. Use it instead of AppTable when there are no columns worth aligning — five agents with a status dot, the last handful of runs. A table earns its search, pager and sort headers at roughly ten rows and two columns worth sorting.",
+      "childrenParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "children",
+        "label",
+        "dense",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "label": {
+          "type": "string",
+          "description": "Accessible name for the `role=\"listbox\"`."
+        },
+        "dense": {
+          "type": "boolean",
+          "description": "Tighter vertical padding (s4 instead of s8)."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "app-list-item"
+      ],
+      "events": [
+        {
+          "name": "list-select",
+          "description": "`{ id, index }` bubbled from an item's `item-select`.",
+          "detail": [
+            "id",
+            "index"
+          ]
+        }
+      ],
+      "actionEvent": "list-select",
+      "note": "Children are app-list-item; selection is the caller's — bind list-select and set `selected` on the current item."
+    },
+    "app-list-item": {
+      "element": "app-list-item",
+      "summary": "One AppList row: a heading, an optional description, a badge, a status dot. Only ever inside AppList.",
+      "paramOrder": [
+        "heading",
+        "description",
+        "value",
+        "image",
+        "indent",
+        "selected",
+        "disabled",
+        "expandable",
+        "expanded",
+        "status-dot",
+        "badge"
+      ],
+      "attributes": {
+        "heading": {
+          "type": "string",
+          "description": "Primary text. Truncates with an ellipsis."
+        },
+        "description": {
+          "type": "string",
+          "description": "Secondary line under the heading."
+        },
+        "value": {
+          "type": "string",
+          "description": "Identifier echoed in `list-item-select` (`id` itself is the DOM id and stays free for the page)."
+        },
+        "image": {
+          "type": "string",
+          "description": "Avatar image src (32px). Renders an `<app-avatar>`."
+        },
+        "indent": {
+          "type": "number",
+          "default": 0,
+          "description": "Nesting level; each level indents by s24 (default 0)."
+        },
+        "selected": {
+          "type": "boolean",
+          "description": "Brand-tinted row with the secondary border."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "expandable": {
+          "type": "boolean",
+          "description": "Shows the disclosure chevron; clicking it fires `item-toggle` instead of selecting."
+        },
+        "expanded": {
+          "type": "boolean",
+          "description": "Chevron points down (open) rather than right."
+        },
+        "status-dot": {
+          "type": "boolean",
+          "description": "8px success dot after the title."
+        },
+        "badge": {
+          "type": "string",
+          "description": "Small outlined label on the trailing edge."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "list-item-select",
+          "description": "`{ id }` on click / Enter / Space. Bubbles; the list re-emits it as `list-select` with the row index.",
+          "detail": [
+            "id"
+          ]
+        },
+        {
+          "name": "list-item-toggle",
+          "description": "`{ expanded }` from the disclosure chevron. Bubbles.",
+          "detail": [
+            "expanded"
+          ]
+        }
+      ],
+      "note": "Selection is bound on the parent app-list (list-select carries id + index); the item itself takes no Action. Its identifier is `value`."
+    },
     "app-modal": {
       "element": "app-modal",
       "summary": "Accessible dialog modal with heading, body, footer slot, backdrop dismiss, and ESC/X close.",
       "childrenParam": true,
+      "actionParam": true,
       "paramOrder": [
         "children",
         "heading",
-        "hide-footer"
+        "no-footer",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "heading"
       ],
       "attributes": {
         "heading": {
           "type": "string",
           "description": "Modal title shown in the header"
         },
-        "hide-footer": {
+        "no-footer": {
           "type": "boolean",
           "description": "Hides the footer container even when a footer slot exists"
         }
@@ -899,6 +1375,58 @@
           "attribute": "data-slot"
         }
       ],
+      "events": [
+        {
+          "name": "modal-toggle",
+          "description": "`{ open }` after the dialog opens or closes. Bubbles.",
+          "detail": [
+            "open"
+          ]
+        },
+        {
+          "name": "modal-close",
+          "description": "`{ result }` after the dialog closes (× button, backdrop, Escape, or `hide(result)`). Bubbles.",
+          "detail": [
+            "result"
+          ]
+        }
+      ],
+      "actionEvent": "modal-close"
+    },
+    "app-progress": {
+      "element": "app-progress",
+      "summary": "A number against the ceiling it is measured against. Use it whenever how much is left matters as much as how much there is — a budget, a quota, seats in use. An AppStatCard states the figure; this states the proportion, which is the part a reader acts on. `value` is a PERCENT, 0–100, not the raw number: for 40 of 50 seats compute `40 / 50 * 100`. Passing 40 draws a bar at 40% for something that is 80% full, and nothing errors.",
+      "paramOrder": [
+        "value",
+        "size",
+        "label",
+        "show-value"
+      ],
+      "attributes": {
+        "value": {
+          "type": "number",
+          "description": "Percent complete, 0–100. Omit for indeterminate."
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm",
+            "lg"
+          ],
+          "default": "md",
+          "description": "`md` (default, 6px) | `sm` (4px) | `lg` (8px)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name, e.g. `Upload progress`. Required for the bar to be announced meaningfully."
+        },
+        "show-value": {
+          "type": "boolean",
+          "description": "Prints the percentage to the right of the bar."
+        }
+      },
+      "slots": [],
       "events": []
     },
     "app-radio": {
@@ -1032,7 +1560,15 @@
           "description": "Allow items to wrap to next line"
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "*"
+      ],
       "events": []
     },
     "app-search": {
@@ -1065,6 +1601,7 @@
             "md",
             "sm"
           ],
+          "default": "md",
           "description": "`md` (default, 36px) | `sm` (28px)"
         },
         "state": {
@@ -1156,10 +1693,20 @@
       "attributes": {
         "items": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "value",
+              "label",
+              "disabled",
+              "title"
+            ],
+            "optional": []
+          },
           "description": "JSON array of `\"value\"` strings or `{value, label, disabled, title}` objects. Prefer the `items` property. The string form uses the label as the value, so `value` has to match it exactly, case included; pass objects when the two should differ."
         },
         "value": {
           "type": "string",
+          "reflects": true,
           "description": "Selected value. Reflected. A value matching no segment selects nothing, which is how \"no choice yet\" is expressed."
         },
         "size": {
@@ -1168,6 +1715,7 @@
             "md",
             "sm"
           ],
+          "default": "md",
           "description": "`md` (default, 32px) | `sm` (28px). The same step the other controls take: 28px box, 12px type, `--r-6` corners."
         },
         "disabled": {
@@ -1232,6 +1780,7 @@
             "md",
             "sm"
           ],
+          "default": "md",
           "description": "`md` (default, 32px) | `sm` (28px)"
         },
         "state": {
@@ -1258,6 +1807,14 @@
         },
         "options": {
           "type": "json",
+          "shape": {
+            "fields": [
+              "value",
+              "label",
+              "disabled"
+            ],
+            "optional": []
+          },
           "description": "JSON array of `\"value\"` or `{value, label, disabled}`."
         },
         "required": {
@@ -1326,6 +1883,75 @@
       "slots": [],
       "events": []
     },
+    "app-slider": {
+      "element": "app-slider",
+      "summary": "A threshold the reader drags. Use it for a filter over a continuous range — “only agents over $5”. For picking from a set, AppSegmentedControl or AppSelect.",
+      "actionParam": true,
+      "paramOrder": [
+        "value",
+        "min",
+        "max",
+        "step",
+        "disabled",
+        "show-value",
+        "name",
+        "aria-label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "aria-label"
+      ],
+      "attributes": {
+        "value": {
+          "type": "number",
+          "reflects": true,
+          "description": "Current value. Reflected back as the user drags."
+        },
+        "min": {
+          "type": "number",
+          "default": 0,
+          "description": "Range start (default 0)."
+        },
+        "max": {
+          "type": "number",
+          "default": 100,
+          "description": "Range end (default 100)."
+        },
+        "step": {
+          "type": "number",
+          "description": "Step size. Omit for continuous (1% of the range per arrow press). With a step that yields ≤ 20 divisions, tick marks are drawn."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "show-value": {
+          "type": "boolean",
+          "description": "Floating value label above the thumb while dragging or focused."
+        },
+        "name": {
+          "type": "string",
+          "description": "Forwarded to the inner input. Pass `aria-label` (or wrap in `<app-field label>`) — the thumb has no visible label."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner input. Pass `aria-label` (or wrap in `<app-field label>`) — the thumb has no visible label."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "input",
+          "description": "Bubbles from the inner input, on every move."
+        },
+        {
+          "name": "change",
+          "description": "Bubbles from the inner input, on release."
+        }
+      ],
+      "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
+    },
     "app-stack": {
       "element": "app-stack",
       "summary": "Vertical flex stack with configurable gap and alignment.",
@@ -1372,7 +1998,15 @@
           "description": "Inner padding token: `xs` | `sm` | `md` | `lg` | `xl`"
         }
       },
-      "slots": [],
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "*"
+      ],
       "events": []
     },
     "app-stat-card": {
@@ -1383,7 +2017,9 @@
         "value",
         "delta",
         "trend",
-        "loading"
+        "loading",
+        "format",
+        "currency"
       ],
       "attributes": {
         "label": {
@@ -1409,7 +2045,29 @@
         },
         "loading": {
           "type": "boolean",
-          "description": "Show a skeleton placeholder instead of data"
+          "description": "Show a skeleton placeholder instead of data (The two attributes below were added after the catalog first shipped and sit last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
+        },
+        "format": {
+          "type": "enum",
+          "values": [
+            "number",
+            "currency",
+            "percent",
+            "compact",
+            "bytes",
+            "duration",
+            "tokens",
+            "date",
+            "time",
+            "datetime",
+            "text"
+          ],
+          "description": "Display unit: `number` | `currency` | `percent` | `compact` | `bytes` | `duration` | `tokens` | `date` | `time` | `datetime` | `text`. Applies to the value. Omit it and the card formats by shape — a fractional number is shown to two decimals, an ISO-8601 string as local time, everything else verbatim; `text` opts out entirely."
+        },
+        "currency": {
+          "type": "string",
+          "default": "USD",
+          "description": "ISO code for `format=\"currency\"` (default `USD`)"
         }
       },
       "slots": [],
@@ -1425,7 +2083,23 @@
       "attributes": {
         "items": {
           "type": "json",
-          "description": "JSON array of metric objects: `{ label, value, sub, pct }`. `sub` is the caption under the value; `pct` (a number) draws a severity meter and is omitted for metrics that have no ceiling. There is deliberately no per-metric colour: a value is a value, and the one that was tinted gold was drift, not meaning."
+          "shape": {
+            "fields": [
+              "label",
+              "value",
+              "sub",
+              "pct",
+              "format",
+              "subFormat",
+              "currency"
+            ],
+            "optional": [
+              "format",
+              "subFormat",
+              "currency"
+            ]
+          },
+          "description": "JSON array of metric objects: `{ label, value, sub, pct, format?, subFormat?, currency? }`. `sub` is the caption under the value; `pct` (a number) draws a severity meter and is omitted for metrics that have no ceiling. There is deliberately no per-metric colour: a value is a value, and the one that was tinted gold was drift, not meaning. `format` is per metric, not per strip, because a strip is precisely where a dollar figure sits next to a token count next to a latency — one attribute for all of them would be wrong for most of them. It takes the same names as `app-stat-card`'s (`currency`, `compact`, `duration`, `bytes`, `date`, …) and `currency` overrides the ISO code for that one metric. Omit it and the value is formatted by shape: a fractional number to two decimals, an ISO-8601 string as local time, a pre-built string verbatim. `sub` takes `subFormat` and the same treatment, so a caption that is just a number does not undo the work."
         },
         "loading": {
           "type": "number",
@@ -1473,6 +2147,7 @@
             "lg",
             "sm"
           ],
+          "default": "lg",
           "description": "`lg` (default, 40×24) | `sm` (36×20)"
         },
         "state": {
@@ -1497,6 +2172,7 @@
             "inline",
             "settings"
           ],
+          "default": "inline",
           "description": "`inline` (default, control then label) | `settings` (label left, control pushed to the far right — Figma Layout=Settings, for settings rows)."
         },
         "name": {
@@ -1532,7 +2208,8 @@
         "search",
         "search-placeholder",
         "detail",
-        "empty-message"
+        "empty-message",
+        "loading"
       ],
       "attributes": {
         "limit": {
@@ -1559,6 +2236,10 @@
         "empty-message": {
           "type": "string",
           "description": "Body text when there are no rows and no query."
+        },
+        "loading": {
+          "type": "boolean",
+          "description": "Hold the skeleton: the owner has not got rows yet and will hand them over later. Present suppresses the fetch entirely, so a table waiting on data upstream never flashes its empty state first; removing it fetches. Every other data component in the design system has this, and a caller who reasonably assumed this one did too was writing an argument that landed in the next slot along."
         }
       },
       "slots": [],
@@ -1575,6 +2256,85 @@
       "dataProp": "dataFn",
       "dataAsFetcher": true,
       "note": "Rows reach app-table as a fetcher on its `dataFn` property (app-table.js:24,113). Assigning the property avoids registering a synthetic source in the app-wide data-sources registry on every render pass — which never got unregistered and could collide with a real name."
+    },
+    "app-tabs": {
+      "element": "app-tabs",
+      "summary": "Tab bar in two shapes: - **Panels** (default) — `[data-tab]` (or `[data-slot]`) children are the panels; the strip is generated from their `data-label` — or from the `tabs` attribute, which is how a generated surface names them — and the component owns which one shows.",
+      "childrenParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "children",
+        "strip",
+        "tabs",
+        "active",
+        "query-param",
+        "label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "strip": {
+          "type": "boolean",
+          "description": "Strip-only mode (see above)"
+        },
+        "tabs": {
+          "type": "json",
+          "shape": {
+            "fields": [
+              "key",
+              "label"
+            ],
+            "optional": []
+          },
+          "description": "JSON array of `{ key, label }` naming the panels (panels mode). Each key matches a child's `data-tab` or `data-slot`. Optional: without it the strip reads each panel's `data-label`, falling back to the key."
+        },
+        "active": {
+          "type": "string",
+          "reflects": true,
+          "description": "Key of the active tab (panels mode). Reflected as the user switches."
+        },
+        "query-param": {
+          "type": "string",
+          "description": "URL param kept in sync with the active tab (panels mode)"
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name of the tablist, e.g. `Agent sections`."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "*"
+      ],
+      "childAttributes": {
+        "data-tab": {
+          "type": "string",
+          "description": "The panel's key; matches a `tabs` entry. `data-slot` is the same thing."
+        },
+        "data-label": {
+          "type": "string",
+          "description": "Strip label for the panel when `tabs` does not name it."
+        }
+      },
+      "events": [
+        {
+          "name": "tabs-change",
+          "description": "Tab switched; `detail: { key: string }` — bubbles",
+          "detail": [
+            "key"
+          ]
+        }
+      ],
+      "actionEvent": "tabs-change",
+      "note": "Panels are the children, each through Slot(\"<key>\"); `tabs` names and orders them. The Action receives { key }. `strip` mode and `query-param` are page concerns and should not be set from a surface."
     },
     "app-tag": {
       "element": "app-tag",
@@ -1633,13 +2393,90 @@
       "events": [
         {
           "name": "tag-change",
-          "description": "`{ selected }` after a `selectable` tag toggles."
+          "description": "`{ selected }` after a `selectable` tag toggles.",
+          "detail": [
+            "selected"
+          ]
         },
         {
           "name": "tag-remove",
-          "description": "Cancelable; the tag removes itself unless prevented."
+          "description": "Cancelable; the tag removes itself unless prevented.",
+          "cancelable": true
         }
       ]
+    },
+    "app-tag-group": {
+      "element": "app-tag-group",
+      "summary": "A row of tags acting as one filter, where several can be on at once — three of eight models. That is the case AppSegmentedControl cannot express, since it is one exclusive choice. Do not build this out of AppButtons.",
+      "childrenParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "children",
+        "selection",
+        "value",
+        "scrollable",
+        "size",
+        "label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "selection": {
+          "type": "enum",
+          "values": [
+            "multiple",
+            "single",
+            "none"
+          ],
+          "default": "multiple",
+          "description": "`multiple` (default) | `single` | `none` — `none` is a plain layout row with no selection behaviour (the Flutter default)."
+        },
+        "value": {
+          "type": "string",
+          "reflects": true,
+          "description": "Selected tag values, space-separated. Reflected as the user picks. Each tag's value is its `value` attribute, falling back to its text."
+        },
+        "scrollable": {
+          "type": "boolean",
+          "description": "One line, horizontal scroll, instead of wrapping."
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm"
+          ],
+          "default": "md",
+          "description": "`md` (default) | `sm` — applied to every tag."
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name of the `role=\"group\"`."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "app-tag"
+      ],
+      "events": [
+        {
+          "name": "tag-group-change",
+          "description": "`{ value: string[] }` after a selection change.",
+          "detail": [
+            "value"
+          ]
+        }
+      ],
+      "actionEvent": "tag-group-change",
+      "note": "Children are app-tag; mode=none is a plain layout row."
     },
     "app-text": {
       "element": "app-text",
@@ -1665,6 +2502,145 @@
       },
       "slots": [],
       "events": []
+    },
+    "app-toggle": {
+      "element": "app-toggle",
+      "summary": "One thing on or off, shown as a pressed button. AppSwitch is the settings form of the same idea; reach for AppToggle inside an AppToggleGroup, or where the state reads as “this filter is applied” rather than “this setting is enabled”.",
+      "textParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "text",
+        "pressed",
+        "disabled",
+        "size",
+        "value",
+        "aria-label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "text",
+        "aria-label"
+      ],
+      "attributes": {
+        "pressed": {
+          "type": "boolean",
+          "reflects": true,
+          "description": "The on state. Reflected as the user toggles."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": ""
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm",
+            "lg"
+          ],
+          "default": "md",
+          "description": "`md` (default, 32px) | `sm` (28px) | `lg` (36px)"
+        },
+        "value": {
+          "type": "string",
+          "description": "Identifier echoed by `<app-toggle-group>` in its events."
+        },
+        "aria-label": {
+          "type": "string",
+          "description": "Forwarded to the inner button. Required when icon-only."
+        }
+      },
+      "slots": [],
+      "events": [
+        {
+          "name": "toggle-change",
+          "description": "`{ pressed, value }` after a user toggle. Bubbles.",
+          "detail": [
+            "pressed",
+            "value"
+          ]
+        }
+      ],
+      "actionEvent": "toggle-change"
+    },
+    "app-toggle-group": {
+      "element": "app-toggle-group",
+      "summary": "Several toggles acting as one control, single or multiple selection. Multiple is the reason it exists — AppSegmentedControl already covers the exclusive case, so use this one when more than one value can be on.",
+      "childrenParam": true,
+      "actionParam": true,
+      "paramOrder": [
+        "children",
+        "selection",
+        "size",
+        "value",
+        "disabled",
+        "attached",
+        "label",
+        "action"
+      ],
+      "requiresName": true,
+      "nameFrom": [
+        "label"
+      ],
+      "attributes": {
+        "selection": {
+          "type": "enum",
+          "values": [
+            "single",
+            "multiple"
+          ],
+          "default": "single",
+          "description": "`single` (default) | `multiple`"
+        },
+        "size": {
+          "type": "enum",
+          "values": [
+            "md",
+            "sm",
+            "lg"
+          ],
+          "default": "md",
+          "description": "`md` (default) | `sm` | `lg` — applied to every item."
+        },
+        "value": {
+          "type": "string",
+          "reflects": true,
+          "description": "In `single` mode, the `value` of the pressed item. Reflected as the user picks. In `multiple` mode, a space-separated list."
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Disables every item."
+        },
+        "attached": {
+          "type": "boolean",
+          "description": "Fuses the items into one segmented bar (shared hairlines, radius on the outer corners only). CSS-only."
+        },
+        "label": {
+          "type": "string",
+          "description": "Accessible name of the `role=\"group\"`."
+        }
+      },
+      "slots": [
+        {
+          "name": "default",
+          "attribute": null
+        }
+      ],
+      "children": [
+        "app-toggle"
+      ],
+      "events": [
+        {
+          "name": "toggle-group-change",
+          "description": "`{ value }` — a string in `single` mode, an array in `multiple`.",
+          "detail": [
+            "value"
+          ]
+        }
+      ],
+      "actionEvent": "toggle-group-change",
+      "note": "Children are app-toggle with a `value`; the group reflects the selection in its own `value`."
     },
     "app-toolbar": {
       "element": "app-toolbar",
@@ -1704,6 +2680,7 @@
     "/builds",
     "/chat",
     "/chats",
+    "/custom-views",
     "/design-system",
     "/executions",
     "/flow",
@@ -1712,7 +2689,6 @@
     "/mcp",
     "/mcp-detail",
     "/observability-session",
-    "/orchestrator",
     "/resources",
     "/secrets",
     "/session-trace",
@@ -1720,6 +2696,7 @@
     "/settings",
     "/setup-cli",
     "/tokenops",
+    "/view",
     "/weave",
     "/workflow",
     "/workflow-new",
@@ -1727,8 +2704,21 @@
     "/your-agents"
   ],
   "blocked": {
-    "app-tabs": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) — an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism.",
     "app-loading-bar": "Zero attributes; driven by global document events, not composition.",
-    "auto-complete": "Needs a live filter callback through data-sources.js — not designed yet."
+    "app-spinner": "A bare indeterminate spinner. Every data component owns its own loading state and shows a skeleton shaped like the thing that is coming; a loose spinner is the model hand-rolling a state the runtime already has.",
+    "app-kbd": "Key caps for a keyboard shortcut. Nothing on a generated surface binds one.",
+    "app-breadcrumb": "A navigation trail. A generated surface is one route with nothing above it — the shell owns navigation, and a trail the surface invents would name places that do not exist.",
+    "app-textarea": "Multi-line prose input. No data source takes prose, so anything typed here has nowhere to go.",
+    "app-otp-input": "A one-time-passcode field. Authentication, never dashboard content.",
+    "app-pagination": "app-table brings its own pager. A second one has nothing to drive, and two pagers on one table is worse than none.",
+    "app-popover": "An anchored overlay with nothing of its own in it — a container for chrome. What it would hold belongs on the surface.",
+    "app-hover-card": "Reveals content on pointer rest. A dashboard should state what it knows; anything worth a hover card is worth a line.",
+    "app-menu": "An anchored popup of actions. Same class as app-context-menu: the actions a generated surface has are few enough to show.",
+    "app-context-menu": "A right-click menu. A hidden affordance the surface has no way to teach, on a page the reader did not build.",
+    "app-sheet": "A full-height side sheet over a backdrop. The Weave dock already owns the right-hand drawer; a surface opening a second one fights it.",
+    "app-calendar": "A full month grid for picking one date. app-date-field is the same choice in the space a dashboard has; the bare grid is a page's control, not a panel.",
+    "app-time-field": "An HH:MM editor. No data source in scope takes a time of day — the windows are days and ranges.",
+    "app-command": "A modal command palette is page chrome, not dashboard content; `groups` is a JSON tree of commands the surface cannot meaningfully author.",
+    "app-resizable": "Draggable panel dividers. Layout is declared with AppStack, AppRow and AppGrid — a surface that also ships a splitter is describing the same thing twice."
   }
 }

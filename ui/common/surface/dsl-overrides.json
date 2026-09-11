@@ -37,7 +37,9 @@
     },
     "app-modal": {
       "status": "ready",
-      "childrenParam": true
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "modal-close"
     },
     "app-accordion": {
       "status": "ready",
@@ -79,9 +81,6 @@
     "app-code-snippet": {
       "status": "ready"
     },
-    "app-action-menu": {
-      "status": "ready"
-    },
     "app-empty-state": {
       "status": "ready",
       "reason": "icon is withheld automatically now \u2014 it carries (markup) in its @attr line, so gen-catalog flags it and gen-dsl-catalog drops it. Listed here previously by hand, which is exactly the list that stops matching the code."
@@ -121,8 +120,11 @@
       "dataProp": "data"
     },
     "app-tabs": {
-      "status": "blocked",
-      "reason": "Selects its children by [role=\"tab\"], .tab (app-tabs.js:23,174) \u2014 an ARIA-role contract, not a slot attribute, so Slot() cannot express it. Needs its own marker mechanism."
+      "status": "ready",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "tabs-change",
+      "note": "Panels are the children, each through Slot(\"<key>\"); `tabs` names and orders them. The Action receives { key }. `strip` mode and `query-param` are page concerns and should not be set from a surface."
     },
     "app-loading-bar": {
       "status": "blocked",
@@ -141,7 +143,7 @@
     "app-segmented-control": {
       "status": "ready",
       "actionParam": true,
-      "note": "A form control, same as app-select: its value plumbing is Action([@Set($var, …)]) on the trailing action slot. Segments come from the `items` attribute, so a generated surface can name them directly."
+      "note": "A form control, same as app-select: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot. Segments come from the `items` attribute, so a generated surface can name them directly."
     },
     "app-search": {
       "status": "ready",
@@ -169,9 +171,141 @@
       "actionParam": true,
       "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
     },
-    "auto-complete": {
+    "app-alert": {
+      "status": "ready",
+      "dslSummary": "Says that something is wrong or needs attention, in place: a source that failed, a quota nearly spent, a filter that matched nothing when it should have matched something. Use it when the surface has to tell the reader something the numbers alone do not. For a notice with an action attached, AppBanner.",
+      "note": "Inline status callout. Title/description are attributes; `variant` picks the feedback tone."
+    },
+    "app-banner": {
+      "status": "ready",
+      "dslSummary": "One statement across the top of a surface, built around a single action \u2014 \u201cSpend is 20% over budget. Review agents.\u201d Use it when the whole surface needs saying something; when one panel is wrong, AppAlert.",
+      "childrenParam": true,
+      "note": "The child is the call to action (an app-button) and lands in the action slot; text is attributes."
+    },
+    "app-spinner": {
       "status": "blocked",
-      "reason": "Needs a live filter callback through data-sources.js \u2014 not designed yet."
+      "reason": "A bare indeterminate spinner. Every data component owns its own loading state and shows a skeleton shaped like the thing that is coming; a loose spinner is the model hand-rolling a state the runtime already has."
+    },
+    "app-progress": {
+      "status": "ready",
+      "dslSummary": "A number against the ceiling it is measured against. Use it whenever how much is left matters as much as how much there is \u2014 a budget, a quota, seats in use. An AppStatCard states the figure; this states the proportion, which is the part a reader acts on. `value` is a PERCENT, 0\u2013100, not the raw number: for 40 of 50 seats compute `40 / 50 * 100`. Passing 40 draws a bar at 40% for something that is 80% full, and nothing errors."
+    },
+    "app-kbd": {
+      "status": "blocked",
+      "reason": "Key caps for a keyboard shortcut. Nothing on a generated surface binds one."
+    },
+    "app-breadcrumb": {
+      "status": "blocked",
+      "reason": "A navigation trail. A generated surface is one route with nothing above it \u2014 the shell owns navigation, and a trail the surface invents would name places that do not exist."
+    },
+    "app-list": {
+      "status": "ready",
+      "dslSummary": "A few rows read downward rather than across. Use it instead of AppTable when there are no columns worth aligning \u2014 five agents with a status dot, the last handful of runs. A table earns its search, pager and sort headers at roughly ten rows and two columns worth sorting.",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "list-select",
+      "note": "Children are app-list-item; selection is the caller's \u2014 bind list-select and set `selected` on the current item."
+    },
+    "app-list-item": {
+      "status": "ready",
+      "dslSummary": "One AppList row: a heading, an optional description, a badge, a status dot. Only ever inside AppList.",
+      "note": "Selection is bound on the parent app-list (list-select carries id + index); the item itself takes no Action. Its identifier is `value`."
+    },
+    "app-field": {
+      "status": "ready",
+      "dslSummary": "Wraps a control in a label, a description and an error line. Use it when a control needs more than the one-line label it already carries \u2014 a filter whose effect is worth explaining, or one the reader can get wrong.",
+      "childrenParam": true,
+      "note": "Wraps one control child with label/description/error. Not for app-input/app-select/app-search, which carry their own."
+    },
+    "app-textarea": {
+      "status": "blocked",
+      "reason": "Multi-line prose input. No data source takes prose, so anything typed here has nowhere to go."
+    },
+    "app-slider": {
+      "status": "ready",
+      "dslSummary": "A threshold the reader drags. Use it for a filter over a continuous range \u2014 \u201conly agents over $5\u201d. For picking from a set, AppSegmentedControl or AppSelect.",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-toggle": {
+      "status": "ready",
+      "dslSummary": "One thing on or off, shown as a pressed button. AppSwitch is the settings form of the same idea; reach for AppToggle inside an AppToggleGroup, or where the state reads as \u201cthis filter is applied\u201d rather than \u201cthis setting is enabled\u201d.",
+      "textParam": true,
+      "actionParam": true,
+      "actionEvent": "toggle-change"
+    },
+    "app-toggle-group": {
+      "status": "ready",
+      "dslSummary": "Several toggles acting as one control, single or multiple selection. Multiple is the reason it exists \u2014 AppSegmentedControl already covers the exclusive case, so use this one when more than one value can be on.",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "toggle-group-change",
+      "note": "Children are app-toggle with a `value`; the group reflects the selection in its own `value`."
+    },
+    "app-otp-input": {
+      "status": "blocked",
+      "reason": "A one-time-passcode field. Authentication, never dashboard content."
+    },
+    "app-tag-group": {
+      "status": "ready",
+      "dslSummary": "A row of tags acting as one filter, where several can be on at once \u2014 three of eight models. That is the case AppSegmentedControl cannot express, since it is one exclusive choice. Do not build this out of AppButtons.",
+      "childrenParam": true,
+      "actionParam": true,
+      "actionEvent": "tag-group-change",
+      "note": "Children are app-tag; mode=none is a plain layout row."
+    },
+    "app-pagination": {
+      "status": "blocked",
+      "reason": "app-table brings its own pager. A second one has nothing to drive, and two pagers on one table is worse than none."
+    },
+    "app-popover": {
+      "status": "blocked",
+      "reason": "An anchored overlay with nothing of its own in it \u2014 a container for chrome. What it would hold belongs on the surface."
+    },
+    "app-hover-card": {
+      "status": "blocked",
+      "reason": "Reveals content on pointer rest. A dashboard should state what it knows; anything worth a hover card is worth a line."
+    },
+    "app-menu": {
+      "status": "blocked",
+      "reason": "An anchored popup of actions. Same class as app-context-menu: the actions a generated surface has are few enough to show."
+    },
+    "app-context-menu": {
+      "status": "blocked",
+      "reason": "A right-click menu. A hidden affordance the surface has no way to teach, on a page the reader did not build."
+    },
+    "app-sheet": {
+      "status": "blocked",
+      "reason": "A full-height side sheet over a backdrop. The Weave dock already owns the right-hand drawer; a surface opening a second one fights it."
+    },
+    "app-calendar": {
+      "status": "blocked",
+      "reason": "A full month grid for picking one date. app-date-field is the same choice in the space a dashboard has; the bare grid is a page's control, not a panel."
+    },
+    "app-date-field": {
+      "status": "ready",
+      "dslSummary": "One specific day, picked from a calendar. Use it when a source takes a date rather than a window \u2014 fetchSpendCalendarDay's `date`. For a rolling window use AppSegmentedControl with 24h / 7d / 30d.",
+      "actionParam": true,
+      "note": "A form control: its value plumbing is Action([@Set($var, \u2026)]) on the trailing action slot, not an attribute."
+    },
+    "app-time-field": {
+      "status": "blocked",
+      "reason": "An HH:MM editor. No data source in scope takes a time of day \u2014 the windows are days and ranges."
+    },
+    "app-command": {
+      "status": "blocked",
+      "reason": "A modal command palette is page chrome, not dashboard content; `groups` is a JSON tree of commands the surface cannot meaningfully author."
+    },
+    "app-resizable": {
+      "status": "blocked",
+      "reason": "Draggable panel dividers. Layout is declared with AppStack, AppRow and AppGrid \u2014 a surface that also ships a splitter is describing the same thing twice."
+    },
+    "app-combobox": {
+      "status": "ready",
+      "dslSummary": "A picker that filters as you type. Use it instead of AppSelect when the list is long enough that scrolling is worse than typing \u2014 every agent, every model. For a five-item range filter, AppSelect or AppSegmentedControl.",
+      "actionParam": true,
+      "actionEvent": "combobox-select",
+      "note": "Suggestions come from `data-fn` (a registered read source, `(query) => options`) or a static `options` list. The Action receives { value, option }."
     }
   },
   "$comment3": "actionParam adds a trailing synthetic `action` parameter \u2014 the component has no such attribute; the renderer binds the Action to the element's trigger event. dslExcludeAttributes is the name weave2.0's dsl_prompt.py expects, so the two sides agree without translation.",
