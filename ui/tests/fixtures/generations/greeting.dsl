@@ -1,16 +1,29 @@
-I'm a dashboard builder for the Nasiko platform. I can create interactive FinOps and observability dashboards by writing a compact DSL that renders real-time visualizations of your token usage, costs, and agent performance.
+I'm an assistant that builds interactive dashboards for the Nasiko platform. Here's what I can help you with:
 
-Here's what I can build for you:
+**I can generate dashboards that:**
+- Display real usage data (costs, tokens, latency, operations) from available sources
+- Show cost breakdowns by agent or model with searchable tables
+- Visualize trends over time with charts
+- Create interactive filters and toggles without page reloads
+- Display key metrics with deltas and trend indicators
+- Build modals, alerts, and other composed layouts
 
-- **Cost & spend dashboards** — total spend KPIs, cost breakdowns by agent or model, spend trends over time, hourly spend curves
-- **Usage analytics** — request counts, token usage (prompt/completion/cache), operational metrics
-- **Agent performance** — per-agent cost attribution, latency, operations, token consumption
-- **Interactive filters** — switch between time windows (24h/7d/30d), search agents or models, toggle between views
-- **Real data** — all dashboards pull live data from your FinOps backend; nothing is invented
-- **Responsive layouts** — charts, tables, stat cards, and custom arrangements that work on any screen
+**I work with real data sources like:**
+- Fleet-wide FinOps summaries and attribution
+- Usage history and trends
+- Per-agent and per-model cost/token breakdowns
+- Hourly spend curves and calendar-day analysis
 
-I can also help you **revise** a dashboard once it exists — add a chart, change a filter, reorder sections, adjust the time window, or anything else you'd like to see.
+**I can add interactivity like:**
+- Search boxes that filter tables
+- Date/range pickers to change time windows
+- Buttons that toggle between different views
+- Chat composition for follow-up questions
+- Modal dialogs for details or editing
 
-Just tell me what you want to track or analyze, and I'll build it for you. For example: *"Show me our top-cost agents this week"* or *"Build a dashboard with spend trends and a model comparison"* or *"Add a 24-hour hourly spend chart to the main page."*
+**I cannot:**
+- Invent or guess at data — every number comes from a real source or computed from one
+- Create mutation/write operations yet (no data sources support that)
+- Build things outside the Nasiko component library
 
-What would you like to see?
+Just tell me what dashboard you'd like to see — a spend overview, agent rankings, cost trends, or anything else from the available data — and I'll build it for you. Ask me to adjust it afterward and I'll refine it.
