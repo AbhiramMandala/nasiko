@@ -80,7 +80,14 @@
  *   A floor, not a fixed size: when the host is laid out taller (a flex panel
  *   that runs to its floor), the plot, skeleton and empty state fill it.
  * @attr {string} format - Value formatting: `number` (default) | `currency` | `percent` |
- *   `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)
+ *   `compact` | `tokens` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a
+ *   latency axis). `tokens` is an alias for `compact` and exists for one reason:
+ *   AppStatCard and AppStatRow accept it, so a surface writes `format: "tokens"`
+ *   on the token KPI and then, one line later, on the chart of the same numbers —
+ *   and got a fatal for being consistent. Two vocabularies for one idea is our
+ *   defect, not the caller's. The stat formats this still does NOT take are the
+ *   ones an axis cannot mean: `bytes` (no source in scope returns any) and
+ *   `date`/`time`/`datetime`/`text`, which are not magnitudes.
  * @attr {string} currency - ISO code for `format="currency"` (default `USD`)
  * @attr {string} center-value - `donut` only: the figure drawn in the hole
  * @attr {string} center-label - `donut` only: the caption under it
@@ -97,7 +104,7 @@
  * @attr {boolean} average-line - `bar` only: dashed horizontal rule at the mean
  *   of the column totals, labelled "avg".
  * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
- *   `number` (default) | `currency` | `percent` | `compact`
+ *   `number` (default) | `currency` | `percent` | `compact` | `tokens` | `duration`
  * @attr {boolean} flush-top - The plot's own canvas-painted background (see
  *   `plotBackground`) normally rounds all four corners, like any other
  *   surface card. Set this when another element sits directly above the
@@ -131,7 +138,7 @@
 import { Chart } from '../../vendor/chart.esm.js';
 import { escHtml, escAttr } from '../../utils/escape.js';
 import { onThemeChange } from '../../utils/theme.js';
-import { fmtDateTime, isIsoDateTime } from '../../utils/units.js';
+import { timeAxisLabels } from '../../utils/units.js';
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-chart.css', import.meta.url));
 
@@ -454,36 +461,18 @@ const averageLine = {
 };
 
 /**
- * Axis labels for a series whose x values are timestamps.
- *
- * Every timeseries this app charts arrives as ISO-8601 in UTC —
- * `bucket_start: "2026-09-09T14:00:00Z"` — and a generated surface binds it
- * straight through, because the DSL has no date formatter and `@builtins` is
- * arithmetic only. Left alone, the x axis is a row of 20-character UTC
- * strings: unreadable, and wrong for the reader, since 14:00Z is not 14:00
- * where they are.
- *
- * The granularity is chosen from the set rather than fixed, because the same
- * endpoint answers both shapes: `bucket=hour` inside one day wants clock
- * times, `bucket=day` across a month wants dates, and a run that crosses a
- * midnight needs both. A set with even one non-date in it is left completely
- * alone — a half-converted axis is worse than an unconverted one.
- *
- * @param {Array<unknown>} labels
- * @returns {Array<unknown>} the same array when these are not dates
+ * @param {Element} el
+ * @param {string} [attr]
+ * @param {{tick?: boolean}} [opts] `tick` when the string labels an AXIS.
+ *   An axis tick and a tooltip value are not the same job. A tooltip states
+ *   one figure and $0.50 is how a figure of fifty cents is written. A tick
+ *   names a position on a scale, and there the second decimal is padding: the
+ *   run "$0.50 / $1 / $1.50" pads two of its three labels to a width the
+ *   others do not use, and 0.5 is the number. Ticks therefore drop trailing
+ *   zeros; everything else keeps the currency's own two.
+ * @returns {(n: number) => string}
  */
-export function timeAxisLabels(labels) {
-  const present = labels.filter((l) => l !== null && l !== undefined && l !== '');
-  if (!present.length || !present.every((l) => isIsoDateTime(l))) return labels;
-  const timed = present.some((l) => /[T ]\d{2}:\d{2}/.test(String(l)));
-  if (!timed) return labels.map((l) => (l ? fmtDateTime(l, 'date') : l));
-  const days = new Set(present.map((l) => new Date(String(l).trim()).toDateString()));
-  const mode = days.size === 1 ? 'time' : 'datetime';
-  return labels.map((l) => (l ? fmtDateTime(l, mode) : l));
-}
-
-/** @returns {(n: number) => string} */
-function formatter(el, attr = 'format') {
+function formatter(el, attr = 'format', { tick = false } = {}) {
   const kind = el.getAttribute(attr) || 'number';
   const currency = el.getAttribute('currency') || 'USD';
   if (kind === 'currency') {
@@ -494,7 +483,8 @@ function formatter(el, attr = 'format') {
     // Below $10 the ticks step in cents; rounding them all to "$0" / "$1" drew a
     // scale of duplicate labels on a near-zero series.
     const cents = new Intl.NumberFormat(undefined,
-      { style: 'currency', currency, currencyDisplay: 'narrowSymbol', maximumFractionDigits: 2 });
+      { style: 'currency', currency, currencyDisplay: 'narrowSymbol',
+        minimumFractionDigits: tick ? 0 : 2, maximumFractionDigits: 2 });
     return (n) => (Math.abs(n) < 10 && n !== Math.round(n) ? cents : whole).format(n);
   }
   if (kind === 'percent') return (n) => `${Math.round(n)}%`;
@@ -507,7 +497,9 @@ function formatter(el, attr = 'format') {
       ? `${Math.round(n)}ms`
       : `${Number((n / 1000).toFixed(1))}s`);
   }
-  if (kind === 'compact') {
+  // `tokens` is `compact` — deliberately the same function, not a near-copy, so
+  // the two names cannot drift into rendering the same number differently.
+  if (kind === 'compact' || kind === 'tokens') {
     const f = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
     return (n) => f.format(n);
   }
@@ -675,6 +667,9 @@ export class AppChart extends HTMLElement {
     const pal = palette(this);
     const fmt = formatter(this);
     const fmt2 = formatter(this, 'format-y2');
+    // Axis ticks get their own pair: same unit, scale spelling. See formatter().
+    const tickFmt = formatter(this, 'format', { tick: true });
+    const tickFmt2 = formatter(this, 'format-y2', { tick: true });
     const sets = this.#datasets();
     const labels = timeAxisLabels(this.#data.labels || []);
     const showLegend = this.#showLegend(type, sets.length);
@@ -761,7 +756,7 @@ export class AppChart extends HTMLElement {
           appChartPlotBg: { color: pal.base, flushTop: this.hasAttribute('flush-top') },
           appChartPills: { hoverInk: colorWithAlpha(pal.ink, 0.22) },
         },
-        scales: type === 'donut' ? {} : this.#scales(pal, fmt, fmt2, { hasY2, segmented }),
+        scales: type === 'donut' ? {} : this.#scales(pal, tickFmt, tickFmt2, { hasY2, segmented }),
       },
       plugins,
     });
@@ -928,7 +923,10 @@ export class AppChart extends HTMLElement {
     };
   }
 
-  #scales(pal, fmt, fmt2, { hasY2 = false, segmented = false } = {}) {
+  /** `tickFmt`/`tickFmt2` are the AXIS formatters, not the value ones — a tick
+   *  names a position on the scale and drops the padding zeros a figure keeps.
+   *  See formatter(). */
+  #scales(pal, tickFmt, tickFmt2, { hasY2 = false, segmented = false } = {}) {
     // `segmented` implies stacking: the pills ARE the stack segments.
     const stacked = this.hasAttribute('stacked') || segmented;
     const scales = {
@@ -960,7 +958,7 @@ export class AppChart extends HTMLElement {
         // maxTicksLimit, not count: a hard count forces steps like $90 where
         // the reading wants $100 — the limit keeps the design's pitch while
         // Chart.js still lands on round values.
-        ticks: { color: pal.tick, padding: 8, callback: (v) => fmt(v),
+        ticks: { color: pal.tick, padding: 8, callback: (v) => tickFmt(v),
                  maxTicksLimit: this.#tickCount() },
         // The concentration presentation hides the value axis: the reading is
         // the shape of the day and the position against the avg rule, and per-
@@ -976,7 +974,7 @@ export class AppChart extends HTMLElement {
         // scale would draw two unrelated rulings over one plot.
         grid: { drawOnChartArea: false, drawTicks: false },
         border: { display: false },
-        ticks: { color: pal.tick, padding: 8, callback: (v) => fmt2(v) },
+        ticks: { color: pal.tick, padding: 8, callback: (v) => tickFmt2(v) },
         // Two scales, one set of rules: rebuild y2's ticks on the SAME
         // fractional positions as the left axis's gridlines, stretching y2's
         // max to the next nice step so the values stay round. Left to its own

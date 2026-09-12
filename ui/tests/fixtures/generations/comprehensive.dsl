@@ -1,0 +1,11 @@
+Sure — building that now.
+root = AppStack([header, kpiRow, chartsSection, agentTable], "md")
+header = AppText("TokenOps Dashboard", "title")
+dashboardQ = Query("fetchTokenopsDashboard", [{range: "7d"}], {kpis: {total_spend: {current: 0}, total_tokens: {current: 0}, cost_per_operation: {current: 0}}, attributions: {rows: []}}, "data")
+kpiRow = AppStatRow([{label: "Total spend", value: dashboardQ.kpis.total_spend.current, delta: dashboardQ.kpis.total_spend.change_pct, trend: dashboardQ.kpis.total_spend.change_pct > 0 ? "up" : dashboardQ.kpis.total_spend.change_pct < 0 ? "down" : "neutral", format: "currency", currency: "USD"}, {label: "Total tokens", value: dashboardQ.kpis.total_tokens.current, delta: dashboardQ.kpis.total_tokens.change_pct, trend: dashboardQ.kpis.total_tokens.change_pct > 0 ? "up" : dashboardQ.kpis.total_tokens.change_pct < 0 ? "down" : "neutral", format: "tokens"}, {label: "Cost per operation", value: dashboardQ.kpis.cost_per_operation.current, delta: dashboardQ.kpis.cost_per_operation.change_pct, trend: dashboardQ.kpis.cost_per_operation.change_pct > 0 ? "up" : dashboardQ.kpis.cost_per_operation.change_pct < 0 ? "down" : "neutral", format: "currency", currency: "USD"}])
+chartsSection = AppGrid([costChart, tokenChart], "1fr 1fr", "md")
+costChart = AppChart({labels: dashboardQ.attributions.rows.agent_name, datasets: [{label: "Cost (USD)", data: dashboardQ.attributions.rows.total_cost}]}, "bar", false, "currency", "USD", null, null, "auto", "No agents with spend in this period")
+tokenChart = AppChart({labels: dashboardQ.attributions.rows.agent_name, datasets: [{label: "Total tokens", data: dashboardQ.attributions.rows.total_tokens}]}, "bar", false, "tokens", null, null, null, "auto", "No token usage in this period")
+agentTable = AppTable(dashboardQ.attributions.rows, 20, "pages", false, null, null, "No agents found")
+
+Here's your comprehensive TokenOps dashboard with KPI metrics, cost and token usage charts, and a detailed agent breakdown table — let me know if you'd like to adjust the time range, add filtering, or modify the layout!

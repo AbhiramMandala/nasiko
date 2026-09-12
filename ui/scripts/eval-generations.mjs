@@ -101,7 +101,22 @@ export const CASES = [
   // sources (by agent, by model) are in scope, so the data for a second shape
   // is there to be asked for — this is not a case that can only be satisfied
   // by inventing something.
+  //
+  // Failing on arrival, and recorded as such rather than tuned until it
+  // passes. The first recording answered "comprehensive" with ONE query
+  // (fetchTokenopsDashboard) and two bar charts over the same x-axis — cost
+  // by agent beside tokens by agent, from the same rows. That is one chart
+  // drawn twice, and a dashboard that never looks at the time dimension at
+  // all, which is what both assertions are for. The prompt rules added for
+  // exactly this (13b on panels, 14b on picking a chart type) did not move it,
+  // which is the finding: they are unproven, not proven.
+  //
+  // knownFailure rather than a looser expectation, because the mechanism
+  // clears itself — a known failure that starts passing fails the run and
+  // asks for the annotation to be removed, so whatever finally fixes this
+  // cannot land unnoticed.
   { id: 'comprehensive', prompt: 'create a comprehensive tokenops dashboard with charts',
+    knownFailure: 'answers breadth with one data source and one chart shape repeated',
     expect: { minQueries: 2, minComponents: 6, minChartKinds: 2 } },
   { id: 'kpis-only', prompt: 'Just the headline numbers, nothing else',
     expect: { minQueries: 1 } },

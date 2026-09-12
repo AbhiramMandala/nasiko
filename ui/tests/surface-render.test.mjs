@@ -511,14 +511,25 @@ test('a real string in a text slot is left alone', () => {
   assert.equal(el.attrs['empty-text'], 'No spend in the last 7 days');
 });
 
-test('one unmistakable candidate is named; several are not guessed at', () => {
-  // Naming an attribute is only worth it when there is exactly one it could
-  // be. A confident wrong guess sends a repair turn to the wrong line, which
-  // is worse than saying "you are counting wrong" and stopping there.
-  const many = draw(
-    'root = AppChart([], "line", false, "currency", "USD", null, null, "auto", '
-    + 'null, null, null, null, false, "No spend in the last 7 days")');
-  const msg = many.diagnostics.find((d) => d.code === 'enum_violation').message;
-  assert.doesNotMatch(msg, /this value fits/,
-    'center-value, center-label and label all accept it — that is a guess');
+test('a candidate is named only when another enum really lists that value', () => {
+  // "auto" is not a chart type and IS a legend setting, so the drift is
+  // legible and worth naming.
+  const named = draw('root = AppChart([], "auto")');
+  const msg = named.diagnostics.find((d) => d.code === 'enum_violation').message;
+  assert.match(msg, /fits legend/, 'the value is a member of legend, not merely a string');
+});
+
+test('a value from a sibling component is not reported as a miscount', () => {
+  // The guess this rule exists to prevent, and it was a real one. A chart of
+  // token counts written `format: "tokens"` — a real format name, just one
+  // AppStatRow takes and AppChart did not — was told the value "fits label,
+  // which is argument 11, the call looks out of step by 7". It was not out of
+  // step at all; `label` was simply the one unset string attribute.
+  //
+  // (app-chart takes `tokens` now, for the same reason it read as a miscount:
+  // two vocabularies for one idea. So this uses another stat-only format.)
+  const { diagnostics } = draw('root = AppChart([], "bar", false, "bytes")');
+  const msg = diagnostics.find((d) => d.code === 'enum_violation').message;
+  assert.doesNotMatch(msg, /fits/, 'no string attribute should be offered as a candidate');
+  assert.match(msg, /out of step/, 'the honest answer is "you may be counting wrong"');
 });

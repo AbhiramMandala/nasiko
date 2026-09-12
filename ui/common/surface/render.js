@@ -228,11 +228,19 @@ function positionHint(def, key, value, props) {
   if (at === -1) return '';
   const where = ` — ${key} is argument ${at + 1} of ${order.length}`;
 
-  const accepts = (spec) => {
-    if (!spec) return false;
-    if (spec.type === 'enum') return Boolean(spec.values?.includes(String(value)));
-    return spec.type === 'string' || spec.type === 'route';
-  };
+  // Only an enum that actually lists this value counts as a candidate.
+  //
+  // "any string fits any string slot" was too loose, and it produced exactly
+  // the confident wrong guess this function is supposed to avoid: a chart with
+  // `format: "tokens"` — a real format name, just one app-chart does not take
+  // — was told the value "fits label, which is argument 11, the call looks out
+  // of step by 7". It was not out of step. It had the right argument and a
+  // value from a sibling component's vocabulary, and the only reason `label`
+  // was named is that it happened to be the one unset string attribute.
+  //
+  // Narrowing it means the generic "you may be counting wrong" message is what
+  // most cases get, which is the honest answer when we cannot tell.
+  const accepts = (spec) => Boolean(spec?.type === 'enum' && spec.values?.includes(String(value)));
   const candidates = Object.entries(def.attributes || {})
     .filter(([name, spec]) => name !== key
       && props[name] === undefined

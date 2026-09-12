@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "79566dc1ce20",
+  "catalogVersion": "5d1bca33ee33",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 41,
@@ -478,10 +478,11 @@
             "currency",
             "percent",
             "compact",
+            "tokens",
             "duration"
           ],
           "default": "number",
-          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)"
+          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `tokens` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis). `tokens` is an alias for `compact` and exists for one reason: AppStatCard and AppStatRow accept it, so a surface writes `format: \"tokens\"` on the token KPI and then, one line later, on the chart of the same numbers — and got a fatal for being consistent. Two vocabularies for one idea is our defect, not the caller's. The stat formats this still does NOT take are the ones an axis cannot mean: `bytes` (no source in scope returns any) and `date`/`time`/`datetime`/`text`, which are not magnitudes."
         },
         "currency": {
           "type": "string",
@@ -533,10 +534,11 @@
             "currency",
             "percent",
             "compact",
+            "tokens",
             "duration"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `duration`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `tokens` | `duration`"
         },
         "flush-top": {
           "type": "boolean",

@@ -540,10 +540,11 @@
             "currency",
             "percent",
             "compact",
+            "tokens",
             "duration"
           ],
           "default": "number",
-          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)"
+          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `tokens` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis). `tokens` is an alias for `compact` and exists for one reason: AppStatCard and AppStatRow accept it, so a surface writes `format: \"tokens\"` on the token KPI and then, one line later, on the chart of the same numbers — and got a fatal for being consistent. Two vocabularies for one idea is our defect, not the caller's. The stat formats this still does NOT take are the ones an axis cannot mean: `bytes` (no source in scope returns any) and `date`/`time`/`datetime`/`text`, which are not magnitudes."
         },
         "currency": {
           "type": "string",
@@ -595,10 +596,11 @@
             "currency",
             "percent",
             "compact",
+            "tokens",
             "duration"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `duration`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `tokens` | `duration`"
         },
         "flush-top": {
           "type": "boolean",
