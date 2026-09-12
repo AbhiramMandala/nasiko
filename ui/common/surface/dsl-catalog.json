@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "8c1397d51566",
+  "catalogVersion": "f436a9fbd21f",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 41,
@@ -363,6 +363,7 @@
       "element": "app-card",
       "summary": "`<app-card>` — THE card component.",
       "childrenParam": true,
+      "childrenSlot": "body",
       "paramOrder": [
         "children",
         "name",
@@ -531,10 +532,11 @@
             "number",
             "currency",
             "percent",
-            "compact"
+            "compact",
+            "duration"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `duration`"
         },
         "flush-top": {
           "type": "boolean",
@@ -2079,8 +2081,7 @@
       "summary": "Row of headline metrics separated by hairlines — the one stat strip.",
       "paramOrder": [
         "items",
-        "loading",
-        "variant"
+        "loading"
       ],
       "attributes": {
         "items": {
@@ -2107,13 +2108,6 @@
           "type": "number",
           "default": 4,
           "description": "Number of skeleton cells to reserve while data loads (default: 4). The skeleton lives here so it cannot drift from the real geometry. Present-but-empty means the default."
-        },
-        "variant": {
-          "type": "enum",
-          "values": [
-            "chips"
-          ],
-          "description": "`chips` lays the same metrics out as a wrapping row of `label: value` pills instead of hairline-separated columns — for strips that sit under a page title rather than heading a dashboard. Purely a layout change: same `items`, same cells, no second markup path. `pct` meters and `sub` captions are column-shaped and are not drawn in chips."
         }
       },
       "slots": [],
@@ -2239,8 +2233,8 @@
           "description": "Placeholder for the search input."
         },
         "detail": {
-          "type": "string",
-          "description": "Present: clicking a row opens a detail modal."
+          "type": "boolean",
+          "description": "Present: clicking a row opens a detail modal. A boolean, not a string: `#showDetail` is `hasAttribute('detail')` and the value is never read. It was typed `{string}` here, which made it a string in the catalog, which made `detail=\"false\"` *enable* the modal — and a generated surface writing `false` into that position (which it does, to reach `empty-message` after it) therefore turned on a row-click modal nobody asked for, on every table, silently."
         },
         "empty-message": {
           "type": "string",
