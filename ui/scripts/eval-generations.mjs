@@ -87,6 +87,22 @@ export const CASES = [
   // leads with children now and this passes on the first recording after.
   { id: 'by-model-chart', prompt: 'Usage by model, with a chart',
     expect: { minQueries: 1, tags: ['app-chart'] } },
+  // The case this suite did not have, and the gap that let a real complaint go
+  // unmeasured. Every other prompt here names ONE thing — a table, a chart, a
+  // toggle — so a model that reaches for the same shape every time still
+  // passes them all. The dashboard that prompted the component and catalog
+  // work was this request, and what was wrong with it was breadth: two line
+  // charts side by side, answering a time question and a volume question with
+  // the same mark, and nothing else.
+  //
+  // `minChartKinds: 2` is the assertion, and it is a floor rather than a
+  // preference for any particular chart. Line for the trend and anything else
+  // for the breakdown both pass; two lines do not. Both tokenops breakdown
+  // sources (by agent, by model) are in scope, so the data for a second shape
+  // is there to be asked for — this is not a case that can only be satisfied
+  // by inventing something.
+  { id: 'comprehensive', prompt: 'create a comprehensive tokenops dashboard with charts',
+    expect: { minQueries: 2, minComponents: 6, minChartKinds: 2 } },
   { id: 'kpis-only', prompt: 'Just the headline numbers, nothing else',
     expect: { minQueries: 1 } },
   { id: 'filter-days', prompt: 'History chart with buttons to switch between 7 and 30 days',
@@ -193,7 +209,18 @@ export function evaluateGeneration(text) {
   });
 
   const tags = [];
-  if (container.children[0]) walk(container.children[0], (el) => tags.push(el.tag));
+  // Which SHAPES of chart, not how many charts. A dashboard answering three
+  // different questions with three line plots has drawn one chart three
+  // times: the reader learns nothing from the second that the first did not
+  // already teach them to read. `type` is unset more often than not, and an
+  // unset one is a line — the component's own default (app-chart.js:550).
+  const chartKinds = new Set();
+  if (container.children[0]) {
+    walk(container.children[0], (el) => {
+      tags.push(el.tag);
+      if (el.tag === 'app-chart') chartKinds.add(el.attrs.type ?? 'line');
+    });
+  }
 
   return {
     statements: statements.length,
@@ -205,6 +232,7 @@ export function evaluateGeneration(text) {
     states: out.states,
     unresolved: out.unresolved,
     actions: statements.filter((s) => /=\s*Action\(/.test(s.raw ?? '')).length,
+    chartKinds: [...chartKinds],
     diagnostics,
   };
 }
@@ -257,6 +285,10 @@ export function check(kase, text) {
   }
   for (const tag of e.tags ?? []) {
     if (!r.tags.includes(tag)) fail.push(`no <${tag}> anywhere in the tree`);
+  }
+  if (e.minChartKinds && r.chartKinds.length < e.minChartKinds) {
+    fail.push(`${r.chartKinds.length} kind(s) of chart (${r.chartKinds.join(', ') || 'none'}), `
+      + `expected at least ${e.minChartKinds} — the same shape repeated answers one question twice`);
   }
 
   return { fail, advisory, runtime, r };

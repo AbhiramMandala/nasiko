@@ -526,7 +526,7 @@
             "hbar",
             "progress"
           ],
-          "default": "progress",
+          "default": "line",
           "description": "`line` | `bar` | `donut` | `hbar` | `progress` (default `line`)"
         },
         "stacked": {
