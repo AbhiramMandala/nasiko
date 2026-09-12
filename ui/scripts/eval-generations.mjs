@@ -27,6 +27,7 @@
  *   node ui/scripts/eval-generations.mjs                 # against the endpoint
  *   node ui/scripts/eval-generations.mjs --record        # save responses as fixtures
  *   node ui/scripts/eval-generations.mjs --offline       # replay saved fixtures, no network
+ *   node ui/scripts/eval-generations.mjs --record --repair   # ...and measure the repair turn
  *   node ui/scripts/eval-generations.mjs --case spend    # one case
  *
  * `--offline` is what CI runs: recorded generations, replayed, so a change to
@@ -46,6 +47,7 @@ const CATALOG = resolve(UI, 'common/surface/dsl-catalog.json');
 
 const { parseBuffer } = await import(new URL('../common/surface/parser.js', import.meta.url).href);
 const { materialize, buildComponentIndex } = await import(new URL('../common/surface/materialize.js', import.meta.url).href);
+const { repairableDiagnostics, buildRepairPrompt } = await import(new URL('../common/surface/repair.js', import.meta.url).href);
 const { render } = await import(new URL('../common/surface/render.js', import.meta.url).href);
 
 const catalog = JSON.parse(readFileSync(CATALOG, 'utf8'));
@@ -302,7 +304,7 @@ async function login() {
 }
 
 /** Read one generation off the control plane, concatenating its dsl-chunks. */
-async function generate(prompt) {
+async function generate(prompt, { currentSurface } = {}) {
   const base = CP_BASE;
   const token = await login();
   const res = await fetch(`${base}/api/weave/surface`, {
@@ -312,7 +314,17 @@ async function generate(prompt) {
       accept: 'text/event-stream',
       authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ prompt, context: { catalogVersion: catalog.catalogVersion } }),
+    body: JSON.stringify({
+      prompt,
+      context: {
+        catalogVersion: catalog.catalogVersion,
+        // A repair turn patches by statement name, which only works if the
+        // generator can see what it is patching. The browser sends this on
+        // every turn (surface-stream.js); without it here the model would
+        // have to reproduce the whole dashboard to change one line.
+        ...(currentSurface && { currentSurface }),
+      },
+    }),
   });
   // 503 is the route's own "no running agent by that name" — worth separating
   // from a transport failure, because the fix is a deployment, not a retry.
@@ -382,6 +394,22 @@ if (!invokedDirectly) { /* imported for its checker */ } else {
 const args = process.argv.slice(2);
 const offline = args.includes('--offline');
 const record = args.includes('--record');
+/**
+ * Also measure the repair turn (common/surface/repair.js).
+ *
+ * Off by default because it doubles the requests on a run that is already
+ * slow, and because the fixtures this records are FIRST-PASS output — that is
+ * what the offline gate should keep judging. The repair number is reported
+ * separately and answers a different question: not "is the model good", but
+ * "when it is wrong, can it fix itself from what the renderer told it".
+ *
+ * Advisories are included here and excluded in the browser, deliberately. A
+ * live user should not wait a round trip to tidy a pre-fetch placeholder;
+ * an eval measuring whether the loop works should absolutely count them,
+ * since default_is_whole_response is the single most common thing it has to
+ * repair.
+ */
+const withRepair = args.includes('--repair');
 const only = args[args.indexOf('--case') + 1];
 const cases = only && args.includes('--case') ? CASES.filter((c) => c.id === only) : CASES;
 
@@ -479,6 +507,8 @@ if (!offline) await checkCatalogReachable();
 /** Cases whose recording was refused because the generator answered nothing. */
 const skipped = [];
 let failed = 0;
+/** What the repair turn did, when --repair asked for one. */
+const repairs = { offered: 0, cleared: 0, improved: 0, noBetter: 0, before: 0, after: 0 };
 for (const kase of cases) {
   const path = resolve(FIXTURES, `${kase.id}.dsl`);
   let text;
@@ -521,6 +551,35 @@ for (const kase of cases) {
 
   const { fail, advisory, runtime, r } = check(kase, text);
 
+  // ── The repair turn, measured ───────────────────────────────────────────
+  // Hand the renderer's own diagnostics back and see whether the generator
+  // can fix them. Deliberately AFTER the fixture is written, so what the
+  // offline gate keeps judging is first-pass output — this measures recovery,
+  // which is a different number and must not be allowed to flatter the first.
+  if (withRepair && !offline && r.root) {
+    const before = repairableDiagnostics(r.diagnostics, SEVERITY, { includeAdvisory: true });
+    if (before.length) {
+      repairs.offered++;
+      repairs.before += before.length;
+      try {
+        const patch = await generate(buildRepairPrompt(before), { currentSurface: text });
+        // The same seeding the runtime does: the delta overwrites by name, so
+        // the prior surface has to be underneath it or `root` goes missing.
+        const merged = `${text}\n${patch.text}`;
+        const after = repairableDiagnostics(
+          evaluateGeneration(merged).diagnostics, SEVERITY, { includeAdvisory: true });
+        repairs.after += after.length;
+        if (!after.length) { repairs.cleared++; console.log(`    repair: ${before.length} → 0`); }
+        else if (after.length < before.length) { repairs.improved++; console.log(`    repair: ${before.length} → ${after.length}`); }
+        else { repairs.noBetter++; console.log(`    repair: ${before.length} → ${after.length}, no better`); }
+      } catch (err) {
+        repairs.after += before.length;
+        repairs.noBetter++;
+        console.log(`    repair: failed — ${err.message}`);
+      }
+    }
+  }
+
   if (kase.knownFailure) {
     if (fail.length) {
       console.log(`~ ${kase.id} — known failure: ${kase.knownFailure}`);
@@ -560,6 +619,26 @@ for (const kase of cases) {
 
 const known = cases.filter((c) => c.knownFailure).length;
 const mode = offline ? 'replayed' : 'live';
+
+// The one number that says whether handing diagnostics back is worth the
+// round trip. Printed before the pass/fail line because it is about a
+// different thing: not how good the first draft was, but how much of its own
+// mess the generator can clear once it is told.
+if (withRepair && !offline) {
+  if (!repairs.offered) {
+    console.log('\nrepair: nothing to repair — no generation carried a fixable diagnostic.');
+  } else {
+    console.log(`\nrepair: ${repairs.offered}/${cases.length} generations needed one; `
+      + `${repairs.cleared} fully cleared, ${repairs.improved} improved, ${repairs.noBetter} no better.`);
+    console.log(`        ${repairs.before} fixable diagnostics → ${repairs.after} `
+      + `(${Math.round((1 - repairs.after / repairs.before) * 100)}% cleared in one turn).`);
+    if (repairs.noBetter > repairs.cleared + repairs.improved) {
+      console.log('        More turns wasted than helped. In the browser those roll back, so');
+      console.log('        the cost is latency rather than a worse dashboard — but at this rate');
+      console.log('        the repair prompt is the thing to look at, not the round count.');
+    }
+  }
+}
 
 // Recording captures; replaying judges. Generation is stochastic, so each
 // record run samples the distribution afresh and will surface different
