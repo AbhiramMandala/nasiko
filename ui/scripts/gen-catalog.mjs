@@ -174,11 +174,31 @@ function typeOf(name, declared, desc) {
   if ((alternation && ticked.length >= 2) || (CONSTRAINED.has(name) && ticked.length >= 1)) {
     const values = [...new Set(ticked)];
     const out = { type: 'enum', values };
-    // `md` (default) — also `md` (default, 32px) and `md` (default: the usual),
-    // which is how most sizes are documented; the size after the comma is
-    // commentary, not part of the marker.
-    const def = valueList.match(/`([\w-]+)`\s*\(default\b[^)]*\)/);
+    // Two spellings, and the order matters.
+    //
+    //   `md` (default)              — the value, then a bare marker. Most
+    //                                 sizes are documented this way, as are
+    //                                 `md` (default, 32px) and
+    //                                 `md` (default: the usual), where what
+    //                                 follows the comma is commentary.
+    //   … | `progress` (default `line`)
+    //                               — the marker NAMES the default instead,
+    //                                 and the value before it is just the last
+    //                                 item of the alternation.
+    //
+    // The second form has to be tried first. Reading app-chart's `type` by
+    // position gave `progress`, the last of five, while the component is
+    // `getAttribute('type') || 'line'` — so the catalog stated a default the
+    // component has never had, `enum_violation` fell back to it, and a chart
+    // with a bad type drew a progress bar instead of a line. One attribute in
+    // the whole catalog writes it this way, which is exactly why it survived.
+    const named = valueList.match(/\(default:?\s*[`"']([\w-]+)[`"']\s*\)/);
+    const positional = valueList.match(/`([\w-]+)`\s*\(default\b[^)]*\)/);
+    const def = named ?? positional;
     if (def) out.default = def[1];
+    if (def && !values.includes(def[1])) {
+      throw new Error(`${name}: documented default "${def[1]}" is not one of its own values (${values.join(', ')}).`);
+    }
     return out;
   }
 

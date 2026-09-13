@@ -80,7 +80,14 @@
  *   A floor, not a fixed size: when the host is laid out taller (a flex panel
  *   that runs to its floor), the plot, skeleton and empty state fill it.
  * @attr {string} format - Value formatting: `number` (default) | `currency` | `percent` |
- *   `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)
+ *   `compact` | `tokens` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a
+ *   latency axis). `tokens` is an alias for `compact` and exists for one reason:
+ *   AppStatCard and AppStatRow accept it, so a surface writes `format: "tokens"`
+ *   on the token KPI and then, one line later, on the chart of the same numbers —
+ *   and got a fatal for being consistent. Two vocabularies for one idea is our
+ *   defect, not the caller's. The stat formats this still does NOT take are the
+ *   ones an axis cannot mean: `bytes` (no source in scope returns any) and
+ *   `date`/`time`/`datetime`/`text`, which are not magnitudes.
  * @attr {string} currency - ISO code for `format="currency"` (default `USD`)
  * @attr {string} center-value - `donut` only: the figure drawn in the hole
  * @attr {string} center-label - `donut` only: the caption under it
@@ -97,7 +104,7 @@
  * @attr {boolean} average-line - `bar` only: dashed horizontal rule at the mean
  *   of the column totals, labelled "avg".
  * @attr {string} format-y2 - Right-axis formatting when a dataset declares `axis: 'y2'`:
- *   `number` (default) | `currency` | `percent` | `compact` | `duration`
+ *   `number` (default) | `currency` | `percent` | `compact` | `tokens` | `duration`
  * @attr {boolean} flush-top - The plot's own canvas-painted background (see
  *   `plotBackground`) normally rounds all four corners, like any other
  *   surface card. Set this when another element sits directly above the
@@ -490,7 +497,9 @@ function formatter(el, attr = 'format', { tick = false } = {}) {
       ? `${Math.round(n)}ms`
       : `${Number((n / 1000).toFixed(1))}s`);
   }
-  if (kind === 'compact') {
+  // `tokens` is `compact` — deliberately the same function, not a near-copy, so
+  // the two names cannot drift into rendering the same number differently.
+  if (kind === 'compact' || kind === 'tokens') {
     const f = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
     return (n) => f.format(n);
   }

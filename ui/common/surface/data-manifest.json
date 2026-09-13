@@ -20,11 +20,7 @@
           "myAgent": "optional"
         },
         "answers": "composite",
-        "answersMeans": "summary (a KPI strip, no chart) + breakdown (a bar, donut or ranking) in one response — it has NO series, so that needs its own Query",
-        "contains": [
-          "summary",
-          "breakdown"
-        ],
+        "answersMeans": "several of the above in one response; say which part you are reading",
         "responseShape": {
           "data": {
             "kpis": {
@@ -238,12 +234,7 @@
           "provider": "optional"
         },
         "answers": "composite",
-        "answersMeans": "summary (a KPI strip, no chart) + series (a line chart) + breakdown (a bar, donut or ranking) in one response",
-        "contains": [
-          "summary",
-          "series",
-          "breakdown"
-        ],
+        "answersMeans": "several of the above in one response; say which part you are reading",
         "responseShape": {
           "data": {
             "hours": [

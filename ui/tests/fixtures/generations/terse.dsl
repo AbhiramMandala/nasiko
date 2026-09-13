@@ -1,11 +1,8 @@
 Sure — building that now.
-root = AppStack([heading, kpis, timeseriesChart, agentTable], "md")
+root = AppStack([heading, kpis, breakdown], "md")
 heading = AppText("Spend overview", "title")
-dashboardQ = Query("fetchTokenopsDashboard", [{range: "7d"}], {kpis: {total_spend: {current: 0, previous: 0, change_pct: null}, total_tokens: {current: 0, previous: 0, change_pct: null}, cost_per_operation: {current: 0, previous: 0, change_pct: null}}, summary: {total_cost: 0, total_operations: 0, active_agents: 0}, attributions: {rows: []}}, "data")
-kpis = AppStatRow([{label: "Total spend", value: "$" + @Round(dashboardQ.kpis.total_spend.current, 2), delta: dashboardQ.kpis.total_spend.change_pct, trend: dashboardQ.kpis.total_spend.change_pct > 0 ? "up" : dashboardQ.kpis.total_spend.change_pct < 0 ? "down" : "neutral"}, {label: "Total tokens", value: @Round(dashboardQ.kpis.total_tokens.current, 0), delta: dashboardQ.kpis.total_tokens.change_pct, trend: dashboardQ.kpis.total_tokens.change_pct > 0 ? "up" : dashboardQ.kpis.total_tokens.change_pct < 0 ? "down" : "neutral"}, {label: "Cost per op", value: "$" + @Round(dashboardQ.kpis.cost_per_operation.current, 4), delta: dashboardQ.kpis.cost_per_operation.change_pct, trend: dashboardQ.kpis.cost_per_operation.change_pct > 0 ? "up" : dashboardQ.kpis.cost_per_operation.change_pct < 0 ? "down" : "neutral"}])
-timeseriesQ = Query("fetchSpendTimeseries", [{range: "7d"}], {data: {points: []}}, "data")
-timeseriesChart = AppChart({labels: timeseriesQ.points.bucket_start, datasets: [{label: "Spend (USD)", data: timeseriesQ.points.spend_usd}]}, "line", false, "currency", "USD", null, null, "auto", "No spend data in the last 7 days")
-agentRows = @Sort(dashboardQ.attributions.rows, "total_cost", "desc")
-agentTable = AppTable(agentRows, 20, "pages", false, null, null, "No agents have incurred spend yet")
-
-Here's your spend dashboard with 7-day KPIs, a spend-over-time chart, and a breakdown by agent — let me know if you'd like to adjust the time window, add filters, or focus on different metrics!
+summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0}, "total_cost_usd")
+historyRows = Query("fetchUsageHistory", [7], [])
+kpis = AppStatCard("Total spend", summaryQ, null, "neutral", false, "currency", "USD")
+breakdown = AppChart({labels: historyRows.date, datasets: [{label: "Cost (USD)", data: historyRows.total_cost_usd}]}, "line", false, "currency", "USD", null, null, "auto", "No spend in the last 7 days")
+Here's your spend dashboard with a summary card and a 7-day cost trend — let me know if you'd like to add agent or model breakdowns, or adjust the time window!

@@ -8,4 +8,4 @@ showSeven = Action([@Set($days, 7), @Run(historyQ)])
 showThirty = Action([@Set($days, 30), @Run(historyQ)])
 historyQ = Query("fetchUsageHistory", [$days], [])
 chart = AppChart({labels: historyQ.date, datasets: [{label: "Cost (USD)", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD")
-Here's your spend history chart with 7-day and 30-day toggle buttons — let me know if you'd like to add more metrics or adjust the view!
+Here's your history chart with 7 and 30-day range buttons — let me know if you'd like to adjust the data shown or add anything else!
