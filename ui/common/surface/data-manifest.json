@@ -20,7 +20,11 @@
           "myAgent": "optional"
         },
         "answers": "composite",
-        "answersMeans": "several of the above in one response; say which part you are reading",
+        "answersMeans": "summary + breakdown in one response — it has NO series, so that needs its own Query",
+        "contains": [
+          "summary",
+          "breakdown"
+        ],
         "responseShape": {
           "data": {
             "kpis": {
@@ -234,7 +238,12 @@
           "provider": "optional"
         },
         "answers": "composite",
-        "answersMeans": "several of the above in one response; say which part you are reading",
+        "answersMeans": "summary + series + breakdown in one response",
+        "contains": [
+          "summary",
+          "series",
+          "breakdown"
+        ],
         "responseShape": {
           "data": {
             "hours": [
