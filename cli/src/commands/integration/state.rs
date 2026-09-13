@@ -17,6 +17,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallationBinding {
+    pub cluster_name: String,
+    pub cluster_url: String,
+    pub principal_id: Uuid,
+}
 
 /// Per-agent settings recorded at install time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +35,10 @@ pub struct AgentState {
     pub capture_content: bool,
     /// Version of the installed hook script.
     pub hook_version: u32,
+    /// Immutable delivery destination selected by the explicit installation.
+    /// Legacy state without this field fails closed and must be reinstalled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<InstallationBinding>,
 }
 
 /// Every installed integration, keyed by catalog id.
@@ -402,6 +414,16 @@ mod tests {
     #[test]
     fn returns_no_agent_state_before_install() {
         assert!(IntegrationState::default().get("claude").is_none());
+    }
+
+    #[test]
+    fn legacy_agent_state_loads_without_inventing_a_destination() {
+        let state: IntegrationState = serde_json::from_str(
+            r#"{"agents":{"claude":{"agent_name":"claude-code","capture_content":true,"hook_version":1}}}"#,
+        )
+        .unwrap();
+
+        assert!(state.get("claude").unwrap().binding.is_none());
     }
 
     fn test_lock(dir: &Path) -> SessionLock {

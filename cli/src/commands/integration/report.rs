@@ -32,18 +32,7 @@ pub fn run(agent: Agent) -> Result<()> {
             spec.id
         );
     };
-    let (cluster_name, cluster) = crate::config::active_cluster()?;
-    let principal_id = cluster
-        .token
-        .as_deref()
-        .and_then(crate::config::token_subject)
-        .and_then(|subject| uuid::Uuid::parse_str(&subject).ok())
-        .ok_or_else(|| anyhow::anyhow!("active cluster token has no valid user UUID subject"))?;
-    let destination = QueueDestination {
-        cluster_name,
-        cluster_url: cluster.url,
-        principal_id,
-    };
+    let destination = destination_from_state(agent_state)?;
     let lock = state::lock_session(
         spec.id,
         &snapshot.session_id,
@@ -103,6 +92,19 @@ pub fn run(agent: Agent) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn destination_from_state(agent_state: &super::state::AgentState) -> Result<QueueDestination> {
+    let binding = agent_state.binding.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "installed integration has no cluster binding; reinstall it with: nasiko agents install <agent>"
+        )
+    })?;
+    Ok(QueueDestination {
+        cluster_name: binding.cluster_name.clone(),
+        cluster_url: binding.cluster_url.clone(),
+        principal_id: binding.principal_id,
+    })
 }
 
 fn canonical_event(
@@ -326,6 +328,43 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(!marked.get());
+    }
+
+    #[test]
+    fn reporting_uses_the_install_time_destination() {
+        let principal_id = uuid::Uuid::new_v4();
+        let state = super::super::state::AgentState {
+            agent_name: "alice-claude-code".into(),
+            capture_content: true,
+            hook_version: 1,
+            binding: Some(super::super::state::InstallationBinding {
+                cluster_name: "cluster-a".into(),
+                cluster_url: "https://a.example".into(),
+                principal_id,
+            }),
+        };
+
+        let destination = destination_from_state(&state).unwrap();
+        assert_eq!(destination.cluster_name, "cluster-a");
+        assert_eq!(destination.cluster_url, "https://a.example");
+        assert_eq!(destination.principal_id, principal_id);
+    }
+
+    #[test]
+    fn legacy_install_state_without_a_destination_fails_closed() {
+        let state = super::super::state::AgentState {
+            agent_name: "alice-claude-code".into(),
+            capture_content: true,
+            hook_version: 1,
+            binding: None,
+        };
+
+        assert!(
+            destination_from_state(&state)
+                .unwrap_err()
+                .to_string()
+                .contains("reinstall")
+        );
     }
 
     #[test]

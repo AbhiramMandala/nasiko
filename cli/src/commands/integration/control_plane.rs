@@ -1,18 +1,26 @@
 //! Control-plane registration for coding-agent integrations.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use super::agents::Agent;
+use super::state::InstallationBinding;
 
 pub struct Registration {
     pub created: bool,
     pub agent_name: String,
+    pub binding: InstallationBinding,
 }
 
 pub fn register_agent(agent: Agent) -> Result<Registration> {
     let spec = agent.spec();
-    let (_, entry) = crate::config::active_cluster()?;
+    let (cluster_name, entry) = crate::config::active_cluster()?;
+    let principal_id = entry
+        .token
+        .as_deref()
+        .and_then(crate::config::token_subject)
+        .and_then(|subject| uuid::Uuid::parse_str(&subject).ok())
+        .context("active cluster token has no valid user UUID subject")?;
     let client = crate::api::Client::from_cluster_entry(&entry);
     let response: serde_json::Value = client.post_json(
         "/agents/coding-integrations",
@@ -30,5 +38,10 @@ pub fn register_agent(agent: Agent) -> Result<Registration> {
     Ok(Registration {
         created,
         agent_name,
+        binding: InstallationBinding {
+            cluster_name,
+            cluster_url: entry.url,
+            principal_id,
+        },
     })
 }

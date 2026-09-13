@@ -20,7 +20,7 @@ use std::path::Path;
 
 use agents::Agent;
 use catalog::Support;
-use state::{AgentState, IntegrationState};
+use state::{AgentState, InstallationBinding, IntegrationState};
 
 /// Options accepted by `nasiko agents install`.
 pub struct InstallOptions<'a> {
@@ -83,7 +83,14 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
     let artifacts = agent.install()?;
     let (script, registration) = persist_installed_artifacts(
         artifacts,
-        || save_agent_state(agent, &registration.agent_name, !options.no_content),
+        || {
+            save_agent_state(
+                agent,
+                &registration.agent_name,
+                !options.no_content,
+                &registration.binding,
+            )
+        },
         || agent.uninstall(),
     )?;
 
@@ -149,6 +156,14 @@ pub fn auto_install_detected() -> Result<()> {
     let mut installed = 0usize;
     for agent in agents {
         let spec = agent.spec();
+        if settings.get(spec.id).is_some() {
+            println!(
+                "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: nasiko agents install {}",
+                spec.display_name, spec.id
+            );
+            installed += 1;
+            continue;
+        }
         let no_content = settings
             .get(spec.id)
             .is_some_and(|state| !state.capture_content);
@@ -316,7 +331,12 @@ fn require_present(agent: Agent) -> Result<()> {
     )
 }
 
-fn save_agent_state(agent: Agent, agent_name: &str, capture_content: bool) -> Result<()> {
+fn save_agent_state(
+    agent: Agent,
+    agent_name: &str,
+    capture_content: bool,
+    binding: &InstallationBinding,
+) -> Result<()> {
     let spec = agent.spec();
     let mut settings = IntegrationState::load()?;
     settings.agents.insert(
@@ -325,6 +345,7 @@ fn save_agent_state(agent: Agent, agent_name: &str, capture_content: bool) -> Re
             agent_name: agent_name.to_string(),
             capture_content,
             hook_version: agent.install_version().expect("instrumented adapter"),
+            binding: Some(binding.clone()),
         },
     );
     settings.save()
@@ -447,6 +468,7 @@ mod tests {
             agent_name: "claude-code".into(),
             capture_content: true,
             hook_version: expected.saturating_sub(1),
+            binding: None,
         };
         assert_ne!(state.hook_version, expected);
     }
