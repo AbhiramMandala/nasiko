@@ -57,6 +57,7 @@ class ChatPage extends HTMLElement {
   #contextId = null;
   #agentId = null;
   #agentLabel = null;
+  #readOnly = false;
   #lastUserContent = null;
   #sampleQueries = [];
   #sending = false;
@@ -108,6 +109,7 @@ class ChatPage extends HTMLElement {
     // hand-typed url — and an unrouted session there is the orchestrator's.
     this.#agentLabel = params.get("agent_name") || (inSessions ? "Orchestrator" : "Agent");
     this.#navModule = inSessions ? "sessions" : (this.#agentId ? "agents" : "orchestrator");
+    this.#readOnly = params.get("read_only") === "1";
 
     if (this.#agentId) document.title = `Nasiko — Chat with ${this.#agentLabel}`;
 
@@ -170,6 +172,7 @@ class ChatPage extends HTMLElement {
     const params = new URLSearchParams({ session_id: first.session_id });
     if (first.agent_id) params.set('agent_id', first.agent_id);
     params.set('agent_name', first.agent_name || 'Orchestrator');
+    if (first.is_coding_agent) params.set('read_only', '1');
     history.replaceState(null, '', `${SESSIONS_PATH}?${params}`);
     this.#enter();
   }
@@ -203,7 +206,7 @@ class ChatPage extends HTMLElement {
 
   #render() {
     const initial = this.#agentLabel.charAt(0).toUpperCase();
-    const agentCardUrl = this.#agentId ? `/agent-card?id=${encodeURIComponent(this.#agentId)}` : null;
+    const agentCardUrl = this.#agentId && !this.#readOnly ? `/agent-card?id=${encodeURIComponent(this.#agentId)}` : null;
 
     this.innerHTML = `
       ${this.#navModule === 'agents' ? '' : `<app-module-nav module="${this.#navModule}"></app-module-nav>`}
@@ -211,20 +214,22 @@ class ChatPage extends HTMLElement {
         <div class="chat-header-avatar" aria-hidden="true">${initial}</div>
         <div class="chat-header-info">
           <span class="chat-agent-name">${escHtml(this.#agentLabel)}</span>
-          <span class="chat-agent-status"><span class="status-dot"></span> Running</span>
+          <span class="chat-agent-status"><span class="status-dot${this.#readOnly ? ' is-recorded' : ''}"></span> ${this.#readOnly ? 'Recorded coding-agent session' : 'Running'}</span>
         </div>
         ${agentCardUrl ? `<a class="chat-header-link" href="${agentCardUrl}" title="View agent card">${icons.externalLink('', 16)}</a>` : ''}
       </div>
       <div class="messages" id="messages">
         ${this.#sessionId ? '' : this.#renderWelcome()}
       </div>
-      <div class="input-area">
-        <app-chatbox
-          id="chat-input"
-          placeholder="Type a message..."
-          transcription-callback="transcribeAudio"
-        ></app-chatbox>
-      </div>
+      ${this.#readOnly
+        ? '<div class="readonly-notice">This is a recorded coding-agent conversation. Continue it in the original coding agent.</div>'
+        : `<div class="input-area">
+            <app-chatbox
+              id="chat-input"
+              placeholder="Type a message..."
+              transcription-callback="transcribeAudio"
+            ></app-chatbox>
+          </div>`}
     `;
   }
 
@@ -320,7 +325,7 @@ class ChatPage extends HTMLElement {
       }
     });
 
-    chatInput.addEventListener("chatbox-submit", async (e) => {
+    chatInput?.addEventListener("chatbox-submit", async (e) => {
       const content = e.detail.value;
       if (!content) {
         chatInput.setLoading(false);
@@ -331,7 +336,7 @@ class ChatPage extends HTMLElement {
   }
 
   async #sendMessage(content) {
-    if (this.#sending) return;
+    if (this.#sending || this.#readOnly) return;
     this.#sending = true;
     const messagesEl = this.querySelector("#messages");
     const chatInput = this.querySelector("#chat-input");
@@ -358,10 +363,7 @@ class ChatPage extends HTMLElement {
         const res = await apiFetch("/chat/sessions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          // `first_prompt` is what makes the server title this session with a
-          // real LLM call instead of leaving it stuck on the "New chat"
-          // fallback forever — same field orchestrator-page.js sends.
-          body: JSON.stringify({ agent_id: this.#agentId, first_prompt: content.slice(0, 100) }),
+          body: JSON.stringify({ agent_id: this.#agentId }),
         });
         if (!res.ok) throw new Error("Failed to create session");
         const body = await res.json();
@@ -486,19 +488,27 @@ class ChatPage extends HTMLElement {
       messagesEl.innerHTML = '';
       if (Array.isArray(msgs) && msgs.length) {
         for (const m of msgs) {
-          this.#appendMsg(messagesEl, m.role, m.content, {
-            usage: usageFromMessage(m),
-            traceId: m.trace_id,
-            files: m.file_parts,
-          });
-          if (m.role === 'user') this.#lastUserContent = m.content;
+          try {
+            this.#appendMsg(messagesEl, m.role, m.content, {
+              usage: usageFromMessage(m),
+              traceId: m.trace_id,
+              metadata: m.metadata,
+              files: m.file_parts,
+            });
+            if (m.role === 'user') this.#lastUserContent = m.content;
+          } catch (error) {
+            console.error('Failed to render stored chat message', m.id, error);
+          }
         }
         this.#updateRetryButtons(messagesEl);
       }
-    } catch { messagesEl.innerHTML = ''; }
+    } catch (error) {
+      console.error('Failed to load stored chat messages', error);
+      messagesEl.innerHTML = '<div class="pane-empty">Failed to load conversation history</div>';
+    }
   }
 
-  #appendMsg(messagesEl, role, content, { usage = null, traceId = null, files = null } = {}) {
+  #appendMsg(messagesEl, role, content, { usage = null, traceId = null, metadata = null, files = null } = {}) {
     // Sessions are written by multiple clients: the web UI stores replies as
     // "assistant" while the CLI/TUI store them as "agent". Anything that is
     // not the user renders as an agent reply (markdown + assistant styling).
@@ -517,9 +527,15 @@ class ChatPage extends HTMLElement {
       div.innerHTML = renderMarkdown(content);
     }
 
+    const toolCalls = metadata?.coding_agent?.tool_calls;
+    let steps = null;
+    if (!isUser && Array.isArray(toolCalls)) {
+      steps = document.createElement('agent-steps');
+      row.appendChild(steps);
+    }
+
     const filesHtml = this.#filesHtml(files);
     if (filesHtml) div.insertAdjacentHTML('beforeend', filesHtml);
-
     row.appendChild(div);
 
     // Message actions toolbar
@@ -535,6 +551,9 @@ class ChatPage extends HTMLElement {
     }
 
     messagesEl.appendChild(row);
+    // `agent-steps` initializes its internal list in connectedCallback, which
+    // runs only after the detached message row is attached to the document.
+    if (steps) steps.loadToolCalls(toolCalls);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -543,6 +562,7 @@ class ChatPage extends HTMLElement {
     for (const btn of messagesEl.querySelectorAll(".msg-action-retry")) {
       btn.remove();
     }
+    if (this.#readOnly) return;
     // Add retry only to the last assistant message
     const lastAssistant = messagesEl.querySelector(".msg-row.is-assistant:last-child .msg-actions");
     if (lastAssistant && this.#lastUserContent) {

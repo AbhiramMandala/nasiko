@@ -32,6 +32,7 @@ pub struct ChatSessionView {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub agent_name: Option<String>,
+    pub is_coding_agent: bool,
     pub last_message: Option<String>,
     // Per-session rollups computed in the list query itself, so the sessions
     // page renders its stats columns without a trace-store round-trip.
@@ -48,6 +49,7 @@ pub struct ChatSessionView {
 pub struct ChatMessage {
     pub id: Uuid,
     pub session_id: String,
+    pub external_turn_id: Option<String>,
     pub role: String,
     pub content: String,
     pub file_parts: Option<sqlx::types::Json<serde_json::Value>>,
@@ -63,6 +65,7 @@ pub struct ChatMessage {
     pub cost_usd: Option<rust_decimal::Decimal>,
     pub usage_estimated: Option<bool>,
     pub trace_id: Option<String>,
+    pub metadata: Option<sqlx::types::Json<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,19 +101,6 @@ pub struct ChatMessageFile {
     pub created_at: DateTime<Utc>,
 }
 
-/// The only two `chat_messages.role` values a client may ever write via `POST
-/// /api/chat/sessions/{id}/messages` (`send_message`, which validates `SendMessage::role` against
-/// these). `"system"` is deliberately excluded even though it's a real, legitimate value in this
-/// column — it's written exclusively by internal server code
-/// (`router/a2a_dispatch.rs::INTERNAL_TRANSCRIPT_ROLE`, a HITL resume's own continuation note) and
-/// must never be attacker-controlled: `list_messages` hides `role = 'system'` rows from the
-/// transcript/audit UI on the assumption that nothing a human or API caller wrote can carry that
-/// role, but `SessionHistory::fetch` (`oss/orchestrator`) applies no such filter when building the
-/// next turn's LLM prompt — a client-forged `role: "system"` row would reach the model as a system
-/// instruction while staying invisible everywhere a human would look for it (found in review).
-pub const CHAT_MESSAGE_ROLE_USER: &str = "user";
-pub const CHAT_MESSAGE_ROLE_ASSISTANT: &str = "assistant";
-
 #[derive(Debug, Deserialize)]
 pub struct SendMessage {
     pub role: String,
@@ -132,4 +122,31 @@ pub struct MessageUsage {
     pub cost_usd: Option<rust_decimal::Decimal>,
     pub estimated: Option<bool>,
     pub trace_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExternalTurn {
+    pub turn_id: String,
+    pub user_content: String,
+    pub assistant_content: String,
+    pub assistant_usage: Option<MessageUsage>,
+    #[serde(default, deserialize_with = "deserialize_optional_object")]
+    pub assistant_metadata: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+fn deserialize_optional_object<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(serde_json::Value::Object(object)) => Ok(Some(object)),
+        Some(_) => Err(D::Error::custom(
+            "assistant_metadata must be null or a JSON object",
+        )),
+    }
 }

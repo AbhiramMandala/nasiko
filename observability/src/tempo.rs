@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
@@ -315,6 +315,7 @@ fn parse_otlp_trace(
     otlp: OtlpTraceResponse,
 ) -> Result<TraceDetails, ObservabilityError> {
     let mut spans = Vec::new();
+    let mut seen_span_ids = HashSet::new();
 
     for batch in &otlp.batches {
         let service_name = batch
@@ -325,6 +326,10 @@ fn parse_otlp_trace(
 
         for scope_spans in batch.scope_spans.as_deref().unwrap_or(&[]) {
             for span in &scope_spans.spans {
+                let span_id = otlp_id_to_hex(&span.span_id);
+                if !seen_span_ids.insert(span_id.clone()) {
+                    continue;
+                }
                 let started_at = parse_nanos_str(&span.start_time_unix_nano).unwrap_or_default();
                 let ended_at = span.end_time_unix_nano.as_deref().and_then(parse_nanos_str);
 
@@ -358,7 +363,7 @@ fn parse_otlp_trace(
                     .collect();
 
                 spans.push(Span {
-                    span_id: otlp_id_to_hex(&span.span_id),
+                    span_id,
                     parent_span_id: span.parent_span_id.as_deref().map(otlp_id_to_hex),
                     name: span.name.clone(),
                     kind: parse_span_kind(span.kind.as_deref()),
@@ -397,4 +402,38 @@ fn parse_otlp_trace(
         ended_at,
         duration_ms,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{OtlpTraceResponse, parse_otlp_trace};
+
+    #[test]
+    fn otlp_replayed_span_is_emitted_and_counted_once() {
+        let span = json!({
+            "spanId": "span-1",
+            "name": "ChatCompletion",
+            "startTimeUnixNano": "1724068800000000000",
+            "endTimeUnixNano": "1724068801000000000",
+            "attributes": [
+                {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "25"}},
+                {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "5"}}
+            ],
+            "events": []
+        });
+        let otlp: OtlpTraceResponse = serde_json::from_value(json!({
+            "batches": [{
+                "resource": {"attributes": []},
+                "scopeSpans": [{"spans": [span.clone(), span]}]
+            }]
+        }))
+        .unwrap();
+
+        let trace = parse_otlp_trace("trace-1", otlp).unwrap();
+
+        assert_eq!(trace.spans.len(), 1);
+        assert_eq!(trace.token_totals(), (25, 5, None));
+    }
 }

@@ -14,6 +14,8 @@ pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
+pub mod coding_agent_otlp;
+pub mod coding_agent_telemetry;
 pub mod flows;
 pub mod github;
 pub mod llm_configs;
@@ -33,7 +35,6 @@ pub mod seed;
 pub mod settings;
 pub mod state;
 pub mod telemetry;
-pub mod titling;
 pub mod transcribe;
 pub mod usage;
 pub mod users;
@@ -266,6 +267,7 @@ where
         .merge(build_routes)
         .merge(degradable_routes)
         .merge(chat::router())
+        .merge(coding_agent_telemetry::router())
         .merge(maf::router())
         .merge(secrets::router())
         .merge(llm_configs::router())

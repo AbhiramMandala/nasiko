@@ -21,21 +21,15 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
-// The salience classifier itself — feature engine, weight loading, scoring, banding.
-// Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
-// `ClassifierSalienceGate`.
 mod patterns;
 pub mod pricing_sync;
 pub mod registry;
-pub mod salience;
-mod salience_classifier;
 
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{RequestType, Tier, classify, signal};
 pub use registry::{PgTierRegistry, TierRegistry};
-pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
 /// Which precedence level produced a routing decision — emitted as a structured tag so we
 /// can see, per request, how the model was chosen.
@@ -45,9 +39,6 @@ pub enum RouteSource {
     Pinned,
     /// Level 2 — served from the decision cache (a continuation turn).
     CacheHit,
-    /// Level 2.5 — the salience gate judged the turn non-substantive (small talk); a cheap
-    /// model was served WITHOUT classifying or pinning (the decision cache is not written).
-    SmallTalk,
     /// Level 3 — the classifier ran at a safe boundary.
     Classified,
     /// Level 4 — the agent's configured (`llm_config`) model.
@@ -103,11 +94,6 @@ pub struct RouteDecision {
 ///    Before returning it, the current turn's message is checked for a feedback
 ///    [`signal`](classifier::signal); if present it is credited to the cached decision's
 ///    `(tier, request_type)` via [`CellStore::observe`] — this is the learning write.
-///    - **Salience gate (Level 2.5)** — at a fireable boundary with a cache miss, an
-///      in-process classifier ([`SalienceGate`]) judges whether the turn is substantive. Small talk
-///      short-circuits here: a cheap/default model is served with source
-///      [`RouteSource::SmallTalk`] and the cache is **not** written, so a greeting can never
-///      pin the session. Only substantive turns fall through to Level 3.
 /// 3. **Classify** — only at a fireable boundary (`switch`/`cold_start` + `free_flowing`)
 ///    with a query present and a registry entry for `(provider, tier)`. Loads the provider's
 ///    learned cells, Thompson-samples a tier, and writes the decision (incl. request type)
@@ -123,7 +109,6 @@ pub async fn route_model(
     cache: &dyn DecisionCache,
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
-    gate: &dyn SalienceGate,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -203,43 +188,11 @@ pub async fn route_model(
             "route_model: LEVEL 2 (CacheHit) miss — no sticky decision cached yet"
         );
 
-        // Levels 2.5 & 3 — classify, but only at a boundary where re-selecting is safe.
+        // Level 3 — classify at a boundary where re-selecting is safe.
         // (has_llm_config is already guarded by the outer block.)
         if inputs.signals.is_fireable_boundary()
             && let Some(query) = inputs.query
         {
-            // Level 2.5 — salience gate. An in-process classifier decides whether this
-            // turn is substantive enough to classify + pin. Small talk is served cheaply
-            // and NEVER pins (no cache write), so a greeting can't fix the session's
-            // model. Only substantive turns fall through to Level 3.
-            tracing::info!(
-                target: "nasiko::llm_router::routing",
-                agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
-                query_preview = %inputs.query.map(query_preview).unwrap_or_default(),
-                "route_model: LEVEL 2.5 (SalienceGate) — cache miss at a fireable boundary; asking the gate whether to classify this turn"
-            );
-            if !gate.is_substantive(query).await {
-                let model = small_talk_model(registry, inputs).await;
-                tracing::info!(
-                    target: "nasiko::llm_router::routing",
-                    agent_id = %inputs.agent_id, %conv_id,
-                    source = ?RouteSource::SmallTalk,
-                    model = %model,
-                    has_llm_config = inputs.has_llm_config,
-                    "route_model: LEVEL 2.5 (SmallTalk) — gate judged this turn NON-substantive; serving a cheap model WITHOUT classifying or pinning (cache NOT written, so the next turn is re-evaluated)"
-                );
-                return RouteDecision {
-                    model,
-                    tier: None,
-                    source: RouteSource::SmallTalk,
-                };
-            }
-            tracing::info!(
-                target: "nasiko::llm_router::routing",
-                agent_id = %inputs.agent_id, %conv_id,
-                "route_model: LEVEL 2.5 (SalienceGate) — gate judged this turn SUBSTANTIVE; proceeding to classify + pin (Level 3)"
-            );
-
             tracing::info!(
                 target: "nasiko::llm_router::routing",
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
@@ -383,58 +336,30 @@ async fn maybe_learn(
         .await;
 }
 
-/// A short, log-safe preview of a query (first 120 chars) — mirrors the classifier's own
-/// `query_preview` so both stages format the query the same way in the logs.
-fn query_preview(q: &str) -> String {
-    q.chars().take(120).collect()
-}
-
-/// The model to answer a non-substantive turn with (Level 2.5). Level 2.5 is only reached
-/// inside the `has_llm_config` block, so the agent is always configured here: it gets its
-/// cheapest available model — the per-config `tier3_model` override, else the global
-/// registry's Tier3 for the provider, else the configured model as a last resort. Never
-/// pins: the caller does not write the cache for this decision.
-async fn small_talk_model(registry: &dyn TierRegistry, inputs: &RouteInputs<'_>) -> String {
-    if let Some(m) = inputs.tier3_model {
-        return m.to_string();
-    }
-    if let Some(m) = registry.model_for(inputs.provider, Tier::Tier3).await {
-        return m;
-    }
-    inputs.fallback_model.to_string()
-}
-
 /// Best-effort plain text of the latest `user` message — the classifier's `query` input.
 /// Walks messages in reverse so the most recent user turn wins; `None` if there is none.
-///
-/// The A2A dispatch path (`a2a_dispatch.rs`) glues conversation history into a single
-/// string via `SessionHistory::with_current_query`, producing messages shaped like:
-///
-/// ```text
-/// user: hello
-/// assistant: Hello! How can I help?
-///
-/// Current message: refactor this function
-/// ```
-///
-/// When the agent forwards that blob as a single `user` message to the LLM router,
-/// the salience gate and classifier would see the entire transcript instead of just the
-/// current turn. Detect the `\n\nCurrent message: ` marker and extract only the tail.
 pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
-    let text = messages
+    messages
         .iter()
         .rev()
         .find(|m| m.role == "user")
-        .and_then(|m| m.text())?;
+        .and_then(|m| m.text())
+}
 
-    // Strip history prefix injected by `SessionHistory::with_current_query`.
-    if let Some(pos) = text.find("\n\nCurrent message: ") {
-        let current = &text[pos + "\n\nCurrent message: ".len()..];
-        if !current.is_empty() {
-            return Some(current.to_string());
-        }
-    }
-    Some(text)
+/// Number of top-level user turns so far (count of `role == "user"` messages). Tool results
+/// normalize to `role == "tool"` (see `inbound::anthropic`'s doc comment on `tool_result` →
+/// `{role:"tool"}`), so this counts only genuine new prompts, not tool-loop continuations.
+/// Combined with [`latest_user_query`], this anchors a coding-agent's `conv_id`
+/// ([`BoundarySignals::for_coding_agent`]) to *this* prompt — stable across the tool loop it
+/// starts, but distinct from the prompt before and after it.
+pub fn user_turn_ordinal(messages: &[crate::ir::Message]) -> usize {
+    messages.iter().filter(|m| m.role == "user").count()
+}
+
+/// Whether the transcript's last turn is a tool result — a coding-agent CLI mid tool-loop,
+/// which [`BoundarySignals::for_coding_agent`] must keep sticky (`Phase::Continue`).
+pub fn is_tool_continuation(messages: &[crate::ir::Message]) -> bool {
+    messages.last().is_some_and(|m| m.role == "tool")
 }
 
 #[cfg(test)]
@@ -483,15 +408,6 @@ mod tests {
         }
     }
 
-    /// A gate that always judges the turn small talk — exercises the Level 2.5 branch.
-    struct DenyGate;
-    #[async_trait]
-    impl SalienceGate for DenyGate {
-        async fn is_substantive(&self, _query: &str) -> bool {
-            false
-        }
-    }
-
     fn signals(conv_id: Option<&str>, phase: Phase, mode: Mode) -> BoundarySignals {
         BoundarySignals {
             conv_id: conv_id.map(str::to_string),
@@ -529,7 +445,6 @@ mod tests {
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
-            &AllowAllGate,
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -546,7 +461,6 @@ mod tests {
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
-            &AllowAllGate,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -565,7 +479,6 @@ mod tests {
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
-            &AllowAllGate,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -585,90 +498,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn level2_5_small_talk_serves_cheapest_config_model_and_does_not_cache() {
-        // Gate says non-substantive: a configured agent gets its cheapest model (registry
-        // Tier3 for anthropic = claude-haiku-4-5), tagged SmallTalk, and the cache is never
-        // written — so the session is not pinned on small talk.
-        let cache = FakeCache::empty();
-        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
-        let d = route_model(
-            &cache,
-            &test_support::StubRegistry,
-            &InMemoryCellStore::new(),
-            &DenyGate,
-            &inputs("anthropic", &s, None),
-        )
-        .await;
-        assert_eq!(d.source, RouteSource::SmallTalk);
-        assert_eq!(d.tier, None);
-        assert_eq!(d.model, "claude-haiku-4-5");
-        assert!(
-            cache.puts.lock().unwrap().is_empty(),
-            "small talk must not pin"
-        );
-    }
-
-    #[tokio::test]
-    async fn no_llm_config_bypasses_the_gate_entirely() {
-        // An agent without llm_config never enters the routing block (has_llm_config guards
-        // Levels 2–3), so the salience gate never runs even when it would deny: the resolver's
-        // passthrough/default model is served (Level 5) and nothing is pinned.
-        let cache = FakeCache::empty();
-        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
-        let mut i = inputs("anthropic", &s, None);
-        i.has_llm_config = false;
-        let d = route_model(
-            &cache,
-            &test_support::StubRegistry,
-            &InMemoryCellStore::new(),
-            &DenyGate,
-            &i,
-        )
-        .await;
-        assert_eq!(d.source, RouteSource::Default);
-        assert_eq!(d.model, "cfg-model");
-        assert!(cache.puts.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn level2_5_small_talk_prefers_config_tier3_override() {
-        // A per-config tier3 override is the cheapest model and wins over the registry.
-        let cache = FakeCache::empty();
-        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
-        let mut i = inputs("anthropic", &s, None);
-        i.tier3_model = Some("claude-cheapo");
-        let d = route_model(
-            &cache,
-            &test_support::StubRegistry,
-            &InMemoryCellStore::new(),
-            &DenyGate,
-            &i,
-        )
-        .await;
-        assert_eq!(d.source, RouteSource::SmallTalk);
-        assert_eq!(d.model, "claude-cheapo");
-        assert!(cache.puts.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn deny_gate_still_serves_cache_hit_before_reaching_gate() {
-        // Level 2 short-circuits before Level 2.5: a cache hit is returned even when the
-        // gate would deny — a pinned session is never re-gated.
-        let cache = FakeCache::with_hit("cached-model");
-        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
-        let d = route_model(
-            &cache,
-            &test_support::StubRegistry,
-            &InMemoryCellStore::new(),
-            &DenyGate,
-            &inputs("anthropic", &s, None),
-        )
-        .await;
-        assert_eq!(d.source, RouteSource::CacheHit);
-        assert_eq!(d.model, "cached-model");
-    }
-
-    #[tokio::test]
     async fn cache_hit_with_positive_feedback_learns_and_stays_sticky() {
         // A continuation turn whose message approves the prior answer: the router returns the
         // sticky cached model (Level 2) AND folds a positive reward into the cached decision's
@@ -678,14 +507,7 @@ mod tests {
         let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
         let mut i = inputs("anthropic", &s, None);
         i.query = Some("perfect, that worked. thanks!");
-        let d = route_model(
-            &cache,
-            &test_support::StubRegistry,
-            &cells,
-            &AllowAllGate,
-            &i,
-        )
-        .await;
+        let d = route_model(&cache, &test_support::StubRegistry, &cells, &i).await;
         assert_eq!(d.source, RouteSource::CacheHit);
         assert_eq!(d.model, "claude-opus-4-8");
         let learned = cells.load("anthropic").await;
@@ -705,14 +527,7 @@ mod tests {
         let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
         let mut i = inputs("anthropic", &s, None);
         i.query = Some("now also handle the empty-input case");
-        let d = route_model(
-            &cache,
-            &test_support::StubRegistry,
-            &cells,
-            &AllowAllGate,
-            &i,
-        )
-        .await;
+        let d = route_model(&cache, &test_support::StubRegistry, &cells, &i).await;
         assert_eq!(d.source, RouteSource::CacheHit);
         assert!(cells.load("anthropic").await.is_empty());
     }
@@ -726,7 +541,6 @@ mod tests {
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
-            &AllowAllGate,
             &inputs("gemini", &s, None),
         )
         .await;
@@ -744,7 +558,6 @@ mod tests {
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
-            &AllowAllGate,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -760,7 +573,6 @@ mod tests {
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
-            &AllowAllGate,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -778,7 +590,6 @@ mod tests {
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
-            &AllowAllGate,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -797,7 +608,6 @@ mod tests {
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
-            &AllowAllGate,
             &i,
         )
         .await;
@@ -826,40 +636,44 @@ mod tests {
     }
 
     #[test]
-    fn latest_user_query_strips_packed_history() {
-        let msg = |role: &str, content: &str| Message {
+    fn user_turn_ordinal_counts_user_messages_not_tool_results() {
+        let msg = |role: &str| Message {
             role: role.into(),
-            content: Some(Value::String(content.into())),
+            content: None,
             name: None,
             tool_calls: None,
             tool_call_id: None,
             extra: Map::new(),
         };
-        // The A2A dispatch packs history via `SessionHistory::with_current_query`:
-        //   "user: hello\nassistant: Hi!\n\nCurrent message: refactor this"
-        let packed = "user: hello\nassistant: Hi there!\n\nCurrent message: refactor this function";
-        let messages = vec![msg("user", packed)];
+        assert_eq!(user_turn_ordinal(&[msg("system"), msg("user")]), 1);
+        // A tool loop after the first prompt doesn't add to the count — it's still turn 1.
         assert_eq!(
-            latest_user_query(&messages).as_deref(),
-            Some("refactor this function")
+            user_turn_ordinal(&[msg("user"), msg("assistant"), msg("tool")]),
+            1
+        );
+        // A second genuine prompt bumps the ordinal.
+        assert_eq!(
+            user_turn_ordinal(&[msg("user"), msg("assistant"), msg("tool"), msg("user")]),
+            2
         );
     }
 
     #[test]
-    fn latest_user_query_returns_full_text_without_marker() {
-        let msg = |role: &str, content: &str| Message {
+    fn is_tool_continuation_detects_a_trailing_tool_result() {
+        let msg = |role: &str| Message {
             role: role.into(),
-            content: Some(Value::String(content.into())),
+            content: None,
             name: None,
             tool_calls: None,
             tool_call_id: None,
             extra: Map::new(),
         };
-        // A normal message without history packing is returned as-is.
-        let messages = vec![msg("user", "just a plain query")];
-        assert_eq!(
-            latest_user_query(&messages).as_deref(),
-            Some("just a plain query")
-        );
+        assert!(is_tool_continuation(&[
+            msg("user"),
+            msg("assistant"),
+            msg("tool")
+        ]));
+        assert!(!is_tool_continuation(&[msg("user"), msg("assistant")]));
+        assert!(!is_tool_continuation(&[]));
     }
 }
