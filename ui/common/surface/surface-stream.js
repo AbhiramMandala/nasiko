@@ -42,7 +42,7 @@ import { createQueryManager } from './queries.js';
 import { createActionRunner } from './actions.js';
 import { createSurfaceTelemetry } from './telemetry.js';
 import { repairableDiagnostics, buildRepairPrompt } from './repair.js';
-import { severities, loadSeverities } from './catalog-load.js';
+import { severities } from './catalog-load.js';
 
 /**
  * A catalog version this client can actually compare against.
@@ -707,14 +707,6 @@ export function createSurfaceSession(options) {
       // aborted one means the user has already moved on.
       if (out.status !== 'ok' || !lastOut?.root || opts.signal?.aborted) break;
 
-      // Loaded here rather than left to the host. weave-surface.js remembered
-      // to call loadSeverities(); weave-dock.js did not, and there was nothing
-      // to remind it — so in the dock, which is where most turns actually
-      // happen, `severities()` was null, every diagnostic read as
-      // unrepairable, and the loop quietly never ran. A feature a host never
-      // asked for must not depend on that host knowing to prime it. Memoised,
-      // so this is one fetch per page and a no-op after.
-      if (!severityTable && !severities()) await loadSeverities();
       const table = severityTable ?? severities();
       const before = repairableDiagnostics(turnDiagnostics, table, cfg);
       if (!before.length) break;

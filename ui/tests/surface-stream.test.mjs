@@ -1071,23 +1071,3 @@ test('a turn that drew nothing is not repaired', async () => {
   await s.send('what can you do?');
   assert.equal(prompts.length, 1);
 });
-
-test('the session loads the severity table itself, without the host priming it', () => {
-  // weave-surface.js calls loadSeverities(); weave-dock.js does not, and there
-  // was nothing to remind it. In the dock — where most turns actually happen —
-  // severities() was null, every diagnostic read as unrepairable, and the loop
-  // silently never ran. The same shape of failure as a stale catalog: a
-  // feature that is simply absent, with nothing saying so.
-  //
-  // Asserted against the source because the alternative is asserting a fetch
-  // in a runner that has no document, and what is worth protecting is the
-  // ownership, not the call.
-  const src = readFileSync(new URL('../common/surface/surface-stream.js', import.meta.url), 'utf8');
-  assert.match(src, /await loadSeverities\(\)/,
-    'the session must load the table it needs rather than depending on a host to');
-
-  for (const host of ['weave-surface/weave-surface.js', 'weave-dock/weave-dock.js']) {
-    const hostSrc = readFileSync(new URL(`../common/features/${host}`, import.meta.url), 'utf8');
-    assert.match(hostSrc, /createSurfaceSession\(/, `${host} is still a session host`);
-  }
-});

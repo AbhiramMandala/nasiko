@@ -39,7 +39,7 @@ const BASE_ROUTES = [
   { path: '/workflow-new',    tag: 'workflow-new-page',         module: '/common/pages/workflow-new-page.js',        title: 'Nasiko — New Workflow' },
   { path: '/workflow',        tag: 'workflow-detail-page',      module: '/common/pages/workflow-detail-page.js',     title: 'Nasiko — Workflow' },
   { path: '/executions',      tag: 'executions-page',          module: '/common/pages/executions-page.js',          title: 'Nasiko — Executions' },
-  { path: '/sessions',        tag: 'sessions-page',            module: '/common/pages/sessions-page.js',            title: 'Nasiko — Session history' },
+  { path: '/sessions',        tag: 'sessions-page',            module: '/common/pages/sessions-page.js',            title: 'Nasiko — Execution history' },
   { path: '/session-trace',   tag: 'session-trace-page',       module: '/common/pages/session-trace-page.js',       title: 'Nasiko — Session Trace' },
   { path: '/observability-session', tag: 'observability-session-page', module: '/common/pages/observability-session-page.js', title: 'Nasiko — Session' },
   { path: '/mcp',             tag: 'mcp-page',                 module: '/common/pages/mcp-page.js',                 title: 'Nasiko — MCP Gateway' },

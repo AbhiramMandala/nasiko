@@ -526,7 +526,7 @@
             "hbar",
             "progress"
           ],
-          "default": "line",
+          "default": "progress",
           "description": "`line` | `bar` | `donut` | `hbar` | `progress` (default `line`)"
         },
         "stacked": {
@@ -540,11 +540,10 @@
             "currency",
             "percent",
             "compact",
-            "tokens",
             "duration"
           ],
           "default": "number",
-          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `tokens` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis). `tokens` is an alias for `compact` and exists for one reason: AppStatCard and AppStatRow accept it, so a surface writes `format: \"tokens\"` on the token KPI and then, one line later, on the chart of the same numbers — and got a fatal for being consistent. Two vocabularies for one idea is our defect, not the caller's. The stat formats this still does NOT take are the ones an axis cannot mean: `bytes` (no source in scope returns any) and `date`/`time`/`datetime`/`text`, which are not magnitudes."
+          "description": "Value formatting: `number` (default) | `currency` | `percent` | `compact` | `duration` (milliseconds in, `420ms` / `1.8s` out — for a latency axis)"
         },
         "currency": {
           "type": "string",
@@ -596,11 +595,10 @@
             "currency",
             "percent",
             "compact",
-            "tokens",
             "duration"
           ],
           "default": "number",
-          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `tokens` | `duration`"
+          "description": "Right-axis formatting when a dataset declares `axis: 'y2'`: `number` (default) | `currency` | `percent` | `compact` | `duration`"
         },
         "flush-top": {
           "type": "boolean",
@@ -2660,8 +2658,8 @@
           "description": "Placeholder for the search input."
         },
         "detail": {
-          "type": "boolean",
-          "description": "Present: clicking a row opens a detail modal. A boolean, not a string: `#showDetail` is `hasAttribute('detail')` and the value is never read. It was typed `{string}` here, which made it a string in the catalog, which made `detail=\"false\"` *enable* the modal — and a generated surface writing `false` into that position (which it does, to reach `empty-message` after it) therefore turned on a row-click modal nobody asked for, on every table, silently."
+          "type": "string",
+          "description": "Present: clicking a row opens a detail modal."
         },
         "empty-message": {
           "type": "string",

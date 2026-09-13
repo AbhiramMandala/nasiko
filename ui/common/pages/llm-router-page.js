@@ -46,10 +46,8 @@ class LlmRouterPage extends HTMLElement {
   #configs = [];
   #providers = [];
   #secrets = [];
-  #customProviders = [];
-  #view = 'list'; // 'list' | 'form' | 'custom-form'
+  #view = 'list'; // 'list' | 'form'
   #editingConfig = null; // null = create, config object = edit
-  #editingCustom = null; // null = create, provider object = edit
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -68,18 +66,14 @@ class LlmRouterPage extends HTMLElement {
         <app-skeleton height="72px" radius="md"></app-skeleton>
       </div>`;
     try {
-      const [configs, providers, secrets, custom] = await Promise.all([
+      const [configs, providers, secrets] = await Promise.all([
         call('fetchLlmConfigs'),
         call('fetchLlmProviders'),
         call('fetchSecretsList'),
-        // Custom providers are a bonus panel — a failure here (e.g. a transient
-        // error) shouldn't blank the whole page, so swallow it to an empty list.
-        call('fetchCustomProviders').catch(() => ({ data: [] })),
       ]);
       this.#configs = configs?.data ?? [];
       this.#providers = providers?.data ?? [];
       this.#secrets = Array.isArray(secrets) ? secrets : secrets?.data ?? [];
-      this.#customProviders = custom?.data ?? [];
     } catch (e) {
       console.error('LLM router load failed:', e);
       this.innerHTML = `${this.#headHtml()}<p class="form-error">Failed to load router configuration</p>`;
@@ -90,14 +84,7 @@ class LlmRouterPage extends HTMLElement {
   }
 
   #render() {
-    if (this.#view === 'form') {
-      this.innerHTML = this.#formHtml();
-    } else if (this.#view === 'custom-form') {
-      this.innerHTML = this.#customFormHtml();
-      this.querySelector('#custom-form')?.addEventListener('submit', (ev) => this.#saveCustom(ev));
-    } else {
-      this.innerHTML = this.#listHtml();
-    }
+    this.innerHTML = this.#view === 'form' ? this.#formHtml() : this.#listHtml();
   }
 
   /* ── List view ─────────────────────────────────────────────────────────── */
@@ -131,93 +118,6 @@ class LlmRouterPage extends HTMLElement {
       <div class="provider-grid">
         ${this.#providers.map((p) => this.#providerCardHtml(p)).join('')}
       </div>
-      ${this.#customSectionHtml()}
-    `;
-  }
-
-  /* ── Custom providers (admin) ──────────────────────────────────────────── */
-
-  #customSectionHtml() {
-    return `
-      <hr class="divider" />
-      <div class="section-head">
-        <h2 class="section-title">Custom providers</h2>
-        <p class="section-sub">Register any OpenAI-compatible endpoint (LiteLLM, vLLM, Ollama, an internal gateway). Its models appear above for tier routing.</p>
-        <app-button variant="secondary" size="md" data-action="new-custom-provider">Add custom provider</app-button>
-      </div>
-      ${this.#customProviders.length
-        ? `<div class="config-list">${this.#customProviders.map((p) => this.#customCardHtml(p)).join('')}</div>`
-        : '<p class="section-sub">No custom providers yet.</p>'}
-    `;
-  }
-
-  #customCardHtml(p) {
-    const menuItems = [
-      { id: `custom-edit:${p.id}`, label: 'Edit' },
-      { id: `custom-sync:${p.id}`, label: 'Sync models now' },
-      { id: `custom-delete:${p.id}`, label: 'Delete' },
-    ];
-    const status = p.last_sync_status || 'pending';
-    const statusClass = status === 'ok' ? 'badge--success'
-      : status === 'unsupported' ? 'badge--muted' : 'badge--warning';
-    const when = p.last_sync_at ? new Date(p.last_sync_at).toLocaleString() : 'never';
-    return `
-      <app-card card-title="${escAttr(p.display_name || p.label)}">
-        <app-menu data-slot="actions" align="end" trigger-label="Provider actions" items='${JSON.stringify(menuItems).replace(/'/g, '&#39;')}'>
-          ${icons.moreVertical?.('', 16) ?? `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>`}
-        </app-menu>
-        <div data-slot="body">
-          <div class="config-meta">
-            <span class="badge ${statusClass}"><span class="badge__dot"></span>${escHtml(status)}</span>
-            <span class="badge badge--muted is-mono">${escHtml(p.label)}</span>
-            ${p.api_key_set ? '' : '<span class="badge badge--warning">No key</span>'}
-          </div>
-          <div class="tier-rows">
-            <div class="tier-row"><span class="tier-label">Endpoint</span><span class="tier-model">${escHtml(p.base_url)}</span></div>
-            <div class="tier-row"><span class="tier-label">Default model</span><span class="tier-model">${escHtml(p.default_model)}</span></div>
-            <div class="tier-row"><span class="tier-label">Last sync</span><span class="tier-model">${escHtml(when)}</span></div>
-          </div>
-          ${p.last_sync_error ? `<p class="form-error">${escHtml(p.last_sync_error)}</p>` : ''}
-        </div>
-      </app-card>`;
-  }
-
-  #customFormHtml() {
-    const c = this.#editingCustom;
-    const isEdit = !!c;
-    return `
-      <div class="form-head">
-        <app-button class="back-btn" variant="tertiary" icon-only size="sm"
-          data-action="back" aria-label="Back">${icons.arrowLeft()}</app-button>
-        <h1 class="title-page">${isEdit ? 'Edit custom provider' : 'Add custom provider'}</h1>
-      </div>
-      <form class="config-form" id="custom-form">
-        <app-input id="cp-display" name="display_name" label="Display name"
-          placeholder="e.g. Internal gateway" value="${escAttr(c?.display_name || '')}" required></app-input>
-        <app-input id="cp-label" name="label" label="Provider id"
-          placeholder="e.g. internal-gateway" value="${escAttr(c?.label || '')}"
-          hint="Lowercase letters, digits, hyphens (2–40). Used everywhere this provider is referenced."
-          ${isEdit ? 'disabled' : 'required'}></app-input>
-        <app-input id="cp-base" name="base_url" label="Base URL"
-          placeholder="https://gateway.internal/v1" value="${escAttr(c?.base_url || '')}"
-          hint="OpenAI-compatible base URL (the part before /chat/completions)." required></app-input>
-        <app-input id="cp-key" name="api_key" type="password" reveal
-          label="API key" placeholder="${isEdit ? 'Leave blank to keep current key' : 'Paste the API key'}"
-          autocomplete="off" hint="Stored encrypted; used to call the endpoint."></app-input>
-        <app-input id="cp-default" name="default_model" label="Default model"
-          placeholder="e.g. llama-3.1-8b" value="${escAttr(c?.default_model || '')}"
-          hint="Last-resort model, used when no tier/config model is chosen. Must be one the endpoint serves." required></app-input>
-        <app-input id="cp-models" name="models" label="Model names (optional)"
-          placeholder="comma-separated, only if auto-listing is unsupported"
-          hint="Leave blank when the endpoint answers GET /models. Otherwise list its models here."></app-input>
-        <app-checkbox id="cp-sync" name="catalog_sync_enabled"
-          label="Keep the model list fresh automatically" ${c ? (c.catalog_sync_enabled ? 'checked' : '') : 'checked'}></app-checkbox>
-        <div class="form-error" id="custom-form-error" hidden></div>
-        <div class="form-actions">
-          <app-button variant="ghost" size="md" data-action="back">Cancel</app-button>
-          <app-button variant="primary" size="md" type="submit">${isEdit ? 'Save changes' : 'Register provider'}</app-button>
-        </div>
-      </form>
     `;
   }
 
@@ -376,16 +276,11 @@ class LlmRouterPage extends HTMLElement {
   }
 
   /** Models a provider offers, as app-select's `options` JSON. The leading
-   *  blank is a real choice, not a placeholder: a tier may be left unset.
-   *  A model with no price row is labelled "cost not tracked" (its value — the
-   *  model id — is unchanged, so routing works; only the cost is unknown). */
+   *  blank is a real choice, not a placeholder: a tier may be left unset. */
   #modelList(provider) {
     const entry = this.#providers.find((p) => p.provider === provider);
     return [{ value: '', label: 'Choose model' },
-            ...(entry?.models ?? []).map((m) => ({
-              value: m.model,
-              label: m.pricing_available === false ? `${m.model} · cost not tracked` : m.model,
-            }))];
+            ...(entry?.models ?? []).map((m) => ({ value: m.model, label: m.model }))];
   }
 
   /* ── Events ────────────────────────────────────────────────────────────── */
@@ -406,13 +301,8 @@ class LlmRouterPage extends HTMLElement {
       this.#view = 'form';
       this.innerHTML = this.#formHtml();
       this.querySelector('#config-form').addEventListener('submit', (ev) => this.#save(ev));
-    } else if (action === 'new-custom-provider') {
-      this.#editingCustom = null;
-      this.#view = 'custom-form';
-      this.#render();
     } else if (action === 'back') {
       this.#editingConfig = null;
-      this.#editingCustom = null;
       this.#view = 'list';
       this.#render();
     }
@@ -421,22 +311,6 @@ class LlmRouterPage extends HTMLElement {
   #onMenuAction(e) {
     const [action, id] = (e.detail?.id || '').split(':');
     if (!action || !id) return;
-    if (action === 'custom-edit') {
-      const cp = this.#customProviders.find((p) => p.id === id);
-      if (!cp) return;
-      this.#editingCustom = cp;
-      this.#view = 'custom-form';
-      this.#render();
-      return;
-    }
-    if (action === 'custom-sync') {
-      this.#syncCustom(id);
-      return;
-    }
-    if (action === 'custom-delete') {
-      this.#deleteCustom(id);
-      return;
-    }
     if (action === 'edit') {
       const cfg = this.#configs.find((c) => c.id === id);
       if (!cfg) return;
@@ -575,76 +449,6 @@ class LlmRouterPage extends HTMLElement {
       return;
     }
     showToast('Default cleared — agents now fall back to the platform key');
-    this.#load();
-  }
-
-  async #saveCustom(e) {
-    e.preventDefault();
-    const form = e.target;
-    const isEdit = !!this.#editingCustom;
-    const errEl = this.querySelector('#custom-form-error');
-    errEl.hidden = true;
-    const key = form.querySelector('#cp-key').value;
-    const modelsRaw = form.querySelector('#cp-models').value.trim();
-    const models = modelsRaw ? modelsRaw.split(',').map((m) => m.trim()).filter(Boolean) : [];
-    const base = {
-      display_name: form.querySelector('#cp-display').value.trim(),
-      base_url: form.querySelector('#cp-base').value.trim(),
-      default_model: form.querySelector('#cp-default').value.trim(),
-      catalog_sync_enabled: form.querySelector('#cp-sync').checked,
-    };
-    try {
-      if (isEdit) {
-        // Omit the key unless a new one was typed (blank ⇒ keep the current key).
-        await call('updateCustomProvider', this.#editingCustom.id, {
-          ...base,
-          ...(key ? { api_key: key } : {}),
-        });
-      } else {
-        await call('createCustomProvider', {
-          ...base,
-          label: form.querySelector('#cp-label').value.trim(),
-          api_key: key,
-          models,
-        });
-      }
-    } catch (err) {
-      errEl.textContent = err?.message || 'Failed to save custom provider';
-      errEl.hidden = false;
-      return;
-    }
-    showToast(isEdit ? 'Custom provider updated' : 'Custom provider registered');
-    this.#editingCustom = null;
-    this.#load();
-  }
-
-  async #syncCustom(id) {
-    try {
-      const res = await call('syncCustomProvider', id);
-      const n = res?.data?.discovered_models;
-      showToast(typeof n === 'number' ? `Synced — ${n} models` : 'Sync complete');
-    } catch (err) {
-      showToast(err?.message || 'Failed to sync models');
-      return;
-    }
-    this.#load();
-  }
-
-  async #deleteCustom(id) {
-    const confirmed = await confirmDialog({
-      title: 'Delete custom provider',
-      message: 'This removes the provider and its discovered models. Configs that reference it must be repointed first.',
-      confirmLabel: 'Delete',
-      danger: true,
-    });
-    if (!confirmed) return;
-    try {
-      await call('deleteCustomProvider', id);
-    } catch (err) {
-      showToast(err?.message || 'Failed to delete provider');
-      return;
-    }
-    showToast('Custom provider deleted');
     this.#load();
   }
 

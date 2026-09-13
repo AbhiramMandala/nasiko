@@ -192,72 +192,6 @@ function describeComponents(value) {
 }
 
 /** @returns {Element|null} */
-/**
- * Say where in the signature a bad value landed, and what it probably meant.
- *
- * Arguments are positional, so the commonest way a generated call goes wrong
- * is not a wrong value — it is a right value one or more slots out of step.
- * The route path has recognised this for a while (`non_route_value`: "an
- * argument is in the wrong position"); this is the same reading for every
- * other slot, because the failure is the signature's shape rather than
- * routes.
- *
- * app-chart is the case that forced it. Fifteen positional parameters, with
- * `empty-text` at 9 and `format-y2` at 14, and rule 16 of the prompt asking
- * for `empty-text` on every chart — so setting it means seven nulls in
- * exactly the right pattern. A real generation wrote
- * `"No spend data in the last 7 days"` into `format-y2`, and the diagnostic
- * said, truthfully and uselessly, that it is not one of number/currency/
- * percent/compact/duration.
- *
- * What the model needed to hear was that it is counting wrong. That it can
- * act on; a list of enum values it cannot.
- *
- * Names a specific attribute only when exactly one unset one would have
- * accepted the value — more than one is a guess, and a confident wrong guess
- * sends a repair turn to the wrong line.
- *
- * @param {object} def the component's catalog entry
- * @param {string} key the attribute the value landed in
- * @param {unknown} value
- * @param {object} props everything the call set, so "already used" is visible
- */
-function positionHint(def, key, value, props) {
-  const order = def.paramOrder || [];
-  const at = order.indexOf(key);
-  if (at === -1) return '';
-  const where = ` — ${key} is argument ${at + 1} of ${order.length}`;
-
-  // Only an enum that actually lists this value counts as a candidate.
-  //
-  // "any string fits any string slot" was too loose, and it produced exactly
-  // the confident wrong guess this function is supposed to avoid: a chart with
-  // `format: "tokens"` — a real format name, just one app-chart does not take
-  // — was told the value "fits label, which is argument 11, the call looks out
-  // of step by 7". It was not out of step. It had the right argument and a
-  // value from a sibling component's vocabulary, and the only reason `label`
-  // was named is that it happened to be the one unset string attribute.
-  //
-  // Narrowing it means the generic "you may be counting wrong" message is what
-  // most cases get, which is the honest answer when we cannot tell.
-  const accepts = (spec) => Boolean(spec?.type === 'enum' && spec.values?.includes(String(value)));
-  const candidates = Object.entries(def.attributes || {})
-    .filter(([name, spec]) => name !== key
-      && props[name] === undefined
-      && order.indexOf(name) !== -1
-      && accepts(spec));
-
-  if (candidates.length === 1) {
-    const [name] = candidates[0];
-    const to = order.indexOf(name);
-    return `${where}, and this value fits ${name}, which is argument ${to + 1}`
-      + ' — the call looks out of step by '
-      + `${Math.abs(at - to)}`;
-  }
-  return `${where}. A value that belongs to a different argument means the call `
-    + 'is out of step; omit trailing optional arguments rather than padding them with null';
-}
-
 function buildNode(node, catalog, deps = {}) {
   const doc = deps.doc ?? globalThis.document;
   // Injected so this module stays testable without a router, and so a host
@@ -325,8 +259,7 @@ function buildNode(node, catalog, deps = {}) {
     if (spec.type === 'enum' && spec.values?.length && !spec.values.includes(String(value))) {
       // Fall back rather than drop: a layout attribute with no value collapses
       // the component's geometry, which looks like a rendering bug.
-      report('enum_violation', `"${value}" is not one of ${spec.values.join(', ')} for ${node.tag}.${key}`
-        + positionHint(def, key, value, node.props || {}));
+      report('enum_violation', `"${value}" is not one of ${spec.values.join(', ')} for ${node.tag}.${key}`);
       if (spec.default === undefined) continue;
       el.setAttribute(key, String(spec.default));
       continue;
@@ -344,8 +277,7 @@ function buildNode(node, catalog, deps = {}) {
     if (spec.templates?.length && !Number.isInteger(Number(value))) {
       if (!spec.templates.includes(String(value))) {
         report('template_not_allowed',
-          `"${value}" is not one of ${spec.templates.join(', ')} for ${node.tag}.${key}`
-          + positionHint(def, key, value, node.props || {}));
+          `"${value}" is not one of ${spec.templates.join(', ')} for ${node.tag}.${key}`);
         continue;
       }
       el.setAttribute(key, String(value));
@@ -380,17 +312,6 @@ function buildNode(node, catalog, deps = {}) {
         continue;
       }
       el.setAttribute(key, path);
-      continue;
-    }
-    // A boolean in a text slot is the same mistake the route path catches,
-    // and it was the silent half of the app-chart miscount: `empty-text` was
-    // given `false` and rendered the literal word "false" as the panel's
-    // no-data message. Nothing errored, and nobody would see it until a
-    // dashboard had no data — which is exactly when the message matters.
-    if (typeof value === 'boolean' && (spec.type === 'string' || spec.type === undefined)) {
-      report('value_in_the_wrong_slot',
-        `${node.tag}.${key} takes text and was given ${value}`
-        + positionHint(def, key, value, node.props || {}));
       continue;
     }
     el.setAttribute(key, toText(value));

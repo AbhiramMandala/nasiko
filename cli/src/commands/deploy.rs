@@ -182,11 +182,6 @@ fn deploy_from_directory(
         .or_else(|| card.get("name").and_then(|n| n.as_str()).map(String::from))
         .unwrap_or_else(|| "agent".into());
 
-    // Checked once up front, same signal `upload.rs`'s `source_references_mcp_gateway` uses for
-    // `nasiko upload` — this path builds straight from `root` and never zips it, so it walks the
-    // directory directly instead of scanning zip entries.
-    let references_mcp_gateway = dir_references_mcp_gateway(root);
-
     // Find the agent first, so we can catch a same-version redeploy below.
     let agent_file = root.join(AGENT_FILE);
     let existing = find_existing_agent_binding(client, &agent_file, &agent_name)?;
@@ -260,9 +255,6 @@ fn deploy_from_directory(
                 eprintln!("  ! Deployed, but failed to update AgentCard.json's version: {e}");
             }
             println!("\n✓ Deployed {agent_name}:{version} (id: {id})");
-            if references_mcp_gateway {
-                print_mcp_gateway_hint(&agent_name);
-            }
             return Ok(());
         }
         None => {
@@ -306,73 +298,7 @@ fn deploy_from_directory(
         eprintln!("  ! Deployed, but failed to update AgentCard.json's version: {e}");
     }
     println!("\n✓ Deployed {agent_name}:{version} (id: {agent_id})");
-    if references_mcp_gateway {
-        print_mcp_gateway_hint(&agent_name);
-    }
     Ok(())
-}
-
-/// Best-effort scan of the agent's source directory for a reference to the MCP gateway env vars
-/// (`MCP_GATEWAY_URL`/`MCP_GATEWAY_TOKEN`) — the signal that this agent's own code is coded to
-/// call `/api/mcp`, as opposed to an agent that never touches it (every agent gets the credential
-/// injected regardless, per `oss/server/src/mcp/wiring.rs`, so its presence alone proves
-/// nothing). Mirrors `upload.rs`'s `source_references_mcp_gateway` (which scans the zip `nasiko
-/// upload` builds from) for this command's directory-deploy path, which builds straight from the
-/// directory and never zips it. Skips common non-source directories and any file over 1MB; any
-/// read/walk failure is treated as "no reference found" — this is a hint, not a correctness
-/// check, so it must never fail the deploy itself.
-fn dir_references_mcp_gateway(dir: &Path) -> bool {
-    const SKIP_DIRS: &[&str] = &[
-        ".git",
-        ".nasiko",
-        "node_modules",
-        "__pycache__",
-        "target",
-        ".venv",
-        "venv",
-        "dist",
-        "build",
-    ];
-    let Ok(entries) = fs::read_dir(dir) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let skip = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| SKIP_DIRS.contains(&n));
-            if !skip && dir_references_mcp_gateway(&path) {
-                return true;
-            }
-            continue;
-        }
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        if metadata.len() > 1_000_000 {
-            continue;
-        }
-        let Ok(contents) = fs::read_to_string(&path) else {
-            continue;
-        };
-        if contents.contains("MCP_GATEWAY_URL") || contents.contains("MCP_GATEWAY_TOKEN") {
-            return true;
-        }
-    }
-    false
-}
-
-/// Same "give it tool access" suggestion `upload.rs` prints for a source that references the MCP
-/// gateway — kept here too since `deploy_from_directory` has its own two success points.
-fn print_mcp_gateway_hint(agent_name: &str) {
-    println!(
-        "\nThis agent's source references the MCP gateway — to give it tool access:\n\
-         \x20 nasiko mcp catalog                                      # find a connector\n\
-         \x20 nasiko mcp connect --connector-id <id>                  # connect your account (if not already)\n\
-         \x20 nasiko mcp agent-tools enable {agent_name} <id>                   # grant this agent access"
-    );
 }
 
 // Same eight values `deploy_with_version_flags` threads into

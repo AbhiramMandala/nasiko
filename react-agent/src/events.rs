@@ -1,7 +1,5 @@
 use serde::Serialize;
 
-use crate::a2a::PauseInfo;
-
 /// Events emitted during orchestration, streamed to the caller in real-time.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -82,12 +80,4 @@ pub enum OrchestratorEvent {
 
     /// An error occurred during orchestration.
     Error { message: String },
-
-    /// A called agent needs a human before it can continue. Terminal for this turn — no further
-    /// event follows for this conversation until a human answers and a new turn is triggered.
-    AwaitingHuman {
-        agent: String,
-        agent_id: String,
-        pause: PauseInfo,
-    },
 }

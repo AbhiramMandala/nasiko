@@ -30,11 +30,6 @@
  * @attr {number} loading - Number of skeleton cells to reserve while data loads
  *   (default: 4). The skeleton lives here so it cannot drift from the real
  *   geometry. Present-but-empty means the default.
- * @attr {string} variant - `chips` lays the same metrics out as a wrapping row
- *   of `label: value` pills instead of hairline-separated columns — for strips
- *   that sit under a page title rather than heading a dashboard. Purely a
- *   layout change: same `items`, same cells, no second markup path. `pct`
- *   meters and `sub` captions are column-shaped and are not drawn in chips.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-stat-row.css', import.meta.url));

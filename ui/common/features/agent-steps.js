@@ -7,6 +7,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /** Long payloads clamp behind "Show more" rather than being cut with an ellipsis. */
 const CLAMP_CHARS = 4000;
+const STORED_TOOL_CHUNK = 100;
 
 /**
  * <agent-steps> — live activity timeline for a streamed A2A response.
@@ -33,7 +34,6 @@ const CLAMP_CHARS = 4000;
  *   const steps = document.createElement('agent-steps');
  *   steps.onEvent(dataPart);   // per `data` part in the SSE stream
  *   steps.finish();            // when the final answer starts / stream ends
- *   steps.awaitInput();        // instead of finish(), when the turn paused for a human
  */
 class AgentSteps extends HTMLElement {
   #rows = new Map();      // key -> row element
@@ -219,7 +219,11 @@ class AgentSteps extends HTMLElement {
     if (!el) return;
     const ms = row.dataset.durationMs
       ? Number(row.dataset.durationMs)
-      : Date.now() - Number(row.dataset.startedAt);
+      : row.classList.contains('is-running') ? Date.now() - Number(row.dataset.startedAt) : NaN;
+    if (!Number.isFinite(ms)) {
+      el.textContent = '';
+      return;
+    }
     el.textContent = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
   }
 
@@ -436,6 +440,71 @@ class AgentSteps extends HTMLElement {
     }
   }
 
+  /** Render validated tool metadata restored from a persisted assistant row. */
+  loadToolCalls(toolCalls) {
+    if (!Array.isArray(toolCalls)) return;
+    const statuses = new Set(['pending', 'running', 'succeeded', 'failed', 'denied', 'timed_out', 'cancelled', 'unknown']);
+    const valid = toolCalls.filter((tool) => tool && typeof tool.id === 'string'
+      && typeof tool.name === 'string' && statuses.has(tool.status));
+    let rendered = 0;
+    const renderNext = () => {
+      const end = Math.min(rendered + STORED_TOOL_CHUNK, valid.length);
+      for (; rendered < end; rendered += 1) this.#addStoredTool(valid[rendered]);
+    };
+
+    renderNext();
+    if (rendered < valid.length) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'steps-load-more';
+      const update = () => {
+        const remaining = valid.length - rendered;
+        more.textContent = `Show ${Math.min(STORED_TOOL_CHUNK, remaining)} more tool calls (${remaining} remaining)`;
+      };
+      update();
+      more.addEventListener('click', () => {
+        more.remove();
+        renderNext();
+        if (rendered < valid.length) {
+          update();
+        } else {
+          more.textContent = 'All tool calls shown';
+          more.disabled = true;
+        }
+        this.querySelector('.steps-list').appendChild(more);
+        more.focus();
+      });
+      this.querySelector('.steps-list').appendChild(more);
+    }
+    this.finish();
+    const summary = this.querySelector('.steps-strong');
+    if (summary) summary.textContent = 'Tool activity';
+    const meta = this.querySelector('.steps-meta');
+    if (meta) meta.textContent = ` ${valid.length} tool${valid.length === 1 ? '' : 's'}`;
+  }
+
+  #addStoredTool(tool) {
+    const row = this.#addRow(`stored:${tool.id}`, {
+      kind: 'tool',
+      title: tool.name,
+      subtitle: tool.kind || '',
+    });
+    if (tool.arguments != null) this.#addSection(row, 'Input', tool.arguments);
+    if (tool.output != null) this.#addSection(row, 'Output', tool.output, { markdown: true });
+    if (tool.error) this.#addSection(row, 'Error', tool.error);
+    if (Number.isFinite(tool.duration_ms)) row.dataset.durationMs = String(tool.duration_ms);
+    if (['pending', 'running', 'unknown'].includes(tool.status)) {
+      row.classList.remove('is-running');
+      row.classList.add('is-unknown');
+      if (Number.isFinite(tool.duration_ms)) this.#paintTime(row);
+    } else {
+      this.#settle(row, {
+        success: tool.status === 'succeeded',
+        blocked: tool.status === 'denied',
+      });
+    }
+  }
+
   /** A structured tool call/result, nested under its agent when known. */
   #onToolEvent(type, t) {
     const key = `tool:${t.id || `${t.agent || ''}:${t.name}`}`;
@@ -484,31 +553,6 @@ class AgentSteps extends HTMLElement {
       if (!already) this.#addSection(row, 'Response', result, { markdown: true });
     }
     this.#settle(row, { success: d.success !== false });
-  }
-
-  /**
-   * The turn paused for a human instead of finishing.
-   *
-   * Not `finish()`: the work is genuinely unfinished, so the summary this would
-   * otherwise settle into ("Reasoned for 4.2s") would be a lie, and the rows
-   * stay expanded because they are the context for the decision the human is
-   * about to make. Marks itself finished so the caller's own `finish()` — which
-   * runs when the stream closes, right after the pause — is a no-op.
-   */
-  awaitInput() {
-    if (this.#finished) return;
-    this.#finished = true;
-    clearInterval(this.#ticker);
-    if (!this.#rows.size) {
-      // No activity to show. A bare question needs no timeline above it.
-      this.style.display = 'none';
-      return;
-    }
-    for (const row of this.#rows.values()) this.#settle(row);
-    this.querySelector('.steps-elapsed')?.remove();
-    const pulse = this.querySelector('.steps-pulse');
-    if (pulse) pulse.outerHTML = icons.alertTriangle('steps-check', 15);
-    this.#setLabel('Needs your input');
   }
 
   /**

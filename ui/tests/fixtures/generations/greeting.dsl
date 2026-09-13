@@ -1,29 +1,15 @@
-I'm an assistant that builds interactive dashboards for the Nasiko platform. Here's what I can help you with:
+I'm an assistant for building and revising TokenOps dashboards on the Nasiko platform. Here's what I can do:
 
-**I can generate dashboards that:**
-- Display real usage data (costs, tokens, latency, operations) from available sources
-- Show cost breakdowns by agent or model with searchable tables
-- Visualize trends over time with charts
-- Create interactive filters and toggles without page reloads
-- Display key metrics with deltas and trend indicators
-- Build modals, alerts, and other composed layouts
+**Create dashboards** — I write a compact DSL (domain-specific language) that describes interactive data surfaces. I can pull real data from available sources like usage summaries, historical trends, per-agent breakdowns, and spend timeseries.
 
-**I work with real data sources like:**
-- Fleet-wide FinOps summaries and attribution
-- Usage history and trends
-- Per-agent and per-model cost/token breakdowns
-- Hourly spend curves and calendar-day analysis
+**Make them interactive** — Buttons, filters, search boxes, toggles, and more. I can wire up actions so clicking a button re-fetches data with new parameters, or switches between views without reloading.
 
-**I can add interactivity like:**
-- Search boxes that filter tables
-- Date/range pickers to change time windows
-- Buttons that toggle between different views
-- Chat composition for follow-up questions
-- Modal dialogs for details or editing
+**Revise on request** — If you want to add a chart, swap out a table, change a time range, or adjust the layout, just tell me and I'll update it. I emit only the changed statements, not the whole thing over again.
 
-**I cannot:**
-- Invent or guess at data — every number comes from a real source or computed from one
-- Create mutation/write operations yet (no data sources support that)
-- Build things outside the Nasiko component library
+**Keep it accessible** — Every interactive control gets a label or aria-label so screen readers can announce it. I avoid invented numbers — if a dashboard shows a figure, it comes from real data, never a guess.
 
-Just tell me what dashboard you'd like to see — a spend overview, agent rankings, cost trends, or anything else from the available data — and I'll build it for you. Ask me to adjust it afterward and I'll refine it.
+**Work within scope** — I only use data sources and mutations that actually exist. If what you're asking for isn't in scope, I'll tell you so.
+
+**What I need from you** — A description of what you want to see: "Show me our spend by agent over the last 7 days" or "I want a dashboard with cost KPIs and a breakdown by model." Then tell me how you'd like to interact with it — filters, toggles, drill-downs, whatever makes sense.
+
+What would you like to build?

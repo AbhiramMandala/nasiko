@@ -46,17 +46,10 @@ let severityPromise = null;
 let severityMap = null;
 
 export function loadSeverities() {
-  // Wrapped, not bare: `document.baseURI` throws synchronously where there is
-  // no document, and a throw here would take down whatever asked rather than
-  // leaving the table null the way every other failure in this function does.
-  // The runtime calls this from inside a turn now, so "no document" is a real
-  // caller (a test, a worker), not a hypothetical.
-  severityPromise ??= (async () => {
-    try {
-      const res = await fetch(new URL('/common/surface/diagnostics.json', globalThis.document?.baseURI));
-      severityMap = res.ok ? (await res.json())?.diagnostics ?? null : null;
-    } catch { severityMap = null; }
-  })();
+  severityPromise ??= fetch(new URL('/common/surface/diagnostics.json', document.baseURI))
+    .then((res) => (res.ok ? res.json() : null))
+    .then((json) => { severityMap = json?.diagnostics ?? null; })
+    .catch(() => { severityMap = null; });
   return severityPromise;
 }
 

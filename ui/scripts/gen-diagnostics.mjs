@@ -75,7 +75,6 @@ const SEVERITY = {
   route_not_allowed: ['fatal', 'a link that goes nowhere'],
   no_data_property: ['fatal', 'a catalog inconsistency, not a generation one — and it breaks every use of that component'],
   data_not_rows: ['fatal', 'the component renders blank'],
-  value_in_the_wrong_slot: ['fatal', 'a boolean landed in a text slot, so the component shows the word "true" or "false"'],
   missing_accessible_name: ['fatal', 'the renderer refuses the control outright'],
   unknown_slot: ['fatal', 'the child lands nowhere'],
   children_have_nowhere_to_land: ['fatal', 'the child is dropped when the parent renders — it has no default slot'],

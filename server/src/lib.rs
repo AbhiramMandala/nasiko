@@ -14,6 +14,8 @@ pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
+pub mod coding_agent_otlp;
+pub mod coding_agent_telemetry;
 pub mod flows;
 pub mod github;
 pub mod llm_configs;
@@ -265,13 +267,13 @@ where
         .merge(build_routes)
         .merge(degradable_routes)
         .merge(chat::router())
+        .merge(coding_agent_telemetry::router())
         .merge(maf::router())
         .merge(secrets::router())
         .merge(llm_configs::router())
         .merge(settings::router())
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
-        .merge(llm_router::custom_providers::router())
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())

@@ -18,13 +18,7 @@
  *   the `dataFn` property directly and call `refresh()` yourself.
  * @attr {boolean} search - Show the search input.
  * @attr {string} search-placeholder - Placeholder for the search input.
- * @attr {boolean} detail - Present: clicking a row opens a detail modal.
- *   A boolean, not a string: `#showDetail` is `hasAttribute('detail')` and the
- *   value is never read. It was typed `{string}` here, which made it a string
- *   in the catalog, which made `detail="false"` *enable* the modal — and a
- *   generated surface writing `false` into that position (which it does, to
- *   reach `empty-message` after it) therefore turned on a row-click modal
- *   nobody asked for, on every table, silently.
+ * @attr {string} detail - Present: clicking a row opens a detail modal.
  * @attr {string} empty-message - Body text when there are no rows and no query.
  * @attr {boolean} loading - Hold the skeleton: the owner has not got rows yet
  *   and will hand them over later. Present suppresses the fetch entirely, so a

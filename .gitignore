@@ -49,8 +49,4 @@ values.json
 /docs/MCP_UPLOAD_PLAN_OSS.md
 .preview-shots/
 /_to_delete/
-# The same holder, anywhere. The Cowork device mount cannot unlink, so a file
-# that has to go gets moved into one of these instead of deleted; a stray one
-# under ui/ was otherwise an untracked directory in every status.
-_to_delete/
 /_xfer/
