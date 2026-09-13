@@ -28,7 +28,14 @@ uv.lock
 *.swo
 .envrc
 
-.claude/
+# Claude Code. Only the personal half — settings.local.json is per-developer
+# permissions and holds absolute paths from whoever's machine wrote it, so it
+# is never shareable. The rest of .claude/ is: settings.json, skills/, agents/
+# and commands/ are team config and should be committed when someone adds one
+# (.claude/skills/backend-ui-slice is already scaffolded). Same split as
+# .vscode/settings.json above — ignore the personal file, not the tool's
+# directory, or the shared half can never land.
+.claude/settings.local.json
 
 
 # Local MCP config — contains a registry credential, do not commit
