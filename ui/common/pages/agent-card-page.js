@@ -158,6 +158,7 @@ class AgentCardPage extends HTMLElement {
   #render() {
     const a = this.#agent;
     const displayName = a.display_name || a.name;
+    const isCodingAgent = a.is_coding_agent === true;
 
     this.innerHTML = `
       <div class="acp-page">
@@ -167,9 +168,9 @@ class AgentCardPage extends HTMLElement {
           ${this.#overviewPanelHtml(a)}
           ${this.#canManage ? this.#accessPanelHtml() : ''}
           ${this.#canManage ? this.#versionsPanelHtml() : ''}
-          ${this.#configurePanelHtml(a)}
+          ${isCodingAgent ? '' : this.#configurePanelHtml(a)}
           ${this.#canManage ? this.#settingsPanelHtml(a) : ''}
-          ${this.#logsPanelHtml()}
+          ${isCodingAgent ? '' : this.#logsPanelHtml()}
         </app-tabs>
       </div>
       ${this.#canManage ? this.#modalsHtml() : ''}

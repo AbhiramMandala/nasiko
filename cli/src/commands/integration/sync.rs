@@ -12,6 +12,8 @@ use uuid::Uuid;
 use super::queue::{self, DeliveryState, QueueDestination, QueueRecord};
 use crate::config::{ClusterEntry, Config};
 
+const MAX_DELIVERY_ATTEMPTS: u32 = 5;
+
 pub fn run() -> Result<()> {
     let _lock = queue::acquire_sync_lock(Duration::from_millis(250))?;
     let started = std::time::Instant::now();
@@ -77,7 +79,7 @@ fn sync_records(config: &Config, records: Vec<(PathBuf, QueueRecord)>) -> Result
         let cluster = match validate_destination(config, &destination) {
             Ok(cluster) => cluster,
             Err(error) => {
-                defer_all(&records, &error)?;
+                defer_blocked_all(&records, &error)?;
                 continue;
             }
         };
@@ -103,8 +105,7 @@ fn deliver_batch(client: &crate::api::Client, records: &[(PathBuf, QueueRecord)]
     let response = match client.post_coding_agent_batch(&request) {
         Ok(response) => response,
         Err(error) => {
-            defer_all(records, &format!("delivery failed: {error:#}"))?;
-            return Ok(true);
+            return defer_delivery_all(records, &format!("delivery failed: {error:#}"));
         }
     };
     let response_matches = response.results.len() == records.len()
@@ -114,11 +115,10 @@ fn deliver_batch(client: &crate::api::Client, records: &[(PathBuf, QueueRecord)]
             .zip(records)
             .all(|(result, (_, record))| result.event_id == record.event.event_id);
     if !response_matches {
-        defer_all(
+        return defer_delivery_all(
             records,
             "server response did not contain one ordered result per event",
-        )?;
-        return Ok(true);
+        );
     }
     for (result, (path, record)) in response.results.into_iter().zip(records) {
         match result.status {
@@ -136,22 +136,48 @@ fn deliver_batch(client: &crate::api::Client, records: &[(PathBuf, QueueRecord)]
     Ok(false)
 }
 
-fn defer_all(records: &[(PathBuf, QueueRecord)], error: &str) -> Result<()> {
+fn defer_blocked_all(records: &[(PathBuf, QueueRecord)], error: &str) -> Result<()> {
     for (path, record) in records {
-        defer(path, record, error.to_string())?;
+        let mut record = record.clone();
+        record.delivery_state = DeliveryState::Deferred;
+        record.last_error = Some(error.to_string());
+        record.updated_at = chrono::Utc::now();
+        record.next_attempt_at = None;
+        queue::update(path, &record)?;
     }
     Ok(())
 }
 
-fn defer(path: &std::path::Path, record: &QueueRecord, error: String) -> Result<()> {
+fn defer_delivery_all(records: &[(PathBuf, QueueRecord)], error: &str) -> Result<bool> {
+    let mut retry = false;
+    for (path, record) in records {
+        retry |= defer_delivery(path, record, error.to_string())?;
+    }
+    Ok(retry)
+}
+
+fn defer_delivery(path: &std::path::Path, record: &QueueRecord, error: String) -> Result<bool> {
     let mut record = record.clone();
     record.delivery_state = DeliveryState::Deferred;
     record.last_error = Some(error);
     record.updated_at = chrono::Utc::now();
     record.attempts = record.attempts.saturating_add(1);
+    if record.attempts >= MAX_DELIVERY_ATTEMPTS {
+        reject(
+            path,
+            &record,
+            format!(
+                "permanently rejected after {} delivery attempts: {}",
+                record.attempts,
+                record.last_error.as_deref().unwrap_or("delivery failed")
+            ),
+        )?;
+        return Ok(false);
+    }
     let delay = 1_i64 << record.attempts.clamp(1, 6).saturating_sub(1);
     record.next_attempt_at = Some(record.updated_at + chrono::Duration::seconds(delay));
-    queue::update(path, &record)
+    queue::update(path, &record)?;
+    Ok(true)
 }
 
 fn reject(path: &std::path::Path, record: &QueueRecord, error: String) -> Result<()> {
@@ -347,6 +373,7 @@ mod tests {
         );
         let retained = queue::load(&queued.0).unwrap();
         assert_eq!(retained.delivery_state, DeliveryState::Deferred);
+        assert_eq!(retained.attempts, 0);
         assert!(retained.last_error.unwrap().contains("refusing to reroute"));
     }
 
@@ -479,5 +506,33 @@ mod tests {
         let retained = queue::load(&queued.0).unwrap();
         assert_eq!(retained.delivery_state, DeliveryState::Deferred);
         assert!(retained.last_error.unwrap().contains("one ordered result"));
+    }
+
+    #[test]
+    fn fifth_delivery_failure_is_quarantined() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = record("bound", "https://bound.example", "s", "retry-cap");
+        record.attempts = MAX_DELIVERY_ATTEMPTS - 1;
+        let queued = queued(&dir, record);
+
+        assert!(!defer_delivery(&queued.0, &queued.1, "offline".into()).unwrap());
+        assert!(!queued.0.exists());
+        let rejected = dir.path().join("rejected");
+        assert!(rejected.exists());
+        let rejected_group = std::fs::read_dir(rejected)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let rejected_path = std::fs::read_dir(rejected_group)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let rejected_record = queue::load(&rejected_path).unwrap();
+        assert_eq!(rejected_record.delivery_state, DeliveryState::Rejected);
+        assert_eq!(rejected_record.attempts, MAX_DELIVERY_ATTEMPTS);
     }
 }

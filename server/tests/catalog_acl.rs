@@ -776,3 +776,83 @@ async fn public_agent_non_owner_can_read_but_not_mutate() {
 
     server.cleanup().await;
 }
+
+#[tokio::test]
+#[serial]
+async fn coding_agent_registration_is_server_managed_idempotent_and_conflict_safe() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_id = admin["user_id"].as_str().unwrap();
+
+    let generic = create_agent(
+        &server,
+        admin_id,
+        json!({
+            "name": "admin-claude-code",
+            "metadata": {"source": "nasiko-cli-integration", "integration_id": "claude"}
+        }),
+    )
+    .await;
+    let generic_id = generic["id"].as_str().unwrap();
+    let generic_detail = get_agent(&server, admin_id, true, generic_id)
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(generic_detail["data"]["is_coding_agent"], false);
+    assert!(generic_detail["data"]["coding_agent_integration_id"].is_null());
+
+    let conflict = common::as_superuser(
+        server
+            .client
+            .post(server.url("/api/agents/coding-integrations")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"integration_id": "claude"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(conflict.status(), 409);
+
+    let alice = create_user(&server, admin_id, "Alice_Example").await;
+    let alice_id = alice["id"].as_str().unwrap();
+    let register = || {
+        common::as_member(
+            server
+                .client
+                .post(server.url("/api/agents/coding-integrations")),
+            alice_id,
+            "Alice_Example",
+        )
+        .json(&json!({"integration_id": "claude"}))
+        .send()
+    };
+    let first = register().await.unwrap();
+    assert_eq!(first.status(), 201);
+    let first: Value = first.json().await.unwrap();
+    assert_eq!(first["name"], "alice-example-claude-code");
+    assert_eq!(first["coding_agent_integration_id"], "claude");
+    assert_eq!(first["created"], true);
+
+    let second = register().await.unwrap();
+    assert_eq!(second.status(), 200);
+    let second: Value = second.json().await.unwrap();
+    assert_eq!(second["id"], first["id"]);
+    assert_eq!(second["created"], false);
+
+    let unsupported = common::as_member(
+        server
+            .client
+            .post(server.url("/api/agents/coding-integrations")),
+        alice_id,
+        "Alice_Example",
+    )
+    .json(&json!({"integration_id": "unknown"}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(unsupported.status(), 400);
+
+    server.cleanup().await;
+}

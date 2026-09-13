@@ -321,25 +321,6 @@ impl Client {
         Ok(())
     }
 
-    /// POST a JSON body, treating 409 Conflict as success.
-    ///
-    /// Returns `true` when the resource was created and `false` when it already
-    /// existed, so callers that only need the resource to *exist* can be run
-    /// repeatedly without special-casing an error string.
-    pub fn post_json_allow_conflict<B: Serialize>(&self, path: &str, body: &B) -> Result<bool> {
-        let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
-        let url = self.api_url(path);
-        let mut resp = self
-            .auth_post(&url)
-            .send_json(body)
-            .context("cannot reach control plane")?;
-        if resp.status().as_u16() == 409 {
-            return Ok(false);
-        }
-        check_status(&mut resp, &url)?;
-        Ok(true)
-    }
-
     pub(crate) fn post_coding_agent_batch(
         &self,
         body: &CodingAgentEventBatchRequest,

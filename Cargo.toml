@@ -82,6 +82,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rustls = { version = "0.23", features = ["ring"] }
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
+toml_edit = "0.25"
 clap = { version = "4", features = ["derive"] }
 ureq = { version = "3", features = ["json"] }
 dialoguer = "0.11"
@@ -116,6 +117,7 @@ tempfile = "3"
 
 # ─── Archive ────────────────────────────────────────────────────────────────
 zip = { version = "2", default-features = false, features = ["deflate"] }
+zstd = "0.13"
 
 # ─── Versioning ─────────────────────────────────────────────────────────────
 semver = "1"

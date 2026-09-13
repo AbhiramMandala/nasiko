@@ -15,7 +15,6 @@ use crate::commands::llm_config::fetch_config_by_ref;
 use crate::config::{self, ClusterEntry, Config};
 
 pub const STATE_VERSION: u32 = 1;
-const INTEGRATION_SOURCE: &str = "nasiko-cli-coding-agent-router";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionBinding {
@@ -129,11 +128,8 @@ pub fn prepare(
     let (cluster, entry, principal_id) = require_current_login()?;
     let client = Client::from_cluster_entry(&entry);
     let (agent_id, agent_name) = match agent_reference {
-        Some(reference) => resolve_owned_agent(&client, reference, &principal_id)?,
-        None => {
-            let canonical_name = account_scoped_agent_name(&client, &entry, spec.default_name)?;
-            ensure_local_agent(&client, &spec, &principal_id, &canonical_name)?
-        }
+        Some(reference) => resolve_owned_agent(&client, reference, &principal_id, spec.id)?,
+        None => ensure_local_agent(&client, &spec, &principal_id)?,
     };
     let (resolved_config, previous_llm_config_id) =
         configure_agent_for_install(&client, &agent_id, llm_config)?;
@@ -262,10 +258,18 @@ pub fn resolve_owned_agent(
     client: &Client,
     reference: &str,
     principal_id: &str,
+    integration_id: &str,
 ) -> Result<(String, String)> {
     let agent = client
         .get_agent(reference)?
         .ok_or_else(|| anyhow::anyhow!("agent '{reference}' not found"))?;
+    if agent
+        .get("coding_agent_integration_id")
+        .and_then(Value::as_str)
+        != Some(integration_id)
+    {
+        bail!("agent '{reference}' is not the {integration_id} coding-agent integration");
+    }
     owned_agent_fields(&agent, principal_id, reference)
 }
 
@@ -293,48 +297,12 @@ pub fn ensure_local_agent(
     client: &Client,
     spec: &AgentSpec<'_>,
     principal_id: &str,
-    canonical_name: &str,
 ) -> Result<(String, String)> {
-    let mut offset = 0;
-    loop {
-        let path = format!("/agents?owner={principal_id}&limit=100&offset={offset}");
-        let agents: Vec<Value> = client.get_json(&path)?;
-        if let Some(agent) = agents.iter().find(|agent| {
-            agent.get("owner_id").and_then(Value::as_str) == Some(principal_id)
-                && agent.get("name").and_then(Value::as_str) == Some(canonical_name)
-                && agent
-                    .get("metadata")
-                    .and_then(|metadata| metadata.get("integration_id"))
-                    .and_then(Value::as_str)
-                    == Some(spec.id)
-        }) {
-            return owned_agent_fields(agent, principal_id, canonical_name);
-        }
-        if agents.len() < 100 {
-            break;
-        }
-        offset += 100;
-    }
-
-    let name = canonical_name.to_string();
-    if let Some(agent) = client.get_agent(&name)?
-        && agent.get("owner_id").and_then(Value::as_str) == Some(principal_id)
-    {
-        return owned_agent_fields(&agent, principal_id, &name);
-    }
-
     let agent: Value = client.post_json(
-        "/agents",
-        &json!({
-            "name": name,
-            "display_name": spec.display_name,
-            "description": format!("Local {} traffic routed through Nasiko", spec.display_name),
-            "version": "1.0.0",
-            "tags": ["local", "coding-agent", "llm-router"],
-            "metadata": {"source": INTEGRATION_SOURCE, "integration_id": spec.id},
-        }),
+        "/agents/coding-integrations",
+        &json!({"integration_id": spec.id}),
     )?;
-    owned_agent_fields(&agent, principal_id, &name)
+    owned_agent_fields(&agent, principal_id, spec.default_name)
 }
 
 pub fn configure_agent(client: &Client, agent_id: &str, llm_config: Option<&str>) -> Result<Value> {
@@ -606,7 +574,28 @@ mod tests {
             .with_body(r#"{"data":{"id":"agent-id","name":"shared","owner_id":"other"}}"#)
             .create();
         let client = Client::for_test(&server.url(), None);
-        assert!(resolve_owned_agent(&client, "shared", "me").is_err());
+        assert!(resolve_owned_agent(&client, "shared", "me", "claude").is_err());
+        request.assert();
+    }
+
+    #[test]
+    fn caller_controlled_metadata_cannot_select_a_routing_agent() {
+        let mut server = mockito::Server::new();
+        let request = server
+            .mock("GET", "/api/agents/spoofed")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"data":{"id":"agent-id","name":"spoofed","owner_id":"me","coding_agent_integration_id":null,"metadata":{"integration_id":"claude"}}}"#,
+            )
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        let error = resolve_owned_agent(&client, "spoofed", "me", "claude").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not the claude coding-agent integration")
+        );
         request.assert();
     }
 

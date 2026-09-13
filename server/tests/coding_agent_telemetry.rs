@@ -24,7 +24,8 @@ async fn setup(server: &common::TestServer) -> (Uuid, Uuid) {
         .unwrap();
     let user_id = Uuid::parse_str(admin["user_id"].as_str().unwrap()).unwrap();
     let agent_id = sqlx::query_scalar(
-        "INSERT INTO agents (name, owner_id) VALUES ('coding-agent', $1) RETURNING id",
+        "INSERT INTO agents (name, owner_id, coding_agent_integration_id) \
+         VALUES ('coding-agent', $1, 'claude') RETURNING id",
     )
     .bind(user_id)
     .fetch_one(&server.db)
@@ -329,11 +330,14 @@ async fn same_native_session_is_scoped_to_each_owned_agent() {
     .execute(&server.db)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO agents (name, owner_id) VALUES ('coding-agent', $1)")
-        .bind(second_user)
-        .execute(&server.db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO agents (name, owner_id, coding_agent_integration_id) \
+         VALUES ('coding-agent', $1, 'claude')",
+    )
+    .bind(second_user)
+    .execute(&server.db)
+    .await
+    .unwrap();
     let shared = event("same-native-session", "turn", CapturePolicy::Content);
 
     assert_eq!(

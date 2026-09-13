@@ -65,6 +65,8 @@ pub fn run(agent: Agent) -> Result<()> {
         ));
     }
     let pending = pending_turns(&completed, &progress.captured_turn_ids);
+    let mut queued = 0;
+    let mut rejected = 0;
     for turn in &pending {
         let record = QueueRecord::new(
             destination.clone(),
@@ -76,17 +78,28 @@ pub fn run(agent: Agent) -> Result<()> {
                 agent_state.capture_content,
             ),
         );
+        if let Err(error) = record.event.validate() {
+            queue::reject_invalid(&record, &error)?;
+            lock.mark_captured(std::slice::from_ref(&record.event.turn.id))?;
+            rejected += 1;
+            log(&format!(
+                "session {} turn {} — quarantined invalid event: {error}",
+                snapshot.session_id, record.event.turn.id
+            ));
+            continue;
+        }
         queue_then_mark(&record, &lock)?;
+        queued += 1;
     }
     drop(lock);
 
-    if !pending.is_empty() {
+    if queued > 0 {
         spawn_sync()?;
+    }
+    if !pending.is_empty() {
         log(&format!(
-            "session {} — queued {} completed turn(s) for {}",
-            snapshot.session_id,
-            pending.len(),
-            destination.cluster_name
+            "session {} — queued {queued} completed turn(s) for {}; quarantined {rejected}",
+            snapshot.session_id, destination.cluster_name
         ));
     }
     Ok(())

@@ -14,24 +14,19 @@ pub fn register_agent(agent: Agent) -> Result<Registration> {
     let spec = agent.spec();
     let (_, entry) = crate::config::active_cluster()?;
     let client = crate::api::Client::from_cluster_entry(&entry);
-    let username =
-        crate::commands::coding_agent_router::authenticated_account_username(&client, &entry)?;
-    let agent_name = crate::commands::coding_agent_router::account_scoped_agent_name_for_username(
-        &username,
-        spec.agent_name,
+    let response: serde_json::Value = client.post_json(
+        "/agents/coding-integrations",
+        &json!({"integration_id": spec.id}),
     )?;
-    let email = crate::commands::coding_agent_router::authenticated_account_email(&client, &entry)?;
-    let created = client.post_json_allow_conflict(
-        "/agents",
-        &json!({
-            "name": agent_name,
-            "display_name": format!("{} ({email})", spec.display_name),
-            "description": format!("Local {} sessions, reported by the Nasiko CLI", spec.display_name),
-            "version": "1.0.0",
-            "tags": ["local", "coding-agent"],
-            "metadata": {"source": "nasiko-cli-integration", "integration_id": spec.id},
-        }),
-    )?;
+    let created = response
+        .get("created")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let agent_name = response
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("coding-agent registration response is missing its name"))?
+        .to_string();
     Ok(Registration {
         created,
         agent_name,

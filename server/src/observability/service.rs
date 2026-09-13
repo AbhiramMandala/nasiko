@@ -1453,7 +1453,7 @@ impl ObservabilityService {
             .await?;
         let agent_name: Option<String> = sqlx::query_scalar(
             r#"SELECT CASE
-                   WHEN a.metadata->>'source' = 'nasiko-cli-integration'
+                   WHEN a.coding_agent_integration_id IS NOT NULL
                         AND u.username IS NOT NULL
                         AND a.name NOT LIKE u.username || '-%'
                      THEN u.username || '-' || a.name

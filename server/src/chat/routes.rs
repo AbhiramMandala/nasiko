@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Multipart, Path, Query, State},
+    extract::{Multipart, Path, Query, State, rejection::JsonRejection},
     http::{StatusCode, header},
     response::IntoResponse,
     routing::get,
@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
+use super::external_turn::{PersistExternalTurnError, persist_external_turn};
 use super::models::*;
 
 const MAX_FILES_PER_UPLOAD: usize = 10;
@@ -38,6 +39,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/chat/sessions/{session_id}/messages",
             get(list_messages).post(send_message),
+        )
+        .route(
+            "/chat/sessions/{session_id}/external-turns",
+            axum::routing::post(save_external_turn),
         )
         .route(
             "/chat/sessions/{session_id}/files",
@@ -93,7 +98,14 @@ fn default_session_limit() -> i64 {
 /// `idx_messages_session(session_id, timestamp)`.
 const SESSION_LIST_SELECT: &str = r#"
     SELECT cs.*,
-           a.name AS agent_name,
+           CASE
+             WHEN a.coding_agent_integration_id IS NOT NULL
+                  AND u.username IS NOT NULL
+                  AND a.name NOT LIKE u.username || '-%'
+               THEN u.username || '-' || a.name
+             ELSE a.name
+           END AS agent_name,
+           (a.coding_agent_integration_id IS NOT NULL) AS is_coding_agent,
            lm.content AS last_message,
            agg.message_count,
            agg.trace_count,
@@ -101,6 +113,7 @@ const SESSION_LIST_SELECT: &str = r#"
            agg.latency_p50_ms
     FROM chat_sessions cs
     LEFT JOIN agents a ON a.id = cs.agent_id
+    LEFT JOIN users u ON u.id = cs.user_id
     LEFT JOIN LATERAL (
         SELECT content FROM chat_messages
         WHERE session_id = cs.session_id
@@ -716,18 +729,12 @@ async fn list_messages(
         .and_then(|(ts, id)| id.parse::<Uuid>().ok().map(|u| (ts, u)))
         .or(params.after.map(|ts| (ts, Uuid::from_u128(u128::MAX))));
 
-    // `role <> 'system'` on every branch: a HITL resume records its continuation ("The archive
-    // agent replied: …") so the next turn's reasoning still has it (`INTERNAL_TRANSCRIPT_ROLE`,
-    // `router/a2a_dispatch.rs`), but nobody said it — shown in a transcript it reads as a message
-    // the human typed. Filtered in SQL rather than after the fetch so page sizes and cursors stay
-    // consistent with what the client actually receives.
-    //
     // Fetch DESC in all cases except `after`; reverse in Rust so client always sees ASC.
     let (msg_result, fetched_asc): (Result<Vec<ChatMessage>, _>, bool) = match (before, after) {
         (_, Some((after_ts, after_id))) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND role <> 'system' AND (timestamp, id) > ($2, $3)
+                   WHERE session_id = $1 AND (timestamp, id) > ($2, $3)
                    ORDER BY timestamp ASC, id ASC
                    LIMIT $4"#,
             )
@@ -742,7 +749,7 @@ async fn list_messages(
         (Some((before_ts, before_id)), None) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND role <> 'system' AND (timestamp, id) < ($2, $3)
+                   WHERE session_id = $1 AND (timestamp, id) < ($2, $3)
                    ORDER BY timestamp DESC, id DESC
                    LIMIT $4"#,
             )
@@ -757,7 +764,7 @@ async fn list_messages(
         (None, None) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND role <> 'system'
+                   WHERE session_id = $1
                    ORDER BY timestamp DESC, id DESC
                    LIMIT $2"#,
             )
@@ -796,61 +803,11 @@ async fn list_messages(
         None
     };
 
-    // Session-load HITL discovery: every HITL request tied to this
-    // session, pending or already resolved, rides along with the message page instead of
-    // requiring a separate `GET /api/hitl/pending` call. Scoped by BOTH `chat_session_id` and
-    // `owner_user_id` inside the query (`list_for_chat_session`) — the second is redundant with
-    // the `owns` check above in the ordinary case, but costs nothing and means a future refactor
-    // of that check can't silently turn this into a cross-user leak on its own. Reuses
-    // `router::hitl::to_response` verbatim so this can never drift from — or accidentally leak
-    // more than — the one HITL DTO the rest of the API already exposes (`resume_state` etc. stay
-    // excluded because `HitlRequest` itself isn't `Serialize`).
-    // A failure here degrades to an empty `hitl` array rather than failing the whole response —
-    // `rows`/`has_more`/the cursors above are already a complete, correct answer to "what are
-    // this session's messages", and this supplementary panel must never make that a hard
-    // dependency of ordinary chat history. The frontend still has `GET /api/hitl/pending` as a
-    // fallback discovery path for anything pending, unlike the messages themselves.
-    let hitl_rows = match state
-        .hitl_store
-        .list_for_chat_session(&session_id, user_id)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!(%e, session_id, "list_messages: hitl lookup failed, omitting hitl array");
-            Vec::new()
-        }
-    };
-    // Each row goes through `resolve_display_row` before `to_response` — a no-op for the
-    // ordinary case, but substitutes the real row's id/kind/question when this row is a mirror
-    // of a real `mcp_tool` block (see that function's doc comment): otherwise the frontend would
-    // see the mirror's own generic question and could "resolve" an id that grants no real
-    // permission. Resolved concurrently, not one row at a time — `resolve_display_row` does a DB
-    // round-trip per linked row, and this endpoint runs on every single chat history page load.
-    let hitl: Vec<serde_json::Value> = futures::future::join_all(hitl_rows.iter().map(|row| {
-        let store = state.hitl_store.as_ref();
-        async move {
-            let display = nasiko_hitl::resolve_display_row(store, row, user_id).await;
-            crate::router::hitl::to_response(&display)
-        }
-    }))
-    .await;
-
-    #[derive(serde::Serialize)]
-    struct MessagesResponse {
-        #[serde(flatten)]
-        page: CursorPage<ChatMessage>,
-        hitl: Vec<serde_json::Value>,
-    }
-
-    Json(MessagesResponse {
-        page: CursorPage {
-            data: rows,
-            has_more,
-            next_cursor: out_next_cursor,
-            prev_cursor: out_prev_cursor,
-        },
-        hitl,
+    Json(CursorPage {
+        data: rows,
+        has_more,
+        next_cursor: out_next_cursor,
+        prev_cursor: out_prev_cursor,
     })
     .into_response()
 }
@@ -880,23 +837,6 @@ async fn send_message(
 
     if !owns {
         return StatusCode::NOT_FOUND.into_response();
-    }
-
-    // Whitelisted, not just filtered on read (found in review): `list_messages` hides
-    // `role = 'system'` rows from the transcript on the assumption that nothing client-supplied
-    // can carry that role, and `SessionHistory::fetch` (`oss/orchestrator`) applies no such filter
-    // when building the next turn's LLM prompt — an unvalidated `role` here would let a caller
-    // plant an invisible system-role instruction that still reaches the model. See
-    // `CHAT_MESSAGE_ROLE_USER`/`CHAT_MESSAGE_ROLE_ASSISTANT`'s own doc comment for why `"system"`
-    // itself is excluded even though it's a real value in this column.
-    if body.role != CHAT_MESSAGE_ROLE_USER && body.role != CHAT_MESSAGE_ROLE_ASSISTANT {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "role must be \"{CHAT_MESSAGE_ROLE_USER}\" or \"{CHAT_MESSAGE_ROLE_ASSISTANT}\""
-            ),
-        )
-            .into_response();
     }
 
     // Dedupe: a client sending the same file_id twice would otherwise cause
@@ -1005,7 +945,8 @@ async fn send_message(
     // Best-effort AND time-bounded - a failure or a slow/not-yet-ready workspace
     // reader (the first turn after install can wait on a pod pull) must never
     // stall the user seeing their completed answer. On timeout the message is
-    // returned without chips; the files are still on disk for a later turn.
+    // returned without chips; the files are still on disk for a later turn. See
+    // docs/WORKSPACE_FILE_ACCESS_PLAN.md.
     if msg.role == "assistant" {
         let capture = tokio::time::timeout(
             CAPTURE_TIMEOUT,
@@ -1023,6 +964,122 @@ async fn send_message(
     }
 
     (StatusCode::CREATED, Json(msg)).into_response()
+}
+
+#[derive(serde::Serialize)]
+struct ExternalTurnResponse {
+    inserted: bool,
+    user_message: ChatMessage,
+    assistant_message: ChatMessage,
+}
+
+async fn save_external_turn(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(session_id): Path<String>,
+    body: Result<Json<ExternalTurn>, JsonRejection>,
+) -> impl IntoResponse {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid external turn: {}", error.body_text()),
+            )
+                .into_response();
+        }
+    };
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+
+    let turn_id = body.turn_id.trim();
+    if turn_id.is_empty()
+        || body.user_content.trim().is_empty()
+        || body.assistant_content.trim().is_empty()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "turn_id and content must be nonempty",
+        )
+            .into_response();
+    }
+
+    if let Some(usage) = &body.assistant_usage {
+        let invalid = usage.input_tokens.is_some_and(|v| v < 0)
+            || usage.output_tokens.is_some_and(|v| v < 0)
+            || usage.duration_ms.is_some_and(|v| v < 0)
+            || usage.cost_usd.is_some_and(|v| v.is_sign_negative());
+        if invalid {
+            return (StatusCode::BAD_REQUEST, "usage values must be nonnegative").into_response();
+        }
+    }
+
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::error!(%e, session_id, "save_external_turn: begin transaction failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let owns = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
+    )
+    .bind(&session_id)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await;
+    match owns {
+        Ok(true) => {}
+        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(%e, session_id, "save_external_turn: ownership lookup failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    let persisted = match persist_external_turn(&mut tx, &session_id, &body, Utc::now(), true).await
+    {
+        Ok(persisted) => persisted,
+        Err(PersistExternalTurnError::Incomplete) => {
+            let _ = tx.rollback().await;
+            return (StatusCode::CONFLICT, "external turn is incomplete").into_response();
+        }
+        Err(PersistExternalTurnError::Conflict) => {
+            let _ = tx.rollback().await;
+            return (
+                StatusCode::CONFLICT,
+                "turn_id already exists with a different payload",
+            )
+                .into_response();
+        }
+        Err(PersistExternalTurnError::Database(e)) => {
+            tracing::error!(%e, session_id, turn_id, "save_external_turn: persistence failed");
+            let _ = tx.rollback().await;
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    if let Err(e) = tx.commit().await {
+        tracing::error!(%e, session_id, turn_id, "save_external_turn: commit failed");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    (
+        if persisted.inserted {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(ExternalTurnResponse {
+            inserted: persisted.inserted,
+            user_message: persisted.user_message,
+            assistant_message: persisted.assistant_message,
+        }),
+    )
+        .into_response()
 }
 
 /// Strip anything from a captured filename that could break out of a quoted
@@ -1094,8 +1151,8 @@ fn reply_references_file(reply: &str, name: &str) -> bool {
 ///
 /// This is a download **convenience, not a privacy boundary**: on a shared
 /// container the agent can already read (and list on request) every file in
-/// `/workspace`, so real per-user isolation needs a per-session container.
-/// Downloads are still ACL'd to the session
+/// `/workspace`, so real per-user isolation needs a per-session container (see
+/// docs/WORKSPACE_FILE_ACCESS_PLAN.md). Downloads are still ACL'd to the session
 /// owner. Bytes stay in the PVC (`storage_uri` =
 /// `workspace://<owner>/<agent>/<relpath>`); `download_file` streams them,
 /// behind a contract Phase 2 can re-back with object storage unchanged.

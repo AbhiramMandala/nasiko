@@ -22,6 +22,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/agents", post(create))
         .route("/agents", get(list))
+        .route("/agents/coding-integrations", post(register_coding_agent))
         .route("/agents/{id}", get(get_one))
         .route("/agents/{id}", put(update))
         .route("/agents/{id}", axum::routing::delete(delete))
@@ -35,6 +36,192 @@ pub fn router() -> Router<AppState> {
         .route("/search/users", get(search_users))
         .route("/registry/user/agents", get(registry_user_agents))
         .route("/registries/{id}", get(get_by_registry_id))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct RegisterCodingAgentRequest {
+    integration_id: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct RegisterCodingAgentResponse {
+    id: Uuid,
+    name: String,
+    owner_id: Uuid,
+    coding_agent_integration_id: String,
+    created: bool,
+}
+
+fn coding_agent_spec(integration_id: &str) -> Option<(&'static str, &'static str)> {
+    match integration_id {
+        "claude" => Some(("claude-code", "Claude Code")),
+        "opencode" => Some(("opencode", "OpenCode")),
+        "codex" => Some(("codex", "Codex")),
+        "cursor" => Some(("cursor", "Cursor")),
+        _ => None,
+    }
+}
+
+fn coding_agent_name(username: &str, base_name: &str) -> Option<String> {
+    let mut normalized = String::new();
+    let mut pending_separator = false;
+    for character in username.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            if pending_separator && !normalized.is_empty() {
+                normalized.push('-');
+            }
+            normalized.push(character);
+            pending_separator = false;
+        } else {
+            pending_separator = true;
+        }
+    }
+    (!normalized.is_empty()).then(|| format!("{normalized}-{base_name}"))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/agents/coding-integrations",
+    tag = "catalog",
+    request_body = RegisterCodingAgentRequest,
+    responses(
+        (status = 200, description = "Existing coding-agent registration", body = RegisterCodingAgentResponse),
+        (status = 201, description = "Coding-agent registration created", body = RegisterCodingAgentResponse),
+        (status = 409, description = "Canonical name or integration identity conflict"),
+    ),
+)]
+pub(crate) async fn register_coding_agent(
+    State(state): State<AppState>,
+    claims: Claims,
+    Json(body): Json<RegisterCodingAgentRequest>,
+) -> impl IntoResponse {
+    let owner_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let integration_id = body.integration_id.trim();
+    let Some((base_name, display_name)) = coding_agent_spec(integration_id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "unsupported coding-agent integration",
+        )
+            .into_response();
+    };
+    let profile =
+        sqlx::query_as::<_, (String, String)>("SELECT username, email FROM users WHERE id = $1")
+            .bind(owner_id)
+            .fetch_optional(&state.db)
+            .await;
+    let (username, email) = match profile {
+        Ok(Some(profile)) => profile,
+        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(error) => {
+            tracing::error!(%error, %owner_id, "coding-agent profile lookup failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let Some(name) = coding_agent_name(&username, base_name) else {
+        return (
+            StatusCode::CONFLICT,
+            "account username cannot form an agent name",
+        )
+            .into_response();
+    };
+    let label = format!("{display_name} ({email})");
+    let description = format!("Local {display_name} sessions and LLM traffic managed by Nasiko");
+    let metadata = serde_json::json!({
+        "source": "nasiko-cli-integration",
+        "integration_id": integration_id,
+    });
+
+    #[derive(sqlx::FromRow)]
+    struct RegistrationRow {
+        id: Uuid,
+        name: String,
+        owner_id: Uuid,
+        coding_agent_integration_id: Option<String>,
+    }
+
+    let inserted = sqlx::query_as::<_, RegistrationRow>(
+        r#"INSERT INTO agents
+               (name, display_name, description, owner_id, tags, metadata,
+                coding_agent_integration_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT DO NOTHING
+           RETURNING id, name, owner_id, coding_agent_integration_id"#,
+    )
+    .bind(&name)
+    .bind(&label)
+    .bind(&description)
+    .bind(owner_id)
+    .bind(vec!["local", "coding-agent"])
+    .bind(metadata)
+    .bind(integration_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    let (row, created) = match inserted {
+        Ok(Some(row)) => (row, true),
+        Ok(None) => {
+            let existing = sqlx::query_as::<_, RegistrationRow>(
+                r#"SELECT id, name, owner_id, coding_agent_integration_id
+                   FROM agents
+                   WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL"#,
+            )
+            .bind(owner_id)
+            .bind(&name)
+            .fetch_optional(&state.db)
+            .await;
+            match existing {
+                Ok(Some(row))
+                    if row.coding_agent_integration_id.as_deref() == Some(integration_id) =>
+                {
+                    (row, false)
+                }
+                Ok(Some(_)) => {
+                    return (
+                        StatusCode::CONFLICT,
+                        "agent name is already used by an unrelated agent",
+                    )
+                        .into_response();
+                }
+                Ok(None) => {
+                    return (
+                        StatusCode::CONFLICT,
+                        "coding-agent integration is already registered under another name",
+                    )
+                        .into_response();
+                }
+                Err(error) => {
+                    tracing::error!(%error, %owner_id, %name, "coding-agent conflict lookup failed");
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                }
+            }
+        }
+        Err(error) => {
+            tracing::error!(%error, %owner_id, %name, "coding-agent registration failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let Some(coding_agent_integration_id) = row.coding_agent_integration_id else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    (
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(RegisterCodingAgentResponse {
+            id: row.id,
+            name: row.name,
+            owner_id: row.owner_id,
+            coding_agent_integration_id,
+            created,
+        }),
+    )
+        .into_response()
 }
 
 /// WHERE-clause fragment implementing the baseline catalog access predicate —
@@ -441,6 +628,10 @@ pub(crate) struct AgentDetailResponse {
     /// tabs without guessing.
     #[serde(rename = "can_manage")]
     can_manage: bool,
+    #[serde(rename = "is_coding_agent")]
+    is_coding_agent: bool,
+    #[serde(rename = "coding_agent_integration_id")]
+    coding_agent_integration_id: Option<String>,
     status: String,
     version: String,
     description: String,
@@ -534,6 +725,19 @@ pub(crate) async fn get_one(
     }
 
     let can_manage = crate::acl::can_manage_agent(&state, &claims, agent.id).await;
+    let coding_agent_integration_id = match sqlx::query_scalar::<_, Option<String>>(
+        "SELECT coding_agent_integration_id FROM agents WHERE id = $1",
+    )
+    .bind(agent.id)
+    .fetch_one(&state.db)
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(%error, agent_id = %agent.id, "coding-agent identity lookup failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
     let skills: Vec<serde_json::Value> = agent
         .skills
@@ -548,6 +752,8 @@ pub(crate) async fn get_one(
         display_name: agent.display_name.clone(),
         owner_id: agent.owner_id,
         can_manage,
+        is_coding_agent: coding_agent_integration_id.is_some(),
+        coding_agent_integration_id,
         status: agent.status.clone(),
         version: agent.version.clone(),
         description: agent.description.unwrap_or_default(),

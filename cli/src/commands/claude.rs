@@ -194,7 +194,8 @@ pub fn run(agent: &str, llm_config: Option<&str>, args: &[String]) -> Result<()>
         .context("Claude Code is not installed or 'claude' is not on PATH")?;
     let (_, entry, principal) = coding_agent_router::require_current_login()?;
     let client = Client::from_cluster_entry(&entry);
-    let (agent_id, _) = coding_agent_router::resolve_owned_agent(&client, agent, &principal)?;
+    let (agent_id, _) =
+        coding_agent_router::resolve_owned_agent(&client, agent, &principal, "claude")?;
     coding_agent_router::configure_agent(&client, &agent_id, llm_config)?;
     #[derive(Deserialize)]
     struct Envelope {

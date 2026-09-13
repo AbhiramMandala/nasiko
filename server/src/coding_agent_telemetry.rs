@@ -103,16 +103,20 @@ async fn process_event(
 
     let mut tx = state.db.begin().await?;
     let agent_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM agents WHERE owner_id = $1 AND name = $2 AND deleted_at IS NULL",
+        r#"SELECT id FROM agents
+           WHERE owner_id = $1 AND name = $2
+             AND coding_agent_integration_id = $3
+             AND deleted_at IS NULL"#,
     )
     .bind(user_id)
     .bind(&event.source.agent_name)
+    .bind(&event.source.agent_id)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(agent_id) = agent_id else {
         return Err(ProcessError::Rejected(format!(
-            "active owned agent '{}' not found",
-            event.source.agent_name
+            "active owned {} coding-agent integration '{}' not found",
+            event.source.agent_id, event.source.agent_name
         )));
     };
     let server_session_id = scoped_session_id(agent_id, &event.session.source_id);
