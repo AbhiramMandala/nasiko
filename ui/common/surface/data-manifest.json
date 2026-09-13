@@ -20,7 +20,7 @@
           "myAgent": "optional"
         },
         "answers": "composite",
-        "answersMeans": "summary + breakdown in one response — it has NO series, so that needs its own Query",
+        "answersMeans": "summary (a KPI strip, no chart) + breakdown (a bar, donut or ranking) in one response — it has NO series, so that needs its own Query",
         "contains": [
           "summary",
           "breakdown"
@@ -238,7 +238,7 @@
           "provider": "optional"
         },
         "answers": "composite",
-        "answersMeans": "summary + series + breakdown in one response",
+        "answersMeans": "summary (a KPI strip, no chart) + series (a line chart) + breakdown (a bar, donut or ranking) in one response",
         "contains": [
           "summary",
           "series",

@@ -182,6 +182,13 @@ const ANSWERS = {
 /** The kinds a composite can be made of. `composite` is not composable. */
 const COMPOSITE_PARTS = ['summary', 'series', 'breakdown'];
 
+/** What each kind is drawn as — the half of ANSWERS that says what to build. */
+const DRAWS = {
+  summary: 'a KPI strip, no chart',
+  series: 'a line chart',
+  breakdown: 'a bar, donut or ranking',
+};
+
 /**
  * What a composite's source line says.
  *
@@ -193,7 +200,14 @@ const COMPOSITE_PARTS = ['summary', 'series', 'breakdown'];
 function compositeMeans(contains) {
   const has = COMPOSITE_PARTS.filter((k) => contains.includes(k));
   const lacks = COMPOSITE_PARTS.filter((k) => !contains.includes(k));
-  return `${has.join(' + ')} in one response`
+  // Each part carries the same chart guidance it would as a standalone kind.
+  // Without it a composite named what it held and not what to DO with it: a
+  // generation read the per-agent rows out of this response, got no hint that
+  // a breakdown is a bar or a donut, and put them in a table — on a request
+  // that said "with charts". The simple kinds had said so all along; the
+  // composite dropped the second half of every one of them.
+  const drawn = has.map((k) => `${k} (${DRAWS[k]})`).join(' + ');
+  return `${drawn} in one response`
     + (lacks.length ? ` — it has NO ${lacks.join(' and no ')}, so that needs its own Query` : '');
 }
 
