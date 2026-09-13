@@ -35,10 +35,13 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 import { icons } from '/common/utils/icons.js';
 import { escHtml } from '/common/utils/escape.js';
 import { navigate } from '/common/core/router.js';
-import { createView, setViewSurface } from '/common/state/weave-views.js';
+import { createView, setViewSurface, generateViewTitle, renameView, hydrateView } from '/common/state/weave-views.js';
 import { createSurfaceSession } from '/common/surface/surface-stream.js';
 import { loadCatalog, withSeverity } from '/common/surface/catalog-load.js';
+import { getJson, postJson } from '/common/services/api.js';
 import '/common/design-system/app-chatbox/app-chatbox.js';
+
+const newSessionId = () => `weave_${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36)}`;
 
 /**
  * "Worked for 12s" — the receipt on a finished turn.
@@ -83,8 +86,15 @@ const STARTERS = [
   'Create a new agent',
 ];
 
-/** The history menu's canned recents, below a "New chat" action. */
-const RECENT_CHATS = ['Traces page details', 'Adding filters to tokenops'];
+/**
+ * How many rows the history menu's "Recent chats" section shows.
+ *
+ * The menu is a small popover off the header icon, not a browsing surface —
+ * that's `/custom-views`. A handful of the most recent views is what "what
+ * did I just do" needs; older ones stay reachable there instead of growing
+ * this dropdown without bound.
+ */
+const RECENT_CHATS_LIMIT = 5;
 
 class WeaveDock extends HTMLElement {
   #initialized = false;
@@ -98,6 +108,7 @@ class WeaveDock extends HTMLElement {
   #said = [];
   /** Diagnostics raised during the turn, so the answer can be qualified. */
   #faults = [];
+  #chatSessionId = null;
 
   #onRouteChange = () => this.#paintLauncher();
   #onDocumentClick = (e) => {
@@ -124,11 +135,13 @@ class WeaveDock extends HTMLElement {
     // The session holds query subscriptions and an open stream. A turn already
     // in flight still resolves — #respond and #paintThread both tolerate a
     // detached dock — but nothing new starts.
-    // Through the promise, so a dock torn down while the catalog is still in
-    // flight still disposes the session that fetch is about to produce.
+    this.#disposeSession();
+    document.documentElement.style.removeProperty('--app-dock-width');
+  }
+
+  #disposeSession() {
     this.#sessionPromise?.then((session) => session.dispose()).catch(() => {});
     this.#sessionPromise = null;
-    document.documentElement.style.removeProperty('--app-dock-width');
   }
 
   /** Open the drawer, optionally with the composer prefilled. */
@@ -165,8 +178,7 @@ class WeaveDock extends HTMLElement {
             >${icons.panelLeft('', 16, 1.25)}</button>
           <div class="history" role="menu" hidden>
             <button class="history__item" type="button" role="menuitem" data-new-chat>New chat</button>
-            <p class="history__label">Recent chats</p>
-            ${RECENT_CHATS.map((c) => `<button class="history__item" type="button" role="menuitem">${escHtml(c)}</button>`).join('')}
+            <p class="history__label" hidden>Recent chats</p>
           </div>
         </header>
 
@@ -208,6 +220,7 @@ class WeaveDock extends HTMLElement {
   #toggleHistory(force) {
     const menu = this.querySelector('.history');
     const next = force ?? menu.hasAttribute('hidden');
+    if (next) this.#paintHistory();
     menu.toggleAttribute('hidden', !next);
     this.querySelector('[data-history]').setAttribute('aria-expanded', String(next));
   }
@@ -215,7 +228,85 @@ class WeaveDock extends HTMLElement {
   #newChat() {
     this.#toggleHistory(false);
     this.#turns = [];
+    this.#chatSessionId = null;
+    this.#disposeSession();
     this.#paintThread();
+  }
+
+  async #paintHistory() {
+    const menu = this.querySelector('.history');
+    const label = menu.querySelector('.history__label');
+    for (const el of menu.querySelectorAll('[data-session-id]')) el.remove();
+
+    let sessions = [];
+    try {
+      const body = await getJson('/chat/sessions?limit=50');
+      const list = body?.data ?? body ?? [];
+      sessions = (Array.isArray(list) ? list : [])
+        .filter((s) => typeof s.session_id === 'string' && s.session_id.startsWith('weave_'))
+        .slice(0, RECENT_CHATS_LIMIT);
+    } catch (err) {
+      console.error('[weave-dock] could not load chat history', err);
+    }
+
+    label.hidden = sessions.length === 0;
+    for (const session of sessions) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'history__item';
+      item.setAttribute('role', 'menuitem');
+      item.dataset.sessionId = session.session_id;
+      item.textContent = session.title;
+      item.addEventListener('click', () => {
+        this.#toggleHistory(false);
+        this.#openSession(session.session_id);
+      });
+      menu.append(item);
+    }
+  }
+
+  async #openSession(sessionId) {
+    this.#turns = [];
+    this.#chatSessionId = sessionId;
+    this.#disposeSession();
+    this.#paintThread();
+
+    let messages = [];
+    try {
+      const body = await getJson(`/chat/sessions/${encodeURIComponent(sessionId)}/messages`);
+      messages = body?.data ?? body ?? [];
+    } catch (err) {
+      console.error('[weave-dock] could not load chat session messages', err);
+    }
+    if (!Array.isArray(messages)) messages = [];
+
+    let lastView = null;
+    for (const m of messages) {
+      if (m.role !== 'user' && m.role !== 'assistant') continue;
+      this.#turns.push({ role: m.role, text: m.content });
+      const viewId = m.file_parts?.weave_view_id;
+      if (viewId) {
+        lastView = {
+          id: viewId,
+          title: m.file_parts.weave_title,
+          dsl: m.file_parts.dsl,
+          catalogVersion: m.file_parts.catalog_version,
+        };
+      }
+    }
+    this.#paintThread();
+
+    if (lastView) {
+      hydrateView(lastView);
+      navigate(`/view?id=${encodeURIComponent(lastView.id)}`);
+      if (lastView.dsl) {
+        try {
+          (await this.#session()).show(lastView.dsl, { catalogVersion: lastView.catalogVersion });
+        } catch (err) {
+          console.error('[weave-dock] could not seed the resumed dashboard state', err);
+        }
+      }
+    }
   }
 
   // ── Conversation ──────────────────────────────────────────────────────
@@ -229,11 +320,54 @@ class WeaveDock extends HTMLElement {
     this.#turns.push({ role: 'user', text });
     this.#paintThread();
 
+    const sessionReady = this.#ensureChatSession(text);
+    sessionReady.then((id) => this.#persistMessage(id, 'user', text));
+
     // The view exists before the answer does — the route it opens is what
     // renders the generating state, so navigating first is not a race.
     const view = createView(text);
     navigate(`/view?id=${encodeURIComponent(view.id)}`);
-    this.#respond(view);
+    this.#retitle(view, text);
+    this.#respond(view, sessionReady);
+  }
+
+  async #ensureChatSession(firstPrompt) {
+    if (this.#chatSessionId) return this.#chatSessionId;
+    const id = newSessionId();
+    try {
+      const body = await postJson('/chat/sessions', { session_id: id, first_prompt: firstPrompt });
+      this.#chatSessionId = body?.data?.session_id ?? id;
+    } catch (err) {
+      console.error('[weave-dock] could not create a chat session', err);
+      this.#chatSessionId = id;
+    }
+    return this.#chatSessionId;
+  }
+
+  async #persistMessage(sessionId, role, content, extra = {}) {
+    if (!sessionId) return;
+    try {
+      await postJson(`/chat/sessions/${encodeURIComponent(sessionId)}/messages`, { role, content, ...extra });
+    } catch (err) {
+      console.error('[weave-dock] could not persist a message', err);
+    }
+  }
+
+  /**
+   * Replace the view's fallback title with the model's own, in place.
+   *
+   * Fired alongside `#respond`, not awaited by it: the title call is one
+   * short, cheap completion (`POST /weave/title`) that resolves well before
+   * the actual generation does, so by the time an artifact card exists for
+   * this view its title has almost always already landed. `#paintThread`
+   * covers the rare case where generation is fast enough that it hasn't.
+   */
+  async #retitle(view, prompt) {
+    const title = await generateViewTitle(prompt);
+    if (!title || title === view.title) return;
+    view.title = title;
+    try { await renameView(view.id, title); } catch { /* the mutation above still shows */ }
+    this.#paintThread();
   }
 
   /**
@@ -262,6 +396,7 @@ class WeaveDock extends HTMLElement {
         endpoint: '/weave/surface',
         catalog,
         container: document.createElement('div'),
+        sessionId: this.#chatSessionId ?? undefined,
         onMessage: (text) => { this.#said.push(text); },
         // Collected so the turn's own claim can be checked against what the
         // runtime actually managed. The model writes its closing sentence
@@ -283,12 +418,13 @@ class WeaveDock extends HTMLElement {
    * `onMessage` collects the sentences the generator wraps its DSL in, so the
    * dock says what was actually built instead of a sentence written here.
    */
-  async #respond(view) {
+  async #respond(view, sessionReady) {
     this.#turns.push({ role: 'working' });
     this.#paintThread();
     this.#said.length = 0;
     this.#faults.length = 0;
     const startedAt = Date.now();
+    const sessionId = await sessionReady;
 
     let out = null;
     try {
@@ -302,11 +438,10 @@ class WeaveDock extends HTMLElement {
       // Said plainly rather than as a canned apology: the user is about to
       // land on a /view that has nothing on it, and the reason belongs here
       // where they asked, not only in a diagnostic pill.
-      this.#turns.push({
-        role: 'assistant',
-        text: this.#said.at(-1)
-          || 'I could not build that one. The generator did not return a surface — try rephrasing, or check that Weave is reachable.',
-      });
+      const text = this.#said.at(-1)
+        || 'I could not build that one. The generator did not return a surface — try rephrasing, or check that Weave is reachable.';
+      this.#turns.push({ role: 'assistant', text });
+      this.#persistMessage(sessionId, 'assistant', text);
     } else {
       // Awaited: on a view the user has already saved this is a real PATCH, and
       // a surface the user can see but the server cannot is the bug it avoids.
@@ -324,13 +459,22 @@ class WeaveDock extends HTMLElement {
       // untrue, so it is followed by what actually went wrong rather than left
       // to stand on its own.
       const fatal = this.#faults.filter((d) => d.severity === 'fatal');
+      const assistantText = this.#said.at(-1) || `Built ${view.title}.`;
       this.#turns.push(
         // The elapsed line stays after the answer: it is the receipt for how
         // much work the answer represents, and it is the handle into the trace.
         { role: 'elapsed', text: elapsedLabel(Date.now() - startedAt) },
-        { role: 'assistant', text: this.#said.at(-1) || `Built ${view.title}.` },
+        { role: 'assistant', text: assistantText },
         { role: 'artifact', text: view.title, view },
       );
+      this.#persistMessage(sessionId, 'assistant', assistantText, {
+        file_parts: {
+          weave_view_id: view.id,
+          weave_title: view.title,
+          dsl: out.surface,
+          catalog_version: out.catalogVersion,
+        },
+      });
       if (fatal.length) {
         this.#turns.push({
           role: 'assistant',
@@ -383,11 +527,15 @@ class WeaveDock extends HTMLElement {
     } else if (turn.role === 'elapsed') {
       node.innerHTML = `<button class="elapsed" type="button">${escHtml(turn.text)}${icons.chevronRight('', 14, 1.25)}</button>`;
     } else if (turn.role === 'artifact') {
+      // `turn.view.title`, not the `turn.text` snapshot taken when the turn
+      // was pushed — `#retitle` mutates the view in place, and reading it
+      // live here is what makes a rename after the card already rendered
+      // actually show up on repaint.
       node.innerHTML = `
         <button class="artifact" type="button">
           ${icons.layers('artifact__icon', 16, 1.25)}
           <span class="artifact__text">
-            <span class="artifact__title">${escHtml(turn.text)}</span>
+            <span class="artifact__title">${escHtml(turn.view.title)}</span>
             <span class="artifact__sub">Version 1</span>
           </span>
         </button>`;

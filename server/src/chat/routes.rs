@@ -1,15 +1,13 @@
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Multipart, Path, Query, State, rejection::JsonRejection},
+    extract::{Multipart, Path, Query, State},
     http::{StatusCode, header},
     response::IntoResponse,
     routing::get,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use nasiko_orchestrator::models::{ChatCompletionRequest, ChatMessage as LlmMessage};
-use nasiko_orchestrator::providers::{LLMProvider, ProviderError};
 use nasiko_runtime::{ContainerId, WorkspaceRef};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -17,7 +15,6 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
-use super::external_turn::{PersistExternalTurnError, persist_external_turn};
 use super::models::*;
 
 const MAX_FILES_PER_UPLOAD: usize = 10;
@@ -39,10 +36,6 @@ pub fn router() -> Router<AppState> {
         .route(
             "/chat/sessions/{session_id}/messages",
             get(list_messages).post(send_message),
-        )
-        .route(
-            "/chat/sessions/{session_id}/external-turns",
-            axum::routing::post(save_external_turn),
         )
         .route(
             "/chat/sessions/{session_id}/files",
@@ -98,14 +91,7 @@ fn default_session_limit() -> i64 {
 /// `idx_messages_session(session_id, timestamp)`.
 const SESSION_LIST_SELECT: &str = r#"
     SELECT cs.*,
-           CASE
-             WHEN a.coding_agent_integration_id IS NOT NULL
-                  AND u.username IS NOT NULL
-                  AND a.name NOT LIKE u.username || '-%'
-               THEN u.username || '-' || a.name
-             ELSE a.name
-           END AS agent_name,
-           (a.coding_agent_integration_id IS NOT NULL) AS is_coding_agent,
+           a.name AS agent_name,
            lm.content AS last_message,
            agg.message_count,
            agg.trace_count,
@@ -113,7 +99,6 @@ const SESSION_LIST_SELECT: &str = r#"
            agg.latency_p50_ms
     FROM chat_sessions cs
     LEFT JOIN agents a ON a.id = cs.agent_id
-    LEFT JOIN users u ON u.id = cs.user_id
     LEFT JOIN LATERAL (
         SELECT content FROM chat_messages
         WHERE session_id = cs.session_id
@@ -345,10 +330,12 @@ async fn create_session(
     // Derive the session title from the user's first prompt synchronously: block
     // on the LLM so the row is inserted with its final title in a single INSERT.
     // On an empty prompt, an unconfigured provider, or any LLM error,
-    // `title_from_first_prompt` falls back to a truncated form of the prompt (or
-    // "New chat"), so creation never fails on the model.
+    // `titling::title_from_prompt` falls back to a truncated form of the prompt
+    // (or "New chat"), so creation never fails on the model.
     let title = match body.first_prompt.as_deref().map(str::trim) {
-        Some(prompt) if !prompt.is_empty() => title_from_first_prompt(&state, prompt).await,
+        Some(prompt) if !prompt.is_empty() => {
+            crate::titling::title_from_prompt(&state, prompt).await
+        }
         _ => "New chat".to_string(),
     };
 
@@ -383,96 +370,6 @@ async fn create_session(
             tracing::error!(%e, "create_session failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
-    }
-}
-
-// ─── Title generation ─────────────────────────────────────────────────────────
-/// Cap on both the generated and fallback title lengths (chars).
-const MAX_TITLE_CHARS: usize = 80;
-
-/// Derive a short session title from the user's first prompt.
-///
-/// Best-effort: a single LLM call summarizes the prompt into a few words. If the
-/// provider is unconfigured or the call fails, we fall back to a truncated form
-/// of the prompt so session creation never fails on the model — the caller only
-/// passes a non-empty, trimmed `first_prompt`.
-async fn title_from_first_prompt(state: &AppState, first_prompt: &str) -> String {
-    match generate_title(state, first_prompt).await {
-        Ok(title) if !title.is_empty() => title,
-        Ok(_) => truncate_title(first_prompt),
-        Err(e) => {
-            tracing::warn!(%e, "title generation failed; falling back to truncated prompt");
-            truncate_title(first_prompt)
-        }
-    }
-}
-
-/// Single non-streaming LLM call that summarizes `first_prompt` into a title.
-async fn generate_title(state: &AppState, first_prompt: &str) -> Result<String, ProviderError> {
-    let provider = LLMProvider::from_env(state.http_client.clone());
-
-    let request = ChatCompletionRequest {
-        // Reuse the cheap task model already configured for capability
-        // generation (`CAPABILITY_GENERATOR_MODEL`, default gpt-4o-mini) —
-        // titling is a small, low-stakes summarization.
-        model: state.config.capability_generator_model.clone(),
-        messages: vec![
-            LlmMessage {
-                role: "system".to_string(),
-                content: Some(
-                    r#"You generate concise titles for chat conversations.
-
-                    Your task is to summarize the USER'S INTENT, not the content they provide.
-
-                    Rules:
-                    - Generate a title of 3-6 words.
-                    - Focus on what the user wants the assistant to do.
-                    - If the user asks to translate text, make the title about translation (e.g. "English to Spanish Translation"), not the text being translated.
-                    - If the user asks to summarize, emphasize summarization.
-                    - If the user asks to write code, emphasize the coding task.
-                    - If the user asks a question, summarize the question's purpose.
-                    - Do not quote or repeat large parts of the user's input.
-                    - Do not use prefixes like "Title:".
-                    - Do not use surrounding quotes.
-                    - Do not end with punctuation.
-                    - Return ONLY the title."#
-                        .to_string(),
-                ),
-            },
-            LlmMessage {
-                role: "user".to_string(),
-                content: Some(first_prompt.to_string()),
-            },
-        ],
-        stream: false,
-        temperature: Some(0.2),
-        max_tokens: Some(16),
-        response_format: None,
-        stream_options: None,
-    };
-
-    let result = provider.chat_completion(&request).await?;
-    Ok(sanitize_title(&result.content))
-}
-
-/// Trim whitespace, strip a single layer of surrounding quotes the model may add,
-/// and cap the length.
-fn sanitize_title(raw: &str) -> String {
-    let trimmed = raw.trim();
-    let unquoted = trimmed
-        .strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .unwrap_or(trimmed)
-        .trim();
-    truncate_title(unquoted)
-}
-
-/// Cap a title at `MAX_TITLE_CHARS` on a char boundary (never mid-codepoint).
-fn truncate_title(s: &str) -> String {
-    let s = s.trim();
-    match s.char_indices().nth(MAX_TITLE_CHARS) {
-        Some((idx, _)) => s[..idx].trim_end().to_string(),
-        None => s.to_string(),
     }
 }
 
@@ -964,122 +861,6 @@ async fn send_message(
     }
 
     (StatusCode::CREATED, Json(msg)).into_response()
-}
-
-#[derive(serde::Serialize)]
-struct ExternalTurnResponse {
-    inserted: bool,
-    user_message: ChatMessage,
-    assistant_message: ChatMessage,
-}
-
-async fn save_external_turn(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(session_id): Path<String>,
-    body: Result<Json<ExternalTurn>, JsonRejection>,
-) -> impl IntoResponse {
-    let body = match body {
-        Ok(Json(body)) => body,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("invalid external turn: {}", error.body_text()),
-            )
-                .into_response();
-        }
-    };
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
-
-    let turn_id = body.turn_id.trim();
-    if turn_id.is_empty()
-        || body.user_content.trim().is_empty()
-        || body.assistant_content.trim().is_empty()
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            "turn_id and content must be nonempty",
-        )
-            .into_response();
-    }
-
-    if let Some(usage) = &body.assistant_usage {
-        let invalid = usage.input_tokens.is_some_and(|v| v < 0)
-            || usage.output_tokens.is_some_and(|v| v < 0)
-            || usage.duration_ms.is_some_and(|v| v < 0)
-            || usage.cost_usd.is_some_and(|v| v.is_sign_negative());
-        if invalid {
-            return (StatusCode::BAD_REQUEST, "usage values must be nonnegative").into_response();
-        }
-    }
-
-    let mut tx = match state.db.begin().await {
-        Ok(tx) => tx,
-        Err(e) => {
-            tracing::error!(%e, session_id, "save_external_turn: begin transaction failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-
-    let owns = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE session_id = $1 AND user_id = $2)",
-    )
-    .bind(&session_id)
-    .bind(user_id)
-    .fetch_one(&mut *tx)
-    .await;
-    match owns {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
-        Err(e) => {
-            tracing::error!(%e, session_id, "save_external_turn: ownership lookup failed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    }
-
-    let persisted = match persist_external_turn(&mut tx, &session_id, &body, Utc::now(), true).await
-    {
-        Ok(persisted) => persisted,
-        Err(PersistExternalTurnError::Incomplete) => {
-            let _ = tx.rollback().await;
-            return (StatusCode::CONFLICT, "external turn is incomplete").into_response();
-        }
-        Err(PersistExternalTurnError::Conflict) => {
-            let _ = tx.rollback().await;
-            return (
-                StatusCode::CONFLICT,
-                "turn_id already exists with a different payload",
-            )
-                .into_response();
-        }
-        Err(PersistExternalTurnError::Database(e)) => {
-            tracing::error!(%e, session_id, turn_id, "save_external_turn: persistence failed");
-            let _ = tx.rollback().await;
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-
-    if let Err(e) = tx.commit().await {
-        tracing::error!(%e, session_id, turn_id, "save_external_turn: commit failed");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-
-    (
-        if persisted.inserted {
-            StatusCode::CREATED
-        } else {
-            StatusCode::OK
-        },
-        Json(ExternalTurnResponse {
-            inserted: persisted.inserted,
-            user_message: persisted.user_message,
-            assistant_message: persisted.assistant_message,
-        }),
-    )
-        .into_response()
 }
 
 /// Strip anything from a captured filename that could break out of a quoted

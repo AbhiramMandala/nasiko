@@ -172,16 +172,6 @@ pub(crate) fn build_agent_spec(
     } else {
         ports
     };
-    // The container's exposed port (above) and the app-facing $PORT env var
-    // it needs to actually bind to are two different things — normalizing
-    // only the former left every caller responsible for remembering the
-    // latter on its own. `seed_agents_if_configured` did; `restart` (and
-    // upload/update/reconcile/import) didn't — confirmed live: a
-    // seed-deployed agent redeployed via the admin restart endpoint lost its
-    // $PORT env var, fell back to its OWN image's internal default instead
-    // of this platform's convention, and Docker's port mapping pointed at a
-    // socket nothing was listening on. `entry` (not a plain insert) respects
-    // a caller-supplied override instead of clobbering it.
     env.entry("PORT".to_string())
         .or_insert_with(|| ports[0].to_string());
     DeploymentSpec {
@@ -360,6 +350,25 @@ mod spec_tests {
             Uuid::nil(),
         );
         assert_eq!(s.ports, vec![9091]);
+    }
+
+    #[test]
+    fn port_env_tracks_the_first_of_several_ports() {
+        let id = Uuid::new_v4();
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![9091, 9092],
+            HashMap::new(),
+            "512Mi",
+            1,
+            false,
+            None,
+            Uuid::nil(),
+        );
+        assert_eq!(s.ports, vec![9091, 9092]);
+        assert_eq!(s.env_vars.get("PORT"), Some(&"9091".to_string()));
     }
 
     #[test]
