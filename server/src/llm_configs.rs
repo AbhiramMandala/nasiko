@@ -27,7 +27,7 @@ use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
 /// Outbound providers the LLM router can translate to — used to validate config writes.
-const SUPPORTED_PROVIDERS: [&str; 3] = ["openai", "anthropic", "gemini"];
+const SUPPORTED_PROVIDERS: [&str; 4] = ["openai", "anthropic", "gemini", "openrouter"];
 
 /// The `llm_configs` columns returned to clients, assembled by Postgres into one JSON object.
 const CONFIG_JSON: &str = "json_build_object(\

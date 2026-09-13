@@ -42,6 +42,10 @@ const MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// Default Portkey pricing API base (no auth required).
 const DEFAULT_PRICING_BASE: &str = "https://configs.portkey.ai";
 
+/// OpenRouter's own model catalog (public, no auth) — it publishes live per-token
+/// pricing directly, so unlike the other spokes this needs no Portkey slug lookup.
+const DEFAULT_OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
+
 /// One model's converted prices, USD per 1M tokens. Cache columns are
 /// both-or-neither (see [`ModelPrices::cache`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -182,6 +186,75 @@ async fn fetch_price_book(
     Some(prices)
 }
 
+/// OpenRouter's `pricing` object is USD **per token** as decimal strings (e.g.
+/// `"0.00000003"`), not cents like Portkey — multiply by 1e6 for USD per 1M tokens.
+/// Some entries (its own meta/auto-routers) report a `"-1"` sentinel for "variable,
+/// not a fixed rate" — those aren't real prices, so they're excluded rather than
+/// stored as a nonsensical negative cost.
+fn openrouter_prices_from_pricing(pricing: &serde_json::Value) -> Option<ModelPrices> {
+    let per_token = |key: &str| -> Option<f64> { pricing.get(key)?.as_str()?.parse().ok() };
+    let input = per_token("prompt")? * 1_000_000.0;
+    let output = per_token("completion")? * 1_000_000.0;
+    if input < 0.0 || output < 0.0 {
+        return None;
+    }
+    Some(ModelPrices {
+        input_per_1m: round4(input),
+        output_per_1m: round4(output),
+        cache_creation_per_1m: None,
+        cache_read_per_1m: None,
+    })
+}
+
+/// Fetch OpenRouter's full model catalog and convert every model's pricing. `None`
+/// on any failure (fail open — existing pricing rows stay).
+async fn fetch_openrouter_catalog(
+    http: &reqwest::Client,
+    models_url: &str,
+) -> Option<HashMap<String, ModelPrices>> {
+    let body: serde_json::Value = http
+        .get(models_url)
+        .timeout(FETCH_TIMEOUT)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| {
+            tracing::warn!(
+                target: "nasiko::llm_router::pricing_sync",
+                error = %e,
+                "openrouter pricing sync: fetch failed — keeping existing pricing"
+            );
+            e
+        })
+        .ok()?
+        .json()
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                target: "nasiko::llm_router::pricing_sync",
+                error = %e,
+                "openrouter pricing sync: response parse failed — keeping existing pricing"
+            );
+            e
+        })
+        .ok()?;
+    let models = body.get("data")?.as_array()?;
+    let prices: HashMap<String, ModelPrices> = models
+        .iter()
+        .filter_map(|m| {
+            let id = m.get("id")?.as_str()?;
+            let priced = openrouter_prices_from_pricing(m.get("pricing")?)?;
+            Some((id.to_string(), priced))
+        })
+        .collect();
+    tracing::info!(
+        target: "nasiko::llm_router::pricing_sync",
+        models = prices.len(),
+        "openrouter pricing sync: fetched catalog"
+    );
+    Some(prices)
+}
+
 /// Current active prices per model (latest effective row, any provider label — a
 /// model whose seed row already matches needs no new row).
 async fn current_prices(
@@ -232,6 +305,7 @@ async fn sync_label(
     db: &PgPool,
     label: &str,
     book: &HashMap<String, ModelPrices>,
+    source: &str,
 ) -> Result<usize, sqlx::Error> {
     let models: Vec<&str> = book.keys().map(String::as_str).collect();
     let current = current_prices(db, &models).await?;
@@ -264,7 +338,7 @@ async fn sync_label(
             "INSERT INTO model_pricing \
              (provider, model, input_price_per_1m, output_price_per_1m, \
               cache_creation_price_per_1m, cache_read_price_per_1m, notes) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'portkey pricing sync')",
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(label)
         .bind(model)
@@ -272,6 +346,7 @@ async fn sync_label(
         .bind(new.output_per_1m)
         .bind(new.cache_creation_per_1m)
         .bind(new.cache_read_per_1m)
+        .bind(source)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -287,15 +362,12 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_PRICING_BASE.to_string());
     let mut inserted = 0;
-    // Include DB-registered custom providers so a private gateway with a Portkey
-    // price book gets real prices; most have none, which is expected and harmless.
-    let custom = super::catalog::load_custom_providers(db).await;
-    for (label, api_base) in super::catalog::priceable_providers(cfg, &custom) {
+    for (label, api_base) in super::catalog::priceable_providers(cfg) {
         let slug = portkey_slug(&label, &api_base);
         let Some(book) = fetch_price_book(http, &pricing_base, &slug).await else {
             continue;
         };
-        match sync_label(db, &label, &book).await {
+        match sync_label(db, &label, &book, "portkey pricing sync").await {
             Ok(n) => {
                 inserted += n;
                 tracing::info!(
@@ -311,6 +383,32 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
             ),
         }
     }
+
+    // OpenRouter publishes its own catalog+pricing (public, no auth) — always synced
+    // regardless of whether a platform key is configured, so the model picker is
+    // populated even before an operator has wired up billing for it.
+    let openrouter_models_url = std::env::var("OPENROUTER_MODELS_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_OPENROUTER_MODELS_URL.to_string());
+    if let Some(book) = fetch_openrouter_catalog(http, &openrouter_models_url).await {
+        match sync_label(db, "openrouter", &book, "openrouter pricing sync").await {
+            Ok(n) => {
+                inserted += n;
+                tracing::info!(
+                    target: "nasiko::llm_router::pricing_sync",
+                    rows_inserted = n,
+                    "openrouter pricing sync: catalog applied"
+                );
+            }
+            Err(e) => tracing::warn!(
+                target: "nasiko::llm_router::pricing_sync",
+                error = %e,
+                "openrouter pricing sync: DB write failed"
+            ),
+        }
+    }
+
     inserted
 }
 
@@ -413,5 +511,84 @@ mod tests {
             "azure-openai"
         );
         unsafe { std::env::remove_var("PORTKEY_PROVIDER_OPENAI") };
+    }
+
+    #[test]
+    fn openrouter_converts_per_token_usd_strings_to_usd_per_1m() {
+        // OpenRouter's own wire shape: decimal-string USD per token, not cents.
+        let pricing = json!({"prompt": "0.00000015", "completion": "0.0000006"});
+        let p = openrouter_prices_from_pricing(&pricing).unwrap();
+        assert_eq!(p.input_per_1m, 0.15);
+        assert_eq!(p.output_per_1m, 0.6);
+        assert_eq!(p.cache_creation_per_1m, None);
+        assert_eq!(p.cache_read_per_1m, None);
+    }
+
+    #[test]
+    fn openrouter_free_model_prices_as_zero() {
+        let pricing = json!({"prompt": "0", "completion": "0"});
+        let p = openrouter_prices_from_pricing(&pricing).unwrap();
+        assert_eq!(p.input_per_1m, 0.0);
+        assert_eq!(p.output_per_1m, 0.0);
+    }
+
+    #[test]
+    fn openrouter_variable_pricing_sentinel_is_excluded() {
+        // OpenRouter's own meta/auto-routers report "-1" for "not a fixed rate".
+        let pricing = json!({"prompt": "-1", "completion": "-1"});
+        assert!(openrouter_prices_from_pricing(&pricing).is_none());
+    }
+
+    #[test]
+    fn openrouter_missing_or_unparseable_price_skips_the_model() {
+        assert!(openrouter_prices_from_pricing(&json!({"completion": "0.001"})).is_none());
+        assert!(
+            openrouter_prices_from_pricing(&json!({"prompt": "abc", "completion": "0.001"}))
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_openrouter_catalog_parses_models_and_skips_bad_entries() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/models")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "data": [
+                        {"id": "openai/gpt-4o-mini", "pricing": {"prompt": "0.00000015", "completion": "0.0000006"}},
+                        {"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1"}},
+                        {"id": "vendor/no-pricing"}
+                    ]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let http = reqwest::Client::new();
+        let book = fetch_openrouter_catalog(&http, &format!("{}/models", server.url()))
+            .await
+            .unwrap();
+        assert_eq!(book.len(), 1);
+        assert_eq!(book["openai/gpt-4o-mini"].input_per_1m, 0.15);
+    }
+
+    #[tokio::test]
+    async fn fetch_openrouter_catalog_returns_none_on_http_error() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/models")
+            .with_status(500)
+            .create_async()
+            .await;
+        let http = reqwest::Client::new();
+        assert!(
+            fetch_openrouter_catalog(&http, &format!("{}/models", server.url()))
+                .await
+                .is_none()
+        );
     }
 }

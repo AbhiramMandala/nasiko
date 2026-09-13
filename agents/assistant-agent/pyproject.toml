@@ -14,5 +14,6 @@ dependencies = [
     "opentelemetry-exporter-otlp>=1.25.0",
     "opentelemetry-instrumentation-openai-v2>=2.0b0",
     "opentelemetry-instrumentation-asgi>=0.46b0",
+    "opentelemetry-instrumentation-httpx>=0.46b0",
     "opentelemetry-instrumentation-starlette>=0.46b0",
 ]
