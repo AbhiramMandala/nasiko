@@ -102,6 +102,29 @@ class WeaveSurface extends HTMLElement {
    * page can ask to widen.
    */
   context = {};
+  /**
+   * The automatic repair turn (surface/repair.js), forwarded to the session.
+   *
+   * Public for the same reason `catalog` and `context` are: it is a knob a
+   * host legitimately sets, and the element was swallowing it. `rounds: 0`
+   * turns the loop off for a host that would rather show the diagnostics than
+   * spend a round trip.
+   *
+   * It also makes the loop observable without waiting for the model to make a
+   * mistake. The default excludes advisories — a user should not wait on a
+   * round trip to tidy a pre-fetch placeholder — and advisories are most of
+   * what a good generation produces, so on a healthy turn the loop correctly
+   * does nothing and there is nothing to watch. From the console:
+   *
+   *     document.querySelector('weave-surface').repair =
+   *       { rounds: 1, includeAdvisory: true };
+   *
+   * and the next turn repairs its own `default_is_whole_response`, which is
+   * the same code path a fatal takes.
+   *
+   * Read at session creation, so set it before the first send().
+   */
+  repair = undefined;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -195,6 +218,7 @@ class WeaveSurface extends HTMLElement {
     this.#session = createSurfaceSession({
       endpoint: this.getAttribute('endpoint') || '/weave/surface',
       catalog,
+      ...(this.repair !== undefined && { repair: this.repair }),
       container: this.#stage,
       onMessage: (text) => this.#emit('weave-message', { text }),
       onAssistant: (text) => this.#emit('weave-assistant', { text }),
