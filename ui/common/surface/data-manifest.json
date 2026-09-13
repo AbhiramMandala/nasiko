@@ -19,6 +19,8 @@
           "orgUnit": "string, optional — accepted but stubbed, no real filtering yet",
           "myAgent": "optional"
         },
+        "answers": "composite",
+        "answersMeans": "several of the above in one response; say which part you are reading",
         "responseShape": {
           "data": {
             "kpis": {
@@ -105,6 +107,8 @@
         "route": "/usage/summary",
         "description": "The CALLER'S OWN usage summary over a fixed 30-day window — not the fleet's (oss/server/src/usage/routes.rs:68). No arguments. For fleet totals use fetchTokenopsDashboard's data.summary. Real backend: GET /usage/summary.",
         "argsShape": {},
+        "answers": "summary",
+        "answersMeans": "one figure or a flat set of them, for the window as a whole — a KPI strip",
         "responseShape": {
           "request_count": "number",
           "total_input_tokens": "number",
@@ -123,6 +127,8 @@
         "argsShape": {
           "days": "number, default 7"
         },
+        "answers": "series",
+        "answersMeans": "a value over TIME, one point per bucket — a line chart",
         "responseShape": [
           {
             "date": "string (YYYY-MM-DD)",
@@ -142,6 +148,8 @@
           "page": "number, 1-based",
           "limit": "number"
         },
+        "answers": "breakdown",
+        "answersMeans": "a value per CATEGORY, one row per thing — a bar, donut or ranking",
         "responseShape": {
           "data": [
             {
@@ -168,6 +176,8 @@
           "page": "number, 1-based",
           "limit": "number"
         },
+        "answers": "breakdown",
+        "answersMeans": "a value per CATEGORY, one row per thing — a bar, donut or ranking",
         "responseShape": {
           "data": [
             {
@@ -197,6 +207,8 @@
           "model": "string, optional",
           "provider": "optional"
         },
+        "answers": "series",
+        "answersMeans": "a value over TIME, one point per bucket — a line chart",
         "responseShape": {
           "data": {
             "bucket": "string (hour|day)",
@@ -221,6 +233,8 @@
           "model": "string, optional",
           "provider": "optional"
         },
+        "answers": "composite",
+        "answersMeans": "several of the above in one response; say which part you are reading",
         "responseShape": {
           "data": {
             "hours": [

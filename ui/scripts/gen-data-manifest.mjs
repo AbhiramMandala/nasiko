@@ -146,7 +146,69 @@ for (const name of allowlisted) {
   }
 }
 
+/**
+ * The four shapes of answer a source can give, and what each one is FOR.
+ *
+ * The manifest has always said how to call a source and never what kind of
+ * question it answers. Seven lines that all read "here is a way to fetch
+ * tokenops data" are seven interchangeable options, so a request for a
+ * "comprehensive" dashboard goes to whichever description sounds most
+ * complete — and `fetchTokenopsDashboard` does. The model then had one
+ * categorical row set in hand and drew it twice, because a bar over agent
+ * names is the only chart that row set can make.
+ *
+ * That is not a model choosing badly. A dashboard's chart shapes follow its
+ * DATA shapes, and it could not plan data shapes it could not see.
+ *
+ * So each source declares what it answers. It makes the difference between
+ * `fetchSpendTimeseries` and `fetchUsageByModel` legible as a difference in
+ * kind rather than in wording, which is what lets "cover the trend and the
+ * breakdown" be a thing a model can act on.
+ */
+const ANSWERS = {
+  summary: 'one figure or a flat set of them, for the window as a whole — a KPI strip',
+  series: 'a value over TIME, one point per bucket — a line chart',
+  breakdown: 'a value per CATEGORY, one row per thing — a bar, donut or ranking',
+  composite: 'several of the above in one response; say which part you are reading',
+};
+
+/** Fields that make something a time axis, and ones that make it a dimension. */
+const TIME_FIELDS = ['bucket_start', 'date', 'day', 'hour', 'timestamp', 'period_start'];
+const DIMENSION_FIELDS = ['agent_name', 'agent_id', 'model', 'provider', 'name', 'workflow', 'label'];
+
+/** Every field name anywhere in a declared shape, at any depth. */
+function shapeFields(shape, out = new Set()) {
+  if (Array.isArray(shape)) { for (const v of shape) shapeFields(v, out); return out; }
+  if (shape && typeof shape === 'object') {
+    for (const [k, v] of Object.entries(shape)) { out.add(k); shapeFields(v, out); }
+  }
+  return out;
+}
+
 for (const [name, decl] of Object.entries(declared)) {
+  // `answers` is a claim about the response, so it is checked against the
+  // response — the same reason argHints are checked against the signature.
+  // A source labelled `series` whose shape has no time field would teach the
+  // model to reach for a line chart it cannot draw, which is worse than the
+  // silence this replaces.
+  const answers = decl.answers;
+  if (answers !== undefined) {
+    if (!ANSWERS[answers]) {
+      fail(`"${name}" declares answers: "${answers}", which is not one of ${Object.keys(ANSWERS).join(', ')}.`,
+        'The set is closed on purpose: it is rendered into the prompt as a menu, and a fifth '
+        + 'kind nobody defined is a word the model has to guess the meaning of.');
+    }
+    const fields = shapeFields(decl.responseShape);
+    if (answers === 'series' && !TIME_FIELDS.some((f) => fields.has(f))) {
+      fail(`"${name}" answers "series" but its responseShape has no time field (${TIME_FIELDS.join(', ')}).`,
+        'A series the model cannot find a time axis in is a line chart it cannot draw.');
+    }
+    if (answers === 'breakdown' && !DIMENSION_FIELDS.some((f) => fields.has(f))) {
+      fail(`"${name}" answers "breakdown" but its responseShape has no dimension field (${DIMENSION_FIELDS.join(', ')}).`,
+        'A breakdown with nothing to break down by has no categories to put on an axis.');
+    }
+  }
+
   // A hint for an argument that no longer exists is drift of exactly the kind
   // this generator exists to catch — the signature moved and the docs did not.
   for (const k of Object.keys(decl.argHints ?? {})) {
@@ -184,7 +246,7 @@ for (const name of registered) {
  */
 function entry(name) {
   const { callStyle, keys, route } = parsed.get(name);
-  const { description, responseShape, argHints = {} } = declared[name];
+  const { description, responseShape, argHints = {}, answers } = declared[name];
   // Keys and their ORDER come from the signature — for a positional function
   // that order is the whole contract. The hints are documentation and are
   // declared, because no type information exists to derive them from.
@@ -196,6 +258,7 @@ function entry(name) {
     route,
     description,
     argsShape,
+    ...(answers && { answers, answersMeans: ANSWERS[answers] }),
     responseShape,
   };
 }
