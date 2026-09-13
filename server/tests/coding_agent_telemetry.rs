@@ -541,3 +541,54 @@ async fn outbox_retry_skips_an_already_delivered_trace() {
     assert_eq!(state, "delivered");
     server.cleanup().await;
 }
+
+/// Receipts are an OTLP outbox, not a system of record — so deleting the chat
+/// session takes them with it. Guards the 0017 FK, which was RESTRICT and made
+/// delete_session 500 *after* it had already dropped the session's files.
+#[tokio::test]
+#[serial]
+async fn deleting_the_chat_session_cascades_its_receipts() {
+    let server = common::TestServer::start().await;
+    let (user_id, _) = setup(&server).await;
+    let event = event("deletable", "turn-1", CapturePolicy::Content);
+    post(&server, user_id, std::slice::from_ref(&event)).await;
+
+    let session_id: String = sqlx::query_scalar(
+        "SELECT session_id FROM coding_agent_telemetry_events WHERE user_id = $1 AND event_id = $2",
+    )
+    .bind(user_id)
+    .bind(&event.event_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    let deleted = common::as_member(
+        server
+            .client
+            .delete(server.url(&format!("/api/chat/sessions/{session_id}"))),
+        &user_id.to_string(),
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(deleted.status(), 204);
+
+    let receipts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM coding_agent_telemetry_events WHERE session_id = $1",
+    )
+    .bind(&session_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(receipts, 0, "receipts outlived the session they belong to");
+
+    let sessions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_sessions WHERE session_id = $1")
+            .bind(&session_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(sessions, 0);
+    server.cleanup().await;
+}
