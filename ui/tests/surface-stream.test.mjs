@@ -1071,3 +1071,46 @@ test('a turn that drew nothing is not repaired', async () => {
   await s.send('what can you do?');
   assert.equal(prompts.length, 1);
 });
+
+test('the session loads the severity table itself, without the host priming it', () => {
+  // weave-surface.js calls loadSeverities(); weave-dock.js does not, and there
+  // was nothing to remind it. In the dock — where most turns actually happen —
+  // severities() was null, every diagnostic read as unrepairable, and the loop
+  // silently never ran. The same shape of failure as a stale catalog: a
+  // feature that is simply absent, with nothing saying so.
+  //
+  // Asserted against the source because the alternative is asserting a fetch
+  // in a runner that has no document, and what is worth protecting is the
+  // ownership, not the call.
+  const src = readFileSync(new URL('../common/surface/surface-stream.js', import.meta.url), 'utf8');
+  assert.match(src, /await loadSeverities\(\)/,
+    'the session must load the table it needs rather than depending on a host to');
+
+  for (const host of ['weave-surface/weave-surface.js', 'weave-dock/weave-dock.js']) {
+    const hostSrc = readFileSync(new URL(`../common/features/${host}`, import.meta.url), 'utf8');
+    assert.match(hostSrc, /createSurfaceSession\(/, `${host} is still a session host`);
+  }
+});
+
+test('a diagnostic that arrives after the stream is counted before the repair, not against it', () => {
+  // A Query settling repaints, every paint re-emits, and turnDiagnostics is
+  // cleared only when a turn starts. Measured the moment the stream ends, a
+  // straggler from turn one lands during turn two and counts in `after` — so
+  // a repair that worked reads as one that half-worked. It only ever inflates
+  // `after`, never `before`, which is why it looks like the loop failing
+  // rather than the measurement being wrong.
+  //
+  // The barrier is queries.settled(), awaited on BOTH sides so the two counts
+  // mean the same thing. Asserted on the source: the alternative is a fake
+  // query manager whose settle timing is the thing under test, which tests
+  // the fake.
+  const src = readFileSync(new URL('../common/surface/surface-stream.js', import.meta.url), 'utf8');
+  const loop = src.slice(src.indexOf('async function send('));
+  const barriers = [...loop.matchAll(/await queries\.settled\(\)/g)];
+  assert.equal(barriers.length, 2,
+    'both `before` and `after` must be measured after the data has landed');
+  assert.ok(loop.indexOf('const before =') > barriers[0].index,
+    'the first barrier comes before the `before` count');
+  assert.ok(loop.indexOf('const after =') > barriers[1].index,
+    'the second comes before the `after` count');
+});
