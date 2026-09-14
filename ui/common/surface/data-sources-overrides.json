@@ -18,13 +18,13 @@
   },
   "sources": {
     "fetchTokenopsDashboard": {
-      "description": "Fleet-wide FinOps for a time window: KPI strip with server-computed deltas, per-agent rows, and view-aware attribution rows. Real backend: GET /api/observability/finops/dashboard.",
+      "description": "Fleet-wide FinOps for a time window: a ten-metric KPI strip with server-computed deltas, per-agent rows, and a pre-computed top-5 spend split at data.spend_by_agent ready to feed a donut without any client-side aggregation. Real backend: GET /api/observability/finops/dashboard.",
       "answers": "composite",
       "contains": [
         "summary",
         "breakdown"
       ],
-      "$shapeSource": "tokenops-page.js header (wired against the tokensopsapis.md handoff) and #applyDashboard at tokenops-page.js:500-503. `kpis` and `attributions` were missing from the hand-written manifest: the backend computes each KPI's previous value and change_pct itself now, so a generated surface could not show a delta at all, and the attribution rows were only reachable through the older `agents` fallback.",
+      "$shapeSource": "Read field-by-field off FinopsDashboardData and its structs in oss/server/src/observability/service.rs:787 (FinopsKpis:879, FinopsSummary:800, AgentFinopsRow:813, SpendByAgentBreakdown:980, SpendPieSlice, FinopsTokenUsage). The hand-written shape had drifted badly after 6987b124 and 3678327c: `spend_by_agent` was absent entirely, `kpis` was missing six of its ten metrics, `agents[]` was missing four, and — the one that actively misled — `token_usage` declared avg_latency_ms, container_hours and version, none of which the struct has. A model binding to a field that does not exist gets nothing and no diagnostic; the renderer can only check what the DSL says against the catalog, never against the response.",
       "argHints": {
         "range": "\"24h\" | \"7d\" | \"30d\" — wins over startTime/endTime when both are sent",
         "startTime": "ISO 8601 string, optional",
@@ -54,8 +54,38 @@
               "change_pct": "number|null"
             },
             "avg_latency_ms": {
-              "current": "number|null",
-              "previous": "number|null",
+              "current": "number",
+              "previous": "number",
+              "change_pct": "number|null"
+            },
+            "total_agents": {
+              "current": "number",
+              "previous": "number",
+              "change_pct": "number|null"
+            },
+            "active_agents": {
+              "current": "number",
+              "previous": "number",
+              "change_pct": "number|null"
+            },
+            "total_operations": {
+              "current": "number",
+              "previous": "number",
+              "change_pct": "number|null"
+            },
+            "total_tool_calls": {
+              "current": "number",
+              "previous": "number",
+              "change_pct": "number|null"
+            },
+            "latency_p95_ms": {
+              "current": "number",
+              "previous": "number",
+              "change_pct": "number|null"
+            },
+            "latency_p99_ms": {
+              "current": "number",
+              "previous": "number",
               "change_pct": "number|null"
             }
           },
@@ -68,20 +98,37 @@
             "total_agents": "number",
             "total_container_hours": "number"
           },
+          "spend_by_agent": {
+            "slices": [
+              {
+                "agent_name": "string",
+                "spend_usd": "number",
+                "pct": "number"
+              }
+            ],
+            "total_spend_usd": "number"
+          },
           "attributions": {
+            "view": "string (agent|workflow)",
             "rows": [
               {
                 "agent_id": "string",
                 "agent_name": "string",
                 "total_cost": "number",
                 "operations": "number",
+                "is_capped": "boolean",
                 "avg_cost_per_operation": "number",
                 "prompt_tokens": "number",
                 "completion_tokens": "number",
+                "cache_read_tokens": "number",
+                "cache_creation_tokens": "number",
                 "total_tokens": "number",
                 "avg_latency_ms": "number|null",
-                "container_hours": "number",
-                "is_capped": "boolean"
+                "avg_latency_p95_ms": "number|null",
+                "avg_latency_p99_ms": "number|null",
+                "tool_call_count": "number",
+                "version": "string|null",
+                "container_hours": "number"
               }
             ]
           },
@@ -91,6 +138,7 @@
               "agent_name": "string",
               "total_cost": "number",
               "operations": "number",
+              "is_capped": "boolean",
               "avg_cost_per_operation": "number",
               "prompt_tokens": "number",
               "completion_tokens": "number",
@@ -98,27 +146,28 @@
               "cache_creation_tokens": "number",
               "total_tokens": "number",
               "avg_latency_ms": "number|null",
+              "avg_latency_p95_ms": "number|null",
+              "avg_latency_p99_ms": "number|null",
+              "tool_call_count": "number",
               "version": "string|null",
               "container_hours": "number"
             }
           ],
           "token_usage": {
+            "total_tokens": "number",
             "prompt_tokens": "number",
             "completion_tokens": "number",
             "cache_read_tokens": "number",
             "cache_creation_tokens": "number",
-            "total_tokens": "number",
-            "avg_latency_ms": "number|null",
-            "version": "string|null",
-            "container_hours": "number"
+            "avg_tokens_per_operation": "number"
           }
         }
       }
     },
     "fetchSpendTimeseries": {
-      "description": "Spend and operation counts bucketed over a time window - the series behind a spend-over-time chart. Dollar-only; there is no percent-of-window form against this endpoint. Real backend: GET /api/observability/finops/spend-timeseries.",
+      "description": "Spend and operation counts bucketed over a time window - the series behind a spend-over-time chart. Each point also carries tool calls, that bucket's top-spending agent, and p50/p95/p99 latency. Real backend: GET /api/observability/finops/spend-timeseries.",
       "answers": "series",
-      "$shapeSource": "tokenops-page.js:20-24 (header) and :519-521, which reads data.bucket and data.points.",
+      "$shapeSource": "FinopsSpendTimeseries and SpendTimeseriesPoint, oss/server/src/observability/service.rs:896. Six of the point's nine fields were undeclared — tool_calls, top_agent_name, top_agent_spend_usd and the three latency percentiles.",
       "argHints": {
         "range": "\"24h\" | \"7d\" | \"30d\"",
         "startTime": "ISO 8601 string, optional",
@@ -133,21 +182,27 @@
             {
               "bucket_start": "string (ISO 8601)",
               "spend_usd": "number",
-              "operations": "number"
+              "operations": "number",
+              "tool_calls": "number",
+              "top_agent_name": "string|null",
+              "top_agent_spend_usd": "number|null",
+              "p50_latency_ms": "number|null",
+              "p95_latency_ms": "number|null",
+              "p99_latency_ms": "number|null"
             }
           ]
         }
       }
     },
     "fetchSpendCalendarDay": {
-      "description": "One calendar day's hourly spend curve, plus that day's average hourly spend and a pre-computed top-agents ranking. A day TOTAL curve, not a per-agent-per-hour breakdown, so it cannot be stacked by agent. Takes a specific date and is independent of any range filter. Real backend: GET /api/observability/finops/spend-calendar/day.",
+      "description": "One calendar day's hourly spend curve, with each hour's own top-agent split, plus that day's average hourly spend and a pre-computed top-agents ranking. Real backend: GET /api/observability/finops/spend-calendar-day.",
       "answers": "composite",
       "contains": [
         "summary",
         "series",
         "breakdown"
       ],
-      "$shapeSource": "tokenops-page.js:25-36 (header), the panel this endpoint was documented for.",
+      "$shapeSource": "FinopsDayDrilldown, SpendHourPoint and AgentSpendSlice in oss/server/src/observability/service.rs. `date` was undeclared, and each hour carries its own top_agents/others_spend_usd that the old shape flattened away.",
       "argHints": {
         "date": "\"YYYY-MM-DD\", required — a calendar day, not a range",
         "agentId": "string, optional",
@@ -155,10 +210,18 @@
       },
       "responseShape": {
         "data": {
+          "date": "string (YYYY-MM-DD)",
           "hours": [
             {
               "hour": "number (0-23)",
-              "spend_usd": "number"
+              "spend_usd": "number",
+              "top_agents": [
+                {
+                  "agent_name": "string",
+                  "spend_usd": "number"
+                }
+              ],
+              "others_spend_usd": "number"
             }
           ],
           "avg_hourly_spend_usd": "number",

@@ -7,7 +7,7 @@
         "name": "fetchTokenopsDashboard",
         "callStyle": "object",
         "route": "/observability/finops/dashboard",
-        "description": "Fleet-wide FinOps for a time window: KPI strip with server-computed deltas, per-agent rows, and view-aware attribution rows. Real backend: GET /api/observability/finops/dashboard.",
+        "description": "Fleet-wide FinOps for a time window: a ten-metric KPI strip with server-computed deltas, per-agent rows, and a pre-computed top-5 spend split at data.spend_by_agent ready to feed a donut without any client-side aggregation. Real backend: GET /api/observability/finops/dashboard.",
         "argsShape": {
           "range": "\"24h\" | \"7d\" | \"30d\" — wins over startTime/endTime when both are sent",
           "startTime": "ISO 8601 string, optional",
@@ -44,8 +44,38 @@
                 "change_pct": "number|null"
               },
               "avg_latency_ms": {
-                "current": "number|null",
-                "previous": "number|null",
+                "current": "number",
+                "previous": "number",
+                "change_pct": "number|null"
+              },
+              "total_agents": {
+                "current": "number",
+                "previous": "number",
+                "change_pct": "number|null"
+              },
+              "active_agents": {
+                "current": "number",
+                "previous": "number",
+                "change_pct": "number|null"
+              },
+              "total_operations": {
+                "current": "number",
+                "previous": "number",
+                "change_pct": "number|null"
+              },
+              "total_tool_calls": {
+                "current": "number",
+                "previous": "number",
+                "change_pct": "number|null"
+              },
+              "latency_p95_ms": {
+                "current": "number",
+                "previous": "number",
+                "change_pct": "number|null"
+              },
+              "latency_p99_ms": {
+                "current": "number",
+                "previous": "number",
                 "change_pct": "number|null"
               }
             },
@@ -58,20 +88,37 @@
               "total_agents": "number",
               "total_container_hours": "number"
             },
+            "spend_by_agent": {
+              "slices": [
+                {
+                  "agent_name": "string",
+                  "spend_usd": "number",
+                  "pct": "number"
+                }
+              ],
+              "total_spend_usd": "number"
+            },
             "attributions": {
+              "view": "string (agent|workflow)",
               "rows": [
                 {
                   "agent_id": "string",
                   "agent_name": "string",
                   "total_cost": "number",
                   "operations": "number",
+                  "is_capped": "boolean",
                   "avg_cost_per_operation": "number",
                   "prompt_tokens": "number",
                   "completion_tokens": "number",
+                  "cache_read_tokens": "number",
+                  "cache_creation_tokens": "number",
                   "total_tokens": "number",
                   "avg_latency_ms": "number|null",
-                  "container_hours": "number",
-                  "is_capped": "boolean"
+                  "avg_latency_p95_ms": "number|null",
+                  "avg_latency_p99_ms": "number|null",
+                  "tool_call_count": "number",
+                  "version": "string|null",
+                  "container_hours": "number"
                 }
               ]
             },
@@ -81,6 +128,7 @@
                 "agent_name": "string",
                 "total_cost": "number",
                 "operations": "number",
+                "is_capped": "boolean",
                 "avg_cost_per_operation": "number",
                 "prompt_tokens": "number",
                 "completion_tokens": "number",
@@ -88,19 +136,20 @@
                 "cache_creation_tokens": "number",
                 "total_tokens": "number",
                 "avg_latency_ms": "number|null",
+                "avg_latency_p95_ms": "number|null",
+                "avg_latency_p99_ms": "number|null",
+                "tool_call_count": "number",
                 "version": "string|null",
                 "container_hours": "number"
               }
             ],
             "token_usage": {
+              "total_tokens": "number",
               "prompt_tokens": "number",
               "completion_tokens": "number",
               "cache_read_tokens": "number",
               "cache_creation_tokens": "number",
-              "total_tokens": "number",
-              "avg_latency_ms": "number|null",
-              "version": "string|null",
-              "container_hours": "number"
+              "avg_tokens_per_operation": "number"
             }
           }
         }
@@ -202,7 +251,7 @@
         "name": "fetchSpendTimeseries",
         "callStyle": "object",
         "route": "/observability/finops/spend-timeseries",
-        "description": "Spend and operation counts bucketed over a time window - the series behind a spend-over-time chart. Dollar-only; there is no percent-of-window form against this endpoint. Real backend: GET /api/observability/finops/spend-timeseries.",
+        "description": "Spend and operation counts bucketed over a time window - the series behind a spend-over-time chart. Each point also carries tool calls, that bucket's top-spending agent, and p50/p95/p99 latency. Real backend: GET /api/observability/finops/spend-timeseries.",
         "argsShape": {
           "range": "\"24h\" | \"7d\" | \"30d\"",
           "startTime": "ISO 8601 string, optional",
@@ -220,7 +269,13 @@
               {
                 "bucket_start": "string (ISO 8601)",
                 "spend_usd": "number",
-                "operations": "number"
+                "operations": "number",
+                "tool_calls": "number",
+                "top_agent_name": "string|null",
+                "top_agent_spend_usd": "number|null",
+                "p50_latency_ms": "number|null",
+                "p95_latency_ms": "number|null",
+                "p99_latency_ms": "number|null"
               }
             ]
           }
@@ -230,7 +285,7 @@
         "name": "fetchSpendCalendarDay",
         "callStyle": "object",
         "route": "/observability/finops/spend-calendar/day",
-        "description": "One calendar day's hourly spend curve, plus that day's average hourly spend and a pre-computed top-agents ranking. A day TOTAL curve, not a per-agent-per-hour breakdown, so it cannot be stacked by agent. Takes a specific date and is independent of any range filter. Real backend: GET /api/observability/finops/spend-calendar/day.",
+        "description": "One calendar day's hourly spend curve, with each hour's own top-agent split, plus that day's average hourly spend and a pre-computed top-agents ranking. Real backend: GET /api/observability/finops/spend-calendar-day.",
         "argsShape": {
           "date": "\"YYYY-MM-DD\", required — a calendar day, not a range",
           "agentId": "string, optional",
@@ -246,10 +301,18 @@
         ],
         "responseShape": {
           "data": {
+            "date": "string (YYYY-MM-DD)",
             "hours": [
               {
                 "hour": "number (0-23)",
-                "spend_usd": "number"
+                "spend_usd": "number",
+                "top_agents": [
+                  {
+                    "agent_name": "string",
+                    "spend_usd": "number"
+                  }
+                ],
+                "others_spend_usd": "number"
               }
             ],
             "avg_hourly_spend_usd": "number",
