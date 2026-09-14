@@ -1,13 +1,12 @@
 name: Notify private repo
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize]
     branches: [main]
 
 jobs:
   dispatch-pr:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
