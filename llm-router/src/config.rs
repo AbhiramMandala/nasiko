@@ -50,7 +50,7 @@ pub struct GatewayConfig {
     pub attribution_window_secs: u64,
 
     /// Interval between provider model-catalog syncs (`GET /models` →
-    /// `provider_models`). Provider model lists move slowly — default 86400 (24 h).
+    /// `provider_models`). Default 600 (10 min).
     pub model_catalog_sync_interval_secs: u64,
 
     /// Interval between Portkey price-book syncs (`model_pricing`). Prices move
@@ -112,7 +112,7 @@ impl Default for GatewayConfig {
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
             attribution_window_secs: 300,
-            model_catalog_sync_interval_secs: 86_400,
+            model_catalog_sync_interval_secs: 600,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
             anthropic_api_base: "https://api.anthropic.com/v1".into(),
@@ -205,19 +205,15 @@ impl GatewayConfig {
         }
     }
 
-    /// The platform-owned fallback key for a **built-in** `provider`, used when an
-    /// agent sets no per-user `api_key_secret_name`. An unknown provider (e.g. a
-    /// DB-registered custom provider, or a mistyped name) returns `""` — never the
-    /// OpenAI key: handing the platform's real OpenAI key to an arbitrary admin-typed
-    /// base URL would leak it. Custom providers supply their own key via the resolved
-    /// config (see `resolver::resolve`).
+    /// The platform-owned fallback key for `provider`, used when an agent sets no
+    /// per-user `api_key_secret_name`. Unknown providers fall back to the OpenAI key
+    /// for backward compatibility.
     pub fn platform_key_for(&self, provider: &str) -> &str {
         match provider {
-            "openai" => &self.platform_openai_api_key,
             "anthropic" => &self.platform_anthropic_api_key,
             "gemini" => &self.platform_gemini_api_key,
             "openrouter" => &self.platform_openrouter_api_key,
-            _ => "",
+            _ => &self.platform_openai_api_key,
         }
     }
 }
@@ -252,36 +248,4 @@ fn env_first(keys: &[&str], default: &str) -> String {
         }
     }
     default.to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn platform_key_for_built_ins() {
-        let cfg = GatewayConfig {
-            platform_openai_api_key: "sk-openai".into(),
-            platform_anthropic_api_key: "sk-ant".into(),
-            platform_gemini_api_key: "sk-gem".into(),
-            ..Default::default()
-        };
-        assert_eq!(cfg.platform_key_for("openai"), "sk-openai");
-        assert_eq!(cfg.platform_key_for("anthropic"), "sk-ant");
-        assert_eq!(cfg.platform_key_for("gemini"), "sk-gem");
-    }
-
-    #[test]
-    fn platform_key_for_unknown_never_returns_openai_key() {
-        // An unknown provider name (a custom provider, or a typo) must NEVER be handed
-        // the platform OpenAI key — that key would then be sent to an arbitrary
-        // admin-typed base URL. Fail closed with an empty string instead.
-        let cfg = GatewayConfig {
-            platform_openai_api_key: "sk-openai".into(),
-            ..Default::default()
-        };
-        assert_eq!(cfg.platform_key_for("my-gateway"), "");
-        assert_eq!(cfg.platform_key_for("deepseek"), "");
-        assert_eq!(cfg.platform_key_for(""), "");
-    }
 }

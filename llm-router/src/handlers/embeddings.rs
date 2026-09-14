@@ -153,12 +153,6 @@ mod tests {
                 agent_is_participant: true,
             }))
         }
-        async fn fetch_custom_provider(
-            &self,
-            _: &str,
-        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
-            Ok(None)
-        }
     }
 
     fn ctx_with(base: String) -> LlmRouterCtx {

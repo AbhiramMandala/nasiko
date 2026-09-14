@@ -807,11 +807,6 @@ pub struct FinopsSummary {
     /// Replica-hours consumed in the dashboard window — includes agents that
     /// have since been deleted (their sessions survive deletion).
     pub total_container_hours: f64,
-    /// Calls in the window that consumed tokens but carry no cost (no price row
-    /// for the model — e.g. a custom provider with no price book). `SUM(cost_usd)`
-    /// silently skips these, so `total_cost` under-reports; this surfaces the gap
-    /// as a known number rather than a smaller one.
-    pub unpriced_calls: usize,
 }
 
 #[derive(Serialize, Clone, ToSchema)]
@@ -2216,31 +2211,6 @@ impl ObservabilityService {
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
-        // 4. Unpriced calls in the window: ran (had tokens) but recorded no cost,
-        //    because no price row backs the model. `SUM(cost_usd)` skips them, so
-        //    surface the count as a known gap. Same filters as the main aggregation.
-        let unpriced_calls: i64 = sqlx::query_scalar(
-            r#"SELECT COUNT(*)::BIGINT
-               FROM trace_usage
-               WHERE started_at >= $1 AND started_at < $2
-                 AND ($3::TEXT IS NULL OR agent_name = $3)
-                 AND ($4::TEXT IS NULL OR model = $4)
-                 AND ($5::TEXT IS NULL OR provider = $5)
-                 AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
-                 AND COALESCE(cost_usd, 0) = 0
-                 AND (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) > 0"#,
-        )
-        .bind(start)
-        .bind(now)
-        .bind(agent_filter)
-        .bind(model_filter)
-        .bind(provider_filter)
-        .bind(has_user_filter)
-        .bind(&user_id_list)
-        .fetch_one(&self.db)
-        .await
-        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-
         // Index lookups for joining.
         let current_by_name: HashMap<&str, &TraceUsageAgg> = current_rows
             .iter()
@@ -2473,7 +2443,6 @@ impl ObservabilityService {
                     active_agents: active,
                     total_agents,
                     total_container_hours,
-                    unpriced_calls: unpriced_calls.max(0) as usize,
                 },
                 agents: agent_rows,
                 token_usage: FinopsTokenUsage {
@@ -3272,7 +3241,6 @@ fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse 
                 active_agents: 0,
                 total_agents: 0,
                 total_container_hours,
-                unpriced_calls: 0,
             },
             agents: vec![],
             token_usage: FinopsTokenUsage {
