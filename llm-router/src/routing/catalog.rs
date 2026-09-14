@@ -23,9 +23,83 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use nasiko_secrets::SecretsCrypto;
 use sqlx::PgPool;
 
 use crate::config::GatewayConfig;
+
+/// A `custom_providers` row as the catalog + pricing sweeps need it: an
+/// OpenAI-compatible endpoint registered in the DB rather than via env config. The
+/// api key is already decrypted (platform-settings scope).
+#[derive(Debug, Clone)]
+pub(crate) struct CustomProviderEntry {
+    pub label: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub default_model: String,
+    pub catalog_sync_enabled: bool,
+}
+
+/// The raw `custom_providers` columns the sweeps read.
+type CustomProviderRow = (String, String, String, String, bool);
+
+fn row_to_entry(row: CustomProviderRow) -> Option<CustomProviderEntry> {
+    let (label, base_url, encrypted_api_key, default_model, catalog_sync_enabled) = row;
+    match SecretsCrypto::for_platform_settings().decrypt(&encrypted_api_key) {
+        Ok(api_key) => Some(CustomProviderEntry {
+            label,
+            base_url,
+            api_key,
+            default_model,
+            catalog_sync_enabled,
+        }),
+        Err(e) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::catalog",
+                label = %label, error = %e,
+                "custom provider key decrypt failed — skipping this provider in the sweep"
+            );
+            None
+        }
+    }
+}
+
+/// Load every active custom provider (keys decrypted). Fail-soft: a DB error yields
+/// an empty list so the built-in sweep still runs.
+pub(crate) async fn load_custom_providers(db: &PgPool) -> Vec<CustomProviderEntry> {
+    let rows: Vec<CustomProviderRow> = match sqlx::query_as(
+        "SELECT label, base_url, encrypted_api_key, default_model, catalog_sync_enabled \
+         FROM custom_providers WHERE deleted_at IS NULL",
+    )
+    .fetch_all(db)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::catalog",
+                error = %e, "failed to load custom providers — sweeping built-ins only"
+            );
+            return Vec::new();
+        }
+    };
+    rows.into_iter().filter_map(row_to_entry).collect()
+}
+
+/// Load one active custom provider by label (key decrypted).
+async fn load_custom_provider(
+    db: &PgPool,
+    label: &str,
+) -> Result<Option<CustomProviderEntry>, sqlx::Error> {
+    let row: Option<CustomProviderRow> = sqlx::query_as(
+        "SELECT label, base_url, encrypted_api_key, default_model, catalog_sync_enabled \
+         FROM custom_providers WHERE label = $1 AND deleted_at IS NULL",
+    )
+    .bind(label)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.and_then(row_to_entry))
+}
 
 /// Upper bound on a `/models` fetch so a slow provider can't stall the sync loop.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -41,13 +115,23 @@ const MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// it covers Gemini too — whereas the catalog sync can't, because Gemini's `ListModels`
 /// answers `{"models": [{"name": …}]}` with a `?key=` credential rather than the
 /// `{"data": [{"id": …}]}` + bearer shape [`fetch_models`] speaks.
-pub(crate) fn priceable_providers(cfg: &GatewayConfig) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = listable_providers(cfg)
+pub(crate) fn priceable_providers(
+    cfg: &GatewayConfig,
+    custom: &[CustomProviderEntry],
+) -> Vec<(String, String)> {
+    // Built-in listable providers only (no custom) — custom entries are appended
+    // below regardless of their catalog-sync toggle, since pricing is independent of
+    // model listing (a private gateway usually has no Portkey price book anyway,
+    // which is expected and harmless).
+    let mut out: Vec<(String, String)> = listable_providers(cfg, &[])
         .into_iter()
         .map(|(label, base, _key)| (label, base))
         .collect();
     if !cfg.platform_gemini_api_key.is_empty() {
         out.push(("gemini".to_string(), cfg.gemini_api_base.clone()));
+    }
+    for c in custom {
+        out.push((c.label.clone(), c.base_url.clone()));
     }
     out
 }
@@ -57,7 +141,14 @@ pub(crate) fn priceable_providers(cfg: &GatewayConfig) -> Vec<(String, String)> 
 /// no key means the router can't call that provider anyway.
 ///
 /// Gemini is deliberately absent — see [`priceable_providers`] for why.
-pub(crate) fn listable_providers(cfg: &GatewayConfig) -> Vec<(String, String, String)> {
+///
+/// `custom` carries DB-registered providers (resolved by the caller so this stays
+/// pure and its unit tests need no database); each one with `catalog_sync_enabled`
+/// is appended as an OpenAI-compatible endpoint.
+pub(crate) fn listable_providers(
+    cfg: &GatewayConfig,
+    custom: &[CustomProviderEntry],
+) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     if !cfg.platform_openai_api_key.is_empty() {
         // Any OpenAI-compatible endpoint (OpenAI, DeepSeek, vLLM, …) shares this shape.
@@ -73,6 +164,11 @@ pub(crate) fn listable_providers(cfg: &GatewayConfig) -> Vec<(String, String, St
             cfg.anthropic_api_base.clone(),
             cfg.platform_anthropic_api_key.clone(),
         ));
+    }
+    for c in custom {
+        if c.catalog_sync_enabled {
+            out.push((c.label.clone(), c.base_url.clone(), c.api_key.clone()));
+        }
     }
     out
 }
@@ -161,29 +257,164 @@ async fn sync_provider(
     Ok(())
 }
 
-/// One sync pass over every listable provider. Returns the number of providers
-/// successfully synced.
+/// Why a provider's catalog was not refreshed. `Unavailable`/`NoModels` both keep
+/// existing rows (stale data beats no data); `Db` means the fetch worked but the
+/// write failed.
+enum SyncSkip {
+    /// The `/models` fetch failed (network/HTTP/parse) — already logged by [`fetch_models`].
+    Unavailable,
+    /// The endpoint answered but listed nothing usable (a non-OpenAI `/models` shape).
+    NoModels,
+    /// The catalog fetched but the DB write failed.
+    Db(sqlx::Error),
+}
+
+/// Fetch one provider's `/models` and replace its catalog rows. On success returns
+/// `(count, models)` so the caller can validate a default model against the fresh set.
+async fn fetch_and_sync(
+    db: &PgPool,
+    http: &reqwest::Client,
+    provider: &str,
+    base: &str,
+    key: &str,
+) -> Result<(usize, HashSet<String>), SyncSkip> {
+    let url = format!("{base}/models");
+    let Some(models) = fetch_models(http, provider, &url, key).await else {
+        return Err(SyncSkip::Unavailable);
+    };
+    if models.is_empty() {
+        return Err(SyncSkip::NoModels);
+    }
+    sync_provider(db, provider, &models)
+        .await
+        .map_err(SyncSkip::Db)?;
+    Ok((models.len(), models))
+}
+
+/// Record a custom provider's last-sync health (`custom_providers.last_sync_*`) so the
+/// UI can show whether it is healthy and when it was last checked. Fail-soft.
+async fn record_sync_status(db: &PgPool, label: &str, status: &str, error: Option<&str>) {
+    if let Err(e) = sqlx::query(
+        "UPDATE custom_providers \
+         SET last_sync_at = now(), last_sync_status = $2, last_sync_error = $3 \
+         WHERE label = $1 AND deleted_at IS NULL",
+    )
+    .bind(label)
+    .bind(status)
+    .bind(error)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(
+            target: "nasiko::llm_router::catalog",
+            label = %label, error = %e, "failed to record custom provider sync status"
+        );
+    }
+}
+
+/// The `last_sync_error` warning to flag when a provider's `default_model` is no
+/// longer in its live catalog — the last-resort fallback would point at a dead model.
+/// We warn loudly and surface it in the UI, but never silently repoint an operator's
+/// choice (that is worse than telling them). `None` when the default is still served.
+fn default_model_error(entry: &CustomProviderEntry, models: &HashSet<String>) -> Option<String> {
+    if models.contains(&entry.default_model) {
+        return None;
+    }
+    tracing::warn!(
+        target: "nasiko::llm_router::catalog",
+        label = %entry.label, default_model = %entry.default_model,
+        "custom provider default_model is no longer served by its endpoint — the \
+         last-resort fallback will fail; update it"
+    );
+    Some(format!(
+        "default model '{}' is no longer served by this endpoint",
+        entry.default_model
+    ))
+}
+
+/// Sync one custom provider's catalog and record its health. Returns the number of
+/// models discovered (0 for a failed/unsupported listing, both of which keep existing
+/// rows). Errors only when the catalog fetched but the DB write failed.
+async fn sync_and_record(
+    db: &PgPool,
+    http: &reqwest::Client,
+    entry: &CustomProviderEntry,
+) -> Result<usize, sqlx::Error> {
+    match fetch_and_sync(db, http, &entry.label, &entry.base_url, &entry.api_key).await {
+        Ok((n, models)) => {
+            let default_error = default_model_error(entry, &models);
+            record_sync_status(db, &entry.label, "ok", default_error.as_deref()).await;
+            Ok(n)
+        }
+        Err(SyncSkip::Unavailable) => {
+            record_sync_status(
+                db,
+                &entry.label,
+                "failed",
+                Some("model listing fetch failed"),
+            )
+            .await;
+            Ok(0)
+        }
+        Err(SyncSkip::NoModels) => {
+            record_sync_status(
+                db,
+                &entry.label,
+                "unsupported",
+                Some("endpoint returned no usable models; enter model names manually"),
+            )
+            .await;
+            Ok(0)
+        }
+        Err(SyncSkip::Db(e)) => Err(e),
+    }
+}
+
+/// Refresh a single custom provider's model catalog on demand (registration and the
+/// "Sync now" button). Returns the number of models discovered — 0 when the listing
+/// failed or is unsupported (the manual-entry case). An unknown label is `Ok(0)`.
+pub async fn sync_one(
+    db: &PgPool,
+    http: &reqwest::Client,
+    label: &str,
+) -> Result<usize, sqlx::Error> {
+    match load_custom_provider(db, label).await? {
+        Some(entry) => sync_and_record(db, http, &entry).await,
+        None => Ok(0),
+    }
+}
+
+/// One sync pass over every listable provider (built-in + DB-registered custom).
+/// Returns the number of providers successfully synced.
 pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig) -> usize {
     let mut synced = 0;
-    for (provider, base, key) in listable_providers(cfg) {
-        let url = format!("{base}/models");
-        let Some(models) = fetch_models(http, &provider, &url, &key).await else {
-            continue;
-        };
-        if models.is_empty() {
-            tracing::warn!(
+    // Built-in providers: no last_sync bookkeeping (their health is env config).
+    for (provider, base, key) in listable_providers(cfg, &[]) {
+        match fetch_and_sync(db, http, &provider, &base, &key).await {
+            Ok(_) => synced += 1,
+            Err(SyncSkip::Unavailable) => {} // already logged by fetch_models
+            Err(SyncSkip::NoModels) => tracing::warn!(
                 target: "nasiko::llm_router::catalog",
                 provider = %provider,
                 "model catalog sync: provider listed zero models — keeping existing rows"
-            );
+            ),
+            Err(SyncSkip::Db(e)) => tracing::warn!(
+                target: "nasiko::llm_router::catalog",
+                provider = %provider, error = %e, "model catalog sync: DB write failed"
+            ),
+        }
+    }
+    // Custom providers: sync + record health + default_model check.
+    for c in load_custom_providers(db).await {
+        if !c.catalog_sync_enabled {
             continue;
         }
-        match sync_provider(db, &provider, &models).await {
-            Ok(()) => synced += 1,
+        match sync_and_record(db, http, &c).await {
+            Ok(n) if n > 0 => synced += 1,
+            Ok(_) => {} // failed/unsupported outcome already recorded on the row
             Err(e) => tracing::warn!(
                 target: "nasiko::llm_router::catalog",
-                provider = %provider, error = %e,
-                "model catalog sync: DB write failed"
+                label = %c.label, error = %e, "model catalog sync: custom provider DB write failed"
             ),
         }
     }
@@ -191,7 +422,7 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
 }
 
 /// Spawn the background catalog-sync loop: an immediate sync at startup, then every
-/// `MODEL_CATALOG_SYNC_INTERVAL_SECS` (default 10 min, floored at [`MIN_INTERVAL`]). The
+/// `MODEL_CATALOG_SYNC_INTERVAL_SECS` (default 24 h, floored at [`MIN_INTERVAL`]). The
 /// task logs and continues on failure; it never panics and never blocks serving.
 ///
 /// Takes the already-resolved [`GatewayConfig`] rather than re-reading the environment,
@@ -241,20 +472,41 @@ mod tests {
         assert!(parse_models_response(&serde_json::json!(null)).is_empty());
     }
 
+    fn entry(label: &str, sync_enabled: bool) -> CustomProviderEntry {
+        CustomProviderEntry {
+            label: label.into(),
+            base_url: format!("https://{label}.internal/v1"),
+            api_key: format!("sk-{label}"),
+            default_model: "m".into(),
+            catalog_sync_enabled: sync_enabled,
+        }
+    }
+
     #[test]
     fn listable_providers_require_platform_keys() {
         let cfg = GatewayConfig::default();
-        assert!(listable_providers(&cfg).is_empty());
+        assert!(listable_providers(&cfg, &[]).is_empty());
 
         let cfg = GatewayConfig {
             platform_openai_api_key: "sk-test".into(),
             openai_api_base: "https://api.deepseek.com/v1".into(),
             ..GatewayConfig::default()
         };
-        let providers = listable_providers(&cfg);
+        let providers = listable_providers(&cfg, &[]);
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].0, "openai");
         assert_eq!(providers[0].1, "https://api.deepseek.com/v1");
+    }
+
+    #[test]
+    fn listable_providers_includes_only_sync_enabled_custom_rows() {
+        let cfg = GatewayConfig::default(); // no built-in keys
+        let custom = vec![entry("my-gateway", true), entry("paused-gw", false)];
+        let providers = listable_providers(&cfg, &custom);
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].0, "my-gateway");
+        assert_eq!(providers[0].1, "https://my-gateway.internal/v1");
+        assert_eq!(providers[0].2, "sk-my-gateway");
     }
 
     #[test]
@@ -265,8 +517,8 @@ mod tests {
         };
         // Gemini is priceable (Portkey knows it) but not listable (its /models
         // shape and credential differ from what `fetch_models` speaks).
-        assert!(listable_providers(&cfg).is_empty());
-        let priceable = priceable_providers(&cfg);
+        assert!(listable_providers(&cfg, &[]).is_empty());
+        let priceable = priceable_providers(&cfg, &[]);
         assert_eq!(priceable.len(), 1);
         assert_eq!(priceable[0].0, "gemini");
         assert_eq!(priceable[0].1, cfg.gemini_api_base);
@@ -274,7 +526,18 @@ mod tests {
 
     #[test]
     fn priceable_providers_is_empty_without_keys() {
-        assert!(priceable_providers(&GatewayConfig::default()).is_empty());
+        assert!(priceable_providers(&GatewayConfig::default(), &[]).is_empty());
+    }
+
+    #[test]
+    fn priceable_providers_includes_custom_regardless_of_sync_toggle() {
+        // Pricing is independent of the catalog-sync toggle, so even a paused
+        // provider is tried against Portkey (usually finds nothing — harmless).
+        let cfg = GatewayConfig::default();
+        let custom = vec![entry("my-gateway", false)];
+        let priceable = priceable_providers(&cfg, &custom);
+        assert_eq!(priceable.len(), 1);
+        assert_eq!(priceable[0].0, "my-gateway");
     }
 
     #[test]
@@ -285,10 +548,20 @@ mod tests {
             platform_gemini_api_key: "gk-test".into(),
             ..GatewayConfig::default()
         };
-        let labels: Vec<String> = priceable_providers(&cfg)
+        let labels: Vec<String> = priceable_providers(&cfg, &[])
             .into_iter()
             .map(|(label, _)| label)
             .collect();
         assert_eq!(labels, vec!["openai", "anthropic", "gemini"]);
+    }
+
+    #[test]
+    fn default_model_error_flags_missing_only() {
+        let e = entry("my-gateway", true);
+        let mut models = HashSet::new();
+        models.insert("other-model".to_string());
+        assert!(default_model_error(&e, &models).is_some());
+        models.insert("m".to_string());
+        assert!(default_model_error(&e, &models).is_none());
     }
 }

@@ -14,9 +14,6 @@ pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
-pub mod coding_agent_otlp;
-pub mod coding_agent_telemetry;
-pub mod context_strategy;
 pub mod flows;
 pub mod github;
 pub mod llm_configs;
@@ -26,7 +23,6 @@ pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
 pub mod openapi;
-pub mod pacms_budget;
 pub mod pool;
 pub mod rate_limit;
 pub mod registry_a2a;
@@ -37,7 +33,6 @@ pub mod seed;
 pub mod settings;
 pub mod state;
 pub mod telemetry;
-pub mod titling;
 pub mod transcribe;
 pub mod usage;
 pub mod users;
@@ -270,15 +265,13 @@ where
         .merge(build_routes)
         .merge(degradable_routes)
         .merge(chat::router())
-        .merge(pacms_budget::router())
-        .merge(context_strategy::router())
-        .merge(coding_agent_telemetry::router())
         .merge(maf::router())
         .merge(secrets::router())
         .merge(llm_configs::router())
         .merge(settings::router())
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
+        .merge(llm_router::custom_providers::router())
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
@@ -360,7 +353,7 @@ where
     let llm_cfg = llm_ctx.cfg.clone();
     let llm_routes = nasiko_llm_router::router(llm_ctx);
     // Keep the provider model catalog (tier-routing candidates) fresh from each
-    // provider's GET /models. Runs immediately, then every 10 min; fail-open.
+    // provider's GET /models. Runs immediately, then every 24 h; fail-open.
     if state.config.model_catalog_sync_enabled {
         nasiko_llm_router::routing::catalog::spawn_sync(
             state.db.clone(),
