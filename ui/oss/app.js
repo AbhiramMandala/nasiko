@@ -11,11 +11,9 @@
  *   3. app.js (this)  — defines routes and starts the router
  */
 
-import { router } from '/common/core/router.js';
+import { createApp } from '/common/core/create-app.js';
 import { resolveOptional } from '/common/core/data-sources.js';
 import { dismissSplash } from '/common/features/app-splash.js';
-import { initErrorBoundary } from '/common/core/error-boundary.js';
-import { initRouteIntegration } from '/common/core/route-persistence.js';
 import { mountWeaveDock } from '/common/features/weave-dock/weave-dock.js';
 
 // ── Base route table ────────────────────────────────────────────────────
@@ -81,42 +79,22 @@ async function loadExtensionRoutes() {
 }
 
 // ── Boot ────────────────────────────────────────────────────────────────
+// The sequence itself lives in core/create-app.js — see the note there on why
+// the splash and the dock arrive through `onReady` rather than being imported
+// by it.
 
-async function boot() {
-  // Wire up global error handling first — catches everything from here on
-  initErrorBoundary();
-
-  // Register base routes
-  router.addAll(BASE_ROUTES);
-
-  // Load edition extension routes (EE pages like /users, /departments, etc.)
-  const ext = await loadExtensionRoutes();
-  if (ext?.routes) {
-    router.addAll(ext.routes());
-  }
-
-  // Exclude paths that should trigger full page loads
-  router.exclude('/login');
-  router.excludePrefix('/api/', '/v1/', '/v2/', '/auth/', '/common/', '/mcp/');
-
-  // Start the router
-  const outlet = document.getElementById('outlet');
-  if (!outlet) {
-    console.error('[app] #outlet element not found');
-    return;
-  }
-  router.start(outlet);
-
-  // Persist route state (scroll positions, deep-link context) across reloads
-  initRouteIntegration();
-
-  // Weave's launcher + drawer. Mounted on <body>, outside the outlet, so a
-  // route swap — including the one the drawer itself triggers when it generates
-  // a view — never tears the conversation down.
-  mountWeaveDock();
-
-  // Everything is wired — drop the splash screen and reveal the app
-  dismissSplash();
-}
-
-boot();
+createApp({
+  routes: BASE_ROUTES,
+  extensionRoutes: loadExtensionRoutes,
+  // A full page load: no app-header, and it does OAuth redirects.
+  exclude: ['/login'],
+  excludePrefix: ['/api/', '/v1/', '/v2/', '/auth/', '/common/', '/mcp/'],
+  onReady() {
+    // Weave's launcher + drawer. Mounted on <body>, outside the outlet, so a
+    // route swap — including the one the drawer itself triggers when it
+    // generates a view — never tears the conversation down.
+    mountWeaveDock();
+    // Everything is wired — drop the splash screen and reveal the app.
+    dismissSplash();
+  },
+});

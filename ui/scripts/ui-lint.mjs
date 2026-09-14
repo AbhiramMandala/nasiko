@@ -210,6 +210,28 @@ function importsOf(source) {
 const lineOf = (source, index) => source.slice(0, index).split('\n').length;
 
 /**
+ * The source with every comment blanked out — same length, same offsets, so a
+ * match index still maps to the right line via `lineOf`.
+ *
+ * Needed by any rule that looks for a CALL rather than an import. The three
+ * false positives this was written for were all prose: a docblock example in
+ * router.js, and two comments in ee/web explaining what app.js awaits. A rule
+ * that cannot tell a call from a sentence about a call is a rule people learn
+ * to ignore.
+ *
+ * Strings are left alone deliberately. A `//` inside one would be blanked by a
+ * naive stripper and could swallow real code after it; leaving them means the
+ * worst case is a false positive on a string that contains a comment-looking
+ * sequence AND the pattern being searched for, which no rule here does.
+ * @param {string} source
+ */
+function blankComments(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, pre) => pre + ' '.repeat(m.length - pre.length));
+}
+
+/**
  * Every path any route table registers, across editions.
  *
  * Route tables are `{ path: '/x', tag, module }` literals living in an `app.js`
@@ -261,6 +283,35 @@ const rules = [
             message: `imports ${spec} (layer ${to}) from layer ${from} — that is upward`,
           });
         }
+      }
+      return out;
+    },
+  },
+
+  {
+    id: 'one-boot-sequence',
+    enforce: 'zero',
+    why: 'Every SPA entry point boots the same way — error boundary, routes, exclusions, outlet, router.start, ' +
+         'route persistence — and there are four of them (ui/oss, ee/registry, ee/portal, ee/tenant). They used to ' +
+         'hand-roll that sequence separately, which meant a change to it had to be made four times and was made ' +
+         'once. core/create-app.js owns it now; an entry point supplies a config literal. ' +
+         'Note what this rule can and cannot see. `sources.lint` in ui/ee/edition.json covers components/ and ' +
+         'web/ only — portal/, tenant/ and registry/ were never in the lint set — so three of the four entry ' +
+         'points are outside it, and the browser suite does not serve them either. They are guarded by nothing. ' +
+         'Adding them costs 5 findings, all no-private-escape-helper in ui/ee/portal/components/, measured; ' +
+         'worth its own change. Until then this rule holds the line for ui/oss and ui/ee/web.',
+    check({ rel, source, isJs }) {
+      if (!isJs || rel === 'ui/common/core/create-app.js') return [];
+      // `router.start(` is the one call that only a boot sequence makes. Route
+      // tables, exclusions and the error boundary all have legitimate other
+      // callers; starting the router does not.
+      const out = [];
+      for (const m of blankComments(source).matchAll(/\brouter\.start\s*\(/g)) {
+        out.push({
+          file: rel,
+          line: lineOf(source, m.index),
+          message: 'starts the router itself — boot through createApp() from core/create-app.js instead',
+        });
       }
       return out;
     },
