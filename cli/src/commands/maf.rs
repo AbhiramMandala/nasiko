@@ -516,6 +516,10 @@ const MAX_POLL_ATTEMPTS: u32 = 150;
 fn poll_execution(client: &Client, exec_id: &str) -> Result<()> {
     let mut last_status = String::new();
     let mut spin = Some(nasiko_utils::term::start_status("waiting for execution"));
+    // The one id we've already answered — `ExecWithHitlResponse` guarantees at most one
+    // `pending` row at a time, so a single slot is enough to tell "still the same pause,
+    // resume dispatcher just hasn't caught up yet" apart from "a genuinely new pause".
+    let mut resolved_hitl_id: Option<String> = None;
 
     for _ in 0..MAX_POLL_ATTEMPTS {
         let resp: Value =
@@ -528,16 +532,19 @@ fn poll_execution(client: &Client, exec_id: &str) -> Result<()> {
 
         if status == "awaiting_human" {
             match pending_hitl_pause(&resp) {
-                Some(pause) => {
+                Some(pause) if resolved_hitl_id.as_deref() != Some(pause.id.as_str()) => {
                     drop(spin.take());
+                    let id = pause.id.clone();
                     crate::hitl::prompt_and_resolve_hitl(&pause)?;
+                    resolved_hitl_id = Some(id);
                     spin = Some(nasiko_utils::term::start_status("resuming"));
                 }
-                // Nothing `pending` right now: either the pause we just answered hasn't
-                // propagated to `maf_executions.status` yet (the resume dispatcher picks it
-                // up on its own ~2s cycle), or the response briefly caught the step
-                // mid-transition — either way, not a new pause, just keep polling.
-                None => {
+                // Either nothing `pending` right now, or it's the same id we already
+                // resolved: the resume dispatcher hasn't propagated that off
+                // `maf_executions.status` yet on its own ~2s cycle. Either way, not a new
+                // pause to re-answer — re-prompting here would force the user to redo the
+                // whole widget for a question they already answered.
+                _ => {
                     spin.get_or_insert_with(|| nasiko_utils::term::start_status("resuming"));
                 }
             }
