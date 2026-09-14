@@ -82,9 +82,6 @@ for (const [tag, def] of Object.entries(catalog.components)) {
       problems.push(`${tag}: dslExcludeAttributes names "${name}", which is not an attribute of ${tag}.`);
     }
   }
-  if (ov.itemActionsAttr && !def.attributes?.[ov.itemActionsAttr]) {
-    problems.push(`${tag}: itemActionsAttr names "${ov.itemActionsAttr}", which is not an attribute of ${tag}.`);
-  }
 
   const attributes = {};
   for (const [name, spec] of Object.entries(def.attributes || {})) {
@@ -243,7 +240,6 @@ for (const [tag, def] of Object.entries(catalog.components)) {
     ...(ov.dataProp && { dataProp: ov.dataProp }),
     ...(ov.dataAsFetcher && { dataAsFetcher: true }),
     ...(ov.actionEvent && { actionEvent: ov.actionEvent }),
-    ...(ov.itemActionsAttr && { itemActionsAttr: ov.itemActionsAttr }),
     ...(ov.needsOpenCall && { needsOpenCall: true }),
     ...(ov.note && { note: ov.note }),
   };

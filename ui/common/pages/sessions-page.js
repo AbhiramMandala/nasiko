@@ -1,12 +1,15 @@
 /**
- * Execution history — every chat session across agents, with per-session trace,
+ * Session history — every chat session across agents, with per-session trace,
  * token and latency counts (GET /api/chat/sessions).
  *
- * The list is an `<app-table>`: it owns the search box, the header, sorting and
- * the skeleton rows. Pagination is `none` because `/chat/sessions` is
- * keyset-paginated and reports no total, so there is no page count to number —
- * the "Load more" pager below the table walks the cursor instead, and the
- * table's search filters everything loaded so far.
+ * The list is an `<app-table>`: it owns the header, sorting and the skeleton
+ * rows. Pagination is `none` because `/chat/sessions` is keyset-paginated and
+ * reports no total, so there is no page count to number — the "Load more" pager
+ * below the table walks the cursor instead.
+ *
+ * Search and the time range live in this page's own toolbar rather than in
+ * app-table's header, because the range is not a text filter and the two belong
+ * in one row.
  *
  * @element sessions-page
  */
@@ -21,6 +24,8 @@ import '../design-system/app-button/app-button.js';
 // a bare Retry button on an otherwise blank card.
 import '../design-system/app-empty-state/app-empty-state.js';
 import '../design-system/app-table/app-table.js';
+import '../design-system/app-search/app-search.js';
+import '../design-system/app-menu/app-menu.js';
 import '../features/app-module-nav.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
@@ -41,6 +46,36 @@ const fmtCount = (n) => {
 };
 
 const fmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`);
+
+/// The row's display name. Titles are auto-generated and are often the literal
+/// "New chat", which makes every row look the same — fall back to the last
+/// message, exactly as the module-nav session rows do (ui/oss/navigation.js).
+const sessionLabel = (s) =>
+  ((s.title && s.title !== 'New chat' ? s.title : s.last_message) || 'New chat')
+    .replace(/\s+/g, ' ').trim().slice(0, 90);
+
+/// Resumes the session in chat. `agent_name` falls back to the orchestrator so
+/// the chat header names the router rather than a blank agent.
+const chatHref = (s) =>
+  `/chat?session_id=${encodeURIComponent(s.session_id)}`
+  + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
+  + `&agent_name=${encodeURIComponent(s.agent_name || 'Orchestrator')}`
+  // A coding-agent session is a transcript of work done elsewhere; chat opens
+  // it read-only rather than offering a prompt box that can't be answered.
+  + (s.is_coding_agent ? '&read_only=1' : '');
+
+/// Time-range presets, newest-first like the list itself. `ms: null` is "all
+/// time" — no cutoff, and the pager behaves exactly as it did before ranges
+/// existed.
+const RANGES = [
+  { id: '15m', label: 'Last 15 minutes', ms: 15 * 60_000 },
+  { id: '1h',  label: 'Last hour',       ms: 60 * 60_000 },
+  { id: '6h',  label: 'Last 6 hours',    ms: 6 * 60 * 60_000 },
+  { id: '24h', label: 'Last 24 hours',   ms: 24 * 60 * 60_000 },
+  { id: '7d',  label: 'Last 7 days',     ms: 7 * 24 * 60 * 60_000 },
+  { id: '30d', label: 'Last 30 days',    ms: 30 * 24 * 60 * 60_000 },
+];
+const DEFAULT_RANGE = '7d';
 
 const fmtDate = (date) => {
   const now = new Date();
@@ -69,6 +104,10 @@ class SessionsPage extends HTMLElement {
   /// instead of resolving instantly against an empty array and flashing its
   /// "nothing here" row before the first fetch returns.
   #ready = null;
+  /// Current time-range preset id; see RANGES.
+  #range = DEFAULT_RANGE;
+  /// Toolbar search text. The table's own search box is off — this page owns it.
+  #query = '';
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -84,11 +123,19 @@ class SessionsPage extends HTMLElement {
       <app-module-nav module="observability"></app-module-nav>
       <div class="sessions-header">
         <div class="sessions-header-info">
-          <h1 class="title-page">Execution history</h1>
+          <h1 class="title-page">Session history</h1>
           <p class="sessions-subtitle">Review all queries across agents. Select a session to open its
             trace details.</p>
         </div>
-        <app-button variant="dark" size="md" id="btn-new">New chat</app-button>
+      </div>
+      <div class="sessions-toolbar">
+        <app-search id="sessions-search" size="sm" placeholder="Search sessions"
+          aria-label="Search sessions"></app-search>
+        <app-menu id="range-menu" align="end" label="Time range"
+          items='${escAttr(JSON.stringify(RANGES.map(({ id, label }) => ({ id, label }))))}'
+        ><app-button variant="tertiary" size="sm">
+          <span class="range-label">${escHtml(this.#rangeLabel())}</span>${icons.chevronDownSmall('', 16)}
+        </app-button></app-menu>
       </div>
       <div class="session-list" id="session-list"></div>
       <div class="sessions-more" id="sessions-more" hidden>
@@ -105,6 +152,20 @@ class SessionsPage extends HTMLElement {
 
     this.querySelector('#btn-more')?.addEventListener('click', () => this.#load({ more: true }));
 
+    this.querySelector('#sessions-search')?.addEventListener('input', (e) => {
+      this.#query = e.target.value || '';
+      this.querySelector('#sessions-table')?.refresh();
+      this.#renderPager();
+    });
+
+    this.querySelector('#range-menu')?.addEventListener('menu-select', (e) => {
+      this.#range = e.detail.id;
+      // The trigger doubles as the filter's current value; relabel the span
+      // rather than app-button's `label` setter, which would drop the chevron.
+      this.querySelector('.range-label').textContent = this.#rangeLabel();
+      this.#syncList();
+    });
+
     // Delegated on the container, not the rows: app-table rebuilds its whole
     // tbody on every refresh and sort, so per-row listeners would be dropped.
     this.querySelector('#session-list').addEventListener('click', (e) => {
@@ -114,10 +175,15 @@ class SessionsPage extends HTMLElement {
         this.#deleteSession(del.dataset.sessionId);
         return;
       }
-      const traces = e.target.closest('.session-traces');
-      if (traces) {
+      // The chat CTA is an <app-button href>: the router's own anchor handler
+      // navigates it, so this only has to keep the row handler below off it.
+      if (e.target.closest('.session-open')) return;
+      // Anywhere else in the row — the title link included — opens the traces.
+      // The link carries the href so it stays a real, middle-clickable anchor.
+      const link = e.target.closest('tr')?.querySelector('.session-link');
+      if (link) {
         e.preventDefault();
-        routerNavigate(`/observability-session?session_id=${encodeURIComponent(traces.dataset.sessionId)}`);
+        routerNavigate(link.getAttribute('href'));
       }
     });
 
@@ -126,34 +192,28 @@ class SessionsPage extends HTMLElement {
 
   #mountTable() {
     const list = this.querySelector('#session-list');
-    list.innerHTML = `<app-table id="sessions-table" search pagination="none"
-      search-placeholder="Filter sessions..." limit="4"></app-table>`;
+    list.innerHTML = `<app-table id="sessions-table" pagination="none" limit="4"></app-table>`;
     const table = list.querySelector('#sessions-table');
 
     table.columns = [
       {
         key: 'session_id',
         label: 'Sessions',
-        width: '27%',
+        width: '32%',
         render: (_v, s) => {
-          const agent = s.agent_name || 'Orchestrator';
-          const href = `/chat?session_id=${encodeURIComponent(s.session_id)}`
-            + `&agent_id=${encodeURIComponent(s.agent_id || '')}`
-            + `&agent_name=${encodeURIComponent(agent)}`
-            + (s.is_coding_agent ? '&read_only=1' : '');
-          const msgs = s.message_count
-            ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
-          const preview = s.last_message
-            ? `<span class="session-preview">${escHtml(s.last_message.slice(0, 90))}</span>` : '';
+          const href = `/observability-session?session_id=${encodeURIComponent(s.session_id)}`;
+          // The design's status dot is not drawn: nothing in the platform
+          // records a session's running/success/error state, and there is no
+          // plan to add one. Title only.
           return `<a class="session-link" href="${escAttr(href)}">
-            <span class="session-agent">${escHtml(agent)}${msgs}</span>${preview}</a>`;
+            <span class="session-title">${escHtml(sessionLabel(s))}</span></a>`;
         },
       },
       // `trace_count`/`total_tokens`/`latency_p50_ms` are null when nothing was
       // recorded at all (a BYO-key agent, or messages predating usage tracking)
       // and read as "—"; a recorded 0 is a real value and must render as "0",
       // hence the null checks rather than truthiness tests.
-      { key: 'trace_count', label: 'Traces', width: '11%', render: (v) => v ?? '—' },
+      { key: 'trace_count', label: 'Traces count', width: '11%', render: (v) => v ?? '—' },
       { key: 'total_tokens', label: 'Tokens', width: '11%', render: (v) => (v != null ? fmtCount(v) : '—') },
       { key: 'latency_p50_ms', label: 'Latency P50', width: '16%', render: (v) => (v != null ? fmtMs(v) : '—') },
       {
@@ -172,12 +232,14 @@ class SessionsPage extends HTMLElement {
         key: 'session_id',
         label: '',
         width: '16%',
-        render: (v) => `
-          <button class="session-traces" type="button" data-session-id="${escAttr(v)}"
-            title="View traces" aria-label="View traces for this session"
-          ><span>Traces</span>${icons.chevronRight('', 14)}</button>
-          <button class="session-delete" type="button" data-session-id="${escAttr(v)}"
-            title="Delete session" aria-label="Delete session">${icons.trash('', 14)}</button>`,
+        render: (v, s) => `
+          <app-button class="session-open" variant="ghost" size="sm"
+            href="${escAttr(chatHref(s))}"
+            title="Open session" aria-label="Open this session's chat"
+          >Open session${icons.chevronRight()}</app-button>
+          <app-button class="session-delete" variant="ghost-danger" size="sm" icon-only
+            data-session-id="${escAttr(v)}"
+            title="Delete session" aria-label="Delete session">${icons.trash()}</app-button>`,
       },
     ];
 
@@ -185,17 +247,67 @@ class SessionsPage extends HTMLElement {
     // is not a server-side query, which is what the footer count says.
     table.dataFn = async (query) => {
       await this.#ready;
-      return { data: this.#visible(query) };
+      return { data: this.#visible() };
     };
     return table;
   }
 
-  #visible(query) {
-    const q = (query || '').toLowerCase().trim();
-    if (!q) return this.#sessions;
+  #rangeLabel() {
+    return (RANGES.find((r) => r.id === this.#range) || RANGES[0]).label;
+  }
+
+  /// Epoch ms before which a session is out of range, or null for all time.
+  #cutoff() {
+    const range = RANGES.find((r) => r.id === this.#range);
+    return range?.ms ? Date.now() - range.ms : null;
+  }
+
+  static #stamp(s) {
+    const t = Date.parse(s.updated_at || s.created_at || '');
+    return Number.isNaN(t) ? null : t;
+  }
+
+  /// Rows in range, then matching the search box.
+  ///
+  /// The range filter is exact without a server-side param because
+  /// `/chat/sessions` orders by `updated_at DESC`: every session newer than the
+  /// cutoff sorts before every older one, so the in-range set is always a
+  /// prefix of what has been loaded. #rangeExhausted below is the other half —
+  /// it decides when the prefix is known to be complete.
+  #inRange() {
+    const cutoff = this.#cutoff();
+    if (cutoff === null) return this.#sessions;
     return this.#sessions.filter((s) => {
+      const t = SessionsPage.#stamp(s);
+      // An undated row can't be placed on either side of the cutoff. Keep it:
+      // hiding a session because its timestamp failed to parse is the worse
+      // failure of the two.
+      return t === null || t >= cutoff;
+    });
+  }
+
+  /// True when every session inside the current range has been loaded — either
+  /// the cursor ran out, or a loaded row already falls outside it and, by the
+  /// DESC ordering, so does everything after it.
+  #rangeExhausted() {
+    if (!this.#nextCursor) return true;
+    const cutoff = this.#cutoff();
+    if (cutoff === null) return false;
+    return this.#sessions.some((s) => {
+      const t = SessionsPage.#stamp(s);
+      return t !== null && t < cutoff;
+    });
+  }
+
+  #visible() {
+    const rows = this.#inRange();
+    const q = this.#query.toLowerCase().trim();
+    if (!q) return rows;
+    return rows.filter((s) => {
       const agent = (s.agent_name || 'Orchestrator').toLowerCase();
-      return agent.includes(q) || (s.last_message || '').toLowerCase().includes(q);
+      return sessionLabel(s).toLowerCase().includes(q)
+        || agent.includes(q)
+        || (s.last_message || '').toLowerCase().includes(q);
     });
   }
 
@@ -263,7 +375,15 @@ class SessionsPage extends HTMLElement {
   #syncList() {
     // Both empty states carry their own CTA, so the header button would be a duplicate.
     this.querySelector('#btn-new')?.toggleAttribute('hidden', !this.#sessions.length);
-    if (this.#sessions.length) {
+    if (this.#sessions.length && !this.#inRange().length && this.#rangeExhausted()) {
+      // History exists, just none of it inside the selected window. No CTA:
+      // "Start a Chat" would be answering a question nobody asked, and the
+      // range control that fixes this is already in the toolbar above.
+      this.#renderState(`<app-empty-state
+        title="No sessions in this range"
+        description="Nothing ran in the ${escHtml(this.#rangeLabel().toLowerCase())}. Widen the time range to see older sessions."
+        icon='${icons.clock()}'></app-empty-state>`);
+    } else if (this.#sessions.length) {
       const table = this.querySelector('#sessions-table');
       table ? table.refresh() : this.#mountTable();
     } else if (this.#hasAgents === false) {
@@ -299,16 +419,22 @@ class SessionsPage extends HTMLElement {
     const count = this.querySelector('#sessions-count');
     if (!wrap || !count) return;
 
-    const loaded = this.#sessions.length;
-    if (!loaded) {
+    // Counted over what the table is actually showing, not over every page
+    // fetched: with a range applied those two differ, and the footer that
+    // says "all 25" under 4 visible rows is the one nobody believes again.
+    const shown = this.#visible().length;
+    if (!this.#sessions.length) {
       wrap.hidden = true;
       return;
     }
     wrap.hidden = false;
-    this.querySelector('#btn-more').hidden = !this.#nextCursor;
-    count.textContent = this.#nextCursor
-      ? `Showing ${loaded} sessions`
-      : `Showing all ${loaded} session${loaded === 1 ? '' : 's'}`;
+    // Nothing more to fetch, or the range is already fully covered — see
+    // #rangeExhausted. Paging further could only return older, out-of-range rows.
+    const exhausted = this.#rangeExhausted();
+    this.querySelector('#btn-more').hidden = exhausted;
+    count.textContent = exhausted
+      ? `Showing all ${shown} session${shown === 1 ? '' : 's'}`
+      : `Showing ${shown} sessions`;
   }
 
   async #deleteSession(sessionId) {

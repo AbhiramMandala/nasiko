@@ -305,17 +305,6 @@ function buildNode(node, catalog, deps = {}) {
       continue;
     }
 
-    // `app-action-menu`'s `items` is the one attribute in the catalog that can
-    // carry a per-item Action — the component itself only fires one
-    // `action-select` for the whole widget (`detail: {id}`), so nothing in the
-    // generic json-attribute path below can wire N different actions to N
-    // items. `itemActionsAttr` names which attribute this is, per component,
-    // so this stays catalog-driven rather than a hardcoded tag check.
-    if (def.itemActionsAttr === key) {
-      wireActionMenuItems(el, value, deps);
-      continue;
-    }
-
     if (spec.type === 'boolean') {
       // Presence is what a boolean attribute means. Writing `search="false"`
       // would read as true to every `hasAttribute` check in the component.
@@ -503,35 +492,6 @@ function buildNode(node, catalog, deps = {}) {
   }
 
   return el;
-}
-
-/**
- * Wire `app-action-menu`'s `items` — an array of `{label, action}` (an
- * explicit `id` is optional; the model is not taught to invent one, so a
- * missing id is synthesized here). The component's own `items` attribute only
- * understands `{id, label}`, and its own `action-select` event only ever
- * carries the id back — so the per-item `Action` has to live somewhere else:
- * a map built here, closed over the listener, keyed by the same id the
- * cleaned attribute uses.
- */
-function wireActionMenuItems(el, items, deps) {
-  const clean = [];
-  const actionsById = new Map();
-  let i = 0;
-  for (const item of Array.isArray(items) ? items : []) {
-    if (item && typeof item === 'object') {
-      const id = item.id != null ? String(item.id) : `item-${i}`;
-      const label = item.label != null ? String(item.label) : id;
-      clean.push({ id, label });
-      if (item.action && item.action.type === 'action') actionsById.set(id, item.action);
-    }
-    i++;
-  }
-  el.setAttribute('items', JSON.stringify(clean));
-  el.addEventListener('action-select', (e) => {
-    const action = actionsById.get(e.detail?.id);
-    if (action) deps.onAction?.(action, el, undefined);
-  });
 }
 
 /**
