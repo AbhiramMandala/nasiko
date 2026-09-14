@@ -20,34 +20,20 @@
   <body>
     <app-header></app-header>
     <observability-session-page data-page>
-      <!-- Mirrors the loaded page: back button + title with the id chip, the
-           chip-form KPI strip, the turn strip, then two panes (traces | span
-           detail). -->
-      <div class="pre-modnav"></div>
+      <!-- Mirrors the loaded page: back button + session id title, KPI strip,
+           then the three panes (chat | traces | span detail). -->
       <div style="display:flex;align-items:center;gap:var(--s-16);margin-bottom:var(--s-24);">
         <div class="skel-block" style="width:36px;height:36px;border-radius:var(--r-8);"></div>
         <div class="skel-card__line" style="height:28px;width:340px;max-width:50vw;"></div>
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:var(--s-8);margin-bottom:var(--s-24);">
-        <div class="skel-block" style="width:150px;height:26px;border-radius:var(--r-8);"></div>
-        <div class="skel-block" style="width:140px;height:26px;border-radius:var(--r-8);"></div>
-        <div class="skel-block" style="width:148px;height:26px;border-radius:var(--r-8);"></div>
-        <div class="skel-block" style="width:136px;height:26px;border-radius:var(--r-8);"></div>
-        <div class="skel-block" style="width:130px;height:26px;border-radius:var(--r-8);"></div>
-        <div class="skel-block" style="width:138px;height:26px;border-radius:var(--r-8);"></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border);padding:var(--s-16) 0;margin-bottom:var(--s-24);gap:var(--s-16);">
+        <div style="display:flex;flex-direction:column;gap:var(--s-8);"><div class="skel-card__line" style="width:80px;"></div><div class="skel-card__line" style="height:20px;width:110px;"></div></div>
+        <div style="display:flex;flex-direction:column;gap:var(--s-8);"><div class="skel-card__line" style="width:80px;"></div><div class="skel-card__line" style="height:20px;width:110px;"></div></div>
+        <div style="display:flex;flex-direction:column;gap:var(--s-8);"><div class="skel-card__line" style="width:80px;"></div><div class="skel-card__line" style="height:20px;width:110px;"></div></div>
+        <div style="display:flex;flex-direction:column;gap:var(--s-8);"><div class="skel-card__line" style="width:80px;"></div><div class="skel-card__line" style="height:20px;width:110px;"></div></div>
       </div>
-      <div style="display:flex;align-items:flex-start;gap:var(--s-16);margin-bottom:var(--s-16);">
-        <div style="display:flex;flex-direction:column;gap:var(--s-8);">
-          <div class="skel-block" style="width:32px;height:32px;border-radius:var(--r-8);"></div>
-          <div class="skel-block" style="width:32px;height:32px;border-radius:var(--r-8);"></div>
-        </div>
-        <div style="flex:1;display:flex;flex-direction:column;gap:var(--s-8);">
-          <div class="skel-card__line" style="width:62%;"></div>
-          <div class="skel-card__line" style="width:88%;"></div>
-          <div class="skel-card__line" style="width:44%;"></div>
-        </div>
-      </div>
-      <div style="display:grid;grid-template-columns:minmax(280px,4fr) minmax(340px,5fr);gap:var(--s-16);">
+      <div style="display:grid;grid-template-columns:minmax(260px,3fr) minmax(280px,3fr) minmax(340px,4fr);gap:var(--s-16);">
+        <div class="skel-block" style="height:480px;border-radius:var(--r-8);"></div>
         <div class="skel-block" style="height:480px;border-radius:var(--r-8);"></div>
         <div class="skel-block" style="height:480px;border-radius:var(--r-8);"></div>
       </div>

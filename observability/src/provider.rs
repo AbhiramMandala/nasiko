@@ -1113,8 +1113,6 @@ impl ObservabilityProvider for TempoLokiProvider {
             });
         }
 
-        let avg = (!latencies.is_empty())
-            .then(|| latencies.iter().sum::<u64>() as f64 / latencies.len() as f64);
         let (p50, p99) = latency_percentiles(latencies);
         let metrics_complete = !has_more_traces && !trace_fetch_failed;
 
@@ -1129,7 +1127,6 @@ impl ObservabilityProvider for TempoLokiProvider {
             model_used,
             latency_ms_p50: metrics_complete.then_some(p50).flatten(),
             latency_ms_p99: metrics_complete.then_some(p99).flatten(),
-            latency_ms_avg: metrics_complete.then_some(avg).flatten(),
             has_more_traces,
             metrics_complete,
             cost: total_cost,
