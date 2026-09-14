@@ -612,17 +612,11 @@ pub(crate) async fn upload_and_deploy(
     // Wire the agent's LLM SDK through the gateway (mint JWT + inject base-URL/key per the
     // agent's inbound_format). Best-effort; skipped (with a warning) if the gateway isn't
     // configured. Injected before the build job is enqueued so the worker deploys with it.
-    //
-    // Both wiring calls read/write `agent_id` through `&mut *tx`, not `&state.db` — the
-    // `agents` row inserted above is still uncommitted at this point (commit happens after
-    // the build_jobs insert below), and a separate pool connection can't see it yet. Against
-    // `&state.db` this silently defaulted the LLM env wiring to the wrong inbound_format and
-    // made the gateway-token insert fail its `agent_gateway_tokens_agent_id_fkey` outright.
-    crate::llm_router::wiring::inject_agent_llm_env(&mut *tx, &mut env, agent_id, Some(owner_id))
+    crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(owner_id))
         .await;
     // Per-agent MCP gateway credential — injected before the build job is
     // enqueued, same as the LLM wiring above, so the worker deploys with it.
-    crate::mcp::wiring::inject_agent_gateway_token(&mut *tx, &mut env, agent_id).await;
+    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env, agent_id).await;
 
     let upload_id = build_id.to_string();
 

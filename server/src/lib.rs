@@ -18,7 +18,6 @@ pub mod coding_agent_otlp;
 pub mod coding_agent_telemetry;
 pub mod flows;
 pub mod github;
-pub mod hitl;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
@@ -164,7 +163,6 @@ where
             state.http_client.clone(),
             state.observability.clone(),
             llm_config,
-            state.hitl_store.clone(),
         );
     } else {
         tracing::warn!(
@@ -279,7 +277,6 @@ where
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
-        .merge(router::hitl::router())
         .nest(
             "/observability",
             observability::protected_router(state.clone(), finops_limiter),

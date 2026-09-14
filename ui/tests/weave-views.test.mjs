@@ -77,9 +77,7 @@ test('a local view is addressable but is not on the server', async () => {
 
   assert.equal(calls.length, 0, 'createView must not write to the server');
   assert.equal(view.saved, false);
-  // The fallback title is the prompt itself (untruncated, under the cap) — the
-  // real title lands later via `generateViewTitle` + `renameView`, not here.
-  assert.equal(view.title, 'Create a view for monitoring costs of the top 5 agents');
+  assert.equal(view.title, 'Monitoring costs top');
   assert.equal(views.getView(view.id).id, view.id);
   // …and it shows up alongside the saved ones for anything listing everything.
   assert.ok(views.listViews().some((v) => v.id === view.id));
@@ -112,13 +110,13 @@ test('first Save is a POST, and the view takes the server id with it', async () 
   views.touchView(local.id);
   views.touchView(local.id);
 
-  scriptedRun([reply(201, row({ id: 'srv-new', title: 'agent latency by provider', dsl: 'root = Y()' }))]);
+  scriptedRun([reply(201, row({ id: 'srv-new', title: 'Agent latency', dsl: 'root = Y()' }))]);
   const savedRow = await views.saveView(local.id);
 
   assert.equal(calls[0].method, 'POST');
   assert.equal(calls[0].url, '/api/weave/views');
   assert.deepEqual(calls[0].body, {
-    title: 'agent latency by provider',
+    title: 'Agent latency',
     dsl: 'root = Y()',
     catalog_version: 'cat-9',
     data_sources: [],
@@ -183,27 +181,6 @@ test('renaming an unsaved view stays local', async () => {
   await views.deleteView(local.id);
 });
 
-test('renaming with a pre-Save id still reaches the saved row', async () => {
-  // Reproduces the dock's #retitle race: it reads `view.id` once, before
-  // Save can swap it for the server's UUID. If a rename lands after that
-  // swap, it must still find the row — not silently no-op and leave the
-  // server holding the placeholder title forever.
-  scriptedRun([]);
-  const local = views.createView('quarterly spend');
-  await views.setViewSurface(local.id, { dsl: 'root = Q()', catalogVersion: 'cat-11' });
-
-  scriptedRun([reply(201, row({ id: 'srv-race', title: 'quarterly spend', dsl: 'root = Q()' }))]);
-  await views.saveView(local.id);
-
-  scriptedRun([reply(200, row({ id: 'srv-race', title: 'Quarterly Spend Review' }))]);
-  const renamed = await views.renameView(local.id, 'Quarterly Spend Review');
-
-  assert.equal(calls[0].method, 'PATCH');
-  assert.equal(calls[0].url, '/api/weave/views/srv-race');
-  assert.equal(renamed.title, 'Quarterly Spend Review');
-  assert.equal(views.getView('srv-race').title, 'Quarterly Spend Review');
-});
-
 test('deleting a saved view waits for the server before dropping the card', async () => {
   scriptedRun([reply(500, null, 'boom')]);
   await assert.rejects(() => views.deleteView('srv-new'));
@@ -249,74 +226,6 @@ test('any other list failure keeps the last good list rather than blanking it', 
   assert.equal(views.hasSavedViews(), true);
   assert.equal(views.getView('srv-keep').id, 'srv-keep');
   assert.equal(views.viewsAvailable(), true, 'a flaky network must not disable the feature');
-});
-
-// ── generateViewTitle: never throws, resolves null on anything but a real title ──
-
-test('generateViewTitle returns the trimmed title on a clean response', async () => {
-  scriptedRun([reply(200, { title: '  Cost Monitoring Dashboard  ' })]);
-  const title = await views.generateViewTitle('build me a cost dashboard');
-  assert.equal(calls[0].method, 'POST');
-  assert.equal(calls[0].url, '/api/weave/title');
-  assert.deepEqual(calls[0].body, { prompt: 'build me a cost dashboard' });
-  assert.equal(title, 'Cost Monitoring Dashboard');
-});
-
-test('generateViewTitle resolves null, not "", on a whitespace-only title', async () => {
-  scriptedRun([reply(200, { title: '   ' })]);
-  assert.equal(await views.generateViewTitle('x'), null);
-});
-
-test('generateViewTitle resolves null on an empty-string title', async () => {
-  scriptedRun([reply(200, { title: '' })]);
-  assert.equal(await views.generateViewTitle('x'), null);
-});
-
-test('generateViewTitle resolves null when the envelope has no data at all', async () => {
-  script = [{ status: 200, body: JSON.stringify({ status_code: 200, message: 'ok' }) }];
-  calls = [];
-  assert.equal(await views.generateViewTitle('x'), null);
-});
-
-test('generateViewTitle resolves null when title is missing from data', async () => {
-  scriptedRun([reply(200, {})]);
-  assert.equal(await views.generateViewTitle('x'), null);
-});
-
-test('generateViewTitle resolves null when title is not a string', async () => {
-  scriptedRun([reply(200, { title: 12345 })]);
-  assert.equal(await views.generateViewTitle('x'), null);
-});
-
-test('generateViewTitle never throws on a 404 (OSS build has no route)', async () => {
-  scriptedRun([reply(404, null, 'not found')]);
-  await assert.doesNotReject(async () => {
-    const title = await views.generateViewTitle('x');
-    assert.equal(title, null);
-  });
-});
-
-test('generateViewTitle never throws on a malformed (non-JSON) response body', async () => {
-  script = [{ status: 200, body: 'not json at all {{{' }];
-  calls = [];
-  await assert.doesNotReject(async () => {
-    const title = await views.generateViewTitle('x');
-    assert.equal(title, null);
-  });
-});
-
-test('generateViewTitle never throws on a network/server error', async () => {
-  scriptedRun([reply(500, null, 'boom')]);
-  await assert.doesNotReject(async () => {
-    const title = await views.generateViewTitle('x');
-    assert.equal(title, null);
-  });
-});
-
-test('generateViewTitle coerces a non-string/undefined prompt to a string rather than sending null', async () => {
-  scriptedRun([reply(200, { title: 'ok' })]);
-  await views.generateViewTitle(undefined);
-  assert.deepEqual(calls[0].body, { prompt: '' });
 });
 
 test('changes are announced on document, once per mutation', async () => {

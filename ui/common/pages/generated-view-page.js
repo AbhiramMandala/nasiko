@@ -288,16 +288,6 @@ class GeneratedViewPage extends HTMLElement {
     this.#view = view;
     this.#syncSave(); // the DSL landing is what makes this view savable
 
-    // The title can change after the initial render — Weave's real title
-    // lands a moment after the fallback one this page was first drawn with
-    // (`weave-dock.js`'s `#retitle`) — so the header and tab title have to
-    // stay bound to the store here too, not just the canvas below.
-    const heading = this.querySelector('.title-page');
-    if (heading && heading.textContent !== view.title) {
-      heading.textContent = view.title;
-      document.title = `Nasiko — ${view.title}`;
-    }
-
     if (!view.dsl) return; // still generating; the working state stays
     if (this.#drawn === view.dsl) return; // nothing new to draw
 

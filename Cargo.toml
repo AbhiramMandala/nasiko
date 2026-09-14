@@ -33,7 +33,6 @@ version = "0.1.0"
 nasiko-auth = { path = "auth" }
 nasiko-config = { path = "config" }
 nasiko-flow = { path = "flow" }
-nasiko-hitl = { path = "hitl" }
 nasiko-agent-proxy = { path = "agent-proxy" }
 nasiko-mcp-gateway = { path = "mcp-gateway" }
 nasiko-github = { path = "github" }
@@ -81,14 +80,6 @@ bcrypt = "0.15"
 # ─── HTTP client ────────────────────────────────────────────────────────────
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rustls = { version = "0.23", features = ["ring"] }
-
-# ─── LLM orchestration ──────────────────────────────────────────────────────
-# Exact-pinned, not a "0.11" caret range: the orchestrator's HITL pause detection
-# (oss/react-agent) recovers a tool error through rig's type-erasure boxing, verified
-# against this exact version's `ToolSetError`/`ToolError::ToolCallError` shape
-# (rig-core-0.11.1/src/tool.rs). A `cargo update` under a caret range could silently
-# move that boxing behavior without anything here noticing.
-rig-core = { version = "=0.11.1", default-features = false, features = ["derive"] }
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
 toml_edit = "0.25"
