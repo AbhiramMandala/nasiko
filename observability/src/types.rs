@@ -46,11 +46,16 @@ pub struct SessionDetails {
     pub trace_count: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Prompt tokens served from provider cache, summed over the session.
     pub cache_read_tokens: u64,
+    /// Prompt tokens written to provider cache, summed over the session.
     pub cache_creation_tokens: u64,
     pub model_used: Option<String>,
     pub latency_ms_p50: Option<f64>,
     pub latency_ms_p99: Option<f64>,
+    /// Mean trace duration. The percentiles above answer "how bad does it get";
+    /// the session KPI strip asks for the plain average.
+    pub latency_ms_avg: Option<f64>,
     /// More matching traces existed than the provider's bounded detail read.
     pub has_more_traces: bool,
     /// False when search was truncated or any matching trace failed to load.
