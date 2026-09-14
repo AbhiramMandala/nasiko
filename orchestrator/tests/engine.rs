@@ -9,8 +9,13 @@ fn router_config_defaults_are_sensible() {
     assert_eq!(cfg.shortlist_threshold, 15);
     assert_eq!(cfg.shortlist_size, 10);
     assert_eq!(cfg.history_pool_size, 150);
-    assert_eq!(cfg.history_token_budget, 2000);
+    assert_eq!(cfg.history_budget_low, 500);
+    assert_eq!(cfg.history_budget_medium, 1000);
+    assert_eq!(cfg.history_budget_high, 5000);
     assert_eq!(cfg.history_mandatory_recent, 3);
+    assert_eq!(cfg.context_k_low, 1);
+    assert_eq!(cfg.context_k_medium, 5);
+    assert_eq!(cfg.context_k_high, 20);
 }
 
 #[test]
@@ -19,14 +24,22 @@ fn router_config_custom_values() {
         shortlist_threshold: 5,
         shortlist_size: 3,
         history_pool_size: 80,
-        history_token_budget: 1000,
+        history_budget_low: 400,
+        history_budget_medium: 1000,
+        history_budget_high: 4000,
         history_mandatory_recent: 2,
+        context_k_low: 2,
+        context_k_medium: 10,
+        context_k_high: 15,
     };
     assert_eq!(cfg.shortlist_threshold, 5);
     assert_eq!(cfg.shortlist_size, 3);
     assert_eq!(cfg.history_pool_size, 80);
-    assert_eq!(cfg.history_token_budget, 1000);
+    assert_eq!(cfg.history_budget_medium, 1000);
     assert_eq!(cfg.history_mandatory_recent, 2);
+    assert_eq!(cfg.context_k_low, 2);
+    assert_eq!(cfg.context_k_medium, 10);
+    assert_eq!(cfg.context_k_high, 15);
 }
 
 // ── OssRoutingEngine construction ─────────────────────────────────────────────
@@ -62,8 +75,13 @@ fn oss_routing_engine_new_with_custom_config() {
         shortlist_threshold: 20,
         shortlist_size: 5,
         history_pool_size: 100,
-        history_token_budget: 1500,
+        history_budget_low: 500,
+        history_budget_medium: 1500,
+        history_budget_high: 5000,
         history_mandatory_recent: 3,
+        context_k_low: 1,
+        context_k_medium: 5,
+        context_k_high: 20,
     };
     let _ = OssRoutingEngine::new(
         config,

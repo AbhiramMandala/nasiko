@@ -1,9 +1,11 @@
 pub mod agent_client;
 mod agent_registry;
+pub mod context_strategy;
 pub mod engine;
 pub mod error;
 pub mod maf;
 pub mod models;
+pub mod pacms_budget;
 pub mod pacms_selector;
 pub mod providers;
 pub mod reranker;
@@ -12,12 +14,14 @@ pub mod session_history;
 pub mod types;
 pub mod vector_store;
 
+pub use context_strategy::ContextSelectionStrategy;
 pub use engine::{OssRoutingEngine, RouterConfig, RoutingEngine};
 pub use error::RouterError;
 pub use models::AgentCardSummary;
+pub use pacms_budget::PacmsBudgetLevel;
 pub use reranker::Reranker;
 pub use selector::AgentSelector;
 pub use selector::ConversationMessage;
-pub use session_history::SessionHistory;
+pub use session_history::{ContextFetchConfig, SessionHistory};
 pub use types::{AgentCard, FilePart, RouteRequest, RouteResult, RouterLogEntry};
 pub use vector_store::{EmbeddingCache, TextEmbeddingCache, VectorStore};

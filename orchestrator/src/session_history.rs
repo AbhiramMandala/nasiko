@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
+use crate::context_strategy::ContextSelectionStrategy;
 use crate::pacms_selector::PacmsSelector;
-use crate::vector_store::VectorStore;
+use crate::vector_store::{VectorStore, cosine_similarity};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -12,9 +13,41 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// One user query paired with the assistant's reply that followed it, in a
+/// session's chronological message stream. This is the candidate unit for
+/// the `topk` context-selection strategy (`SessionHistory::fetch_topk`).
+#[derive(Debug, Clone)]
+pub struct MessagePair {
+    pub query: String,
+    pub answer: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionHistory {
     pub messages: Vec<ChatMessage>,
+}
+
+/// Per-call tuning knobs for [`SessionHistory::fetch_context`], bundled so
+/// the dispatcher's argument count stays reasonable. Engine-side callers
+/// source these from `RouterConfig`; direct server call sites source them
+/// from `Config` — both already carry the `pacms_*` values `fetch_pacms`
+/// used before this strategy dispatch existed.
+pub struct ContextFetchConfig {
+    /// `fetch_pacms`'s candidate pool size (ignored by `TopK`/`LastK`).
+    pub pool_size: usize,
+    /// `fetch_pacms`'s token budget, already resolved from the user's
+    /// `PacmsBudgetLevel` tier (ignored by `TopK`/`LastK`).
+    pub token_budget: usize,
+    /// `fetch_pacms`'s mandatory-recent window (ignored by `TopK`/`LastK`).
+    pub mandatory_recent: usize,
+    /// Number of most-relevant pairs `fetch_topk` keeps — resolved from the
+    /// same `PacmsBudgetLevel` tier as `token_budget` above, via
+    /// `PacmsBudgetLevel::k` (ignored by `Pacms`).
+    pub topk_count: usize,
+    /// Recency window for the standalone `LastK` strategy, and for `TopK`'s
+    /// fallback when embeddings are unavailable or the session has no
+    /// pairs — same tier-derived value as `topk_count` (ignored by `Pacms`).
+    pub lastk_limit: usize,
 }
 
 impl SessionHistory {
@@ -125,6 +158,127 @@ impl SessionHistory {
         Self { messages }
     }
 
+    /// Dispatch to the user's selected context-selection strategy.
+    ///
+    /// `TopK` falls back to plain recency (`fetch`, sized by
+    /// `cfg.lastk_limit`) if embeddings are unavailable or the session has
+    /// no complete pairs yet — the same "a transient failure degrades to
+    /// recency instead of breaking the request" contract `fetch_pacms`
+    /// already has via its own internal `select_lastk` fallback.
+    pub async fn fetch_context(
+        strategy: ContextSelectionStrategy,
+        session_id: &str,
+        pool: &PgPool,
+        vector_store: &VectorStore,
+        query: &str,
+        cfg: &ContextFetchConfig,
+    ) -> Self {
+        match strategy {
+            ContextSelectionStrategy::Pacms => {
+                Self::fetch_pacms(
+                    session_id,
+                    pool,
+                    vector_store,
+                    query,
+                    cfg.pool_size,
+                    cfg.token_budget,
+                    cfg.mandatory_recent,
+                )
+                .await
+            }
+            ContextSelectionStrategy::TopK => {
+                let history =
+                    Self::fetch_topk(session_id, pool, query, vector_store, cfg.topk_count).await;
+                if history.is_empty() {
+                    Self::fetch(session_id, pool, cfg.lastk_limit).await
+                } else {
+                    history
+                }
+            }
+            ContextSelectionStrategy::LastK => Self::fetch(session_id, pool, cfg.lastk_limit).await,
+        }
+    }
+
+    /// Fetch the `top_k` message pairs most relevant to `query`, ranked by
+    /// cosine similarity of their (query + answer) embedding to the query's
+    /// embedding — most relevant first. Unlike `fetch`/`fetch_pacms`, the
+    /// result is *not* restored to chronological order, and there is no
+    /// token budget or mandatory-recent floor: this is a faithful port of
+    /// the plain top-k-by-relevance baseline.
+    ///
+    /// Returns an empty history if the session has no complete pairs, or if
+    /// embedding fails for any reason (disabled vector store, API error,
+    /// mismatched response) — `fetch_context` falls back to `fetch` for the
+    /// `TopK` strategy when this happens.
+    pub async fn fetch_topk(
+        session_id: &str,
+        pool: &PgPool,
+        query: &str,
+        vector_store: &VectorStore,
+        top_k: usize,
+    ) -> Self {
+        let pairs = Self::fetch_pairs(session_id, pool).await;
+        if pairs.is_empty() {
+            return Self::default();
+        }
+
+        // Embed query+answer concatenated per pair, so a pair scores as
+        // relevant if either half matches the current query.
+        let pair_texts: Vec<String> = pairs
+            .iter()
+            .map(|p| format!("{} {}", p.query, p.answer))
+            .collect();
+
+        // One call for the query, one batched call for every pair.
+        let query_embedding = vector_store.embed(query).await;
+        let pair_embeddings = vector_store.embed_batch(&pair_texts).await;
+
+        let (query_embedding, pair_embeddings) = match (query_embedding, pair_embeddings) {
+            (Ok(q), Ok(p)) => (q, p),
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::warn!(%e, "top-k context selection failed — embeddings unavailable");
+                return Self::default();
+            }
+        };
+
+        Self {
+            messages: rank_pairs(&pairs, &pair_embeddings, &query_embedding, top_k),
+        }
+    }
+
+    /// Fetch all messages for a session in chronological order and pair up
+    /// each `user` message with the `assistant` message that immediately
+    /// follows it. Unmatched trailing/leading messages (e.g. a query the
+    /// assistant hasn't answered yet, or non user/assistant roles) are
+    /// skipped.
+    async fn fetch_pairs(session_id: &str, pool: &PgPool) -> Vec<MessagePair> {
+        let messages: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
+            "SELECT role, content FROM chat_messages \
+             WHERE session_id = $1 ORDER BY timestamp ASC",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let mut pairs = Vec::new();
+        let mut i = 0;
+        while i + 1 < messages.len() {
+            let (role_a, content_a) = &messages[i];
+            let (role_b, content_b) = &messages[i + 1];
+            if role_a == "user" && role_b == "assistant" {
+                pairs.push(MessagePair {
+                    query: content_a.clone(),
+                    answer: content_b.clone(),
+                });
+                i += 2; // consume both messages of the pair
+            } else {
+                i += 1; // not a user→assistant pair here — slide the window by one
+            }
+        }
+        pairs
+    }
+
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
@@ -163,4 +317,93 @@ impl SessionHistory {
 pub struct LlmMessage {
     pub role: String,
     pub content: String,
+}
+
+/// The pure selection core of `fetch_topk`: no I/O, so it can be exercised
+/// with fabricated embeddings instead of a live embeddings endpoint. Scores
+/// every pair by cosine similarity to `query_embedding`, sorts descending,
+/// and flattens the top `top_k` pairs into `[user, assistant]` messages —
+/// in similarity-rank order, not chronological order.
+fn rank_pairs(
+    pairs: &[MessagePair],
+    pair_embeddings: &[Vec<f32>],
+    query_embedding: &[f32],
+    top_k: usize,
+) -> Vec<ChatMessage> {
+    let mut scored: Vec<(f32, &MessagePair)> = pairs
+        .iter()
+        .zip(pair_embeddings.iter())
+        .map(|(pair, emb)| (cosine_similarity(query_embedding, emb), pair))
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    scored
+        .into_iter()
+        .take(top_k)
+        .flat_map(|(_, pair)| {
+            [
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: pair.query.clone(),
+                },
+                ChatMessage {
+                    role: "assistant".to_string(),
+                    content: pair.answer.clone(),
+                },
+            ]
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod rank_pairs_tests {
+    use super::*;
+
+    fn pair(query: &str, answer: &str) -> MessagePair {
+        MessagePair {
+            query: query.to_string(),
+            answer: answer.to_string(),
+        }
+    }
+
+    #[test]
+    fn ranks_by_similarity_not_recency() {
+        // Oldest pair first in the input, but its embedding is closest to
+        // the query — it must come out first, not last.
+        let pairs = vec![
+            pair("refund status", "processed yesterday"),
+            pair("shipping estimate", "3-5 business days"),
+            pair("login help", "reset your password"),
+        ];
+        let embeddings = vec![
+            vec![1.0, 0.0], // "refund" — closest to the query below
+            vec![0.0, 1.0], // "shipping" — orthogonal
+            vec![0.5, 0.5], // "login" — partial overlap
+        ];
+        let query_embedding = vec![1.0, 0.0];
+
+        let messages = rank_pairs(&pairs, &embeddings, &query_embedding, 2);
+
+        assert_eq!(messages.len(), 4); // top_k=2 pairs * 2 messages each
+        assert_eq!(messages[0].content, "refund status");
+        assert_eq!(messages[1].content, "processed yesterday");
+        // Second-ranked by cosine similarity is "login" (0.5,0.5), not the
+        // chronologically-second "shipping" (0.0,1.0).
+        assert_eq!(messages[2].content, "login help");
+        assert_eq!(messages[3].content, "reset your password");
+    }
+
+    #[test]
+    fn top_k_larger_than_pool_returns_everything() {
+        let pairs = vec![pair("a", "b")];
+        let embeddings = vec![vec![1.0, 0.0]];
+        let messages = rank_pairs(&pairs, &embeddings, &[1.0, 0.0], 10);
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn empty_pool_returns_empty() {
+        let messages = rank_pairs(&[], &[], &[1.0, 0.0], 5);
+        assert!(messages.is_empty());
+    }
 }
