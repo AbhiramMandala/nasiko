@@ -100,8 +100,21 @@ class WeaveDock extends HTMLElement {
   /** Diagnostics raised during the turn, so the answer can be qualified. */
   #faults = [];
   #chatSessionId = null;
+  /** Something went wrong while the drawer was shut, so the launcher says so. */
+  #unread = false;
 
   #onRouteChange = () => this.#paintLauncher();
+  /**
+   * Diagnostics from a surface that actually rendered, offered by `/view`.
+   *
+   * Cancelling is the dock saying "these are mine" — the page keeps its own
+   * strip for when nothing claims them, so taking them without being able to
+   * show them would lose them entirely. Hence the guard inside `#noteFaults`:
+   * a view this thread has no turn for is not this conversation's problem.
+   */
+  #onViewDiagnostics = (e) => {
+    if (this.#noteFaults(e.detail?.viewId, e.detail?.diagnostics)) e.preventDefault();
+  };
   #onDocumentClick = (e) => {
     if (!this.querySelector('.history')?.hasAttribute('hidden')
         && !e.target.closest('.history, [data-history]')) this.#toggleHistory(false);
@@ -117,12 +130,14 @@ class WeaveDock extends HTMLElement {
     // disconnect, so a re-parented dock would otherwise lose both permanently.
     document.addEventListener('route-change', this.#onRouteChange);
     document.addEventListener('click', this.#onDocumentClick);
+    document.addEventListener('weave-view-diagnostics', this.#onViewDiagnostics);
     this.#applyOpen();
   }
 
   disconnectedCallback() {
     document.removeEventListener('route-change', this.#onRouteChange);
     document.removeEventListener('click', this.#onDocumentClick);
+    document.removeEventListener('weave-view-diagnostics', this.#onViewDiagnostics);
     // The session holds query subscriptions and an open stream. A turn already
     // in flight still resolves — #respond and #paintThread both tolerate a
     // detached dock — but nothing new starts.
@@ -138,7 +153,9 @@ class WeaveDock extends HTMLElement {
   /** Open the drawer, optionally with the composer prefilled. */
   open(prompt = '') {
     this.#open = true;
+    this.#unread = false;
     this.#applyOpen();
+    this.#paintLauncher();
     const box = this.querySelector('app-chatbox');
     if (prompt) box.value = prompt;
     box.focus();
@@ -161,7 +178,9 @@ class WeaveDock extends HTMLElement {
       <aside class="drawer" aria-label="Weave">
         <header class="drawer__bar">
           <button class="bar-btn" type="button" data-history aria-label="Chat history"
-            aria-haspopup="true" aria-expanded="false">${icons.history('', 16, 1.25)}</button>
+            aria-haspopup="menu" aria-expanded="false">${icons.history('', 16, 1.25)}</button>
+          // <button class="bar-btn" type="button" data-settings aria-label="Weave settings"
+          //   >${icons.settings('', 16, 1.25)}</button>
           <h2 class="drawer__title">Weave</h2>
           <button class="bar-btn" type="button" data-close aria-label="Close Weave"
             >${icons.panelLeft('', 16, 1.25)}</button>
@@ -196,7 +215,19 @@ class WeaveDock extends HTMLElement {
 
   #paintLauncher() {
     const path = location.pathname.replace(/\.html$/, '').replace(/\/$/, '') || '/';
-    this.querySelector('.launcher__label').textContent = LAUNCHER_LABELS[path] ?? LAUNCHER_DEFAULT;
+    // A turn can resolve after the dock has been torn down — #noteFaults
+    // repaints, and there is nothing to paint into. Same guard as #paintThread.
+    const launcher = this.querySelector('.launcher');
+    if (!launcher) return;
+    launcher.querySelector('.launcher__label').textContent =
+      LAUNCHER_LABELS[path] ?? LAUNCHER_DEFAULT;
+    // A turn can land badly while the drawer is shut — the user pressed send,
+    // watched the view open, and closed the conversation. Moving the complaint
+    // off the canvas and into the thread is only an improvement if the thread
+    // can get their attention from outside itself.
+    launcher.classList.toggle('has-unread', this.#unread);
+    launcher.setAttribute('aria-label',
+      this.#unread ? 'Open Weave — something did not render' : 'Open Weave');
   }
 
   /**
@@ -472,13 +503,6 @@ class WeaveDock extends HTMLElement {
       } catch (err) {
         console.error('[weave-dock] could not persist the generated surface', err);
       }
-      // The model writes its closing sentence before a single component has
-      // rendered, so on a turn that dropped something it still says "here's
-      // your chart" — which is exactly what happened, and the screen was the
-      // only place that disagreed. A fatal diagnostic makes that sentence
-      // untrue, so it is followed by what actually went wrong rather than left
-      // to stand on its own.
-      const fatal = this.#faults.filter((d) => d.severity === 'fatal');
       const assistantText = this.#said.at(-1) || `Built ${view.title}.`;
       this.#turns.push(
         // The elapsed line stays after the answer: it is the receipt for how
@@ -495,19 +519,79 @@ class WeaveDock extends HTMLElement {
           catalog_version: out.catalogVersion,
         },
       });
-      if (fatal.length) {
-        this.#turns.push({
-          role: 'assistant',
-          text: `Not all of that reached the page — ${
-            [...new Set(fatal.map((d) => d.why || d.code))].join('; ')
-          }. The view shows the detail.`,
-        });
-      }
+      // Diagnostics raised while the DSL was being parsed and materialized.
+      // They go under the answer they contradict, and `/view` adds whatever
+      // else only shows up once the thing is actually on screen and fetching.
+      this.#noteFaults(view.id, this.#faults, view);
     }
 
     this.#busy = false;
     this.querySelector('app-chatbox')?.setLoading(false);
     this.#paintThread();
+  }
+
+  /**
+   * Attach what went wrong to the turn that produced it.
+   *
+   * The model writes its closing sentence before a single component has
+   * rendered, so on a turn that dropped something it still says "here's your
+   * chart" — which is exactly what happened, and the screen was the only place
+   * that disagreed. The complaint belongs directly under the claim it makes
+   * untrue, which is here, not in a banner over the dashboard.
+   *
+   * Two callers, one turn. `#respond` passes the diagnostics raised while the
+   * DSL was parsed and materialized; `/view` passes the ones that only appear
+   * once the surface is on screen and its queries have run. They arrive
+   * seconds apart, describe the same generation, and overlap — the page
+   * re-materializes the same DSL — so they merge into one section rather than
+   * stacking two, deduplicated on code and message.
+   *
+   * Returns whether this thread owns the view. A saved view reopened from
+   * `/custom-views` long after its conversation ended fires the same
+   * diagnostics at a dock that has no turn for it; there is nothing here for
+   * them to sit under, so they are declined and the page shows its own strip.
+   *
+   * @param {string} viewId
+   * @param {Array<{code?: string, message?: string, severity?: string, why?: string}>} list
+   * @param {object} [view] the row, when the caller is mid-turn and the
+   *   artifact card for it has only just been pushed
+   * @returns {boolean}
+   */
+  #noteFaults(viewId, list, view = null) {
+    if (!viewId) return false;
+    const shown = (list ?? []).filter((d) =>
+      // Fatal means the surface is not what was asked for; runtime means
+      // something it needed did not arrive. Advisory is a nudge aimed at the
+      // generator, not at the person reading the screen, and showing it would
+      // train everyone to ignore the rest.
+      (d.severity === 'fatal' || d.severity === 'runtime')
+      // The repair loop narrating itself. `repair_started` and
+      // `repair_no_better` are classified runtime because they describe the
+      // runtime, and they would otherwise read as two more things wrong with
+      // the dashboard. What the loop failed to fix is already in this list on
+      // its own account.
+      && d.source !== 'repair');
+    const owned = view ?? this.#turns
+      .find((t) => t.role === 'artifact' && t.view?.id === viewId)?.view;
+    if (!owned) return false;
+    if (!shown.length) return true; // ours, and nothing wrong with it
+
+    let turn = this.#turns.find((t) => t.role === 'faults' && t.view?.id === viewId);
+    if (!turn) {
+      turn = { role: 'faults', view: owned, items: [], seen: new Set() };
+      this.#turns.push(turn);
+    }
+    for (const d of shown) {
+      const key = `${d.code}/${d.message}`;
+      if (turn.seen.has(key)) continue;
+      turn.seen.add(key);
+      turn.items.push(d);
+    }
+
+    if (!this.#open) this.#unread = true;
+    this.#paintLauncher();
+    this.#paintThread();
+    return true;
   }
 
   #paintThread() {
@@ -561,6 +645,27 @@ class WeaveDock extends HTMLElement {
         </button>`;
       node.querySelector('.artifact').addEventListener('click',
         () => navigate(`/view?id=${encodeURIComponent(turn.view.id)}`));
+    } else if (turn.role === 'faults') {
+      // `why` first, `message` second, and both. `why` is the manifest's
+      // one-line answer to what this means for the person looking at the
+      // screen; `message` names statements and dot-paths and is written for
+      // whoever has to fix the generator. The person reporting it is very
+      // often the one who then has to fix it, so neither is dropped.
+      const worst = turn.items.some((d) => d.severity === 'fatal') ? 'fatal' : 'runtime';
+      node.innerHTML = `
+        <div class="faults faults--${worst}">
+          <p class="faults__head">
+            ${icons.alertTriangle('faults__icon', 14, 1.5)}
+            ${turn.items.length === 1 ? 'One thing did not reach the page' : `${turn.items.length} things did not reach the page`}
+          </p>
+          <ul class="faults__list">
+            ${turn.items.map((d) => `
+              <li class="faults__item">
+                <span class="faults__why">${escHtml(d.why || d.code || 'Something went wrong')}</span>
+                ${d.message ? `<span class="faults__detail">${escHtml(d.message)}</span>` : ''}
+              </li>`).join('')}
+          </ul>
+        </div>`;
     } else {
       node.textContent = turn.text;
     }

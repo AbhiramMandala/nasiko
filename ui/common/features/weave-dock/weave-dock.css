@@ -38,6 +38,20 @@
   .launcher:focus-visible { outline: 2px solid var(--shell-selected); outline-offset: 2px; }
   .launcher__icon { color: var(--shell-selected); flex: 0 0 auto; }
 
+  /* A turn can go wrong while the drawer is shut. The dot is the only way the
+     thread reaches someone who is not looking at it — without it, moving the
+     complaint off the canvas would just be hiding it. */
+  .launcher.has-unread::after {
+    content: "";
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: var(--s-8);
+    height: var(--s-8);
+    border-radius: var(--r-full);
+    background: var(--shell-fg-error);
+  }
+
   /* One or the other, never both. */
   :scope.is-open .launcher { display: none; }
 
@@ -290,6 +304,79 @@
   .artifact__text { display: flex; flex-direction: column; gap: var(--s-2); min-width: 0; }
   .artifact__title { font-size: var(--font-size-sm); font-weight: var(--fw-medium); }
   .artifact__sub { font-size: var(--font-size-xs); color: var(--shell-fg-muted); }
+
+  /* ── What did not reach the page ──────────────────────────────────────
+     The same card shape as .artifact and deliberately so: both are the turn's
+     output, one is what got built and the other is what did not, and they sit
+     next to each other. Only the accent changes, so the eye reads a pair
+     rather than a card and an alarm.
+
+     --faults-accent is set once per severity and every rule below reads it —
+     the two variants differ in exactly one value, and writing that twice is
+     how they drift. */
+  .faults {
+    --faults-accent: var(--shell-fg-warning);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-8);
+    padding: var(--s-12);
+    border: 1px solid color-mix(in srgb, var(--faults-accent) 30%, transparent);
+    border-radius: var(--r-10);
+    background: color-mix(in srgb, var(--faults-accent) 10%, transparent);
+  }
+
+  /* One fatal in the set makes the whole card fatal: "mostly rendered" is not
+     a state worth a third colour, and the softer of two accents on a card
+     that contains a fatal reads as reassurance the surface has not earned. */
+  .faults--fatal { --faults-accent: var(--shell-fg-error); }
+
+  .faults__head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    margin: 0;
+    color: var(--faults-accent);
+    font-size: var(--font-size-sm);
+    font-weight: var(--fw-medium);
+  }
+
+  .faults__icon { flex: 0 0 auto; }
+
+  .faults__list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-8);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .faults__item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    /* Indented by a rule rather than a bullet: the detail line wraps to two or
+       three lines and a marker would leave it hanging in the gutter. */
+    padding-left: var(--s-8);
+    border-left: 2px solid color-mix(in srgb, var(--faults-accent) 40%, transparent);
+  }
+
+  .faults__why {
+    color: var(--shell-fg);
+    font-size: var(--font-size-sm);
+    line-height: var(--lh-snug);
+  }
+
+  /* The runtime's own words — statement names and dot-paths. Monospace
+     because that is what they are, and muted because the line above it is
+     what most readers need. */
+  .faults__detail {
+    color: var(--shell-fg-muted);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    line-height: var(--lh-snug);
+    overflow-wrap: anywhere;
+  }
 
   /* ── Composer ─────────────────────────────────────────────────────────── */
   /* app-chatbox paints from --bg-input / --color-text-main / --color-text-muted.
