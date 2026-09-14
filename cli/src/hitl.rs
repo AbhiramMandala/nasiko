@@ -5,6 +5,7 @@
 //! pause can surface, rather than each surface reimplementing its own.
 
 use anyhow::Result;
+use dialoguer::theme::ColorfulTheme;
 use nasiko_utils::term;
 
 use crate::api::Client;
@@ -206,67 +207,259 @@ impl StructuredOptions {
     }
 }
 
-/// Single-select: the offered labels, plus a trailing "Something else" choice when custom
-/// input is allowed — picking it opens a free-text prompt whose answer (not the literal
-/// "Something else" string) is what gets sent, matching `resolve_structured_answer`'s "a bare
-/// `answer` string, custom or predefined — membership in `opts.labels` is what distinguishes
-/// the two" contract.
+/// Single-select: the offered labels, plus a trailing "Something else" choice when custom input
+/// is allowed. Unlike a plain list, landing the cursor on that trailing row opens its free-text
+/// field immediately (no separate confirm-then-prompt step) via [`select_with_inline_custom`];
+/// the answer sent (not the literal "Something else" string) matches `resolve_structured_answer`'s
+/// "a bare `answer` string, custom or predefined — membership in `opts.labels` is what
+/// distinguishes the two" contract either way.
 fn prompt_single_select(opts: &StructuredOptions) -> serde_json::Value {
-    let mut items = opts.labels.clone();
-    let custom_idx = opts.allow_custom_input.then(|| {
-        items.push("Something else…".to_string());
-        items.len() - 1
-    });
-
-    let choice = dialoguer::Select::new()
-        .with_prompt("Choose one")
-        .items(&items)
-        .default(0)
-        .interact()
-        .unwrap_or(0);
-
-    if custom_idx == Some(choice) {
-        let answer = dialoguer::Input::<String>::new()
-            .with_prompt("\x1b[1;36m❯ you\x1b[0m")
-            .allow_empty(true)
-            .interact_text()
-            .unwrap_or_default();
-        serde_json::json!({ "answer": answer })
+    let answer = if opts.allow_custom_input {
+        select_with_inline_custom(&opts.labels)
     } else {
-        serde_json::json!({ "answer": items[choice] })
+        let choice = dialoguer::Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Choose one")
+            .items(&opts.labels)
+            .default(0)
+            .interact()
+            .unwrap_or(0);
+        opts.labels[choice].clone()
+    };
+    eprintln!("  \x1b[32m✓\x1b[0m {answer}");
+    serde_json::json!({ "answer": answer })
+}
+
+/// Combo select+inline-text prompt used only when the question allows custom input. A plain
+/// `dialoguer::Select` blocks on Enter before any custom-text step can start, forcing a visible
+/// select-then-separate-prompt handoff; this instead opens the free-text field the instant the
+/// cursor reaches the trailing row, so picking "Something else" and typing it feel like one
+/// motion. Hand-rolled over `crossterm` (already a CLI dependency for the TUI, so no new crate)
+/// since dialoguer has no combo-box primitive. Falls back to the first label on an unreadable
+/// terminal/interrupted read, mirroring the plain-list path's `.unwrap_or(0)` fail-forward.
+fn select_with_inline_custom(labels: &[String]) -> String {
+    println!(
+        "\x1b[1m? Choose one\x1b[0m \x1b[2m(\u{2191}/\u{2193} to move, enter to confirm)\x1b[0m"
+    );
+    run_select_with_inline_custom(labels)
+        .unwrap_or_else(|_| labels.first().cloned().unwrap_or_default())
+}
+
+/// RAII guard so raw mode is always turned back off — on a normal return, an error, or a panic —
+/// rather than leaving the user's shell in a broken (no-echo, no-line-buffering) state.
+struct RawMode;
+
+impl RawMode {
+    fn enable() -> Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(Self)
     }
 }
 
-/// Multi-select: checkboxes for the offered labels, plus — when custom input is allowed — an
-/// always-shown trailing free-text prompt. Kept as a separate prompt rather than a checkbox
-/// item: `resolve_structured_answer` sends `answer` (the ticked labels) and `custom_answer`
-/// (this text) as two distinct fields, and any ticked item not in `opts.labels` is rejected by
-/// the server outright.
-fn prompt_multi_select(opts: &StructuredOptions) -> serde_json::Value {
-    let chosen = dialoguer::MultiSelect::new()
-        .with_prompt("Select all that apply (space to toggle, enter to confirm)")
-        .items(&opts.labels)
-        .interact()
-        .unwrap_or_default();
-    let selected: Vec<&str> = chosen
-        .into_iter()
-        .map(|i| opts.labels[i].as_str())
-        .collect();
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
 
-    let custom = if opts.allow_custom_input {
-        let text = dialoguer::Input::<String>::new()
-            .with_prompt("Something else (optional, press Enter to skip)")
-            .allow_empty(true)
-            .interact_text()
-            .unwrap_or_default();
-        Some(text).filter(|t| !t.trim().is_empty())
+fn run_select_with_inline_custom(labels: &[String]) -> Result<String> {
+    use crossterm::cursor::{MoveToColumn, MoveUp};
+    use crossterm::event::{Event, KeyCode, KeyEventKind, read};
+    use crossterm::execute;
+    use crossterm::terminal::{Clear, ClearType};
+    use std::io::{Write, stdout};
+
+    let custom_idx = labels.len();
+    let row_count = labels.len() + 1;
+    let mut cursor_idx = 0usize;
+    let mut buffer = String::new();
+    let mut out = stdout();
+
+    let _raw = RawMode::enable()?;
+    let mut first_render = true;
+    loop {
+        if !first_render {
+            execute!(out, MoveUp(row_count as u16))?;
+        }
+        first_render = false;
+        for (i, label) in labels.iter().enumerate() {
+            execute!(out, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+            if i == cursor_idx {
+                write!(out, "\x1b[36m❯ {label}\x1b[0m")?;
+            } else {
+                write!(out, "  {label}")?;
+            }
+            write!(out, "\r\n")?;
+        }
+        execute!(out, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+        if cursor_idx == custom_idx {
+            write!(out, "\x1b[36m❯ Something else: {buffer}\x1b[0m▏")?;
+        } else {
+            write!(out, "  Something else…")?;
+        }
+        write!(out, "\r\n")?;
+        out.flush()?;
+
+        let Event::Key(key) = read()? else { continue };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match key.code {
+            KeyCode::Up => cursor_idx = cursor_idx.checked_sub(1).unwrap_or(row_count - 1),
+            KeyCode::Down => cursor_idx = (cursor_idx + 1) % row_count,
+            KeyCode::Enter => {
+                return Ok(if cursor_idx == custom_idx {
+                    buffer
+                } else {
+                    labels[cursor_idx].clone()
+                });
+            }
+            KeyCode::Backspace if cursor_idx == custom_idx => {
+                buffer.pop();
+            }
+            KeyCode::Char(c) if cursor_idx == custom_idx => buffer.push(c),
+            KeyCode::Esc => return Ok(labels.first().cloned().unwrap_or_default()),
+            _ => {}
+        }
+    }
+}
+
+/// Multi-select: checkboxes for the offered labels, plus — when custom input is allowed — a
+/// trailing "Other" checkbox whose free-text field opens the instant it's checked (via
+/// [`multi_select_with_inline_custom`]) rather than as a separate step after confirming the whole
+/// list. "Other" itself is never included in the submitted `answer` labels, since
+/// `resolve_structured_answer` rejects any ticked item not in `opts.labels` outright.
+fn prompt_multi_select(opts: &StructuredOptions) -> serde_json::Value {
+    let (selected, custom) = if opts.allow_custom_input {
+        multi_select_with_inline_custom(&opts.labels)
     } else {
-        None
+        let chosen = dialoguer::MultiSelect::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select all that apply (space to toggle, enter to confirm)")
+            .items(&opts.labels)
+            .interact()
+            .unwrap_or_default();
+        let selected = chosen.into_iter().map(|i| opts.labels[i].clone()).collect();
+        (selected, None)
     };
+
+    let summary = match (selected.is_empty(), &custom) {
+        (true, None) => "(none)".to_string(),
+        (true, Some(c)) => c.clone(),
+        (false, None) => selected.join(", "),
+        (false, Some(c)) => format!("{}, {c}", selected.join(", ")),
+    };
+    eprintln!("  \x1b[32m✓\x1b[0m {summary}");
 
     match custom {
         Some(custom) => serde_json::json!({ "answer": selected, "custom_answer": custom }),
         None => serde_json::json!({ "answer": selected }),
+    }
+}
+
+/// Combo multi-select+inline-text prompt used only when the question allows custom input.
+/// Checking the trailing "Other" row opens its free-text field immediately — type right away, no
+/// separate confirm-then-prompt step — mirroring [`select_with_inline_custom`]'s single-select
+/// behavior. Backspacing past an empty field unchecks "Other" again, so there's no dead field
+/// left checked with nothing in it.
+fn multi_select_with_inline_custom(labels: &[String]) -> (Vec<String>, Option<String>) {
+    println!(
+        "\x1b[1m? Select all that apply\x1b[0m \x1b[2m(space to toggle, \u{2191}/\u{2193} to move, enter to confirm)\x1b[0m"
+    );
+    run_multi_select_with_inline_custom(labels).unwrap_or_else(|_| (Vec::new(), None))
+}
+
+fn run_multi_select_with_inline_custom(labels: &[String]) -> Result<(Vec<String>, Option<String>)> {
+    use crossterm::cursor::{MoveToColumn, MoveUp};
+    use crossterm::event::{Event, KeyCode, KeyEventKind, read};
+    use crossterm::execute;
+    use crossterm::terminal::{Clear, ClearType};
+    use std::io::{Write, stdout};
+
+    let other_idx = labels.len();
+    let row_count = labels.len() + 1;
+    let mut checked = vec![false; labels.len()];
+    let mut other_checked = false;
+    let mut cursor_idx = 0usize;
+    let mut buffer = String::new();
+    let mut out = stdout();
+
+    let _raw = RawMode::enable()?;
+    let mut first_render = true;
+    loop {
+        if !first_render {
+            execute!(out, MoveUp(row_count as u16))?;
+        }
+        first_render = false;
+        // Matches dialoguer's own `ColorfulTheme` checkbox styling exactly (green ✔ / magenta
+        // ⬚, cyan label when focused, no arrow) so this combo widget looks identical to the
+        // plain `MultiSelect` path just above it.
+        for (i, label) in labels.iter().enumerate() {
+            execute!(out, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+            let glyph = if checked[i] {
+                "\x1b[32m✔\x1b[0m"
+            } else {
+                "\x1b[35m⬚\x1b[0m"
+            };
+            if i == cursor_idx {
+                write!(out, "{glyph} \x1b[36m{label}\x1b[0m")?;
+            } else {
+                write!(out, "{glyph} {label}")?;
+            }
+            write!(out, "\r\n")?;
+        }
+        execute!(out, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+        let other_glyph = if other_checked {
+            "\x1b[32m✔\x1b[0m"
+        } else {
+            "\x1b[35m⬚\x1b[0m"
+        };
+        if cursor_idx == other_idx {
+            write!(out, "{other_glyph} \x1b[36mOther\x1b[0m")?;
+        } else {
+            write!(out, "{other_glyph} Other")?;
+        }
+        if other_checked {
+            write!(out, "\x1b[36m: {buffer}\x1b[0m▏")?;
+        }
+        write!(out, "\r\n")?;
+        out.flush()?;
+
+        let Event::Key(key) = read()? else { continue };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match key.code {
+            KeyCode::Up => cursor_idx = cursor_idx.checked_sub(1).unwrap_or(row_count - 1),
+            KeyCode::Down => cursor_idx = (cursor_idx + 1) % row_count,
+            KeyCode::Enter => {
+                let selected = labels
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| checked[*i])
+                    .map(|(_, label)| label.clone())
+                    .collect();
+                let custom = (other_checked && !buffer.trim().is_empty()).then_some(buffer);
+                return Ok((selected, custom));
+            }
+            KeyCode::Char(' ') => {
+                if cursor_idx == other_idx {
+                    if other_checked {
+                        buffer.push(' ');
+                    } else {
+                        other_checked = true;
+                    }
+                } else {
+                    checked[cursor_idx] = !checked[cursor_idx];
+                }
+            }
+            KeyCode::Backspace if cursor_idx == other_idx && other_checked => {
+                if buffer.pop().is_none() {
+                    other_checked = false;
+                }
+            }
+            KeyCode::Char(c) if cursor_idx == other_idx && other_checked => buffer.push(c),
+            KeyCode::Esc => return Ok((Vec::new(), None)),
+            _ => {}
+        }
     }
 }
 
