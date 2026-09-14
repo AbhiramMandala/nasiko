@@ -181,8 +181,7 @@ class WeaveDock extends HTMLElement {
             aria-haspopup="menu" aria-expanded="false">${icons.history('', 16, 1.25)}</button>
 
             <!-- Hiding the settings button manually using HTML comments because the settings feature is not yet implemented
-          <button class="bar-btn" type="button" data-settings aria-label="Weave settings"
-            >${icons.settings('', 16, 1.25)}</button>
+            <button class="bar-btn" type="button" data-settings aria-label="Weave settings">${icons.settings('', 16, 1.25)}</button>
             -->
             
           <h2 class="drawer__title">Weave</h2>
