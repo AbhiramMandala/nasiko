@@ -23,6 +23,13 @@
      grey glyph read as a different palette beside the gold selected state. */
   --shell-fg-muted:       var(--sand-500);
   --shell-selected:       var(--yellow-200); /* pale-gold selected fill #F7E19C */
+  /* Trouble, said on the ink plane. --fg-error and --fg-warning are
+     light-dark() pairs and resolve to their LIGHT value on a light page — red/600
+     and orange/600, which are mixed for contrast against white and go muddy on
+     sand/900. Chrome is dark in both themes (see group 1), so these are fixed at
+     the dark-side steps the semantic roles already use there. */
+  --shell-fg-error:       var(--red-400);
+  --shell-fg-warning:     var(--orange-400);
   --shell-logo-glow:      drop-shadow(0 4px 16px color-mix(in srgb, var(--yellow-200) 16%, transparent));
   --shell-shadow:         0 12px 32px color-mix(in srgb, var(--black) 32%, transparent);
   --shell-border-subtle:  color-mix(in srgb, var(--white) 8%, transparent);

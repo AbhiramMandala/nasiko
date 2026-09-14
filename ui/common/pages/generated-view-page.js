@@ -227,18 +227,50 @@ class GeneratedViewPage extends HTMLElement {
   }
 
   /**
-   * Show what the runtime could not do, instead of leaving a gap on the page.
+   * Say what the runtime could not do — in the conversation, if anyone is
+   * having one, and on the page if not.
    *
-   * This is the difference between "the dashboard is wrong" and "the dashboard
-   * says why it is wrong". A generated surface fails silently by construction:
-   * a statement the model built but never placed produces a page that is simply
-   * missing it, while the assistant's own closing sentence says it is there.
-   * The runtime already detects that and calls it fatal — nothing was showing it.
+   * A generated surface fails silently by construction: a statement the model
+   * built but never placed produces a page that is simply missing it, while
+   * the assistant's own closing sentence says it is there. So the failure has
+   * to be said somewhere. The question this method answers is where.
    *
-   * Fatal and runtime only. Fatal means the surface is not what was asked for;
-   * runtime means something the surface needed did not arrive. Advisory is a
-   * nudge aimed at the generator, not at the person reading the screen, and
-   * putting it here would train everyone to ignore the strip.
+   * It belongs in the dock. What went wrong is the assistant's answer being
+   * partly untrue, and the assistant's answer is in the thread — a banner over
+   * the canvas separates the claim from the correction, pushes the dashboard
+   * down the page, and reads as the *view* being broken rather than the turn
+   * that produced it. It is also where the fix happens: the next thing a
+   * person does about a bad generation is type at Weave again.
+   *
+   * `weave-view-diagnostics` offers them to whoever is listening, and the dock
+   * takes them by cancelling it — but only when it has a turn for this view.
+   * Reopening a saved view months later fires the same diagnostics into a dock
+   * that never generated it, and a complaint attached to no turn is worse than
+   * no complaint.
+   *
+   * The strip below is what happens when nobody claims them. It is not dead
+   * code kept for tidiness: a fatal diagnostic that reaches no one is the
+   * exact regression this page was built to end (NAS-626), and "the dock is
+   * always mounted" is a property of one app shell, not of this page.
+   *
+   * Fatal and runtime only, in both destinations. Fatal means the surface is
+   * not what was asked for; runtime means something it needed did not arrive.
+   * Advisory is a nudge aimed at the generator, not at the person reading the
+   * screen, and showing it would train everyone to ignore the rest.
+   */
+  #reportDiagnostics(diagnostics) {
+    const shown = (diagnostics ?? [])
+      .filter((d) => d.severity === 'fatal' || d.severity === 'runtime');
+    if (!shown.length) return;
+    const offered = document.dispatchEvent(new CustomEvent('weave-view-diagnostics', {
+      detail: { viewId: this.#view?.id, diagnostics: shown },
+      cancelable: true,
+    }));
+    if (offered) this.#showDiagnostics(shown);
+  }
+
+  /**
+   * The fallback strip, above the canvas.
    *
    * Keyed by code+message so a re-render of the same turn does not stack
    * duplicates, and cleared per draw because the state each one describes
@@ -248,7 +280,6 @@ class GeneratedViewPage extends HTMLElement {
     const host = this.querySelector('#diagnostics');
     if (!host) return;
     for (const d of diagnostics ?? []) {
-      if (d.severity !== 'fatal' && d.severity !== 'runtime') continue;
       const key = `${d.code}/${d.message}`;
       if (this.#seenDiagnostics.has(key)) continue;
       this.#seenDiagnostics.add(key);
@@ -310,7 +341,7 @@ class GeneratedViewPage extends HTMLElement {
       // own diagnostics both fire during the first draw, so a listener added
       // afterwards would miss the turn it is there to report on.
       surface.addEventListener('weave-diagnostics',
-        (e) => this.#showDiagnostics(e.detail.diagnostics));
+        (e) => this.#reportDiagnostics(e.detail.diagnostics));
       canvas.append(surface);
     }
     // A new DSL is a new surface, so last draw's complaints no longer apply.
