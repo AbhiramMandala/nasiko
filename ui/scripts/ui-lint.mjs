@@ -295,11 +295,11 @@ const rules = [
          'route persistence — and there are four of them (ui/oss, ee/registry, ee/portal, ee/tenant). They used to ' +
          'hand-roll that sequence separately, which meant a change to it had to be made four times and was made ' +
          'once. core/create-app.js owns it now; an entry point supplies a config literal. ' +
-         'Note what this rule can and cannot see. `sources.lint` in ui/ee/edition.json covers components/ and ' +
-         'web/ only — portal/, tenant/ and registry/ were never in the lint set — so three of the four entry ' +
-         'points are outside it, and the browser suite does not serve them either. They are guarded by nothing. ' +
-         'Adding them costs 5 findings, all no-private-escape-helper in ui/ee/portal/components/, measured; ' +
-         'worth its own change. Until then this rule holds the line for ui/oss and ui/ee/web.',
+         'Note what this rule can and cannot see. The enterprise edition manifest puts only two of its source ' +
+         'trees in `sources.lint`, so three of the four entry points are outside the lint set — and the browser ' +
+         'suite does not serve them either. They are guarded by nothing. Adding them costs 5 findings, all ' +
+         'no-private-escape-helper in one of those trees, measured; worth its own change. Until then this rule ' +
+         'holds the line for the trees that are linted.',
     check({ rel, source, isJs }) {
       if (!isJs || rel === 'ui/common/core/create-app.js') return [];
       // `router.start(` is the one call that only a boot sequence makes. Route

@@ -1,11 +1,15 @@
 /**
  * The boot sequence every SPA entry point runs.
  *
- * There are four — `ui/oss/app.js`, `ui/ee/registry/app.js`,
- * `ui/ee/portal/web/app.js`, `ui/ee/tenant/web/app.js` — and before this they
- * each hand-rolled the same eight steps in the same order. Three of the four
- * were near-identical, differing only in their route table and which prefixes
- * they excluded.
+ * There are four — the OSS control plane's `app.js` and one per enterprise
+ * surface — and before this they each hand-rolled the same eight steps in the
+ * same order. Three of the four were near-identical, differing only in their
+ * route table and which prefixes they excluded.
+ *
+ * (Named generically on purpose: this file is published to the public repo,
+ * and the enterprise paths are not. Same rule ui-lint's
+ * `private-element-in-shared-code` applies to element names — a private path
+ * in a shared comment is still published.)
  *
  * That is not just repetition. It is four places to remember when the sequence
  * gains a step, and the next step it gains is already known: NAS-211 needs one
