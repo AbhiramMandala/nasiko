@@ -262,9 +262,9 @@ const fetchNavigation = async () => {
     }
   }
   // After the extension, not before it. An extension is free to return its own
-  // ordered list rather than patch `base` — `ui/ee/web/nav-ext.js` does exactly
-  // that — and anything appended to `base` beforehand is simply dropped on the
-  // floor, which is why this entry never appeared on the EE build. Appending
+  // ordered list rather than patch `base` — the enterprise nav extension does
+  // exactly that — and anything appended to `base` beforehand is simply dropped
+  // on the floor, which is why this entry never appeared on the EE build. Appending
   // here is the only placement that holds for every extension, present and
   // future; nothing else in the list is dynamic enough to care about order.
   if (hasSavedViews()) items.push(CUSTOM_VIEWS_ITEM);
