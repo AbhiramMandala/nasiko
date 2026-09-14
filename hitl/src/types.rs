@@ -522,17 +522,17 @@ mod tests {
         // migration file and compares it against those consts value-for-value, in order — so
         // the migration and the consts above can't silently drift apart in either direction.
         //
-        // `resume_status` reads from 0021, not 0007: sqlx hashes applied migration files, so a
+        // `resume_status` reads from 0027, not 0007: sqlx hashes applied migration files, so a
         // widened CHECK on an already-shipped column has to be re-expressed as a forward-only
-        // ALTER (0011_baseline_deltas.sql's own precedent) rather than edited in place — 0021 is
+        // ALTER (0011_baseline_deltas.sql's own precedent) rather than edited in place — 0027 is
         // the column's current source of truth, same as 0007 still is for the other three.
         let migration_0007 = include_str!("../../migrations/0007_hitl.sql");
-        let migration_0021 = include_str!("../../migrations/0021_hitl_resume_status_skipped.sql");
+        let migration_0027 = include_str!("../../migrations/0027_hitl_resume_status_skipped.sql");
         for (migration, column, expected) in [
             (migration_0007, "kind", SQL_KIND_VALUES),
             (migration_0007, "origin", SQL_ORIGIN_VALUES),
             (migration_0007, "status", SQL_STATUS_VALUES),
-            (migration_0021, "resume_status", SQL_RESUME_STATUS_VALUES),
+            (migration_0027, "resume_status", SQL_RESUME_STATUS_VALUES),
         ] {
             let actual = parse_check_values(migration, column);
             assert_eq!(

@@ -152,7 +152,7 @@ async fn different_connector_creates_a_distinct_pending_row() {
 }
 
 /// Security regression (`uq_hitl_pending_per_connector_auth`,
-/// `0023_hitl_mcp_pending_owner_scope.sql`): `context_id` falls back to the raw, agent-controlled
+/// `0029_hitl_mcp_pending_owner_scope.sql`): `context_id` falls back to the raw, agent-controlled
 /// trace id whenever no `session_traces` mapping exists, so two different users' calls can collide
 /// on the same `(agent, connector, context)` tuple without either doing anything wrong. Before the
 /// index (and this `ON CONFLICT` target) included `owner_user_id`, the second user's create would

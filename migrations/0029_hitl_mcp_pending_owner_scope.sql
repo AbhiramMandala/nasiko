@@ -1,5 +1,5 @@
 -- Scope hitl_requests' two MCP-tool idempotency indexes by owner, not just agent (security
--- review) — the same class of bug 0019_hitl_task_id_scope.sql already closed for
+-- review) — the same class of bug 0025_hitl_task_id_scope.sql already closed for
 -- uq_hitl_pending_per_task, which uq_hitl_pending_per_tool_call and
 -- uq_hitl_pending_per_connector_auth never got.
 --

@@ -251,7 +251,7 @@ async fn duplicate_pending_tool_approval_is_idempotent_and_distinct_tools_never_
     assert_ne!(first.id, different_tool.id);
 }
 
-/// Security regression (`uq_hitl_pending_per_tool_call`, `0023_hitl_mcp_pending_owner_scope.sql`):
+/// Security regression (`uq_hitl_pending_per_tool_call`, `0029_hitl_mcp_pending_owner_scope.sql`):
 /// `context_id` for an `mcp_tool` row falls back to the raw, agent-controlled trace id whenever no
 /// `session_traces` mapping exists, so two different users' calls can collide on the exact same
 /// `(agent, connector, tool, context)` tuple without either of them doing anything wrong. Before

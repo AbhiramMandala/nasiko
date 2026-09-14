@@ -88,7 +88,7 @@ impl TestDb {
 
     /// Seeds a minimal, real `mcp_connectors` row and returns its id — needed by any test that
     /// inserts into `mcp_session_tool_grants`, whose `connector_id` column gained a real FK to
-    /// this table (`0020_mcp_session_tool_grants_fk.sql`); a synthetic `Uuid::new_v4()` connector
+    /// this table (`0026_mcp_session_tool_grants_fk.sql`); a synthetic `Uuid::new_v4()` connector
     /// id (the previous pattern in these tests) now violates that constraint.
     ///
     /// `url` is not optional padding: `source_kind` defaults to `external_url`, and

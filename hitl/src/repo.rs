@@ -1,5 +1,5 @@
 //! Postgres persistence for `hitl_requests` (migration `0007_hitl.sql` +
-//! `0016_hitl_auth_required.sql`).
+//! `0022_hitl_auth_required.sql`).
 //!
 //! `oss/mcp-gateway` calls `create_pending_auth_required`/`create_pending_auth_required_with_ttl`
 //! from `protocol::handle_auth_required` and `create_pending_tool_approval`/
@@ -99,7 +99,7 @@ pub async fn create_pending_auth_required_with_ttl(
         -- users whose calls happened to collide on the same (agent, connector, context) tuple
         -- would silently `DO UPDATE` and `RETURNING *` each other's row, handing one user's
         -- pending auth-required row back to the other's request. Same class of bug
-        -- `0019_hitl_task_id_scope.sql` closed for `uq_hitl_pending_per_task`.
+        -- `0025_hitl_task_id_scope.sql` closed for `uq_hitl_pending_per_task`.
         ON CONFLICT (owner_user_id, agent_id, connector_id, context_id)
             WHERE status = 'pending' AND kind = 'auth_required' AND origin = 'mcp_tool'
             -- Also refreshes `expires_at`, not just `updated_at`: without this, a connector that

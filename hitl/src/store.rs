@@ -347,8 +347,8 @@ impl PgHitlStore {
     ///
     /// Every branch is scoped by `owner_user_id` in addition to whatever the index's own matching
     /// columns are, matching `uq_hitl_pending_per_task`/`uq_hitl_pending_per_tool_call`/
-    /// `uq_hitl_pending_per_connector_auth` themselves (`0019_hitl_task_id_scope.sql`,
-    /// `0023_hitl_mcp_pending_owner_scope.sql`) — `task_id` and `context_id` (the McpTool
+    /// `uq_hitl_pending_per_connector_auth` themselves (`0025_hitl_task_id_scope.sql`,
+    /// `0029_hitl_mcp_pending_owner_scope.sql`) — `task_id` and `context_id` (the McpTool
     /// branches' own matching value, which falls back to a raw trace id when no `session_traces`
     /// mapping exists) are both populated from agent-controlled data, never a Nasiko-minted id, so
     /// neither may be trusted alone as a database-wide key: without this scoping, a non-random or
