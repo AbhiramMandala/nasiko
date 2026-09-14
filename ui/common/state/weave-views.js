@@ -242,7 +242,15 @@ export function getView(id) {
 
 // ── titles and ids ──────────────────────────────────────────────────────────
 
-/** Matches the server's `titling::MAX_TITLE_CHARS` fallback cap. */
+/**
+ * The server's `titling::MAX_TITLE_CHARS`, restated.
+ *
+ * Restated, not shared — there is no build step between Rust and this file —
+ * so `weave-views.test.mjs` reads the constant out of `titling.rs` and fails
+ * if the two drift. A cap that silently disagrees across the boundary gives
+ * one truncation before the fetch and a different one after it, on the same
+ * prompt, which reads as the title changing for no reason.
+ */
 const MAX_TITLE_CHARS = 80;
 
 /**
@@ -254,12 +262,20 @@ const MAX_TITLE_CHARS = 80;
  * `POST /weave/title` resolves (see `weave-dock.js#retitle`); this is only
  * what's on screen for the second or two before that.
  */
-function fallbackTitle(prompt) {
+export function fallbackTitle(prompt) {
   const trimmed = String(prompt || '').trim();
   if (!trimmed) return 'New view';
-  return trimmed.length > MAX_TITLE_CHARS
-    ? `${trimmed.slice(0, MAX_TITLE_CHARS).trimEnd()}…`
-    : trimmed;
+  // Code POINTS, and no ellipsis — both to match `titling::truncate_title`,
+  // which does `char_indices().nth(MAX)` then `trim_end()` and appends
+  // nothing. `slice()` counts UTF-16 units, so an emoji costs two: sixty of
+  // them plus a few words came out at 41 code points here against the
+  // server's 76, and a cut landing between a surrogate pair leaves half a
+  // character behind. The ellipsis was the more visible half of the same
+  // mismatch — the same prompt was titled "…every agent…" here and
+  // "…every agent" the moment the server answered.
+  const points = [...trimmed];
+  if (points.length <= MAX_TITLE_CHARS) return trimmed;
+  return points.slice(0, MAX_TITLE_CHARS).join('').trimEnd();
 }
 
 /**

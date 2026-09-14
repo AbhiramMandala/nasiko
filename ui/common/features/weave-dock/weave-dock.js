@@ -96,6 +96,13 @@ const STARTERS = [
  */
 const RECENT_CHATS_LIMIT = 5;
 
+/**
+ * How far to page looking for them. A dropdown opening should not walk the
+ * whole history: five pages of fifty is ample for "what did I just do", and
+ * anything older belongs on /custom-views.
+ */
+const MAX_HISTORY_PAGES = 5;
+
 class WeaveDock extends HTMLElement {
   #initialized = false;
   /** Turns rendered in the thread: `{ role, text, view? }`. */
@@ -240,11 +247,7 @@ class WeaveDock extends HTMLElement {
 
     let sessions = [];
     try {
-      const body = await getJson('/chat/sessions?limit=50');
-      const list = body?.data ?? body ?? [];
-      sessions = (Array.isArray(list) ? list : [])
-        .filter((s) => typeof s.session_id === 'string' && s.session_id.startsWith('weave_'))
-        .slice(0, RECENT_CHATS_LIMIT);
+      sessions = await this.#recentWeaveSessions();
     } catch (err) {
       console.error('[weave-dock] could not load chat history', err);
     }
@@ -263,6 +266,39 @@ class WeaveDock extends HTMLElement {
       });
       menu.append(item);
     }
+  }
+
+  /**
+   * The most recent Weave sessions, paged until there are enough.
+   *
+   * `/chat/sessions` has no prefix filter — it takes `limit`, `cursor` and
+   * `agent_id`, and adding a fourth would mean a fifth keyset variant in the
+   * Rust — so the `weave_` prefix is applied here. Which means one page is
+   * not enough: this list is every chat session the user has, Weave's and
+   * the agent chats both, newest first. Someone who has been using /chat all
+   * week pushes their Weave sessions past the first page and the menu comes
+   * up empty, with nothing on screen to say why.
+   *
+   * So it follows `next_cursor` until it has RECENT_CHATS_LIMIT or runs out.
+   * Bounded by MAX_HISTORY_PAGES rather than by the data: this is a dropdown
+   * opening, not a search, and five pages of misses means the answer is
+   * "nothing recent" either way. Whatever it found by then is shown.
+   */
+  async #recentWeaveSessions() {
+    const found = [];
+    let cursor = null;
+    for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
+      const qs = new URLSearchParams({ limit: '50', ...(cursor ? { cursor } : {}) });
+      const body = await getJson(`/chat/sessions?${qs}`);
+      const list = body?.data ?? body ?? [];
+      for (const s of Array.isArray(list) ? list : []) {
+        if (typeof s.session_id === 'string' && s.session_id.startsWith('weave_')) found.push(s);
+        if (found.length >= RECENT_CHATS_LIMIT) return found;
+      }
+      cursor = body?.next_cursor;
+      if (!cursor) break;
+    }
+    return found;
   }
 
   async #openSession(sessionId) {
@@ -301,6 +337,18 @@ class WeaveDock extends HTMLElement {
       navigate(`/view?id=${encodeURIComponent(lastView.id)}`);
       if (lastView.dsl) {
         try {
+          // What the user SEES comes from hydrateView above — /view reads the
+          // store and draws it. This is for the turn after: the session needs
+          // `currentSurface` set, or the first revision on a resumed chat is
+          // sent with no prior surface and the model rebuilds from scratch
+          // instead of patching by name.
+          //
+          // It is not free. The dock's container is a detached div, so this
+          // renders a tree nobody looks at and fires every Query in it for
+          // real — one round of fetches to seed one string. Worth it because
+          // the alternative is a silently worse first revision, but worth
+          // knowing: if `show()` ever grows a "parse and seed, do not draw"
+          // mode, this is its caller.
           (await this.#session()).show(lastView.dsl, { catalogVersion: lastView.catalogVersion });
         } catch (err) {
           console.error('[weave-dock] could not seed the resumed dashboard state', err);

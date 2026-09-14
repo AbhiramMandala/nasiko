@@ -15,6 +15,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { installBrowserShim } from './browser-shim.mjs';
 
 installBrowserShim();
@@ -328,4 +329,99 @@ test('changes are announced on document, once per mutation', async () => {
   off();
   views.createView('b');
   assert.equal(beats, 1, 'unsubscribe must actually unsubscribe');
+});
+
+// ── the fallback title, and the boundary it has to match ───────────────────
+// A view is titled twice: once here the instant it is created, and again when
+// POST /weave/title answers. The two have to agree on the truncation, or the
+// same prompt is titled one way for a second and another way after — which
+// reads as the title changing by itself.
+
+test('the truncation cap has not drifted from the server that shares it', () => {
+  // Restated across a boundary with no build step between them, so this is
+  // the only thing keeping them equal. Reading the Rust rather than a copy of
+  // it is the point: a copy drifts the same way the constant would.
+  const rust = readFileSync(new URL('../../oss/server/src/titling.rs', import.meta.url), 'utf8');
+  const declared = rust.match(/pub const MAX_TITLE_CHARS:\s*usize\s*=\s*(\d+)/)?.[1];
+  assert.ok(declared, 'titling.rs no longer declares MAX_TITLE_CHARS — the comment in weave-views.js points at it');
+  assert.equal(views.fallbackTitle('x'.repeat(200)).length, Number(declared),
+    `the client truncates at ${views.fallbackTitle('x'.repeat(200)).length}, titling.rs at ${declared}`);
+});
+
+test('the fallback truncates by code point, the way truncate_title does', () => {
+  // `slice()` counts UTF-16 units, so an astral character costs two: this
+  // input is 100 code points and 200 units, and the old cut took 40 of them
+  // where the server takes 80. It could also land between a surrogate pair
+  // and leave half a character behind.
+  const out = views.fallbackTitle('📊'.repeat(100));
+  assert.equal([...out].length, 80, 'eighty code points, not eighty code units');
+  // `u` matters: without it, `$` anchors to the last code UNIT, so the low
+  // surrogate of a perfectly good pair matches and the check fails on
+  // correct output. In unicode mode the class only catches a lone one.
+  assert.doesNotMatch(out, /[\uD800-\uDFFF]$/u, 'never ends on half a surrogate pair');
+  // And one that is under the cap only when counted properly: 60 astral
+  // characters plus 16 of text is 76 points but 136 units, so a unit-based
+  // cut would truncate a title that fits.
+  const fits = `${'📊'.repeat(60)} spend dashboard`;
+  assert.equal(views.fallbackTitle(fits), fits, 'under the cap, left alone');
+});
+
+test('the fallback adds no ellipsis, because the server adds none', () => {
+  const out = views.fallbackTitle('word '.repeat(40));
+  assert.doesNotMatch(out, /…|\.\.\.$/);
+  assert.equal(out, out.trimEnd(), 'and the cut is trimmed, like trim_end()');
+});
+
+test('a blank prompt still gets a name', () => {
+  assert.equal(views.fallbackTitle(''), 'New view');
+  assert.equal(views.fallbackTitle('   '), 'New view');
+  assert.equal(views.fallbackTitle(null), 'New view');
+});
+
+test('a short prompt is left exactly alone', () => {
+  assert.equal(views.fallbackTitle('  spend by agent  '), 'spend by agent');
+});
+
+// ── hydrateView: the resume path ───────────────────────────────────────────
+// Reopening a chat from the dock's history replays its messages and, for the
+// last one that carried a view, puts that view back in the store so /view can
+// draw it. It writes to localStorage, so getting it wrong leaves a duplicate
+// or a shadow row over something already saved.
+
+test('hydrating a view the store has never seen puts it in the local list', () => {
+  scriptedRun([]);
+  const view = views.hydrateView({
+    id: 'resumed-1', title: 'Spend review', dsl: 'root = AppText("hi")', catalogVersion: 'abc123',
+  });
+  assert.equal(view.id, 'resumed-1');
+  assert.equal(view.dsl, 'root = AppText("hi")');
+  assert.equal(view.catalogVersion, 'abc123');
+  assert.equal(views.getView('resumed-1').title, 'Spend review');
+  assert.equal(calls.length, 0, 'hydrating is local — it must not call the server');
+});
+
+test('hydrating twice does not duplicate the row', () => {
+  scriptedRun([]);
+  views.hydrateView({ id: 'resumed-2', title: 'First', dsl: 'a' });
+  const again = views.hydrateView({ id: 'resumed-2', title: 'Second', dsl: 'b' });
+  assert.equal(again.title, 'First', 'the row already there wins — a resume is not an edit');
+  assert.equal(views.listViews().filter((v) => v.id === 'resumed-2').length, 1);
+});
+
+test('hydrating an id that is already SAVED does not shadow it locally', () => {
+  // The dangerous case. A saved view lives on the server and is reached
+  // through `saved`, not localStorage — writing a second unsaved row under
+  // the same id would give the shelf one title and /view another.
+  scriptedRun([reply(200, [row({ id: 'srv-hydrate', title: 'On the server' })])]);
+  return views.refreshViews().then(() => {
+    scriptedRun([]);
+    const out = views.hydrateView({ id: 'srv-hydrate', title: 'Stale local copy', dsl: 'x' });
+    assert.equal(out.title, 'On the server');
+    assert.equal(views.getView('srv-hydrate').title, 'On the server');
+  });
+});
+
+test('a hydrated view with no title still gets a name', () => {
+  scriptedRun([]);
+  assert.equal(views.hydrateView({ id: 'resumed-3' }).title, 'New view');
 });
