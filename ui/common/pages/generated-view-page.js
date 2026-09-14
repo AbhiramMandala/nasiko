@@ -30,19 +30,13 @@ import { icons } from '/common/utils/icons.js';
 import { toast } from '/common/utils/toast.js';
 import { navigate } from '/common/core/router.js';
 import {
-  ensureViews, getView, saveView, touchView, onViewsChange, viewsAvailable,
+  ensureViews, getView, saveView, onViewsChange, viewsAvailable,
 } from '/common/state/weave-views.js';
 import '/common/features/weave-surface/weave-surface.js';
 import '/common/design-system/app-button/app-button.js';
-import '/common/design-system/app-menu/app-menu.js';
+import '/common/design-system/app-modal/app-modal.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-alert/app-alert.js';
-
-const COPY_ACTIONS = [
-  { id: 'link', label: 'Copy link' },
-  { id: 'json', label: 'Copy as JSON' },
-  { id: 'image', label: 'Copy as image' },
-];
 
 class GeneratedViewPage extends HTMLElement {
   #initialized = false;
@@ -86,7 +80,6 @@ class GeneratedViewPage extends HTMLElement {
    * the time anyone has generated anything.
    */
   async #load() {
-    this.classList.remove('is-expanded');
     this.#drawn = null;
     const id = new URLSearchParams(location.search).get('id') || '';
     this.#view = getView(id);
@@ -106,7 +99,6 @@ class GeneratedViewPage extends HTMLElement {
     if (this.#view.id !== id) {
       history.replaceState(history.state, '', `/view?id=${encodeURIComponent(this.#view.id)}`);
     }
-    touchView(this.#view.id);
     document.title = `Nasiko — ${this.#view.title}`;
     this.#render();
     this.#drawSurface();
@@ -129,11 +121,9 @@ class GeneratedViewPage extends HTMLElement {
         <h1 class="title-page">${escHtml(this.#view.title)}</h1>
         <div class="view-bar__actions">
           <app-button id="save" variant="primary" size="sm"></app-button>
-          <app-menu id="copy" label="Copy view" align="end"
-            items='${JSON.stringify(COPY_ACTIONS)}'>
-            <app-button variant="ghost" size="sm">Copy ${icons.chevronDownSmall('', 14, 1.25)}</app-button>
-          </app-menu>
-          <button class="icon-btn" id="expand" type="button" aria-label="Expand"
+          <button class="icon-btn" id="copy" type="button" aria-label="Copy link"
+            >${icons.copy('', 16, 1.25)}</button>
+          <button class="icon-btn" id="expand" type="button" aria-label="Open full width"
             >${icons.externalLink('', 16, 1.25)}</button>
           <button class="icon-btn" id="close" type="button" aria-label="Close view"
             >${icons.x('', 16, 1.25)}</button>
@@ -154,17 +144,24 @@ class GeneratedViewPage extends HTMLElement {
           </ul>
           <p>This usually takes a few seconds.</p>
         </div>
-      </div>`;
+      </div>
+
+      <app-modal id="fullscreen" heading="${escHtml(this.#view.title)}">
+        <div class="modal-canvas"></div>
+      </app-modal>`;
 
     this.#syncSave();
     this.querySelector('#save').addEventListener('click', () => this.#save());
     this.querySelector('#close').addEventListener('click', () => this.#close());
-    this.querySelector('#expand').addEventListener('click',
-      () => this.classList.toggle('is-expanded'));
-    this.querySelector('#copy').addEventListener('menu-select', (e) => {
-      if (e.detail.id === 'link') navigator.clipboard?.writeText(location.href);
-      toast.success('Copied');
+    this.querySelector('#expand').addEventListener('click', () => this.#expand());
+    this.querySelector('#copy').addEventListener('click', () => {
+      navigator.clipboard?.writeText(location.href);
+      toast.success('Link copied');
     });
+    // The dialog's own surface is thrown away on close rather than left behind:
+    // a weave-surface holds a live session, and removing it is what disposes it.
+    this.querySelector('#fullscreen').addEventListener('modal-close',
+      () => this.querySelector('.modal-canvas').replaceChildren());
   }
 
   /**
@@ -179,6 +176,13 @@ class GeneratedViewPage extends HTMLElement {
    * On the OSS build there is nowhere to save to, so the button is not there.
    */
   #syncSave() {
+    // A saved view is a page in its own right: it is in the sidebar, and the
+    // surface carries its own heading. The band is the *ephemeral* view's
+    // chrome — save is the only thing in it that still had to happen — so once
+    // that is done the whole thing goes rather than sitting there greyed out.
+    const bar = this.querySelector('.view-bar');
+    if (bar) bar.hidden = !!this.#view?.saved;
+
     const button = this.querySelector('#save');
     if (!button) return;
     button.hidden = viewsAvailable() === false;
@@ -220,6 +224,22 @@ class GeneratedViewPage extends HTMLElement {
     }
   }
 
+  /**
+   * The same view, in a dialog the width of the window.
+   *
+   * A second `weave-surface` rather than the page's own moved into the dialog:
+   * moving it disconnects it, and `disconnectedCallback` disposes the session
+   * that keeps the dashboard live. Drawing a second one costs one more render
+   * of a spec that is already in hand — no generation, doc-cheap.
+   */
+  async #expand() {
+    if (!this.#view?.dsl) return; // still generating; nothing to blow up
+    const surface = document.createElement('weave-surface');
+    this.querySelector('.modal-canvas').replaceChildren(surface);
+    this.querySelector('#fullscreen').show();
+    await surface.show(this.#view.dsl, { catalogVersion: this.#view.catalogVersion });
+  }
+
   /** Back to wherever this was generated from; the app root if there is no history. */
   #close() {
     if (history.length > 1) history.back();
@@ -227,50 +247,18 @@ class GeneratedViewPage extends HTMLElement {
   }
 
   /**
-   * Say what the runtime could not do — in the conversation, if anyone is
-   * having one, and on the page if not.
+   * Show what the runtime could not do, instead of leaving a gap on the page.
    *
-   * A generated surface fails silently by construction: a statement the model
-   * built but never placed produces a page that is simply missing it, while
-   * the assistant's own closing sentence says it is there. So the failure has
-   * to be said somewhere. The question this method answers is where.
+   * This is the difference between "the dashboard is wrong" and "the dashboard
+   * says why it is wrong". A generated surface fails silently by construction:
+   * a statement the model built but never placed produces a page that is simply
+   * missing it, while the assistant's own closing sentence says it is there.
+   * The runtime already detects that and calls it fatal — nothing was showing it.
    *
-   * It belongs in the dock. What went wrong is the assistant's answer being
-   * partly untrue, and the assistant's answer is in the thread — a banner over
-   * the canvas separates the claim from the correction, pushes the dashboard
-   * down the page, and reads as the *view* being broken rather than the turn
-   * that produced it. It is also where the fix happens: the next thing a
-   * person does about a bad generation is type at Weave again.
-   *
-   * `weave-view-diagnostics` offers them to whoever is listening, and the dock
-   * takes them by cancelling it — but only when it has a turn for this view.
-   * Reopening a saved view months later fires the same diagnostics into a dock
-   * that never generated it, and a complaint attached to no turn is worse than
-   * no complaint.
-   *
-   * The strip below is what happens when nobody claims them. It is not dead
-   * code kept for tidiness: a fatal diagnostic that reaches no one is the
-   * exact regression this page was built to end (NAS-626), and "the dock is
-   * always mounted" is a property of one app shell, not of this page.
-   *
-   * Fatal and runtime only, in both destinations. Fatal means the surface is
-   * not what was asked for; runtime means something it needed did not arrive.
-   * Advisory is a nudge aimed at the generator, not at the person reading the
-   * screen, and showing it would train everyone to ignore the rest.
-   */
-  #reportDiagnostics(diagnostics) {
-    const shown = (diagnostics ?? [])
-      .filter((d) => d.severity === 'fatal' || d.severity === 'runtime');
-    if (!shown.length) return;
-    const offered = document.dispatchEvent(new CustomEvent('weave-view-diagnostics', {
-      detail: { viewId: this.#view?.id, diagnostics: shown },
-      cancelable: true,
-    }));
-    if (offered) this.#showDiagnostics(shown);
-  }
-
-  /**
-   * The fallback strip, above the canvas.
+   * Fatal and runtime only. Fatal means the surface is not what was asked for;
+   * runtime means something the surface needed did not arrive. Advisory is a
+   * nudge aimed at the generator, not at the person reading the screen, and
+   * putting it here would train everyone to ignore the strip.
    *
    * Keyed by code+message so a re-render of the same turn does not stack
    * duplicates, and cleared per draw because the state each one describes
@@ -280,6 +268,7 @@ class GeneratedViewPage extends HTMLElement {
     const host = this.querySelector('#diagnostics');
     if (!host) return;
     for (const d of diagnostics ?? []) {
+      if (d.severity !== 'fatal' && d.severity !== 'runtime') continue;
       const key = `${d.code}/${d.message}`;
       if (this.#seenDiagnostics.has(key)) continue;
       this.#seenDiagnostics.add(key);
@@ -326,6 +315,7 @@ class GeneratedViewPage extends HTMLElement {
     const heading = this.querySelector('.title-page');
     if (heading && heading.textContent !== view.title) {
       heading.textContent = view.title;
+      this.querySelector('#fullscreen')?.setAttribute('heading', view.title);
       document.title = `Nasiko — ${view.title}`;
     }
 
@@ -341,7 +331,7 @@ class GeneratedViewPage extends HTMLElement {
       // own diagnostics both fire during the first draw, so a listener added
       // afterwards would miss the turn it is there to report on.
       surface.addEventListener('weave-diagnostics',
-        (e) => this.#reportDiagnostics(e.detail.diagnostics));
+        (e) => this.#showDiagnostics(e.detail.diagnostics));
       canvas.append(surface);
     }
     // A new DSL is a new surface, so last draw's complaints no longer apply.

@@ -38,7 +38,6 @@ import { navigate } from '/common/core/router.js';
 import { createView, setViewSurface, generateViewTitle, renameView, hydrateView } from '/common/state/weave-views.js';
 import { createSurfaceSession } from '/common/surface/surface-stream.js';
 import { loadCatalog, withSeverity } from '/common/surface/catalog-load.js';
-import { WEAVE_STARTERS } from '/common/surface/starters.js';
 import { getJson, postJson } from '/common/services/api.js';
 import '/common/design-system/app-chatbox/app-chatbox.js';
 
@@ -73,28 +72,19 @@ const LAUNCHER_LABELS = {
   '/tokenops': 'Ask Weave to explore your TokenOps data…',
   '/sessions': 'Ask Weave to explore your TokenOps data…',
   '/observability-session': 'Ask Weave to explore your TokenOps data…',
-  '/session-trace': 'Ask Weave to explore your TokenOps data…',
+  '/session-trace': 'Ask Weave about this trace…',
   '/agents': 'Ask Weave about your agents…',
   '/custom-views': 'Ask Weave to build a new view…',
 };
 const LAUNCHER_DEFAULT = 'Ask Weave anything…';
 
-/**
- * How many rows the history menu's "Recent chats" section shows.
- *
- * The menu is a small popover off the header icon, not a browsing surface —
- * that's `/custom-views`. A handful of the most recent views is what "what
- * did I just do" needs; older ones stay reachable there instead of growing
- * this dropdown without bound.
- */
-const RECENT_CHATS_LIMIT = 5;
-
-/**
- * How far to page looking for them. A dropdown opening should not walk the
- * whole history: five pages of fifty is ample for "what did I just do", and
- * anything older belongs on /custom-views.
- */
-const MAX_HISTORY_PAGES = 5;
+/** Empty-thread suggestions. Two build something, two answer something. */
+const STARTERS = [
+  'Create a view for monitoring costs',
+  'Help me configure an LLM provider',
+  'What needs my attention?',
+  'Create a new agent',
+];
 
 class WeaveDock extends HTMLElement {
   #initialized = false;
@@ -109,21 +99,8 @@ class WeaveDock extends HTMLElement {
   /** Diagnostics raised during the turn, so the answer can be qualified. */
   #faults = [];
   #chatSessionId = null;
-  /** Something went wrong while the drawer was shut, so the launcher says so. */
-  #unread = false;
 
   #onRouteChange = () => this.#paintLauncher();
-  /**
-   * Diagnostics from a surface that actually rendered, offered by `/view`.
-   *
-   * Cancelling is the dock saying "these are mine" — the page keeps its own
-   * strip for when nothing claims them, so taking them without being able to
-   * show them would lose them entirely. Hence the guard inside `#noteFaults`:
-   * a view this thread has no turn for is not this conversation's problem.
-   */
-  #onViewDiagnostics = (e) => {
-    if (this.#noteFaults(e.detail?.viewId, e.detail?.diagnostics)) e.preventDefault();
-  };
   #onDocumentClick = (e) => {
     if (!this.querySelector('.history')?.hasAttribute('hidden')
         && !e.target.closest('.history, [data-history]')) this.#toggleHistory(false);
@@ -139,14 +116,12 @@ class WeaveDock extends HTMLElement {
     // disconnect, so a re-parented dock would otherwise lose both permanently.
     document.addEventListener('route-change', this.#onRouteChange);
     document.addEventListener('click', this.#onDocumentClick);
-    document.addEventListener('weave-view-diagnostics', this.#onViewDiagnostics);
     this.#applyOpen();
   }
 
   disconnectedCallback() {
     document.removeEventListener('route-change', this.#onRouteChange);
     document.removeEventListener('click', this.#onDocumentClick);
-    document.removeEventListener('weave-view-diagnostics', this.#onViewDiagnostics);
     // The session holds query subscriptions and an open stream. A turn already
     // in flight still resolves — #respond and #paintThread both tolerate a
     // detached dock — but nothing new starts.
@@ -162,9 +137,7 @@ class WeaveDock extends HTMLElement {
   /** Open the drawer, optionally with the composer prefilled. */
   open(prompt = '') {
     this.#open = true;
-    this.#unread = false;
     this.#applyOpen();
-    this.#paintLauncher();
     const box = this.querySelector('app-chatbox');
     if (prompt) box.value = prompt;
     box.focus();
@@ -187,22 +160,25 @@ class WeaveDock extends HTMLElement {
       <aside class="drawer" aria-label="Weave">
         <header class="drawer__bar">
           <button class="bar-btn" type="button" data-history aria-label="Chat history"
-            aria-haspopup="menu" aria-expanded="false">${icons.history('', 16, 1.25)}</button>
-          // <button class="bar-btn" type="button" data-settings aria-label="Weave settings"
-          //   >${icons.settings('', 16, 1.25)}</button>
+            aria-haspopup="true" aria-expanded="false">${icons.history('', 16, 1.25)}</button>
           <h2 class="drawer__title">Weave</h2>
           <button class="bar-btn" type="button" data-close aria-label="Close Weave"
             >${icons.panelLeft('', 16, 1.25)}</button>
-          <div class="history" role="menu" hidden>
-            <button class="history__item" type="button" role="menuitem" data-new-chat>New chat</button>
+          <!-- A plain popover, not role="menu": the search box is not a valid
+               menu descendant, and native buttons need no menu semantics. -->
+          <div class="history" hidden>
+            <button class="history__item" type="button" data-new-chat>New chat</button>
             <p class="history__label" hidden>Recent chats</p>
+            <input class="history__search" type="search" placeholder="Search sessions"
+              aria-label="Search sessions" hidden>
+            <div class="history__list"></div>
           </div>
         </header>
 
         <div class="thread" id="thread" aria-live="polite"></div>
 
         <div class="composer">
-          <app-chatbox placeholder="Ask weave anything..." aria-label="Ask Weave"></app-chatbox>
+          <app-chatbox no-attachments placeholder="Ask weave anything..." aria-label="Ask Weave"></app-chatbox>
         </div>
       </aside>`;
 
@@ -210,6 +186,7 @@ class WeaveDock extends HTMLElement {
     this.querySelector('[data-close]').addEventListener('click', () => this.close());
     this.querySelector('[data-history]').addEventListener('click', () => this.#toggleHistory());
     this.querySelector('[data-new-chat]').addEventListener('click', () => this.#newChat());
+    this.querySelector('.history__search').addEventListener('input', (e) => this.#filterHistory(e.target.value));
     this.addEventListener('chatbox-submit', (e) => this.#send(e.detail.value));
 
     this.#paintLauncher();
@@ -218,19 +195,7 @@ class WeaveDock extends HTMLElement {
 
   #paintLauncher() {
     const path = location.pathname.replace(/\.html$/, '').replace(/\/$/, '') || '/';
-    // A turn can resolve after the dock has been torn down — #noteFaults
-    // repaints, and there is nothing to paint into. Same guard as #paintThread.
-    const launcher = this.querySelector('.launcher');
-    if (!launcher) return;
-    launcher.querySelector('.launcher__label').textContent =
-      LAUNCHER_LABELS[path] ?? LAUNCHER_DEFAULT;
-    // A turn can land badly while the drawer is shut — the user pressed send,
-    // watched the view open, and closed the conversation. Moving the complaint
-    // off the canvas and into the thread is only an improvement if the thread
-    // can get their attention from outside itself.
-    launcher.classList.toggle('has-unread', this.#unread);
-    launcher.setAttribute('aria-label',
-      this.#unread ? 'Open Weave — something did not render' : 'Open Weave');
+    this.querySelector('.launcher__label').textContent = LAUNCHER_LABELS[path] ?? LAUNCHER_DEFAULT;
   }
 
   /**
@@ -265,62 +230,46 @@ class WeaveDock extends HTMLElement {
   async #paintHistory() {
     const menu = this.querySelector('.history');
     const label = menu.querySelector('.history__label');
-    for (const el of menu.querySelectorAll('[data-session-id]')) el.remove();
+    const search = menu.querySelector('.history__search');
+    const list = menu.querySelector('.history__list');
+    list.replaceChildren();
+    search.value = '';
 
     let sessions = [];
     try {
-      sessions = await this.#recentWeaveSessions();
+      // `weave=true`: the dock's chats are hidden from every other session
+      // list (Sessions page, Orchestrator nav, `nasiko sessions`), so this is
+      // the only caller that asks for them — server-side, by session-id prefix.
+      // 100 is the server's clamp on `limit` (`oss/server/src/chat/routes.rs`).
+      const body = await getJson('/chat/sessions?limit=100&weave=true');
+      const rows = body?.data ?? body ?? [];
+      sessions = Array.isArray(rows) ? rows : [];
     } catch (err) {
       console.error('[weave-dock] could not load chat history', err);
     }
 
     label.hidden = sessions.length === 0;
+    search.hidden = sessions.length === 0;
     for (const session of sessions) {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'history__item';
-      item.setAttribute('role', 'menuitem');
       item.dataset.sessionId = session.session_id;
       item.textContent = session.title;
       item.addEventListener('click', () => {
         this.#toggleHistory(false);
         this.#openSession(session.session_id);
       });
-      menu.append(item);
+      list.append(item);
     }
   }
 
-  /**
-   * The most recent Weave sessions, paged until there are enough.
-   *
-   * `/chat/sessions` has no prefix filter — it takes `limit`, `cursor` and
-   * `agent_id`, and adding a fourth would mean a fifth keyset variant in the
-   * Rust — so the `weave_` prefix is applied here. Which means one page is
-   * not enough: this list is every chat session the user has, Weave's and
-   * the agent chats both, newest first. Someone who has been using /chat all
-   * week pushes their Weave sessions past the first page and the menu comes
-   * up empty, with nothing on screen to say why.
-   *
-   * So it follows `next_cursor` until it has RECENT_CHATS_LIMIT or runs out.
-   * Bounded by MAX_HISTORY_PAGES rather than by the data: this is a dropdown
-   * opening, not a search, and five pages of misses means the answer is
-   * "nothing recent" either way. Whatever it found by then is shown.
-   */
-  async #recentWeaveSessions() {
-    const found = [];
-    let cursor = null;
-    for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
-      const qs = new URLSearchParams({ limit: '50', ...(cursor ? { cursor } : {}) });
-      const body = await getJson(`/chat/sessions?${qs}`);
-      const list = body?.data ?? body ?? [];
-      for (const s of Array.isArray(list) ? list : []) {
-        if (typeof s.session_id === 'string' && s.session_id.startsWith('weave_')) found.push(s);
-        if (found.length >= RECENT_CHATS_LIMIT) return found;
-      }
-      cursor = body?.next_cursor;
-      if (!cursor) break;
+  /** Client-side title filter — the whole list is already in the DOM. */
+  #filterHistory(query) {
+    const needle = query.trim().toLowerCase();
+    for (const item of this.querySelectorAll('.history__list [data-session-id]')) {
+      item.hidden = needle !== '' && !item.textContent.toLowerCase().includes(needle);
     }
-    return found;
   }
 
   async #openSession(sessionId) {
@@ -522,6 +471,13 @@ class WeaveDock extends HTMLElement {
       } catch (err) {
         console.error('[weave-dock] could not persist the generated surface', err);
       }
+      // The model writes its closing sentence before a single component has
+      // rendered, so on a turn that dropped something it still says "here's
+      // your chart" — which is exactly what happened, and the screen was the
+      // only place that disagreed. A fatal diagnostic makes that sentence
+      // untrue, so it is followed by what actually went wrong rather than left
+      // to stand on its own.
+      const fatal = this.#faults.filter((d) => d.severity === 'fatal');
       const assistantText = this.#said.at(-1) || `Built ${view.title}.`;
       this.#turns.push(
         // The elapsed line stays after the answer: it is the receipt for how
@@ -538,79 +494,19 @@ class WeaveDock extends HTMLElement {
           catalog_version: out.catalogVersion,
         },
       });
-      // Diagnostics raised while the DSL was being parsed and materialized.
-      // They go under the answer they contradict, and `/view` adds whatever
-      // else only shows up once the thing is actually on screen and fetching.
-      this.#noteFaults(view.id, this.#faults, view);
+      if (fatal.length) {
+        this.#turns.push({
+          role: 'assistant',
+          text: `Not all of that reached the page — ${
+            [...new Set(fatal.map((d) => d.why || d.code))].join('; ')
+          }. The view shows the detail.`,
+        });
+      }
     }
 
     this.#busy = false;
     this.querySelector('app-chatbox')?.setLoading(false);
     this.#paintThread();
-  }
-
-  /**
-   * Attach what went wrong to the turn that produced it.
-   *
-   * The model writes its closing sentence before a single component has
-   * rendered, so on a turn that dropped something it still says "here's your
-   * chart" — which is exactly what happened, and the screen was the only place
-   * that disagreed. The complaint belongs directly under the claim it makes
-   * untrue, which is here, not in a banner over the dashboard.
-   *
-   * Two callers, one turn. `#respond` passes the diagnostics raised while the
-   * DSL was parsed and materialized; `/view` passes the ones that only appear
-   * once the surface is on screen and its queries have run. They arrive
-   * seconds apart, describe the same generation, and overlap — the page
-   * re-materializes the same DSL — so they merge into one section rather than
-   * stacking two, deduplicated on code and message.
-   *
-   * Returns whether this thread owns the view. A saved view reopened from
-   * `/custom-views` long after its conversation ended fires the same
-   * diagnostics at a dock that has no turn for it; there is nothing here for
-   * them to sit under, so they are declined and the page shows its own strip.
-   *
-   * @param {string} viewId
-   * @param {Array<{code?: string, message?: string, severity?: string, why?: string}>} list
-   * @param {object} [view] the row, when the caller is mid-turn and the
-   *   artifact card for it has only just been pushed
-   * @returns {boolean}
-   */
-  #noteFaults(viewId, list, view = null) {
-    if (!viewId) return false;
-    const shown = (list ?? []).filter((d) =>
-      // Fatal means the surface is not what was asked for; runtime means
-      // something it needed did not arrive. Advisory is a nudge aimed at the
-      // generator, not at the person reading the screen, and showing it would
-      // train everyone to ignore the rest.
-      (d.severity === 'fatal' || d.severity === 'runtime')
-      // The repair loop narrating itself. `repair_started` and
-      // `repair_no_better` are classified runtime because they describe the
-      // runtime, and they would otherwise read as two more things wrong with
-      // the dashboard. What the loop failed to fix is already in this list on
-      // its own account.
-      && d.source !== 'repair');
-    const owned = view ?? this.#turns
-      .find((t) => t.role === 'artifact' && t.view?.id === viewId)?.view;
-    if (!owned) return false;
-    if (!shown.length) return true; // ours, and nothing wrong with it
-
-    let turn = this.#turns.find((t) => t.role === 'faults' && t.view?.id === viewId);
-    if (!turn) {
-      turn = { role: 'faults', view: owned, items: [], seen: new Set() };
-      this.#turns.push(turn);
-    }
-    for (const d of shown) {
-      const key = `${d.code}/${d.message}`;
-      if (turn.seen.has(key)) continue;
-      turn.seen.add(key);
-      turn.items.push(d);
-    }
-
-    if (!this.#open) this.#unread = true;
-    this.#paintLauncher();
-    this.#paintThread();
-    return true;
   }
 
   #paintThread() {
@@ -634,7 +530,7 @@ class WeaveDock extends HTMLElement {
       <h3 class="hero__title">What are you working on?</h3>
       <p class="hero__sub">Ask a question, create something new, or describe what you want to change.</p>
       <div class="hero__chips">
-        ${WEAVE_STARTERS.map((s) => `<button class="chip" type="button">${escHtml(s)}</button>`).join('')}
+        ${STARTERS.map((s) => `<button class="chip" type="button">${escHtml(s)}</button>`).join('')}
       </div>`;
     for (const chip of hero.querySelectorAll('.chip')) {
       chip.addEventListener('click', () => this.#send(chip.textContent));
@@ -664,27 +560,6 @@ class WeaveDock extends HTMLElement {
         </button>`;
       node.querySelector('.artifact').addEventListener('click',
         () => navigate(`/view?id=${encodeURIComponent(turn.view.id)}`));
-    } else if (turn.role === 'faults') {
-      // `why` first, `message` second, and both. `why` is the manifest's
-      // one-line answer to what this means for the person looking at the
-      // screen; `message` names statements and dot-paths and is written for
-      // whoever has to fix the generator. The person reporting it is very
-      // often the one who then has to fix it, so neither is dropped.
-      const worst = turn.items.some((d) => d.severity === 'fatal') ? 'fatal' : 'runtime';
-      node.innerHTML = `
-        <div class="faults faults--${worst}">
-          <p class="faults__head">
-            ${icons.alertTriangle('faults__icon', 14, 1.5)}
-            ${turn.items.length === 1 ? 'One thing did not reach the page' : `${turn.items.length} things did not reach the page`}
-          </p>
-          <ul class="faults__list">
-            ${turn.items.map((d) => `
-              <li class="faults__item">
-                <span class="faults__why">${escHtml(d.why || d.code || 'Something went wrong')}</span>
-                ${d.message ? `<span class="faults__detail">${escHtml(d.message)}</span>` : ''}
-              </li>`).join('')}
-          </ul>
-        </div>`;
     } else {
       node.textContent = turn.text;
     }

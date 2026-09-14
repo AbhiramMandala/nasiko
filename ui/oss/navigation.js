@@ -122,11 +122,10 @@ const MODULE_NAVS = {
   observability: {
     title: 'Observability', icon: 'activity',
     groups: [
-      // Heading-level links (a group with a url and no items), so the two
-      // entry points sit above the dynamic "Recent sessions" group rather
-      // than under a "Home" label that names nothing.
-      { label: 'All sessions', url: '/sessions' },
-      { label: 'Resources', url: '/resources' },
+      { label: 'Home', items: [
+        { label: 'Execution history', url: '/sessions' },
+        { label: 'Resources', url: '/resources' },
+      ]},
     ],
   },
   // Every chat, newest first, under one tree — the group is dynamic, so the
@@ -160,18 +159,7 @@ const MODULE_NAVS = {
 // agent's chats instead. The API has no filter for either, so over-fetch one
 // page and filter client-side.
 const SESSION_ROWS = 15;
-const sessionItems = async ({
-  orchestratorOnly = false,
-  path = '/chat',
-  // The observability tree links to a page that reads `session_id` alone.
-  // app-module-nav's active-row match compares *every* param in the row's url
-  // against the location, so carrying chat's agent params there would mean no
-  // row ever highlights.
-  sessionIdOnly = false,
-  // Chat rows delete the session; an observability row is a read-only jump and
-  // must not put a destructive control in a nav list.
-  deletable = true,
-} = {}) => {
+const sessionItems = async ({ orchestratorOnly = false, path = '/chat' } = {}) => {
   try {
     const res = await call('fetchSessions', '', 50);
     return (res?.data || [])
@@ -179,17 +167,15 @@ const sessionItems = async ({
       .slice(0, SESSION_ROWS)
       .map((s) => {
         const params = new URLSearchParams({ session_id: s.session_id });
-        if (!sessionIdOnly) {
-          // Absent, not empty: app-module-nav's active-row match compares every
-          // param in the row's url against the location, and chat-page reads a
-          // missing agent_id as "the orchestrator routed this one".
-          if (s.agent_id) params.set('agent_id', s.agent_id);
-          params.set('agent_name', s.agent_name || 'Orchestrator');
-          if (s.is_coding_agent) params.set('read_only', '1');
-        }
+        // Absent, not empty: app-module-nav's active-row match compares every
+        // param in the row's url against the location, and chat-page reads a
+        // missing agent_id as "the orchestrator routed this one".
+        if (s.agent_id) params.set('agent_id', s.agent_id);
+        params.set('agent_name', s.agent_name || 'Orchestrator');
+        if (s.is_coding_agent) params.set('read_only', '1');
         return {
           // Present ⇒ app-module-nav renders the row's delete affordance.
-          ...(deletable ? { sessionId: s.session_id } : {}),
+          sessionId: s.session_id,
           // Titles are auto-generated and often the literal "New chat", which
           // makes every row look the same — fall back to the last message.
           // Sliced: a last_message is a whole markdown answer, and the row
@@ -252,45 +238,48 @@ const fetchNavigation = async () => {
   // stays empty and the entry simply never appears — which is correct, because
   // the routes it leads to are not there either.
   await ensureViews();
-  if (hasSavedViews()) base.push(CUSTOM_VIEWS_ITEM);
   const ext = await extension();
-  if (!ext.items) return base;
-  try {
-    return (await ext.items(base, await extensionContext())) || base;
-  } catch (err) {
-    console.error('[navigation] nav extension items() failed — falling back to base', err);
-    return base;
+  let items = base;
+  if (ext.items) {
+    try {
+      items = (await ext.items(base, await extensionContext())) || base;
+    } catch (err) {
+      console.error('[navigation] nav extension items() failed — falling back to base', err);
+    }
   }
+  // After the extension, not before it. An extension is free to return its own
+  // ordered list rather than patch `base` — `ui/ee/web/nav-ext.js` does exactly
+  // that — and anything appended to `base` beforehand is simply dropped on the
+  // floor, which is why this entry never appeared on the EE build. Appending
+  // here is the only placement that holds for every extension, present and
+  // future; nothing else in the list is dynamic enough to care about order.
+  if (hasSavedViews()) items.push(CUSTOM_VIEWS_ITEM);
+  return items;
 };
 
 const fetchModuleNav = async (module) => {
   const nav = MODULE_NAVS[module];
+  // Observability used to append a dynamic "Recent activity" group listing the
+  // five newest sessions. Dropped: on sessions.html — the only page it appeared
+  // on — it restated the first five rows of the table beside it, and the table
+  // is filterable, sortable and complete. Truncated duplicates of the primary
+  // content are noise, and it cost an extra API call per page load.
   let base = nav ? { ...nav, groups: [...nav.groups] } : null;
-  // Three trees list sessions: Orchestrator shows the chats it routed under its
-  // own entry point, Sessions shows every agent's, Observability links the same
-  // rows to their traces.
-  //
-  // Observability's group was removed once before, on the grounds that on
-  // /sessions it restated the first rows of the table beside it. It is back
-  // because the module now has a second page — /observability-session, which
-  // has no table — and stepping between sessions there is the whole point of
-  // the list. It costs the one `fetchSessions` call the other two trees
-  // already make.
-  if (base && ['orchestrator', 'sessions', 'observability'].includes(module)) {
+  // The two trees that list chats: Orchestrator shows the ones it routed under
+  // its own entry point, Sessions shows every agent's.
+  if (base && (module === 'orchestrator' || module === 'sessions')) {
     const orchestratorOnly = module === 'orchestrator';
-    const observability = module === 'observability';
     const sessions = await sessionItems({
       orchestratorOnly,
-      path: observability ? '/observability-session' : orchestratorOnly ? '/chat' : '/chats',
-      sessionIdOnly: observability,
-      deletable: !observability,
+      path: orchestratorOnly ? '/chat' : '/chats',
     });
-    // Last, below the static groups; omitted entirely when empty, since a group
-    // with no items and no url renders as a stray heading.
+    // Last, below Workflows; omitted entirely when empty, since a group with
+    // no items and no url renders as a stray heading.
     if (sessions.length) {
-      const label = observability ? 'Recent sessions'
-        : orchestratorOnly ? 'Session' : 'All sessions';
-      base = { ...base, groups: [...base.groups, { label, items: sessions }] };
+      base = {
+        ...base,
+        groups: [...base.groups, { label: orchestratorOnly ? 'Session' : 'All sessions', items: sessions }],
+      };
     }
   }
   const ext = await extension();

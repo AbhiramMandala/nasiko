@@ -22,7 +22,7 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./custom-views-page.css', import.meta.url));
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-import { escHtml, escAttr } from '/common/utils/escape.js';
+import { escAttr } from '/common/utils/escape.js';
 import { timeAgo } from '/common/utils/date-utils.js';
 import { toast } from '/common/utils/toast.js';
 import {
@@ -35,11 +35,22 @@ import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-menu/app-menu.js';
 import '/common/design-system/app-input/app-input.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-card/app-card.js';
 
-const SORTS = [
-  { value: 'visits', label: 'Most visited' },
+/**
+ * Both orders run on the server's own timestamps, so they mean the same thing
+ * on every machine the user signs in from. (The "Most visited" sort that used
+ * to head this list did not: it counted opens in one browser's localStorage,
+ * which the API has nowhere to store and a second device could never agree
+ * with.) `value` must be a key of the store's `SORTS`.
+ */
+const SORT_OPTIONS = [
+  { value: 'newest', label: 'Newest first' },
+  { value: 'oldest', label: 'Oldest first' },
   { value: 'recent', label: 'Recently edited' },
 ];
+
+const DEFAULT_SORT = 'newest';
 
 /**
  * The two things a shelf is for besides opening: fixing a name the generator
@@ -54,7 +65,7 @@ const CARD_ACTIONS = [
 
 class CustomViewsPage extends HTMLElement {
   #initialized = false;
-  #sort = 'visits';
+  #sort = DEFAULT_SORT;
   #unsubscribe = null;
   /** False until a list call has answered, so "empty" and "not asked yet" differ. */
   #loaded = false;
@@ -66,7 +77,7 @@ class CustomViewsPage extends HTMLElement {
         <div class="page-head">
           <h1 class="title-page">Custom views</h1>
           <app-select id="sort" size="md" aria-label="Sort views"
-            options='${JSON.stringify(SORTS)}' value="visits"></app-select>
+            options='${JSON.stringify(SORT_OPTIONS)}' value="${DEFAULT_SORT}"></app-select>
         </div>
         <div class="grid" id="grid"></div>`;
 
@@ -167,21 +178,35 @@ class CustomViewsPage extends HTMLElement {
       }
       return;
     }
-    // ponytail: no per-card menu. Rename, duplicate and delete are all real
-    // wants, and none of them was asked for — the shelf's job is to list and
-    // open. The store is ready for two of them: `deleteView()` and the title
-    // arm of `saveView()`'s PATCH are both wired to the API already.
-    grid.innerHTML = views.map((v) => `
-      <article class="view-card" data-id="${escAttr(v.id)}">
-        <a class="view-card__link" href="/view?id=${escAttr(encodeURIComponent(v.id))}">
-          <h2 class="view-card__title">${escHtml(v.title)}</h2>
-        </a>
-        <p class="view-card__meta">Edited ${escHtml(timeAgo(Math.floor(v.updatedAt / 1000)))}</p>
-        <app-menu class="view-card__menu" align="end"
-          label="Actions for ${escAttr(v.title)}" trigger-label="View actions"
-          items='${escAttr(JSON.stringify(CARD_ACTIONS))}'></app-menu>
-      </article>`).join('');
+    grid.innerHTML = views.map((v) => cardHtml(v)).join('');
   }
+}
+
+/**
+ * One card — the same tile the orchestrator's agent suggestions use.
+ *
+ * `<app-card>` with a name and a one-line description, which is all those are
+ * (`orchestrator-page.js#L282`). A view had a composition summary and
+ * data-source chips here, both read off the DSL; they went because a shelf of
+ * tiles is scanned, not read, and the title is what the user is scanning for.
+ * `view-summary.js` went with them.
+ *
+ * No corner arrow: the whole card is the link (`href`), so the glyph restated
+ * what the cursor and the hover lift already say. The actions slot carries the
+ * menu alone, revealed on hover.
+ */
+function cardHtml(v) {
+  return `
+    <app-card class="view-card" data-id="${escAttr(v.id)}"
+      name="${escAttr(v.title)}"
+      description="Edited ${escAttr(timeAgo(Math.floor(v.updatedAt / 1000)))}"
+      tags='${escAttr(JSON.stringify(v.ownerName ? [`Owner: ${v.ownerName}`] : []))}'
+      href="/view?id=${escAttr(encodeURIComponent(v.id))}"
+      aria-label="Open ${escAttr(v.title)}">
+      <app-menu data-slot="actions" class="view-card__menu" align="end"
+        label="Actions for ${escAttr(v.title)}" trigger-label="View actions"
+        items='${escAttr(JSON.stringify(CARD_ACTIONS))}'></app-menu>
+    </app-card>`;
 }
 
 /**

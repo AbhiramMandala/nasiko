@@ -3,7 +3,7 @@
  *
  * Saved views live on the server; unsaved ones live in localStorage and are
  * never sent. The seam between them is where the bugs are, so that is what
- * these cover: the id changing at first Save, a visit count that has to survive
+ * these cover: the id changing at first Save and everything that has to follow
  * it, and a 404 meaning "this build does not have the feature" rather than
  * "something went wrong".
  *
@@ -110,8 +110,6 @@ test('first Save is a POST, and the view takes the server id with it', async () 
   scriptedRun([]);
   const local = views.createView('agent latency by provider');
   await views.setViewSurface(local.id, { dsl: 'root = Y()', catalogVersion: 'cat-9' });
-  views.touchView(local.id);
-  views.touchView(local.id);
 
   scriptedRun([reply(201, row({ id: 'srv-new', title: 'agent latency by provider', dsl: 'root = Y()' }))]);
   const savedRow = await views.saveView(local.id);
@@ -135,9 +133,6 @@ test('first Save is a POST, and the view takes the server id with it', async () 
   assert.equal(views.getView(local.id).id, 'srv-new');
   assert.equal(views.getView('srv-new').id, 'srv-new');
   assert.ok(views.listSavedViews().some((v) => v.id === 'srv-new'));
-  // The visit count followed the id across, or "Most visited" would reset every
-  // time someone saved the thing they had been opening.
-  assert.equal(views.getView('srv-new').visits, 2);
 });
 
 test('the pre-Save id keeps resolving, so nothing holding it is orphaned', () => {
@@ -424,4 +419,24 @@ test('hydrating an id that is already SAVED does not shadow it locally', () => {
 test('a hydrated view with no title still gets a name', () => {
   scriptedRun([]);
   assert.equal(views.hydrateView({ id: 'resumed-3' }).title, 'New view');
+});
+
+// ── listSavedViews: the three orders /custom-views offers ────────────────────
+
+test('sorts by created, both ways, and by edited — falling back rather than throwing', async () => {
+  scriptedRun([reply(200, [
+    row({ id: 'old-made', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z' }),
+    row({ id: 'new-made', created_at: '2026-06-01T00:00:00Z', updated_at: '2026-02-01T00:00:00Z' }),
+  ])]);
+  await views.refreshViews();
+
+  const ids = (opts) => views.listSavedViews(opts).map((v) => v.id);
+  assert.deepEqual(ids({ sort: 'newest' }), ['new-made', 'old-made']);
+  assert.deepEqual(ids({ sort: 'oldest' }), ['old-made', 'new-made']);
+  // Edited is a different order from created here, which is the whole point of
+  // offering it: the older view is the one touched most recently.
+  assert.deepEqual(ids({ sort: 'recent' }), ['old-made', 'new-made']);
+  // The value comes from a select; an unknown one must not throw mid-render.
+  assert.deepEqual(ids({ sort: 'most-visited' }), ids({ sort: 'newest' }));
+  assert.deepEqual(ids(), ids({ sort: 'newest' }));
 });

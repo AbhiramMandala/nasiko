@@ -26,13 +26,6 @@
  * everything saved-related turns itself off. `viewsAvailable()` is what the
  * rail and the Save button read.
  *
- * ## `visits` has no server field
- *
- * /custom-views offers a "Most visited" sort and the API has nowhere to put a
- * visit count. It stays local: a small id→count map, merged on read. A user on
- * a second machine sees the same views ordered by their own use of them, which
- * is the honest reading of what that sort means anyway.
- *
  * @module common/state/weave-views
  */
 
@@ -43,8 +36,6 @@ import { getJson, postJson, patchJson, deleteJson } from '../services/api.js';
 
 /** Versioned so a shape change can't be read back as the old one. */
 const KEY = 'weave-views-v1';
-/** Visit counts, kept apart because they outlive the local row once it is saved. */
-const VISITS_KEY = 'weave-view-visits-v1';
 /** Local id → server id, so nothing that kept the pre-Save id is orphaned by it. */
 const ALIAS_KEY = 'weave-view-aliases-v1';
 /** Oldest aliases are dropped past this. Generous; each entry is two short strings. */
@@ -58,7 +49,7 @@ let saved = [];
 /** null = not asked yet, true/false = the answer from the first list call. */
 let available = null;
 
-// ── local storage: unsaved views, and visit counts ──────────────────────────
+// ── local storage: unsaved views ────────────────────────────────────────────
 
 function readLocal() {
   try {
@@ -72,15 +63,6 @@ function readLocal() {
 function writeLocal(views) {
   try { localStorage.setItem(KEY, JSON.stringify(views)); } catch { /* quota / private mode */ }
   announce();
-}
-
-function readVisits() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(VISITS_KEY) || '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
 }
 
 function readAliases() {
@@ -115,10 +97,6 @@ function addAlias(from, to) {
 /** The id a view is known by now, following one hop of the swap above. */
 export const resolveViewId = (id) => readAliases()[id] || id;
 
-function writeVisits(visits) {
-  try { localStorage.setItem(VISITS_KEY, JSON.stringify(visits)); } catch { /* quota / private mode */ }
-}
-
 const announce = () => document.dispatchEvent(new CustomEvent(VIEWS_CHANGED));
 
 // ── the wire shape ──────────────────────────────────────────────────────────
@@ -131,10 +109,11 @@ const announce = () => document.dispatchEvent(new CustomEvent(VIEWS_CHANGED));
  * out of four call sites — and out of the pages, which should not have to know
  * this store has a server behind it at all.
  */
-function fromRow(row, visits = readVisits()) {
+function fromRow(row) {
   return {
     id: row.id,
     title: row.title,
+    ownerName: row.owner_name || '',
     prompt: '',                       // not stored server-side; only the title survives
     dsl: row.dsl || null,
     catalogVersion: row.catalog_version || null,
@@ -142,7 +121,6 @@ function fromRow(row, visits = readVisits()) {
     createdAt: Date.parse(row.created_at) || 0,
     updatedAt: Date.parse(row.updated_at) || 0,
     saved: true,
-    visits: visits[row.id] ?? 0,
   };
 }
 
@@ -208,36 +186,40 @@ export const viewsAvailable = () => available;
 
 /** Every view this browser knows about, newest first — saved and unsaved alike. */
 export function listViews() {
-  const visits = readVisits();
-  return [...saved, ...readLocal().map((v) => ({ ...v, visits: visits[v.id] ?? 0 }))]
-    .sort((a, b) => b.createdAt - a.createdAt);
+  return [...saved, ...readLocal()].sort((a, b) => b.createdAt - a.createdAt);
 }
+
+/**
+ * The orders /custom-views offers. Both timestamps are the server's, so every
+ * one of these means the same thing on every machine the user signs in from —
+ * which is what a local visit counter could never be, and why the "Most
+ * visited" sort this replaced is gone.
+ */
+export const SORTS = {
+  newest: (a, b) => b.createdAt - a.createdAt,
+  oldest: (a, b) => a.createdAt - b.createdAt,
+  recent: (a, b) => b.updatedAt - a.updatedAt,
+};
 
 /**
  * The saved ones, which are the only ones the sidebar and /custom-views show.
  *
  * Synchronous and served from cache on purpose: this is called on every render
  * and every store change. `refreshViews()` is what makes it current.
+ *
+ * `sort` is one of `SORTS`; anything else falls back to `newest` rather than
+ * throwing, since the value arrives from a select the user can change.
  */
-export function listSavedViews({ sort = 'visits' } = {}) {
-  const visits = readVisits();
-  const rows = saved.map((v) => ({ ...v, visits: visits[v.id] ?? 0 }));
-  return rows.sort(sort === 'recent'
-    ? (a, b) => b.updatedAt - a.updatedAt
-    : (a, b) => (b.visits ?? 0) - (a.visits ?? 0) || b.updatedAt - a.updatedAt);
+export function listSavedViews({ sort = 'newest' } = {}) {
+  return [...saved].sort(SORTS[sort] || SORTS.newest);
 }
 
 export const hasSavedViews = () => saved.length > 0;
 
 /** A view by id, wherever it lives. Local first: an unsaved view is only here. */
 export function getView(id) {
-  const visits = readVisits();
   const key = resolveViewId(id);
-  const view = readLocal().find((v) => v.id === key) || saved.find((v) => v.id === key);
-  // `visits` is merged on read rather than stored on the row, for both homes:
-  // the count changes without the row changing, and on a saved row the copy
-  // baked in at fetch time would be stale the moment the view was opened.
-  return view ? { ...view, visits: visits[key] ?? 0 } : null;
+  return readLocal().find((v) => v.id === key) || saved.find((v) => v.id === key) || null;
 }
 
 // ── titles and ids ──────────────────────────────────────────────────────────
@@ -322,7 +304,6 @@ export function createView(prompt) {
     createdAt: now,
     updatedAt: now,
     saved: false,
-    visits: 0,
     // Informational server-side (doc 6); empty until something knows which
     // data functions the generated surface actually reached for.
     dataSources: [],
@@ -346,7 +327,6 @@ export function hydrateView({ id, title, dsl, catalogVersion }) {
     createdAt: now,
     updatedAt: now,
     saved: false,
-    visits: 0,
     dataSources: [],
     dsl: dsl ?? null,
     catalogVersion: catalogVersion ?? null,
@@ -448,15 +428,8 @@ export async function saveView(id) {
     data_sources: local.dataSources ?? [],
   })));
 
-  // Carry the visit count across the id change, then swap the rows. Both
-  // writes happen before the single announce so no listener ever sees the
-  // view twice or not at all.
-  const visits = readVisits();
-  if (visits[id]) {
-    visits[row.id] = (visits[row.id] ?? 0) + visits[id];
-    delete visits[id];
-    writeVisits(visits);
-  }
+  // Both writes happen before the single announce, so no listener ever sees
+  // the view twice or not at all.
   addAlias(id, row.id);
   saved = [row, ...saved];
   try { localStorage.setItem(KEY, JSON.stringify(readLocal().filter((v) => v.id !== id))); } catch { /* quota */ }
@@ -477,7 +450,7 @@ export async function renameView(id, title) {
   const next = String(title ?? '').trim();
   if (!next) throw new Error('A view needs a name.');
 
-  // Resolved, not the raw id, the same way `getView`/`touchView` are: a caller
+  // Resolved, not the raw id, the same way `getView` is: a caller
   // that captured a view's pre-Save id (the dock's `#retitle`, firing after a
   // generation, does exactly this) can still be racing a Save that already
   // swapped it for the server's UUID. Without this hop, neither `readLocal()`
@@ -517,23 +490,6 @@ export async function deleteView(id) {
     if (err?.status !== 404) throw err;
   }
   saved = saved.filter((v) => v.id !== id);
-  announce();
-}
-
-/**
- * Bump the visit counter that orders /custom-views' "Most visited".
- *
- * Local by design: the server has no such field, and a count of how often *you*
- * opened something is the honest reading of that sort anyway. Kept in its own
- * map rather than on the row, so it survives the id swap at first Save and does
- * not need re-merging every time the list is refreshed.
- */
-export function touchView(id) {
-  if (!id) return;
-  const key = resolveViewId(id);
-  const visits = readVisits();
-  visits[key] = (visits[key] ?? 0) + 1;
-  writeVisits(visits);
   announce();
 }
 

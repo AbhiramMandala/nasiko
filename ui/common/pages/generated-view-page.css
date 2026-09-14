@@ -19,6 +19,9 @@
     background: var(--bg-subtle);
   }
 
+  /* `hidden` loses to `display: flex` above without this. */
+  .view-bar[hidden] { display: none; }
+
   .view-bar__actions {
     display: flex;
     align-items: center;
@@ -98,14 +101,28 @@
   .generating__head { color: var(--color-text-main); }
   .generating__steps { margin: 0; padding-left: var(--s-16); }
 
-  /* `is-expanded` used to give the canvas
-     calc(100dvh - var(--shell-topbar-height) - var(--s-80)) — the same class of
-     bug, 48px milder: it subtracted 132px of chrome where there is 180px, so
-     expanding overscrolled by 48px. Now that the canvas fills the card on its
-     own the rule has nothing left to add, so it is gone rather than corrected.
-     The expand button therefore has no visual effect at the moment: decide what
-     expanding should do (escape the card? hide the band and filters?) before
-     giving it a rule again. */
+  /* ── Expanded ─────────────────────────────────────────────────────────── */
+  /* Expand escapes the card: the same dashboard in a dialog that is the whole
+     window, which is the only place a wide generated layout gets its columns.
+     Both rules outrank app-modal's own (600px, 65vh) on specificity. */
+  /* `inset: 0` rather than 100vw/100dvh: the dialog is in the top layer, so its
+     containing block is already the viewport — sizing by inset can't overshoot
+     by the scrollbar's width the way 100vw does. margin/max-* are global.css's
+     centering defaults, which a full-bleed dialog has to give back. */
+  #fullscreen .app-modal {
+    inset: 0;
+    width: auto;
+    height: auto;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    border-radius: 0;
+  }
+
+  /* The body is the page now: it takes the height the header leaves and scrolls
+     its own content. `flex: 1` is safe here (unlike app-modal's default) because
+     the dialog's height is fixed by the viewport, not by this content. */
+  #fullscreen .body { flex: 1; max-height: none; padding: var(--s-24); }
 
   /* ── Filters ──────────────────────────────────────────────────────────── */
   .filters {
