@@ -262,6 +262,37 @@ function routePaths() {
 //  Rules
 // ─────────────────────────────────────────────────────────────────────────────
 
+
+/**
+ * Every deprecated attribute in the design system, read from the components
+ * themselves: `@attr {string} title - (deprecated: use heading)`.
+ *
+ * Generated, not listed. A hand-kept list is what `layerOf` above already
+ * describes going wrong once — it drifted, and drift in a list is invisible.
+ * Here the component that deprecates an attribute is the same file that
+ * declares it, so the two cannot disagree.
+ *
+ * @returns {Map<string, Map<string, string>>} tag -> (old attribute -> new one)
+ */
+function deprecatedAttributes() {
+  if (deprecatedAttributes.cache) return deprecatedAttributes.cache;
+  const out = new Map();
+  const DS = resolve(UI, 'common/design-system');
+  for (const dir of readdirSync(DS, { withFileTypes: true })) {
+    if (!dir.isDirectory()) continue;
+    const file = resolve(DS, dir.name, `${dir.name}.js`);
+    let src;
+    try { src = readFileSync(file, 'utf8'); } catch { continue; }
+    const attrs = new Map();
+    for (const m of src.matchAll(/@attr\s*\{[^}]*\}\s*([\w-]+)\s*-\s*\(deprecated:\s*use\s+([\w-]+)\)/g)) {
+      attrs.set(m[1], m[2]);
+    }
+    if (attrs.size) out.set(dir.name, attrs);
+  }
+  deprecatedAttributes.cache = out;
+  return out;
+}
+
 const rules = [
   {
     id: 'layer-direction',
@@ -282,6 +313,35 @@ const rules = [
             line: lineOf(source, source.indexOf(spec)),
             message: `imports ${spec} (layer ${to}) from layer ${from} — that is upward`,
           });
+        }
+      }
+      return out;
+    },
+  },
+
+  {
+    id: 'no-deprecated-attribute',
+    enforce: 'zero',
+    why: 'A component that renames an attribute keeps the old name working, so nothing breaks and nothing tells ' +
+         'you either — the shim warns at runtime, which no CI run reads. app-empty-state\'s `title` was cleaned ' +
+         'out of three pages and came back in a fourth written months later against an old example, and the only ' +
+         'thing that noticed was a person reading the file. There are 16 deprecated attributes across 12 ' +
+         'components; every one of them is the same trap. The pairs are read from the components\' own docblocks, ' +
+         'so this rule cannot fall behind the design system.',
+    check({ rel, source, isJs }) {
+      if (!isJs && !rel.endsWith('.html')) return [];
+      const out = [];
+      for (const [tag, attrs] of deprecatedAttributes()) {
+        if (!source.includes(`<${tag}`)) continue;
+        for (const open of source.matchAll(new RegExp(`<${tag}\\b[^>]*>`, 'g'))) {
+          for (const [old, replacement] of attrs) {
+            if (!new RegExp(`\\b${old}=`).test(open[0])) continue;
+            out.push({
+              file: rel,
+              line: lineOf(source, open.index),
+              message: `<${tag}> is given the deprecated "${old}" — use "${replacement}"`,
+            });
+          }
         }
       }
       return out;

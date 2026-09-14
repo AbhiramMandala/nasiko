@@ -355,7 +355,7 @@ class OverviewPage extends HTMLElement {
           <app-chart id="activity-plot" class="plot-slot" type="line" format="compact" height="240px"
             label="Requests over time" empty-text="No activity in this window" loading></app-chart>
           <app-empty-state id="activity-empty" hidden
-            title="See your agents in action"
+            heading="See your agents in action"
             description="Request volume, tool calls, A2A interactions and activity trends will appear here as your agents run."></app-empty-state>
         </section>
 
@@ -367,7 +367,7 @@ class OverviewPage extends HTMLElement {
             label="Latency percentiles over time"
             empty-text="No latency recorded" loading></app-chart>
           <app-empty-state id="latency-empty" hidden
-            title="See how your agents perform"
+            heading="See how your agents perform"
             description="Track response times across your fleet and spot changes in latency as your agents handle real work."></app-empty-state>
           <p class="tail-note" id="tail-note" hidden></p>
         </section>
@@ -395,7 +395,7 @@ class OverviewPage extends HTMLElement {
             height="240px" format="currency" label="Spend over time"
             empty-text="No spend in this window" loading></app-chart>
           <app-empty-state id="spend-empty" hidden
-            title="Understand your agent economics"
+            heading="Understand your agent economics"
             description="Track tokens, usage and platform spend as your fleet grows."></app-empty-state>
         </section>
 
@@ -408,7 +408,7 @@ class OverviewPage extends HTMLElement {
           <app-table id="attr-table" pagination="none"
             empty-message="No activity in this period"></app-table>
           <app-empty-state id="attr-empty" hidden
-            title="See what&#39;s driving activity"
+            heading="See what&#39;s driving activity"
             description="Your agents will appear here once they&#39;re connected and running."></app-empty-state>
         </section>
       </div>

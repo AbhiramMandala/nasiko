@@ -380,7 +380,7 @@ class SessionsPage extends HTMLElement {
       // "Start a Chat" would be answering a question nobody asked, and the
       // range control that fixes this is already in the toolbar above.
       this.#renderState(`<app-empty-state
-        title="No sessions in this range"
+        heading="No sessions in this range"
         description="Nothing ran in the ${escHtml(this.#rangeLabel().toLowerCase())}. Widen the time range to see older sessions."
         icon='${icons.clock()}'></app-empty-state>`);
     } else if (this.#sessions.length) {

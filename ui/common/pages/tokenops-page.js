@@ -413,7 +413,7 @@ class TokenopsPage extends HTMLElement {
               flush-top legend="off" label="Spend over time" empty-text="No usage in this window" loading></app-chart>
           </div>
           <app-empty-state id="spend-empty" hidden
-            title="Track your spend as it happens"
+            heading="Track your spend as it happens"
             description="Cost and operation volume will chart here once your agents start running."></app-empty-state>
         </section>
 
@@ -428,7 +428,7 @@ class TokenopsPage extends HTMLElement {
                 format="currency" label="Spend by hour of day"
                 empty-text="No spend on this day" loading></app-chart>
               <app-empty-state id="conc-empty" hidden
-                title="See when spend clusters"
+                heading="See when spend clusters"
                 description="An hour-by-hour breakdown of the day you pick will appear here once your agents run."></app-empty-state>
             </div>
             <ul class="conc-legend" id="conc-legend"></ul>
@@ -451,7 +451,7 @@ class TokenopsPage extends HTMLElement {
         search-placeholder="Search by name..."
         empty-message="No activity in this period"></app-table>
       <app-empty-state id="table-empty" hidden
-        title="See what&#39;s driving spend"
+        heading="See what&#39;s driving spend"
         description="Your agents will appear here once they&#39;re connected and running."></app-empty-state>
         </div>
     `;

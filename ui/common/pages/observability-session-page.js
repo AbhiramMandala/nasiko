@@ -588,10 +588,10 @@ class ObservabilitySessionPage extends HTMLElement {
    * without a span to select, so `.traces-empty` folds it away and this one
    * empty state takes both columns.
    */
-  #renderTracesPlaceholder(title, description, icon) {
+  #renderTracesPlaceholder(heading, description, icon) {
     this.querySelector('#traces-pane').innerHTML = `
       ${this.#tracesTitle()}
-      <app-empty-state title="${escHtml(title)}" description="${escHtml(description)}"
+      <app-empty-state heading="${escHtml(heading)}" description="${escHtml(description)}"
         icon='${icon}'></app-empty-state>
     `;
     this.#syncPanes();

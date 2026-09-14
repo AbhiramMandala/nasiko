@@ -208,7 +208,7 @@ class ChatPage extends HTMLElement {
     messagesEl.innerHTML = `
       <div class="welcome-state">
         <app-empty-state
-          title="${failed ? 'Failed to load sessions' : 'No sessions yet'}"
+          heading="${failed ? 'Failed to load sessions' : 'No sessions yet'}"
           description="${failed
             ? 'Something went wrong while loading your chat sessions.'
             : 'Every chat, across every agent, is listed here. Pick an agent to start one.'}"
