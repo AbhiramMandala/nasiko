@@ -98,6 +98,8 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         secrets_encryption_key: "12345678901234567890123456789012".into(),
         oci_storage_bucket: "nasiko-bench-artifacts".into(),
         agent_image_registry: String::new(),
+        agent_registry_username: None,
+        agent_registry_password: None,
         build_push_token: String::new(),
         seed_agents: None,
         // Dummy but non-empty — ee build_ee_app requires Some(), and a

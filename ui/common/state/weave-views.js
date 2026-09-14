@@ -242,37 +242,42 @@ export function getView(id) {
 
 // ── titles and ids ──────────────────────────────────────────────────────────
 
+/** Matches the server's `titling::MAX_TITLE_CHARS` fallback cap. */
+const MAX_TITLE_CHARS = 80;
+
 /**
- * Words a request is phrased with rather than about. Stripping them is what
- * turns "Create a view for monitoring costs of the top 5 agents" into a title
- * short enough for a tab and a card.
+ * The title a view is created with, before the real one arrives.
  *
- * ponytail: a canned heuristic standing in for the model's own title. Replace
- * this with whatever the generator returns, not with a longer word list.
+ * A plain truncation of the prompt — the same fallback the server uses when
+ * its own LLM call fails — rather than a heuristic that tries to guess a
+ * good title client-side. The dock replaces this via `renameView` the moment
+ * `POST /weave/title` resolves (see `weave-dock.js#retitle`); this is only
+ * what's on screen for the second or two before that.
  */
-const FILLER = new Set([
-  'a', 'an', 'the', 'me', 'my', 'our', 'of', 'for', 'to', 'in', 'on', 'with',
-  'and', 'or', 'that', 'this', 'only', 'all', 'some', 'please', 'can', 'you',
-  'create', 'build', 'make', 'show', 'give', 'add', 'generate', 'get', 'want',
-  'view', 'views', 'dashboard', 'screen', 'page', 'report', 'chart',
-]);
+function fallbackTitle(prompt) {
+  const trimmed = String(prompt || '').trim();
+  if (!trimmed) return 'New view';
+  return trimmed.length > MAX_TITLE_CHARS
+    ? `${trimmed.slice(0, MAX_TITLE_CHARS).trimEnd()}…`
+    : trimmed;
+}
 
 /**
- * A connective left dangling at the cut, e.g. "agent latency by" from "…latency
- * by provider". Trimmed rather than added to FILLER: these words carry meaning
- * inside a phrase and only read as debris at the end of one.
+ * The model's own title for `prompt`, via the same LLM call chat sessions use
+ * server-side (`POST /weave/title`, `nasiko_server::titling`).
+ *
+ * Resolves to `null` on any failure — an unconfigured provider, a flaky
+ * network, or the OSS build (the route is EE-only, so this 404s there) —
+ * rather than throwing, so a title fetch is never treated as the turn itself
+ * failing. The caller keeps whatever fallback title is already showing.
  */
-const DANGLING = /\s+(by|per|from|over|across|within|into|at|as|about|between|than)$/;
-
-function titleFrom(prompt) {
-  const words = String(prompt || '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .split(/\s+/)
-    .filter((w) => w && !FILLER.has(w));
-  if (!words.length) return 'New view';
-  const picked = words.slice(0, 3).join(' ').replace(DANGLING, '');
-  return picked.charAt(0).toUpperCase() + picked.slice(1);
+export async function generateViewTitle(prompt) {
+  try {
+    const title = unwrap(await postJson('/weave/title', { prompt: String(prompt || '') }))?.title;
+    return typeof title === 'string' && title.trim() ? title.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -296,7 +301,7 @@ export function createView(prompt) {
   const now = Date.now();
   const view = {
     id: newId(),
-    title: titleFrom(prompt),
+    title: fallbackTitle(prompt),
     prompt: String(prompt || ''),
     createdAt: now,
     updatedAt: now,
@@ -309,6 +314,26 @@ export function createView(prompt) {
     // so "still generating" and "generated an empty surface" stay distinct.
     dsl: null,
     catalogVersion: null,
+  };
+  writeLocal([...readLocal(), view]);
+  return view;
+}
+
+export function hydrateView({ id, title, dsl, catalogVersion }) {
+  const existing = getView(id);
+  if (existing) return existing;
+  const now = Date.now();
+  const view = {
+    id,
+    title: title || 'New view',
+    prompt: '',
+    createdAt: now,
+    updatedAt: now,
+    saved: false,
+    visits: 0,
+    dataSources: [],
+    dsl: dsl ?? null,
+    catalogVersion: catalogVersion ?? null,
   };
   writeLocal([...readLocal(), view]);
   return view;
@@ -436,16 +461,23 @@ export async function renameView(id, title) {
   const next = String(title ?? '').trim();
   if (!next) throw new Error('A view needs a name.');
 
+  // Resolved, not the raw id, the same way `getView`/`touchView` are: a caller
+  // that captured a view's pre-Save id (the dock's `#retitle`, firing after a
+  // generation, does exactly this) can still be racing a Save that already
+  // swapped it for the server's UUID. Without this hop, neither `readLocal()`
+  // nor `saved` has a row under the stale id, the rename silently no-ops, and
+  // the server keeps the placeholder title forever.
+  const key = resolveViewId(id);
   const local = readLocal();
-  const view = local.find((v) => v.id === id);
+  const view = local.find((v) => v.id === key);
   if (view) {
     view.title = next;
     view.updatedAt = Date.now();
     writeLocal(local);
     return view;
   }
-  if (!saved.some((v) => v.id === id)) return null;
-  return patchSaved(id, { title: next });
+  if (!saved.some((v) => v.id === key)) return null;
+  return patchSaved(key, { title: next });
 }
 
 /**

@@ -35,6 +35,7 @@ pub mod seed;
 pub mod settings;
 pub mod state;
 pub mod telemetry;
+pub mod titling;
 pub mod transcribe;
 pub mod usage;
 pub mod users;

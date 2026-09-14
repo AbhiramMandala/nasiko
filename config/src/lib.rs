@@ -28,6 +28,15 @@ pub struct Config {
     /// Empty string → no prefix (Docker local mode).
     /// TODO: this needs to be removed.
     pub agent_image_registry: String,
+    /// Username for authenticating agent-image pulls from a private registry
+    /// (e.g. a private Docker Hub repo). `None` (default) means anonymous
+    /// pulls only — unchanged behavior for public images. Only meaningful
+    /// together with `agent_registry_password`; `DockerRuntime` treats a
+    /// pair where only one is set as "not configured."
+    pub agent_registry_username: Option<String>,
+    /// Password or access token paired with `agent_registry_username`. Never
+    /// logged, never returned in any API response.
+    pub agent_registry_password: Option<String>,
     /// Shared credential the in-cluster BuildKit build Job presents (HTTP
     /// Basic auth, username `"build-service"`) to push freshly-built agent
     /// images into the built-in OCI registry — see
@@ -286,6 +295,12 @@ impl Config {
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
+            agent_registry_username: std::env::var("AGENT_REGISTRY_USERNAME")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            agent_registry_password: std::env::var("AGENT_REGISTRY_PASSWORD")
+                .ok()
+                .filter(|s| !s.is_empty()),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),

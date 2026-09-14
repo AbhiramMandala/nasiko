@@ -398,6 +398,8 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         secrets_encryption_key: "12345678901234567890123456789012".into(),
         oci_storage_bucket: "nasiko-test-artifacts".into(),
         agent_image_registry: String::new(),
+        agent_registry_username: None,
+        agent_registry_password: None,
         build_push_token: String::new(),
         seed_agents: None,
         openai_api_key: None,

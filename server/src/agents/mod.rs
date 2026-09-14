@@ -160,22 +160,25 @@ pub(crate) fn build_agent_spec(
     name: &str,
     image: impl Into<String>,
     ports: Vec<u16>,
-    env: HashMap<String, String>,
+    mut env: HashMap<String, String>,
     default_memory: &str,
     max_replicas: u32,
     writable: bool,
     writable_path: Option<String>,
     owner_id: Uuid,
 ) -> DeploymentSpec {
+    let ports = if ports.is_empty() {
+        vec![DEFAULT_AGENT_PORT]
+    } else {
+        ports
+    };
+    env.entry("PORT".to_string())
+        .or_insert_with(|| ports[0].to_string());
     DeploymentSpec {
         container_id: ContainerId::from_uuid(agent_id),
         name: name.to_string(),
         image: image.into(),
-        ports: if ports.is_empty() {
-            vec![DEFAULT_AGENT_PORT]
-        } else {
-            ports
-        },
+        ports,
         env_vars: env,
         min_replicas: 1,
         max_replicas,
@@ -196,6 +199,7 @@ pub(crate) fn build_agent_spec(
         writable,
         writable_path,
         owner_id,
+        force_pull: false,
     }
 }
 
@@ -265,6 +269,71 @@ mod spec_tests {
     }
 
     #[test]
+    fn sets_the_port_env_var_to_match_the_default_exposed_port() {
+        // Regression: this used to be every CALLER's job to remember. Only
+        // seed_agents_if_configured did; restart/upload/update/reconcile/
+        // import didn't — confirmed live, a seed-deployed agent restarted
+        // via the admin restart endpoint lost $PORT, fell back to its own
+        // image's internal default, and the platform's Docker port mapping
+        // (still pointed at DEFAULT_AGENT_PORT) reached nothing.
+        let id = Uuid::new_v4();
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![],
+            HashMap::new(),
+            "512Mi",
+            1,
+            false,
+            None,
+            Uuid::nil(),
+        );
+        assert_eq!(
+            s.env_vars.get("PORT"),
+            Some(&DEFAULT_AGENT_PORT.to_string())
+        );
+    }
+
+    #[test]
+    fn sets_the_port_env_var_to_match_an_explicit_port() {
+        let id = Uuid::new_v4();
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![9091],
+            HashMap::new(),
+            "512Mi",
+            1,
+            false,
+            None,
+            Uuid::nil(),
+        );
+        assert_eq!(s.env_vars.get("PORT"), Some(&"9091".to_string()));
+    }
+
+    #[test]
+    fn a_caller_supplied_port_env_var_is_never_overwritten() {
+        let id = Uuid::new_v4();
+        let mut env = HashMap::new();
+        env.insert("PORT".to_string(), "1234".to_string());
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![],
+            env,
+            "512Mi",
+            1,
+            false,
+            None,
+            Uuid::nil(),
+        );
+        assert_eq!(s.env_vars.get("PORT"), Some(&"1234".to_string()));
+    }
+
+    #[test]
     fn preserves_explicit_ports() {
         let id = Uuid::new_v4();
         let s = build_agent_spec(
@@ -280,6 +349,25 @@ mod spec_tests {
             Uuid::nil(),
         );
         assert_eq!(s.ports, vec![9091]);
+    }
+
+    #[test]
+    fn port_env_tracks_the_first_of_several_ports() {
+        let id = Uuid::new_v4();
+        let s = build_agent_spec(
+            id,
+            "a",
+            "img:1",
+            vec![9091, 9092],
+            HashMap::new(),
+            "512Mi",
+            1,
+            false,
+            None,
+            Uuid::nil(),
+        );
+        assert_eq!(s.ports, vec![9091, 9092]);
+        assert_eq!(s.env_vars.get("PORT"), Some(&"9091".to_string()));
     }
 
     #[test]
