@@ -49,9 +49,7 @@ values.json
 /docs/MCP_UPLOAD_PLAN_OSS.md
 .preview-shots/
 
-# Vendored LongMemEval benchmark (local PACMS eval harness only, not product
-# code) — clone https://github.com/xiaowu0162/LongMemEval separately if
-# re-running scripts/pacms_longmemeval_test.py.
+# Vendored third-party eval dataset, not product code.
 /LongMemEval-main/
 
 /_to_delete/
