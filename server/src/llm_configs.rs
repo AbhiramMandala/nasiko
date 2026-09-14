@@ -26,8 +26,34 @@ use crate::auth::Claims;
 use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
-/// Outbound providers the LLM router can translate to — used to validate config writes.
-const SUPPORTED_PROVIDERS: [&str; 4] = ["openai", "anthropic", "gemini", "openrouter"];
+/// Built-in providers the LLM router routes through a dedicated client. A config may
+/// also name any admin-registered custom provider — see [`provider_is_supported`].
+const SUPPORTED_PROVIDERS: [&str; 3] = ["openai", "anthropic", "gemini"];
+
+/// Whether `provider` is a usable provider name: a built-in, or a registered (live)
+/// custom provider. Custom providers are added at runtime, so this can't be a static
+/// list — it consults `custom_providers`.
+async fn provider_is_supported(db: &sqlx::PgPool, provider: &str) -> bool {
+    if SUPPORTED_PROVIDERS.contains(&provider) {
+        return true;
+    }
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM custom_providers WHERE label = $1 AND deleted_at IS NULL)",
+    )
+    .bind(provider)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false)
+}
+
+/// Client-facing message for a provider name that is neither a built-in nor a
+/// registered custom provider.
+fn unsupported_provider_msg(provider: &str) -> String {
+    format!(
+        "unsupported provider '{provider}' (expected a built-in [{}] or a registered custom provider)",
+        SUPPORTED_PROVIDERS.join(", ")
+    )
+}
 
 /// The `llm_configs` columns returned to clients, assembled by Postgres into one JSON object.
 const CONFIG_JSON: &str = "json_build_object(\
@@ -127,15 +153,13 @@ pub struct UpdateLlmConfigRequest {
 /// only when no tier model is set (otherwise the router has no fallback).
 fn validate(
     provider: &str,
+    provider_supported: bool,
     model: Option<&str>,
     pinned_model: &Option<String>,
     has_any_tier: bool,
 ) -> Result<(), String> {
-    if !SUPPORTED_PROVIDERS.contains(&provider) {
-        return Err(format!(
-            "unsupported provider '{provider}' (expected one of: {})",
-            SUPPORTED_PROVIDERS.join(", ")
-        ));
+    if !provider_supported {
+        return Err(unsupported_provider_msg(provider));
     }
     match model {
         Some(m) if m.trim().is_empty() => {
@@ -284,8 +308,10 @@ pub(crate) async fn create(
     }
     let has_any_tier =
         req.tier1_model.is_some() || req.tier2_model.is_some() || req.tier3_model.is_some();
+    let provider_supported = provider_is_supported(&state.db, &req.provider).await;
     if let Err(msg) = validate(
         &req.provider,
+        provider_supported,
         req.model.as_deref(),
         &req.pinned_model,
         has_any_tier,
@@ -441,16 +467,9 @@ pub(crate) async fn update(
     }
     // Validate only the fields that are present.
     if let Some(provider) = &req.provider
-        && !SUPPORTED_PROVIDERS.contains(&provider.as_str())
+        && !provider_is_supported(&state.db, provider).await
     {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "unsupported provider '{provider}' (expected one of: {})",
-                SUPPORTED_PROVIDERS.join(", ")
-            ),
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, unsupported_provider_msg(provider)).into_response();
     }
     if let Some(model) = &req.model
         && model.trim().is_empty()
@@ -764,41 +783,57 @@ mod tests {
         assert!(
             validate(
                 "anthropic",
+                true,
                 Some("claude-3-5-sonnet-20241022"),
                 &None,
                 false
             )
             .is_ok()
         );
-        assert!(validate("openai", Some("gpt-4o-mini"), &None, false).is_ok());
+        assert!(validate("openai", true, Some("gpt-4o-mini"), &None, false).is_ok());
+    }
+
+    #[test]
+    fn accepts_custom_provider() {
+        // A registered custom provider (membership resolved by the caller via the DB)
+        // validates just like a built-in.
+        assert!(validate("deepseek", true, Some("deepseek-chat"), &None, false).is_ok());
     }
 
     #[test]
     fn accepts_no_model_when_tiers_set() {
-        assert!(validate("anthropic", None, &None, true).is_ok());
+        assert!(validate("anthropic", true, None, &None, true).is_ok());
     }
 
     #[test]
     fn rejects_no_model_and_no_tiers() {
-        let err = validate("openai", None, &None, false).unwrap_err();
+        let err = validate("openai", true, None, &None, false).unwrap_err();
         assert!(err.contains("either model or at least one tier model"));
     }
 
     #[test]
     fn rejects_unsupported_provider() {
-        let err = validate("cohere", Some("command-r"), &None, false).unwrap_err();
+        // Not a built-in and not registered (caller resolved membership to false).
+        let err = validate("cohere", false, Some("command-r"), &None, false).unwrap_err();
         assert!(err.contains("unsupported provider"));
     }
 
     #[test]
     fn rejects_empty_model() {
-        let err = validate("openai", Some("   "), &None, false).unwrap_err();
+        let err = validate("openai", true, Some("   "), &None, false).unwrap_err();
         assert!(err.contains("model must not be empty"));
     }
 
     #[test]
     fn rejects_empty_pinned_model() {
-        let err = validate("openai", Some("gpt-4o"), &Some("  ".to_string()), false).unwrap_err();
+        let err = validate(
+            "openai",
+            true,
+            Some("gpt-4o"),
+            &Some("  ".to_string()),
+            false,
+        )
+        .unwrap_err();
         assert!(err.contains("pinned_model must not be empty"));
     }
 }
