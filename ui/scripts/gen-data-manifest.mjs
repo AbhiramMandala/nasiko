@@ -169,8 +169,47 @@ const ANSWERS = {
   summary: 'one figure or a flat set of them, for the window as a whole — a KPI strip',
   series: 'a value over TIME, one point per bucket — a line chart',
   breakdown: 'a value per CATEGORY, one row per thing — a bar, donut or ranking',
-  composite: 'several of the above in one response; say which part you are reading',
+  // Never rendered bare. A composite declares `contains`, and the line the
+  // model reads names both what is in there AND what is not — see
+  // `compositeMeans`. "Several of the above" on its own is the sentence that
+  // cost a whole round of this: fetchTokenopsDashboard is KPIs, a summary and
+  // per-agent rows with no time series anywhere in it, and a model told the
+  // response holds "several of the above" reasonably read that as including
+  // one, fetched it alone, and drew its one row set twice.
+  composite: 'several of these in one response',
 };
+
+/** The kinds a composite can be made of. `composite` is not composable. */
+const COMPOSITE_PARTS = ['summary', 'series', 'breakdown'];
+
+/** What each kind is drawn as — the half of ANSWERS that says what to build. */
+const DRAWS = {
+  summary: 'a KPI strip, no chart',
+  series: 'a line chart',
+  breakdown: 'a bar, donut or ranking',
+};
+
+/**
+ * What a composite's source line says.
+ *
+ * The absence is stated, not left to be inferred. A model cannot tell the
+ * difference between "this response has no series" and "the description did
+ * not happen to mention one", and the second reading is the one that ends
+ * with a single Query and a single chart shape.
+ */
+function compositeMeans(contains) {
+  const has = COMPOSITE_PARTS.filter((k) => contains.includes(k));
+  const lacks = COMPOSITE_PARTS.filter((k) => !contains.includes(k));
+  // Each part carries the same chart guidance it would as a standalone kind.
+  // Without it a composite named what it held and not what to DO with it: a
+  // generation read the per-agent rows out of this response, got no hint that
+  // a breakdown is a bar or a donut, and put them in a table — on a request
+  // that said "with charts". The simple kinds had said so all along; the
+  // composite dropped the second half of every one of them.
+  const drawn = has.map((k) => `${k} (${DRAWS[k]})`).join(' + ');
+  return `${drawn} in one response`
+    + (lacks.length ? ` — it has NO ${lacks.join(' and no ')}, so that needs its own Query` : '');
+}
 
 /** Fields that make something a time axis, and ones that make it a dimension. */
 const TIME_FIELDS = ['bucket_start', 'date', 'day', 'hour', 'timestamp', 'period_start'];
@@ -199,6 +238,38 @@ for (const [name, decl] of Object.entries(declared)) {
         + 'kind nobody defined is a word the model has to guess the meaning of.');
     }
     const fields = shapeFields(decl.responseShape);
+    // A composite says WHICH kinds, and each one is checked like a standalone
+    // claim of that kind would be. Left unchecked, `composite` was the one
+    // label that could mean anything — and the most-reached-for source in the
+    // scope was wearing it while containing no series at all.
+    if (answers === 'composite') {
+      const contains = decl.contains;
+      if (!Array.isArray(contains) || contains.length < 2) {
+        fail(`"${name}" answers "composite" but does not declare which kinds it contains.`,
+          `Add contains: [...] with at least two of ${COMPOSITE_PARTS.join(', ')}. `
+          + 'A composite that does not say what is in it is a label the model has to guess at, '
+          + 'and it guesses that everything is in it.');
+      } else {
+        for (const part of contains) {
+          if (!COMPOSITE_PARTS.includes(part)) {
+            fail(`"${name}" declares contains: "${part}", which is not one of ${COMPOSITE_PARTS.join(', ')}.`,
+              'A composite is made of the simple kinds; it cannot contain another composite.');
+          }
+        }
+        if (contains.includes('series') && !TIME_FIELDS.some((f) => fields.has(f))) {
+          fail(`"${name}" says it contains a series, but its responseShape has no time field.`,
+            'This is the check that was missing: a composite claiming a series it does not have '
+            + 'is why a dashboard asking for breadth fetched one source and drew one shape twice.');
+        }
+        if (contains.includes('breakdown') && !DIMENSION_FIELDS.some((f) => fields.has(f))) {
+          fail(`"${name}" says it contains a breakdown, but its responseShape has no dimension field.`,
+            'Nothing to break down by means no categories to put on an axis.');
+        }
+      }
+    } else if (decl.contains) {
+      fail(`"${name}" declares contains but answers "${answers}", not "composite".`,
+        'Only a composite is made of parts.');
+    }
     if (answers === 'series' && !TIME_FIELDS.some((f) => fields.has(f))) {
       fail(`"${name}" answers "series" but its responseShape has no time field (${TIME_FIELDS.join(', ')}).`,
         'A series the model cannot find a time axis in is a line chart it cannot draw.');
@@ -246,7 +317,7 @@ for (const name of registered) {
  */
 function entry(name) {
   const { callStyle, keys, route } = parsed.get(name);
-  const { description, responseShape, argHints = {}, answers } = declared[name];
+  const { description, responseShape, argHints = {}, answers, contains } = declared[name];
   // Keys and their ORDER come from the signature — for a positional function
   // that order is the whole contract. The hints are documentation and are
   // declared, because no type information exists to derive them from.
@@ -258,7 +329,11 @@ function entry(name) {
     route,
     description,
     argsShape,
-    ...(answers && { answers, answersMeans: ANSWERS[answers] }),
+    ...(answers && {
+      answers,
+      answersMeans: answers === 'composite' ? compositeMeans(contains ?? []) : ANSWERS[answers],
+      ...(contains && { contains }),
+    }),
     responseShape,
   };
 }

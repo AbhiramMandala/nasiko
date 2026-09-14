@@ -116,6 +116,7 @@ const FRAMES = new Set(['surface', 'dsl-chunk', 'end', 'fail', 'message', 'note'
 export function createSurfaceSession(options) {
   const {
     endpoint, catalog, container,
+    sessionId = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36),
     onMessage, onDiagnostics, onStatus, onAction, onAssistant,
     call = callDataSource,
     // The live route table, not a copy — see render.js and actions.js. A host
@@ -419,6 +420,7 @@ export function createSurfaceSession(options) {
     const url = `${base}/api${endpoint}`;
     const body = JSON.stringify({
       prompt,
+      session_id: sessionId,
       context: {
         ...(opts.context || {}),
         // The vocabulary this client will actually render with. The generator
@@ -715,6 +717,23 @@ export function createSurfaceSession(options) {
       // asked for must not depend on that host knowing to prime it. Memoised,
       // so this is one fetch per page and a no-op after.
       if (!severityTable && !severities()) await loadSeverities();
+      // Wait for this turn's data before measuring anything.
+      //
+      // A Query settling repaints (queries.onChange -> paint), every paint
+      // re-runs materialize and render, and what they report lands in
+      // turnDiagnostics — which is cleared only when a turn STARTS. So
+      // measuring the moment the stream ends measures a half-arrived surface,
+      // and the stragglers turn up during the repair turn and are counted
+      // against it. The contamination runs one way: it inflates `after`, so a
+      // repair that worked reads as one that half-worked, and a good loop
+      // looks like a doubtful one.
+      //
+      // Seen in the browser as "5 → 4" on a turn the eval scored 100% — the
+      // eval never fetches, so it never had this to see.
+      //
+      // Failures here are already reported as query_failed by the manager;
+      // this is only a barrier, so a rejection must not take the turn with it.
+      try { await queries.settled(); } catch { /* reported elsewhere */ }
       const table = severityTable ?? severities();
       const before = repairableDiagnostics(turnDiagnostics, table, cfg);
       if (!before.length) break;
@@ -731,6 +750,8 @@ export function createSurfaceSession(options) {
       }]);
 
       const repaired = await runTurn(repairPrompt, { ...opts, repairRound: round });
+      // Measured the same way as `before`, for the same reason.
+      try { await queries.settled(); } catch { /* reported elsewhere */ }
       const after = repairableDiagnostics(turnDiagnostics, table, cfg);
 
       if (repaired.status === 'ok' && after.length < before.length) {

@@ -363,7 +363,10 @@ class ChatPage extends HTMLElement {
         const res = await apiFetch("/chat/sessions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agent_id: this.#agentId }),
+          // `first_prompt` is what makes the server title this session with a
+          // real LLM call instead of leaving it stuck on the "New chat"
+          // fallback forever — same field orchestrator-page.js sends.
+          body: JSON.stringify({ agent_id: this.#agentId, first_prompt: content.slice(0, 100) }),
         });
         if (!res.ok) throw new Error("Failed to create session");
         const body = await res.json();

@@ -20,6 +20,10 @@
     "fetchTokenopsDashboard": {
       "description": "Fleet-wide FinOps for a time window: KPI strip with server-computed deltas, per-agent rows, and view-aware attribution rows. Real backend: GET /api/observability/finops/dashboard.",
       "answers": "composite",
+      "contains": [
+        "summary",
+        "breakdown"
+      ],
       "$shapeSource": "tokenops-page.js header (wired against the tokensopsapis.md handoff) and #applyDashboard at tokenops-page.js:500-503. `kpis` and `attributions` were missing from the hand-written manifest: the backend computes each KPI's previous value and change_pct itself now, so a generated surface could not show a delta at all, and the attribution rows were only reachable through the older `agents` fallback.",
       "argHints": {
         "range": "\"24h\" | \"7d\" | \"30d\" — wins over startTime/endTime when both are sent",
@@ -138,6 +142,11 @@
     "fetchSpendCalendarDay": {
       "description": "One calendar day's hourly spend curve, plus that day's average hourly spend and a pre-computed top-agents ranking. A day TOTAL curve, not a per-agent-per-hour breakdown, so it cannot be stacked by agent. Takes a specific date and is independent of any range filter. Real backend: GET /api/observability/finops/spend-calendar/day.",
       "answers": "composite",
+      "contains": [
+        "summary",
+        "series",
+        "breakdown"
+      ],
       "$shapeSource": "tokenops-page.js:25-36 (header), the panel this endpoint was documented for.",
       "argHints": {
         "date": "\"YYYY-MM-DD\", required — a calendar day, not a range",

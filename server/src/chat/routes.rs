@@ -8,8 +8,6 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use nasiko_orchestrator::models::{ChatCompletionRequest, ChatMessage as LlmMessage};
-use nasiko_orchestrator::providers::{LLMProvider, ProviderError};
 use nasiko_runtime::{ContainerId, WorkspaceRef};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -345,10 +343,12 @@ async fn create_session(
     // Derive the session title from the user's first prompt synchronously: block
     // on the LLM so the row is inserted with its final title in a single INSERT.
     // On an empty prompt, an unconfigured provider, or any LLM error,
-    // `title_from_first_prompt` falls back to a truncated form of the prompt (or
-    // "New chat"), so creation never fails on the model.
+    // `titling::title_from_prompt` falls back to a truncated form of the prompt
+    // (or "New chat"), so creation never fails on the model.
     let title = match body.first_prompt.as_deref().map(str::trim) {
-        Some(prompt) if !prompt.is_empty() => title_from_first_prompt(&state, prompt).await,
+        Some(prompt) if !prompt.is_empty() => {
+            crate::titling::title_from_prompt(&state, prompt).await
+        }
         _ => "New chat".to_string(),
     };
 
@@ -383,96 +383,6 @@ async fn create_session(
             tracing::error!(%e, "create_session failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
-    }
-}
-
-// ─── Title generation ─────────────────────────────────────────────────────────
-/// Cap on both the generated and fallback title lengths (chars).
-const MAX_TITLE_CHARS: usize = 80;
-
-/// Derive a short session title from the user's first prompt.
-///
-/// Best-effort: a single LLM call summarizes the prompt into a few words. If the
-/// provider is unconfigured or the call fails, we fall back to a truncated form
-/// of the prompt so session creation never fails on the model — the caller only
-/// passes a non-empty, trimmed `first_prompt`.
-async fn title_from_first_prompt(state: &AppState, first_prompt: &str) -> String {
-    match generate_title(state, first_prompt).await {
-        Ok(title) if !title.is_empty() => title,
-        Ok(_) => truncate_title(first_prompt),
-        Err(e) => {
-            tracing::warn!(%e, "title generation failed; falling back to truncated prompt");
-            truncate_title(first_prompt)
-        }
-    }
-}
-
-/// Single non-streaming LLM call that summarizes `first_prompt` into a title.
-async fn generate_title(state: &AppState, first_prompt: &str) -> Result<String, ProviderError> {
-    let provider = LLMProvider::from_env(state.http_client.clone());
-
-    let request = ChatCompletionRequest {
-        // Reuse the cheap task model already configured for capability
-        // generation (`CAPABILITY_GENERATOR_MODEL`, default gpt-4o-mini) —
-        // titling is a small, low-stakes summarization.
-        model: state.config.capability_generator_model.clone(),
-        messages: vec![
-            LlmMessage {
-                role: "system".to_string(),
-                content: Some(
-                    r#"You generate concise titles for chat conversations.
-
-                    Your task is to summarize the USER'S INTENT, not the content they provide.
-
-                    Rules:
-                    - Generate a title of 3-6 words.
-                    - Focus on what the user wants the assistant to do.
-                    - If the user asks to translate text, make the title about translation (e.g. "English to Spanish Translation"), not the text being translated.
-                    - If the user asks to summarize, emphasize summarization.
-                    - If the user asks to write code, emphasize the coding task.
-                    - If the user asks a question, summarize the question's purpose.
-                    - Do not quote or repeat large parts of the user's input.
-                    - Do not use prefixes like "Title:".
-                    - Do not use surrounding quotes.
-                    - Do not end with punctuation.
-                    - Return ONLY the title."#
-                        .to_string(),
-                ),
-            },
-            LlmMessage {
-                role: "user".to_string(),
-                content: Some(first_prompt.to_string()),
-            },
-        ],
-        stream: false,
-        temperature: Some(0.2),
-        max_tokens: Some(16),
-        response_format: None,
-        stream_options: None,
-    };
-
-    let result = provider.chat_completion(&request).await?;
-    Ok(sanitize_title(&result.content))
-}
-
-/// Trim whitespace, strip a single layer of surrounding quotes the model may add,
-/// and cap the length.
-fn sanitize_title(raw: &str) -> String {
-    let trimmed = raw.trim();
-    let unquoted = trimmed
-        .strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .unwrap_or(trimmed)
-        .trim();
-    truncate_title(unquoted)
-}
-
-/// Cap a title at `MAX_TITLE_CHARS` on a char boundary (never mid-codepoint).
-fn truncate_title(s: &str) -> String {
-    let s = s.trim();
-    match s.char_indices().nth(MAX_TITLE_CHARS) {
-        Some((idx, _)) => s[..idx].trim_end().to_string(),
-        None => s.to_string(),
     }
 }
 

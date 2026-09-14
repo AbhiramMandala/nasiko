@@ -102,21 +102,24 @@ export const CASES = [
   // is there to be asked for — this is not a case that can only be satisfied
   // by inventing something.
   //
-  // Failing on arrival, and recorded as such rather than tuned until it
-  // passes. The first recording answered "comprehensive" with ONE query
-  // (fetchTokenopsDashboard) and two bar charts over the same x-axis — cost
-  // by agent beside tokens by agent, from the same rows. That is one chart
-  // drawn twice, and a dashboard that never looks at the time dimension at
-  // all, which is what both assertions are for. The prompt rules added for
-  // exactly this (13b on panels, 14b on picking a chart type) did not move it,
-  // which is the finding: they are unproven, not proven.
+  // Failed on arrival and stayed failing through four attempts to fix it, all
+  // of them edits to what the prompt SAID. It passes now because of the fifth,
+  // which changed what the prompt SHOWS — see WORKED EXAMPLE 2b-ii. The two
+  // findings, in the order they were established:
   //
-  // knownFailure rather than a looser expectation, because the mechanism
-  // clears itself — a known failure that starts passing fails the run and
-  // asks for the annotation to be removed, so whatever finally fixes this
-  // cannot land unnoticed.
+  //   1. Chart shapes follow DATA shapes. The first recordings fetched one
+  //      source and drew its one row set twice, because they had nothing else
+  //      in hand. Declaring what each source ANSWERS — and, for a composite,
+  //      what it does NOT contain — is what got a second Query written.
+  //   2. Demonstrated code beats described intent. With a series and a
+  //      breakdown both fetched, the breakdown still went into a table: every
+  //      worked example that built from one did that, and a source line saying
+  //      "a bar, donut or ranking" lost to four examples showing otherwise.
+  //
+  // Keep both assertions. They are a floor, not a style: minQueries catches a
+  // dashboard with nothing to be broad about, minChartKinds catches one chart
+  // drawn twice. Neither prefers a particular chart.
   { id: 'comprehensive', prompt: 'create a comprehensive tokenops dashboard with charts',
-    knownFailure: 'answers breadth with one data source and one chart shape repeated',
     expect: { minQueries: 2, minComponents: 6, minChartKinds: 2 } },
   { id: 'kpis-only', prompt: 'Just the headline numbers, nothing else',
     expect: { minQueries: 1 } },
