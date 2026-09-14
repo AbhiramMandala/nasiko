@@ -413,8 +413,8 @@ exec cat \"$t\"";
 /// on container (re)creation for Docker and on every pod start for Kubernetes.
 ///
 /// Per-user isolation is no longer a filesystem concern here: the server
-/// captures each turn's writes onto the assistant message, session-scoped, so
-/// there is no root-owned `u/` parent to
+/// captures each turn's writes onto the assistant message, session-scoped (see
+/// docs/WORKSPACE_FILE_ACCESS_PLAN.md), so there is no root-owned `u/` parent to
 /// build.
 ///
 /// Shared verbatim by `DockerRuntime`'s init helper and `KubeRuntime`'s writable
