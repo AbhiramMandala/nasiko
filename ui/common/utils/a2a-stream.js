@@ -21,7 +21,6 @@
  *     onActivity(line)  {}  // one new line of working prose (tool activity)
  *     onReply(text)     {}  // cumulative reply text (call renders it)
  *     onData(part)      {}  // data parts (agent-steps events)
- *     onHitl(row)       {}  // the turn paused for a human — {id, kind, question, …}
  *     onTraceMeta(meta) {}  // { trace_id }
  *     onUsageMeta(meta) {}  // usage footer (tokens/cost), when present
  *     onError(message)  {}  // stream-level failure text
@@ -29,7 +28,7 @@
  *                           // in disconnectedCallback or the reader keeps
  *                           // pulling into detached DOM after navigation.
  *   });
- *   // out = { text, progressText, traceId, usage, failed, errorMessage, aborted, hitl }
+ *   // out = { text, progressText, traceId, usage, failed, errorMessage, aborted }
  */
 
 function textOfParts(parts) {
@@ -75,8 +74,6 @@ export async function readA2aStream(res, handlers = {}) {
     errorMessage: null,
     /** True when the caller aborted; the caller should render nothing further. */
     aborted: false,
-    /** The `hitl` data part, when this turn paused for a human instead of replying. */
-    hitl: null,
   };
   // Tracked separately from out.progressText: activity is reported for the
   // whole stream, progressText only until a reply exists.
@@ -97,17 +94,6 @@ export async function readA2aStream(res, handlers = {}) {
       if (d.type === "usage_meta") {
         out.usage = d;
         handlers.onUsageMeta?.(d);
-        continue;
-      }
-      // A human-in-the-loop pause. The server yields this synthetic part once
-      // the row is durably committed, then the stream ends with no reply — so
-      // it is the turn's outcome, not a step, and it must not reach the
-      // activity timeline. `id`/`kind`/`question` are already the real row's
-      // even when the pause is a two-row mirror, so this id is always the one
-      // to resolve. See FRONTEND_HITL_API_CONTRACT.md §11.2/§13.3.
-      if (d.type === "hitl" && d.id) {
-        out.hitl = d;
-        handlers.onHitl?.(d);
         continue;
       }
       handlers.onData?.(d);
@@ -185,21 +171,11 @@ export async function readA2aStream(res, handlers = {}) {
 
   const handleArtifactUpdate = (au) => {
     const text = textOfParts(au.artifact?.parts);
-    // `append: false` opens a fresh artifact, and that is a reset even when the
-    // frame carries no text — which is exactly how a turn starts (the first
-    // chunk is empty, every chunk after it appends). Skipping empty frames
-    // wholesale left the PREVIOUS turn's reply sitting in the accumulator, and
-    // a resumed HITL turn — whose buffer replays the sub-agent's own reply and
-    // then the orchestrator's — appended the second onto the first and printed
-    // both in one bubble. Reloading the page showed one, because the transcript
-    // stores only the final reply.
-    if (au.append) {
-      if (!text) return;
-      out.text += text;
-    } else {
-      out.text = text;
+    if (text) {
+      if (au.append) out.text += text;
+      else out.text = text;
+      emitReply();
     }
-    if (out.text) emitReply();
   };
 
   const handleFrame = (evt) => {
@@ -275,14 +251,9 @@ export async function readA2aStream(res, handlers = {}) {
   buffer += decoder.decode();
   if (buffer) handleLine(buffer); // trailing frame without final newline
 
-  if (!out.text && out.progressText && !out.failed && !out.hitl) {
+  if (!out.text && out.progressText && !out.failed) {
     // Stream ended without a final artifact/completed text — keep the last
     // progress text rather than discarding what the user already saw.
-    //
-    // Except when the turn paused: a pause legitimately ends the stream with
-    // no reply, and promoting the agent's working prose to `text` there would
-    // render "Reviewing the policy set…" as its answer — and persist it as
-    // one.
     out.text = out.progressText;
     emitReply();
   }

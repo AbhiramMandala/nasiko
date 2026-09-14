@@ -73,27 +73,6 @@ pub struct GatewayConfig {
     /// (the Pingora `/llm` strip route) when building the agent's `*_BASE_URL`. Empty ⇒
     /// the injector skips LLM wiring (fail closed — no broken base URL without a key).
     pub llm_gateway_base_url: String,
-
-    /// Level 2.5 salience gate: an in-process classifier decides whether a boundary turn
-    /// is substantive enough to classify + pin, or is small talk to be served cheaply
-    /// without pinning. Enabled by default. When `false`, the router classifies at every
-    /// fireable boundary (behaviour before the gate existed).
-    pub salience_gate_enabled: bool,
-    /// Optional override: path to a trained weights JSON (same schema as the embedded
-    /// asset) to load *instead of* the model embedded in the binary. Empty (the
-    /// default) ⇒ use the embedded model, which needs no deployment step. Exists so a
-    /// candidate model can be trialled without a rebuild; a load failure falls back to
-    /// classifying every boundary, never to an outage.
-    pub salience_weights_path: String,
-    /// Below this probability the classifier confidently judges the turn small talk and
-    /// the gate defers. This is the only threshold that changes a routing outcome —
-    /// raising it defers more turns. Default 0.20; tune against validation data.
-    pub salience_low_threshold: f64,
-    /// Above this probability the classifier is confidently substantive. Turns between the
-    /// thresholds route too, so this does not change routing on its own — it marks the
-    /// uncertain band in the gate's logs so its size can be measured before `low` is
-    /// retuned. Default 0.80.
-    pub salience_high_threshold: f64,
 }
 
 impl Default for GatewayConfig {
@@ -121,10 +100,6 @@ impl Default for GatewayConfig {
             openrouter_http_referer: String::new(),
             openrouter_x_title: String::new(),
             llm_gateway_base_url: String::new(),
-            salience_gate_enabled: true,
-            salience_weights_path: String::new(),
-            salience_low_threshold: 0.20,
-            salience_high_threshold: 0.80,
         }
     }
 }
@@ -189,19 +164,6 @@ impl GatewayConfig {
             openrouter_http_referer: env_or("OPENROUTER_HTTP_REFERER", &d.openrouter_http_referer),
             openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
-            salience_gate_enabled: std::env::var("SALIENCE_GATE_ENABLED")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(d.salience_gate_enabled),
-            salience_weights_path: env_or("SALIENCE_WEIGHTS_PATH", &d.salience_weights_path),
-            salience_low_threshold: std::env::var("SALIENCE_LOW_THRESHOLD")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(d.salience_low_threshold),
-            salience_high_threshold: std::env::var("SALIENCE_HIGH_THRESHOLD")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(d.salience_high_threshold),
         }
     }
 

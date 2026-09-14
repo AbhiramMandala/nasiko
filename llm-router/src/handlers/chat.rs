@@ -292,7 +292,6 @@ pub(crate) async fn resolve_routed_request(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
-        ctx.salience_gate.as_ref(),
         &RouteInputs {
             agent_id: &agent_id,
             provider: &resolved.provider,
@@ -594,7 +593,6 @@ mod tests {
             router_cache: Arc::new(crate::routing::NoopCache),
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
-            salience_gate: Arc::new(crate::routing::AllowAllGate),
         }
     }
 

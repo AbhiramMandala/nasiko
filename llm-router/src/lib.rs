@@ -43,8 +43,8 @@ pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    CellStore, DecisionCache, InMemoryCellStore, NoopCache, PgCellStore, PgTierRegistry,
+    RedisCache, TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -73,10 +73,6 @@ pub struct LlmRouterCtx {
     /// [`PgCellStore`] (durable, cross-instance) in production; tests use
     /// [`InMemoryCellStore`].
     pub cell_store: Arc<dyn CellStore>,
-    /// Level 2.5 salience gate — decides whether a boundary turn is substantive enough to
-    /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
-    /// (classify at every boundary, i.e. behaviour before the gate existed).
-    pub salience_gate: Arc<dyn SalienceGate>,
 }
 
 impl LlmRouterCtx {
@@ -116,80 +112,14 @@ impl LlmRouterCtx {
             "llm-router: cell store = PgCellStore (DB router_quality_cells table; learns per-provider tier quality from feedback)"
         );
         let router_cache = build_router_cache(&cfg);
-        let cfg = Arc::new(cfg);
-        let salience_gate = build_salience_gate(&cfg);
         Self {
             db,
             http,
-            cfg,
+            cfg: Arc::new(cfg),
             cache,
             router_cache,
             tier_registry,
             cell_store,
-            salience_gate,
-        }
-    }
-}
-
-/// Build the Level 2.5 salience gate from config.
-///
-/// [`AllowAllGate`] when `SALIENCE_GATE_ENABLED=false`; otherwise
-/// [`ClassifierSalienceGate`] over the model embedded in this binary, or over
-/// `SALIENCE_WEIGHTS_PATH` when that override is set.
-///
-/// A model that cannot be loaded (a corrupt embedded asset, or a missing/malformed override
-/// file) logs a warning and degrades to [`AllowAllGate`] — the router classifies at every
-/// fireable boundary, exactly as it did before the gate existed. That is the same fail-safe
-/// direction the gate itself takes: nothing defers a turn unless a model confidently says
-/// it is small talk, so a gate that cannot run costs money, never availability.
-fn build_salience_gate(cfg: &Arc<GatewayConfig>) -> Arc<dyn SalienceGate> {
-    if !cfg.salience_gate_enabled {
-        tracing::info!(
-            target: "nasiko::llm_router::startup",
-            "llm-router: salience gate = AllowAllGate (SALIENCE_GATE_ENABLED=false; classify at every fireable boundary)"
-        );
-        return Arc::new(AllowAllGate);
-    }
-
-    let (source, loaded) = if cfg.salience_weights_path.is_empty() {
-        (
-            "embedded",
-            ClassifierSalienceGate::embedded(
-                cfg.salience_low_threshold,
-                cfg.salience_high_threshold,
-            ),
-        )
-    } else {
-        (
-            cfg.salience_weights_path.as_str(),
-            ClassifierSalienceGate::from_path(
-                &cfg.salience_weights_path,
-                cfg.salience_low_threshold,
-                cfg.salience_high_threshold,
-            ),
-        )
-    };
-
-    match loaded {
-        Ok((gate, trained_at)) => {
-            tracing::info!(
-                target: "nasiko::llm_router::startup",
-                weights_source = source,
-                model_trained_at = %trained_at,
-                low_threshold = cfg.salience_low_threshold,
-                high_threshold = cfg.salience_high_threshold,
-                "llm-router: salience gate = ClassifierSalienceGate (Level 2.5 enabled; small talk answered cheaply without pinning, no LLM call in the hot path)"
-            );
-            Arc::new(gate)
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "nasiko::llm_router::startup",
-                weights_source = source,
-                error = %e,
-                "llm-router: salience model failed to load; falling back to AllowAllGate (classify at every fireable boundary)"
-            );
-            Arc::new(AllowAllGate)
         }
     }
 }

@@ -84,25 +84,6 @@ export class AppChatbox extends HTMLElement {
     clearInterval(this.timerInterval);
   }
 
-  // `no-attachments` is listed but not reacted to: it is read once at render.
-  // The catalog generator requires every documented attribute to appear here,
-  // and it is read with hasAttribute rather than getAttribute, which is the
-  // form its phantom-attribute check looks for.
-  static get observedAttributes() {
-    return ["placeholder", "no-attachments"];
-  }
-
-  /**
-   * The composer's prompt is state, not just markup: a page changes it to say
-   * what the box is for right now ("Approve or reject to continue here" while a
-   * human-in-the-loop card is waiting). `render()` only runs once, on first
-   * connect, so a later attribute write would otherwise be silently ignored.
-   */
-  attributeChangedCallback(name, previous, value) {
-    if (name !== "placeholder" || previous === value || !this.textarea) return;
-    this.textarea.placeholder = value || "Type your message...";
-  }
-
   render() {
     const noAttach = this.hasAttribute("no-attachments");
     const placeholder = this.getAttribute("placeholder") || "Type your message...";

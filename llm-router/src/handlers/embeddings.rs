@@ -172,7 +172,6 @@ mod tests {
             router_cache: Arc::new(crate::routing::NoopCache),
             tier_registry: Arc::new(crate::routing::registry::test_support::StubRegistry),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
-            salience_gate: Arc::new(crate::routing::AllowAllGate),
         }
     }
 

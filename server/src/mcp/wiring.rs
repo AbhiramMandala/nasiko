@@ -16,16 +16,12 @@
 
 use std::collections::HashMap;
 
+use sqlx::PgPool;
 use uuid::Uuid;
 
 /// Mint (rotate) the agent's gateway credential and set `MCP_GATEWAY_TOKEN`.
-///
-/// Generic over the executor so a caller still inside the transaction that
-/// created `agent_id` (e.g. `agents::upload::upload_and_deploy`) can pass
-/// `&mut *tx` — a separate pool connection can't see that row until commit,
-/// which otherwise fails the mint's `agent_gateway_tokens_agent_id_fkey`.
 pub async fn inject_agent_gateway_token(
-    db: impl sqlx::PgExecutor<'_>,
+    db: &PgPool,
     env_vars: &mut HashMap<String, String>,
     agent_id: Uuid,
 ) {

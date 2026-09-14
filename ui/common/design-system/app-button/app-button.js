@@ -77,12 +77,7 @@ export class AppButton extends HTMLElement {
     const type     = ['submit', 'reset'].includes(typeAttr) ? typeAttr : 'button';
     const loading  = this.hasAttribute('loading');
     const disabled = this.hasAttribute('disabled') || loading;
-    // Moved as nodes, never re-serialised: Lit binds its parts to the actual
-    // comment/text nodes it put inside us (a dynamic label, an icon directive).
-    // Round-tripping them through innerHTML hands back look-alike copies and
-    // leaves those parts pointing at detached nodes, so the next update throws
-    // and the button is stuck on its first label.
-    const kids = [...(this.querySelector('.content') ?? this).childNodes];
+    const content  = this.querySelector('.content')?.innerHTML ?? this.innerHTML;
     // `variant="icon"` is the ghost-coloured square; `icon-only` squares any variant.
     const iconOnly = this.hasAttribute('icon-only') || variant === 'icon';
     const classes  = ['btn', `is-${variant}`, size ? `is-${size}` : '',
@@ -101,9 +96,8 @@ export class AppButton extends HTMLElement {
       <${tag} class="${classes}"${linked ? '' : ` type="${type}"`}${forwarded}${!linked && disabled ? ' disabled' : ''}${
         loading ? ' aria-busy="true"' : ''}>
         ${loading ? '<span class="spinner" aria-hidden="true"></span>' : ''}
-        <span class="content"></span>
+        <span class="content">${content}</span>
       </${tag}>`;
-    this.querySelector('.content').append(...kids);
 
     // icons.js writes each glyph's size into the svg's `style` attribute, and an
     // inline style beats every stylesheet rule — so the icon ramp above (l 20,

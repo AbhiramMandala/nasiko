@@ -204,12 +204,6 @@ mod tests {
             }
             Ok(self.flow.clone())
         }
-        async fn fetch_custom_provider(
-            &self,
-            _: &str,
-        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
-            Ok(None)
-        }
     }
 
     const AGENT: &str = "11111111-1111-1111-1111-111111111111";
