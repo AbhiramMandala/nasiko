@@ -38,6 +38,7 @@ import { navigate } from '/common/core/router.js';
 import { createView, setViewSurface, generateViewTitle, renameView, hydrateView } from '/common/state/weave-views.js';
 import { createSurfaceSession } from '/common/surface/surface-stream.js';
 import { loadCatalog, withSeverity } from '/common/surface/catalog-load.js';
+import { WEAVE_STARTERS } from '/common/surface/starters.js';
 import { getJson, postJson } from '/common/services/api.js';
 import '/common/design-system/app-chatbox/app-chatbox.js';
 
@@ -72,19 +73,11 @@ const LAUNCHER_LABELS = {
   '/tokenops': 'Ask Weave to explore your TokenOps data…',
   '/sessions': 'Ask Weave to explore your TokenOps data…',
   '/observability-session': 'Ask Weave to explore your TokenOps data…',
-  '/session-trace': 'Ask Weave about this trace…',
+  '/session-trace': 'Ask Weave to explore your TokenOps data…',
   '/agents': 'Ask Weave about your agents…',
   '/custom-views': 'Ask Weave to build a new view…',
 };
 const LAUNCHER_DEFAULT = 'Ask Weave anything…';
-
-/** Empty-thread suggestions. Two build something, two answer something. */
-const STARTERS = [
-  'Create a view for monitoring costs',
-  'Help me configure an LLM provider',
-  'What needs my attention?',
-  'Create a new agent',
-];
 
 /**
  * How many rows the history menu's "Recent chats" section shows.
@@ -559,7 +552,7 @@ class WeaveDock extends HTMLElement {
       <h3 class="hero__title">What are you working on?</h3>
       <p class="hero__sub">Ask a question, create something new, or describe what you want to change.</p>
       <div class="hero__chips">
-        ${STARTERS.map((s) => `<button class="chip" type="button">${escHtml(s)}</button>`).join('')}
+        ${WEAVE_STARTERS.map((s) => `<button class="chip" type="button">${escHtml(s)}</button>`).join('')}
       </div>`;
     for (const chip of hero.querySelectorAll('.chip')) {
       chip.addEventListener('click', () => this.#send(chip.textContent));

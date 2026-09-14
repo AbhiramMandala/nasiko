@@ -25,6 +25,7 @@ import { escHtml } from '/common/utils/escape.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
+import { WEAVE_STARTERS } from '/common/surface/starters.js';
 import '/common/features/weave-surface/weave-surface.js';
 import '/common/services/usage-service.js';
 
@@ -40,14 +41,6 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
  * nothing and the surface would render its declared defaults forever.
  */
 const SCOPE = 'tokenops';
-
-/** Something to click on an empty page. Every one of these is answerable with the tokenops sources. */
-const STARTERS = [
-  'Show me spend and request volume for the last 14 days',
-  'Which agents cost the most? Table, with a cost breakdown',
-  'Give me a cost dashboard I can switch between cost and operations',
-  'Usage by model, with a chart',
-];
 
 class WeavePage extends HTMLElement {
   #initialized = false;
@@ -107,7 +100,7 @@ class WeavePage extends HTMLElement {
     this.querySelector('#reset').addEventListener('click', () => this.#reset());
 
     const starters = this.querySelector('#starters');
-    for (const text of STARTERS) {
+    for (const text of WEAVE_STARTERS) {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'starter';
