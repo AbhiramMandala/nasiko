@@ -1,5 +1,6 @@
 pub mod a2a;
 pub mod coding_agent;
+pub mod maf;
 pub mod registry;
 
 pub use coding_agent::{

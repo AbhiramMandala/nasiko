@@ -116,7 +116,6 @@ const FRAMES = new Set(['surface', 'dsl-chunk', 'end', 'fail', 'message', 'note'
 export function createSurfaceSession(options) {
   const {
     endpoint, catalog, container,
-    sessionId = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36),
     onMessage, onDiagnostics, onStatus, onAction, onAssistant,
     call = callDataSource,
     // The live route table, not a copy — see render.js and actions.js. A host
@@ -420,7 +419,6 @@ export function createSurfaceSession(options) {
     const url = `${base}/api${endpoint}`;
     const body = JSON.stringify({
       prompt,
-      session_id: sessionId,
       context: {
         ...(opts.context || {}),
         // The vocabulary this client will actually render with. The generator

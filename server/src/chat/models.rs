@@ -101,6 +101,19 @@ pub struct ChatMessageFile {
     pub created_at: DateTime<Utc>,
 }
 
+/// The only two `chat_messages.role` values a client may ever write via `POST
+/// /api/chat/sessions/{id}/messages` (`send_message`, which validates `SendMessage::role` against
+/// these). `"system"` is deliberately excluded even though it's a real, legitimate value in this
+/// column — it's written exclusively by internal server code
+/// (`router/a2a_dispatch.rs::INTERNAL_TRANSCRIPT_ROLE`, a HITL resume's own continuation note) and
+/// must never be attacker-controlled: `list_messages` hides `role = 'system'` rows from the
+/// transcript/audit UI on the assumption that nothing a human or API caller wrote can carry that
+/// role, but `SessionHistory::fetch` (`oss/orchestrator`) applies no such filter when building the
+/// next turn's LLM prompt — a client-forged `role: "system"` row would reach the model as a system
+/// instruction while staying invisible everywhere a human would look for it (found in review).
+pub const CHAT_MESSAGE_ROLE_USER: &str = "user";
+pub const CHAT_MESSAGE_ROLE_ASSISTANT: &str = "assistant";
+
 #[derive(Debug, Deserialize)]
 pub struct SendMessage {
     pub role: String,

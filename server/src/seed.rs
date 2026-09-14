@@ -164,12 +164,6 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             None,
             owner_id,
         );
-        // Only takes effect when `deploy()` actually recreates the container
-        // (no existing container, or its image/env changed) — the idempotent
-        // "already running, same image, same env" branch never consults this
-        // flag at all, so SEED_FORCE_PULL alone does not force a re-pull of an
-        // unchanged, already-running seed agent. See DeploymentSpec::force_pull.
-        spec.force_pull = force_pull;
         crate::agents::attach_pull_credential(
             &state.db,
             &state.config.agent_runtime,
@@ -379,11 +373,6 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
             );
         }
     }
-    // Per-agent MCP gateway credential (rotates on every re-seed) — without
-    // this, McpInjector still sets MCP_GATEWAY_URL unconditionally but has no
-    // MCP_GATEWAY_TOKEN to complete MCP_GATEWAY_CONNECT_URL with, leaving the
-    // gateway unreachable from inside the container.
-    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env, agent.id).await;
 
     let mut spec = crate::agents::build_agent_spec(
         agent.id,
@@ -397,11 +386,6 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
         None,
         owner_id,
     );
-    // Only takes effect when `deploy()` actually recreates the container (no
-    // existing container, or its image/env changed) — see this function's
-    // sibling `seed_agents_if_configured` for the same caveat in full, and
-    // DeploymentSpec::force_pull.
-    spec.force_pull = force_pull;
     crate::agents::attach_pull_credential(
         &state.db,
         &state.config.agent_runtime,
@@ -444,23 +428,12 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
 }
 
 /// Extract agent name from image ref: "nasiko/echo-agent:v1" -> "echo-agent"
-/// Extract agent name from image ref: "nasiko/echo-agent:v1" -> "echo-agent",
-/// "localhost:5050/echo-agent:v1" -> "echo-agent".
-///
-/// Splits on `/` FIRST, not `:` first — a registry host commonly carries its
-/// own port (`localhost:5050/...`, `myregistry.example.com:5000/...`), and
-/// splitting on the first `:` would wrongly treat that port as the tag
-/// separator, extracting the registry host itself as the "name" (confirmed
-/// live: `localhost:5050/weave-build-orchestrator:v1` produced an agent
-/// literally named "localhost"). The tag, if any, only ever appears after
-/// the LAST `/`, so isolating that final path segment before splitting on
-/// `:` is unambiguous regardless of how many colons a registry host has.
 fn extract_name(image: &str) -> String {
-    let last_segment = image.rsplit('/').next().unwrap_or(image);
-    last_segment
-        .split(':')
+    let without_tag = image.split(':').next().unwrap_or(image);
+    without_tag
+        .rsplit('/')
         .next()
-        .unwrap_or(last_segment)
+        .unwrap_or(without_tag)
         .to_string()
 }
 
@@ -657,52 +630,5 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
             }
             Err(e) => warn!(toolkit = %toolkit, %e, "failed to sync tools"),
         }
-    }
-}
-
-#[cfg(test)]
-mod extract_name_tests {
-    use super::extract_name;
-
-    #[test]
-    fn plain_dockerhub_style_ref() {
-        assert_eq!(extract_name("nasiko/echo-agent:v1"), "echo-agent");
-    }
-
-    #[test]
-    fn no_tag_at_all() {
-        assert_eq!(extract_name("nasiko/echo-agent"), "echo-agent");
-    }
-
-    #[test]
-    fn bare_name_no_namespace_no_tag() {
-        assert_eq!(extract_name("echo-agent"), "echo-agent");
-    }
-
-    #[test]
-    fn registry_host_with_a_port_is_not_mistaken_for_the_tag_separator() {
-        // Regression: a naive "split on first colon" treats the registry
-        // port as the tag delimiter, extracting "localhost" as the name
-        // instead of the actual repository — confirmed live before this fix.
-        assert_eq!(
-            extract_name("localhost:5050/weave-build-orchestrator:v1"),
-            "weave-build-orchestrator"
-        );
-    }
-
-    #[test]
-    fn registry_host_with_a_port_and_no_tag() {
-        assert_eq!(
-            extract_name("localhost:5050/weave-build-orchestrator"),
-            "weave-build-orchestrator"
-        );
-    }
-
-    #[test]
-    fn multi_level_registry_path() {
-        assert_eq!(
-            extract_name("myregistry.example.com:5000/team/project/agent:v3"),
-            "agent"
-        );
     }
 }

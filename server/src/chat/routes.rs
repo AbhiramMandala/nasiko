@@ -8,6 +8,8 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
+use nasiko_orchestrator::models::{ChatCompletionRequest, ChatMessage as LlmMessage};
+use nasiko_orchestrator::providers::{LLMProvider, ProviderError};
 use nasiko_runtime::{ContainerId, WorkspaceRef};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -343,12 +345,10 @@ async fn create_session(
     // Derive the session title from the user's first prompt synchronously: block
     // on the LLM so the row is inserted with its final title in a single INSERT.
     // On an empty prompt, an unconfigured provider, or any LLM error,
-    // `titling::title_from_prompt` falls back to a truncated form of the prompt
-    // (or "New chat"), so creation never fails on the model.
+    // `title_from_first_prompt` falls back to a truncated form of the prompt (or
+    // "New chat"), so creation never fails on the model.
     let title = match body.first_prompt.as_deref().map(str::trim) {
-        Some(prompt) if !prompt.is_empty() => {
-            crate::titling::title_from_prompt(&state, prompt).await
-        }
+        Some(prompt) if !prompt.is_empty() => title_from_first_prompt(&state, prompt).await,
         _ => "New chat".to_string(),
     };
 
@@ -383,6 +383,96 @@ async fn create_session(
             tracing::error!(%e, "create_session failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+// ─── Title generation ─────────────────────────────────────────────────────────
+/// Cap on both the generated and fallback title lengths (chars).
+const MAX_TITLE_CHARS: usize = 80;
+
+/// Derive a short session title from the user's first prompt.
+///
+/// Best-effort: a single LLM call summarizes the prompt into a few words. If the
+/// provider is unconfigured or the call fails, we fall back to a truncated form
+/// of the prompt so session creation never fails on the model — the caller only
+/// passes a non-empty, trimmed `first_prompt`.
+async fn title_from_first_prompt(state: &AppState, first_prompt: &str) -> String {
+    match generate_title(state, first_prompt).await {
+        Ok(title) if !title.is_empty() => title,
+        Ok(_) => truncate_title(first_prompt),
+        Err(e) => {
+            tracing::warn!(%e, "title generation failed; falling back to truncated prompt");
+            truncate_title(first_prompt)
+        }
+    }
+}
+
+/// Single non-streaming LLM call that summarizes `first_prompt` into a title.
+async fn generate_title(state: &AppState, first_prompt: &str) -> Result<String, ProviderError> {
+    let provider = LLMProvider::from_env(state.http_client.clone());
+
+    let request = ChatCompletionRequest {
+        // Reuse the cheap task model already configured for capability
+        // generation (`CAPABILITY_GENERATOR_MODEL`, default gpt-4o-mini) —
+        // titling is a small, low-stakes summarization.
+        model: state.config.capability_generator_model.clone(),
+        messages: vec![
+            LlmMessage {
+                role: "system".to_string(),
+                content: Some(
+                    r#"You generate concise titles for chat conversations.
+
+                    Your task is to summarize the USER'S INTENT, not the content they provide.
+
+                    Rules:
+                    - Generate a title of 3-6 words.
+                    - Focus on what the user wants the assistant to do.
+                    - If the user asks to translate text, make the title about translation (e.g. "English to Spanish Translation"), not the text being translated.
+                    - If the user asks to summarize, emphasize summarization.
+                    - If the user asks to write code, emphasize the coding task.
+                    - If the user asks a question, summarize the question's purpose.
+                    - Do not quote or repeat large parts of the user's input.
+                    - Do not use prefixes like "Title:".
+                    - Do not use surrounding quotes.
+                    - Do not end with punctuation.
+                    - Return ONLY the title."#
+                        .to_string(),
+                ),
+            },
+            LlmMessage {
+                role: "user".to_string(),
+                content: Some(first_prompt.to_string()),
+            },
+        ],
+        stream: false,
+        temperature: Some(0.2),
+        max_tokens: Some(16),
+        response_format: None,
+        stream_options: None,
+    };
+
+    let result = provider.chat_completion(&request).await?;
+    Ok(sanitize_title(&result.content))
+}
+
+/// Trim whitespace, strip a single layer of surrounding quotes the model may add,
+/// and cap the length.
+fn sanitize_title(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(trimmed)
+        .trim();
+    truncate_title(unquoted)
+}
+
+/// Cap a title at `MAX_TITLE_CHARS` on a char boundary (never mid-codepoint).
+fn truncate_title(s: &str) -> String {
+    let s = s.trim();
+    match s.char_indices().nth(MAX_TITLE_CHARS) {
+        Some((idx, _)) => s[..idx].trim_end().to_string(),
+        None => s.to_string(),
     }
 }
 
@@ -639,12 +729,18 @@ async fn list_messages(
         .and_then(|(ts, id)| id.parse::<Uuid>().ok().map(|u| (ts, u)))
         .or(params.after.map(|ts| (ts, Uuid::from_u128(u128::MAX))));
 
+    // `role <> 'system'` on every branch: a HITL resume records its continuation ("The archive
+    // agent replied: …") so the next turn's reasoning still has it (`INTERNAL_TRANSCRIPT_ROLE`,
+    // `router/a2a_dispatch.rs`), but nobody said it — shown in a transcript it reads as a message
+    // the human typed. Filtered in SQL rather than after the fetch so page sizes and cursors stay
+    // consistent with what the client actually receives.
+    //
     // Fetch DESC in all cases except `after`; reverse in Rust so client always sees ASC.
     let (msg_result, fetched_asc): (Result<Vec<ChatMessage>, _>, bool) = match (before, after) {
         (_, Some((after_ts, after_id))) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND (timestamp, id) > ($2, $3)
+                   WHERE session_id = $1 AND role <> 'system' AND (timestamp, id) > ($2, $3)
                    ORDER BY timestamp ASC, id ASC
                    LIMIT $4"#,
             )
@@ -659,7 +755,7 @@ async fn list_messages(
         (Some((before_ts, before_id)), None) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1 AND (timestamp, id) < ($2, $3)
+                   WHERE session_id = $1 AND role <> 'system' AND (timestamp, id) < ($2, $3)
                    ORDER BY timestamp DESC, id DESC
                    LIMIT $4"#,
             )
@@ -674,7 +770,7 @@ async fn list_messages(
         (None, None) => {
             let r = sqlx::query_as::<_, ChatMessage>(
                 r#"SELECT * FROM chat_messages
-                   WHERE session_id = $1
+                   WHERE session_id = $1 AND role <> 'system'
                    ORDER BY timestamp DESC, id DESC
                    LIMIT $2"#,
             )
@@ -713,11 +809,61 @@ async fn list_messages(
         None
     };
 
-    Json(CursorPage {
-        data: rows,
-        has_more,
-        next_cursor: out_next_cursor,
-        prev_cursor: out_prev_cursor,
+    // Session-load HITL discovery: every HITL request tied to this
+    // session, pending or already resolved, rides along with the message page instead of
+    // requiring a separate `GET /api/hitl/pending` call. Scoped by BOTH `chat_session_id` and
+    // `owner_user_id` inside the query (`list_for_chat_session`) — the second is redundant with
+    // the `owns` check above in the ordinary case, but costs nothing and means a future refactor
+    // of that check can't silently turn this into a cross-user leak on its own. Reuses
+    // `router::hitl::to_response` verbatim so this can never drift from — or accidentally leak
+    // more than — the one HITL DTO the rest of the API already exposes (`resume_state` etc. stay
+    // excluded because `HitlRequest` itself isn't `Serialize`).
+    // A failure here degrades to an empty `hitl` array rather than failing the whole response —
+    // `rows`/`has_more`/the cursors above are already a complete, correct answer to "what are
+    // this session's messages", and this supplementary panel must never make that a hard
+    // dependency of ordinary chat history. The frontend still has `GET /api/hitl/pending` as a
+    // fallback discovery path for anything pending, unlike the messages themselves.
+    let hitl_rows = match state
+        .hitl_store
+        .list_for_chat_session(&session_id, user_id)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(%e, session_id, "list_messages: hitl lookup failed, omitting hitl array");
+            Vec::new()
+        }
+    };
+    // Each row goes through `resolve_display_row` before `to_response` — a no-op for the
+    // ordinary case, but substitutes the real row's id/kind/question when this row is a mirror
+    // of a real `mcp_tool` block (see that function's doc comment): otherwise the frontend would
+    // see the mirror's own generic question and could "resolve" an id that grants no real
+    // permission. Resolved concurrently, not one row at a time — `resolve_display_row` does a DB
+    // round-trip per linked row, and this endpoint runs on every single chat history page load.
+    let hitl: Vec<serde_json::Value> = futures::future::join_all(hitl_rows.iter().map(|row| {
+        let store = state.hitl_store.as_ref();
+        async move {
+            let display = nasiko_hitl::resolve_display_row(store, row, user_id).await;
+            crate::router::hitl::to_response(&display)
+        }
+    }))
+    .await;
+
+    #[derive(serde::Serialize)]
+    struct MessagesResponse {
+        #[serde(flatten)]
+        page: CursorPage<ChatMessage>,
+        hitl: Vec<serde_json::Value>,
+    }
+
+    Json(MessagesResponse {
+        page: CursorPage {
+            data: rows,
+            has_more,
+            next_cursor: out_next_cursor,
+            prev_cursor: out_prev_cursor,
+        },
+        hitl,
     })
     .into_response()
 }
@@ -747,6 +893,23 @@ async fn send_message(
 
     if !owns {
         return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Whitelisted, not just filtered on read (found in review): `list_messages` hides
+    // `role = 'system'` rows from the transcript on the assumption that nothing client-supplied
+    // can carry that role, and `SessionHistory::fetch` (`oss/orchestrator`) applies no such filter
+    // when building the next turn's LLM prompt — an unvalidated `role` here would let a caller
+    // plant an invisible system-role instruction that still reaches the model. See
+    // `CHAT_MESSAGE_ROLE_USER`/`CHAT_MESSAGE_ROLE_ASSISTANT`'s own doc comment for why `"system"`
+    // itself is excluded even though it's a real value in this column.
+    if body.role != CHAT_MESSAGE_ROLE_USER && body.role != CHAT_MESSAGE_ROLE_ASSISTANT {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "role must be \"{CHAT_MESSAGE_ROLE_USER}\" or \"{CHAT_MESSAGE_ROLE_ASSISTANT}\""
+            ),
+        )
+            .into_response();
     }
 
     // Dedupe: a client sending the same file_id twice would otherwise cause
@@ -855,8 +1018,7 @@ async fn send_message(
     // Best-effort AND time-bounded - a failure or a slow/not-yet-ready workspace
     // reader (the first turn after install can wait on a pod pull) must never
     // stall the user seeing their completed answer. On timeout the message is
-    // returned without chips; the files are still on disk for a later turn. See
-    // docs/WORKSPACE_FILE_ACCESS_PLAN.md.
+    // returned without chips; the files are still on disk for a later turn.
     if msg.role == "assistant" {
         let capture = tokio::time::timeout(
             CAPTURE_TIMEOUT,
@@ -1061,8 +1223,8 @@ fn reply_references_file(reply: &str, name: &str) -> bool {
 ///
 /// This is a download **convenience, not a privacy boundary**: on a shared
 /// container the agent can already read (and list on request) every file in
-/// `/workspace`, so real per-user isolation needs a per-session container (see
-/// docs/WORKSPACE_FILE_ACCESS_PLAN.md). Downloads are still ACL'd to the session
+/// `/workspace`, so real per-user isolation needs a per-session container.
+/// Downloads are still ACL'd to the session
 /// owner. Bytes stay in the PVC (`storage_uri` =
 /// `workspace://<owner>/<agent>/<relpath>`); `download_file` streams them,
 /// behind a contract Phase 2 can re-back with object storage unchanged.
