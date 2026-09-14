@@ -41,6 +41,18 @@ pub struct AppState {
     pub github_svc: Option<Arc<GitHubService>>,
     /// Wakes the build worker immediately when a new job is enqueued.
     pub build_tx: mpsc::Sender<()>,
+    /// HITL persistence (`hitl_requests`) — detection, human-facing API, and the resume
+    /// dispatcher all go through this. See `oss/hitl`.
+    pub hitl_store: Arc<dyn nasiko_hitl::HitlStore>,
+    /// Best-effort wake for the HITL resume dispatcher right after a `resolve()` commits — a
+    /// latency optimization only; the dispatcher's own poll loop is the actual delivery
+    /// guarantee.
+    pub hitl_resume_tx: mpsc::Sender<()>,
+    /// Replay buffer for a resumed HITL execution's real A2A/SSE events, so a frontend
+    /// reconnecting through `POST /api/orchestrator/a2a` (`metadata.reconnect_after_hitl_id`)
+    /// sees them without polling `/messages` or the resume dispatcher ever touching the browser
+    /// connection. See `oss/server/src/hitl/continuation.rs`.
+    pub continuation_events: crate::hitl::continuation::ContinuationRegistry,
     /// UI mounts for the page gate (`auth::require_page_auth`) — each frontend
     /// prefix with its own login page. OSS serves the root mount only; the EE
     /// composition root adds the Flutter app mount at `/app/`.
@@ -167,6 +179,11 @@ impl AppState {
             });
 
         let (build_tx, build_rx) = mpsc::channel(64);
+        let (hitl_resume_tx, hitl_resume_rx) = mpsc::channel(64);
+        let continuation_events = crate::hitl::continuation::ContinuationRegistry::new();
+        let hitl_store: Arc<dyn nasiko_hitl::HitlStore> = Arc::new(
+            nasiko_hitl::PgHitlStore::with_ttl_days(db.clone(), config.hitl_request_ttl_days),
+        );
 
         // MCP gateway state: reuses the same pool, redis client, and pooled
         // HTTP client — no duplicated infrastructure.
@@ -202,12 +219,61 @@ impl AppState {
             observability,
             github_svc,
             build_tx,
+            hitl_store,
+            hitl_resume_tx,
+            continuation_events,
             ui_mounts: &[crate::auth::UiMount::ROOT],
         };
 
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
         let worker_state = state.clone();
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
+
+        // Spawn the HITL resume dispatcher — same shape as the build worker above.
+        // Handles `direct_chat`/`agent_proxy`/`maf`/`orchestrator`-origin rows (real A2A task
+        // resume, or an XADD continuation job for MAF); its own `claim_for_resume` is scoped to
+        // just those four origins. `mcp_tool` rows have their own separate dispatcher
+        // (`nasiko_hitl::dispatcher`, wired up elsewhere in this function).
+        let hitl_state = state.clone();
+        tokio::spawn(crate::hitl::run(hitl_state, hitl_resume_rx));
+
+        // Periodic eviction for finished continuation buffers — same shape as every other
+        // periodic sweep in this file.
+        tokio::spawn(crate::hitl::continuation::sweep_loop(
+            state.continuation_events.clone(),
+        ));
+
+        // The `mcp_tool`-origin resume dispatcher (AuthRequired's auto-resume nudge, and any
+        // ToolApproval push) — lives inside `nasiko-hitl` since it isn't A2A-task-shaped (an MCP
+        // tool call has no `task_id` to resume; `RuntimeResumeNotifier` sends a standalone nudge
+        // message instead). Its own `claim_for_resume` is scoped to `origin = 'mcp_tool'`, so it
+        // can run alongside the dispatcher above without racing it for the same rows.
+        let resume_notifier: Arc<dyn nasiko_hitl::ResumeNotifier> =
+            Arc::new(nasiko_hitl::RuntimeResumeNotifier::new(
+                state.db.clone(),
+                state.runtime.clone(),
+                state.http_client.clone(),
+                // Same bound `gateway.rs`'s `flow_user` enforces on the agent's retry, so the
+                // nudge never registers a window the gateway will reject.
+                i64::from(state.config.flow_timeout_secs),
+            ));
+        tokio::spawn(nasiko_hitl::dispatcher::run(
+            state.db.clone(),
+            resume_notifier,
+            nasiko_hitl::DispatcherConfig {
+                poll_interval: std::time::Duration::from_secs(
+                    state.config.hitl_resume_poll_interval_secs,
+                ),
+                recovery_interval: std::time::Duration::from_secs(
+                    state.config.hitl_resume_recovery_interval_secs,
+                ),
+                lease_minutes: state.config.hitl_resume_lease_minutes,
+                max_attempts: state.config.hitl_resume_max_attempts,
+                retry_delay: std::time::Duration::from_secs(
+                    state.config.hitl_resume_retry_delay_secs,
+                ),
+            },
+        ));
 
         if let Some(endpoint) = state.config.coding_agent_otlp_endpoint.clone() {
             tokio::spawn(crate::coding_agent_otlp::run(

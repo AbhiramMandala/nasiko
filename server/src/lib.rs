@@ -18,6 +18,7 @@ pub mod coding_agent_otlp;
 pub mod coding_agent_telemetry;
 pub mod flows;
 pub mod github;
+pub mod hitl;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
@@ -164,6 +165,7 @@ where
             state.http_client.clone(),
             state.observability.clone(),
             llm_config,
+            state.hitl_store.clone(),
         );
     } else {
         tracing::warn!(
@@ -275,10 +277,10 @@ where
         .merge(settings::router())
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
-        .merge(llm_router::custom_providers::router())
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
+        .merge(router::hitl::router())
         .nest(
             "/observability",
             observability::protected_router(state.clone(), finops_limiter),
@@ -357,7 +359,7 @@ where
     let llm_cfg = llm_ctx.cfg.clone();
     let llm_routes = nasiko_llm_router::router(llm_ctx);
     // Keep the provider model catalog (tier-routing candidates) fresh from each
-    // provider's GET /models. Runs immediately, then every 24 h; fail-open.
+    // provider's GET /models. Runs immediately, then every 10 min; fail-open.
     if state.config.model_catalog_sync_enabled {
         nasiko_llm_router::routing::catalog::spawn_sync(
             state.db.clone(),

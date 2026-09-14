@@ -106,3 +106,28 @@ test('no signal at all still works — the parameter is optional', async () => {
   assert.equal(out.aborted, false);
   assert.match(out.text, /ok/);
 });
+
+/**
+ * A resumed HITL turn replays two turns down one connection: the paused
+ * sub-agent's own reply, then the fresh orchestrator turn that reasons over it.
+ * The second turn opens with an EMPTY `append: false` artifact chunk and then
+ * appends deltas. Skipping that empty opener left turn one's text in the
+ * accumulator, so the bubble printed both replies run together — and a reload,
+ * which reads the stored transcript instead, showed only one.
+ */
+test('a new artifact resets the reply, even when its opening chunk is empty', async () => {
+  const frames = [
+    // Turn 1 — the sub-agent's own resumed reply, arriving whole.
+    { result: { artifactUpdate: { artifact: { parts: [{ text: 'Received your input: "blue".' }] } } } },
+    { result: { statusUpdate: { status: { state: 'TASK_STATE_COMPLETED' } } } },
+    // Turn 2 — the orchestrator's answer, opened empty and streamed in deltas.
+    { result: { artifactUpdate: { artifact: { parts: [{ text: '' }] }, append: false } } },
+    { result: { artifactUpdate: { artifact: { parts: [{ text: 'The archive agent' }] }, append: true } } },
+    { result: { artifactUpdate: { artifact: { parts: [{ text: ' replied: blue.' }] }, append: true } } },
+    { result: { artifactUpdate: { artifact: { parts: [{ text: '' }] }, append: true, lastChunk: true } } },
+    { result: { statusUpdate: { status: { state: 'TASK_STATE_COMPLETED' } } } },
+  ];
+  const { res } = frameStream(frames);
+  const out = await readA2aStream(res);
+  assert.equal(out.text, 'The archive agent replied: blue.');
+});

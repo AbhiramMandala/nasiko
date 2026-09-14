@@ -190,7 +190,20 @@ fn extract_skills(skills_json: serde_json::Value) -> Vec<super::models::SkillSum
                 .and_then(|d| d.as_str())
                 .unwrap_or(&name)
                 .to_string();
-            Some(super::models::SkillSummary { name, description })
+            let examples = s
+                .get("examples")
+                .and_then(|e| e.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(super::models::SkillSummary {
+                name,
+                description,
+                examples,
+            })
         })
         .collect()
 }
@@ -205,4 +218,30 @@ pub enum SelectorError {
     ParseError(String),
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+}
+
+#[cfg(test)]
+mod skill_extraction_tests {
+    use super::extract_skills;
+
+    /// The AgentCard's `examples` are the literal inputs a skill answers to. Dropping them left
+    /// the planner inventing its own wording for every delegation — a skill keyed on an exact
+    /// phrase ("hitl auth test") then never fired through the orchestrator, only in direct chat.
+    #[test]
+    fn examples_survive_extraction() {
+        let skills = extract_skills(serde_json::json!([
+            {
+                "id": "hitl-auth-demo",
+                "name": "HITL Auth-Required Fixture",
+                "description": "Pauses with AUTH_REQUIRED.",
+                "examples": ["hitl auth test"],
+            },
+            { "name": "No examples here", "description": "Still a skill." },
+        ]));
+
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].examples, vec!["hitl auth test".to_string()]);
+        // A skill that documents none is not a parse failure — it just has nothing to relay.
+        assert!(skills[1].examples.is_empty());
+    }
 }

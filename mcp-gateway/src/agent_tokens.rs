@@ -40,7 +40,12 @@ pub fn hash_token(token: &str) -> String {
 /// to be live — see the constant. A hash that was already revoked is not carried
 /// forward: re-minting for a previously destroyed agent must not resurrect the
 /// credential that destroy tombstoned.
-pub async fn mint(db: &PgPool, agent_id: Uuid) -> Result<String, sqlx::Error> {
+///
+/// Generic over the executor (not concretely `&PgPool`) so a caller whose agent
+/// row was inserted earlier in an as-yet-uncommitted transaction can pass
+/// `&mut *tx` — the `agent_gateway_tokens_agent_id_fkey` insert must see that row,
+/// which a separate pool connection can't until the transaction commits.
+pub async fn mint(db: impl sqlx::PgExecutor<'_>, agent_id: Uuid) -> Result<String, sqlx::Error> {
     let mut buf = [0u8; 32];
     rand::rng().fill_bytes(&mut buf);
     let token = format!("ngt_{}", hex::encode(buf));
