@@ -244,7 +244,7 @@ async fn translated_attempt(
         );
     }
     let mut guard = AttemptGuard::new(ctx, routed, attempt, started, parsed.stream);
-    let provider = provider_for(&attempt.provider, &ctx.http, &ctx.cfg).map_err(|error| {
+    let provider = provider_for(attempt, &ctx.http, &ctx.cfg).map_err(|error| {
         guard.fail("routing", &error);
         TranslatedAttemptError::Configuration(error)
     })?;
@@ -1014,6 +1014,13 @@ mod tests {
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(None)
         }
+
+        async fn fetch_custom_provider(
+            &self,
+            _: &str,
+        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            Ok(None)
+        }
     }
 
     fn ctx(base: String) -> LlmRouterCtx {
@@ -1462,6 +1469,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: false,
+            base_url: None,
             is_coding_agent: false,
         };
         let routed = RoutedRequest {
@@ -1848,6 +1856,7 @@ mod tests {
                 tier2_model: None,
                 tier3_model: None,
                 platform_paid: true,
+                base_url: None,
                 is_coding_agent: false,
             },
             flow_id: None,

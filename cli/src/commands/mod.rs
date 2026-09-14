@@ -1,6 +1,5 @@
 pub mod agents;
 pub mod auth;
-pub mod budget;
 pub mod build;
 pub mod card;
 pub mod chat;
@@ -8,7 +7,6 @@ pub mod claude;
 pub mod cluster;
 pub mod codex;
 pub mod coding_agent_router;
-pub mod context_strategy;
 pub mod deploy;
 pub mod deployments;
 pub mod dev;

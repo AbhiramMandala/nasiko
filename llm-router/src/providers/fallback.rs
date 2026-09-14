@@ -38,7 +38,7 @@ pub async fn execute_chat(
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("chat", attempt, i, total);
-        let provider = match provider_for(&attempt.provider, http, cfg) {
+        let provider = match provider_for(attempt, http, cfg) {
             Ok(p) => p,
             Err(e) => {
                 last = Some(e);
@@ -90,7 +90,7 @@ pub async fn execute_chat_stream(
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("chat_stream", attempt, i, total);
-        let provider = match provider_for(&attempt.provider, http, cfg) {
+        let provider = match provider_for(attempt, http, cfg) {
             Ok(p) => p,
             Err(e) => {
                 last = Some(e);
@@ -142,7 +142,7 @@ pub async fn execute_embeddings(
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("embeddings", attempt, i, total);
-        match provider_for(&attempt.provider, http, cfg) {
+        match provider_for(attempt, http, cfg) {
             Err(e) => last = Some(e),
             Ok(provider) => match provider.embeddings(req, attempt).await {
                 Ok(resp) => {
@@ -280,6 +280,15 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
         } else {
             true
         };
+        // A same-provider fallback inherits the primary's base URL, so a custom
+        // provider's own fallback still targets its endpoint; a cross-provider
+        // fallback uses the built-in base URL (and a custom cross-provider name has
+        // no platform key, so it is already skipped by the `is_empty` guard above).
+        let base_url = if provider == primary.provider {
+            primary.base_url.clone()
+        } else {
+            None
+        };
         attempts.push(ResolvedConfig {
             provider,
             model,
@@ -296,6 +305,7 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             tier2_model: None,
             tier3_model: None,
             platform_paid,
+            base_url,
             is_coding_agent: primary.is_coding_agent,
         });
     }
@@ -337,6 +347,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
+            base_url: None,
             is_coding_agent: false,
         }
     }
@@ -369,6 +380,33 @@ mod tests {
         let attempts = build_attempts(&p, &cfg("")); // no platform key
         assert_eq!(attempts.len(), 1); // fallback skipped
         assert_eq!(attempts[0].provider, "anthropic");
+    }
+
+    #[test]
+    fn cross_provider_fallback_to_custom_name_is_skipped() {
+        // A fallback naming a custom (non-built-in) provider gets no platform key
+        // (platform_key_for returns "" for non-built-ins), so it is skipped rather
+        // than mis-keyed with the OpenAI key.
+        let p = primary("openai", vec!["my-gateway/llama-3.1-70b"]);
+        let attempts = build_attempts(&p, &cfg("sk-platform"));
+        assert_eq!(attempts.len(), 1); // custom-named fallback skipped
+        assert_eq!(attempts[0].provider, "openai");
+    }
+
+    #[test]
+    fn same_provider_custom_fallback_inherits_base_url() {
+        // A same-provider fallback for a custom provider reuses the primary key and
+        // carries the primary's base URL so the attempt still targets the endpoint.
+        let mut p = primary("my-gateway", vec!["my-gateway/llama-3.1-8b"]);
+        p.base_url = Some("https://gw.internal/v1".into());
+        let attempts = build_attempts(&p, &cfg("sk-platform"));
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[1].provider, "my-gateway");
+        assert_eq!(attempts[1].api_key, "primary-key"); // same-provider ⇒ reuse key
+        assert_eq!(
+            attempts[1].base_url.as_deref(),
+            Some("https://gw.internal/v1")
+        );
     }
 
     #[tokio::test]
@@ -417,6 +455,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
+            base_url: None,
             is_coding_agent: false,
         };
         let req: ChatRequest =
@@ -470,6 +509,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
+            base_url: None,
             is_coding_agent: false,
         };
         let req: EmbeddingsRequest =
@@ -547,6 +587,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
+            base_url: None,
             is_coding_agent: false,
         };
         let req: ChatRequest =
@@ -622,6 +663,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
+            base_url: None,
             is_coding_agent: false,
         };
         let req: ChatRequest = serde_json::from_value(json!({
@@ -670,6 +712,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
+            base_url: None,
             is_coding_agent: false,
         };
         let req: ChatRequest =
