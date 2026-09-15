@@ -17,6 +17,7 @@ use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde_json::Value;
+use tracing::Instrument;
 
 use futures::stream::BoxStream;
 
@@ -179,12 +180,31 @@ async fn chat_core(
         "chat_core: final model selected — dispatching to provider"
     );
 
+    // Server-side gen_ai span — records the *actual* provider and resolved model so
+    // traces show the truth even when the agent-side OTel instrumentation labels the
+    // span by the SDK name (e.g. "openai") instead of the real upstream.
+    let llm_span = tracing::info_span!(
+        "gen_ai.chat",
+        otel.kind = "client",
+        gen_ai.operation.name = "chat",
+        gen_ai.request.model = %resolved.model,
+        gen_ai.provider.name = %resolved.provider,
+        gen_ai.agent.id = %agent_id,
+        gen_ai.response.model = tracing::field::Empty,
+        gen_ai.usage.input_tokens = tracing::field::Empty,
+        gen_ai.usage.output_tokens = tracing::field::Empty,
+    );
+
     let started = Instant::now();
     let platform_paid = resolved.platform_paid;
 
     if req.is_streaming() {
-        let (stream, (provider, model)) =
-            fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req).await?;
+        let (stream, (provider, model)) = fallback::execute_chat_stream(
+            &ctx.http, &ctx.cfg, &resolved, &req,
+        )
+        .instrument(llm_span.clone())
+        .await?;
+        llm_span.record("gen_ai.response.model", model.as_str());
         let renderer = inbound.chat_stream_renderer();
         return stream_chat(StreamChatArgs {
             ctx,
@@ -202,9 +222,23 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) =
-        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req).await?;
+    let (resp, (provider, model)) = fallback::execute_chat(
+        &ctx.http, &ctx.cfg, &resolved, &req,
+    )
+    .instrument(llm_span.clone())
+    .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
+
+    // Record effective model and token usage on the server-side gen_ai span.
+    llm_span.record("gen_ai.response.model", model.as_str());
+    if let Some(ref usage) = resp.usage {
+        if let Some(input) = usage.prompt_tokens {
+            llm_span.record("gen_ai.usage.input_tokens", input);
+        }
+        if let Some(output) = usage.completion_tokens {
+            llm_span.record("gen_ai.usage.output_tokens", output);
+        }
+    }
 
     usage::spawn_log(
         ctx.db.clone(),
@@ -559,6 +593,12 @@ mod tests {
                 mode: None,
                 agent_is_participant: true,
             }))
+        }
+        async fn fetch_custom_provider(
+            &self,
+            _: &str,
+        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            Ok(None)
         }
     }
 
@@ -994,7 +1034,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_provider_is_internal_error() {
+    async fn unregistered_provider_is_bad_request() {
+        // A non-built-in provider with no active custom_providers row is a client
+        // error (400), resolved before any provider client is built — it must not
+        // fall through to the OpenAI key/base URL, nor surface as an opaque 500.
         let ctx = ctx_with("http://unused".into());
         let store = Store {
             config: Some(LLMConfig {
@@ -1023,6 +1066,6 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, GatewayError::Internal(_)));
+        assert!(matches!(err, GatewayError::BadRequest(_)));
     }
 }

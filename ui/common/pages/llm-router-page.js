@@ -46,8 +46,10 @@ class LlmRouterPage extends HTMLElement {
   #configs = [];
   #providers = [];
   #secrets = [];
-  #view = 'list'; // 'list' | 'form'
+  #customProviders = [];
+  #view = 'list'; // 'list' | 'form' | 'custom-form'
   #editingConfig = null; // null = create, config object = edit
+  #editingCustom = null; // null = create, provider object = edit
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -66,14 +68,18 @@ class LlmRouterPage extends HTMLElement {
         <app-skeleton height="72px" radius="md"></app-skeleton>
       </div>`;
     try {
-      const [configs, providers, secrets] = await Promise.all([
+      const [configs, providers, secrets, custom] = await Promise.all([
         call('fetchLlmConfigs'),
         call('fetchLlmProviders'),
         call('fetchSecretsList'),
+        // Custom providers are a bonus panel — a failure here (e.g. a transient
+        // error) shouldn't blank the whole page, so swallow it to an empty list.
+        call('fetchCustomProviders').catch(() => ({ data: [] })),
       ]);
       this.#configs = configs?.data ?? [];
       this.#providers = providers?.data ?? [];
       this.#secrets = Array.isArray(secrets) ? secrets : secrets?.data ?? [];
+      this.#customProviders = custom?.data ?? [];
     } catch (e) {
       console.error('LLM router load failed:', e);
       this.innerHTML = `${this.#headHtml()}<p class="form-error">Failed to load router configuration</p>`;
@@ -84,7 +90,14 @@ class LlmRouterPage extends HTMLElement {
   }
 
   #render() {
-    this.innerHTML = this.#view === 'form' ? this.#formHtml() : this.#listHtml();
+    if (this.#view === 'form') {
+      this.innerHTML = this.#formHtml();
+    } else if (this.#view === 'custom-form') {
+      this.innerHTML = this.#customFormHtml();
+      this.querySelector('#custom-form')?.addEventListener('submit', (ev) => this.#saveCustom(ev));
+    } else {
+      this.innerHTML = this.#listHtml();
+    }
   }
 
   /* ── List view ─────────────────────────────────────────────────────────── */
@@ -118,6 +131,84 @@ class LlmRouterPage extends HTMLElement {
       <div class="provider-grid">
         ${this.#providers.map((p) => this.#providerCardHtml(p)).join('')}
       </div>
+      ${this.#customSectionHtml()}
+    `;
+  }
+
+  /* ── Custom providers (admin) ──────────────────────────────────────────── */
+
+  #customSectionHtml() {
+    return `
+      <hr class="divider" />
+      <div class="section-head">
+        <h2 class="section-title">Custom providers</h2>
+        <p class="section-sub">Register any OpenAI-compatible endpoint (LiteLLM, vLLM, Ollama, an internal gateway). Its models appear above for tier routing.</p>
+        <app-button variant="secondary" size="md" data-action="new-custom-provider">Add custom provider</app-button>
+      </div>
+      ${this.#customProviders.length
+        ? `<div class="config-list">${this.#customProviders.map((p) => this.#customCardHtml(p)).join('')}</div>`
+        : '<p class="section-sub">No custom providers yet.</p>'}
+    `;
+  }
+
+  #customCardHtml(p) {
+    const menuItems = [
+      { id: `custom-edit:${p.id}`, label: 'Edit' },
+      { id: `custom-sync:${p.id}`, label: 'Sync models now' },
+      { id: `custom-delete:${p.id}`, label: 'Delete' },
+    ];
+    const status = p.last_sync_status || 'pending';
+    const statusClass = status === 'ok' ? 'badge--success'
+      : status === 'unsupported' ? 'badge--muted' : 'badge--warning';
+    const when = p.last_sync_at ? new Date(p.last_sync_at).toLocaleString() : 'never';
+    return `
+      <app-card card-title="${escAttr(p.display_name || p.label)}">
+        <app-menu data-slot="actions" align="end" trigger-label="Provider actions" items='${JSON.stringify(menuItems).replace(/'/g, '&#39;')}'>
+          ${icons.moreVertical?.('', 16) ?? `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>`}
+        </app-menu>
+        <div data-slot="body">
+          <div class="config-meta">
+            <span class="badge ${statusClass}"><span class="badge__dot"></span>${escHtml(status)}</span>
+            <span class="badge badge--muted is-mono">${escHtml(p.label)}</span>
+            ${p.api_key_set ? '' : '<span class="badge badge--warning">No key</span>'}
+          </div>
+          <div class="tier-rows">
+            <div class="tier-row"><span class="tier-label">Endpoint</span><span class="tier-model">${escHtml(p.base_url)}</span></div>
+            ${p.default_model ? `<div class="tier-row"><span class="tier-label">Default model</span><span class="tier-model">${escHtml(p.default_model)}</span></div>` : ''}
+            <div class="tier-row"><span class="tier-label">Last sync</span><span class="tier-model">${escHtml(when)}</span></div>
+          </div>
+          ${p.last_sync_error ? `<p class="form-error">${escHtml(p.last_sync_error)}</p>` : ''}
+        </div>
+      </app-card>`;
+  }
+
+  #customFormHtml() {
+    const c = this.#editingCustom;
+    const isEdit = !!c;
+    return `
+      <div class="form-head">
+        <app-button class="back-btn" variant="tertiary" icon-only size="sm"
+          data-action="back" aria-label="Back">${icons.arrowLeft()}</app-button>
+        <h1 class="title-page">${isEdit ? 'Edit custom provider' : 'Add custom provider'}</h1>
+      </div>
+      <form class="config-form" id="custom-form">
+        <app-input id="cp-display" name="display_name" label="Name"
+          placeholder="e.g. Internal gateway" value="${escAttr(c?.display_name || '')}" required></app-input>
+        <app-input id="cp-base" name="base_url" label="Base URL"
+          placeholder="https://gateway.internal/v1" value="${escAttr(c?.base_url || '')}"
+          hint="OpenAI-compatible base URL (the part before /chat/completions)." required></app-input>
+        <app-input id="cp-key" name="api_key" type="password" reveal
+          label="API key" placeholder="${isEdit ? 'Leave blank to keep current key' : 'Paste the API key'}"
+          autocomplete="off" hint="Stored encrypted; used to call the endpoint."
+          ${isEdit ? '' : 'required'}></app-input>
+        <div id="test-result" hidden></div>
+        <div class="form-error" id="custom-form-error" hidden></div>
+        <div class="form-actions">
+          <app-button variant="ghost" size="md" data-action="back">Cancel</app-button>
+          <app-button variant="secondary" size="md" data-action="test-connection">Test connection</app-button>
+          <app-button variant="primary" size="md" type="submit">${isEdit ? 'Save changes' : 'Register provider'}</app-button>
+        </div>
+      </form>
     `;
   }
 
@@ -223,8 +314,12 @@ class LlmRouterPage extends HTMLElement {
           placeholder="Enter name" value="${escAttr(formName)}" required></app-input>
         <app-select id="cfg-provider" name="provider" label="Provider"
           placeholder="Choose Provider" required
-          options="${escAttr(JSON.stringify(this.#providers.map((p) => ({
-            value: p.provider, label: this.#cap(p.provider) }))))}"
+          options="${escAttr(JSON.stringify([
+            ...this.#providers.map((p) => ({
+              value: p.provider_id || p.provider,
+              label: p.display_name || this.#cap(p.provider),
+            })),
+          ]))}"
           value="${escAttr(formProvider)}"></app-select>
         <div>
           <h3 class="group-title">Connect provider</h3>
@@ -276,11 +371,17 @@ class LlmRouterPage extends HTMLElement {
   }
 
   /** Models a provider offers, as app-select's `options` JSON. The leading
-   *  blank is a real choice, not a placeholder: a tier may be left unset. */
+   *  blank is a real choice, not a placeholder: a tier may be left unset.
+   *  A model with no price row is labelled "cost not tracked" (its value — the
+   *  model id — is unchanged, so routing works; only the cost is unknown).
+   *  Matches by provider name or provider_id (UUID) for custom providers. */
   #modelList(provider) {
-    const entry = this.#providers.find((p) => p.provider === provider);
+    const entry = this.#providers.find((p) =>
+      p.provider === provider || (p.provider_id && p.provider_id === provider));
     return [{ value: '', label: 'Choose model' },
-            ...(entry?.models ?? []).map((m) => ({ value: m.model, label: m.model }))];
+            ...(entry?.models ?? []).map((m) => ({
+              value: m.model, label: m.model,
+            }))];
   }
 
   /* ── Events ────────────────────────────────────────────────────────────── */
@@ -301,8 +402,15 @@ class LlmRouterPage extends HTMLElement {
       this.#view = 'form';
       this.innerHTML = this.#formHtml();
       this.querySelector('#config-form').addEventListener('submit', (ev) => this.#save(ev));
+    } else if (action === 'test-connection') {
+      this.#testConnection();
+    } else if (action === 'new-custom-provider') {
+      this.#editingCustom = null;
+      this.#view = 'custom-form';
+      this.#render();
     } else if (action === 'back') {
       this.#editingConfig = null;
+      this.#editingCustom = null;
       this.#view = 'list';
       this.#render();
     }
@@ -311,6 +419,22 @@ class LlmRouterPage extends HTMLElement {
   #onMenuAction(e) {
     const [action, id] = (e.detail?.id || '').split(':');
     if (!action || !id) return;
+    if (action === 'custom-edit') {
+      const cp = this.#customProviders.find((p) => p.id === id);
+      if (!cp) return;
+      this.#editingCustom = cp;
+      this.#view = 'custom-form';
+      this.#render();
+      return;
+    }
+    if (action === 'custom-sync') {
+      this.#syncCustom(id);
+      return;
+    }
+    if (action === 'custom-delete') {
+      this.#deleteCustom(id);
+      return;
+    }
     if (action === 'edit') {
       const cfg = this.#configs.find((c) => c.id === id);
       if (!cfg) return;
@@ -449,6 +573,129 @@ class LlmRouterPage extends HTMLElement {
       return;
     }
     showToast('Default cleared — agents now fall back to the platform key');
+    this.#load();
+  }
+
+  async #saveCustom(e) {
+    e.preventDefault();
+    const form = e.target;
+    const isEdit = !!this.#editingCustom;
+    const errEl = this.querySelector('#custom-form-error');
+    errEl.hidden = true;
+    const key = form.querySelector('#cp-key').value;
+    const base = {
+      display_name: form.querySelector('#cp-display').value.trim(),
+      base_url: form.querySelector('#cp-base').value.trim(),
+    };
+    let result;
+    try {
+      if (isEdit) {
+        await call('updateCustomProvider', this.#editingCustom.id, {
+          ...base,
+          ...(key ? { api_key: key } : {}),
+        });
+      } else {
+        result = await call('createCustomProvider', { ...base, api_key: key });
+      }
+    } catch (err) {
+      errEl.textContent = err?.message || 'Failed to save custom provider';
+      errEl.hidden = false;
+      return;
+    }
+    showToast(isEdit ? 'Custom provider updated' : 'Custom provider registered');
+    this.#editingCustom = null;
+
+    if (isEdit) {
+      this.#load();
+      return;
+    }
+    // New registration: reload the catalog so the new provider's models are
+    // available, then open the config form pre-selected with this provider.
+    const providerId = result?.data?.id;
+    try {
+      const [configs, providers, secrets, custom] = await Promise.all([
+        call('fetchLlmConfigs'),
+        call('fetchLlmProviders'),
+        call('fetchSecretsList'),
+        call('fetchCustomProviders').catch(() => ({ data: [] })),
+      ]);
+      this.#configs = configs?.data ?? [];
+      this.#providers = providers?.data ?? [];
+      this.#secrets = Array.isArray(secrets) ? secrets : secrets?.data ?? [];
+      this.#customProviders = custom?.data ?? [];
+    } catch { /* fall through to list */ }
+
+    // Find the provider value to pre-select (UUID for custom providers).
+    const match = this.#providers.find((p) => p.provider_id === providerId);
+    const preselect = match?.provider_id || match?.provider || '';
+    this.#editingConfig = null;
+    this.#view = 'form';
+    this.innerHTML = this.#formHtml(preselect);
+    this.querySelector('#config-form')?.addEventListener('submit', (ev) => this.#save(ev));
+    showToast('Now configure the routing — pick models for each reasoning level.');
+  }
+
+  async #testConnection() {
+    const form = this.querySelector('#custom-form');
+    if (!form) return;
+    const base_url = form.querySelector('#cp-base').value.trim();
+    const api_key = form.querySelector('#cp-key').value;
+    const errEl = this.querySelector('#custom-form-error');
+    const resultEl = this.querySelector('#test-result');
+    errEl.hidden = true;
+    resultEl.hidden = true;
+    if (!base_url || !api_key) {
+      errEl.textContent = 'Base URL and API key are required to test.';
+      errEl.hidden = false;
+      return;
+    }
+    const btn = this.querySelector('[data-action="test-connection"]');
+    if (btn) btn.setAttribute('loading', '');
+    try {
+      const res = await call('testCustomProvider', { base_url, api_key });
+      const data = res?.data ?? res ?? {};
+      const models = data.models ?? [];
+      resultEl.innerHTML = `
+        <div class="test-result-box">
+          <p><strong>Models discovered: ${models.length}</strong></p>
+          ${models.length ? `<div class="test-models">${models.map((m) => `<span class="badge badge--muted is-mono">${escHtml(m)}</span>`).join(' ')}</div>` : '<p class="section-sub">No models returned — the endpoint may not support GET /models.</p>'}
+        </div>`;
+      resultEl.hidden = false;
+    } catch (err) {
+      errEl.textContent = err?.message || 'Connection test failed';
+      errEl.hidden = false;
+    } finally {
+      if (btn) btn.removeAttribute('loading');
+    }
+  }
+
+  async #syncCustom(id) {
+    try {
+      const res = await call('syncCustomProvider', id);
+      const n = res?.data?.discovered_models;
+      showToast(typeof n === 'number' ? `Synced — ${n} models` : 'Sync complete');
+    } catch (err) {
+      showToast(err?.message || 'Failed to sync models');
+      return;
+    }
+    this.#load();
+  }
+
+  async #deleteCustom(id) {
+    const confirmed = await confirmDialog({
+      title: 'Delete custom provider',
+      message: 'This removes the provider and its discovered models. Configs that reference it must be repointed first.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await call('deleteCustomProvider', id);
+    } catch (err) {
+      showToast(err?.message || 'Failed to delete provider');
+      return;
+    }
+    showToast('Custom provider deleted');
     this.#load();
   }
 

@@ -36,12 +36,12 @@ pub(crate) struct CustomProviderEntry {
     pub label: String,
     pub base_url: String,
     pub api_key: String,
-    pub default_model: String,
+    pub default_model: Option<String>,
     pub catalog_sync_enabled: bool,
 }
 
 /// The raw `custom_providers` columns the sweeps read.
-type CustomProviderRow = (String, String, String, String, bool);
+type CustomProviderRow = (String, String, String, Option<String>, bool);
 
 fn row_to_entry(row: CustomProviderRow) -> Option<CustomProviderEntry> {
     let (label, base_url, encrypted_api_key, default_model, catalog_sync_enabled) = row;
@@ -317,18 +317,20 @@ async fn record_sync_status(db: &PgPool, label: &str, status: &str, error: Optio
 /// We warn loudly and surface it in the UI, but never silently repoint an operator's
 /// choice (that is worse than telling them). `None` when the default is still served.
 fn default_model_error(entry: &CustomProviderEntry, models: &HashSet<String>) -> Option<String> {
-    if models.contains(&entry.default_model) {
+    let Some(ref default_model) = entry.default_model else {
+        return None; // No default model set — nothing to warn about.
+    };
+    if models.contains(default_model) {
         return None;
     }
     tracing::warn!(
         target: "nasiko::llm_router::catalog",
-        label = %entry.label, default_model = %entry.default_model,
+        label = %entry.label, default_model = %default_model,
         "custom provider default_model is no longer served by its endpoint — the \
          last-resort fallback will fail; update it"
     );
     Some(format!(
-        "default model '{}' is no longer served by this endpoint",
-        entry.default_model
+        "default model '{default_model}' is no longer served by this endpoint",
     ))
 }
 
@@ -477,7 +479,7 @@ mod tests {
             label: label.into(),
             base_url: format!("https://{label}.internal/v1"),
             api_key: format!("sk-{label}"),
-            default_model: "m".into(),
+            default_model: Some("m".into()),
             catalog_sync_enabled: sync_enabled,
         }
     }

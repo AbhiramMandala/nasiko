@@ -67,6 +67,12 @@ pub(crate) struct ModelEntry {
 #[derive(Serialize, ToSchema)]
 pub(crate) struct ProviderCatalog {
     provider: String,
+    /// UUID of the custom provider, if this is a DB-registered custom endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_id: Option<uuid::Uuid>,
+    /// Human-friendly name of the custom provider, if this is a DB-registered custom endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
     models: Vec<ModelEntry>,
 }
 
@@ -131,21 +137,26 @@ pub(crate) async fn list_providers(
 
     // Registered custom providers are never hidden, even if their label collides with
     // a `HIDDEN_PROVIDERS` entry (e.g. an admin registers "deepseek").
-    let custom_labels: std::collections::HashSet<String> = match sqlx::query_scalar::<_, String>(
-        "SELECT label FROM custom_providers WHERE deleted_at IS NULL",
-    )
-    .fetch_all(&state.db)
-    .await
-    {
-        Ok(labels) => labels.into_iter().collect(),
-        Err(e) => {
-            tracing::error!(%e, "list_providers: custom label lookup failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-        }
-    };
+    let custom_meta: std::collections::HashMap<String, (uuid::Uuid, String)> =
+        match sqlx::query_as::<_, (uuid::Uuid, String, String)>(
+            "SELECT id, label, display_name FROM custom_providers WHERE deleted_at IS NULL",
+        )
+        .fetch_all(&state.db)
+        .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(id, label, name)| (label, (id, name)))
+                .collect(),
+            Err(e) => {
+                tracing::error!(%e, "list_providers: custom provider lookup failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
+        };
+    let custom_labels: std::collections::HashSet<String> = custom_meta.keys().cloned().collect();
 
     ApiResponse::ok(
-        json!(group_by_provider(rows, &custom_labels)),
+        json!(group_by_provider(rows, &custom_labels, &custom_meta)),
         "Providers retrieved successfully",
     )
     .into_response()
@@ -168,6 +179,7 @@ const HIDDEN_PROVIDERS: &[&str] = &["groq", "deepseek"];
 fn group_by_provider(
     rows: Vec<PricingRow>,
     custom_labels: &std::collections::HashSet<String>,
+    custom_meta: &std::collections::HashMap<String, (uuid::Uuid, String)>,
 ) -> Vec<ProviderCatalog> {
     let mut out: Vec<ProviderCatalog> = Vec::new();
     for row in rows {
@@ -194,8 +206,14 @@ fn group_by_provider(
         if let Some(group) = out.iter_mut().find(|g| g.provider == provider) {
             group.models.push(entry);
         } else {
+            let (provider_id, display_name) = custom_meta
+                .get(&provider)
+                .map(|(id, name)| (Some(*id), Some(name.clone())))
+                .unwrap_or((None, None));
             out.push(ProviderCatalog {
                 provider,
+                provider_id,
+                display_name,
                 models: vec![entry],
             });
         }

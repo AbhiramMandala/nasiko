@@ -46,8 +46,53 @@ const fetchLlmProviders = async () => {
 
 const fetchSecretsList = async () => fetchApi('/secrets');
 
+/* ── Custom (DB-registered) LLM providers ──────────────────────────────────── */
+
+const fetchCustomProviders = async () => {
+  return fetchApi('/custom-providers');
+};
+
+const testCustomProvider = async (body) => {
+  return fetchApi('/custom-providers/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
+const createCustomProvider = async (body) => {
+  return fetchApi('/custom-providers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
+const updateCustomProvider = async (id, body) => {
+  return fetchApi(`/custom-providers/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
+const deleteCustomProvider = async (id) => {
+  return fetchApi(`/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+};
+
+const syncCustomProvider = async (id) => {
+  return fetchApi(`/custom-providers/${encodeURIComponent(id)}/sync`, { method: 'POST' });
+};
+
+const fetchCustomProviderModels = async (id) => {
+  return fetchApi(`/custom-providers/${encodeURIComponent(id)}/models`);
+};
+
 registerAll({
   fetchLlmConfigs, createLlmConfig, updateLlmConfig, deleteLlmConfig,
   setDefaultLlmConfig, clearDefaultLlmConfig,
   fetchLlmProviders, fetchSecretsList,
+  fetchCustomProviders, testCustomProvider, createCustomProvider,
+  updateCustomProvider, deleteCustomProvider, syncCustomProvider,
+  fetchCustomProviderModels,
 }, { replace: true });

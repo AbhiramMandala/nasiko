@@ -128,6 +128,7 @@ fn portkey_slug(label: &str, api_base: &str) -> String {
         "api.groq.com" => "groq",
         "api.together.xyz" => "together-ai",
         "api.x.ai" => "x-ai",
+        "api.tokenfactory.nebius.com" => "nebius",
         _ => label,
     }
     .to_string()
@@ -355,6 +356,44 @@ async fn sync_label(
     Ok(inserted)
 }
 
+/// Sync pricing for a single provider by label and base URL. Resolves the Portkey
+/// slug, fetches the price book, and upserts into `model_pricing`. Returns the
+/// number of rows inserted. Called at registration time so a newly added custom
+/// provider has prices immediately — without waiting for the 24h background loop.
+pub async fn sync_one_provider(
+    db: &PgPool,
+    http: &reqwest::Client,
+    label: &str,
+    api_base: &str,
+) -> usize {
+    let pricing_base = std::env::var("PORTKEY_PRICING_BASE_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_PRICING_BASE.to_string());
+    let slug = portkey_slug(label, api_base);
+    let Some(book) = fetch_price_book(http, &pricing_base, &slug).await else {
+        return 0;
+    };
+    match sync_label(db, label, &book, "portkey pricing sync (on-register)").await {
+        Ok(n) => {
+            tracing::info!(
+                target: "nasiko::llm_router::pricing_sync",
+                label = %label, slug = %slug, rows_inserted = n,
+                "pricing sync (on-register): price book applied"
+            );
+            n
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::pricing_sync",
+                label = %label, error = %e,
+                "pricing sync (on-register): DB write failed"
+            );
+            0
+        }
+    }
+}
+
 /// One pricing-sync pass over every configured provider. Returns rows inserted.
 pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig) -> usize {
     let pricing_base = std::env::var("PORTKEY_PRICING_BASE_URL")
@@ -362,7 +401,10 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_PRICING_BASE.to_string());
     let mut inserted = 0;
-    for (label, api_base) in super::catalog::priceable_providers(cfg) {
+    // Include DB-registered custom providers so a private gateway with a Portkey
+    // price book gets real prices; most have none, which is expected and harmless.
+    let custom = super::catalog::load_custom_providers(db).await;
+    for (label, api_base) in super::catalog::priceable_providers(cfg, &custom) {
         let slug = portkey_slug(&label, &api_base);
         let Some(book) = fetch_price_book(http, &pricing_base, &slug).await else {
             continue;

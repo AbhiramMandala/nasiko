@@ -48,6 +48,7 @@ pub fn router() -> Router<AppState> {
     // Mutations are superuser-only (platform-wide config), matching model_registry::router().
     let write = Router::new()
         .route("/custom-providers", post(create))
+        .route("/custom-providers/test", post(test_endpoint))
         .route(
             "/custom-providers/{id}",
             axum::routing::patch(update).delete(delete_provider),
@@ -68,7 +69,7 @@ pub(crate) struct ProviderView {
     pub label: String,
     pub display_name: String,
     pub base_url: String,
-    pub default_model: String,
+    pub default_model: Option<String>,
     pub catalog_sync_enabled: bool,
     /// Whether an encrypted key is stored (the key itself is never returned).
     pub api_key_set: bool,
@@ -84,15 +85,9 @@ const VIEW_COLS: &str = "id, label, display_name, base_url, default_model, \
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct CreateRequest {
-    pub label: String,
     pub display_name: String,
     pub base_url: String,
     pub api_key: String,
-    pub default_model: String,
-    /// Model names to seed when automatic listing is unsupported (the escape hatch —
-    /// see §4.1). Ignored when listing succeeds.
-    #[serde(default)]
-    pub models: Vec<String>,
     #[serde(default = "default_true")]
     pub catalog_sync_enabled: bool,
 }
@@ -120,25 +115,118 @@ fn internal(context: &str, e: impl std::fmt::Display) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 }
 
-/// Validate a provider label: 2–40 chars, lowercase alphanumeric with internal
-/// hyphens (mirrors the SQL CHECK), and not a reserved built-in name. Returns the
-/// normalized label or a client-facing error message.
-fn validate_label(raw: &str) -> Result<String, String> {
-    let label = raw.trim().to_ascii_lowercase();
-    let bytes = label.as_bytes();
-    let shaped = (2..=40).contains(&label.len())
-        && bytes
-            .iter()
-            .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && bytes.first().is_some_and(|b| b.is_ascii_alphanumeric())
-        && bytes.last().is_some_and(|b| b.is_ascii_alphanumeric());
-    if !shaped {
-        return Err("label must be 2–40 chars: lowercase letters, digits, internal hyphens".into());
+/// Auto-generate an internal label (slug) from a display name. The label is the
+/// join key across `provider_models`, `model_registry`, `token_usage`, etc. — it
+/// must be lowercase alphanumeric with internal hyphens, 2–40 chars.
+fn slugify(name: &str) -> String {
+    let slug: String = name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    // Collapse runs of hyphens.
+    let mut collapsed = String::with_capacity(slug.len());
+    let mut prev_dash = false;
+    for c in slug.chars() {
+        if c == '-' {
+            if !prev_dash {
+                collapsed.push(c);
+            }
+            prev_dash = true;
+        } else {
+            collapsed.push(c);
+            prev_dash = false;
+        }
     }
-    if RESERVED_LABELS.contains(&label.as_str()) {
-        return Err(format!("'{label}' is a reserved built-in provider name"));
+    // Trim leading/trailing hyphens and truncate to 40 chars.
+    let trimmed = collapsed.trim_matches('-');
+    let truncated = if trimmed.len() > 40 {
+        &trimmed[..40]
+    } else {
+        trimmed
+    };
+    let truncated = truncated.trim_end_matches('-');
+    if truncated.len() < 2 {
+        // Fallback for very short or all-special-char names.
+        format!("custom-{}", &Uuid::new_v4().to_string()[..8])
+    } else {
+        truncated.to_string()
     }
-    Ok(label)
+}
+
+#[derive(Deserialize, ToSchema)]
+pub(crate) struct TestRequest {
+    pub base_url: String,
+    pub api_key: String,
+    /// Optional model to chat-test. When absent, only the model list is fetched.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Test a custom provider endpoint without storing anything. Probes chat (if a model
+/// is given) and fetches the model list. Superuser only.
+pub(crate) async fn test_endpoint(
+    State(state): State<AppState>,
+    _claims: Claims,
+    Json(body): Json<TestRequest>,
+) -> Response {
+    let base_url = body.base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() || body.api_key.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "base_url and api_key are required");
+    }
+
+    // Chat test (optional — only when a model is provided).
+    let chat_ok = if let Some(ref model) = body.model {
+        match probe_chat(&state.http_client, base_url, &body.api_key, model).await {
+            Ok(()) => true,
+            Err(reason) => {
+                return ApiResponse::ok(
+                    json!({ "chat_ok": false, "chat_error": reason, "models": [] }),
+                    "Chat test failed",
+                )
+                .into_response();
+            }
+        }
+    } else {
+        false // not tested
+    };
+
+    // Fetch model list.
+    let models = fetch_model_list(&state.http_client, base_url, &body.api_key).await;
+
+    ApiResponse::ok(
+        json!({ "chat_ok": chat_ok, "models": models }),
+        "Endpoint test complete",
+    )
+    .into_response()
+}
+
+/// Fetch the model list from an OpenAI-compatible `/models` endpoint.
+async fn fetch_model_list(http: &reqwest::Client, base_url: &str, api_key: &str) -> Vec<String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let resp = match http
+        .get(&url)
+        .bearer_auth(api_key)
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    body.get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Chat-test the endpoint with one tiny `POST /chat/completions`. `GET /models`
@@ -240,147 +328,94 @@ pub(crate) async fn create(
     claims: Claims,
     Json(body): Json<CreateRequest>,
 ) -> Response {
-    // 1. Validate the name (shape + reserved), and the required fields.
-    let label = match validate_label(&body.label) {
-        Ok(l) => l,
-        Err(msg) => return err(StatusCode::BAD_REQUEST, msg),
-    };
     let display_name = body.display_name.trim();
     let base_url = body.base_url.trim().trim_end_matches('/');
-    let default_model = body.default_model.trim();
-    if display_name.is_empty() || base_url.is_empty() || default_model.is_empty() {
+    if display_name.is_empty() || base_url.is_empty() {
         return err(
             StatusCode::BAD_REQUEST,
-            "display_name, base_url and default_model are required",
+            "display_name and base_url are required",
         );
     }
     if body.api_key.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "api_key is required");
     }
 
-    // 2. Chat-test the endpoint with the chosen default model — a hard 400 on failure.
-    if let Err(reason) =
-        probe_chat(&state.http_client, base_url, &body.api_key, default_model).await
-    {
-        return err(
-            StatusCode::BAD_REQUEST,
-            format!("endpoint check failed: {reason}"),
-        );
+    // Auto-generate internal label from display name.
+    let mut label = slugify(display_name);
+    if RESERVED_LABELS.contains(&label.as_str()) {
+        label = format!("{label}-custom");
     }
 
-    // 3. Store the row (encrypting the key under the platform-settings scope).
     let encrypted = SecretsCrypto::for_platform_settings().encrypt(body.api_key.trim());
     let created_by = match claims.user_uuid() {
         Ok(u) => u,
         Err((status, msg)) => return err(status, msg),
     };
-    let inserted: Result<(Uuid,), sqlx::Error> = sqlx::query_as(
-        "INSERT INTO custom_providers \
-           (label, display_name, base_url, encrypted_api_key, default_model, \
-            catalog_sync_enabled, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
-    )
-    .bind(&label)
-    .bind(display_name)
-    .bind(base_url)
-    .bind(&encrypted)
-    .bind(default_model)
-    .bind(body.catalog_sync_enabled)
-    .bind(created_by)
-    .fetch_one(&state.db)
-    .await;
 
-    let id = match inserted {
-        Ok((id,)) => id,
-        Err(sqlx::Error::Database(dbe)) if dbe.is_unique_violation() => {
-            return err(
-                StatusCode::CONFLICT,
-                format!("provider '{label}' already exists"),
-            );
+    // Try insert; on label collision, append a suffix.
+    let mut id: Option<Uuid> = None;
+    for suffix in 0..10 {
+        let candidate = if suffix == 0 {
+            label.clone()
+        } else {
+            format!("{label}-{suffix}")
+        };
+        match sqlx::query_as::<_, (Uuid,)>(
+            "INSERT INTO custom_providers \
+               (label, display_name, base_url, encrypted_api_key, \
+                catalog_sync_enabled, created_by) \
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+        )
+        .bind(&candidate)
+        .bind(display_name)
+        .bind(base_url)
+        .bind(&encrypted)
+        .bind(body.catalog_sync_enabled)
+        .bind(created_by)
+        .fetch_one(&state.db)
+        .await
+        {
+            Ok((new_id,)) => {
+                label = candidate;
+                id = Some(new_id);
+                break;
+            }
+            Err(sqlx::Error::Database(dbe)) if dbe.is_unique_violation() => continue,
+            Err(e) => return internal("create insert", e),
         }
-        Err(e) => return internal("create insert", e),
+    }
+
+    let Some(id) = id else {
+        return err(
+            StatusCode::CONFLICT,
+            format!("could not generate a unique label for '{display_name}'"),
+        );
     };
 
-    // 4. Fetch the model list (reusing the catalog sync). On success, validate the
-    //    default model is one of them; on an unsupported listing, accept manual names.
+    // Sync the model catalog.
     let discovered =
         match nasiko_llm_router::routing::catalog::sync_one(&state.db, &state.http_client, &label)
             .await
         {
             Ok(n) => n,
             Err(e) => {
-                // The row exists but the catalog write failed — leave it; the sweep retries.
                 tracing::warn!(%e, %label, "custom_providers: initial catalog sync failed");
                 0
             }
         };
 
-    let discovered = if discovered == 0 {
-        // Listing unsupported/failed: seed any manually-entered model names so the
-        // rest of the pipeline behaves identically.
-        seed_manual_models(&state.db, &label, &body.models).await
-    } else {
-        // Listing succeeded: the default model must be one it actually serves.
-        if !model_in_catalog(&state.db, &label, default_model).await {
-            let _ = sqlx::query("DELETE FROM custom_providers WHERE id = $1")
-                .bind(id)
-                .execute(&state.db)
-                .await;
-            return err(
-                StatusCode::BAD_REQUEST,
-                format!("default_model '{default_model}' is not served by this endpoint"),
-            );
-        }
-        discovered
-    };
+    // Sync pricing from Portkey so the new provider has cost data immediately
+    // (the background loop runs every 24h — too long to wait).
+    let priced = nasiko_llm_router::routing::pricing_sync::sync_one_provider(
+        &state.db, &state.http_client, &label, base_url,
+    )
+    .await;
 
     ApiResponse::created(
-        json!({ "id": id, "label": label, "discovered_models": discovered }),
+        json!({ "id": id, "label": label, "discovered_models": discovered, "priced_models": priced }),
         "Custom provider registered",
     )
     .into_response()
-}
-
-/// Write manually-entered model names into `provider_models`, returning how many were
-/// stored. Used when the endpoint's `/models` listing is unsupported.
-async fn seed_manual_models(db: &sqlx::PgPool, label: &str, models: &[String]) -> usize {
-    let names: Vec<String> = models
-        .iter()
-        .map(|m| m.trim().to_string())
-        .filter(|m| !m.is_empty())
-        .collect();
-    if names.is_empty() {
-        return 0;
-    }
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    match sqlx::query(
-        "INSERT INTO provider_models (provider, model, last_seen_at) \
-         SELECT $1, m, now() FROM unnest($2::text[]) AS m \
-         ON CONFLICT (provider, model) DO UPDATE SET last_seen_at = now()",
-    )
-    .bind(label)
-    .bind(&refs)
-    .execute(db)
-    .await
-    {
-        Ok(_) => names.len(),
-        Err(e) => {
-            tracing::warn!(%e, %label, "custom_providers: manual model seed failed");
-            0
-        }
-    }
-}
-
-/// Whether `model` appears in the provider's live catalog.
-async fn model_in_catalog(db: &sqlx::PgPool, label: &str, model: &str) -> bool {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM provider_models WHERE provider = $1 AND model = $2)",
-    )
-    .bind(label)
-    .bind(model)
-    .fetch_one(db)
-    .await
-    .unwrap_or(false)
 }
 
 /// Update a custom provider. Superuser only. A provided `api_key` rotates the stored

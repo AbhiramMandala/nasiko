@@ -265,5 +265,18 @@
     align-items: center;
   }
 
+  .test-result-box {
+    padding: var(--s-16);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-raised, var(--bg-secondary));
+    border: 1px solid var(--color-border-muted, var(--border));
+  }
+
+  .test-models {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-6);
+    margin-top: var(--s-8);
+  }
 
 }
