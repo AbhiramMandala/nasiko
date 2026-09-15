@@ -277,6 +277,7 @@ where
         .merge(settings::router())
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
+        .merge(llm_router::custom_providers::router())
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
@@ -359,7 +360,7 @@ where
     let llm_cfg = llm_ctx.cfg.clone();
     let llm_routes = nasiko_llm_router::router(llm_ctx);
     // Keep the provider model catalog (tier-routing candidates) fresh from each
-    // provider's GET /models. Runs immediately, then every 10 min; fail-open.
+    // provider's GET /models. Runs immediately, then every 24 h; fail-open.
     if state.config.model_catalog_sync_enabled {
         nasiko_llm_router::routing::catalog::spawn_sync(
             state.db.clone(),

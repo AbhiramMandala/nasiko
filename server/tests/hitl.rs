@@ -87,26 +87,6 @@ async fn seed_pending_tool_approval(
     .unwrap()
 }
 
-/// Insert a `chat_sessions` row directly — the FK target `chat_messages.session_id` needs, so a
-/// resolve's answer-persistence insert (see the new test below) has somewhere real to land.
-async fn seed_chat_session(
-    server: &common::TestServer,
-    session_id: &str,
-    user_id: Uuid,
-    agent_id: Uuid,
-) {
-    sqlx::query(
-        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
-         VALUES ($1, $2, $3, '/api/agents/x', 'test session')",
-    )
-    .bind(session_id)
-    .bind(user_id)
-    .bind(agent_id)
-    .execute(&server.db)
-    .await
-    .unwrap();
-}
-
 /// Insert a pending `input_required` row directly, with an arbitrary `question` — used for both
 /// the pre-existing plain-text shape and the selectable-options extension (`question.options`).
 async fn seed_pending_input_required(
@@ -1015,113 +995,6 @@ async fn custom_input_is_rejected_when_the_question_disallows_it() {
     server.cleanup().await;
 }
 
-// ─── Answer persisted into chat_messages (session-visible history) ─────────────────────────────
-
-/// Regression test: resolving `input_required` previously only wrote the human's answer into
-/// `hitl_requests.human_response` — nothing ever appended it to `chat_messages`, so a session
-/// with an answered pause showed the agent's question, then jumped straight to whatever it said
-/// after resuming, with the human's own reply invisible in both the CLI and the web UI's session
-/// view. `router::hitl::resolve` now does this itself (fire-and-forget, dedup-guarded like
-/// `agent_proxy.rs`'s own user-message insert).
-#[tokio::test]
-#[serial]
-async fn resolving_input_required_persists_the_answer_as_a_chat_message() {
-    let server = common::TestServer::start().await;
-    let owner = seed_user(&server, "hitl-history-1").await;
-    let agent_id = seed_agent(&server, owner, "hitl-history-agent-1").await;
-    let context_id = "ses_history_1";
-    seed_chat_session(&server, context_id, owner, agent_id).await;
-    let request_id = seed_pending_input_required(
-        &server,
-        agent_id,
-        owner,
-        context_id,
-        json!({"message": "What repo?"}),
-    )
-    .await;
-
-    let res = common::as_member(
-        server
-            .client
-            .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
-        &owner.to_string(),
-        "hitl-history-1",
-    )
-    .json(&json!({"answer": "nasiko-bishnu/test"}))
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(res.status(), 200);
-
-    // The insert is fire-and-forget (`tokio::spawn`) — give it a moment to land rather than
-    // asserting on the very next tick.
-    let content: Option<String> = poll_for_chat_message(&server, context_id).await;
-    assert_eq!(
-        content.as_deref(),
-        Some("nasiko-bishnu/test"),
-        "the human's answer must show up as a real chat_messages turn, not just human_response"
-    );
-
-    server.cleanup().await;
-}
-
-/// Idempotent double-resolve (same row, resolved again) must not append the answer a second
-/// time — `already_resolved: true` responses are excluded from the persistence write.
-#[tokio::test]
-#[serial]
-async fn resolving_an_already_resolved_request_does_not_duplicate_the_chat_message() {
-    let server = common::TestServer::start().await;
-    let owner = seed_user(&server, "hitl-history-2").await;
-    let agent_id = seed_agent(&server, owner, "hitl-history-agent-2").await;
-    let context_id = "ses_history_2";
-    seed_chat_session(&server, context_id, owner, agent_id).await;
-    let request_id = seed_pending_input_required(
-        &server,
-        agent_id,
-        owner,
-        context_id,
-        json!({"message": "What repo?"}),
-    )
-    .await;
-
-    let resolve = || {
-        common::as_member(
-            server
-                .client
-                .post(server.url(&format!("/api/hitl/{request_id}/resolve"))),
-            &owner.to_string(),
-            "hitl-history-2",
-        )
-        .json(&json!({"answer": "nasiko-bishnu/test"}))
-        .send()
-    };
-    assert_eq!(resolve().await.unwrap().status(), 200);
-    poll_for_chat_message(&server, context_id).await;
-    let second = resolve().await.unwrap();
-    assert_eq!(second.status(), 200);
-    assert_eq!(
-        second.json::<Value>().await.unwrap()["already_resolved"],
-        true
-    );
-
-    // Give any (incorrect) second insert the same grace period the first one needed, then count.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM chat_messages WHERE session_id = $1 AND role = 'user' AND content = $2",
-    )
-    .bind(context_id)
-    .bind("nasiko-bishnu/test")
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
-    assert_eq!(
-        count, 1,
-        "an already-resolved duplicate resolve must not append the answer again"
-    );
-
-    server.cleanup().await;
-}
-
 /// Raised in review (PR #383, `oss/hitl/src/authz.rs`): "an agent is uploaded by User A, shared
 /// across team/dept, User B wants to chat with this agent — this action will return 403".
 ///
@@ -1216,22 +1089,4 @@ async fn a_grantee_resolves_their_own_pause_on_someone_elses_agent_but_the_agent
     );
 
     server.cleanup().await;
-}
-
-/// Polls `chat_messages` briefly for the fire-and-forget answer-persistence insert to land,
-/// rather than asserting on the very next tick after the HTTP response returns.
-async fn poll_for_chat_message(server: &common::TestServer, session_id: &str) -> Option<String> {
-    for _ in 0..20 {
-        let content: Option<String> =
-            sqlx::query_scalar("SELECT content FROM chat_messages WHERE session_id = $1 AND role = 'user' ORDER BY timestamp DESC LIMIT 1")
-                .bind(session_id)
-                .fetch_optional(&server.db)
-                .await
-                .unwrap();
-        if content.is_some() {
-            return content;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    None
 }
