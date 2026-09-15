@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createStore } from '../common/surface/store.js';
 import { createQueryManager } from '../common/surface/queries.js';
-import { createActionRunner } from '../common/surface/actions.js';
+import { createActionRunner, valueOf } from '../common/surface/actions.js';
 import { parseBuffer } from '../common/surface/parser.js';
 import { materialize, buildComponentIndex } from '../common/surface/materialize.js';
 import catalog from '../common/surface/dsl-catalog.json' with { type: 'json' };
@@ -231,4 +231,38 @@ root = AppStack([btn, tbl], "md")`, { call: async (n) => { ran.push(n); return [
   await s.run(evalAction(s.last, 'doIt'));
   assert.ok(s.diagnostics.some((d) => d.code === 'bad_set'));
   assert.deepEqual(ran, ['fetchAgents']);
+});
+
+// ── What $event reads off the component that fired ──────────────────────────
+// A checkbox and a radio are the same HTML element type wearing opposite
+// meanings, and one branch used to cover both.
+
+test('a radio reports which option, not that it is on', () => {
+  // A radio can only fire change while turning ON, so `checked` is the
+  // constant true. Reading it made $event `true` for every radio-based
+  // control in the catalog — a range picker re-fetched with `?days=true`.
+  assert.equal(valueOf({ target: { type: 'radio', value: '30', checked: true } }), '30');
+});
+
+test('a checkbox reports whether it is on, not its submit-time value', () => {
+  // The opposite case, and the one the old branch was written for: a
+  // checkbox's `value` is "on" unless someone set it, and says nothing about
+  // what the user did.
+  assert.equal(valueOf({ target: { type: 'checkbox', value: 'on', checked: true } }), true);
+  assert.equal(valueOf({ target: { type: 'checkbox', value: 'on', checked: false } }), false);
+});
+
+test('a component that reports through detail wins over its inner node', () => {
+  // A composed control's `target` can be an inner element whose value means
+  // something else entirely.
+  assert.equal(
+    valueOf({ detail: { value: 'from-detail' }, target: { type: 'radio', value: 'from-target' } }),
+    'from-detail');
+});
+
+test('nothing meaningful is undefined, not an empty string', () => {
+  // So $event falls through to the store rather than binding a confident blank.
+  assert.equal(valueOf(null), undefined);
+  assert.equal(valueOf({}), undefined);
+  assert.equal(valueOf({ target: {} }), undefined);
 });

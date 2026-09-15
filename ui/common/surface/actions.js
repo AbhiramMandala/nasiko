@@ -36,8 +36,19 @@ import { childScope } from './materialize.js';
  *
  * A custom element that reports through `detail.value` is preferred over the
  * DOM node, because a composed component's `target` can be an inner element
- * whose value means something else. Checkboxes report `checked`: their `value`
- * is a submit-time string and has nothing to do with what the user did.
+ * whose value means something else.
+ *
+ * A checkbox and a radio look alike and mean opposite things. A checkbox is
+ * one question, so what the user did is `checked` and its `value` is a
+ * submit-time string that has nothing to do with the answer. A radio is one
+ * option among several: it can only ever fire change while turning ON, so
+ * `checked` is the constant `true` and carries no information at all — the
+ * answer is WHICH radio, which is `value`. Grouping the two under one branch
+ * made `$event` resolve to `true` for every radio-based control in the
+ * catalog (app-segmented-control, app-radio, app-toggle-group): a range picker
+ * re-fetched with `?days=true`, and a view switch set its state variable to a
+ * boolean that matched nothing. app-segmented-control's own catalog entry says
+ * to read `e.target.value`, which is this, one layer down.
  *
  * `undefined` when there is nothing meaningful — which leaves `$event` to fall
  * through to the store, rather than binding a confident-looking empty string.
@@ -48,7 +59,8 @@ export function valueOf(ev) {
   if (detail && typeof detail === 'object' && 'value' in detail) return detail.value;
   const target = ev.target;
   if (!target) return undefined;
-  if (target.type === 'checkbox' || target.type === 'radio') return target.checked;
+  if (target.type === 'radio') return target.value;
+  if (target.type === 'checkbox') return target.checked;
   if (typeof target.checked === 'boolean' && target.value === undefined) return target.checked;
   if ('value' in target) return target.value;
   return undefined;
