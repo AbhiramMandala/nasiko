@@ -100,6 +100,8 @@ class WeaveDock extends HTMLElement {
   /** Diagnostics raised during the turn, so the answer can be qualified. */
   #faults = [];
   #chatSessionId = null;
+  /** The title generated for this conversation's first turn, reused by every later view. */
+  #conversationTitle = null;
   /** Something went wrong while the drawer was shut, so the launcher says so. */
   #unread = false;
 
@@ -258,6 +260,7 @@ class WeaveDock extends HTMLElement {
     this.#toggleHistory(false);
     this.#turns = [];
     this.#chatSessionId = null;
+    this.#conversationTitle = null;
     this.#disposeSession();
     this.#paintThread();
   }
@@ -310,6 +313,7 @@ class WeaveDock extends HTMLElement {
   async #openSession(sessionId) {
     this.#turns = [];
     this.#chatSessionId = sessionId;
+    this.#conversationTitle = null;
     this.#disposeSession();
     this.#paintThread();
 
@@ -339,6 +343,7 @@ class WeaveDock extends HTMLElement {
     this.#paintThread();
 
     if (lastView) {
+      this.#conversationTitle = lastView.title || null;
       hydrateView(lastView);
       navigate(`/view?id=${encodeURIComponent(lastView.id)}`);
       if (lastView.dsl) {
@@ -374,14 +379,20 @@ class WeaveDock extends HTMLElement {
     this.#turns.push({ role: 'user', text });
     this.#paintThread();
 
+    const isFirstTurn = !this.#chatSessionId;
     const sessionReady = this.#ensureChatSession(text);
     sessionReady.then((id) => this.#persistMessage(id, 'user', text));
 
     // The view exists before the answer does — the route it opens is what
     // renders the generating state, so navigating first is not a race.
     const view = createView(text);
+    if (isFirstTurn) {
+      this.#retitle(view, text);
+    } else if (this.#conversationTitle && this.#conversationTitle !== view.title) {
+      view.title = this.#conversationTitle;
+      renameView(view.id, this.#conversationTitle).catch(() => {});
+    }
     navigate(`/view?id=${encodeURIComponent(view.id)}`);
-    this.#retitle(view, text);
     this.#respond(view, sessionReady);
   }
 
@@ -410,6 +421,10 @@ class WeaveDock extends HTMLElement {
   /**
    * Replace the view's fallback title with the model's own, in place.
    *
+   * Only called for a conversation's first turn (see `#send`) — the result,
+   * success or fallback, becomes `#conversationTitle` and every later turn in
+   * this conversation reuses it instead of asking the model again.
+   *
    * Fired alongside `#respond`, not awaited by it: the title call is one
    * short, cheap completion (`POST /weave/title`) that resolves well before
    * the actual generation does, so by the time an artifact card exists for
@@ -418,6 +433,7 @@ class WeaveDock extends HTMLElement {
    */
   async #retitle(view, prompt) {
     const title = await generateViewTitle(prompt);
+    this.#conversationTitle = title || view.title;
     if (!title || title === view.title) return;
     view.title = title;
     try { await renameView(view.id, title); } catch { /* the mutation above still shows */ }
