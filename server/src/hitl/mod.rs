@@ -249,12 +249,20 @@ async fn deliver(state: AppState, row: HitlRequest) {
         }
     };
 
-    // Every other inter-agent call path (`agent_proxy.rs`, `acl.rs`) runs through
-    // `FlowGuard` — the single chokepoint for cascade limits (depth/fan-out/token
-    // budget/timeout). This resume call has no traceparent to continue the original
-    // flow with (nothing on `hitl_requests` stores one), so it opens a fresh bounded
-    // root flow rather than skipping the check entirely.
-    let flow_ctx = FlowContext::new_root();
+    // Reuse the original flow if it was stashed in `resume_state` at pause time — the
+    // agent's OTel auto-instrumentation already carries this trace_id on every outbound
+    // call, so reopening the same flow means the agent's MCP and LLM-router calls pass
+    // the `traceparent → live flow` check with zero agent-side changes. Falls back to a
+    // fresh root flow for rows created before this stash was added.
+    let flow_ctx = row
+        .resume_state
+        .get("flow_id")
+        .and_then(|v| v.as_str())
+        .map(|fid| FlowContext {
+            flow_id: fid.to_string(),
+            parent_span_id: FlowContext::generate_span_id(),
+        })
+        .unwrap_or_else(FlowContext::new_root);
     let agent_id_str = row.agent_id.to_string();
     state.flow_guard.init_flow(&flow_ctx, &agent_name).await;
     if let Err(rejection) = state.flow_guard.check(&flow_ctx, &agent_id_str).await {
@@ -578,6 +586,15 @@ async fn deliver(state: AppState, row: HitlRequest) {
         };
         match state.hitl_store.create(new_row).await {
             Ok(created) => {
+                // Stash the resume's flow_id so a second resume can reopen the same
+                // flow (same rationale as `persist_direct_chat_pause`).
+                let _ = sqlx::query(
+                    "UPDATE hitl_requests SET resume_state = resume_state || $2 WHERE id = $1",
+                )
+                .bind(created.id)
+                .bind(serde_json::json!({ "flow_id": &flow_ctx.flow_id }))
+                .execute(&state.db)
+                .await;
                 // The frontend discovers HITL #2 from the reconnected A2A stream itself, not by
                 // polling `/messages` — same synthetic-frame shape `build_hitl_stream_event`
                 // already layers onto a live turn's own SSE (§11.2), reused here via

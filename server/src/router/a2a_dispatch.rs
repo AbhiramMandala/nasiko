@@ -911,6 +911,15 @@ pub(crate) async fn orchestrator_stream(
                                 .bind(&flow_id_cleanup)
                                 .execute(&db)
                                 .await;
+                            // Stash the original flow_id for the resume dispatcher (same
+                            // rationale as `persist_direct_chat_pause`).
+                            let _ = sqlx::query(
+                                "UPDATE hitl_requests SET resume_state = resume_state || $2 WHERE id = $1",
+                            )
+                            .bind(hitl_row.id)
+                            .bind(serde_json::json!({ "flow_id": &flow_id_cleanup }))
+                            .execute(&db)
+                            .await;
 
                             // NOTE: no chat_messages checkpoint is written here yet — how a
                             // resumed-turn checkpoint should be tagged in chat_messages is still
@@ -2019,6 +2028,17 @@ pub(crate) async fn persist_direct_chat_pause(
                 .bind(flow_id)
                 .execute(db)
                 .await;
+            // Stash the original flow_id so the resume dispatcher can reopen this
+            // same flow instead of minting a new one — the agent's OTel auto-
+            // instrumentation already carries this trace_id, so reusing it means
+            // zero agent-side changes for traceparent propagation on HITL resume.
+            let _ = sqlx::query(
+                "UPDATE hitl_requests SET resume_state = resume_state || $2 WHERE id = $1",
+            )
+            .bind(row.id)
+            .bind(serde_json::json!({ "flow_id": flow_id }))
+            .execute(db)
+            .await;
             Ok(row)
         }
         Err(e) => {
