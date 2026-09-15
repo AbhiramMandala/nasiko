@@ -399,12 +399,21 @@ async function generate(prompt, { currentSurface, sessionId } = {}) {
       },
     }),
   });
-  // 503 is the route's own "no running agent by that name" — worth separating
-  // from a transport failure, because the fix is a deployment, not a retry.
+  // 503 is the route saying the agent is not reachable — worth separating from
+  // a transport failure, because the fix is a deployment, not a retry.
+  //
+  // The route knows WHICH of the two ways it is unreachable (never seeded, or
+  // seeded and the deploy failed) and says so in the body, so print that
+  // rather than the guess this used to make. It told twelve cases in a row to
+  // go set WEAVE_AGENT_IMAGE on a deployment where WEAVE_AGENT_IMAGE was set
+  // and the image was in the registry — advice that is not merely useless but
+  // points away from the startup log, which is where the cause actually is.
   if (res.status === 503) {
+    const said = await res.text().then(
+      (t) => { try { return JSON.parse(t).error ?? ''; } catch { return ''; } }, () => '');
     throw new Error(
-      'the control plane has no running weave agent — set WEAVE_AGENT_IMAGE in '
-      + 'ee/server/.env and restart it, then check `docker ps` for the container it seeds');
+      `${said || 'the control plane has no running weave agent'} `
+      + '— check the control plane\'s startup output for "weave agent"');
   }
   if (res.status === 404) {
     throw new Error(
