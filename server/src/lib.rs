@@ -242,12 +242,6 @@ where
     // costs two bcrypt cost-12 hashes. 10/min is generous for a human changing
     // their own password and still bounds the CPU burn from a scripted loop.
     let change_password_limiter = RateLimiter::new(10, Duration::from_secs(60));
-    // The FinOps dashboard/timeseries/calendar/attributions endpoints fan out
-    // several concurrent Tempo searches per request (bounded concurrency, but
-    // real load nonetheless) — a tighter, dedicated budget than the rest of
-    // the observability router (session/trace/span reads are cheap single
-    // lookups and shouldn't share it).
-    let finops_limiter = RateLimiter::new(20, Duration::from_secs(60));
 
     // Public A2A registry (agent discovery) — see registry_a2a.rs for why it
     // is unauthenticated; the global fixed window bounds enumeration abuse.
@@ -277,14 +271,13 @@ where
         .merge(settings::router())
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
-        .merge(llm_router::custom_providers::router())
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
         .merge(router::hitl::router())
         .nest(
             "/observability",
-            observability::protected_router(state.clone(), finops_limiter),
+            observability::protected_router(state.clone()),
         )
         .merge(agents::upload::status_router())
         .merge(github::router())
@@ -360,7 +353,7 @@ where
     let llm_cfg = llm_ctx.cfg.clone();
     let llm_routes = nasiko_llm_router::router(llm_ctx);
     // Keep the provider model catalog (tier-routing candidates) fresh from each
-    // provider's GET /models. Runs immediately, then every 24 h; fail-open.
+    // provider's GET /models. Runs immediately, then every 10 min; fail-open.
     if state.config.model_catalog_sync_enabled {
         nasiko_llm_router::routing::catalog::spawn_sync(
             state.db.clone(),
