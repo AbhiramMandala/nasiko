@@ -30,7 +30,7 @@
 
 /** @typedef {(query: string, page: number, limit: number, opts?: { signal?: AbortSignal }) => Promise<{data: any[], total: number}>} ListFn */
 
-/** @type {Map<string, Function>} */
+/** @type {Map<string, Function|object>} */
 const sources = new Map();
 /** @type {Set<string>} */
 const warnedLegacy = new Set();
@@ -128,7 +128,7 @@ export function resolve(name) {
  * @returns {Function|undefined}
  */
 export function resolveOptional(name) {
-  if (sources.has(name)) return sources.get(name);
+  if (sources.has(name)) return /** @type {Function} */ (sources.get(name));
   const legacy = /** @type {any} */ (globalThis)[name];
   if (typeof legacy === 'function') {
     if (!warnedLegacy.has(name)) {
