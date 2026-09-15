@@ -38,11 +38,31 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { createHash } from 'node:crypto';
+import { resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const UI = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURES = resolve(UI, 'tests/fixtures/generations');
+
+/**
+ * Where every recorded run is kept, one directory per run.
+ *
+ * `--record` overwrites the fixtures in place, and used to keep no history at
+ * all: three baseline runs were taken in one afternoon to measure how much a
+ * generation varies with no intervention, and the first two were gone before
+ * anyone could compare them. Only the numbers someone had transcribed by hand
+ * survived, and those turned out to be component INSTANCE counts rather than
+ * vocabulary breadth — so they could not answer the question they were
+ * gathered for.
+ *
+ * A run is cheap to keep (twelve small text files) and impossible to
+ * reconstruct, so every one is kept now. Git-ignored: these are experiment
+ * output, not source, and they accumulate. To keep one as a durable baseline,
+ * `git add -f` it or copy it somewhere outside the repo — `--compare` takes
+ * any directory of `.dsl` files.
+ */
+const RUNS = resolve(UI, 'tests/fixtures/runs');
 const CATALOG = resolve(UI, 'common/surface/dsl-catalog.json');
 
 const { parseBuffer } = await import(new URL('../common/surface/parser.js', import.meta.url).href);
@@ -172,6 +192,48 @@ const SEVERITY = JSON.parse(
 
 /** Unknown means unclassified means fatal — the gate should have caught it. */
 const severityOf = (code) => SEVERITY[code]?.severity ?? 'fatal';
+
+/** How many components the catalog offers — the denominator for breadth. */
+const CATALOG_SIZE = Object.keys(catalog.components ?? {}).length;
+
+/**
+ * The component kinds a generation actually rendered.
+ *
+ * Off `evaluateGeneration`'s `tags`, which is a walk of the MATERIALIZED tree,
+ * never a regex over the DSL text. A regex counts named statements and misses
+ * a component written inline inside another call — `AppCard([AppStatCard(…)])`
+ * is one statement and two components. Measuring breadth that way undercounted
+ * a real corpus by one kind and produced a confident wrong baseline, so the
+ * rule is: the evaluator is the only thing that counts components.
+ */
+const kindsOf = (r) => [...new Set(r.tags ?? [])].sort();
+
+/** `{ code: n }` for one generation's diagnostics, and how many were fatal. */
+function diagnosticTally(r) {
+  const counts = {};
+  let fatal = 0;
+  for (const d of r.diagnostics ?? []) {
+    counts[d.code] = (counts[d.code] ?? 0) + 1;
+    if (severityOf(d.code) === 'fatal') fatal++;
+  }
+  return { counts, fatal };
+}
+
+const sha256 = (text) => createHash('sha256').update(text).digest('hex').slice(0, 16);
+
+/** Evaluate a directory of `.dsl` files the same way a live run is evaluated. */
+function evaluateDir(dir) {
+  const out = {};
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.dsl')).sort()) {
+    const text = readFileSync(resolve(dir, f), 'utf8');
+    const r = evaluateGeneration(text);
+    const { counts, fatal } = diagnosticTally(r);
+    out[f.replace(/\.dsl$/, '')] = {
+      kinds: kindsOf(r), instances: (r.tags ?? []).length, diagnostics: counts, fatal,
+    };
+  }
+  return out;
+}
 
 /**
  * Every source the scope allows. Anything else must not survive to the client.
@@ -503,8 +565,67 @@ const record = args.includes('--record');
 const withRepair = args.includes('--repair');
 const only = args[args.indexOf('--case') + 1];
 const cases = only && args.includes('--case') ? CASES.filter((c) => c.id === only) : CASES;
+/** Diff the current fixtures against a saved run. Analysis, never a gate. */
+const compareTo = args.includes('--compare') ? args[args.indexOf('--compare') + 1] : null;
 
 if (!existsSync(FIXTURES)) mkdirSync(FIXTURES, { recursive: true });
+
+/**
+ * `--compare <dir>` — what changed between a saved run and the fixtures now.
+ *
+ * Reads both sides off disk and re-evaluates them, so it works against any
+ * directory of `.dsl` files: a run under `tests/fixtures/runs/`, a baseline
+ * copied out of git, anything. No network, no model, deterministic.
+ *
+ * Deliberately NOT an assertion and deliberately not wired into CI. Breadth
+ * moves by a component or two between two runs of an unchanged prompt — a
+ * gate on that number would fail on noise. This exists to answer "did the
+ * intervention convert the cases it was aimed at", which is legible per case
+ * and is the signal the corpus number is too coarse to carry.
+ */
+if (compareTo) {
+  if (!compareTo || !existsSync(compareTo)) {
+    console.error(`eval --compare: no such directory: ${compareTo ?? '(missing argument)'}`);
+    process.exit(2);
+  }
+  const before = evaluateDir(compareTo);
+  const after = evaluateDir(FIXTURES);
+  const ids = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+
+  const bKinds = new Set(Object.values(before).flatMap((c) => c.kinds));
+  const aKinds = new Set(Object.values(after).flatMap((c) => c.kinds));
+  const gained = [...aKinds].filter((k) => !bKinds.has(k)).sort();
+  const lost = [...bKinds].filter((k) => !aKinds.has(k)).sort();
+
+  console.log(`eval --compare\n  baseline: ${compareTo}\n  current : ${FIXTURES}\n`);
+  console.log(`corpus breadth  ${bKinds.size}/${CATALOG_SIZE}  ->  ${aKinds.size}/${CATALOG_SIZE}`);
+  console.log(`  newly generated : ${gained.join(', ') || 'none'}`);
+  console.log(`  no longer used  : ${lost.join(', ') || 'none'}\n`);
+
+  const unchanged = [];
+  for (const id of ids) {
+    const b = before[id]; const a = after[id];
+    if (!b) { console.log(`+ ${id}  (new case) ${a.kinds.join(' ')}`); continue; }
+    if (!a) { console.log(`- ${id}  (gone from the current fixtures)`); continue; }
+    const plus = a.kinds.filter((k) => !b.kinds.includes(k));
+    const minus = b.kinds.filter((k) => !a.kinds.includes(k));
+    const dPlus = Object.keys(a.diagnostics).filter((c) => !b.diagnostics[c]);
+    const dMinus = Object.keys(b.diagnostics).filter((c) => !a.diagnostics[c]);
+    if (!plus.length && !minus.length && !dPlus.length && !dMinus.length
+        && b.instances === a.instances) { unchanged.push(id); continue; }
+    console.log(`~ ${id}`);
+    console.log(`    kinds     ${b.kinds.length} -> ${a.kinds.length}`
+      + `${plus.length ? `   +${plus.join(' +')}` : ''}${minus.length ? `   -${minus.join(' -')}` : ''}`);
+    if (b.instances !== a.instances) console.log(`    instances ${b.instances} -> ${a.instances}`);
+    if (b.fatal !== a.fatal) console.log(`    fatal     ${b.fatal} -> ${a.fatal}`);
+    if (dPlus.length) console.log(`    new diagnostics      ${dPlus.join(', ')}`);
+    if (dMinus.length) console.log(`    resolved diagnostics ${dMinus.join(', ')}`);
+  }
+  if (unchanged.length) console.log(`\n= unchanged (${unchanged.length}): ${unchanged.join(', ')}`);
+  console.log('\nObservational. Generation is stochastic — a difference here is a '
+    + 'hypothesis, not a result, until it repeats.');
+  process.exit(0);
+}
 
 if (offline) {
   const have = new Set(readdirSync(FIXTURES).filter((f) => f.endsWith('.dsl')).map((f) => f.replace(/\.dsl$/, '')));
@@ -595,6 +716,21 @@ async function checkCatalogReachable() {
 
 if (!offline) await checkCatalogReachable();
 
+/**
+ * This run's own directory, and the per-case rows that become `summary.json`.
+ *
+ * The run's generations are written HERE as well as over the fixtures, so the
+ * directory is a faithful record of this run rather than of the one it
+ * replaced. A run is then identifiable by its own content: each row carries a
+ * sha256 of the exact text that was evaluated.
+ */
+const runDir = record
+  ? resolve(RUNS, `${new Date().toISOString().replace(/[:.]/g, '-').replace(/-\d+Z$/, 'Z')}-${catalog.catalogVersion}`)
+  : null;
+if (runDir) mkdirSync(runDir, { recursive: true });
+/** One row per case, in case order. */
+const runRows = {};
+
 /** Cases whose recording was refused because the generator answered nothing. */
 const skipped = [];
 let failed = 0;
@@ -635,6 +771,7 @@ for (const kase of cases) {
     // "recorded 12" while writing nothing — the one moment the count had to
     // be right.
     unreachable.push(kase.id);
+    if (record) runRows[kase.id] = { status: 'unreachable', error: err.message };
     continue;
   }
   // An empty answer is never a recording worth keeping. It means the generator
@@ -647,11 +784,37 @@ for (const kase of cases) {
   // emptied all eleven in one command, including the prose-only cases that
   // touch neither the catalog nor the DSL.
   if (record) {
-    if (text.trim()) writeFileSync(path, text);
-    else skipped.push(kase.id);
+    if (text.trim()) {
+      writeFileSync(path, text);
+      // The same bytes into the run directory. Written here rather than by
+      // copying the fixtures afterwards, so a case that is skipped below
+      // (empty answer, fixture left alone) is absent from the snapshot too
+      // instead of silently carrying the previous run's text.
+      writeFileSync(resolve(runDir, `${kase.id}.dsl`), text);
+    } else skipped.push(kase.id);
   }
 
   const { fail, advisory, runtime, r } = check(kase, text);
+
+  // Observational only — nothing below reads this to decide pass or fail.
+  if (record) {
+    const { counts, fatal } = diagnosticTally(r);
+    runRows[kase.id] = {
+      status: fail.length ? 'failed' : (text.trim() ? 'ok' : 'skipped'),
+      failReasons: fail,
+      sha256: sha256(text),
+      statements: r.statements,
+      componentInstances: (r.tags ?? []).length,
+      uniqueKinds: kindsOf(r),
+      uniqueKindCount: kindsOf(r).length,
+      chartKinds: r.chartKinds ?? [],
+      queries: (r.queries ?? []).length,
+      actions: r.actions ?? 0,
+      states: (r.states ?? []).length,
+      diagnostics: counts,
+      fatalDiagnostics: fatal,
+    };
+  }
 
   // ── The repair turn, measured ───────────────────────────────────────────
   // Hand the renderer's own diagnostics back and see whether the generator
@@ -722,6 +885,47 @@ for (const kase of cases) {
 
 const known = cases.filter((c) => c.knownFailure).length;
 const mode = offline ? 'replayed' : 'live';
+
+// ── The run's own record ────────────────────────────────────────────────────
+// Written before any of the reporting below, so a run that exits non-zero
+// still leaves its evidence behind. Every number here is observational: this
+// file decides nothing, and nothing reads it to gate.
+if (record && runDir) {
+  const kinds = new Set(Object.values(runRows).flatMap((c) => c.uniqueKinds ?? []));
+  const diagnostics = {};
+  let fatal = 0;
+  for (const c of Object.values(runRows)) {
+    for (const [code, n] of Object.entries(c.diagnostics ?? {})) {
+      diagnostics[code] = (diagnostics[code] ?? 0) + n;
+    }
+    fatal += c.fatalDiagnostics ?? 0;
+  }
+  const summary = {
+    _generated: 'by ui/scripts/eval-generations.mjs --record — observational, gates nothing',
+    timestamp: new Date().toISOString(),
+    catalogVersion: catalog.catalogVersion,
+    manifestVersion: MANIFEST.manifestVersion ?? null,
+    mode: withRepair ? 'record+repair' : 'record',
+    snapshotDir: runDir.slice(runDir.indexOf('ui/')),
+    caseCount: cases.length,
+    corpus: {
+      uniqueKinds: [...kinds].sort(),
+      uniqueKindCount: kinds.size,
+      catalogSize: CATALOG_SIZE,
+      breadth: `${kinds.size}/${CATALOG_SIZE}`,
+      fatalDiagnostics: fatal,
+      diagnosticCounts: diagnostics,
+      skipped, unreachable,
+    },
+    cases: runRows,
+  };
+  writeFileSync(resolve(runDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
+  console.log(`\nrun saved: ${summary.snapshotDir}`);
+  console.log(`  breadth ${summary.corpus.breadth} unique component kinds`
+    + `   fatal diagnostics: ${fatal}`);
+  console.log('  compare a later run with:'
+    + `\n    node ui/scripts/eval-generations.mjs --compare ${summary.snapshotDir}`);
+}
 
 // The one number that says whether handing diagnostics back is worth the
 // round trip. Printed before the pass/fail line because it is about a
