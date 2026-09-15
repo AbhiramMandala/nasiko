@@ -120,6 +120,11 @@ class WeaveDock extends HTMLElement {
   #unread = false;
   /** Show diagnostics in the runtime's own words. Off for everyone but us. */
   #dev = false;
+  /**
+   * The title the server derived when it created this chat session, held for
+   * the one turn that can use it. Null on every turn after the first.
+   */
+  #sessionTitle = null;
 
   #onRouteChange = () => this.#paintLauncher();
   /**
@@ -436,7 +441,7 @@ class WeaveDock extends HTMLElement {
     // renders the generating state, so navigating first is not a race.
     const view = createView(text);
     navigate(`/view?id=${encodeURIComponent(view.id)}`);
-    this.#retitle(view, text);
+    this.#retitle(view, text, sessionReady);
     this.#respond(view, sessionReady);
   }
 
@@ -446,6 +451,10 @@ class WeaveDock extends HTMLElement {
     try {
       const body = await postJson('/chat/sessions', { session_id: id, first_prompt: firstPrompt });
       this.#chatSessionId = body?.data?.session_id ?? id;
+      // The row is named from `first_prompt` by titling::title_from_prompt —
+      // the same function, on the same string, that /weave/title would run a
+      // moment later. Kept so #retitle can use it instead of asking again.
+      this.#sessionTitle = body?.data?.title ?? null;
     } catch (err) {
       console.error('[weave-dock] could not create a chat session', err);
       this.#chatSessionId = id;
@@ -465,14 +474,28 @@ class WeaveDock extends HTMLElement {
   /**
    * Replace the view's fallback title with the model's own, in place.
    *
-   * Fired alongside `#respond`, not awaited by it: the title call is one
-   * short, cheap completion (`POST /weave/title`) that resolves well before
-   * the actual generation does, so by the time an artifact card exists for
-   * this view its title has almost always already landed. `#paintThread`
-   * covers the rare case where generation is fast enough that it hasn't.
+   * Fired alongside `#respond`, not awaited by it: the title is either already
+   * in hand from the session the turn just opened, or one short completion
+   * (`POST /weave/title`) that resolves well before the generation does. Either
+   * way, by the time an artifact card exists for this view its title has
+   * almost always landed. `#paintThread` covers the rare case where generation
+   * is fast enough that it has not.
    */
-  async #retitle(view, prompt) {
-    const title = await generateViewTitle(prompt);
+  async #retitle(view, prompt, sessionReady) {
+    // On the first turn of a chat session this prompt has already been titled,
+    // server-side, to name the session row. Asking /weave/title for the same
+    // string is a second identical completion — two LLM calls for one title,
+    // on the one turn where someone is watching a spinner. Both were visible
+    // in the log as a pair of warnings 30ms apart when the provider key went
+    // bad, which is how this was noticed at all.
+    //
+    // Only the first turn. A follow-up reuses the session, and the session's
+    // title belongs to the prompt that opened it rather than to this one.
+    await sessionReady;
+    const reused = this.#sessionTitle;
+    this.#sessionTitle = null;
+
+    const title = reused || await generateViewTitle(prompt);
     if (!title || title === view.title) return;
     view.title = title;
     try { await renameView(view.id, title); } catch { /* the mutation above still shows */ }
