@@ -35,6 +35,7 @@ ratatui.workspace = true
 crossterm.workspace = true
 chrono.workspace = true
 tabled.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 mockito.workspace = true

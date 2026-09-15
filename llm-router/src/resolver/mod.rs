@@ -92,10 +92,6 @@ pub struct ResolvedConfig {
     /// `user_secrets` key). Recorded on usage rows so platform-paid spend can be
     /// metered separately from bring-your-own-key spend.
     pub platform_paid: bool,
-    /// Base URL for a custom (DB-registered) provider. `None` ⇒ use the built-in
-    /// base URL from [`GatewayConfig`]. Resolved from the `custom_providers` row so
-    /// the destination URL follows the resolved config rather than only env config.
-    pub base_url: Option<String>,
     /// Whether this agent is a coding-agent CLI integration. See
     /// [`AgentConfigResult::is_coding_agent`] — the chat handler uses this to derive
     /// model-routing boundary signals from the transcript instead of the (permanently
@@ -134,21 +130,6 @@ pub struct AgentConfigResult {
     pub is_coding_agent: bool,
 }
 
-/// An admin-registered, OpenAI-compatible custom provider (`custom_providers`
-/// table), resolved by its `label`. Read per request through [`RegistryStore`] —
-/// deliberately uncached so a key rotation or delete takes effect immediately on
-/// every replica (the api key is decrypted in the impl, so mocks can supply
-/// plaintext).
-#[derive(Debug, Clone)]
-pub struct CustomProvider {
-    /// The endpoint's OpenAI-compatible base URL (used in place of the built-in one).
-    pub base_url: String,
-    /// The decrypted platform-owned API key for this endpoint.
-    pub api_key: String,
-    /// Last-resort model, used in place of the global `DEFAULT_MODEL`. See §4.3.
-    pub default_model: String,
-}
-
 /// Storage seam for the resolver — mockable in tests.
 #[async_trait]
 pub trait RegistryStore: Send + Sync {
@@ -178,15 +159,6 @@ pub trait RegistryStore: Send + Sync {
         agent_id: Uuid,
         window_secs: i64,
     ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error>;
-
-    /// The active custom provider registered under `label`, or `None`. Decryption
-    /// of the stored api key happens in the impl, so mocks can supply a plaintext
-    /// key. Read per request (never cached) so key rotation and delete take effect
-    /// immediately — see §2.4 of the custom-provider plan.
-    async fn fetch_custom_provider(
-        &self,
-        label: &str,
-    ) -> Result<Option<CustomProvider>, sqlx::Error>;
 }
 
 /// Postgres-backed [`RegistryStore`].
@@ -341,31 +313,6 @@ impl RegistryStore for PgRegistry {
             }),
         )
     }
-
-    async fn fetch_custom_provider(
-        &self,
-        label: &str,
-    ) -> Result<Option<CustomProvider>, sqlx::Error> {
-        let row: Option<(String, String, String)> = sqlx::query_as(
-            "SELECT base_url, encrypted_api_key, default_model \
-             FROM custom_providers WHERE label = $1 AND deleted_at IS NULL",
-        )
-        .bind(label)
-        .fetch_optional(&self.db)
-        .await?;
-        let Some((base_url, encrypted_api_key, default_model)) = row else {
-            return Ok(None);
-        };
-        // Shared platform credential (not a per-user secret) → platform-settings scope.
-        let api_key = SecretsCrypto::for_platform_settings()
-            .decrypt(&encrypted_api_key)
-            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
-        Ok(Some(CustomProvider {
-            base_url,
-            api_key,
-            default_model,
-        }))
-    }
 }
 
 /// Resolve `(agent_id, owner_id)` into a [`ResolvedConfig`].
@@ -387,50 +334,18 @@ pub async fn resolve(
     let is_coding_agent = agent_result.is_coding_agent;
     let has_llm_config = llm_config.is_some();
     let secret_name = plan_secret_name(&llm_config);
-
-    // Decide the destination provider up front (same rule `plan_config` uses) so a
-    // custom (DB-registered) provider row can be loaded before the pure planning
-    // step. A non-built-in name that resolves to no active row is a client error —
-    // never a silent fallthrough to OpenAI (that would send the platform key to an
-    // unknown endpoint; see the `platform_key_for` fail-closed change).
-    let provider_name = destination_provider(&llm_config, cfg, hint);
-    let custom = if is_builtin_provider(&provider_name) {
-        None
-    } else {
-        match store
-            .fetch_custom_provider(&provider_name)
-            .await
-            .map_err(|e| GatewayError::Internal(format!("custom provider read failed: {e}")))?
-        {
-            Some(cp) => Some(cp),
-            None => {
-                return Err(GatewayError::BadRequest(format!(
-                    "provider '{provider_name}' is not a registered custom provider"
-                )));
-            }
-        }
-    };
-
-    let plan = plan_config(
-        llm_config,
-        cfg,
-        hint,
-        agent_pinned_model.as_deref(),
-        custom.as_ref(),
-    );
+    let plan = plan_config(llm_config, cfg, hint, agent_pinned_model.as_deref());
     let api_key = resolve_api_key(
         store,
         cfg,
         owner_id,
         &plan.provider,
         plan.api_key_secret_name.as_deref(),
-        custom.as_ref(),
     )
     .await?;
 
     // Mirrors resolve_api_key: a secret name + non-empty owner uses the owner's key
-    // (or errors) — everything else is a platform-owned key (the built-in platform
-    // key or the custom provider's stored key).
+    // (or errors) — everything else is the platform key.
     let platform_paid = secret_name.is_none() || owner_id.is_empty();
     let resolved = ResolvedConfig {
         litellm_model: format!("{}/{}", plan.provider, plan.model),
@@ -446,7 +361,6 @@ pub async fn resolve(
         tier2_model: plan.tier2_model,
         tier3_model: plan.tier3_model,
         platform_paid,
-        base_url: custom.as_ref().map(|c| c.base_url.clone()),
         is_coding_agent,
     };
     tracing::info!(
@@ -565,42 +479,12 @@ struct ConfigPlan {
     tier3_model: Option<String>,
 }
 
-/// Whether `provider` is one of the built-in providers the router speaks natively.
-/// Everything else is a candidate custom (DB-registered) provider.
-fn is_builtin_provider(provider: &str) -> bool {
-    matches!(provider, "openai" | "anthropic" | "gemini")
-}
-
-/// The destination provider name, decided exactly as [`plan_config`] decides it:
-/// the config's provider when the agent is configured, else the request hint's
-/// provider, else the platform default. Computed before `plan_config` so a custom
-/// provider row can be loaded for its key + default model.
-fn destination_provider(
-    llm_config: &Option<LLMConfig>,
-    cfg: &GatewayConfig,
-    hint: RequestHint<'_>,
-) -> String {
-    match llm_config {
-        Some(c) => c.provider.clone(),
-        None => hint
-            .provider
-            .map(str::to_string)
-            .unwrap_or_else(|| cfg.default_provider.clone()),
-    }
-}
-
 fn plan_config(
     llm_config: Option<LLMConfig>,
     cfg: &GatewayConfig,
     hint: RequestHint<'_>,
     agent_pinned_model: Option<&str>,
-    custom: Option<&CustomProvider>,
 ) -> ConfigPlan {
-    // Last-resort model: a custom provider almost never serves the global
-    // DEFAULT_MODEL (gpt-4o-mini), so its own registered default is used instead.
-    let default_model = custom
-        .map(|c| c.default_model.clone())
-        .unwrap_or_else(|| cfg.default_model.clone());
     match llm_config {
         Some(c) => {
             // Configured agent: the config is authoritative — the request hint is ignored.
@@ -612,7 +496,7 @@ fn plan_config(
                 .or_else(|| c.tier2_model.clone())
                 .or_else(|| c.tier1_model.clone())
                 .or_else(|| c.tier3_model.clone())
-                .unwrap_or_else(|| default_model.clone());
+                .unwrap_or_else(|| cfg.default_model.clone());
             // Agent-level pin overrides config-level pin.
             let config_pin = c
                 .pinned
@@ -643,7 +527,7 @@ fn plan_config(
             model: hint
                 .model
                 .map(str::to_string)
-                .unwrap_or_else(|| default_model.clone()),
+                .unwrap_or_else(|| cfg.default_model.clone()),
             fallback_models: Vec::new(),
             temperature: None,
             max_tokens: None,
@@ -664,7 +548,6 @@ async fn resolve_api_key(
     owner_id: &str,
     provider: &str,
     secret_name: Option<&str>,
-    custom: Option<&CustomProvider>,
 ) -> Result<String, GatewayError> {
     if let Some(name) = secret_name
         && !owner_id.is_empty()
@@ -683,11 +566,6 @@ async fn resolve_api_key(
         return crypto
             .decrypt(&encrypted)
             .map_err(|e| GatewayError::Internal(format!("secret decryption failed: {e}")));
-    }
-    // No per-user secret: a custom provider pays with its own stored (platform-owned)
-    // key; a built-in provider pays with the platform key for that provider.
-    if let Some(cp) = custom {
-        return Ok(cp.api_key.clone());
     }
     platform_key(cfg, provider)
 }
@@ -710,12 +588,10 @@ mod tests {
     const AGENT: &str = "11111111-1111-1111-1111-111111111111";
     const OWNER: &str = "22222222-2222-2222-2222-222222222222";
 
-    #[derive(Default)]
     struct MockRegistry {
         config: Option<Option<LLMConfig>>,
         secret: Option<String>,
         agent_pinned_model: Option<String>,
-        custom_provider: Option<CustomProvider>,
     }
 
     #[async_trait]
@@ -742,12 +618,6 @@ mod tests {
             _: i64,
         ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
             unreachable!("resolver tests never attribute flows")
-        }
-        async fn fetch_custom_provider(
-            &self,
-            _: &str,
-        ) -> Result<Option<CustomProvider>, sqlx::Error> {
-            Ok(self.custom_provider.clone())
         }
     }
 
@@ -792,7 +662,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let r = resolve(
             &store,
@@ -818,7 +687,6 @@ mod tests {
             config: None,
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let err = resolve(
             &store,
@@ -843,7 +711,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let err = resolve(
             &store,
@@ -873,7 +740,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let r = resolve(
             &store,
@@ -903,7 +769,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let err = resolve(
             &store,
@@ -930,7 +795,6 @@ mod tests {
             ))),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let hint = RequestHint {
             provider: Some("openai"),
@@ -970,7 +834,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let hint = RequestHint {
             provider: Some("anthropic"),
@@ -994,7 +857,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let hint = RequestHint {
             provider: Some("openai"),
@@ -1024,7 +886,6 @@ mod tests {
             ))),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let err = resolve(
             &store,
@@ -1065,7 +926,6 @@ mod tests {
             ))),
             secret: Some(ciphertext),
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let r = resolve(
             &store,
@@ -1090,7 +950,6 @@ mod tests {
             config: Some(Some(c)),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let r = resolve(
             &store,
@@ -1116,7 +975,6 @@ mod tests {
             config: Some(Some(c)),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let r = resolve(
             &store,
@@ -1137,7 +995,6 @@ mod tests {
             config: Some(Some(llm_config("anthropic", "claude-x", None))),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let r = resolve(
             &store,
@@ -1161,7 +1018,6 @@ mod tests {
             config: Some(None),
             secret: None,
             agent_pinned_model: None,
-            custom_provider: None,
         };
         let cache = cache();
         let cfg = cfg("openai", "gpt-4o-mini", "platform-key");
@@ -1174,97 +1030,5 @@ mod tests {
         assert_eq!(a.model, b.model);
         // Config is cached, so the cache should have an entry.
         assert!(cache.get(Uuid::parse_str(AGENT).unwrap()).is_some());
-    }
-
-    fn custom(base_url: &str, api_key: &str, default_model: &str) -> CustomProvider {
-        CustomProvider {
-            base_url: base_url.into(),
-            api_key: api_key.into(),
-            default_model: default_model.into(),
-        }
-    }
-
-    #[tokio::test]
-    async fn custom_provider_resolves_base_url_and_own_key() {
-        // A config naming a DB-registered custom provider resolves to that endpoint's
-        // base URL and its own stored key — never the platform OpenAI key.
-        let store = MockRegistry {
-            config: Some(Some(llm_config("my-gateway", "llama-3.1-70b", None))),
-            secret: None,
-            agent_pinned_model: None,
-            custom_provider: Some(custom(
-                "https://gw.internal/v1",
-                "sk-gateway",
-                "llama-3.1-8b",
-            )),
-        };
-        let r = resolve(
-            &store,
-            &cache(),
-            &cfg("openai", "gpt-4o-mini", "sk-platform-openai"),
-            AGENT,
-            OWNER,
-            RequestHint::default(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(r.provider, "my-gateway");
-        assert_eq!(r.model, "llama-3.1-70b");
-        assert_eq!(r.litellm_model, "my-gateway/llama-3.1-70b");
-        assert_eq!(r.api_key, "sk-gateway");
-        assert_eq!(r.base_url.as_deref(), Some("https://gw.internal/v1"));
-    }
-
-    #[tokio::test]
-    async fn custom_provider_default_model_beats_global_default() {
-        // Config has no model and no tier models: the last-resort fallback must be the
-        // custom provider's own default_model, not the global DEFAULT_MODEL (gpt-4o-mini).
-        let mut c = llm_config("my-gateway", "unused", None);
-        c.model = None;
-        let store = MockRegistry {
-            config: Some(Some(c)),
-            secret: None,
-            agent_pinned_model: None,
-            custom_provider: Some(custom(
-                "https://gw.internal/v1",
-                "sk-gateway",
-                "llama-3.1-8b",
-            )),
-        };
-        let r = resolve(
-            &store,
-            &cache(),
-            &cfg("openai", "gpt-4o-mini", "sk-platform-openai"),
-            AGENT,
-            OWNER,
-            RequestHint::default(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(r.model, "llama-3.1-8b");
-        assert_eq!(r.litellm_model, "my-gateway/llama-3.1-8b");
-    }
-
-    #[tokio::test]
-    async fn unregistered_custom_provider_is_bad_request() {
-        // A non-built-in provider name with no active custom_providers row is a client
-        // error — it must not fall through to the OpenAI platform key + base URL.
-        let store = MockRegistry {
-            config: Some(Some(llm_config("ghost-gateway", "some-model", None))),
-            secret: None,
-            agent_pinned_model: None,
-            custom_provider: None,
-        };
-        let err = resolve(
-            &store,
-            &cache(),
-            &cfg("openai", "gpt-4o-mini", "sk-platform-openai"),
-            AGENT,
-            OWNER,
-            RequestHint::default(),
-        )
-        .await
-        .unwrap_err();
-        assert!(matches!(err, GatewayError::BadRequest(_)));
     }
 }

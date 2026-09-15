@@ -1,6 +1,7 @@
 pub mod api;
 pub mod commands;
 pub mod config;
+pub mod hitl;
 pub mod oci;
 pub mod skill;
 pub mod util;

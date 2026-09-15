@@ -523,9 +523,23 @@ impl HitlStore for PgHitlStore {
         // generous cap for what is, per row, one human decision in one conversation — the inner
         // query takes the most recent 200 by `created_at`, then the outer re-sorts them oldest
         // first to preserve this method's documented ordering.
+        //
+        // `chat_session_id` (the column) is only ever populated for an `Orchestrator`-origin row
+        // — the stable top-level session a sub-agent dispatch was mirrored under; its `context_id`
+        // is that sub-agent's own unstable per-dispatch context, never a real session, and must
+        // never be treated as one. `AgentProxy`/`DirectChat`-origin rows never set
+        // `chat_session_id` at all; for those, `context_id` already IS the stable, caller-facing
+        // session id (no separate orchestrator-level session to distinguish it from — same
+        // reasoning as `oss/server/src/hitl/mod.rs::stable_session_id`). Matching only the
+        // `chat_session_id` column here meant this query returned empty for *every* direct-chat
+        // session, no matter how many real HITL rows it had (confirmed live: two resolved
+        // `input_required` rows for a real `archive` direct-chat session, zero returned) — fixed
+        // by falling back to `context_id` only when `chat_session_id` is absent, mirroring
+        // `stable_session_id`'s `unwrap_or` precisely: never both, never neither's absence
+        // silently matching the wrong column.
         let rows: Vec<HitlRequestRow> = sqlx::query_as(
             "SELECT * FROM (
-                 SELECT * FROM hitl_requests WHERE chat_session_id = $1 AND owner_user_id = $2
+                 SELECT * FROM hitl_requests WHERE COALESCE(chat_session_id, context_id) = $1 AND owner_user_id = $2
                   ORDER BY created_at DESC LIMIT 200
              ) recent ORDER BY created_at ASC",
         )
