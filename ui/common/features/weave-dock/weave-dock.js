@@ -66,6 +66,22 @@ const DOCK_WIDTH = '432px';
 const OPEN_KEY = 'weave-dock-open';
 
 /**
+ * Developer mode: show the runtime's own account of what went wrong.
+ *
+ * Off by default, because the fault card speaks the runtime's language —
+ * statement names, component tags, dot-paths — and that is written for whoever
+ * has to fix the generator, not for whoever asked for a dashboard.
+ *
+ * Off does NOT mean silent. The model writes its closing sentence before a
+ * single component has rendered, so on a turn that dropped something it still
+ * says "here's your chart" with conviction. Letting that stand unchallenged is
+ * the failure NAS-626 was filed for, and hiding the detail must not bring it
+ * back. So off gets one plain sentence and on gets the full card — the
+ * difference is vocabulary, never whether the user is told.
+ */
+const DEV_KEY = 'weave-dock-dev';
+
+/**
  * What the launcher offers, by route. A pill that names the data under the
  * cursor is an invitation; "Ask Weave anything" is wallpaper.
  */
@@ -100,10 +116,10 @@ class WeaveDock extends HTMLElement {
   /** Diagnostics raised during the turn, so the answer can be qualified. */
   #faults = [];
   #chatSessionId = null;
-  /** The title generated for this conversation's first turn, reused by every later view. */
-  #conversationTitle = null;
   /** Something went wrong while the drawer was shut, so the launcher says so. */
   #unread = false;
+  /** Show diagnostics in the runtime's own words. Off for everyone but us. */
+  #dev = false;
 
   #onRouteChange = () => this.#paintLauncher();
   /**
@@ -126,6 +142,9 @@ class WeaveDock extends HTMLElement {
     if (!this.#initialized) {
       this.#initialized = true;
       this.#open = localStorage.getItem(OPEN_KEY) === 'true';
+      // Opt-in, so an unset value and a storage that throws both land on off —
+      // the state an end user should get.
+      try { this.#dev = localStorage.getItem(DEV_KEY) === 'true'; } catch { this.#dev = false; }
       this.#render();
     }
     // Every connect, not just the first: teardown below runs on every
@@ -187,6 +206,12 @@ class WeaveDock extends HTMLElement {
             -->
             
           <h2 class="drawer__title">Weave</h2>
+          <!-- aria-pressed, not a checkbox or a switch: it is a toggle button
+               whose effect is visible in the thread behind it, which is exactly
+               what aria-pressed describes. The label says what pressing does
+               rather than what the state is, and #paintDev keeps both true. -->
+          <button class="bar-btn" type="button" data-dev aria-pressed="false"
+            >${icons.terminal('', 16, 1.25)}</button>
           <button class="bar-btn" type="button" data-close aria-label="Close Weave"
             >${icons.panelLeft('', 16, 1.25)}</button>
           <!-- A plain popover, not role="menu": the search box is not a valid
@@ -209,12 +234,14 @@ class WeaveDock extends HTMLElement {
 
     this.querySelector('[data-open]').addEventListener('click', () => this.open());
     this.querySelector('[data-close]').addEventListener('click', () => this.close());
+    this.querySelector('[data-dev]').addEventListener('click', () => this.#toggleDev());
     this.querySelector('[data-history]').addEventListener('click', () => this.#toggleHistory());
     this.querySelector('[data-new-chat]').addEventListener('click', () => this.#newChat());
     this.querySelector('.history__search').addEventListener('input', (e) => this.#filterHistory(e.target.value));
     this.addEventListener('chatbox-submit', (e) => this.#send(e.detail.value));
 
     this.#paintLauncher();
+    this.#paintDev();
     this.#paintThread();
   }
 
@@ -248,6 +275,32 @@ class WeaveDock extends HTMLElement {
     try { localStorage.setItem(OPEN_KEY, String(this.#open)); } catch { /* private mode */ }
   }
 
+  /**
+   * Turn the runtime's vocabulary on and off.
+   *
+   * Repaints the thread rather than toggling a class, because the two modes are
+   * different content and not the same content styled twice: off is one
+   * sentence the turn's author would recognise, on is a list of statement
+   * names. A CSS toggle would have to render both and hide one, which means
+   * shipping the codes to every end user's DOM to never show them.
+   */
+  #toggleDev() {
+    this.#dev = !this.#dev;
+    try { localStorage.setItem(DEV_KEY, String(this.#dev)); } catch { /* private mode */ }
+    this.#paintDev();
+    this.#paintThread();
+  }
+
+  #paintDev() {
+    const btn = this.querySelector('[data-dev]');
+    if (!btn) return;
+    btn.setAttribute('aria-pressed', String(this.#dev));
+    btn.classList.toggle('is-on', this.#dev);
+    btn.setAttribute('aria-label',
+      this.#dev ? 'Hide diagnostic detail' : 'Show diagnostic detail');
+    btn.title = this.#dev ? 'Developer mode on' : 'Developer mode off';
+  }
+
   #toggleHistory(force) {
     const menu = this.querySelector('.history');
     const next = force ?? menu.hasAttribute('hidden');
@@ -260,7 +313,6 @@ class WeaveDock extends HTMLElement {
     this.#toggleHistory(false);
     this.#turns = [];
     this.#chatSessionId = null;
-    this.#conversationTitle = null;
     this.#disposeSession();
     this.#paintThread();
   }
@@ -313,7 +365,6 @@ class WeaveDock extends HTMLElement {
   async #openSession(sessionId) {
     this.#turns = [];
     this.#chatSessionId = sessionId;
-    this.#conversationTitle = null;
     this.#disposeSession();
     this.#paintThread();
 
@@ -343,7 +394,6 @@ class WeaveDock extends HTMLElement {
     this.#paintThread();
 
     if (lastView) {
-      this.#conversationTitle = lastView.title || null;
       hydrateView(lastView);
       navigate(`/view?id=${encodeURIComponent(lastView.id)}`);
       if (lastView.dsl) {
@@ -379,20 +429,14 @@ class WeaveDock extends HTMLElement {
     this.#turns.push({ role: 'user', text });
     this.#paintThread();
 
-    const isFirstTurn = !this.#chatSessionId;
     const sessionReady = this.#ensureChatSession(text);
     sessionReady.then((id) => this.#persistMessage(id, 'user', text));
 
     // The view exists before the answer does — the route it opens is what
     // renders the generating state, so navigating first is not a race.
     const view = createView(text);
-    if (isFirstTurn) {
-      this.#retitle(view, text);
-    } else if (this.#conversationTitle && this.#conversationTitle !== view.title) {
-      view.title = this.#conversationTitle;
-      renameView(view.id, this.#conversationTitle).catch(() => {});
-    }
     navigate(`/view?id=${encodeURIComponent(view.id)}`);
+    this.#retitle(view, text);
     this.#respond(view, sessionReady);
   }
 
@@ -421,10 +465,6 @@ class WeaveDock extends HTMLElement {
   /**
    * Replace the view's fallback title with the model's own, in place.
    *
-   * Only called for a conversation's first turn (see `#send`) — the result,
-   * success or fallback, becomes `#conversationTitle` and every later turn in
-   * this conversation reuses it instead of asking the model again.
-   *
    * Fired alongside `#respond`, not awaited by it: the title call is one
    * short, cheap completion (`POST /weave/title`) that resolves well before
    * the actual generation does, so by the time an artifact card exists for
@@ -433,7 +473,6 @@ class WeaveDock extends HTMLElement {
    */
   async #retitle(view, prompt) {
     const title = await generateViewTitle(prompt);
-    this.#conversationTitle = title || view.title;
     if (!title || title === view.title) return;
     view.title = title;
     try { await renameView(view.id, title); } catch { /* the mutation above still shows */ }
@@ -664,6 +703,32 @@ class WeaveDock extends HTMLElement {
         </button>`;
       node.querySelector('.artifact').addEventListener('click',
         () => navigate(`/view?id=${encodeURIComponent(turn.view.id)}`));
+    } else if (turn.role === 'faults' && !this.#dev) {
+      // Developer mode off: say that something is missing, and nothing more.
+      //
+      // Not a softened version of the card — a different statement. The card
+      // answers "what is wrong with this DSL"; this answers "can I trust what
+      // the assistant just told me", which is the only question the person
+      // reading it can act on. They can ask again or rephrase; they cannot
+      // fix an orphaned statement.
+      //
+      // `fatal` and `runtime` are worth different sentences. Fatal means the
+      // surface is not what was asked for and asking again may help. Runtime
+      // means a data source failed, where asking again changes nothing and
+      // waiting might.
+      const anyFatal = turn.items.some((d) => d.severity === 'fatal');
+      node.innerHTML = `
+        <div class="faults faults--quiet faults--${anyFatal ? 'fatal' : 'runtime'}">
+          <p class="faults__head">
+            ${icons.alertTriangle('faults__icon', 14, 1.5)}
+            ${anyFatal
+              ? 'Part of this dashboard did not render'
+              : 'Some of this data could not be loaded'}
+          </p>
+          <p class="faults__quiet-text">${anyFatal
+            ? 'What you see is incomplete, whatever the message above says. Asking again, or describing it differently, usually gets a full one.'
+            : 'The dashboard is built correctly; the data behind it did not arrive. It may fill in on a refresh.'}</p>
+        </div>`;
     } else if (turn.role === 'faults') {
       // `why` first, `message` second, and both. `why` is the manifest's
       // one-line answer to what this means for the person looking at the
