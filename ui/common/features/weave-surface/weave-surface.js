@@ -54,8 +54,35 @@ import { createSurfaceSession } from '/common/surface/surface-stream.js';
  * an undefined element the browser can't render: no shadow DOM, no styling,
  * attributes that go nowhere. This is that place — the one seam between the
  * runtime and the rest of the app already promises to own "a vocabulary."
+ *
+ * That was the intent and it had drifted: fifteen of the catalog's forty-one
+ * were missing, app-segmented-control and app-tabs among them. A generated
+ * surface naming one got an inert element — an empty box with the right tag,
+ * no diagnostic, nothing in the console. Worse, it was order-dependent: the
+ * SPA shares one custom-element registry, so a component was defined if the
+ * user had happened to visit a page that imports it, and undefined on a fresh
+ * load straight to /view. The same DSL rendered two different ways.
+ *
+ * `ui-lint`'s `weave-imports-every-catalog-element` now compares this list
+ * against the catalog and fails on a difference, so the next component added
+ * to the vocabulary cannot be added to it alone.
  */
 import '/common/design-system/app-menu/app-menu.js';
+import '/common/design-system/app-accordion/app-accordion.js';
+import '/common/design-system/app-alert/app-alert.js';
+import '/common/design-system/app-banner/app-banner.js';
+import '/common/design-system/app-combobox/app-combobox.js';
+import '/common/design-system/app-date-field/app-date-field.js';
+import '/common/design-system/app-field/app-field.js';
+import '/common/design-system/app-list/app-list.js';
+import '/common/design-system/app-list-item/app-list-item.js';
+import '/common/design-system/app-progress/app-progress.js';
+import '/common/design-system/app-segmented-control/app-segmented-control.js';
+import '/common/design-system/app-slider/app-slider.js';
+import '/common/design-system/app-tabs/app-tabs.js';
+import '/common/design-system/app-tag-group/app-tag-group.js';
+import '/common/design-system/app-toggle/app-toggle.js';
+import '/common/design-system/app-toggle-group/app-toggle-group.js';
 import '/common/design-system/app-avatar/app-avatar.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
