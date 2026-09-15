@@ -84,10 +84,26 @@ class ChatPage extends HTMLElement {
   #resumed = new Set();
 
   /**
-   * Aborted on disconnect — see orchestrator-page for the same reasoning: an
-   * in-flight A2A stream used to outlive the element that started it.
+   * The turn this view currently owns, or null.
+   *
+   * Leaving the page *detaches* the turn instead of cancelling it. Cancelling
+   * was the old behaviour and it lost the answer outright: a reply reaches the
+   * transcript only once the stream completes — `#persistMessage` below for a
+   * direct agent chat, `insert_assistant_message` inside the SSE generator
+   * (a2a_dispatch.rs) for an orchestrator-routed one — and dropping the
+   * connection drops that generator too, so the agent call was abandoned
+   * mid-token and nothing was ever written. The user came back to their own
+   * question and no reply, ever. Draining a turn nobody is watching costs one
+   * idle fetch, and is what puts the reply there when they return.
+   *
+   * `detached` gates only the writes that would land somewhere wrong — a
+   * re-rendered DOM, or the session the user moved on to — never the read loop.
+   *
+   * ponytail: nothing caps how many detached turns drain at once; each ends when
+   * its own agent does, so the bound is how fast someone can hop sessions. If
+   * that ever bites, keep the detached readers in a set and cap it.
    */
-  #abort = new AbortController();
+  #turn = null;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -108,8 +124,7 @@ class ChatPage extends HTMLElement {
     const params = new URLSearchParams(location.search);
     if ((params.get("session_id") || null) === this.#sessionId
         && params.get("agent_id") === this.#agentId) return;
-    this.#abort.abort();
-    this.#abort = new AbortController();
+    this.#detachTurn();
     this.#sending = false;
     this.#lastUserContent = null;
     this.#enter();
@@ -165,7 +180,15 @@ class ChatPage extends HTMLElement {
 
   disconnectedCallback() {
     this.removeEventListener("route-update", this.#onRouteUpdate);
-    this.#abort.abort();
+    this.#detachTurn();
+  }
+
+  /** Let the in-flight turn run to completion and persist, but stop it writing
+   *  into this element — about to be removed, or re-rendered for another
+   *  session. See #turn. */
+  #detachTurn() {
+    if (this.#turn) this.#turn.detached = true;
+    this.#turn = null;
   }
 
   /** The Sessions route's own view: its module nav (the session list) beside a
@@ -366,6 +389,11 @@ class ChatPage extends HTMLElement {
   async #sendMessage(content) {
     if (this.#sending || this.#readOnly) return;
     this.#sending = true;
+    // Snapshot the session this turn belongs to: the reply is persisted after
+    // the stream ends, and by then `this.#sessionId` may name whichever session
+    // the user moved to — which is where the answer used to get filed.
+    const turn = { sessionId: this.#sessionId, detached: false };
+    this.#turn = turn;
     const messagesEl = this.querySelector("#messages");
     const chatInput = this.querySelector("#chat-input");
 
@@ -403,6 +431,7 @@ class ChatPage extends HTMLElement {
         const session = body.data || body;
         this.#sessionId = session.session_id || session.id;
         if (!this.#sessionId) throw new Error("Session created without an id");
+        turn.sessionId = this.#sessionId;
         // The module nav lists chat sessions — tell it there is a new one, and
         // which one, so it can highlight the row for the chat on screen.
         document.dispatchEvent(new CustomEvent("session-created", {
@@ -458,14 +487,14 @@ class ChatPage extends HTMLElement {
       };
 
       // `timeout: 0` disables the API funnel's default 30s deadline — this is a
-      // long-lived stream, not a request/response. `signal` lets
-      // disconnectedCallback cut it off on navigation.
+      // long-lived stream, not a request/response. Deliberately unsignalled:
+      // this fetch has to survive navigation so the turn finishes and persists
+      // (see #turn).
       const res = await apiFetch("/orchestrator/a2a", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
         timeout: 0,
-        signal: this.#abort.signal,
       });
       if (!res.ok) {
         const errBody = await res.text();
@@ -479,7 +508,7 @@ class ChatPage extends HTMLElement {
       }
 
       pendingRow.remove();
-      const { text: reply, traceId, usage, aborted, paused, contentEl } = await this.#readA2aStream(res, messagesEl);
+      const { text: reply, traceId, usage, aborted, paused, contentEl } = await this.#readA2aStream(res, messagesEl, turn);
       // Paused, not finished: there is no reply to store yet, and the resumed
       // one is persisted by #resume when it arrives.
       if (paused) return;
@@ -487,7 +516,7 @@ class ChatPage extends HTMLElement {
       // failure), so this guard is what stops a half-received reply from being
       // written to the server as if the agent had finished saying it.
       if (aborted) return;
-      const persisted = await this.#persistMessage(this.#sessionId, "assistant", reply, { traceId, usage });
+      const persisted = await this.#persistMessage(turn.sessionId, "assistant", reply, { traceId, usage });
       // Surface any files this turn produced on the just-streamed message. The
       // server captures the agent's `/workspace` writes onto the message and
       // returns them here, session-scoped. Attach to this turn's own element so
@@ -495,18 +524,23 @@ class ChatPage extends HTMLElement {
       if (persisted?.file_parts?.length && contentEl?.isConnected) {
         contentEl.insertAdjacentHTML("beforeend", this.#filesHtml(persisted.file_parts));
       }
-      this.#updateRetryButtons(messagesEl);
+      if (!turn.detached) this.#updateRetryButtons(messagesEl);
     } catch (err) {
       pendingRow.remove();
       // A cancellation is us, not a failure — see orchestrator-page. Also don't
-      // persist a partial reply: the stream was cut, not completed.
-      if (!isAbort(err)) {
+      // persist a partial reply: the stream was cut, not completed. A detached
+      // turn has no one to tell either: its transcript is off screen.
+      if (!isAbort(err) && !turn.detached) {
         this.#appendMsg(messagesEl, "assistant", `Error: ${userMessage(err)}`);
       }
-      this.#updateRetryButtons(messagesEl);
+      if (!turn.detached) this.#updateRetryButtons(messagesEl);
     } finally {
-      this.#sending = false;
-      this.#syncComposer();
+      // Only the live turn owns the composer: a detached one finishing later
+      // must not unlock a composer that belongs to whatever is on screen now.
+      if (!turn.detached) {
+        this.#sending = false;
+        this.#syncComposer();
+      }
     }
   }
 
@@ -560,10 +594,12 @@ class ChatPage extends HTMLElement {
     if (this.#resumed.has(id)) return;
     this.#resumed.add(id);
     this.#resumeTail = this.#resumeTail.then(async () => {
+      const turn = { sessionId: this.#sessionId, detached: false };
+      this.#turn = turn;
       this.#syncComposer({ streaming: true });
       try {
-        const res = await reconnectAfterHitl(id, { signal: this.#abort.signal });
-        const { text, aborted, paused } = await this.#readA2aStream(res, messagesEl);
+        const res = await reconnectAfterHitl(id);
+        const { text, aborted, paused } = await this.#readA2aStream(res, messagesEl, turn);
         if (aborted || paused || !text) return;
         // No persist here: the resumed turn is the server's to record — the
         // HITL dispatcher writes the reply itself (`persist_resume_reply`,
@@ -571,11 +607,13 @@ class ChatPage extends HTMLElement {
         // resumed reply twice, so the transcript showed it twice on reload.
         // Unlike the normal send path, where the direct-agent branch of
         // a2a_dispatch persists nothing and this page owns the write.
-        this.#updateRetryButtons(messagesEl);
+        if (!turn.detached) this.#updateRetryButtons(messagesEl);
       } catch (err) {
-        if (!isAbort(err)) this.#appendMsg(messagesEl, "assistant", `Error: ${userMessage(err)}`);
+        if (!isAbort(err) && !turn.detached) {
+          this.#appendMsg(messagesEl, "assistant", `Error: ${userMessage(err)}`);
+        }
       } finally {
-        this.#syncComposer();
+        if (!turn.detached) this.#syncComposer();
       }
     });
   }
@@ -707,7 +745,7 @@ class ChatPage extends HTMLElement {
     }
   }
 
-  async #readA2aStream(res, messagesEl) {
+  async #readA2aStream(res, messagesEl, turn) {
     // Create unified streaming area
     const streamRow = document.createElement("div");
     streamRow.className = "msg-row is-assistant";
@@ -749,7 +787,6 @@ class ChatPage extends HTMLElement {
       showContent(renderMarkdown(text));
     });
     const out = await readA2aStream(res, {
-      signal: this.#abort.signal,
       onReply: renderReply,
       // Working prose goes to the activity timeline, not into the message
       // body: it is the agent's tool activity, and rendering it there as a
@@ -776,7 +813,11 @@ class ChatPage extends HTMLElement {
     if (out.hitl) {
       stepsEl.awaitInput();
       typingEl.remove();
-      this.#mountHitl(streamArea, out.hitl);
+      // A pause belonging to a turn the user has navigated away from must not
+      // mount here: #mountHitl sets #hitlCard, which would lock the composer of
+      // whatever session is on screen now on someone else's decision. #loadMessages
+      // replays it from `pendingRows` when they come back to that session.
+      if (!turn?.detached) this.#mountHitl(streamArea, out.hitl);
       return { text: "", traceId: out.traceId, usage: out.usage, aborted: out.aborted, paused: true };
     }
 

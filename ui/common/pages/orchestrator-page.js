@@ -47,11 +47,20 @@ class OrchestratorPage extends HTMLElement {
   #resumed = new Set();
 
   /**
-   * Aborted on disconnect. Before this existed, navigating away mid-response
-   * left the A2A reader pulling frames and writing them into detached DOM for as
-   * long as the agent kept streaming.
+   * The turn this view currently owns, or null.
+   *
+   * Leaving the page *detaches* the turn instead of cancelling it. Aborting was
+   * the old behaviour, and here it lost the answer outright: this page never
+   * persists a reply itself — `insert_assistant_message` (a2a_dispatch.rs) does,
+   * from inside the SSE generator — and dropping the connection drops that
+   * generator, so the orchestrator turn was abandoned mid-token and no reply was
+   * ever recorded. Draining a turn nobody is watching costs one idle fetch and
+   * is what puts the reply in the session when the user comes back to it.
+   *
+   * `detached` gates only the writes that would land in a dead view, never the
+   * read loop.
    */
-  #abort = new AbortController();
+  #turn = null;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -130,6 +139,9 @@ class OrchestratorPage extends HTMLElement {
       chatbox.setLoading(true);
       this.classList.add('has-response');
 
+      const turn = { detached: false };
+      this.#turn = turn;
+
       // Append user message
       this.#appendMsg(messagesEl, 'user', content);
 
@@ -184,32 +196,31 @@ class OrchestratorPage extends HTMLElement {
         };
 
         // `timeout: 0` disables the API funnel's default 30s deadline — this is
-        // a long-lived stream, not a request/response. `signal` lets
-        // disconnectedCallback cut it off on navigation.
+        // a long-lived stream, not a request/response. Deliberately unsignalled:
+        // the fetch has to survive navigation so the server-side turn runs to
+        // its own persist (see #turn).
         const res = await apiFetch('/orchestrator/a2a', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
           timeout: 0,
-          signal: this.#abort.signal,
         });
         if (!res.ok) throw new Error(await res.text());
 
         pendingRow.remove();
-        await this.#readStream(res, messagesEl);
+        await this.#readStream(res, messagesEl, turn);
         // Assistant reply is persisted server-side by the orchestrator dispatch
         // (insert_assistant_message in a2a_dispatch.rs) — no client-side write
         // needed, unlike the agent chat page whose direct-agent path does not.
       } catch (err) {
         pendingRow.remove();
         // A cancellation is us, not a failure: the element is being removed, so
-        // there is nobody to tell. Without this, navigating away mid-response
-        // painted "Error: The user aborted a request." into a dying page.
-        if (!isAbort(err)) {
+        // there is nobody to tell. Same for a detached turn — its view is gone.
+        if (!isAbort(err) && !turn.detached) {
           this.#appendMsg(messagesEl, 'assistant', `Error: ${userMessage(err)}`);
         }
       } finally {
-        this.#syncComposer();
+        if (!turn.detached) this.#syncComposer();
       }
     });
   }
@@ -258,20 +269,31 @@ class OrchestratorPage extends HTMLElement {
     if (this.#resumed.has(id)) return;
     this.#resumed.add(id);
     this.#resumeTail = this.#resumeTail.then(async () => {
+      const turn = { detached: false };
+      this.#turn = turn;
       this.#syncComposer({ streaming: true });
       try {
-        const res = await reconnectAfterHitl(id, { signal: this.#abort.signal });
-        await this.#readStream(res, messagesEl);
+        const res = await reconnectAfterHitl(id);
+        await this.#readStream(res, messagesEl, turn);
       } catch (err) {
-        if (!isAbort(err)) this.#appendMsg(messagesEl, 'assistant', `Error: ${userMessage(err)}`);
+        if (!isAbort(err) && !turn.detached) {
+          this.#appendMsg(messagesEl, 'assistant', `Error: ${userMessage(err)}`);
+        }
       } finally {
-        this.#syncComposer();
+        if (!turn.detached) this.#syncComposer();
       }
     });
   }
 
   disconnectedCallback() {
-    this.#abort.abort();
+    this.#detachTurn();
+  }
+
+  /** Let the in-flight turn run to completion and persist server-side, but stop
+   *  it writing into this element, which is being removed. See #turn. */
+  #detachTurn() {
+    if (this.#turn) this.#turn.detached = true;
+    this.#turn = null;
   }
 
   #appendMsg(messagesEl, role, content, { usage = null, traceId = null } = {}) {
@@ -372,7 +394,7 @@ class OrchestratorPage extends HTMLElement {
     }
   }
 
-  async #readStream(res, messagesEl) {
+  async #readStream(res, messagesEl, turn) {
     const streamRow = document.createElement('div');
     streamRow.className = 'msg-row is-assistant';
     const streamArea = document.createElement('div');
@@ -433,7 +455,10 @@ class OrchestratorPage extends HTMLElement {
     if (out.hitl) {
       stepsEl.awaitInput();
       typingEl.remove();
-      this.#mountHitl(streamArea, out.hitl);
+      // A pause from a turn the user has navigated away from must not mount:
+      // #mountHitl sets #hitlCard, which locks the composer of whatever is on
+      // screen now on someone else's decision.
+      if (!turn?.detached) this.#mountHitl(streamArea, out.hitl);
       return { text: '', traceId: out.traceId, usage: out.usage, paused: true };
     }
 

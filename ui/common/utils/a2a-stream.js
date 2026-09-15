@@ -25,9 +25,11 @@
  *     onTraceMeta(meta) {}  // { trace_id }
  *     onUsageMeta(meta) {}  // usage footer (tokens/cost), when present
  *     onError(message)  {}  // stream-level failure text
- *     signal            {}  // AbortSignal — REQUIRED from a component; abort it
- *                           // in disconnectedCallback or the reader keeps
- *                           // pulling into detached DOM after navigation.
+ *     signal            {}  // AbortSignal — optional, and NOT what a page should
+ *                           // reach for on navigation: a turn is only persisted
+ *                           // once its stream completes, so cancelling on
+ *                           // disconnect throws the reply away (see chat-page's
+ *                           // `#turn`). Pass one only for a real cancellation.
  *   });
  *   // out = { text, progressText, traceId, usage, failed, errorMessage, aborted, hitl }
  */
@@ -62,9 +64,9 @@ function normalizeTaskState(state) {
 }
 
 export async function readA2aStream(res, handlers = {}) {
-  // `handlers.signal` is how a component stops this loop. Without it the reader
-  // kept pulling — and the handlers kept writing — after the element had been
-  // removed from the DOM, because nothing connected navigation to the stream.
+  // `handlers.signal` is how a caller stops this loop early. Pages deliberately
+  // do not pass one on navigation — draining to the end is what lets the turn
+  // persist — so this is optional and every use of it below is guarded.
   const signal = handlers.signal;
   const out = {
     text: "",

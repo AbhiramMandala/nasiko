@@ -483,6 +483,19 @@
     color: var(--color-text-main);
   }
 
+  /* Output owns a strip of its own at the foot of the pane, below the other
+     sections, so it needs the gap a section heading would have given it. */
+  .output-tabs { margin-top: var(--s-16); }
+
+  /* Dotted rule between stacked sections of the detail pane — section headings
+     and consecutive message blocks. First-in-container gets none, so a panel
+     never opens on a rule. */
+  .detail-section-title:not(:first-child),
+  .msg-block + .msg-block {
+    border-top: 1px dotted var(--color-border);
+    padding-top: var(--s-12);
+  }
+
   /* No inline padding: `--color-bg-base` resolves to `--bg-group`, the pane's
      own background (tokens/colors.css:198), so this "well" is invisible and its
      16px side padding only inset the message text from the tab strip and the

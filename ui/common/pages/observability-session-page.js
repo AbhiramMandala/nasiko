@@ -743,14 +743,16 @@ class ObservabilitySessionPage extends HTMLElement {
         ${provider ? `<span><b>Provider:</b> ${escHtml(provider)}</span>` : ''}
         ${model ? `<span><b>Model:</b> ${escHtml(model)}</span>` : ''}
       </div>` : ''}
-      <app-tabs>
+      <app-tabs label="Span sections">
         <div data-tab="input" data-label="Input">${this.#inputTabHtml()}</div>
         <div data-tab="usage" data-label="Usage">${this.#usageTabHtml()}</div>
         <div data-tab="events" data-label="Metadata &amp; events">${this.#eventsTabHtml()}</div>
         <div data-tab="raw" data-label="Raw attributes"><pre class="raw-json">${
           escHtml(JSON.stringify(attrs, null, 2))}</pre></div>
       </app-tabs>
-      ${this.#outputHtml()}
+      <app-tabs class="output-tabs" label="Span output">
+        <div data-tab="output" data-label="${escHtml(this.#outputTitle())}">${this.#outputHtml()}</div>
+      </app-tabs>
     `;
     // Every panel is rendered up front — app-tabs owns the switch, so there is
     // no re-render to hang the clamp pass off. #applyClamps measures, and a
@@ -813,15 +815,18 @@ class ObservabilitySessionPage extends HTMLElement {
     `;
   }
 
-  #outputHtml() {
+  /** Tool spans name their output by outcome; everything else is just "Output". */
+  #outputTitle() {
     const attrs = this.#span?.attributes ?? {};
-    const tool = this.#isToolSpan(attrs);
-    const title = tool ? (attrs.tool?.status === 'failed' ? 'Error' : 'Result') : 'Output';
-    return `
-      <div class="detail-section-title">${title}</div>
-      ${this.#msgBlocksHtml(this.#messagesFor('output'),
-        tool ? 'No result captured' : 'No output message available')}
-    `;
+    if (!this.#isToolSpan(attrs)) return 'Output';
+    return attrs.tool?.status === 'failed' ? 'Error' : 'Result';
+  }
+
+  #outputHtml() {
+    return this.#msgBlocksHtml(this.#messagesFor('output'),
+      this.#isToolSpan(this.#span?.attributes ?? {})
+        ? 'No result captured'
+        : 'No output message available');
   }
 
   /** Per-span usage: the token split, the cache counts and the cost. */
