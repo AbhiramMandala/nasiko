@@ -1301,9 +1301,19 @@ async fn pull_image(
     registry_host: Option<&str>,
     registry_credentials: Option<&DockerCredentials>,
 ) -> Result<()> {
-    // Prefer the registry-qualified ref when a registry_host is configured.
+    // Qualify with the configured registry only when the ref does not already
+    // name one of its own.
+    //
+    // The guard used to be `!image.starts_with(host)`, which only recognised a
+    // ref already qualified with THIS registry. A ref qualified with a
+    // DIFFERENT one sailed past it and got a second host bolted on the front:
+    // with OCI_REGISTRY_HOST=localhost:8443 and an agent image of
+    // `localhost:5050/weave-dashboard-generator:v1`, the daemon was asked for
+    // `localhost:8443/localhost:5050/weave-dashboard-generator:v1`. It fails
+    // as a pull error, which reads as a missing image — the one thing it is
+    // not, since the image pulls by hand.
     let pull_ref = match registry_host {
-        Some(host) if !image.starts_with(host) => format!("{host}/{image}"),
+        Some(host) if !has_registry_host(image) => format!("{host}/{image}"),
         _ => image.to_owned(),
     };
     let opts = CreateImageOptions {
@@ -1338,6 +1348,23 @@ async fn tag_as_bare_ref(client: &Docker, pull_ref: &str, image: &str) -> Result
         )
         .await
         .map_err(|e| RuntimeError::ImageNotFound(format!("tag {pull_ref} as {image} failed: {e}")))
+}
+
+/// Whether an image reference already names a registry.
+///
+/// Docker's own rule, and the only one that works: the first path segment is a
+/// registry host when it contains a `.` or a `:`, or is exactly `localhost`.
+/// Everything else is a Docker Hub namespace — `nasiko/echo-agent:v1` — which
+/// is precisely what a configured `registry_host` exists to qualify.
+///
+/// `seed.rs::extract_name` already carries this knowledge, in a comment about
+/// registry hosts commonly having their own port. It was true there and absent
+/// here, and the gap cost a working deployment.
+fn has_registry_host(image: &str) -> bool {
+    match image.split_once('/') {
+        Some((first, _)) => first == "localhost" || first.contains('.') || first.contains(':'),
+        None => false,
+    }
 }
 
 /// Split `repo:tag` on the tag separator; a `:` inside the last path segment
@@ -2239,6 +2266,34 @@ mod writable_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The qualification decision, which is the whole of what `pull_image`
+    /// does before it talks to the daemon.
+    #[test]
+    fn a_ref_that_already_names_a_registry_is_not_qualified_again() {
+        // The one that broke: a local dev registry, qualified, with the
+        // built-in OCI registry also configured.
+        assert!(has_registry_host(
+            "localhost:5050/weave-dashboard-generator:v1"
+        ));
+        assert!(has_registry_host("localhost:8443/nasiko/echo-agent:v1"));
+        assert!(has_registry_host("registry.example.com/team/app:1.0"));
+        assert!(has_registry_host("registry.example.com:5000/app:1.0"));
+        // Bare `localhost` with no port is still a registry.
+        assert!(has_registry_host("localhost/app:v1"));
+    }
+
+    #[test]
+    fn a_hub_namespace_is_not_a_registry_and_still_gets_qualified() {
+        // `nasiko` is an organisation on Docker Hub, not a host — qualifying
+        // this is the entire reason registry_host exists, so the fix must not
+        // stop doing it.
+        assert!(!has_registry_host("nasiko/echo-agent:v1"));
+        assert!(!has_registry_host("nasiko/translator:1.0.0"));
+        // No slash at all: a bare image name, likewise unqualified.
+        assert!(!has_registry_host("echo-agent:v1"));
+        assert!(!has_registry_host("ubuntu"));
+    }
 
     #[test]
     fn parse_docker_started_at_accepts_valid_rfc3339() {
