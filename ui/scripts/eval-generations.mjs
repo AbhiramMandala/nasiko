@@ -473,9 +473,17 @@ async function generate(prompt, { currentSurface, sessionId } = {}) {
   if (res.status === 503) {
     const said = await res.text().then(
       (t) => { try { return JSON.parse(t).error ?? ''; } catch { return ''; } }, () => '');
-    throw new Error(
+    const err = new Error(
       `${said || 'the control plane has no running weave agent'} `
       + '— check the control plane\'s startup output for "weave agent"');
+    // Flagged rather than only printed, because the caller can act on it. A
+    // 503 here is always "no agent to talk to", and the one case where that
+    // resolves by itself is a control plane that has only just started: the
+    // agent row sits at 'deploying' while the image is pulled and the
+    // container comes up, which can outlast the seconds between `just run`
+    // and the next command. Twelve cases were spent on exactly that.
+    err.agentUnavailable = true;
+    throw err;
   }
   if (res.status === 404) {
     throw new Error(
@@ -717,6 +725,46 @@ async function checkCatalogReachable() {
 if (!offline) await checkCatalogReachable();
 
 /**
+ * Retry through a control plane whose weave agent has not finished deploying.
+ *
+ * The seeded agent's row is set to 'deploying' before its image is pulled and
+ * only becomes 'running' once the container answers, so a run started in the
+ * same breath as `just run` gets a 503 on every case and records nothing —
+ * twelve model calls' worth of nothing, and a run directory with breadth 0/41
+ * that looks like a catastrophic regression rather than a race.
+ *
+ * Bounded, and spent ONCE for the whole run rather than per case: if the agent
+ * is genuinely failed, waiting longer will not fix it, and the budget is there
+ * to tell "not yet" apart from "not going to". The wait is announced, because
+ * a script that silently stalls for two minutes is worse than one that fails.
+ */
+const AGENT_WAIT_MS = 150_000;
+let agentWaitLeft = AGENT_WAIT_MS;
+let announcedWait = false;
+async function withAgentReady(attempt) {
+  for (;;) {
+    try {
+      return await attempt();
+    } catch (err) {
+      if (!err.agentUnavailable || agentWaitLeft <= 0) throw err;
+      if (!announcedWait) {
+        announcedWait = true;
+        console.log(`eval: the weave agent is not answering yet — ${err.message}`);
+        console.log(`  waiting up to ${Math.round(AGENT_WAIT_MS / 1000)}s for it to come up, `
+          + 'rather than spending the corpus on a control plane that has only just started.');
+      }
+      await new Promise((r) => setTimeout(r, 5_000));
+      agentWaitLeft -= 5_000;
+      if (agentWaitLeft <= 0) {
+        console.log('  still not answering. Treating it as deployed-and-failed from here on.');
+      }
+    }
+  }
+}
+
+
+
+/**
  * This run's own directory, and the per-case rows that become `summary.json`.
  *
  * The run's generations are written HERE as well as over the fixtures, so the
@@ -745,7 +793,7 @@ for (const kase of cases) {
     if (offline) {
       text = readFileSync(path, 'utf8');
     } else {
-      const got = await generate(kase.prompt, { sessionId: sessionFor(kase.id) });
+      const got = await withAgentReady(() => generate(kase.prompt, { sessionId: sessionFor(kase.id) }));
       text = got.text;
       // The generator says which catalog it built against. Judging its output
       // with a different one is judging the wrong thing — and a silent
