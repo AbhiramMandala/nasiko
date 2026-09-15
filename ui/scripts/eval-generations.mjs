@@ -353,8 +353,24 @@ async function login() {
   return cachedToken;
 }
 
+/**
+ * One id per case per run, which is what the route calls the A2A context.
+ *
+ * Per CASE because a session is a conversation: two cases sharing one would
+ * let the dashboard generated for the first steer the second, and the suite
+ * would stop measuring twelve independent prompts. Per RUN because the agent
+ * keeps that context — a stable id would have every re-record answering with
+ * a month of accumulated history behind it.
+ *
+ * The repair turn is the deliberate exception: it passes the id of the turn
+ * it is repairing, because patching by statement name only means anything
+ * against the surface that produced those names.
+ */
+const RUN = Date.now().toString(36);
+const sessionFor = (id) => `eval-${id}-${RUN}`;
+
 /** Read one generation off the control plane, concatenating its dsl-chunks. */
-async function generate(prompt, { currentSurface } = {}) {
+async function generate(prompt, { currentSurface, sessionId } = {}) {
   const base = CP_BASE;
   const token = await login();
   const res = await fetch(`${base}/api/weave/surface`, {
@@ -365,6 +381,13 @@ async function generate(prompt, { currentSurface } = {}) {
       authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
+      // Required, and the request struct is deny_unknown_fields, so this is
+      // both mandatory and unforgiving: a missing one is a 400 before the
+      // prompt is looked at. Added to the route on 2026-09-13 (dec454e5) for
+      // persisted chat history; this script never sent one and kept passing
+      // against control planes built before that, which is exactly as long as
+      // it took someone to rebuild.
+      session_id: sessionId ?? sessionFor('adhoc'),
       prompt,
       context: {
         catalogVersion: catalog.catalogVersion,
@@ -388,7 +411,16 @@ async function generate(prompt, { currentSurface } = {}) {
       `${base} has no /api/weave/surface route — that route is EE-only, so this `
       + 'has to be the EE server (`just run`), not the OSS one');
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status} from ${base}/api/weave/surface`);
+  if (!res.ok) {
+    // The route answers a JSON {error} on every 4xx and this used to drop it,
+    // so twelve identical "HTTP 400" lines said nothing about which of the six
+    // rejections fired. The body names it in one word.
+    const said = await res.text().then(
+      (t) => { try { return JSON.parse(t).error ?? t.slice(0, 200); } catch { return t.slice(0, 200); } },
+      () => '');
+    throw new Error(
+      `HTTP ${res.status} from ${base}/api/weave/surface${said ? ` — ${said}` : ''}`);
+  }
 
   let text = '';
   let generatorCatalog = null;
@@ -559,6 +591,8 @@ const skipped = [];
 let failed = 0;
 /** What the repair turn did, when --repair asked for one. */
 const repairs = { offered: 0, cleared: 0, improved: 0, noBetter: 0, before: 0, after: 0 };
+/** Cases whose request never came back — a transport or route failure, not a sample. */
+const unreachable = [];
 for (const kase of cases) {
   const path = resolve(FIXTURES, `${kase.id}.dsl`);
   let text;
@@ -566,7 +600,7 @@ for (const kase of cases) {
     if (offline) {
       text = readFileSync(path, 'utf8');
     } else {
-      const got = await generate(kase.prompt);
+      const got = await generate(kase.prompt, { sessionId: sessionFor(kase.id) });
       text = got.text;
       // The generator says which catalog it built against. Judging its output
       // with a different one is judging the wrong thing — and a silent
@@ -583,6 +617,15 @@ for (const kase of cases) {
   } catch (err) {
     console.error(`✗ ${kase.id}: ${err.message}`);
     failed++;
+    // Counted separately from `skipped`, which means "answered, but with
+    // nothing". This one never reached the generator at all, and the two used
+    // to be conflated by omission: a case that threw fell straight past the
+    // record block, so `skipped` stayed empty, the "your fixtures are
+    // untouched" reassurance never fired, and the summary went on to report
+    // `cases.length - skipped.length` files recorded. Twelve 400s printed
+    // "recorded 12" while writing nothing — the one moment the count had to
+    // be right.
+    unreachable.push(kase.id);
     continue;
   }
   // An empty answer is never a recording worth keeping. It means the generator
@@ -612,7 +655,8 @@ for (const kase of cases) {
       repairs.offered++;
       repairs.before += before.length;
       try {
-        const patch = await generate(buildRepairPrompt(before), { currentSurface: text });
+        const patch = await generate(buildRepairPrompt(before),
+          { currentSurface: text, sessionId: sessionFor(kase.id) });
         // The same seeding the runtime does: the delta overwrites by name, so
         // the prior surface has to be underneath it or `root` goes missing.
         const merged = `${text}\n${patch.text}`;
@@ -699,6 +743,14 @@ if (withRepair && !offline) {
 // the generator is not generating. Said separately and first, because the
 // per-case failures underneath all read as "the model wrote nothing useful"
 // and none of them names the actual cause.
+if (record && unreachable.length === cases.length) {
+  console.error(`\neval: all ${cases.length} requests failed — nothing was recorded, your fixtures are untouched.`);
+  console.error('Every case got the same answer from the control plane, so this is the route');
+  console.error('or the request, not the model. The first ✗ line above carries what the');
+  console.error('server said; a 400 names the field it rejected, a 503 means no running agent.\n');
+  process.exit(1);
+}
+
 if (record && skipped.length === cases.length) {
   console.error(`\neval: all ${cases.length} came back empty — nothing was recorded, your fixtures are untouched.`);
   console.error('The generator answered nothing at all, including the prose-only cases, which');
@@ -720,8 +772,14 @@ if (record && skipped.length) {
   console.error('Those fixtures keep whatever they had. Re-run them once the cause is fixed.');
 }
 
+if (record && unreachable.length) {
+  console.error(`\neval: ${unreachable.length} never reached the generator — ${unreachable.join(', ')}.`);
+  console.error('Those fixtures were not touched.');
+}
+
 if (record && failed) {
-  console.error(`\neval: recorded ${cases.length - skipped.length}; ${failed} would fail as a baseline.`);
+  const wrote = cases.length - skipped.length - unreachable.length;
+  console.error(`\neval: recorded ${wrote}; ${failed} would fail as a baseline.`);
   console.error('Read them, then either fix the cause or re-record for a different sample.');
   console.error('CI judges the committed fixtures — run --offline before you commit.');
   process.exit(0);
