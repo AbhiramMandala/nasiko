@@ -206,6 +206,31 @@ export const CASES = [
     prompt: 'Daily usage history as a table, with a control to switch between 7, 30 and 90 days '
       + 'and a search box to narrow the rows.',
     expect: { minQueries: 1, minActions: 2, minStates: 2, tags: ['app-table'] } },
+  // The positive control for semantic_control_argument_mismatch, and the one
+  // reading the analyzer does not have.
+  //
+  // It flags free text into an exactly-matched argument, which is right when
+  // the box says "Search agents..." and the argument is agentId — a partial
+  // name returns nothing. But a free-text box into an exact argument is not
+  // wrong in itself: pasting an id you already have is a real interaction, and
+  // an exact argument is exactly what it should reach. Three true positives
+  // across seven runs prove the check fires; none of them prove it can stay
+  // silent when free text is the right answer, because no case has ever asked
+  // for one.
+  //
+  // So the prompt asks for identifier ENTRY, in those words, and names no
+  // component. What is being measured is whether the model reaches for a
+  // free-text control here at all, and if it does, whether the analyzer's rule
+  // as written calls it a mismatch — which would make it a false positive on
+  // its own terms.
+  //
+  // Floor only, and no tag assertion: "its usage" could honestly be a stat
+  // row, a table or a card, and pinning one would measure obedience rather
+  // than wiring.
+  { id: 'agent-by-id',
+    prompt: 'Look up one agent by its exact agent ID and show its usage. '
+      + 'The ID is typed or pasted in.',
+    expect: { minQueries: 1, minActions: 1, minStates: 1 } },
   // Not a dashboard request. agent.yaml rule 11 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.
@@ -550,6 +575,81 @@ function pascalToTag(name) {
   return name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 }
 
+/**
+ * A state a Query reads that no Action re-runs it for.
+ *
+ * The mirror of {@link redundantRuns}, and the half the corpus could not see.
+ * `@Run` forces and `$state` does not — a variable changing never re-fetches
+ * on its own (queries.js:24, agent.yaml rule 5) — so a filter whose value IS
+ * one of a Query's arguments and whose Action never `@Run`s it is inert:
+ * typing moves the store, the args the fetch was made under do not change,
+ * and the table sits there showing the old data. It renders, nothing is
+ * unresolved, no diagnostic fires, and the checker passed one of these while
+ * two people looked at it.
+ *
+ * Together the pair states one invariant in both directions: the set of
+ * states an Action sets and the set of states a Query reads have to agree
+ * about whether that Action re-runs that Query.
+ *
+ * Two exclusions, both about not inventing a defect:
+ *
+ *   - A state no Action sets is a constant with an initial value. There is no
+ *     Action to have forgotten anything.
+ *   - A surface can deliberately separate typing from submitting: the input
+ *     sets the state, and a Search or Refresh button carries the `@Run`. That
+ *     button is an Action that runs the Query and sets none of its state
+ *     arguments, which is exactly what a bare trigger looks like, so one of
+ *     those anywhere in the surface suppresses this for that Query.
+ */
+function missingQueryRuns(statements) {
+  const lines = statements.map((st) => st.raw ?? '');
+
+  /** queryName -> the `$state` names its argument list reads. */
+  const stateArgsOf = new Map();
+  for (const l of lines) {
+    const q = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Query\s*\(/.exec(l);
+    if (!q) continue;
+    const args = topLevelArgs(l, 'Query')[1] ?? '';
+    stateArgsOf.set(q[1], new Set([...args.matchAll(/(\$[\w$]+)/g)].map((m) => m[1])));
+  }
+
+  /** Every Action, with what it sets and what it runs. */
+  const actions = [];
+  for (const l of lines) {
+    const a = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Action\s*\(/.exec(l);
+    if (!a) continue;
+    actions.push({
+      name: a[1],
+      sets: new Set([...l.matchAll(/@Set\(\s*(\$[\w$]+)/g)].map((m) => m[1])),
+      runs: new Set([...l.matchAll(/@Run\(\s*([A-Za-z_$][\w$]*)\s*\)/g)].map((m) => m[1])),
+    });
+  }
+
+  // A Query with its own submit button needs no per-setter @Run.
+  const hasBareTrigger = new Set();
+  for (const act of actions) {
+    for (const q of act.runs) {
+      const stateArgs = stateArgsOf.get(q);
+      if (!stateArgs) continue;
+      if (![...act.sets].some((v) => stateArgs.has(v))) hasBareTrigger.add(q);
+    }
+  }
+
+  const found = [];
+  for (const [query, stateArgs] of stateArgsOf) {
+    if (hasBareTrigger.has(query)) continue;
+    for (const state of stateArgs) {
+      const setters = actions.filter((act) => act.sets.has(state));
+      if (!setters.length) continue;
+      for (const act of setters) {
+        if (act.runs.has(query)) continue;
+        found.push({ action: act.name, query, state });
+      }
+    }
+  }
+  return found;
+}
+
 export function evaluateGeneration(text) {
   const diagnostics = [];
   const { statements, prose } = parseBuffer(text);
@@ -590,6 +690,7 @@ export function evaluateGeneration(text) {
     unresolved: out.unresolved,
     actions: statements.filter((s) => /=\s*Action\(/.test(s.raw ?? '')).length,
     redundantRuns: redundantRuns(statements),
+    missingQueryRuns: missingQueryRuns(statements),
     semanticMismatches: semanticMismatches(statements),
     chartKinds: [...chartKinds],
     diagnostics,
@@ -651,6 +752,12 @@ export function check(kase, text) {
   for (const sm of r.semanticMismatches) {
     advisory.push(`diagnostic eval/semantic_control_argument_mismatch: ${sm.control} writes `
       + `${sm.state}, passed to ${sm.source}'s "${sm.argument}" (${sm.query}). ${sm.reason}`);
+  }
+  for (const mr of r.missingQueryRuns) {
+    fail.push(`${mr.action} sets ${mr.state}, which ${mr.query} reads as an argument, but does `
+      + 'not @Run it — a $state changing never re-fetches on its own, so the control moves and '
+      + 'the data does not. Either @Run it, or take the state out of the arguments and filter '
+      + 'what is already fetched');
   }
   for (const rr of r.redundantRuns) {
     fail.push(`${rr.action} re-runs ${rr.query}, but ${rr.states.join('/')} is not one of its `

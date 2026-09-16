@@ -333,3 +333,76 @@ root = AppStack([picker, table], "md")
 Done.`;
   assert.doesNotMatch(check(kase({}), pickerIntoEnum).advisory.join(' '), /semantic_control_argument_mismatch/);
 });
+
+test('a Query argument whose setter never re-runs it is caught', () => {
+  // The mirror of the redundant-@Run case, and the half nothing could see.
+  // `$agentFilter` IS one of the Query's arguments, so typing has to refetch —
+  // but `@Run` forces and `$state` does not, so this filter moves the store
+  // and leaves the table showing data fetched under the old value. It
+  // renders, nothing is unresolved, no diagnostic fires.
+  const inertFilter = `Here.
+$agent = ""
+$range = "7d"
+setAgent = Action([@Set($agent, $event)])
+setRange = Action([@Set($range, $event), @Run(rowsQ)])
+box = AppSearch("md", null, false, false, "Search agents...", $agent, null, null, null, null, null, setAgent)
+picker = AppSegmentedControl([{value: "7d", label: "7d"}, {value: "30d", label: "30d"}], $range, "md", false, null, "Range", null, setRange)
+rowsQ = Query("fetchTokenopsDashboard", [{range: $range, agentId: $agent}], {attributions: {rows: []}}, "data")
+table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
+root = AppStack([box, picker, table], "md")
+Done.`;
+  const caught = check(kase({}), inertFilter);
+  assert.match(caught.fail.join(' '), /setAgent sets \$agent, which rowsQ reads as an argument/);
+  // The range control is wired correctly and must not be named.
+  assert.doesNotMatch(caught.fail.join(' '), /setRange/);
+
+  // Adding the @Run is the fix, and silences it.
+  const fixed = inertFilter.replace(
+    'setAgent = Action([@Set($agent, $event)])',
+    'setAgent = Action([@Set($agent, $event), @Run(rowsQ)])',
+  );
+  assert.deepEqual(check(kase({}), fixed).fail, []);
+
+  // Taking the state out of the arguments and filtering what is already
+  // fetched is the other fix, and must not trip the redundant-@Run half.
+  const clientSide = `Here.
+$agent = ""
+$range = "7d"
+setAgent = Action([@Set($agent, $event)])
+setRange = Action([@Set($range, $event), @Run(rowsQ)])
+box = AppSearch("md", null, false, false, "Search agents...", $agent, null, null, null, null, null, setAgent)
+picker = AppSegmentedControl([{value: "7d", label: "7d"}, {value: "30d", label: "30d"}], $range, "md", false, null, "Range", null, setRange)
+rowsQ = Query("fetchTokenopsDashboard", [{range: $range}], {attributions: {rows: []}}, "data")
+rows = @Filter(rowsQ.attributions.rows, "agent_name", "contains", $agent)
+table = AppTable(rows, 25, "pages", false)
+root = AppStack([box, picker, table], "md")
+Done.`;
+  assert.deepEqual(check(kase({}), clientSide).fail, []);
+});
+
+test('the missing-@Run check does not invent defects', () => {
+  // A state nothing sets is a constant with an initial value. There is no
+  // Action that forgot anything.
+  const constantArg = `Here.
+$range = "7d"
+rowsQ = Query("fetchTokenopsDashboard", [{range: $range}], {attributions: {rows: []}}, "data")
+table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
+root = AppStack([table], "md")
+Done.`;
+  assert.deepEqual(check(kase({}), constantArg).fail, []);
+
+  // Type, then submit: the input sets the state and a Search button carries
+  // the @Run. That button sets none of the Query's state arguments, which is
+  // what a bare trigger looks like, and it makes the surface correct.
+  const typeThenSubmit = `Here.
+$q = ""
+setQ = Action([@Set($q, $event)])
+runIt = Action([@Run(rowsQ)])
+box = AppSearch("md", null, false, false, "Search agents...", $q, null, null, null, null, null, setQ)
+btn = AppButton("Search", "primary", null, null, null, null, null, null, null, null, runIt)
+rowsQ = Query("fetchUsageByAgent", [$q, 1, 20], [], "data")
+table = AppTable(rowsQ, 20, "pages", true)
+root = AppStack([box, btn, table], "md")
+Done.`;
+  assert.deepEqual(check(kase({}), typeThenSubmit).fail, []);
+});
