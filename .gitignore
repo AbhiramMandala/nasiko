@@ -53,4 +53,5 @@ values.json
 # that has to go gets moved into one of these instead of deleted; a stray one
 # under ui/ was otherwise an untracked directory in every status.
 _to_delete/
-/_xfer/ui/tests/fixtures/runs/
+/_xfer/
+ui/tests/fixtures/runs/
