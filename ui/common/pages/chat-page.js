@@ -28,6 +28,62 @@ import '/common/features/app-module-nav.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /**
+ * Turns still draining with nobody watching, keyed by the session they belong
+ * to. Module level, because the whole point is that they outlive the element
+ * that started them.
+ *
+ * Leaving a chat detaches its turn rather than cancelling it, so the reply is
+ * still written when the agent finishes (NAS-690). That fixed the write and
+ * not the read: come back to the session before the drain ends and `#enter()`
+ * has already re-rendered and re-fetched a transcript that did not contain the
+ * answer yet, and nothing told the live view when it landed. The user saw
+ * their own question with no reply under it — indistinguishable, from the
+ * outside, from the bug that was just fixed.
+ *
+ * `#detachTurn` files the turn here; the turn's own `finally` takes it out and
+ * announces the write. A mounted page for that session hears it and re-reads
+ * the transcript. That is also why this is a registry and not a single flag:
+ * the same session can be left and re-entered while one turn drains, and two
+ * different sessions can drain at once.
+ *
+ * @type {Map<string, Set<object>>}
+ */
+const draining = new Map();
+
+/** Event a finished detached turn fires so a mounted view can catch up. */
+const PERSISTED_EVENT = "session-message-persisted";
+
+/** File a detached turn against its session. */
+function markDraining(turn) {
+  if (!turn?.sessionId || turn.done) return;
+  if (!draining.has(turn.sessionId)) draining.set(turn.sessionId, new Set());
+  draining.get(turn.sessionId).add(turn);
+}
+
+/**
+ * Take a finished turn out, and — if it was draining unwatched — say so.
+ *
+ * The announcement comes AFTER the removal on purpose: the listener re-reads
+ * the transcript and re-derives the composer from this map, so announcing
+ * first would hand it a session that still looks busy and leave the composer
+ * locked until the next navigation.
+ */
+function clearDraining(turn) {
+  turn.done = true;
+  const set = draining.get(turn.sessionId);
+  if (!set?.delete(turn)) return;
+  if (!set.size) draining.delete(turn.sessionId);
+  document.dispatchEvent(new CustomEvent(PERSISTED_EVENT, {
+    detail: { sessionId: turn.sessionId },
+  }));
+}
+
+/** Is a turn for this session still draining with no view attached? */
+function isDraining(sessionId) {
+  return Boolean(sessionId) && draining.has(sessionId);
+}
+
+/**
  * The Sessions module's route (app.js registers it onto this same page): the
  * same transcript view, but its module nav lists every agent's chats rather
  * than only the ones the orchestrator routed, and it opens the newest one when
@@ -99,9 +155,18 @@ class ChatPage extends HTMLElement {
    * `detached` gates only the writes that would land somewhere wrong — a
    * re-rendered DOM, or the session the user moved on to — never the read loop.
    *
-   * ponytail: nothing caps how many detached turns drain at once; each ends when
-   * its own agent does, so the bound is how fast someone can hop sessions. If
-   * that ever bites, keep the detached readers in a set and cap it.
+   * Detached turns are now tracked in `draining` above, which is what lets a
+   * returning view know an answer is still coming and catch it when it lands.
+   *
+   * ponytail: still nothing CAPS how many drain at once; each ends when its own
+   * agent does, so the bound remains how fast someone can hop sessions. The set
+   * asked for is here now, but the cap it was meant to enable is deliberately
+   * not: the only way to enforce one is to abandon a turn, and abandoning a
+   * turn is exactly how NAS-690 lost replies in the first place. A cap that
+   * re-introduces the bug this code exists to fix is worse than no cap. If the
+   * concurrency ever actually bites, the answer is to refuse to START a turn
+   * while too many drain — which is a product decision about telling the user
+   * why, not a line of bookkeeping.
    */
   #turn = null;
 
@@ -109,6 +174,10 @@ class ChatPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
     this.addEventListener("route-update", this.#onRouteUpdate);
+    // On `document`, not on this element: the turn that fires it was detached
+    // precisely because this element stopped owning it, and by then it holds
+    // no reference to anything still in the tree.
+    document.addEventListener(PERSISTED_EVENT, this.#onPersisted);
     this.#enter();
   }
 
@@ -170,6 +239,20 @@ class ChatPage extends HTMLElement {
     this.#bindEvents();
 
     if (this.#sessionId) {
+      // Re-entering a session whose turn is still draining: the composer stays
+      // shut. `#onRouteUpdate` clears `#sending` on every navigation, which is
+      // right for a session with nothing in flight and wrong for this one —
+      // unlocked, it accepts a second message while the first is still
+      // running, and both persist whenever they happen to finish, so a reload
+      // shows them in completion order rather than the order they were sent.
+      //
+      // The trade, stated plainly: an agent that never answers now holds this
+      // session's composer shut across navigations, where before you could get
+      // it back by leaving and returning. That escape was the bug — it is what
+      // let a second message into a session with a turn still running — and the
+      // stream carries `timeout: 0` by design, so there is no deadline to lean
+      // on. A reload clears it, since this map lives with the document.
+      this.#sending = isDraining(this.#sessionId);
       const messagesEl = this.querySelector("#messages");
       messagesEl.innerHTML = TRANSCRIPT_SKELETON;
       this.#loadMessages(messagesEl);
@@ -180,14 +263,45 @@ class ChatPage extends HTMLElement {
 
   disconnectedCallback() {
     this.removeEventListener("route-update", this.#onRouteUpdate);
+    document.removeEventListener(PERSISTED_EVENT, this.#onPersisted);
     this.#detachTurn();
   }
+
+  /**
+   * A turn that finished with nobody watching just wrote to this session.
+   *
+   * Re-reads the whole transcript rather than appending the new row, and that
+   * is the deliberate choice here. Appending is one fetch cheaper and opens a
+   * duplicate: `#loadMessages` may still be in flight from `#enter()`, and if
+   * its response lands after an appended row and already contains that row —
+   * which it will, once the write beats the read — the reply shows twice. The
+   * alternative is threading message ids through the event and de-duplicating
+   * against the DOM, which is real bookkeeping to avoid one request on a path
+   * that fires at most once per abandoned turn.
+   *
+   * `#loadMessages` clears and rebuilds from the server, so running it twice
+   * costs a fetch and converges. The bug being fixed here is a transcript that
+   * disagrees with the server; re-reading the server is the fix that cannot
+   * itself disagree.
+   */
+  #onPersisted = (e) => {
+    if (!this.#sessionId || e.detail?.sessionId !== this.#sessionId) return;
+    const messagesEl = this.querySelector("#messages");
+    if (messagesEl) this.#loadMessages(messagesEl);
+  };
 
   /** Let the in-flight turn run to completion and persist, but stop it writing
    *  into this element — about to be removed, or re-rendered for another
    *  session. See #turn. */
   #detachTurn() {
-    if (this.#turn) this.#turn.detached = true;
+    if (this.#turn) {
+      this.#turn.detached = true;
+      // Only a turn that is still running: `#turn` keeps pointing at the last
+      // one after it settles, so detaching on a navigation away from an idle
+      // chat would file a finished turn that never gets taken out again — a
+      // session permanently marked busy, with a locked composer to match.
+      markDraining(this.#turn);
+    }
     this.#turn = null;
   }
 
@@ -392,7 +506,7 @@ class ChatPage extends HTMLElement {
     // Snapshot the session this turn belongs to: the reply is persisted after
     // the stream ends, and by then `this.#sessionId` may name whichever session
     // the user moved to — which is where the answer used to get filed.
-    const turn = { sessionId: this.#sessionId, detached: false };
+    const turn = { sessionId: this.#sessionId, detached: false, done: false };
     this.#turn = turn;
     const messagesEl = this.querySelector("#messages");
     const chatInput = this.querySelector("#chat-input");
@@ -432,6 +546,12 @@ class ChatPage extends HTMLElement {
         this.#sessionId = session.session_id || session.id;
         if (!this.#sessionId) throw new Error("Session created without an id");
         turn.sessionId = this.#sessionId;
+        // A first message in a brand-new chat can be navigated away from before
+        // the session POST answers, and `#detachTurn` had nothing to file it
+        // under — `turn.sessionId` was still null. Now that it has one, file it,
+        // or the reply this turn is about to write would be exactly the case
+        // this whole mechanism exists for and the one it misses.
+        if (turn.detached) markDraining(turn);
         // The module nav lists chat sessions — tell it there is a new one, and
         // which one, so it can highlight the row for the chat on screen.
         document.dispatchEvent(new CustomEvent("session-created", {
@@ -535,6 +655,11 @@ class ChatPage extends HTMLElement {
       }
       if (!turn.detached) this.#updateRetryButtons(messagesEl);
     } finally {
+      // Takes the turn out of `draining` and, if it was in there, announces the
+      // write so a view that came back to this session re-reads the transcript.
+      // Unconditional: a turn that was never detached is not in the map, and
+      // clearDraining says nothing for one it did not remove.
+      clearDraining(turn);
       // Only the live turn owns the composer: a detached one finishing later
       // must not unlock a composer that belongs to whatever is on screen now.
       if (!turn.detached) {
@@ -575,8 +700,12 @@ class ChatPage extends HTMLElement {
     const chatInput = this.querySelector("#chat-input");
     if (!chatInput) return;
     const card = this.#hitlCard;
+    // A turn draining for this session counts as streaming even though this
+    // view is not the one reading it — the agent is still answering, and the
+    // composer means the same thing to the person looking at it either way.
+    const busy = streaming || isDraining(this.#sessionId);
     chatInput.setAttribute("placeholder", card?.composerHint || "Type a message...");
-    chatInput.setLoading(streaming || Boolean(card?.blocksComposer));
+    chatInput.setLoading(busy || Boolean(card?.blocksComposer));
   }
 
   /**
@@ -594,7 +723,7 @@ class ChatPage extends HTMLElement {
     if (this.#resumed.has(id)) return;
     this.#resumed.add(id);
     this.#resumeTail = this.#resumeTail.then(async () => {
-      const turn = { sessionId: this.#sessionId, detached: false };
+      const turn = { sessionId: this.#sessionId, detached: false, done: false };
       this.#turn = turn;
       this.#syncComposer({ streaming: true });
       try {
@@ -613,6 +742,14 @@ class ChatPage extends HTMLElement {
           this.#appendMsg(messagesEl, "assistant", `Error: ${userMessage(err)}`);
         }
       } finally {
+        // Worth naming the difference from the send path above: this reply is
+        // the SERVER's write (`persist_resume_reply`), not ours, so the refetch
+        // this triggers races a write we do not control. If it arrives first
+        // the transcript is simply unchanged — no worse than before this
+        // existed, where nothing refetched at all — and the next navigation
+        // still shows it. Announcing on our own completion is the closest
+        // signal available without the server telling us.
+        clearDraining(turn);
         if (!turn.detached) this.#syncComposer();
       }
     });
@@ -670,11 +807,27 @@ class ChatPage extends HTMLElement {
         this.#mountHitl(row, waiting);
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
+      // Same typing dots the send path shows, for a turn that is still running
+      // somewhere else. Without them the transcript is the user's question and
+      // nothing under it — which is the exact picture this bug was reported as,
+      // and looks identical whether an answer is coming or was lost.
+      if (isDraining(this.#sessionId)) this.#appendDrainingIndicator(messagesEl);
       this.#syncComposer();
     } catch (error) {
       console.error('Failed to load stored chat messages', error);
       messagesEl.innerHTML = '<div class="pane-empty">Failed to load conversation history</div>';
     }
+  }
+
+  /** Typing dots for a turn draining out of sight. Same markup as the send
+   *  path's, so the two states read identically to the user; removed by the
+   *  next `#loadMessages`, which the turn's completion triggers. */
+  #appendDrainingIndicator(messagesEl) {
+    const row = document.createElement("div");
+    row.className = "msg-row is-assistant";
+    row.innerHTML = `<div class="typing-indicator" aria-label="Agent is responding"><span></span><span></span><span></span></div>`;
+    messagesEl.appendChild(row);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
   #appendMsg(messagesEl, role, content, { usage = null, traceId = null, metadata = null, files = null } = {}) {
