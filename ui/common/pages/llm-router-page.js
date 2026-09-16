@@ -20,6 +20,7 @@ import { showToast } from '../utils/toast.js';
 import { confirmDialog } from '../design-system/app-modal/app-modal.js';
 import '/common/design-system/app-menu/app-menu.js';
 import '/common/design-system/app-button/app-button.js';
+import '/common/design-system/app-alert/app-alert.js';
 import '/common/design-system/app-card/app-card.js';
 import '/common/design-system/app-checkbox/app-checkbox.js';
 import '/common/design-system/app-input/app-input.js';
@@ -56,6 +57,7 @@ class LlmRouterPage extends HTMLElement {
     this.#initialized = true;
     this.addEventListener('click', (e) => this.#onClick(e));
     this.addEventListener('change', (e) => this.#onChange(e));
+    this.addEventListener('input', (e) => this.#onInput(e));
     this.addEventListener('menu-select', (e) => this.#onMenuAction(e));
     this.#load();
   }
@@ -143,11 +145,11 @@ class LlmRouterPage extends HTMLElement {
       <div class="section-head">
         <h2 class="section-title">Custom providers</h2>
         <p class="section-sub">Register any OpenAI-compatible endpoint (LiteLLM, vLLM, Ollama, an internal gateway). Its models appear above for tier routing.</p>
-        <app-button variant="secondary" size="md" data-action="new-custom-provider">Add custom provider</app-button>
+        <app-button variant="secondary" size="md" data-action="new-custom-provider" class="custom-provider-btn">Add custom provider</app-button>
       </div>
       ${this.#customProviders.length
         ? `<div class="config-list">${this.#customProviders.map((p) => this.#customCardHtml(p)).join('')}</div>`
-        : '<p class="section-sub">No custom providers yet.</p>'}
+        : ''}
     `;
   }
 
@@ -202,7 +204,7 @@ class LlmRouterPage extends HTMLElement {
           autocomplete="off" hint="Stored encrypted; used to call the endpoint."
           ${isEdit ? '' : 'required'}></app-input>
         <div id="test-result" hidden></div>
-        <div class="form-error" id="custom-form-error" hidden></div>
+        <app-alert id="custom-form-alert" variant="destructive" hidden></app-alert>
         <div class="form-actions">
           <app-button variant="ghost" size="md" data-action="back">Cancel</app-button>
           <app-button variant="secondary" size="md" data-action="test-connection">Test connection</app-button>
@@ -258,7 +260,7 @@ class LlmRouterPage extends HTMLElement {
                 ${c.is_default
                   ? '<span class="badge badge--brand"><span class="badge__dot"></span>Default</span>'
                   : '<span class="badge badge--success"><span class="badge__dot"></span>Active</span>'}
-                <span class="badge badge--muted">${escHtml(this.#cap(c.provider))}</span>
+                <span class="badge badge--muted">${escHtml(this.#providerLabel(c.provider))}</span>
               </div>
               <div class="tier-rows">
                 ${TIERS.map((t) => `
@@ -281,10 +283,11 @@ class LlmRouterPage extends HTMLElement {
 
   #providerCardHtml(p) {
     const count = p.models?.length ?? 0;
+    const name = p.display_name || this.#cap(p.provider);
     return `
-      <app-card card-title="${escAttr(this.#cap(p.provider))}" role="button" tabindex="0"
-        data-action="new-config" data-provider="${escAttr(p.provider)}">
-        <span data-slot="leading" class="provider-glyph">${escHtml((p.provider || '?')[0])}</span>
+      <app-card card-title="${escAttr(name)}" role="button" tabindex="0"
+        data-action="new-config" data-provider="${escAttr(this.#providerValue(p))}">
+        <span data-slot="leading" class="provider-glyph">${escHtml((name || '?')[0])}</span>
         <span data-slot="actions" class="provider-add">${icons.plus('', 15)}</span>
         <div data-slot="body" class="provider-chips">
           <span class="badge badge--muted">Requires API key</span>
@@ -316,7 +319,7 @@ class LlmRouterPage extends HTMLElement {
           placeholder="Choose Provider" required
           options="${escAttr(JSON.stringify([
             ...this.#providers.map((p) => ({
-              value: p.provider_id || p.provider,
+              value: this.#providerValue(p),
               label: p.display_name || this.#cap(p.provider),
             })),
           ]))}"
@@ -370,14 +373,28 @@ class LlmRouterPage extends HTMLElement {
     `;
   }
 
+  /** The value a provider is identified by in a config — the UUID for a custom
+   *  provider, the name for a built-in one. The provider card, the select
+   *  options and the saved config must all agree or nothing pre-selects. */
+  #providerValue(p) { return p.provider_id || p.provider; }
+
+  #findProvider(value) {
+    if (!value) return undefined;
+    return this.#providers.find((p) => p.provider === value || p.provider_id === value);
+  }
+
+  /** Display name for a stored provider value (a name, or a custom-provider UUID). */
+  #providerLabel(value) {
+    const entry = this.#findProvider(value);
+    return entry?.display_name || this.#cap(entry?.provider || value);
+  }
+
   /** Models a provider offers, as app-select's `options` JSON. The leading
    *  blank is a real choice, not a placeholder: a tier may be left unset.
    *  A model with no price row is labelled "cost not tracked" (its value — the
-   *  model id — is unchanged, so routing works; only the cost is unknown).
-   *  Matches by provider name or provider_id (UUID) for custom providers. */
+   *  model id — is unchanged, so routing works; only the cost is unknown). */
   #modelList(provider) {
-    const entry = this.#providers.find((p) =>
-      p.provider === provider || (p.provider_id && p.provider_id === provider));
+    const entry = this.#findProvider(provider);
     return [{ value: '', label: 'Choose model' },
             ...(entry?.models ?? []).map((m) => ({
               value: m.model, label: m.model,
@@ -469,6 +486,17 @@ class LlmRouterPage extends HTMLElement {
         sel.setAttribute('options', options);
       });
     }
+  }
+
+  /** Editing the endpoint or the key invalidates the last probe: the verdict
+   *  goes and the Test button comes back. */
+  #onInput(e) {
+    if (!e.target.closest('#cp-base, #cp-key')) return;
+    const resultEl = this.querySelector('#test-result');
+    if (resultEl) resultEl.hidden = true;
+    this.#customError(null);
+    const btn = this.querySelector('[data-action="test-connection"]');
+    if (btn) btn.hidden = false;
   }
 
   async #save(e) {
@@ -576,12 +604,19 @@ class LlmRouterPage extends HTMLElement {
     this.#load();
   }
 
+  /** The custom-provider form's error line. `null` hides it. */
+  #customError(message) {
+    const el = this.querySelector('#custom-form-alert');
+    if (!el) return;
+    if (message) el.setAttribute('heading', message);
+    el.hidden = !message;
+  }
+
   async #saveCustom(e) {
     e.preventDefault();
     const form = e.target;
     const isEdit = !!this.#editingCustom;
-    const errEl = this.querySelector('#custom-form-error');
-    errEl.hidden = true;
+    this.#customError(null);
     const key = form.querySelector('#cp-key').value;
     const base = {
       display_name: form.querySelector('#cp-display').value.trim(),
@@ -598,8 +633,7 @@ class LlmRouterPage extends HTMLElement {
         result = await call('createCustomProvider', { ...base, api_key: key });
       }
     } catch (err) {
-      errEl.textContent = err?.message || 'Failed to save custom provider';
-      errEl.hidden = false;
+      this.#customError(err?.message || 'Failed to save custom provider');
       return;
     }
     showToast(isEdit ? 'Custom provider updated' : 'Custom provider registered');
@@ -627,7 +661,7 @@ class LlmRouterPage extends HTMLElement {
 
     // Find the provider value to pre-select (UUID for custom providers).
     const match = this.#providers.find((p) => p.provider_id === providerId);
-    const preselect = match?.provider_id || match?.provider || '';
+    const preselect = match ? this.#providerValue(match) : '';
     this.#editingConfig = null;
     this.#view = 'form';
     this.innerHTML = this.#formHtml(preselect);
@@ -640,32 +674,29 @@ class LlmRouterPage extends HTMLElement {
     if (!form) return;
     const base_url = form.querySelector('#cp-base').value.trim();
     const api_key = form.querySelector('#cp-key').value;
-    const errEl = this.querySelector('#custom-form-error');
-    const resultEl = this.querySelector('#test-result');
-    errEl.hidden = true;
-    resultEl.hidden = true;
+    this.#customError(null);
     if (!base_url || !api_key) {
-      errEl.textContent = 'Base URL and API key are required to test.';
-      errEl.hidden = false;
+      this.#customError('Base URL and API key are required to test.');
       return;
     }
     const btn = this.querySelector('[data-action="test-connection"]');
     if (btn) btn.setAttribute('loading', '');
     try {
       const res = await call('testCustomProvider', { base_url, api_key });
-      const data = res?.data ?? res ?? {};
-      const models = data.models ?? [];
+      const models = (res?.data ?? res ?? {}).models ?? [];
+      const resultEl = this.querySelector('#test-result');
       resultEl.innerHTML = `
         <div class="test-result-box">
           <p><strong>Models discovered: ${models.length}</strong></p>
           ${models.length ? `<div class="test-models">${models.map((m) => `<span class="badge badge--muted is-mono">${escHtml(m)}</span>`).join(' ')}</div>` : '<p class="section-sub">No models returned — the endpoint may not support GET /models.</p>'}
         </div>`;
       resultEl.hidden = false;
+      // Nothing left to retest — until the URL or key is edited (#onInput).
+      if (btn) btn.hidden = true;
     } catch (err) {
-      errEl.textContent = err?.message || 'Connection test failed';
-      errEl.hidden = false;
+      this.#customError(err?.message || 'Connection test failed');
     } finally {
-      if (btn) btn.removeAttribute('loading');
+      btn?.removeAttribute('loading');
     }
   }
 
