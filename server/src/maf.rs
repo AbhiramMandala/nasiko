@@ -38,6 +38,10 @@ pub fn router(
         )
         .route("/maf/generate", post(generate_maf))
         .route("/maf/workflow/{id}/run", post(run_workflow))
+        // Promotion is the draft's deferred creation cost: it runs the same
+        // decomposer + per-step routing `from-instruction` does, so it belongs
+        // to the same budget.
+        .route("/maf/workflow/{id}/promote", post(promote_draft))
         .layer(axum::middleware::from_fn_with_state(
             run_limiter,
             crate::rate_limit::limit_by_user,
@@ -51,6 +55,11 @@ pub fn router(
         .route("/maf/workflows", get(list_mafs).post(create_maf))
         // Static segment "result" wins over {id} in matchit so this route is unambiguous
         .route("/maf/workflow/result/{exec_id}", get(get_result))
+        // Same static-beats-{id} rule: "draft"/"drafts" never shadow a UUID.
+        // Saving a draft is a plain row write — no decomposer, no routing — so
+        // it sits in the cheap tier and can be called on every keystroke pause.
+        .route("/maf/workflow/draft", post(save_draft))
+        .route("/maf/workflow/drafts", get(list_drafts))
         .route(
             "/maf/workflow/{id}",
             get(get_maf).put(update_maf).delete(delete_maf),
@@ -363,36 +372,370 @@ fn default_limit() -> i64 {
     50
 }
 
+/// Sort order for the workflows list.
+///
+/// A closed enum rather than a free string: each variant maps to one fixed
+/// `ORDER BY` fragment, so a caller can never reach the query planner with
+/// text of their own.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WorkflowSort {
+    /// Newest first — the list's default, shown as "All" in the UI.
+    #[default]
+    Recent,
+    SuccessRate,
+    TokenUsage,
+    ExecutionCount,
+    Health,
+}
+
+impl WorkflowSort {
+    /// This option's `ORDER BY` fragment.
+    ///
+    /// Every option falls back to `created_at` so the order is total: without a
+    /// tiebreak, rows with equal metrics (very common — a fleet of workflows at
+    /// 100%) could come back in a different order on each page of the same
+    /// listing, and the client would show duplicates and drop rows.
+    ///
+    /// Workflows that have never run sort last wherever the metric is NULL: a
+    /// row with no history is never what someone sorting by a metric is looking
+    /// for.
+    fn order_by(self) -> &'static str {
+        match self {
+            Self::Recent => "m.created_at DESC",
+            Self::SuccessRate => "success_rate DESC NULLS LAST, m.created_at DESC",
+            Self::TokenUsage => "total_tokens DESC, m.created_at DESC",
+            Self::ExecutionCount => "execution_count DESC, m.created_at DESC",
+            // Ascending, i.e. worst first. Health is bucketed from the same
+            // number `SuccessRate` sorts on, so descending would make the two
+            // options identical; surfacing the workflows that need attention is
+            // the only reading under which a separate "Health" option earns its
+            // place next to "Success rate".
+            Self::Health => "success_rate ASC NULLS LAST, m.created_at DESC",
+        }
+    }
+}
+
+/// Sort order for the drafts list.
+///
+/// Deliberately a shorter menu than [`WorkflowSort`]: a draft has no run
+/// history to rank by, so success rate and execution count would sort every row
+/// identically. Token usage is kept because a draft that was promoted, run and
+/// sent back to draft state does carry spend.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DraftSort {
+    /// Newest draft first — the list's default, shown as "All" in the UI.
+    #[default]
+    All,
+    LastUpdated,
+    TokenUsage,
+}
+
+impl DraftSort {
+    fn order_by(self) -> &'static str {
+        match self {
+            // "All" orders by when the draft was started; "Last updated" by
+            // when it was last edited. They differ for any draft that has been
+            // reopened and changed since it was first saved.
+            Self::All => "m.created_at DESC",
+            Self::LastUpdated => "m.updated_at DESC, m.created_at DESC",
+            Self::TokenUsage => "total_tokens DESC, m.updated_at DESC",
+        }
+    }
+}
+
+/// Query parameters for the drafts list — same shape as
+/// [`WorkflowListQuery`], with the drafts-specific sort menu.
+#[derive(Deserialize)]
+struct DraftListQuery {
+    #[serde(default = "default_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+    #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    sort: DraftSort,
+}
+
+/// A workflow's health, bucketed from its all-time success rate.
+///
+/// Derived on read rather than stored: it is a pure function of figures the
+/// list query already computes, and a stored copy would be one more thing that
+/// can drift away from the executions it summarises.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Health {
+    Healthy,
+    Degraded,
+    Unhealthy,
+    /// Never run, so there is no rate to judge. Distinct from `Unhealthy` so
+    /// the UI can say "no runs yet" instead of branding a new workflow as
+    /// failing — a third of the workflows in a working deployment have never
+    /// been run.
+    Unknown,
+}
+
+impl Health {
+    fn from_success_rate(rate: Option<f64>) -> Self {
+        match rate {
+            None => Self::Unknown,
+            Some(rate) if rate >= 90.0 => Self::Healthy,
+            Some(rate) if rate >= 50.0 => Self::Degraded,
+            Some(_) => Self::Unhealthy,
+        }
+    }
+}
+
+/// Query parameters for the workflows list.
+///
+/// Its own type rather than an extension of [`ListQuery`]: search and sort are
+/// meaningless on the two execution listings that share `ListQuery`, and
+/// `#[serde(flatten)]` cannot be used to compose the two because the
+/// form-encoded decoder behind `Query` does not support it.
+#[derive(Deserialize)]
+struct WorkflowListQuery {
+    #[serde(default = "default_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+    /// Case-insensitive substring match over name and description.
+    #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    sort: WorkflowSort,
+}
+
+/// One row of the workflows list: the stored workflow plus the aggregates the
+/// list renders.
+///
+/// Separate from [`MafRow`] because the single-workflow endpoints compute no
+/// aggregates, and widening their shared row would force every one of their
+/// queries to produce figures nothing reads.
+#[derive(Debug, sqlx::FromRow)]
+struct WorkflowListRow {
+    id: Uuid,
+    user_id: Uuid,
+    name: String,
+    description: Option<String>,
+    maf_json: String,
+    status: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    execution_count: i64,
+    success_rate: Option<f64>,
+    total_tokens: i64,
+    last_run_at: Option<DateTime<Utc>>,
+    last_run_status: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WorkflowListResponse {
+    id: Uuid,
+    user_id: Uuid,
+    name: String,
+    description: Option<String>,
+    maf_json: serde_json::Value,
+    status: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    execution_count: i64,
+    /// All-time successful runs as a percentage to one decimal place, or `null`
+    /// when the workflow has never run. `null` is not `0` — see [`Health`].
+    success_rate: Option<f64>,
+    health: Health,
+    /// All-time orchestration spend across every execution of this workflow.
+    total_tokens: i64,
+    /// When the most recent execution *started*, or `null` if none ever has.
+    last_run_at: Option<DateTime<Utc>>,
+    /// That same execution's status, so the list can show the last outcome
+    /// independently of aggregate health — a workflow at 96% whose latest run
+    /// failed is healthy overall and worth flagging right now.
+    last_run_status: Option<String>,
+    step_count: usize,
+    /// The distinct agents this workflow uses, in first-use order.
+    agent_names: Vec<String>,
+}
+
+/// The distinct agents a workflow's steps use, in first-use order.
+///
+/// De-duplicated on agent id: a workflow may call the same agent in several
+/// steps, and the list shows each agent once.
+fn distinct_agent_names(definition: &MafDefinition) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    definition
+        .steps
+        .iter()
+        .filter(|step| seen.insert(step.agent_id))
+        .map(|step| step.agent_name.clone())
+        .collect()
+}
+
+/// Which rows one page of the workflow list selects.
+#[derive(Clone, Copy)]
+enum ListScope {
+    /// Live workflows — what the deployed list shows.
+    Active,
+    /// Everything that began life as a draft, still a draft or not.
+    ///
+    /// A promoted draft deliberately stays in this list rather than vanishing
+    /// from it: the point of the drafts view is to follow an idea from the
+    /// sentence you typed through to the runs and spend it went on to produce,
+    /// and a row that disappears the moment it is deployed can't show that.
+    /// Rows are told apart by their `status` — `"draft"` versus `"active"`.
+    Drafted,
+}
+
+impl ListScope {
+    /// This scope's `WHERE` fragment. A closed enum, so no caller text ever
+    /// reaches the statement.
+    fn predicate(self) -> &'static str {
+        match self {
+            Self::Active => "m.status = 'active'",
+            // Soft-deleted rows stay out: discarding a draft means discarding
+            // it, whether or not it had been deployed by then.
+            Self::Drafted => "m.drafted_at IS NOT NULL AND m.status <> 'deleted'",
+        }
+    }
+}
+
+/// What to select, and how to order, for one page of the workflow list.
+struct WorkflowPage<'a> {
+    user_id: Uuid,
+    scope: ListScope,
+    search: Option<&'a str>,
+    /// A fixed `ORDER BY` fragment from a sort enum — never caller text.
+    order_by: &'a str,
+    limit: i64,
+    offset: i64,
+}
+
+/// One page of workflows with the aggregates the list cards render.
+///
+/// Shared by the active list and the drafts list. Both draw the same card, so
+/// both need the same figures, and the only differences are which `status` they
+/// select and how they order — which makes a second copy of this statement pure
+/// downside: a column added for one list would silently go missing from the
+/// other.
+///
+/// Every per-row figure comes out of this single statement. The obvious
+/// alternative — a correlated subquery per metric, or a round trip per card —
+/// turns one listing into O(rows x metrics) queries, which is the shape that
+/// makes a dashboard slow once a user has more than a handful of workflows.
+///
+/// `last_run_status` is the exception: it is the *latest* execution's status
+/// rather than an aggregate, so it cannot come from the GROUP BY. It stays a
+/// subquery, ordered the same way `MAX(started_at)` picks its row so the two
+/// always describe the same execution, and it reads straight down
+/// `idx_maf_executions_maf_started (maf_id, started_at)`.
+///
+/// Executions queued but never started carry a NULL `started_at` and are
+/// excluded: "last run" means the last one that actually ran.
+async fn fetch_workflow_page(
+    db: &sqlx::PgPool,
+    page: WorkflowPage<'_>,
+) -> Result<Vec<WorkflowListRow>, sqlx::Error> {
+    let sql = format!(
+        r#"SELECT m.id, m.user_id, m.name, m.description, m.maf_json::text AS maf_json,
+                  m.status, m.created_at, m.updated_at,
+                  COUNT(e.id) AS execution_count,
+                  ROUND(100.0 * COUNT(*) FILTER (WHERE e.status = 'success')
+                        / NULLIF(COUNT(e.id), 0), 1)::float8 AS success_rate,
+                  COALESCE(SUM(e.tokens_used), 0)::bigint AS total_tokens,
+                  MAX(e.started_at) AS last_run_at,
+                  (SELECT latest.status
+                     FROM maf_executions latest
+                    WHERE latest.maf_id = m.id AND latest.started_at IS NOT NULL
+                    ORDER BY latest.started_at DESC
+                    LIMIT 1) AS last_run_status
+           FROM mafs m
+           LEFT JOIN maf_executions e ON e.maf_id = m.id
+           WHERE m.user_id = $1 AND {}
+             AND ($4::text IS NULL
+                  OR m.name ILIKE '%' || $4 || '%'
+                  OR COALESCE(m.description, '') ILIKE '%' || $4 || '%')
+           GROUP BY m.id
+           ORDER BY {}
+           LIMIT $2 OFFSET $3"#,
+        page.scope.predicate(),
+        page.order_by
+    );
+
+    sqlx::query_as::<_, WorkflowListRow>(&sql)
+        .bind(page.user_id)
+        .bind(page.limit)
+        .bind(page.offset)
+        .bind(page.search)
+        .fetch_all(db)
+        .await
+}
+
+/// An all-whitespace `?search=` is someone who has cleared the box, not a
+/// search for spaces — treat it as absent so it doesn't match nothing.
+fn normalize_search(search: Option<&str>) -> Option<&str> {
+    search.map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn list_row_to_response(row: WorkflowListRow) -> WorkflowListResponse {
+    // A row whose definition no longer parses still belongs in the list — it is
+    // exactly the row a user needs to see in order to fix or delete it — so a
+    // parse failure degrades to an empty shape rather than dropping the card.
+    let definition = serde_json::from_str::<MafDefinition>(&row.maf_json).ok();
+    let step_count = definition.as_ref().map_or(0, |d| d.steps.len());
+    let agent_names = definition
+        .as_ref()
+        .map(distinct_agent_names)
+        .unwrap_or_default();
+
+    WorkflowListResponse {
+        id: row.id,
+        user_id: row.user_id,
+        name: row.name,
+        description: row.description,
+        maf_json: serde_json::from_str(&row.maf_json).unwrap_or(serde_json::Value::Null),
+        status: row.status,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        execution_count: row.execution_count,
+        success_rate: row.success_rate,
+        health: Health::from_success_rate(row.success_rate),
+        total_tokens: row.total_tokens,
+        last_run_at: row.last_run_at,
+        last_run_status: row.last_run_status,
+        step_count,
+        agent_names,
+    }
+}
+
 // ─── 1. GET /maf/workflows ─────────────────────────────────────────────────
 
 async fn list_mafs(
     State(state): State<AppState>,
     claims: Claims,
-    Query(q): Query<ListQuery>,
+    Query(q): Query<WorkflowListQuery>,
 ) -> impl IntoResponse {
-    let user_id = match parse_user_id(&claims) {
-        Some(id) => id,
-        None => return unauthorized(),
+    let Some(user_id) = parse_user_id(&claims) else {
+        return unauthorized();
     };
 
-    let rows = sqlx::query_as::<_, MafRow>(
-        r#"SELECT m.id, m.user_id, m.name, m.description, m.maf_json::text AS maf_json,
-                  m.status, m.created_at, m.updated_at,
-                  (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = m.id) AS execution_count
-           FROM mafs m
-           WHERE m.user_id = $1 AND m.status = 'active'
-           ORDER BY m.created_at DESC
-           LIMIT $2 OFFSET $3"#,
+    let rows = fetch_workflow_page(
+        &state.db,
+        WorkflowPage {
+            user_id,
+            scope: ListScope::Active,
+            search: normalize_search(q.search.as_deref()),
+            order_by: q.sort.order_by(),
+            limit: q.limit,
+            offset: q.offset,
+        },
     )
-    .bind(user_id)
-    .bind(q.limit)
-    .bind(q.offset)
-    .fetch_all(&state.db)
     .await;
 
     match rows {
         Ok(data) => {
-            let items: Vec<MafResponse> = data.into_iter().map(maf_row_to_response).collect();
+            let items: Vec<WorkflowListResponse> =
+                data.into_iter().map(list_row_to_response).collect();
             ok_json(
                 StatusCode::OK,
                 crate::Paginated::new(items),
@@ -422,6 +765,7 @@ async fn create_maf(
         req.name,
         req.description,
         req.steps,
+        None,
     )
     .await
 }
@@ -430,6 +774,14 @@ async fn create_maf(
 /// `create_maf_from_instruction` (steps come from decomposing one sentence).
 /// Resolves any step lacking an `agent_id` via the routing engine, then
 /// persists the resulting `MafDefinition` as a new `mafs` row.
+/// Resolves each step to an agent and persists the workflow.
+///
+/// `existing` selects the destination row: `None` inserts a new workflow,
+/// `Some(id)` overwrites that row and flips it to `active`. The second form is
+/// how a draft is promoted — the draft keeps its id, so any link or reference
+/// to it stays valid once it becomes a real workflow, and a promotion that is
+/// retried updates the same row instead of leaving duplicates behind.
+#[allow(clippy::too_many_arguments)]
 async fn create_maf_from_steps(
     state: &AppState,
     claims: &Claims,
@@ -437,6 +789,7 @@ async fn create_maf_from_steps(
     name: Option<String>,
     description: Option<String>,
     steps: Vec<CreateStepRequest>,
+    existing: Option<Uuid>,
 ) -> axum::response::Response {
     if steps.is_empty() {
         return bad_request("steps must not be empty");
@@ -560,13 +913,7 @@ async fn create_maf_from_steps(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            resolved_steps[0]
-                .task_description
-                .chars()
-                .take(60)
-                .collect()
-        });
+        .unwrap_or_else(|| derive_workflow_name(&resolved_steps[0].task_description));
 
     let maf_def = MafDefinition {
         description: None, // generated by the runtime planner on each execution
@@ -580,21 +927,37 @@ async fn create_maf_from_steps(
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    let row = sqlx::query_as::<_, MafRow>(
+    // A promotion overwrites the draft row in place; a plain create inserts.
+    // `status` is set explicitly on the update path because the row being
+    // overwritten is a draft and this is the moment it stops being one.
+    let sql = if existing.is_some() {
+        r#"UPDATE mafs
+              SET name = $2, description = $3, maf_json = $4::jsonb,
+                  status = 'active', updated_at = now()
+            WHERE id = $5 AND user_id = $1 AND status = 'draft'
+        RETURNING id, user_id, name, description, maf_json::text AS maf_json,
+                  status, created_at, updated_at,
+                  (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = mafs.id)
+                      AS execution_count"#
+    } else {
         r#"INSERT INTO mafs (user_id, name, description, maf_json)
            VALUES ($1, $2, $3, $4::jsonb)
            RETURNING id, user_id, name, description, maf_json::text AS maf_json,
-                     status, created_at, updated_at, 0::bigint AS execution_count"#,
-    )
-    .bind(user_id)
-    .bind(&name)
-    .bind(description)
-    .bind(&maf_json_str)
-    .fetch_one(&state.db)
-    .await;
+                     status, created_at, updated_at, 0::bigint AS execution_count"#
+    };
+
+    let mut query = sqlx::query_as::<_, MafRow>(sql)
+        .bind(user_id)
+        .bind(&name)
+        .bind(description)
+        .bind(&maf_json_str);
+    if let Some(id) = existing {
+        query = query.bind(id);
+    }
+    let row = query.fetch_optional(&state.db).await;
 
     match row {
-        Ok(r) => {
+        Ok(Some(r)) => {
             tracing::info!(maf_id = %r.id, name = %r.name, "maf create: workflow persisted");
             ok_json(
                 StatusCode::CREATED,
@@ -602,6 +965,10 @@ async fn create_maf_from_steps(
                 "Workflow created successfully",
             )
         }
+        // Only reachable on the promotion path: the `WHERE` matched nothing, so
+        // the draft was deleted, is owned by someone else, or was already
+        // promoted by a concurrent request. None of those is a server fault.
+        Ok(None) => not_found("draft"),
         Err(e) => internal_err(e),
     }
 }
@@ -634,14 +1001,40 @@ async fn create_maf_from_instruction(
         return bad_request("instruction is required");
     }
 
-    let decomposer_url = match &state.config.decomposer_api_url {
-        Some(u) => u.clone(),
-        None => {
-            return err_json(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "MODEL_API_URL is not configured on this server",
-            );
-        }
+    let steps = match decompose_into_steps(&state, &req.instruction).await {
+        Ok(steps) => steps,
+        Err(response) => return response,
+    };
+
+    create_maf_from_steps(
+        &state,
+        &claims,
+        user_id,
+        None,
+        Some(req.instruction),
+        steps,
+        None,
+    )
+    .await
+}
+
+/// Splits one compound instruction into per-step requests via the decomposer
+/// service, each left unassigned so the routing engine picks its agent.
+///
+/// Shared by `from-instruction` and draft promotion: both turn exactly one
+/// sentence into exactly one step list, and the error responses they owe the
+/// caller (503 when the service is unconfigured or unreachable) are identical.
+/// The `Err` arm carries the finished response rather than an error type
+/// because every failure here is already a decided HTTP outcome.
+async fn decompose_into_steps(
+    state: &AppState,
+    instruction: &str,
+) -> Result<Vec<CreateStepRequest>, axum::response::Response> {
+    let Some(decomposer_url) = state.config.decomposer_api_url.clone() else {
+        return Err(err_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "MODEL_API_URL is not configured on this server",
+        ));
     };
     let decomposer = DecomposerClient::new(
         state.http_client.clone(),
@@ -652,12 +1045,12 @@ async fn create_maf_from_instruction(
     // Same reasoning as the per-step log in `create_maf_from_steps`: the raw
     // instruction is user content and does not belong in `info!`.
     tracing::info!(
-        instruction_len = req.instruction.len(),
+        instruction_len = instruction.len(),
         "maf create: decomposing instruction"
     );
-    tracing::debug!(instruction = %req.instruction, "maf create: instruction text");
+    tracing::debug!(instruction = %instruction, "maf create: instruction text");
     let decompose_start = std::time::Instant::now();
-    let sub_queries = match decomposer.decompose(&req.instruction).await {
+    let sub_queries = match decomposer.decompose(instruction).await {
         Ok(qs) => qs,
         Err(e) => {
             // A failed dependency is a warning, not routine info. The error
@@ -669,7 +1062,10 @@ async fn create_maf_from_instruction(
                 error = %e,
                 "maf create: decomposer failed"
             );
-            return err_json(StatusCode::SERVICE_UNAVAILABLE, &format!("decomposer: {e}"));
+            return Err(err_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("decomposer: {e}"),
+            ));
         }
     };
     tracing::info!(
@@ -679,15 +1075,198 @@ async fn create_maf_from_instruction(
     );
     tracing::debug!(sub_queries = ?sub_queries, "maf create: sub-query text");
 
-    let steps = sub_queries
+    Ok(sub_queries
         .into_iter()
         .map(|task_description| CreateStepRequest {
             task_description,
             agent_id: None,
         })
-        .collect();
+        .collect())
+}
 
-    create_maf_from_steps(&state, &claims, user_id, None, Some(req.instruction), steps).await
+/// A display name derived from free text: the first 60 characters.
+///
+/// Used for both a draft (from the instruction as typed) and a finished
+/// workflow (from step 0's task), so the name a draft shows does not jump to
+/// something unrecognisable the moment it is promoted.
+fn derive_workflow_name(text: &str) -> String {
+    text.trim().chars().take(60).collect()
+}
+
+// ─── Drafts ────────────────────────────────────────────────────────────────
+//
+// A draft is an instruction the user has typed but not yet committed to. It is
+// a `mafs` row with `status = 'draft'` and an empty step list: saving one makes
+// no decomposer call, runs no routing, and bills nothing — it stores the
+// sentence so that closing the tab does not lose it.
+//
+// All the real work is deferred to promotion, which runs the same path
+// `from-instruction` does and overwrites the draft row in place, keeping its
+// id. So an abandoned draft only ever costs a row, and a resumed one picks up
+// from exactly the sentence the user left behind.
+//
+// Drafts are invisible to `list_mafs` (it filters `status = 'active'`), so a
+// half-written idea never appears among real workflows.
+
+#[derive(Deserialize)]
+struct SaveDraftRequest {
+    /// The instruction as typed so far.
+    instruction: String,
+    /// The draft to overwrite. Omitted on the first save; the response echoes
+    /// the id back so the client keeps updating one row rather than creating a
+    /// new draft on every autosave.
+    #[serde(default)]
+    draft_id: Option<Uuid>,
+}
+
+// ─── 2c. POST /maf/workflow/draft ──────────────────────────────────────────
+
+async fn save_draft(
+    State(state): State<AppState>,
+    claims: Claims,
+    Json(req): Json<SaveDraftRequest>,
+) -> impl IntoResponse {
+    let Some(user_id) = parse_user_id(&claims) else {
+        return unauthorized();
+    };
+
+    let instruction = req.instruction.trim();
+    if instruction.is_empty() {
+        return bad_request("instruction is required");
+    }
+    let name = derive_workflow_name(instruction);
+
+    // Both branches scope the write to the caller, so one user can never
+    // overwrite another's draft by guessing an id.
+    let row = match req.draft_id {
+        Some(draft_id) => {
+            sqlx::query_as::<_, MafRow>(
+                r#"UPDATE mafs
+                      SET name = $2, description = $3, updated_at = now()
+                    WHERE id = $4 AND user_id = $1 AND status = 'draft'
+                RETURNING id, user_id, name, description, maf_json::text AS maf_json,
+                          status, created_at, updated_at, 0::bigint AS execution_count"#,
+            )
+            .bind(user_id)
+            .bind(&name)
+            .bind(instruction)
+            .bind(draft_id)
+            .fetch_optional(&state.db)
+            .await
+        }
+        None => {
+            sqlx::query_as::<_, MafRow>(
+                r#"INSERT INTO mafs (user_id, name, description, maf_json, status, drafted_at)
+                   VALUES ($1, $2, $3, '{"steps": []}'::jsonb, 'draft', now())
+                   RETURNING id, user_id, name, description, maf_json::text AS maf_json,
+                             status, created_at, updated_at, 0::bigint AS execution_count"#,
+            )
+            .bind(user_id)
+            .bind(&name)
+            .bind(instruction)
+            .fetch_optional(&state.db)
+            .await
+        }
+    };
+
+    match row {
+        Ok(Some(r)) => ok_json(StatusCode::OK, maf_row_to_response(r), "Draft saved"),
+        // The update matched nothing: the draft was deleted or already
+        // promoted. Saying so lets the client drop its stale id and save again
+        // as a new draft rather than silently losing the user's text.
+        Ok(None) => not_found("draft"),
+        Err(e) => internal_err(e),
+    }
+}
+
+// ─── 2d. GET /maf/workflow/drafts ──────────────────────────────────────────
+
+async fn list_drafts(
+    State(state): State<AppState>,
+    claims: Claims,
+    Query(q): Query<DraftListQuery>,
+) -> impl IntoResponse {
+    let Some(user_id) = parse_user_id(&claims) else {
+        return unauthorized();
+    };
+
+    let rows = fetch_workflow_page(
+        &state.db,
+        WorkflowPage {
+            user_id,
+            scope: ListScope::Drafted,
+            search: normalize_search(q.search.as_deref()),
+            order_by: q.sort.order_by(),
+            limit: q.limit,
+            offset: q.offset,
+        },
+    )
+    .await;
+
+    match rows {
+        Ok(data) => {
+            let items: Vec<WorkflowListResponse> =
+                data.into_iter().map(list_row_to_response).collect();
+            ok_json(
+                StatusCode::OK,
+                crate::Paginated::new(items),
+                "Drafts retrieved successfully",
+            )
+        }
+        Err(e) => internal_err(e),
+    }
+}
+
+// ─── 2e. POST /maf/workflow/{id}/promote ───────────────────────────────────
+//
+// Turns a draft into a runnable workflow: decomposes the stored instruction,
+// routes an agent per step, and overwrites the draft row in place.
+
+async fn promote_draft(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    claims: Claims,
+) -> impl IntoResponse {
+    let Some(user_id) = parse_user_id(&claims) else {
+        return unauthorized();
+    };
+
+    let draft = match fetch_maf(&state.db, id).await {
+        Ok(Some(r)) if r.user_id == user_id => r,
+        Ok(Some(_)) => return forbidden("not owned by caller"),
+        Ok(None) => return not_found("draft"),
+        Err(e) => return internal_err(e),
+    };
+
+    if draft.status != "draft" {
+        return bad_request(&format!(
+            "workflow is already '{}' — only a draft can be promoted",
+            draft.status
+        ));
+    }
+
+    // The instruction lives in `description`, which is where every creation
+    // path stores the sentence a workflow came from.
+    let instruction = draft.description.unwrap_or_default();
+    if instruction.trim().is_empty() {
+        return bad_request("draft has no instruction to promote");
+    }
+
+    let steps = match decompose_into_steps(&state, &instruction).await {
+        Ok(steps) => steps,
+        Err(response) => return response,
+    };
+
+    create_maf_from_steps(
+        &state,
+        &claims,
+        user_id,
+        None,
+        Some(instruction),
+        steps,
+        Some(id),
+    )
+    .await
 }
 
 // ─── 3. GET /maf/workflow/{id} ─────────────────────────────────────────────
@@ -894,8 +1473,10 @@ async fn delete_maf(
         Ok(Some(_)) => {}
     }
 
+    // `<> 'deleted'` rather than `= 'active'` so discarding a draft works too,
+    // while a second delete of an already-deleted row stays a no-op.
     match sqlx::query(
-        "UPDATE mafs SET status = 'deleted', updated_at = now() WHERE id = $1 AND status = 'active'",
+        "UPDATE mafs SET status = 'deleted', updated_at = now() WHERE id = $1 AND status <> 'deleted'",
     )
     .bind(id)
     .execute(&state.db)
@@ -951,6 +1532,17 @@ async fn run_workflow(
         Ok(None) => return not_found("workflow"),
         Err(e) => return internal_err(e),
     };
+
+    // A draft is a saved instruction with no steps yet. Enqueuing one would
+    // create an execution that can only fail in the worker, several seconds
+    // later and out of sight of this caller — so it is refused here, naming the
+    // call that makes it runnable.
+    if maf.status == "draft" {
+        return bad_request(
+            "this workflow is still a draft — promote it first with \
+             POST /api/maf/workflow/{id}/promote",
+        );
+    }
 
     // Re-check agent access at run time, not just at create/update time.
     //
@@ -1572,12 +2164,18 @@ async fn generate_maf(
 
 // ─── DB helpers ────────────────────────────────────────────────────────────
 
+/// One workflow by id, in any live state.
+///
+/// Admits drafts as well as active workflows — a draft is a real row its owner
+/// can fetch, edit, promote and discard; only the run path treats it specially.
+/// Soft-deleted rows stay excluded, so a deleted workflow is still a 404
+/// everywhere.
 async fn fetch_maf(db: &sqlx::PgPool, id: Uuid) -> Result<Option<MafRow>, sqlx::Error> {
     sqlx::query_as::<_, MafRow>(
         r#"SELECT m.id, m.user_id, m.name, m.description, m.maf_json::text AS maf_json,
                   m.status, m.created_at, m.updated_at,
                   (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = m.id) AS execution_count
-           FROM mafs m WHERE m.id = $1 AND m.status = 'active'"#,
+           FROM mafs m WHERE m.id = $1 AND m.status <> 'deleted'"#,
     )
     .bind(id)
     .fetch_optional(db)
