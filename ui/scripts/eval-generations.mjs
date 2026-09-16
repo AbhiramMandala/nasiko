@@ -394,6 +394,162 @@ function redundantRuns(statements) {
   return found;
 }
 
+/**
+ * Every data source by name, so an argument can be looked up by the source
+ * that declares it. Same manifest ALLOWED_SOURCES is built from.
+ */
+const SOURCES_BY_NAME = new Map(
+  Object.values(MANIFEST.scopes ?? {}).flat()
+    .filter((s) => typeof s !== 'string')
+    .map((s) => [s.name, s]),
+);
+
+/**
+ * What KIND of value a control hands to `$event`, read off the catalog rather
+ * than listed here.
+ *
+ * The distinction that matters is whether the value came from a closed set the
+ * component itself defines, or from a person typing. `options`/`items` IS that
+ * closed set — a combobox counts as a picker even though you type into it,
+ * because what it commits is one of its options. A `value` whose description
+ * names a literal format (app-date-field's `YYYY-MM-DD`) is neither: the
+ * component guarantees the shape.
+ *
+ * Anything with no `value` attribute at all — a button, a modal — writes
+ * nothing a query argument could read, and is not classified.
+ */
+function controlValueKind(tag) {
+  const def = catalog.components?.[tag];
+  if (!def) return null;
+  const attrs = def.attributes ?? {};
+  if (!attrs.value) return null;
+  if (attrs.options || attrs.items) return 'picked';
+  const desc = String(attrs.value.description ?? '');
+  if (/`[A-Za-z]{2,}-[A-Za-z]{2,}/.test(desc) || /ISO[ -]?8601/i.test(desc)) return 'formatted';
+  if (attrs.placeholder) return 'free-text';
+  return null;
+}
+
+/**
+ * What KIND of value a source's argument expects, read off the manifest's own
+ * `argsShape` prose — the same sentence the model is shown.
+ *
+ * Deliberately parsed rather than re-declared. A second hand-kept table of
+ * argument types is a table that drifts from the one the generator reads, and
+ * then this check would be judging against a contract nobody was given.
+ */
+function argumentKind(sourceName, argName) {
+  const shape = SOURCES_BY_NAME.get(sourceName)?.argsShape;
+  const text = shape?.[argName];
+  if (typeof text !== 'string') return null;
+  if (/"[^"]+"\s*\|\s*"/.test(text)) return 'enum';
+  if (/\bnumber\b/i.test(text)) return 'number';
+  if (/ISO[ -]?8601/i.test(text) || /"[A-Z]{2,}-[A-Z]{2,}/.test(text)) return 'formatted';
+  if (/\bsearch\b/i.test(text)) return 'search';
+  if (/\bstring\b/i.test(text)) return 'exact-string';
+  return null;
+}
+
+/** Positional sources name their arguments by order; object ones by key. */
+function argNameAt(sourceName, index) {
+  const src = SOURCES_BY_NAME.get(sourceName);
+  if (!src || src.callStyle !== 'positional') return null;
+  return Object.keys(src.argsShape ?? {})[index] ?? null;
+}
+
+/**
+ * A control whose value cannot be what the argument it feeds is asking for.
+ *
+ * ONE class, on purpose: a free-text box wired to an argument the source
+ * matches exactly. `AppSearch → agentId` renders, raises no diagnostic, and
+ * returns nothing for every partial name anyone types — the table just looks
+ * empty, which reads as "no usage" rather than as a wiring mistake. It was
+ * generated twice in a row and nothing in the harness could see it.
+ *
+ * Everything else is left alone even where it looks suspect, because this is
+ * the boundary between a defect and a taste assertion:
+ *
+ *   - free-text into a `search` argument is the argument doing its job
+ *   - a picker into anything is a value the component guarantees
+ *   - a formatted control (app-date-field) into a formatted argument is right,
+ *     and into anything else is a different question than this one
+ *   - a state that reaches @Filter rather than a query argument is not a
+ *     query argument problem at all
+ *   - an argument the manifest does not describe is not judged
+ *
+ * Advisory, never fatal. It is a claim about what the data will do, not about
+ * what rendered, and the manifest prose it reads is written for people.
+ */
+function semanticMismatches(statements) {
+  const lines = statements.map((st) => st.raw ?? '');
+
+  // $state -> the Action that sets it, and that Action -> the control that
+  // references it. Textual for the same reason redundantRuns is: a
+  // materialized call holds VALUES, and by then nothing remembers which
+  // control wrote them.
+  const setterOf = new Map();
+  for (const l of lines) {
+    const act = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Action\s*\(/.exec(l);
+    if (!act) continue;
+    for (const m of l.matchAll(/@Set\(\s*(\$[\w$]+)/g)) setterOf.set(m[1], act[1]);
+  }
+  const controlOf = new Map();
+  for (const l of lines) {
+    const comp = /^\s*[A-Za-z_$][\w$]*\s*=\s*(App[A-Za-z]+)\s*\(/.exec(l);
+    if (!comp) continue;
+    const tag = pascalToTag(comp[1]);
+    for (const act of new Set(setterOf.values())) {
+      if (new RegExp(`\\b${act}\\b`).test(l)) controlOf.set(act, tag);
+    }
+  }
+
+  const found = [];
+  for (const l of lines) {
+    const q = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Query\s*\(\s*"([^"]+)"/.exec(l);
+    if (!q) continue;
+    const [queryName, source] = [q[1], q[2]];
+    const argsText = topLevelArgs(l, 'Query')[1] ?? '';
+    // Every `name: $state` an object-style call passes, and every `$state` a
+    // positional one passes, paired with the argument it lands in.
+    const pairs = [];
+    for (const m of argsText.matchAll(/([A-Za-z_][\w]*)\s*:\s*(\$[\w$]+)/g)) {
+      pairs.push({ arg: m[1], state: m[2] });
+    }
+    if (!pairs.length) {
+      const positional = topLevelArgs(`f(${argsText.trim().replace(/^\[|\]$/g, '')})`, 'f');
+      positional.forEach((raw, i) => {
+        const st = /^\s*(\$[\w$]+)\s*$/.exec(raw);
+        const arg = argNameAt(source, i);
+        if (st && arg) pairs.push({ arg, state: st[1] });
+      });
+    }
+    for (const { arg, state } of pairs) {
+      const tag = controlOf.get(setterOf.get(state));
+      if (!tag) continue;
+      const valueKind = controlValueKind(tag);
+      const argKind = argumentKind(source, arg);
+      if (valueKind !== 'free-text' || argKind !== 'exact-string') continue;
+      found.push({
+        control: tag,
+        state,
+        query: queryName,
+        source,
+        argument: arg,
+        valueKind,
+        argumentKind: argKind,
+        reason: `${tag} writes ${state} as free text, and ${source}'s "${arg}" is matched `
+          + 'exactly — a partial value returns nothing, with no error to say so',
+      });
+    }
+  }
+  return found;
+}
+
+/** AppStatCard -> app-stat-card, the one direction the catalog does not store. */
+function pascalToTag(name) {
+  return name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+}
+
 export function evaluateGeneration(text) {
   const diagnostics = [];
   const { statements, prose } = parseBuffer(text);
@@ -434,6 +590,7 @@ export function evaluateGeneration(text) {
     unresolved: out.unresolved,
     actions: statements.filter((s) => /=\s*Action\(/.test(s.raw ?? '')).length,
     redundantRuns: redundantRuns(statements),
+    semanticMismatches: semanticMismatches(statements),
     chartKinds: [...chartKinds],
     diagnostics,
   };
@@ -487,6 +644,13 @@ export function check(kase, text) {
   }
   for (const tag of e.tags ?? []) {
     if (!r.tags.includes(tag)) fail.push(`no <${tag}> anywhere in the tree`);
+  }
+  // Advisory, not a failure. The defect is real and the detection is narrow,
+  // but it is a claim about what the DATA will do rather than about what
+  // rendered, so it is reported and measured before it is allowed to gate.
+  for (const sm of r.semanticMismatches) {
+    advisory.push(`diagnostic eval/semantic_control_argument_mismatch: ${sm.control} writes `
+      + `${sm.state}, passed to ${sm.source}'s "${sm.argument}" (${sm.query}). ${sm.reason}`);
   }
   for (const rr of r.redundantRuns) {
     fail.push(`${rr.action} re-runs ${rr.query}, but ${rr.states.join('/')} is not one of its `
@@ -1030,7 +1194,7 @@ for (const kase of cases) {
       // known-failing case was the one place an advisory was collected and
       // then thrown away — and it is the case most likely to be carrying a
       // second, unrelated mistake nobody has looked at yet.
-      for (const a of advisory) console.log(`    corrected: ${a}`);
+      for (const a of advisory) console.log(`    ${a.includes('eval/') ? 'noted' : 'corrected'}: ${a}`);
       for (const t of runtime) console.log(`    runtime: ${t}`);
     } else {
       // A known failure that passes is a fix nobody wrote down. Failing here is
@@ -1053,7 +1217,7 @@ for (const kase of cases) {
       : 'prose only';
     console.log(`✓ ${kase.id} — ${shape}`);
   }
-  for (const a of advisory) console.log(`    corrected: ${a}`);
+  for (const a of advisory) console.log(`    ${a.includes('eval/') ? 'noted' : 'corrected'}: ${a}`);
   // Offline, nothing should reach the network or the stream. One of these
   // means the harness, not the generation.
   for (const t of runtime) console.log(`    runtime: ${t}`);

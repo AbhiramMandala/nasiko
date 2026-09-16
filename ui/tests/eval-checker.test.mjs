@@ -260,3 +260,76 @@ root = AppStack([picker, table], "md")
 Done.`;
   assert.deepEqual(check(kase({}), mixed).fail, []);
 });
+
+test('a free-text control wired to an exactly-matched argument is caught', () => {
+  // The defect: AppSearch hands whatever was typed to an argument the source
+  // matches exactly, so a partial name returns nothing and the table reads as
+  // "no usage" rather than as a wiring mistake. Generated twice in a row with
+  // no diagnostic, which is why the harness needed its own eye for it.
+  const freeTextIntoId = `Here.
+$agent = ""
+setAgent = Action([@Set($agent, $event), @Run(rowsQ)])
+box = AppSearch("md", null, false, false, "Search agents...", $agent, null, null, null, null, null, setAgent)
+rowsQ = Query("fetchTokenopsDashboard", [{agentId: $agent}], {attributions: {rows: []}}, "data")
+table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
+root = AppStack([box, table], "md")
+Done.`;
+  const caught = check(kase({}), freeTextIntoId);
+  assert.deepEqual(caught.fail, [], caught.fail.join(' / '));
+  assert.match(caught.advisory.join(' '), /semantic_control_argument_mismatch/);
+  assert.match(caught.advisory.join(' '), /agentId/);
+
+  // `model` is the same shape and was generated alongside it.
+  const intoModel = freeTextIntoId.replace(/agentId/g, 'model');
+  assert.match(check(kase({}), intoModel).advisory.join(' '), /semantic_control_argument_mismatch/);
+
+  // A picker's value comes from a set the component defines, so the same
+  // argument is correct — this is what the fix looks like, and flagging it
+  // would make the check unusable.
+  const pickerIntoId = `Here.
+$agent = ""
+setAgent = Action([@Set($agent, $event), @Run(rowsQ)])
+picker = AppSelect("md", null, "Agent", null, "All agents", ["a-1", "a-2"], false, false, "agentId", "Select agent", $agent, false, setAgent)
+rowsQ = Query("fetchTokenopsDashboard", [{agentId: $agent}], {attributions: {rows: []}}, "data")
+table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
+root = AppStack([picker, table], "md")
+Done.`;
+  assert.doesNotMatch(check(kase({}), pickerIntoId).advisory.join(' '), /semantic_control_argument_mismatch/);
+
+  // Free text over rows already fetched is what free text is FOR. No query
+  // argument is involved, so there is nothing to mismatch.
+  const freeTextIntoFilter = `Here.
+$q = ""
+setQ = Action([@Set($q, $event)])
+box = AppSearch("md", null, false, false, "Search dates...", $q, null, null, null, null, null, setQ)
+rowsQ = Query("fetchUsageHistory", [7], [])
+rows = @Filter(rowsQ, "date", "contains", $q)
+table = AppTable(rows, 25, "pages", false)
+root = AppStack([box, table], "md")
+Done.`;
+  assert.doesNotMatch(check(kase({}), freeTextIntoFilter).advisory.join(' '), /semantic_control_argument_mismatch/);
+
+  // An argument the manifest describes as a search argument is the one place
+  // free text belongs server-side. Positional, so the argument is identified
+  // by its order rather than by a key.
+  const freeTextIntoSearchArg = `Here.
+$q = ""
+setQ = Action([@Set($q, $event), @Run(rowsQ)])
+box = AppSearch("md", null, false, false, "Search agents...", $q, null, null, null, null, null, setQ)
+rowsQ = Query("fetchUsageByAgent", [$q, 1, 20], [], "data")
+table = AppTable(rowsQ, 20, "pages", true)
+root = AppStack([box, table], "md")
+Done.`;
+  assert.doesNotMatch(check(kase({}), freeTextIntoSearchArg).advisory.join(' '), /semantic_control_argument_mismatch/);
+
+  // A picker into an enum argument, which is most of what these dashboards do.
+  const pickerIntoEnum = `Here.
+$range = "7d"
+setRange = Action([@Set($range, $event), @Run(rowsQ)])
+picker = AppSegmentedControl([{value: "7d", label: "7d"}, {value: "30d", label: "30d"}], $range, "md", false, null, "Range", null, setRange)
+rowsQ = Query("fetchTokenopsDashboard", [{range: $range}], {attributions: {rows: []}}, "data")
+table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
+root = AppStack([picker, table], "md")
+Done.`;
+  assert.doesNotMatch(check(kase({}), pickerIntoEnum).advisory.join(' '), /semantic_control_argument_mismatch/);
+});
