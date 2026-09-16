@@ -499,6 +499,27 @@ pub enum MafCommands {
         #[command(subcommand)]
         command: MafExecutionCommands,
     },
+    /// Run one instruction end to end and report every stage
+    #[command(
+        after_help = "Does in one command what `workflow create --instruction`, \
+`workflow run --wait` and `execution get` do in three: sends the sentence to the decomposer, \
+shows how it was split and which agent each step was routed to, runs it while reporting each \
+step as it finishes, then prints the result with its token breakdown.\n\n\
+The workflow is kept by default so it can be re-run or inspected; pass --cleanup to delete it \
+once the run finishes."
+    )]
+    Trace {
+        /// The compound instruction to decompose into a workflow and run
+        instruction: String,
+        /// Run-time data folded into step 0's task before planning
+        #[arg(long)]
+        content: Option<String>,
+        /// Delete the workflow once the run finishes
+        #[arg(long)]
+        cleanup: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1352,6 +1373,12 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                     commands::maf::execution_result(&execution_id, json)
                 }
             },
+            MafCommands::Trace {
+                instruction,
+                content,
+                cleanup,
+                json,
+            } => commands::maf::trace(&instruction, content.as_deref(), cleanup, json),
         },
     }
 }
