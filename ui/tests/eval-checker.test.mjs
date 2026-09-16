@@ -201,3 +201,62 @@ Done.`;
   const lost = check(kase({}), swallowed);
   assert.match(lost.fail.join(' '), /component_as_attribute/);
 });
+
+test('an @Run whose own state is not a Query argument is caught', () => {
+  // The wiring mistake the toolbar worked example caused, in miniature. The
+  // agent search filters rows already fetched, which is right for a source
+  // with no name argument — but the @Run came along from the server-side
+  // shape it was adapted from, so every keystroke refetches identical data.
+  // Nothing else in the harness notices: it renders, it has no diagnostic,
+  // and the screen does not move.
+  const refetchesNothing = `Here.
+$q = ""
+setQ = Action([@Set($q, $event), @Run(rowsQ)])
+box = AppSearch("md", null, false, false, "Search agents...", $q, null, null, null, null, null, setQ)
+rowsQ = Query("fetchTokenopsDashboard", [{}], {attributions: {rows: []}}, "data")
+rows = @Filter(rowsQ.attributions.rows, "agent_name", "contains", $q)
+table = AppTable(rows, 25, "pages", false)
+root = AppStack([box, table], "md")
+Done.`;
+  const caught = check(kase({}), refetchesNothing);
+  assert.match(caught.fail.join(' '), /setQ re-runs rowsQ/);
+
+  // The same surface with the @Run dropped is correct and must stay silent —
+  // writing $q alone already repaints, and @Filter re-evaluates against it.
+  const correct = refetchesNothing.replace(', @Run(rowsQ)', '');
+  assert.deepEqual(check(kase({}), correct).fail, []);
+
+  // A state that IS an argument earns its @Run.
+  const serverSide = `Here.
+$range = "7d"
+setRange = Action([@Set($range, $event), @Run(rowsQ)])
+picker = AppSegmentedControl([{value: "7d", label: "7d"}, {value: "30d", label: "30d"}], $range, "md", false, null, "Range", null, setRange)
+rowsQ = Query("fetchTokenopsDashboard", [{range: $range}], {attributions: {rows: []}}, "data")
+table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
+root = AppStack([picker, table], "md")
+Done.`;
+  assert.deepEqual(check(kase({}), serverSide).fail, []);
+
+  // A Refresh button is a bare @Run with no @Set at all, and is exactly right.
+  const refresh = `Here.
+again = Action([@Run(rowsQ)])
+btn = AppButton("Refresh", "secondary", null, null, null, null, null, null, null, null, again)
+rowsQ = Query("fetchTokenopsDashboard", [{}], {attributions: {rows: []}}, "data")
+table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
+root = AppStack([btn, table], "md")
+Done.`;
+  assert.deepEqual(check(kase({}), refresh).fail, []);
+
+  // One state in the arguments justifies the @Run for every other set in the
+  // same Action — flagging that would be a taste assertion, not a defect.
+  const mixed = `Here.
+$range = "7d"
+$dense = false
+both = Action([@Set($range, $event), @Set($dense, true), @Run(rowsQ)])
+picker = AppSegmentedControl([{value: "7d", label: "7d"}, {value: "30d", label: "30d"}], $range, "md", false, null, "Range", null, both)
+rowsQ = Query("fetchTokenopsDashboard", [{range: $range}], {attributions: {rows: []}}, "data")
+table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
+root = AppStack([picker, table], "md")
+Done.`;
+  assert.deepEqual(check(kase({}), mixed).fail, []);
+});

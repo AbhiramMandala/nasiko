@@ -157,6 +157,55 @@ export const CASES = [
   // still catches is a control with neither.
   { id: 'interactive-controls', prompt: 'Cost dashboard with a search box and buttons to change the window',
     expect: { minQueries: 1, minActions: 1 } },
+  // The composition-SHAPE case, and the only one here that asks for an
+  // arrangement rather than for a component. Every other prompt names one
+  // thing — a table, a chart, a toggle — so a surface that drops its controls
+  // into a loose row passes all of them, and app-toolbar and app-field went
+  // unused across three separate recordings without a single case being able
+  // to notice. A worked example demonstrating them changed nothing measurable
+  // for exactly that reason: the corpus had no task that needed one.
+  //
+  // "Group the filters above the table" is the requirement and the whole
+  // reason this case exists. Three named filters is more control surface than
+  // a bare row carries, and a labelled group sitting above a result set is the
+  // shape app-toolbar and app-field are for.
+  //
+  // What is asserted is deliberately NOT app-toolbar or app-field. This case
+  // was added to MEASURE whether demonstration moves that choice, and gating
+  // on the outcome would make the question unfalsifiable — it would pass only
+  // when the answer was already yes. The floor is what the prompt itself
+  // states: real data, a table as the result, and filters that are actually
+  // filters rather than decoration (more than one $state, written by more
+  // than one Action). How they are grouped is measured, not required.
+  { id: 'grouped-filters',
+    prompt: 'Show TokenOps usage in a table with filters for agent, model, and date range. '
+      + 'Group the filters above the table.',
+    expect: { minQueries: 1, minActions: 2, minStates: 2, tags: ['app-table'] } },
+  // The other half of rule 20, and the half `grouped-filters` cannot reach.
+  // Every state in that case turned out to be a real argument of
+  // fetchTokenopsDashboard, so "a state in the args needs an @Run" was
+  // exercised three times over and "a state that is NOT an argument must not
+  // have one" was never exercised at all — the rule's negative clause has
+  // never been tested against a generation.
+  //
+  // fetchUsageHistory is the one source that forces it. Its whole argument
+  // list is `days`, and its rows come back bare, so a box that narrows those
+  // rows has nowhere server-side to go: the only way to satisfy the request
+  // is @Filter over what was already fetched, and the Action that sets the
+  // search must not re-run a Query whose one argument did not change.
+  //
+  // The prompt names the task, not the mechanism — no "client-side", no
+  // "already fetched". A model that reads the source line has everything it
+  // needs to work the strategy out, and one that does not will reach for the
+  // shape it saw last. That difference is the measurement.
+  //
+  // Assertions are the same floor as grouped-filters and deliberately do not
+  // mention @Filter or @Run: redundantRuns() already fails the wiring defect
+  // objectively, and asserting the mechanism here would gate on the answer.
+  { id: 'client-side-filter',
+    prompt: 'Daily usage history as a table, with a control to switch between 7, 30 and 90 days '
+      + 'and a search box to narrow the rows.',
+    expect: { minQueries: 1, minActions: 2, minStates: 2, tags: ['app-table'] } },
   // Not a dashboard request. agent.yaml rule 11 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.
@@ -273,6 +322,78 @@ function walk(el, fn) {
  * Everything the client would do with this text, and everything it complained
  * about on the way. No network, no DOM — the same modules the browser runs.
  */
+/**
+ * Split a call's argument list at top level, so `Query("x", [{a: 1, b: 2}], …)`
+ * yields three arguments and not five. Bracket-aware and string-aware; returns
+ * [] for text that is not a call.
+ */
+function topLevelArgs(raw, callName) {
+  const open = raw.indexOf(`${callName}(`);
+  if (open < 0) return [];
+  let i = open + callName.length + 1, depth = 0, quote = null, start = i;
+  const out = [];
+  for (; i < raw.length; i++) {
+    const c = raw[i];
+    if (quote) { if (c === quote && raw[i - 1] !== '\\') quote = null; continue; }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '(' || c === '[' || c === '{') { depth++; continue; }
+    if (c === ')' && depth === 0) { out.push(raw.slice(start, i)); return out; }
+    if (c === ')' || c === ']' || c === '}') { depth--; continue; }
+    if (c === ',' && depth === 0) { out.push(raw.slice(start, i)); start = i + 1; }
+  }
+  return out;
+}
+
+/**
+ * Actions that re-run a Query none of their own state reaches.
+ *
+ * The narrow, objective half of a wiring mistake the toolbar worked example
+ * caused and nothing else caught. A generation filtered agents client-side
+ * with `@Filter` — correct for a source with no name argument — but kept the
+ * `@Run(dashboardQ)` from the server-side shape it was adapting. The state it
+ * sets is not one of that Query's arguments, so the refetch asks for byte-wise
+ * identical data on every keystroke: no diagnostic fires, nothing on screen
+ * moves, and the surface is wrong only in what it costs.
+ *
+ * Deliberately narrow, and deliberately not a claim about architecture:
+ *
+ *   - An Action with no `@Set` at all is left alone. A bare `@Run` is a
+ *     Refresh button, which is exactly right.
+ *   - An Action is flagged only when NONE of the states it sets appear in the
+ *     Query's argument list. One state in the args justifies the `@Run` for
+ *     every other set in the same Action.
+ *   - Matching is on the ARGUMENT list only, not the default or the dot-path,
+ *     because a `$state` in the default says nothing about whether the fetch
+ *     would change.
+ *
+ * Textual rather than structural on purpose: by the time a Query is
+ * materialized its arguments hold VALUES, and `{range: "7d"}` no longer
+ * remembers that it came from `$range` — which is the one fact this needs.
+ */
+function redundantRuns(statements) {
+  const argsOf = new Map();
+  for (const st of statements) {
+    const raw = st.raw ?? '';
+    const m = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Query\s*\(/.exec(raw);
+    if (m) argsOf.set(m[1], topLevelArgs(raw, 'Query')[1] ?? '');
+  }
+  const found = [];
+  for (const st of statements) {
+    const raw = st.raw ?? '';
+    const named = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Action\s*\(/.exec(raw);
+    if (!named) continue;
+    const sets = [...raw.matchAll(/@Set\(\s*(\$[\w$]+)/g)].map((x) => x[1]);
+    if (!sets.length) continue;
+    for (const q of [...raw.matchAll(/@Run\(\s*([A-Za-z_$][\w$]*)\s*\)/g)].map((x) => x[1])) {
+      const args = argsOf.get(q);
+      if (args === undefined) continue;
+      if (sets.some((v) => new RegExp(`\\${v}\\b`).test(args))) continue;
+      found.push({ action: named[1], query: q, states: sets });
+    }
+  }
+  return found;
+}
+
 export function evaluateGeneration(text) {
   const diagnostics = [];
   const { statements, prose } = parseBuffer(text);
@@ -312,6 +433,7 @@ export function evaluateGeneration(text) {
     states: out.states,
     unresolved: out.unresolved,
     actions: statements.filter((s) => /=\s*Action\(/.test(s.raw ?? '')).length,
+    redundantRuns: redundantRuns(statements),
     chartKinds: [...chartKinds],
     diagnostics,
   };
@@ -365,6 +487,12 @@ export function check(kase, text) {
   }
   for (const tag of e.tags ?? []) {
     if (!r.tags.includes(tag)) fail.push(`no <${tag}> anywhere in the tree`);
+  }
+  for (const rr of r.redundantRuns) {
+    fail.push(`${rr.action} re-runs ${rr.query}, but ${rr.states.join('/')} is not one of its `
+      + 'arguments — the fetch returns identical data and nothing on screen changes. '
+      + 'Either put the state in the Query\'s arguments or drop the @Run and filter what is '
+      + 'already fetched');
   }
   if (e.minChartKinds && r.chartKinds.length < e.minChartKinds) {
     fail.push(`${r.chartKinds.length} kind(s) of chart (${r.chartKinds.join(', ') || 'none'}), `

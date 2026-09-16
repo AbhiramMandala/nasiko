@@ -1,8 +1,11 @@
 Sure — building that now.
-root = AppStack([heading, kpis, breakdown], "md")
-heading = AppText("Spend overview", "title")
-summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0}, "total_cost_usd")
-historyRows = Query("fetchUsageHistory", [7], [])
-kpis = AppStatCard("Total spend", summaryQ, null, "neutral", false, "currency", "USD")
-breakdown = AppChart({labels: historyRows.date, datasets: [{label: "Cost (USD)", data: historyRows.total_cost_usd}]}, "line", false, "currency", "USD", null, null, "auto", "No spend in the last 7 days")
-Here's your spend dashboard with a summary card and a 7-day cost trend — let me know if you'd like to add agent or model breakdowns, or adjust the time window!
+
+root = AppStack([heading, kpiSection, spendTrendSection], "md")
+heading = AppText("TokenOps spend overview", "title")
+dashboardQ = Query("fetchTokenopsDashboard", [{range: "7d"}], {kpis: {total_spend: {current: 0, previous: 0, change_pct: null}, total_tokens: {current: 0, previous: 0, change_pct: null}, cost_per_operation: {current: 0, previous: 0, change_pct: null}, total_operations: {current: 0, previous: 0, change_pct: null}}, spend_by_agent: {slices: [], total_spend_usd: 0}, attributions: {rows: []}}, "data")
+kpiSection = AppStatRow([{label: "Total spend", value: dashboardQ.kpis.total_spend.current, format: "currency", sub: dashboardQ.kpis.total_spend.change_pct > 0 ? "+" + @Round(dashboardQ.kpis.total_spend.change_pct, 1) + "%" : @Round(dashboardQ.kpis.total_spend.change_pct, 1) + "%"}, {label: "Operations", value: dashboardQ.kpis.total_operations.current, sub: dashboardQ.kpis.total_operations.change_pct > 0 ? "+" + @Round(dashboardQ.kpis.total_operations.change_pct, 1) + "%" : @Round(dashboardQ.kpis.total_operations.change_pct, 1) + "%"}, {label: "Tokens", value: dashboardQ.kpis.total_tokens.current, format: "compact", sub: dashboardQ.kpis.total_tokens.change_pct > 0 ? "+" + @Round(dashboardQ.kpis.total_tokens.change_pct, 1) + "%" : @Round(dashboardQ.kpis.total_tokens.change_pct, 1) + "%"}, {label: "Cost per op", value: dashboardQ.kpis.cost_per_operation.current, format: "currency", sub: dashboardQ.kpis.cost_per_operation.change_pct > 0 ? "+" + @Round(dashboardQ.kpis.cost_per_operation.change_pct, 1) + "%" : @Round(dashboardQ.kpis.cost_per_operation.change_pct, 1) + "%"}])
+spendByAgentChart = AppChart({labels: dashboardQ.spend_by_agent.slices.agent_name, datasets: [{label: "Spend (USD)", data: dashboardQ.spend_by_agent.slices.spend_usd}]}, "donut", false, "currency", "USD", dashboardQ.spend_by_agent.total_spend_usd, "Total spend", "auto", "No agent spend recorded")
+spendTrendChart = AppChart({labels: [], datasets: [{label: "Daily spend", data: []}]}, "line", false, "currency", "USD", null, null, "auto", "No spend trend data")
+spendTrendSection = AppGrid([spendByAgentChart, spendTrendChart], "1fr 1fr", "md")
+
+Here's your spend dashboard with KPI metrics, a donut chart showing spend by agent, and a trend line placeholder — let me know if you'd like to add more detail or refine the view!

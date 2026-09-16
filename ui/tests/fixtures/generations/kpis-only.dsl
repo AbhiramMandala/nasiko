@@ -1,5 +1,5 @@
 Sure — building that now.
 root = AppStack([kpis], "md")
-summaryQ = Query("fetchUsageSummary", [], {request_count: 0, total_input_tokens: 0, total_output_tokens: 0, total_tokens: 0, total_cost_usd: 0, avg_latency_ms: 0, period_days: 0})
-kpis = AppStatRow([{label: "Total cost", value: summaryQ.total_cost_usd, format: "currency", currency: "USD"}, {label: "Requests", value: summaryQ.request_count}, {label: "Total tokens", value: summaryQ.total_tokens, format: "compact"}, {label: "Avg latency", value: summaryQ.avg_latency_ms, format: "duration"}])
-Here's your headline metrics — cost, requests, tokens, and latency all in one row. Let me know if you'd like to adjust what's shown.
+dashboardQ = Query("fetchTokenopsDashboard", [{}], {kpis: {total_spend: {current: 0}, total_operations: {current: 0}, total_tokens: {current: 0}, avg_latency_ms: {current: 0}}}, "data")
+kpis = AppStatRow([{label: "Total spend", value: dashboardQ.kpis.total_spend.current, format: "currency", currency: "USD"}, {label: "Operations", value: dashboardQ.kpis.total_operations.current}, {label: "Tokens", value: dashboardQ.kpis.total_tokens.current}, {label: "Avg latency", value: dashboardQ.kpis.avg_latency_ms.current, format: "duration"}])
+Here's your headline KPI strip with spend, operations, tokens, and latency — let me know if you'd like to adjust the metrics or add anything else!
