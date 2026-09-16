@@ -53,9 +53,4 @@ values.json
 # that has to go gets moved into one of these instead of deleted; a stray one
 # under ui/ was otherwise an untracked directory in every status.
 _to_delete/
-/_xfer/
-# Recorded eval runs (ui/scripts/eval-generations.mjs --record). One directory
-# per run, kept so a baseline is never lost again — experiment output, not
-# source, and it accumulates. To keep one durably, `git add -f` it or copy it
-# out; `--compare` takes any directory of .dsl files.
-ui/tests/fixtures/runs/
+/_xfer/ui/tests/fixtures/runs/
