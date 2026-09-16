@@ -221,6 +221,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
+            base_url: None,
             is_coding_agent: false,
         }
     }
