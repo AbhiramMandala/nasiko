@@ -407,7 +407,10 @@ pub(crate) async fn create(
     // Sync pricing from Portkey so the new provider has cost data immediately
     // (the background loop runs every 24h — too long to wait).
     let priced = nasiko_llm_router::routing::pricing_sync::sync_one_provider(
-        &state.db, &state.http_client, &label, base_url,
+        &state.db,
+        &state.http_client,
+        &label,
+        base_url,
     )
     .await;
 

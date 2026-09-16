@@ -199,11 +199,10 @@ async fn chat_core(
     let platform_paid = resolved.platform_paid;
 
     if req.is_streaming() {
-        let (stream, (provider, model)) = fallback::execute_chat_stream(
-            &ctx.http, &ctx.cfg, &resolved, &req,
-        )
-        .instrument(llm_span.clone())
-        .await?;
+        let (stream, (provider, model)) =
+            fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req)
+                .instrument(llm_span.clone())
+                .await?;
         llm_span.record("gen_ai.response.model", model.as_str());
         let renderer = inbound.chat_stream_renderer();
         return stream_chat(StreamChatArgs {
@@ -222,11 +221,9 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(
-        &ctx.http, &ctx.cfg, &resolved, &req,
-    )
-    .instrument(llm_span.clone())
-    .await?;
+    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+        .instrument(llm_span.clone())
+        .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
