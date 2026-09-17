@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_observability::ObservabilityProvider;
-use nasiko_orchestrator::RoutingEngine;
+use nasiko_orchestrator::{RoutingEngine, TextEmbeddingCache};
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
@@ -28,6 +29,11 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
+    /// PACMS candidate/query embedding cache for the history enrichment done
+    /// directly in `a2a_dispatch.rs` (shared across requests, like the one
+    /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
+    /// see `TextEmbeddingCache` docs).
+    pub history_embedding_cache: TextEmbeddingCache,
     /// Tempo+Loki observability provider with DB-backed model pricing.
     /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
     /// addresses; queries fail soft when the stack is absent.
@@ -126,6 +132,7 @@ impl AppState {
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
             nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone()),
         );
+        let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
             max_depth: config.flow_max_depth as u32,
@@ -216,6 +223,7 @@ impl AppState {
             genai_metrics,
             config: Arc::new(config),
             routing_engine,
+            history_embedding_cache,
             observability,
             github_svc,
             build_tx,
@@ -381,8 +389,7 @@ impl AppState {
         env
     }
 
-    /// Build the full environment for an agent container: platform-level vars + agent-specific secrets
-    /// + feature flags from metadata.
+    /// Build the full environment for an agent container: platform-level vars + agent-specific secrets.
     pub async fn agent_env(
         &self,
         agent_id: uuid::Uuid,
@@ -392,30 +399,6 @@ impl AppState {
             env.entry(key).or_insert(value);
         }
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
-
-        // Inject feature flags from agents.metadata.features as `NASIKO_<KEY>` env vars.
-        // `metadata` is owner-writable through `PUT /api/agents/{id}`, so keys are filtered
-        // to identifier characters: anything else cannot form a valid env var name. Flags use
-        // `or_insert`, so an agent secret of the same name still wins.
-        if let Ok(metadata) = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT metadata FROM agents WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(agent_id)
-        .fetch_one(&self.db)
-        .await
-            && let Some(features) = metadata.get("features").and_then(|f| f.as_object())
-        {
-            for (key, value) in features {
-                let Some(val) = value.as_str() else { continue };
-                if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                    tracing::warn!(%agent_id, %key, "agent_env: skipping feature flag with non-identifier key");
-                    continue;
-                }
-                env.entry(format!("NASIKO_{}", key.to_uppercase()))
-                    .or_insert_with(|| val.to_string());
-            }
-        }
-
         env
     }
 }

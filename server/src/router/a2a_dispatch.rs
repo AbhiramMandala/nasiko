@@ -21,7 +21,10 @@ use nasiko_react_agent::{
 };
 use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse};
 
-use nasiko_orchestrator::{AgentSelector, SessionHistory};
+use nasiko_orchestrator::{
+    AgentSelector, ContextFetchConfig, ContextSelectionStrategy, PacmsBudgetLevel, SessionHistory,
+    VectorStore,
+};
 
 use nasiko_flow::FlowContext;
 
@@ -208,7 +211,46 @@ pub async fn a2a_dispatch_handler(
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
-    let history = SessionHistory::fetch(history_sid, &state.db, 20).await;
+    let history_store = VectorStore::for_embedding(
+        state.config.openai_api_key.clone().unwrap_or_default(),
+        state
+            .config
+            .openai_base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com".into()),
+        state.config.embedding_model.clone(),
+        state.history_embedding_cache.clone(),
+    );
+    let (budget_level, strategy) = tokio::join!(
+        PacmsBudgetLevel::for_user(&state.db, user_id),
+        ContextSelectionStrategy::for_user(&state.db, user_id),
+    );
+    let token_budget = budget_level.tokens(
+        state.config.pacms_budget_low,
+        state.config.pacms_budget_medium,
+        state.config.pacms_budget_high,
+    );
+    let k = budget_level.k(
+        state.config.context_k_low,
+        state.config.context_k_medium,
+        state.config.context_k_high,
+    );
+    let history_cfg = ContextFetchConfig {
+        pool_size: state.config.pacms_history_pool_size,
+        token_budget,
+        mandatory_recent: state.config.pacms_history_mandatory_recent,
+        topk_count: k,
+        lastk_limit: k,
+    };
+    let history = SessionHistory::fetch_context(
+        strategy,
+        history_sid,
+        &state.db,
+        &history_store,
+        &text,
+        &history_cfg,
+    )
+    .await;
 
     let query = history.with_current_query(&text);
 
@@ -1773,13 +1815,21 @@ async fn ensure_orchestrator_chat_session(
         return;
     }
 
-    let _ =
-        sqlx::query("INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)")
-            .bind(context_id)
-            .bind(role)
-            .bind(query)
-            .execute(&state.db)
-            .await;
+    // 10s dedup guard: mirrors the one in agent_proxy.rs — the CLI's A2A
+    // method negotiation can hit this path twice for the same logical
+    // message when it retries under a different JSON-RPC method name.
+    let _ = sqlx::query(
+        "INSERT INTO chat_messages (session_id, role, content) \
+         SELECT $1, $2, $3 WHERE NOT EXISTS ( \
+             SELECT 1 FROM chat_messages \
+             WHERE session_id = $1 AND role = $2 AND content = $3 \
+               AND timestamp > now() - INTERVAL '10 seconds')",
+    )
+    .bind(context_id)
+    .bind(role)
+    .bind(query)
+    .execute(&state.db)
+    .await;
 }
 
 pub(crate) async fn resolve_endpoint(

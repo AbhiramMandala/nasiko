@@ -1442,16 +1442,6 @@ class AgentCardPage extends HTMLElement {
             </dl>
           </section>
           <section class="acp-section">
-            <h2 class="acp-section-title">Features</h2>
-            <p class="acp-section-sub">Agent-level feature flags. Changes take effect on next restart.</p>
-            <label class="acp-json-toggle">
-              <input type="checkbox" id="acp-feature-prompt-comments" ${(a.metadata?.features?.prompt_comments === 'enabled') ? 'checked' : ''} />
-              <span class="acp-json-track" aria-hidden="true"></span>
-              <span class="acp-field-label">Prompt comments</span>
-            </label>
-            <p class="acp-field-hint">Lets the agent record, prune, and maintain workspace instructions with rationale annotations. A workspace can still opt out with <code>&lt;!-- @prompt-comments disabled --&gt;</code> in its instruction file.</p>
-          </section>
-          <section class="acp-section">
             <secrets-manager id="acp-secrets" scope="agent" defer
               agent-id="${escAttr(a.id)}"
               heading="Secrets"
@@ -1468,31 +1458,6 @@ class AgentCardPage extends HTMLElement {
   #wireSettings() {
     const identityForm = this.querySelector('#acp-identity-form');
     identityForm?.addEventListener('submit', (e) => this.#saveIdentity(e));
-
-    const promptCommentsToggle = this.querySelector('#acp-feature-prompt-comments');
-    promptCommentsToggle?.addEventListener('change', (e) => this.#toggleFeature('prompt_comments', e.target));
-  }
-
-  async #toggleFeature(key, input) {
-    const enabled = input.checked;
-    const metadata = { ...(this.#agent.metadata || {}), features: { ...(this.#agent.metadata?.features || {}), [key]: enabled ? 'enabled' : 'disabled' } };
-    input.disabled = true;
-    try {
-      await fetchApi(`/agents/${encodeURIComponent(this.#agent.id)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ metadata }),
-      });
-    } catch (err) {
-      // Snap back so the switch never shows a state the server did not accept.
-      input.checked = !enabled;
-      showToast(`Failed to update feature: ${err.message}`);
-      return;
-    } finally {
-      input.disabled = false;
-    }
-    this.#agent.metadata = metadata;
-    showToast(`${key.replace(/_/g, ' ')} ${enabled ? 'enabled' : 'disabled'}. Restart the agent to apply.`);
   }
 
   async #saveIdentity(e) {

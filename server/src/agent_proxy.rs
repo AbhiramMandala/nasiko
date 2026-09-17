@@ -7,7 +7,9 @@ use axum::{
     response::Response,
 };
 use nasiko_flow::{FlowContext, TRACEPARENT_HEADER};
-use nasiko_orchestrator::SessionHistory;
+use nasiko_orchestrator::{
+    ContextFetchConfig, ContextSelectionStrategy, PacmsBudgetLevel, SessionHistory, VectorStore,
+};
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -180,6 +182,14 @@ pub async fn agent_proxy(
     // Persist the user message to chat_messages (fire-and-forget, mirrors CLI
     // behaviour). No trace_id column: session_traces (below) is the
     // authoritative session↔trace mapping now.
+    //
+    // The 10s dedup guard exists because the CLI's A2A method negotiation
+    // (`send_message` in oss/cli/src/commands/chat.rs) retries the same
+    // logical message under a different JSON-RPC method name (message/stream
+    // -> SendStreamingMessage -> SendMessage -> message/send) when an agent
+    // rejects one with "method not found" — each retry is a fresh proxied
+    // request and would otherwise persist an identical duplicate row before
+    // the agent has even accepted the call.
     if let Some(ref info) = persist_info
         && !info.user_text.is_empty()
     {
@@ -195,7 +205,11 @@ pub async fn agent_proxy(
         let user_text = info.user_text.clone();
         tokio::spawn(async move {
             let _ = sqlx::query(
-                "INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)",
+                "INSERT INTO chat_messages (session_id, role, content) \
+                 SELECT $1, $2, $3 WHERE NOT EXISTS ( \
+                     SELECT 1 FROM chat_messages \
+                     WHERE session_id = $1 AND role = $2 AND content = $3 \
+                       AND timestamp > now() - INTERVAL '10 seconds')",
             )
             .bind(&session_id)
             .bind("user")
@@ -700,7 +714,46 @@ async fn ensure_chat_session(
     // continuity its own "resume with --session-id" hint implies.
     let mut rewrite_needed = injected;
     if !user_text.is_empty() && same_agent_session {
-        let history = SessionHistory::fetch(&session_id, &state.db, 20).await;
+        let history_store = VectorStore::for_embedding(
+            state.config.openai_api_key.clone().unwrap_or_default(),
+            state
+                .config
+                .openai_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com".into()),
+            state.config.embedding_model.clone(),
+            state.history_embedding_cache.clone(),
+        );
+        let (budget_level, strategy) = tokio::join!(
+            PacmsBudgetLevel::for_user(&state.db, user_id),
+            ContextSelectionStrategy::for_user(&state.db, user_id),
+        );
+        let token_budget = budget_level.tokens(
+            state.config.pacms_budget_low,
+            state.config.pacms_budget_medium,
+            state.config.pacms_budget_high,
+        );
+        let k = budget_level.k(
+            state.config.context_k_low,
+            state.config.context_k_medium,
+            state.config.context_k_high,
+        );
+        let history_cfg = ContextFetchConfig {
+            pool_size: state.config.pacms_history_pool_size,
+            token_budget,
+            mandatory_recent: state.config.pacms_history_mandatory_recent,
+            topk_count: k,
+            lastk_limit: k,
+        };
+        let history = SessionHistory::fetch_context(
+            strategy,
+            &session_id,
+            &state.db,
+            &history_store,
+            &user_text,
+            &history_cfg,
+        )
+        .await;
         if !history.is_empty()
             && let Some(part) = message
                 .get_mut("parts")
