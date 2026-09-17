@@ -96,13 +96,20 @@ pub struct Config {
     /// loop expires it. `oss/hitl`'s own store applies this at row-creation time — see
     /// `PgHitlStore::with_ttl_days`.
     pub hitl_request_ttl_days: i64,
-    /// `nasiko_hitl::dispatcher::DispatcherConfig`'s five tunables (the `mcp_tool`-origin resume
-    /// dispatcher, `oss/hitl/src/dispatcher.rs`) — every comparable tunable elsewhere in this
-    /// codebase goes through this single `Config` struct, and `hitl_request_ttl_days` right above
-    /// is the same feature's own TTL knob, so these were the odd ones out as compile-time
+    /// `nasiko_hitl::dispatcher::DispatcherConfig`'s remaining tunables (the `mcp_tool`-origin
+    /// resume dispatcher, `oss/hitl/src/dispatcher.rs`) — every comparable tunable elsewhere in
+    /// this codebase goes through this single `Config` struct, and `hitl_request_ttl_days` right
+    /// above is the same feature's own TTL knob, so these were the odd ones out as compile-time
     /// constants (found in review).
     pub hitl_resume_poll_interval_secs: u64,
     pub hitl_resume_recovery_interval_secs: u64,
+    /// Claim-lease floor shared by *both* resume dispatchers — `nasiko_hitl::dispatcher`'s
+    /// `mcp_tool` one (via `DispatcherConfig::effective_lease_minutes`, which holds one claim
+    /// across its own in-process retry loop) and `oss/server/src/hitl/mod.rs`'s `direct_chat`/
+    /// `agent_proxy`/`orchestrator`/`maf` one (via its `lease_secs` helper, which claims once per
+    /// delivery attempt). Each dispatcher floors its own effective lease at what its own delivery
+    /// shape needs, so raising or lowering this one knob can never reopen either's
+    /// double-delivery window.
     pub hitl_resume_lease_minutes: i64,
     pub hitl_resume_max_attempts: u32,
     pub hitl_resume_retry_delay_secs: u64,
@@ -126,46 +133,7 @@ pub struct Config {
     pub nasiko_bff_url: Option<String>,
     pub router_shortlist_threshold: usize,
     pub router_shortlist_size: usize,
-    /// How many of the most recent chat messages the PACMS context selector
-    /// draws candidates from (a wide pool for the selector to choose a
-    /// budget-fitting subset from). See `SessionHistory::fetch_pacms`.
-    pub pacms_history_pool_size: usize,
-    /// Structurally compress tool results as the ReAct loop stores them
-    /// (PRD §9 IP-3). Shrinks what the loop carries, which also defers the
-    /// context-compaction cliff. On by default — gated by the agent's own
-    /// switch, so this is a fleet kill switch rather than an enabler.
-    pub react_compress_enabled: bool,
-    /// Skip tool results below this size.
-    pub react_compress_min_bytes: usize,
-    /// Structurally compress each history message before context selection
-    /// (PRD §9 IP-4). On by default — gated by the agent's own switch, so this
-    /// is a fleet kill switch rather than an enabler.
-    pub history_compress_enabled: bool,
-    /// Skip history messages below this size. A short turn is mostly prose,
-    /// which does not compress, so the attempt is pure cost.
-    pub history_compress_min_bytes: usize,
-    /// Token budget for a user on the PACMS "low" tier (`users.pacms_budget_level`).
-    pub pacms_budget_low: usize,
-    /// Token budget for a user on the PACMS "medium" tier — the default tier
-    /// for a user who hasn't picked one.
-    pub pacms_budget_medium: usize,
-    /// Token budget for a user on the PACMS "high" tier.
-    pub pacms_budget_high: usize,
-    /// How many of the most-recent messages in the pool are force-included
-    /// (PACMS `mandatory` set) regardless of relevance/coverage score, so the
-    /// immediate conversational thread is never dropped.
-    pub pacms_history_mandatory_recent: usize,
-    /// Item count for a user on the "low" tier (`users.pacms_budget_level`),
-    /// shared by the `topk` strategy's query/answer-pair count
-    /// (`SessionHistory::fetch_topk`) and the `lastk` strategy's recency
-    /// window (`SessionHistory::fetch`) — same tier the PACMS token budget
-    /// above reads, resolved via `PacmsBudgetLevel::k`.
-    pub context_k_low: usize,
-    /// Item count for a user on the "medium" tier — the default tier for a
-    /// user who hasn't picked one.
-    pub context_k_medium: usize,
-    /// Item count for a user on the "high" tier.
-    pub context_k_high: usize,
+    pub max_router_history_messages: usize,
     /// OpenAI-compatible model used for Stage 1 vector embeddings.
     /// Default: `text-embedding-3-small`. Stage 1 is skipped if `openai_api_key` is unset.
     pub embedding_model: String,
@@ -319,13 +287,6 @@ pub struct Config {
     /// Comma-separated Composio toolkit names to auto-register at first boot.
     /// SEED_TOOLKITS, default empty. Requires COMPOSIO_API_KEY to be set.
     pub seed_toolkits: Vec<String>,
-    /// MCP tool search mode: `semantic` (embedding cosine, default), `keyword`
-    /// (BM25 fallback), or `none` (eager fan-out, no search — rollback).
-    pub mcp_tool_search_mode: String,
-    /// Max tools returned by query-aware `tools/list`.
-    pub mcp_tool_search_tool_limit: usize,
-    /// Max tools returned by the `nasiko_search_tools` meta-tool.
-    pub mcp_tool_search_meta_limit: usize,
 }
 
 impl Config {
@@ -436,18 +397,7 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
-            pacms_history_pool_size: env_parse("PACMS_HISTORY_POOL_SIZE", 150),
-            react_compress_enabled: env_parse("TOKEN_COMPRESS_TOOL_RESULTS", true),
-            react_compress_min_bytes: env_parse("TOKEN_COMPRESS_TOOL_RESULTS_MIN_BYTES", 2048),
-            history_compress_enabled: env_parse("TOKEN_COMPRESS_HISTORY", true),
-            history_compress_min_bytes: env_parse("TOKEN_COMPRESS_HISTORY_MIN_BYTES", 2048),
-            pacms_budget_low: env_parse("PACMS_BUDGET_LOW", 500),
-            pacms_budget_medium: env_parse("PACMS_BUDGET_MEDIUM", 1000),
-            pacms_budget_high: env_parse("PACMS_BUDGET_HIGH", 5000),
-            pacms_history_mandatory_recent: env_parse("PACMS_HISTORY_MANDATORY_RECENT", 3),
-            context_k_low: env_parse("CONTEXT_K_LOW", 1),
-            context_k_medium: env_parse("CONTEXT_K_MEDIUM", 5),
-            context_k_high: env_parse("CONTEXT_K_HIGH", 20),
+            max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
@@ -545,9 +495,6 @@ impl Config {
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .collect(),
-            mcp_tool_search_mode: env_or("MCP_TOOL_SEARCH_MODE", "semantic"),
-            mcp_tool_search_tool_limit: env_parse("MCP_TOOL_SEARCH_TOOL_LIMIT", 15),
-            mcp_tool_search_meta_limit: env_parse("MCP_TOOL_SEARCH_META_LIMIT", 10),
         })
     }
 
@@ -567,11 +514,11 @@ impl Config {
 /// base URL, for callers that append their own `/v1/...` path segment.
 ///
 /// `OPENAI_BASE_URL` is commonly written *with* the `/v1` — that is how
-/// `cp.nasiko.dev` and typical deployment env files have it — so appending `/v1/whatever`
+/// `cp.nasiko.dev` and `ee/server/.env` have it — so appending `/v1/whatever`
 /// to the raw value doubles up into `.../v1/v1/whatever`, which 404s.
 ///
 /// Deliberately a free function rather than normalization applied to
-/// [`Config::openai_base_url`] itself: the artifact registry uses the opposite
+/// [`Config::openai_base_url`] itself: `ee/artifact-registry` uses the opposite
 /// convention (base URL *includes* `/v1`, it appends bare `/embeddings`), so
 /// the stored value has to stay verbatim.
 pub fn openai_base_url_without_v1(base_url: &str) -> &str {
