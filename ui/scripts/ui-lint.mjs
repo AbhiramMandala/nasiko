@@ -650,12 +650,14 @@ const rules = [
          'entry pointing at a path no route table registers is not a 404: the server serves the SPA shell for any ' +
          'clean URL, the router finds no match and returns, and the outlet stays empty — a blank page with working ' +
          'chrome. That is how a page goes blank when its route is renamed, or dropped, and the nav is not. Both ' +
-         'sides are plain object literals, so they are matched as text; add the route, or drop the nav entry.',
+         'sides are plain object literals, so they are matched as text; add the route, or drop the nav entry. ' +
+         'Exception: a `.html` URL is never SPA-routed at all — the server serves that literal file directly, so ' +
+         'the outlet-stays-empty failure mode this rule guards against cannot happen for one.',
     check({ rel, source, isJs }) {
       if (!isJs || !/(^|\/)(navigation|nav-ext)\.js$/.test(rel)) return [];
       const routes = routePaths();
       return [...source.matchAll(/\burl:\s*'(\/[^']*)'/g)]
-        .filter((m) => !routes.has(m[1]))
+        .filter((m) => !m[1].endsWith('.html') && !routes.has(m[1]))
         .map((m) => ({
           file: rel,
           line: lineOf(source, m.index),
