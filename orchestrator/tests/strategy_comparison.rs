@@ -195,3 +195,58 @@ async fn compare_strategies_on_one_session() {
         .await
         .ok();
 }
+
+/// `fetch_topk` used to `SELECT` a session's entire history with no `LIMIT`
+/// and embed every pair of it. It now draws from the same `pool_size` window
+/// `fetch_pacms` uses, so a long session cannot grow the query or the
+/// per-request embedding cost without bound.
+#[tokio::test]
+#[ignore = "needs DATABASE_URL + OPENAI_API_KEY"]
+async fn topk_is_bounded_by_pool_size() {
+    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+    let pool = PgPool::connect(&db_url).await.expect("connect");
+
+    let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users ORDER BY created_at LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .expect("a user row must exist");
+
+    let session_id = "topk-pool-bound";
+    seed(&pool, session_id, user_id).await;
+
+    let store = VectorStore::for_embedding(
+        api_key,
+        "https://api.openai.com".to_string(),
+        "text-embedding-3-small".to_string(),
+        Arc::new(dashmap::DashMap::new()),
+    );
+
+    // top_k far exceeds the pool, so the pool is the only thing limiting the
+    // result: at most `POOL / 2` pairs, i.e. `POOL` messages. Unbounded, this
+    // returned all 96 seeded messages.
+    const POOL: usize = 10;
+    let history = nasiko_orchestrator::SessionHistory::fetch_topk(
+        session_id, &pool, QUERY, &store, 999, POOL,
+    )
+    .await;
+
+    println!(
+        "seeded {} messages, pool_size={POOL} → fetch_topk returned {}",
+        turns().len() * 2,
+        history.messages.len(),
+    );
+    assert!(
+        history.messages.len() <= POOL,
+        "fetch_topk returned {} messages from a {}-message session with pool_size={POOL} \
+         — the window is not being applied",
+        history.messages.len(),
+        turns().len() * 2,
+    );
+
+    sqlx::query("DELETE FROM chat_messages WHERE session_id = $1")
+        .bind(session_id)
+        .execute(&pool)
+        .await
+        .ok();
+}

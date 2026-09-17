@@ -82,15 +82,18 @@ impl<'a> PacmsSelector<'a> {
     /// Embeds every candidate plus the query. Relevance is no longer computed
     /// here: it falls out of the same normalised matrix that feeds the coverage
     /// weights, so the query/candidate cosines are not a separate pass.
+    ///
+    /// Candidates go through `embed_batch`, not a per-candidate `embed()`
+    /// loop. `embed_batch` checks `text_cache` per text and issues one request
+    /// for the misses, so a warm pool still costs zero network calls — the
+    /// property the per-item loop was reinstated for — while a cold pool costs
+    /// one round trip instead of `pool_size` sequential ones.
     async fn embed_all(
         &self,
         candidates: &[String],
         query: &str,
     ) -> Result<(Vec<Vec<f32>>, Vec<f32>), RouterError> {
-        let mut embeddings = Vec::with_capacity(candidates.len());
-        for c in candidates {
-            embeddings.push(self.vector_store.embed(c).await?);
-        }
+        let embeddings = self.vector_store.embed_batch(candidates).await?;
         let query_emb = self.vector_store.embed(query).await?;
         Ok((embeddings, query_emb))
     }

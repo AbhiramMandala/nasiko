@@ -32,7 +32,10 @@ pub struct SessionHistory {
 /// `ContextTiers::resolve` — nothing outside this crate constructs one, so
 /// the operator-configured tier table is the only way in.
 pub(crate) struct ContextFetchConfig {
-    /// `fetch_pacms`'s candidate pool size (ignored by `TopK`/`LastK`).
+    /// Candidate window both embedding-backed strategies draw from: the pool
+    /// `fetch_pacms` selects a budget-fitting subset of, and the pool
+    /// `fetch_topk` pairs up and ranks. Ignored by `LastK`, which is sized by
+    /// `lastk_limit` alone.
     pub pool_size: usize,
     /// `fetch_pacms`'s token budget, already resolved from the user's
     /// `PacmsBudgetLevel` tier (ignored by `TopK`/`LastK`).
@@ -186,8 +189,15 @@ impl SessionHistory {
                 .await
             }
             ContextSelectionStrategy::TopK => {
-                let history =
-                    Self::fetch_topk(session_id, pool, query, vector_store, cfg.topk_count).await;
+                let history = Self::fetch_topk(
+                    session_id,
+                    pool,
+                    query,
+                    vector_store,
+                    cfg.topk_count,
+                    cfg.pool_size,
+                )
+                .await;
                 if history.is_empty() {
                     Self::fetch(session_id, pool, cfg.lastk_limit).await
                 } else {
@@ -215,8 +225,9 @@ impl SessionHistory {
         query: &str,
         vector_store: &VectorStore,
         top_k: usize,
+        pool_size: usize,
     ) -> Self {
-        let pairs = Self::fetch_pairs(session_id, pool).await;
+        let pairs = Self::fetch_pairs(session_id, pool, pool_size).await;
         if pairs.is_empty() {
             return Self::default();
         }
@@ -245,20 +256,31 @@ impl SessionHistory {
         }
     }
 
-    /// Fetch all messages for a session in chronological order and pair up
-    /// each `user` message with the `assistant` message that immediately
-    /// follows it. Unmatched trailing/leading messages (e.g. a query the
-    /// assistant hasn't answered yet, or non user/assistant roles) are
-    /// skipped.
-    async fn fetch_pairs(session_id: &str, pool: &PgPool) -> Vec<MessagePair> {
-        let messages: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
+    /// Pair up each `user` message with the `assistant` message that
+    /// immediately follows it, over the latest `pool_size` messages.
+    /// Unmatched trailing/leading messages (e.g. a query the assistant hasn't
+    /// answered yet, or non user/assistant roles) are skipped.
+    ///
+    /// Bounded by the same `pool_size` window `fetch_pacms` draws from: this
+    /// used to select the session's entire history with no `LIMIT` and embed
+    /// every pair of it, so a long-running session grew both the query and
+    /// the per-request embedding cost without limit.
+    async fn fetch_pairs(session_id: &str, pool: &PgPool, pool_size: usize) -> Vec<MessagePair> {
+        // Latest `pool_size` (DESC + LIMIT), then reversed back into
+        // chronological order so the pairing below sees user→assistant
+        // adjacency — `ORDER BY timestamp ASC LIMIT n` would pin the window to
+        // the oldest messages and never advance, the same trap `fetch_raw`
+        // documents.
+        let mut messages: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
             "SELECT role, content FROM chat_messages \
-             WHERE session_id = $1 ORDER BY timestamp ASC",
+             WHERE session_id = $1 ORDER BY timestamp DESC LIMIT $2",
         )
         .bind(session_id)
+        .bind(pool_size as i64)
         .fetch_all(pool)
         .await
         .unwrap_or_default();
+        messages.reverse();
 
         let mut pairs = Vec::new();
         let mut i = 0;
