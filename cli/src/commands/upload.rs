@@ -43,7 +43,7 @@ pub fn upload(
     // implementation instead of duplicating it. Only meaningful for a directory source: a source
     // that's already a `.zip` has nothing to walk, so it falls back to the zip-entry scan below
     // instead (`source_references_mcp_gateway`).
-    let dir_references_mcp_gateway = source_path
+    let dir_hint = source_path
         .is_dir()
         .then(|| crate::util::dir_references_mcp_gateway(source_path));
 
@@ -89,7 +89,7 @@ pub fn upload(
     // src/mcp/wiring.rs`), so its mere presence can't tell us whether THIS
     // agent's own code actually calls the gateway. Only the source itself can.
     let references_mcp_gateway =
-        dir_references_mcp_gateway.unwrap_or_else(|| source_references_mcp_gateway(&zip_path));
+        dir_hint.unwrap_or_else(|| source_references_mcp_gateway(&zip_path));
 
     let result = client.upload_agent(
         &zip_path,

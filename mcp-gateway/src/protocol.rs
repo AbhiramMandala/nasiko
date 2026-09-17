@@ -1675,8 +1675,11 @@ mod tests {
     /// connector that might be perfectly fine.
     #[test]
     fn db_error_does_not_trigger_a_false_auth_required() {
+        // `PoolTimedOut`, not `RowNotFound` — this stands in for a real transient blip
+        // (`get_user_connection` uses `fetch_optional`, which never produces `RowNotFound`;
+        // that variant means "a `fetch_one` found nothing," not a connectivity failure).
         let db_err: crate::error::Result<Option<crate::repo::McpUserConnection>> =
-            Err(sqlx::Error::RowNotFound.into());
+            Err(sqlx::Error::PoolTimedOut.into());
         assert!(!needs_auth_required(&db_err));
     }
 }

@@ -381,7 +381,7 @@ fn run_combo_select(labels: &[String], multi: bool) -> Result<(Vec<usize>, Optio
     // couple of rows duplicated many times over). Relative cursor movement has no such ambiguity.
     let mut prev_rows = 0usize;
     loop {
-        let cols = term::terminal_cols().max(1);
+        let cols = term::terminal_cols();
         if prev_rows > 0 {
             execute!(
                 out,
@@ -563,5 +563,63 @@ mod structured_options_tests {
     fn parse_is_none_for_an_empty_options_array() {
         let question = serde_json::json!({ "message": "Pick one", "options": [] });
         assert!(StructuredOptions::parse(&question).is_none());
+    }
+}
+
+#[cfg(test)]
+mod colorize_tests {
+    use super::colorize;
+    use std::sync::Mutex;
+
+    // `colorize` reads `NO_COLOR` (via `term::use_color`) from the process environment, which
+    // `cargo test`'s default multi-threaded runner shares across every test in this binary. This
+    // mutex serializes only the two tests below against each other; no other test in this crate
+    // reads `NO_COLOR`, so nothing else can observe the mutation mid-flight.
+    static NO_COLOR_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Restores `NO_COLOR` to its state from before the test on drop, including on panic — same
+    /// "always undo, even on the unwind path" shape as this file's own `RawMode` guard.
+    struct NoColorGuard(Option<String>);
+
+    impl NoColorGuard {
+        fn set(value: Option<&str>) -> Self {
+            let previous = std::env::var("NO_COLOR").ok();
+            // SAFETY: serialized by `NO_COLOR_LOCK`, held for this guard's whole lifetime.
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var("NO_COLOR", v),
+                    None => std::env::remove_var("NO_COLOR"),
+                }
+            }
+            Self(previous)
+        }
+    }
+
+    impl Drop for NoColorGuard {
+        fn drop(&mut self) {
+            // SAFETY: same as `set` — still under `NO_COLOR_LOCK`.
+            unsafe {
+                match &self.0 {
+                    Some(v) => std::env::set_var("NO_COLOR", v),
+                    None => std::env::remove_var("NO_COLOR"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wraps_in_the_given_sgr_code_when_color_is_enabled() {
+        let _lock = NO_COLOR_LOCK.lock().unwrap();
+        let _guard = NoColorGuard::set(None);
+        assert_eq!(colorize("32", "✓"), "\x1b[32m✓\x1b[0m");
+        assert_eq!(colorize("1;36", "❯ you"), "\x1b[1;36m❯ you\x1b[0m");
+    }
+
+    #[test]
+    fn returns_plain_text_when_no_color_is_set() {
+        let _lock = NO_COLOR_LOCK.lock().unwrap();
+        let _guard = NoColorGuard::set(Some("1"));
+        assert_eq!(colorize("32", "✓"), "✓");
+        assert_eq!(colorize("1;36", "❯ you"), "❯ you");
     }
 }

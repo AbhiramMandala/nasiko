@@ -192,24 +192,6 @@ pub trait HitlStore: Send + Sync {
 /// Only `id`/`kind`/`question` come from the linked row; every other field — crucially
 /// `task_id`/`context_id`/`chat_session_id` — stays the mirror's own, since those are what the
 /// frontend needs to correlate the prompt back to the visible chat task/session.
-/// Whether `linked` — a row fetched by an agent-controlled `hitl_request_id` pointer embedded in
-/// someone else's `question` — is safe to treat as the real `mcp_tool` pause that pointer claims
-/// to identify. `question`/its `metadata` is an untrusted A2A response echoed straight from the
-/// agent, so an agent can stamp *any* UUID there; without this check, that UUID would resolve
-/// straight to another user's row (the #383 mirror-hijack family). All four conditions are
-/// load-bearing: owner scopes it to the same human, `origin == McpTool` and `status == Pending`
-/// confirm it's genuinely the live MCP-gateway pause (not some other, already-settled, or
-/// wrong-kind row that merely shares an id), and `agent_id` ties it to the same deployment that
-/// raised `row`. Shared by every site that dereferences this pointer — currently
-/// [`resolve_display_row`] (UI display) and `oss/server/src/hitl/mod.rs::deliver`'s continuation-
-/// buffer aliasing — so there is exactly one place this predicate can drift from correct.
-pub fn is_valid_mcp_mirror_link(linked: &HitlRequest, owner_user_id: Uuid, agent_id: Uuid) -> bool {
-    linked.owner_user_id == owner_user_id
-        && linked.origin == HitlOrigin::McpTool
-        && linked.status == HitlStatus::Pending
-        && linked.agent_id == agent_id
-}
-
 pub async fn resolve_display_row(
     store: &dyn HitlStore,
     row: &HitlRequest,
@@ -244,6 +226,24 @@ pub async fn resolve_display_row(
         }
         _ => row.clone(),
     }
+}
+
+/// Whether `linked` — a row fetched by an agent-controlled `hitl_request_id` pointer embedded in
+/// someone else's `question` — is safe to treat as the real `mcp_tool` pause that pointer claims
+/// to identify. `question`/its `metadata` is an untrusted A2A response echoed straight from the
+/// agent, so an agent can stamp *any* UUID there; without this check, that UUID would resolve
+/// straight to another user's row (the #383 mirror-hijack family). All four conditions are
+/// load-bearing: owner scopes it to the same human, `origin == McpTool` and `status == Pending`
+/// confirm it's genuinely the live MCP-gateway pause (not some other, already-settled, or
+/// wrong-kind row that merely shares an id), and `agent_id` ties it to the same deployment that
+/// raised `row`. Shared by every site that dereferences this pointer — currently
+/// [`resolve_display_row`] (UI display) and `oss/server/src/hitl/mod.rs::deliver`'s continuation-
+/// buffer aliasing — so there is exactly one place this predicate can drift from correct.
+pub fn is_valid_mcp_mirror_link(linked: &HitlRequest, owner_user_id: Uuid, agent_id: Uuid) -> bool {
+    linked.owner_user_id == owner_user_id
+        && linked.origin == HitlOrigin::McpTool
+        && linked.status == HitlStatus::Pending
+        && linked.agent_id == agent_id
 }
 
 /// Mirrors the `hitl_requests` table with plain column types (`String` for the four CHECK-backed

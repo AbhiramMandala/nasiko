@@ -173,7 +173,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
         let linked = state.hitl_store.get(mcp_row_id).await;
         if matches!(
             linked,
-            Ok(Some(ref linked)) if nasiko_hitl::is_valid_mcp_mirror_link(linked, row.owner_user_id, row.agent_id)
+            Ok(Some(ref mirror)) if nasiko_hitl::is_valid_mcp_mirror_link(mirror, row.owner_user_id, row.agent_id)
         ) {
             state.continuation_events.alias(mcp_row_id, row.id);
         }

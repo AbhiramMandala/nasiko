@@ -73,6 +73,7 @@ clippy:
 # Phase I — unit tests, no infra required
 test-unit:
     cargo test \
+      -p nasiko \
       -p nasiko-auth \
       -p nasiko-secrets \
       -p nasiko-config \
@@ -96,8 +97,12 @@ test-unit:
 # `tests/store.rs` truncates `hitl_requests` on entry. Kept a separate recipe from `test-server`
 # so a failure names the layer it came from. Re-runs the lib tests `test-unit` already covered
 # (~200 tests, well under a second) rather than glob-selecting every `--test` target by hand.
+# `--include-ignored`: every test in `nasiko-hitl`'s own `tests/store.rs` is marked
+# `#[ignore = "requires PostgreSQL"]` so a plain `cargo test` (no infra) doesn't fail — but that
+# mark is static, not conditional on `DATABASE_URL`, so without this flag Postgres being up here
+# never actually un-skips them (found in review: they were silently 0-run for every prior PR).
 test-crates:
-    cargo test -p nasiko-hitl -p nasiko-mcp-gateway -- --test-threads=1
+    cargo test -p nasiko-hitl -p nasiko-mcp-gateway -- --test-threads=1 --include-ignored
 
 # Phase II — server integration tests (run `just infra` first)
 test-server:
