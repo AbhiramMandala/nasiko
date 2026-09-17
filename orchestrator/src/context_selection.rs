@@ -23,7 +23,7 @@ use crate::vector_store::VectorStore;
 // ── Stored preferences ────────────────────────────────────────────────────────
 
 /// A user's chosen conversation-history tier. Mirrors the Postgres
-/// `pacms_budget_level` enum (migration 0012) — deriving `sqlx::Type` lets
+/// `pacms_budget_level` enum (migration 0032) — deriving `sqlx::Type` lets
 /// sqlx decode the column directly instead of treating it as TEXT.
 ///
 /// The tier only names *which* level a user picked; the actual token counts
@@ -81,7 +81,7 @@ impl PacmsBudgetLevel {
 }
 
 /// A user's chosen conversation-history context-selection strategy. Mirrors
-/// the Postgres `context_selection_strategy` enum (migration 0013) —
+/// the Postgres `context_selection_strategy` enum (migration 0033) —
 /// deriving `sqlx::Type` lets sqlx decode the column directly instead of
 /// treating it as TEXT.
 #[derive(
