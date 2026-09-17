@@ -6,7 +6,8 @@
  * @note Static content, no API calls. Commands mirror `nasiko --help`
  *       (oss/cli/src/main.rs) and the OSS README quick start.
  * @note Deployments may replace the guide wholesale by defining
- *       `setupCliSteps` via data-sources (same shape as STEPS) in nav-ext.js —
+ *       `setupCliSteps` via data-sources (same shape as STEPS) in their layer's
+ *       nav-ext file (`nav-ext-ee.js` on EE) —
  *       e.g. to install a prebuilt binary instead of building from source.
  */
 import { icons } from '../utils/icons.js';

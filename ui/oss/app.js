@@ -12,7 +12,7 @@
  */
 
 import { createApp } from '/common/core/create-app.js';
-import { resolveOptional } from '/common/core/data-sources.js';
+import { extensionChain } from '/common/core/extension-chain.js';
 import { dismissSplash } from '/common/features/app-splash.js';
 import { mountWeaveDock } from '/common/features/weave-dock/weave-dock.js';
 
@@ -62,20 +62,33 @@ const BASE_ROUTES = [
   { path: '/custom-views',    tag: 'custom-views-page',        module: '/common/pages/custom-views-page.js',        title: 'Nasiko — Custom Views' },
 ];
 
-// ── Route extension seam (same pattern as nav-ext.js) ───────────────────
-// On OSS, /routes-ext.js is a no-op. On EE, the asset overlay serves
-// ee/ui/web/routes-ext.js which registers additional routes (users,
-// departments, teams, access-control, etc.) via the data-sources registry.
+// ── Route extension chain (same pattern as nav-ext.js) ──────────────────
+// One link per overlay, base first, each with a no-op in ui/oss/ so every
+// specifier resolves on every surface. An overlay replaces only the file
+// carrying its own suffix, so `ee/multi-tenant/web` can add routes without
+// shadowing `ee/web`'s away — which a shared `routes-ext.js` name did
+// (NAS-637). Registry names are written out here rather than derived from the
+// suffix, so `routeExtensionEe` is greppable from both ends.
+// See common/core/extension-chain.js.
 
-let extPromise;
+const ROUTE_LAYERS = [
+  ['/routes-ext.js',    'routeExtension'],   // base       — ui/oss (no-op)
+  ['/routes-ext-ee.js', 'routeExtensionEe'], // enterprise — ui/ee/web
+  ['/routes-ext-mt.js', 'routeExtensionMt'], // multi-tenant — ui/ee/multi-tenant/web
+];
+
+const routeChain = extensionChain(ROUTE_LAYERS, 'app');
+
+// create-app takes one table, so the layers are concatenated here, base first.
+// Note that `router.#findMatch` returns the FIRST pattern that matches, so on a
+// duplicate path the lower layer wins — the reverse of how the asset overlay
+// resolves a duplicate file. That is pre-existing (the base table is registered
+// before any extension), it is recorded here because it is the one thing about
+// this chain that does not read the way the overlay does: a layer overrides a
+// page by pointing its own route at a different PATH, never by re-declaring one.
 async function loadExtensionRoutes() {
-  extPromise ??= import('/routes-ext.js')
-    .then(() => resolveOptional('routeExtension'))
-    .catch((err) => {
-      console.warn('[app] /routes-ext.js failed to load — using base routes', err);
-      return null;
-    });
-  return extPromise;
+  const layers = await routeChain();
+  return { routes: () => layers.flatMap((ext) => ext.routes?.() ?? []) };
 }
 
 // ── Boot ────────────────────────────────────────────────────────────────

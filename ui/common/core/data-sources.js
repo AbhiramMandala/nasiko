@@ -47,9 +47,9 @@ const missing = new Set();
  * that used to do the same job).
  *
  * Values, not only functions: the two registrations that are plain data —
- * `navExtension` (an object of hooks) and `setupCliSteps` (an array) — were
+ * the nav extension (an object of hooks) and `setupCliSteps` (an array) — were
  * dropped on the floor by a `typeof fn === 'function'` guard here and in
- * `registerAll`, silently. On EE that meant `nav-ext.js` registered nothing, so
+ * `registerAll`, silently. On EE that meant `nav-ext-ee.js` registered nothing, so
  * `navigation.js` fell back to the base nav and every enterprise item (Users,
  * Departments, Teams, Access Control, Team Access, Group Mappings, Agent
  * Runtime, the whole org module tree) was missing from the sidebar. Only

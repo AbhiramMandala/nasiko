@@ -235,10 +235,16 @@ function blankComments(source) {
  * Every path any route table registers, across editions.
  *
  * Route tables are `{ path: '/x', tag, module }` literals living in an `app.js`
- * (the base table) or a `routes-ext.js` (an edition's additions), so they are
- * found by filename rather than by naming a directory here — ui/scripts/ is
- * published and must not know the private layout. Read as text: these modules
- * import browser mount paths ('/common/...') that no loader here can resolve.
+ * (the base table) or a `routes-ext*.js` (one layer of the edition chain — the
+ * suffix is per-layer, `routes-ext-ee.js` and so on, see
+ * common/core/extension-chain.js), so they are found by filename rather than by
+ * naming a directory here — ui/scripts/ is published and must not know the
+ * private layout. Matching the suffix matters: when the enterprise table was
+ * renamed to `routes-ext-ee.js`, an exact-name match would have quietly stopped
+ * collecting seven routes, and `nav-url-must-have-route` below would then have
+ * reported every enterprise nav entry as pointing nowhere. Read as text: these
+ * modules import browser mount paths ('/common/...') that no loader here can
+ * resolve.
  */
 let ROUTE_PATHS;
 function routePaths() {
@@ -249,7 +255,7 @@ function routePaths() {
       if (e.name === 'node_modules' || e.name === 'vendor' || e.name === 'tests') continue;
       const full = resolve(dir, e.name);
       if (e.isDirectory()) walk(full);
-      else if (e.name === 'app.js' || e.name === 'routes-ext.js') {
+      else if (e.name === 'app.js' || /^routes-ext(-[a-z0-9]+)?\.js$/.test(e.name)) {
         for (const m of readFileSync(full, 'utf8').matchAll(/\bpath:\s*'([^']+)'/g)) ROUTE_PATHS.add(m[1]);
       }
     }
@@ -644,6 +650,35 @@ const rules = [
   },
 
   {
+    id: 'edition-seam-needs-a-base-stub',
+    enforce: 'zero',
+    why: 'The edition overlay seam is a chain of per-layer files — /nav-ext.js, /nav-ext-ee.js, /nav-ext-mt.js ' +
+         'and the routes-ext equivalents — and every one of those specifiers is imported unconditionally on ' +
+         'every surface. The chain only works because ui/oss, the layer every binary embeds, holds a documented ' +
+         'no-op for each link; an overlay then replaces just the file bearing its own suffix. Name a layer in ' +
+         'the list without leaving that no-op behind and the import 404s on every surface that has no such ' +
+         'overlay, which the loader catches and downgrades to a console warning — so the failure is a layer ' +
+         'that silently contributes nothing, which is the exact shape of the bug the chain replaced (NAS-637). ' +
+         'Nothing else sees it: check-imports.mjs deliberately does not resolve non-/common/ absolute ' +
+         'specifiers, because those are resolved per binary by the rust-embed overlay and not on disk.',
+    check({ rel, source, isJs }) {
+      // The layer lists live beside the code that folds them — app.js owns the
+      // route chain, navigation.js the nav chain.
+      if (!isJs || !/(^|\/)(app|navigation)\.js$/.test(rel)) return [];
+      const out = [];
+      for (const m of blankComments(source).matchAll(/'(\/(?:routes|nav)-ext(?:-[a-z0-9]+)?\.js)'/g)) {
+        if (existsSync(resolve(UI, 'oss', m[1].slice(1)))) continue;
+        out.push({
+          file: rel,
+          line: lineOf(source, m.index),
+          message: `names layer ${m[1]} but ui/oss${m[1]} does not exist — that link 404s wherever no overlay supplies it`,
+        });
+      }
+      return out;
+    },
+  },
+
+  {
     id: 'nav-url-must-have-route',
     enforce: 'zero',
     why: 'The nav is a list of URLs and the router is a list of paths, and nothing but this connects them. A nav ' +
@@ -654,7 +689,7 @@ const rules = [
          'Exception: a `.html` URL is never SPA-routed at all — the server serves that literal file directly, so ' +
          'the outlet-stays-empty failure mode this rule guards against cannot happen for one.',
     check({ rel, source, isJs }) {
-      if (!isJs || !/(^|\/)(navigation|nav-ext)\.js$/.test(rel)) return [];
+      if (!isJs || !/(^|\/)(navigation|nav-ext(-[a-z0-9]+)?)\.js$/.test(rel)) return [];
       const routes = routePaths();
       return [...source.matchAll(/\burl:\s*'(\/[^']*)'/g)]
         .filter((m) => !m[1].endsWith('.html') && !routes.has(m[1]))

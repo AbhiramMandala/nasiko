@@ -14,13 +14,14 @@
  * that wasn't had silently drifted into a user-visible bug.
  *
  * Now both editions share this file, and edition-specific navigation lives in
- * `/nav-ext.js`, resolved through the same overlay: `ui/oss/nav-ext.js` is a
- * documented no-op, `ee/ui/web/nav-ext.js` supplies the EE tree. Nothing 404s,
- * and there is exactly one copy of every data function.
+ * the `/nav-ext*.js` chain, resolved through the same overlay: `ui/oss/` holds
+ * a documented no-op for every link, `ee/ui/web/nav-ext-ee.js` supplies the EE
+ * tree. Nothing 404s, and there is exactly one copy of every data function.
  */
 
 import '/common/services/data-functions.js';
-import { call, registerAll, resolveOptional } from '/common/core/data-sources.js';
+import { call, registerAll } from '/common/core/data-sources.js';
+import { extensionChain } from '/common/core/extension-chain.js';
 import { ensureViews, hasSavedViews } from '/common/state/weave-views.js';
 
 // rail: true → shown as a rail module icon; everything else is reachable
@@ -58,6 +59,13 @@ const BASE_ITEMS = () => [
   { title: "Builds", url: "/builds", icon: "cube", module: "agents" },
   { title: "Secrets", url: "/secrets", icon: "lock", module: "settings" },
   { title: "Settings", url: "/settings", icon: "settings", rail: true, module: "settings" },
+  // backup-restore.html is a multi-tenant-ui page (ee/tenant-server's BFF),
+  // not one of ui/oss's own — it 404s outside that BFF, so it's only listed
+  // when window.nasikoChrome (injected by the BFF at serve time, see
+  // ee/tenant-server/src/mtui.rs) says this page is being served through it.
+  ...(window.nasikoChrome?.workspaceSwitcher
+    ? [{ title: "Backup & Restore", url: "/backup-restore.html", icon: "cloudDownload", module: "settings" }]
+    : []),
 ];
 
 // Rail entry for the views Weave generated and the user chose to keep. Absent
@@ -141,7 +149,6 @@ const MODULE_NAVS = {
       // four rows highlighted and did nothing, pinning the content to Secrets.
       { label: 'Workspace', items: [
         { label: 'General', section: 'general', url: '/settings' },
-        { label: 'Orchestrator', section: 'orchestrator', url: '/settings' },
         { label: 'Flow limits', section: 'limits', url: '/settings' },
         { label: 'Registry', section: 'registry', url: '/settings' },
       ]},
@@ -208,41 +215,44 @@ const sessionItems = async ({
 };
 
 /**
- * The edition extension, loaded once.
+ * The edition extension chain, loaded once.
  *
- * The extension is delivered through the asset overlay (ui/oss/nav-ext.js
- * is a no-op, ee/ui/web/nav-ext.js supplies the EE hooks) and resolved
- * through the data-sources registry. The dynamic import triggers the extension
- * module's side-effect registration; the actual contract is DI-based so the
- * seam is testable and consistent with the rest of the architecture.
+ * One link per overlay, base first, each with a no-op in ui/oss/ so every
+ * specifier resolves on every surface. An overlay replaces only the file
+ * carrying its own suffix, so `ee/multi-tenant/web` can add nav entries without
+ * shadowing `ee/web`'s away — which a shared `nav-ext.js` name did (NAS-637).
+ * The hooks are still resolved through data-sources under a per-layer name, so
+ * the seam keeps the DI contract and stays reachable from `__dataSources`; the
+ * names are literals here rather than derived from the suffix so they can be
+ * grepped from both ends. See common/core/extension-chain.js.
  *
- * @type {Promise<{ context?: () => Promise<any>, items?: Function, moduleNav?: Function }>}
+ * @type {Array<[string, string]>}
  */
-let extensionPromise;
-const extension = () => {
-  extensionPromise ??= import('/nav-ext.js')
-    .then(() => resolveOptional('navExtension') || {})
-    .catch((err) => {
-      console.warn('[navigation] /nav-ext.js failed to load — using base navigation', err);
-      return {};
-    });
-  return extensionPromise;
-};
+const NAV_LAYERS = [
+  ['/nav-ext.js',    'navExtension'],   // base         — ui/oss (no-op)
+  ['/nav-ext-ee.js', 'navExtensionEe'], // enterprise   — ui/ee/web
+  ['/nav-ext-mt.js', 'navExtensionMt'], // multi-tenant — ui/ee/multi-tenant/web
+];
+
+const extensions = extensionChain(NAV_LAYERS, 'navigation');
 
 /**
- * Extension context (org role, feature flags), fetched at most once per page.
+ * Per-layer extension context (org role, feature flags), fetched at most once
+ * per page per layer. A layer's hooks get its OWN context, never a neighbour's
+ * — they are different objects from different endpoints.
  *
  * Deliberately lazy: the login page has no session, and eagerly fetching this at
  * module load would 401 on every unauthenticated page load.
+ *
+ * @type {WeakMap<object, Promise<any>>}
  */
-let contextPromise;
-const extensionContext = async () => {
-  const ext = await extension();
-  if (!ext.context) return null;
-  contextPromise ??= Promise.resolve()
-    .then(() => ext.context())
-    .catch(() => null);
-  return contextPromise;
+const contexts = new WeakMap();
+const extensionContext = (ext) => {
+  if (!ext.context) return Promise.resolve(null);
+  if (!contexts.has(ext)) {
+    contexts.set(ext, Promise.resolve().then(() => ext.context()).catch(() => null));
+  }
+  return contexts.get(ext);
 };
 
 const fetchNavigation = async () => {
@@ -253,13 +263,17 @@ const fetchNavigation = async () => {
   // stays empty and the entry simply never appears — which is correct, because
   // the routes it leads to are not there either.
   await ensureViews();
-  const ext = await extension();
+  // Folded, base first: each layer receives what the layers below it produced,
+  // so a hook that returns its own ordered list (the enterprise one does) is
+  // still extensible by the layer above. A layer that throws is skipped and the
+  // chain continues with the last good list rather than collapsing to BASE_ITEMS.
   let items = base;
-  if (ext.items) {
+  for (const ext of await extensions()) {
+    if (!ext.items) continue;
     try {
-      items = (await ext.items(base, await extensionContext())) || base;
+      items = (await ext.items(items, await extensionContext(ext))) || items;
     } catch (err) {
-      console.error('[navigation] nav extension items() failed — falling back to base', err);
+      console.error('[navigation] a nav extension items() failed — keeping the layers below it', err);
     }
   }
   // After the extension, not before it. An extension is free to return its own
@@ -302,14 +316,25 @@ const fetchModuleNav = async (module) => {
       base = { ...base, groups: [...base.groups, { label, items: sessions }] };
     }
   }
-  const ext = await extension();
-  if (!ext.moduleNav) return base;
-  try {
-    return await ext.moduleNav(module, base, await extensionContext());
-  } catch (err) {
-    console.error('[navigation] nav extension moduleNav() failed — falling back to base', err);
-    return base;
+  // Same BFF-only gate as the top-level nav entry above — plain page link
+  // (not a `section`), since backup-restore.html is its own document.
+  if (base && module === 'settings' && window.nasikoChrome?.workspaceSwitcher) {
+    base = { ...base, groups: [...base.groups, { label: 'Backup', items: [{ label: 'Backup & Restore', url: '/backup-restore.html' }] }] };
   }
+  // Folded like items(): `base` for a layer is the tree the layers below it
+  // returned. Note a hook returns the WHOLE tree (or null for "this module has
+  // none"), so returning `base` unchanged is how a layer says "not mine" — see
+  // the enterprise hook's final `return base`.
+  let tree = base;
+  for (const ext of await extensions()) {
+    if (!ext.moduleNav) continue;
+    try {
+      tree = await ext.moduleNav(module, tree, await extensionContext(ext));
+    } catch (err) {
+      console.error('[navigation] a nav extension moduleNav() failed — keeping the layers below it', err);
+    }
+  }
+  return tree;
 };
 
 registerAll({ fetchNavigation, fetchModuleNav }, { replace: true });
