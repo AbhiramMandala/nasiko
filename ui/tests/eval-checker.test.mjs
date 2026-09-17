@@ -13,7 +13,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { check, evaluateGeneration, CASES, ALLOWED_SOURCES } from '../scripts/eval-generations.mjs';
+import {
+  check, evaluateGeneration, provenanceFrom, runProvenance, CASES, ALLOWED_SOURCES,
+} from '../scripts/eval-generations.mjs';
 
 const GOOD = `Sure — building that now.
 totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
@@ -240,7 +242,7 @@ Done.`;
   // A Refresh button is a bare @Run with no @Set at all, and is exactly right.
   const refresh = `Here.
 again = Action([@Run(rowsQ)])
-btn = AppButton("Refresh", "secondary", null, null, null, null, null, null, null, null, again)
+btn = AppButton("Refresh", "secondary", null, null, null, null, null, null, null, null, null, again)
 rowsQ = Query("fetchTokenopsDashboard", [{}], {attributions: {rows: []}}, "data")
 table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
 root = AppStack([btn, table], "md")
@@ -399,7 +401,7 @@ $q = ""
 setQ = Action([@Set($q, $event)])
 runIt = Action([@Run(rowsQ)])
 box = AppSearch("md", null, false, false, "Search agents...", $q, null, null, null, null, null, setQ)
-btn = AppButton("Search", "primary", null, null, null, null, null, null, null, null, runIt)
+btn = AppButton("Search", "primary", null, null, null, null, null, null, null, null, null, runIt)
 rowsQ = Query("fetchUsageByAgent", [$q, 1, 20], [], "data")
 table = AppTable(rowsQ, 20, "pages", true)
 root = AppStack([box, btn, table], "md")
@@ -468,4 +470,404 @@ table = AppTable(rows, 25, "pages", false)
 root = AppStack([table], "md")
 Done.`;
   assert.doesNotMatch(check(kase({}), literal).fail.join(' '), /does not return/);
+});
+
+/*
+ * The positional contract (NAS-729).
+ *
+ * `app-input` has twenty-four positional parameters, `value` at thirteen and
+ * `action` at twenty-four, and every recorded generation that reached for it
+ * miscounted. One of those was scored a clean pass: twenty arguments is not
+ * more than twenty-four, so no arity check fires, and the Action it named was
+ * referenced, so nothing was orphaned — for a box that does nothing at all.
+ *
+ * A correctly wired control, and then the same control with one argument
+ * moved. Every fault below is a real one that was recorded, not an invented
+ * shape.
+ */
+const CONTROL = `Sure — building that now.
+$agentId = ""
+setId = Action([@Set($agentId, $event), @Run(rowsQ)])
+idInput = AppInput("md", null, "Agent ID", null, null, false, false, false, false, "text", null, null, $agentId, null, null, null, null, null, null, null, null, null, null, setId)
+rowsQ = Query("fetchUsageByAgent", [$agentId, 1, 20], {data: [], total: 0})
+table = AppTable(rowsQ.data, 20, "pages", false, null, null, "No agents")
+root = AppStack([idInput, table], "md")
+Done.`;
+
+/** The codes the positional contract reported, in order. */
+const codesFor = (dsl) => evaluateGeneration(dsl).positionalContract.map((p) => p.code);
+
+test('a correctly bound control reports nothing', () => {
+  const r = evaluateGeneration(CONTROL);
+  assert.deepEqual(r.positionalContract, []);
+  assert.deepEqual(check(kase({ minQueries: 1 }), CONTROL).fail, []);
+});
+
+test('an Action in the wrong slot is caught', () => {
+  // `setId` into `pattern` (slot 20) — recorded twice, and silent both times.
+  const dsl = CONTROL.replace(
+    '$agentId, null, null, null, null, null, null, null, null, null, null, setId)',
+    '$agentId, null, null, null, null, null, null, setId, null, null, null, null)',
+  );
+  assert.ok(codesFor(dsl).includes('action_in_wrong_slot'), codesFor(dsl).join(','));
+  assert.match(check(kase({}), dsl).fail.join(' '), /takes its Action last, but setId is at "pattern"/);
+});
+
+test('an Action past the end of the parameter list is caught', () => {
+  const dsl = CONTROL.replace('null, null, setId)', 'null, null, null, setId)');
+  assert.ok(codesFor(dsl).includes('action_dropped'), codesFor(dsl).join(','));
+  assert.match(check(kase({}), dsl).fail.join(' '), /past the end of its parameter list/);
+});
+
+test('a $state in a slot that binds nothing is caught', () => {
+  // The state slides from `value` (13) to `list` (21); `value` goes null.
+  const dsl = CONTROL.replace(
+    'null, null, $agentId, null, null, null, null, null, null, null, null, null, null, setId)',
+    'null, null, null, null, null, null, null, null, null, null, $agentId, null, null, setId)',
+  );
+  const codes = codesFor(dsl);
+  assert.ok(codes.includes('state_in_non_binding_slot'), codes.join(','));
+  assert.match(check(kase({}), dsl).fail.join(' '), /\$agentId at "list" \(slot 21\)/);
+});
+
+test('a control with wiring but nothing bound to value is caught', () => {
+  // The Action is in the right slot and the value is simply never bound —
+  // the case materialize.js's `uncontrolled_input` covers only when the
+  // action slot happens to be the one that was filled.
+  const dsl = CONTROL.replace('null, null, $agentId, null,', 'null, null, null, null,');
+  const codes = codesFor(dsl);
+  assert.ok(codes.includes('control_never_bound'), codes.join(','));
+  assert.match(check(kase({}), dsl).fail.join(' '), /not read back from a \$state/);
+});
+
+test("a state's name in quotes is not the state", () => {
+  const dsl = CONTROL.replace('null, null, $agentId, null,', 'null, null, "$agentId", null,');
+  const codes = codesFor(dsl);
+  assert.ok(codes.includes('state_as_literal'), codes.join(','));
+  assert.match(check(kase({}), dsl).fail.join(' '), /is the state's NAME in quotes/);
+
+  // A string that merely looks like one is left alone — the name has to be a
+  // state this surface actually declares.
+  const unrelated = CONTROL.replace('"Agent ID"', '"$notAState"');
+  assert.ok(!codesFor(unrelated).includes('state_as_literal'), codesFor(unrelated).join(','));
+});
+
+test('narrower controls are not flagged, which is why only app-input ever was', () => {
+  // app-search puts `value` at 6 and `action` at 12, and no recorded
+  // generation has ever mis-slotted it. The check must agree.
+  const search = `Here.
+$q = ""
+setQ = Action([@Set($q, $event), @Run(rowsQ)])
+box = AppSearch("md", null, false, false, "Search agents...", $q, null, null, null, null, null, setQ)
+rowsQ = Query("fetchUsageByAgent", [$q, 1, 20], {data: [], total: 0})
+table = AppTable(rowsQ.data, 20, "pages", false)
+root = AppStack([box, table], "md")
+Done.`;
+  assert.deepEqual(evaluateGeneration(search).positionalContract, []);
+});
+
+/*
+ * Run provenance.
+ *
+ * A recorded run used to say which catalog THIS CHECKOUT held and nothing
+ * about the generator, so the only way to attribute an A/B was the order the
+ * containers were deployed in. The 3f experiment is inconclusive for exactly
+ * that reason: the worked example was committed thirteen minutes before the
+ * first "baseline" case, and the redeploy that separated the arms left no
+ * trace but a network error in the middle.
+ */
+
+test('a surface event carries every provenance field, present or not', () => {
+  // The payload weave_surface.rs emits, verbatim in shape.
+  const full = provenanceFrom({
+    catalogVersion: 'b663b6eaa08a',
+    surfaceId: 's-1',
+    promptDigest: '0123456789ab',
+    specDigest: 'ba9876543210',
+    generatorDigest: 'cafebabe0001',
+    model: 'a-model',
+  });
+  assert.equal(full.promptDigest, '0123456789ab');
+  assert.equal(full.specDigest, 'ba9876543210');
+  assert.equal(full.generatorDigest, 'cafebabe0001');
+  assert.equal(full.model, 'a-model');
+  assert.equal(full.catalogVersion, 'b663b6eaa08a');
+
+  // An older generator sends the two original keys. The run is recordable and
+  // visibly unattributed, rather than looking like any other run.
+  const old = provenanceFrom({ catalogVersion: 'b663b6eaa08a', surfaceId: 's-1' });
+  assert.equal(old.promptDigest, null);
+  assert.equal(old.model, null);
+});
+
+test('a run whose cases agree is one experimental condition', () => {
+  const g = { promptDigest: 'aaaaaaaaaaaa', specDigest: 'bbbbbbbbbbbb', model: 'm' };
+  const { generator, generatorConsistent } = runProvenance({ a: { ...g }, b: { ...g }, c: { ...g } });
+  assert.equal(generatorConsistent, true);
+  assert.equal(generator.promptDigest, 'aaaaaaaaaaaa');
+});
+
+test('a run recorded across a redeploy is rejected as one condition', () => {
+  const { generatorConsistent, generatorSpread } = runProvenance({
+    'grouped-filters': { promptDigest: 'aaaaaaaaaaaa' },
+    'agent-by-id': { promptDigest: 'aaaaaaaaaaaa' },
+    'paged-agent-usage': { promptDigest: 'zzzzzzzzzzzz' },
+  });
+  assert.equal(generatorConsistent, false);
+  assert.deepEqual(generatorSpread.aaaaaaaaaaaa, ['grouped-filters', 'agent-by-id']);
+  assert.deepEqual(generatorSpread.zzzzzzzzzzzz, ['paged-agent-usage']);
+});
+
+test('a case that reported no provenance is not silently folded into one that did', () => {
+  const { generatorConsistent } = runProvenance({
+    a: { promptDigest: 'aaaaaaaaaaaa' },
+    b: { promptDigest: null },
+  });
+  assert.equal(generatorConsistent, false);
+});
+
+/*
+ * Candidate A — the four mechanism decisions a server-paged source forces.
+ *
+ * `fetchUsageByAgent(query, page, limit)` returns `{data, total}`. Each of
+ * the three arguments and the envelope can be answered the wrong way while
+ * the surface renders perfectly, so they are read as four booleans and never
+ * summed. The wrong answers below are the shapes the corpus actually
+ * contains: a frozen `["", 1, 50]`, app-table's own pager, an @Filter over
+ * the page that came back, and a "data" path that throws `total` away.
+ */
+const pagedCase = {
+  id: 'paged-agent-usage',
+  prompt: 'p',
+  expect: { minQueries: 1, mechanism: { source: 'fetchUsageByAgent' } },
+};
+
+const SERVER_PAGED = `Sure — building that now.
+$q = ""
+$page = 1
+setQ = Action([@Set($q, $event), @Set($page, 1), @Run(rowsQ)])
+prev = Action([@Set($page, $page - 1), @Run(rowsQ)])
+next = Action([@Set($page, $page + 1), @Run(rowsQ)])
+rowsQ = Query("fetchUsageByAgent", [$q, $page, 20], {data: [], total: 0})
+box = AppSearch("md", null, false, false, "Search agents...", $q, null, null, null, null, null, setQ)
+prevBtn = AppButton("Previous", "secondary", "md", false, null, $page <= 1, false, "button", null, null, null, prev)
+nextBtn = AppButton("Next", "secondary", "md", false, null, false, false, "button", null, null, null, next)
+count = AppText(rowsQ.total, "body")
+table = AppTable(rowsQ.data, 20, "off", false, null, null, "No agents")
+root = AppStack([box, count, table, prevBtn, nextBtn], "md")
+Done.`;
+
+test('the four mechanism dimensions read a correct server-paged surface', () => {
+  const { dimensions } = check(pagedCase, SERVER_PAGED);
+  assert.deepEqual(
+    { ...dimensions, detail: undefined },
+    {
+      sourceCorrect: true,
+      paginationCorrect: true,
+      searchMechanismCorrect: true,
+      totalCorrect: true,
+      detail: undefined,
+    },
+  );
+  assert.equal(dimensions.detail.pageArg, '$page');
+  assert.equal(dimensions.detail.queryArg, '$q');
+});
+
+test('a frozen page argument with app-table doing the paging is not pagination', () => {
+  // `["", 1, 50]` is what every recorded generation against the sibling
+  // source wrote, four times out of four.
+  const dsl = SERVER_PAGED
+    .replace('[$q, $page, 20]', '[$q, 1, 500]')
+    .replace('AppTable(rowsQ.data, 20, "off"', 'AppTable(rowsQ.data, 20, "pages"');
+  const { dimensions } = check(pagedCase, dsl);
+  assert.equal(dimensions.paginationCorrect, false);
+  assert.equal(dimensions.detail.pageArg, null);
+  assert.equal(dimensions.detail.clientPagination, true);
+  // Search is a separate decision and is still right — which is the whole
+  // reason these are not one number.
+  assert.equal(dimensions.searchMechanismCorrect, true);
+});
+
+test('an @Filter over the fetched page is not the search mechanism', () => {
+  const dsl = SERVER_PAGED
+    .replace('[$q, $page, 20]', '["", $page, 20]')
+    .replace('setQ = Action([@Set($q, $event), @Set($page, 1), @Run(rowsQ)])',
+             'setQ = Action([@Set($q, $event)])')
+    .replace('table = AppTable(rowsQ.data, 20, "off"',
+             'shown = @Filter(rowsQ.data, "agent_name", "contains", $q)\ntable = AppTable(shown, 20, "off"');
+  const { dimensions } = check(pagedCase, dsl);
+  assert.equal(dimensions.searchMechanismCorrect, false);
+  assert.equal(dimensions.detail.clientFilter, true);
+  // Pagination is untouched by the search mistake.
+  assert.equal(dimensions.paginationCorrect, true);
+});
+
+test('a "data" path throws total away before anything can read it', () => {
+  const dsl = SERVER_PAGED
+    .replace('{data: [], total: 0})', '[], "data")')
+    .replace('count = AppText(rowsQ.total, "body")', 'count = AppText(@Count(rowsQ), "body")')
+    .replace('AppTable(rowsQ.data, 20', 'AppTable(rowsQ, 20');
+  const { dimensions } = check(pagedCase, dsl);
+  assert.equal(dimensions.totalCorrect, false);
+  assert.equal(dimensions.sourceCorrect, true);
+});
+
+test('a different source is a source failure, not four failures', () => {
+  const dsl = SERVER_PAGED.replace('"fetchUsageByAgent"', '"fetchTokenopsDashboard"');
+  const { dimensions } = check(pagedCase, dsl);
+  assert.equal(dimensions.sourceCorrect, false);
+  assert.deepEqual(dimensions.detail.sourceUsed, ['fetchTokenopsDashboard']);
+});
+
+test('the mechanism dimensions never reach the pass/fail line', () => {
+  // Every dimension wrong, and the surface is still sound. A case that gated
+  // on the answer it measures could only ever return the answer it was given.
+  const dsl = SERVER_PAGED
+    .replace('"fetchUsageByAgent"', '"fetchUsageByModel"')
+    .replace('[$q, $page, 20]', '["", 1, 50]')
+    .replace('setQ = Action([@Set($q, $event), @Set($page, 1), @Run(rowsQ)])',
+             'setQ = Action([@Set($q, $event)])')
+    .replace('prev = Action([@Set($page, $page - 1), @Run(rowsQ)])', 'prev = Action([@Set($page, 1)])')
+    .replace('next = Action([@Set($page, $page + 1), @Run(rowsQ)])', 'next = Action([@Set($page, 2)])')
+    .replace('count = AppText(rowsQ.total, "body")', 'count = AppText(@Count(rowsQ.data), "body")');
+  const { fail, dimensions } = check(pagedCase, dsl);
+  assert.deepEqual(fail, []);
+  assert.equal(dimensions.sourceCorrect, false);
+  assert.equal(dimensions.paginationCorrect, false);
+  assert.equal(dimensions.totalCorrect, false);
+});
+
+/*
+ * Pagination, read against what the prompt actually asked for.
+ *
+ * "20 rows at a time with next and previous buttons" is four separate
+ * claims, and a surface can satisfy the shape of it while satisfying none:
+ * a `$page` that reaches the argument but is only ever set to 1, a page size
+ * of 50, a next button that moves the state and never refetches. Each is
+ * checked on its own so the baseline can say which one failed.
+ *
+ * Nothing here names a component. Which control fires the Action is taste;
+ * that the Action moves the page by one and forces the fetch is not.
+ */
+const pageDetail = (dsl) => check(pagedCase, dsl).dimensions.detail;
+
+test('page state, a page size of 20, and a step in each direction that refetches', () => {
+  const { dimensions } = check(pagedCase, SERVER_PAGED);
+  assert.equal(dimensions.paginationCorrect, true);
+  const d = dimensions.detail;
+  assert.equal(d.pageArg, '$page');
+  assert.equal(d.limitResolved, 20);
+  assert.equal(d.limitFrom, 'literal');
+  assert.deepEqual(d.next, { action: 'next', runs: true });
+  assert.deepEqual(d.prev, { action: 'prev', runs: true });
+});
+
+test('a frozen page literal is not pagination, however the buttons look', () => {
+  const dsl = SERVER_PAGED.replace('[$q, $page, 20]', '[$q, 1, 20]');
+  const { dimensions } = check(pagedCase, dsl);
+  assert.equal(dimensions.paginationCorrect, false);
+  assert.equal(dimensions.detail.pageArg, null);
+  // No page argument means there is no page to step, so the buttons are not
+  // read as steps at all — they move a state the fetch never sees.
+  assert.equal(dimensions.detail.next.action, null);
+});
+
+test('a page size of 50 is not the 20 that was asked for', () => {
+  const dsl = SERVER_PAGED.replace('[$q, $page, 20]', '[$q, $page, 50]');
+  const { dimensions } = check(pagedCase, dsl);
+  assert.equal(dimensions.paginationCorrect, false);
+  assert.equal(dimensions.detail.limitResolved, 50);
+  // Everything else about the pagination is right, which is the point of
+  // reporting the parts rather than the verdict.
+  assert.equal(dimensions.detail.next.runs, true);
+  assert.equal(dimensions.detail.prev.runs, true);
+});
+
+test('a limit held in a state counts when the state resolves to 20', () => {
+  const dsl = SERVER_PAGED
+    .replace('$page = 1', '$page = 1\n$pageSize = 20')
+    .replace('[$q, $page, 20]', '[$q, $page, $pageSize]');
+  const { dimensions } = check(pagedCase, dsl);
+  assert.equal(dimensions.detail.limitResolved, 20);
+  assert.equal(dimensions.detail.limitFrom, 'state');
+  assert.equal(dimensions.paginationCorrect, true);
+
+  // …and does not, when it resolves to something else.
+  const wrong = dsl.replace('$pageSize = 20', '$pageSize = 100');
+  assert.equal(check(pagedCase, wrong).dimensions.paginationCorrect, false);
+});
+
+test('a next button that moves the page but never refetches is caught', () => {
+  const dsl = SERVER_PAGED.replace(
+    'next = Action([@Set($page, $page + 1), @Run(rowsQ)])',
+    'next = Action([@Set($page, $page + 1)])',
+  );
+  const d = pageDetail(dsl);
+  // Told apart from having no next button at all: the Action is named, and
+  // the missing @Run is what is false.
+  assert.equal(d.next.action, 'next');
+  assert.equal(d.next.runs, false);
+  assert.equal(d.prev.runs, true);
+  assert.equal(check(pagedCase, dsl).dimensions.paginationCorrect, false);
+});
+
+test('a previous button that moves the page but never refetches is caught', () => {
+  const dsl = SERVER_PAGED.replace(
+    'prev = Action([@Set($page, $page - 1), @Run(rowsQ)])',
+    'prev = Action([@Set($page, $page - 1)])',
+  );
+  const d = pageDetail(dsl);
+  assert.equal(d.prev.action, 'prev');
+  assert.equal(d.prev.runs, false);
+  assert.equal(d.next.runs, true);
+  assert.equal(check(pagedCase, dsl).dimensions.paginationCorrect, false);
+});
+
+test('a next button that jumps rather than steps is not a next button', () => {
+  // `@Set($page, 2)` sets page two from page seven. It refetches, the table
+  // changes, and it is not what "next" means.
+  const dsl = SERVER_PAGED.replace('@Set($page, $page + 1)', '@Set($page, 2)');
+  const d = pageDetail(dsl);
+  assert.equal(d.next.action, null);
+  assert.equal(d.prev.action, 'prev');
+  assert.equal(check(pagedCase, dsl).dimensions.paginationCorrect, false);
+});
+
+test('a previous button that resets rather than steps is not a previous button', () => {
+  const dsl = SERVER_PAGED.replace('@Set($page, $page - 1)', '@Set($page, 1)');
+  const d = pageDetail(dsl);
+  assert.equal(d.prev.action, null);
+  assert.equal(d.next.action, 'next');
+  assert.equal(check(pagedCase, dsl).dimensions.paginationCorrect, false);
+});
+
+test('a guarded step still steps', () => {
+  // Clamping at page one is a better surface, not a different mechanism.
+  const dsl = SERVER_PAGED.replace('@Set($page, $page - 1)', '@Set($page, @Max($page - 1, 1))');
+  assert.equal(check(pagedCase, dsl).dimensions.paginationCorrect, true);
+});
+
+test('an omitted limit is the service default, and says so', () => {
+  // usage-service.js:111 — `limit ?? 20`. Twenty rows really do come back,
+  // so it counts; `limitFrom` keeps it tellable apart from a decision.
+  const dsl = SERVER_PAGED.replace('[$q, $page, 20]', '[$q, $page]');
+  const d = pageDetail(dsl);
+  assert.equal(d.limitResolved, 20);
+  assert.equal(d.limitFrom, 'service default');
+  assert.equal(check(pagedCase, dsl).dimensions.paginationCorrect, true);
+});
+
+test('the tightened pagination check leaves the other three dimensions alone', () => {
+  // Pagination wrong in all four ways at once; source, search and total
+  // untouched. A composite score could not say this.
+  const dsl = SERVER_PAGED
+    .replace('[$q, $page, 20]', '[$q, 1, 50]')
+    .replace('next = Action([@Set($page, $page + 1), @Run(rowsQ)])', 'next = Action([@Set($page, 2)])')
+    .replace('prev = Action([@Set($page, $page - 1), @Run(rowsQ)])', 'prev = Action([@Set($page, 1)])');
+  const { fail, dimensions } = check(pagedCase, dsl);
+  assert.equal(dimensions.paginationCorrect, false);
+  assert.equal(dimensions.sourceCorrect, true);
+  assert.equal(dimensions.searchMechanismCorrect, true);
+  assert.equal(dimensions.totalCorrect, true);
+  assert.deepEqual(fail, []);
 });

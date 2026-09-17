@@ -240,6 +240,34 @@ export const CASES = [
     prompt: 'Look up one agent by its exact agent ID and show its usage. '
       + 'The ID is typed or pasted in.',
     expect: { minQueries: 1, minActions: 1, minStates: 1 } },
+  // Candidate A. The first case whose source is server-paged and
+  // server-searchable, and the first where the RIGHT answer is the opposite
+  // of what worked example 3f demonstrates.
+  //
+  // 3f teaches that a search box is a client-side @Filter, because
+  // `agent_name` is a field on the fleet rows and not an argument of the
+  // source. On fetchUsageByAgent, `query` IS an argument — the manifest says
+  // `text [search]` — so the same request has the opposite answer, and a
+  // generation that reaches for @Filter here has learned the shape of the
+  // example rather than the procedure in it. Nothing else in this suite can
+  // tell those two apart.
+  //
+  // Four decisions, and the corpus says the model currently makes at most one
+  // of them: across every recorded generation, `page` and `limit` have only
+  // ever been written as frozen literals (`["", 1, 50]`, by-model-chart, four
+  // times out of four), `total` has never been read, and 54 of 56 app-tables
+  // page client-side over whatever one fetch returned.
+  //
+  // `expect` is the same thin floor as the other interaction cases and says
+  // nothing about pagination, search or total. Those four are recorded beside
+  // it by `expect.mechanism`, separately and unweighted — see pagedMechanism.
+  { id: 'paged-agent-usage',
+    prompt: 'My own usage broken down by agent, 20 rows at a time with next and previous '
+      + 'buttons, and a box to search agents by name. Show how many there are in total.',
+    expect: {
+      minQueries: 1, minStates: 2, tags: ['app-table'],
+      mechanism: { source: 'fetchUsageByAgent' },
+    } },
   // Not a dashboard request. agent.yaml rule 11 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.
@@ -305,6 +333,14 @@ function diagnosticTally(r) {
 const sha256 = (text) => createHash('sha256').update(text).digest('hex').slice(0, 16);
 
 /** Evaluate a directory of `.dsl` files the same way a live run is evaluated. */
+/** A saved run's `generator` block, when it has one. */
+function readProvenance(dir) {
+  try {
+    const s = JSON.parse(readFileSync(resolve(dir, 'summary.json'), 'utf8'));
+    return s.generator ? { ...s.generator, consistent: s.generatorConsistent } : null;
+  } catch { return null; }
+}
+
 function evaluateDir(dir) {
   const out = {};
   for (const f of readdirSync(dir).filter((x) => x.endsWith('.dsl')).sort()) {
@@ -334,6 +370,61 @@ const MANIFEST = JSON.parse(
 export const ALLOWED_SOURCES = new Set(
   Object.values(MANIFEST.scopes ?? {}).flat().map((s) => (typeof s === 'string' ? s : s.name)),
 );
+
+/**
+ * One run's provenance, and whether it is one run at all.
+ *
+ * A recording is an experimental condition only if every case in it came from
+ * the same generator. The last A/B could not prove that: 3f was committed
+ * thirteen minutes before the first "baseline" case, the arms were separated
+ * by a redeploy nobody recorded, and the only trace of it was a network error
+ * in the middle. A run whose cases disagree is not a result to be argued
+ * about later — it is two half-runs, and saying so at record time costs
+ * nothing.
+ */
+export function runProvenance(byCase) {
+  const seen = Object.values(byCase).filter(Boolean);
+  if (!seen.length) return { generator: null, generatorConsistent: true, generatorSpread: null };
+  const digests = [...new Set(seen.map((g) => g.promptDigest ?? 'unreported'))];
+  const consistent = digests.length === 1;
+  const spread = consistent ? null : Object.fromEntries(
+    digests.map((d) => [d, Object.keys(byCase).filter((id) => (byCase[id]?.promptDigest ?? 'unreported') === d)]),
+  );
+  return { generator: seen[0], generatorConsistent: consistent, generatorSpread: spread };
+}
+
+/**
+ * What a recorded run has to say about the generator that produced it.
+ *
+ * Every earlier run recorded `catalogVersion` — which comes from THIS
+ * checkout, not from the agent — and a hand-set `manifestVersion` that
+ * nothing compares. So a saved surface said nothing about the prompt behind
+ * it, and the last A/B could only be attributed by the order the containers
+ * were deployed in. That is a story about a deployment, not evidence about a
+ * generation, and it is why that experiment is inconclusive rather than
+ * negative.
+ *
+ * `promptDigest` is taken over the ASSEMBLED system message on the generator
+ * side, not over agent.yaml: the message is built from the spec's
+ * instructions, the component signatures, the data-source signatures and the
+ * builtin list, and two prompt changes that moved generation measurably never
+ * touched agent.yaml at all. `specDigest` answers the narrower "which
+ * agent.yaml" question beside it, `generatorDigest` covers the code that
+ * assembles the prompt and filters the output, and `model` changes what comes
+ * back without moving any of the three.
+ */
+const PROVENANCE_KEYS = ['promptDigest', 'specDigest', 'generatorDigest', 'model', 'catalogVersion'];
+
+/**
+ * The provenance out of one `surface` event's payload.
+ *
+ * Every key, always, even when the generator did not send it: a run recorded
+ * against an older agent has to be visibly unattributed rather than quietly
+ * missing the field.
+ */
+export function provenanceFrom(meta) {
+  return Object.fromEntries(PROVENANCE_KEYS.map((k) => [k, meta?.[k] ?? null]));
+}
 
 /** A recording element — the same shape the renderer tests use. */
 function makeEl(tag) {
@@ -729,6 +820,345 @@ function unknownFilterFields(statements) {
   return found;
 }
 
+/** Spans of `raw` that sit inside a string literal, so a scan can skip them. */
+function quotedSpans(raw) {
+  const spans = [];
+  let quote = null, start = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (quote) { if (c === quote && raw[i - 1] !== '\\') { spans.push([start, i]); quote = null; } continue; }
+    if (c === '"' || c === "'") { quote = c; start = i; }
+  }
+  return spans;
+}
+
+/** Every `AppXxx(...)` call in a line, with its top-level arguments, in order. */
+function componentCalls(raw) {
+  const skip = quotedSpans(raw);
+  const out = [];
+  for (const m of raw.matchAll(/\b(App[A-Z][A-Za-z0-9]*)\(/g)) {
+    if (skip.some(([a, b]) => m.index > a && m.index < b)) continue;
+    const args = topLevelArgs(raw.slice(m.index), m[1]);
+    if (args.length) out.push({ name: m[1], args: args.map((a) => a.trim()) });
+  }
+  return out;
+}
+
+const BARE_STATE = /^\$[A-Za-z_][\w$]*$/;
+const BARE_IDENT = /^[A-Za-z_][\w$]*$/;
+
+/**
+ * A control whose arguments landed in the wrong positional slots.
+ *
+ * `app-input` has twenty-four positional parameters, `value` at thirteen and
+ * `action` at twenty-four, and every generation that has reached for it
+ * miscounted. Two independent samples, both of which render a normal-looking
+ * box that does nothing at all:
+ *
+ *   AppInput("md", null, "Agent ID", …, "$agentId", null, runSearch)
+ *     -> the state's NAME as a string in `max`, the Action in `pattern`
+ *   AppInput("md", null, "Agent ID", …, $agentId, …, lookupAgent)
+ *     -> the state in `list`, the Action three past the end and dropped
+ *
+ * Only the second is caught today, and only incidentally: 27 > 24 trips
+ * `excess_arguments` (materialize.js:473), which fires on argument COUNT and
+ * never on placement. The first is twenty arguments into a twenty-four
+ * parameter signature, so nothing fires — `runSearch` is referenced, so it is
+ * not orphaned, and the `@Run` inside it resolves. It was recorded as a clean
+ * pass for a surface whose only input is inert.
+ *
+ * A declared-TYPE check cannot catch either. The catalog types `max`, `step`,
+ * `maxlength`, `list`, `spellcheck` and `pattern` all as `string`, so a state
+ * or a state's name in any of them is type-valid. What is decidable is the
+ * REFERENT: an identifier that names an `Action(...)` statement, and a bare
+ * `$state`, are things the catalog says where to put.
+ *
+ * Structural only. Nothing here asks whether the control should exist, which
+ * component it should have been, or what its wording says — those change with
+ * taste and these do not.
+ */
+function positionalContract(statements) {
+  const lines = statements.map((st) => st.raw ?? '');
+
+  const actionNames = new Set();
+  const stateNames = new Set();
+  for (const l of lines) {
+    const a = /^\s*([A-Za-z_][\w$]*)\s*=\s*Action\s*\(/.exec(l);
+    if (a) actionNames.add(a[1]);
+    const s = /^\s*(\$[A-Za-z_][\w$]*)\s*=/.exec(l);
+    if (s) stateNames.add(s[1]);
+  }
+
+  const found = [];
+  for (const l of lines) {
+    const named = /^\s*([A-Za-z_$][\w$]*)\s*=/.exec(l);
+    const statement = named ? named[1] : null;
+    const add = (code, component, param, index, detail) => {
+      found.push({ statement, component, code, param, index, detail });
+    };
+
+    // A state's NAME in quotes is seven characters of text. Every read of it
+    // gets the characters, the box never shows what was typed, and the
+    // argument it feeds is asked for an agent literally called "$agentId".
+    // Narrow by construction: the name has to be one this surface declares.
+    for (const m of l.matchAll(/"(\$[A-Za-z_][\w$]*)"/g)) {
+      if (stateNames.has(m[1])) add('state_as_literal', null, null, null, m[1]);
+    }
+
+    for (const call of componentCalls(l)) {
+      const tag = pascalToTag(call.name);
+      const def = catalog.components?.[tag];
+      const params = def?.paramOrder ?? [];
+      if (!params.length) continue;
+      const attrs = def.attributes ?? {};
+      const actIdx = params.indexOf('action');
+      const bindIdx = params.includes('value') ? params.indexOf('value') : params.indexOf('checked');
+      // Only a control that can BE bound is judged on binding. A layout or a
+      // display component holding a state is just a component holding a state.
+      const interactive = def.actionParam === true && bindIdx >= 0;
+      const bound = bindIdx >= 0 && bindIdx < call.args.length
+        && /\$[A-Za-z_][\w$]*/.test(call.args[bindIdx]);
+      let wiring = false;
+
+      for (let i = 0; i < call.args.length; i++) {
+        const a = call.args[i];
+        const isAction = BARE_IDENT.test(a) && actionNames.has(a);
+        const isState = BARE_STATE.test(a) && stateNames.has(a);
+        if (isAction || isState) wiring = true;
+
+        if (isAction && i >= params.length) {
+          add('action_dropped', tag, null, i, a);
+        } else if (isAction && i !== actIdx) {
+          add('action_in_wrong_slot', tag, params[i], i, a);
+        }
+
+        // A bare state outside the binding slot, on a control nothing bound.
+        // Boolean slots are exempt — `disabled: $busy` is a real thing to
+        // write and says nothing about a miscount — and a control whose
+        // `value` IS bound is left alone, because a second state elsewhere is
+        // then a choice rather than a slip.
+        if (isState && interactive && !bound && i !== bindIdx && i < params.length
+            && attrs[params[i]]?.type !== 'boolean') {
+          add('state_in_non_binding_slot', tag, params[i], i, a);
+        }
+      }
+
+      // The generalisation of materialize.js's `uncontrolled_input`, which is
+      // gated on the ACTION slot being filled — exactly the assumption a
+      // miscount breaks, and exactly why the twenty-argument sample was
+      // silent. Anything in the list that looks like wiring is enough.
+      if (interactive && wiring && !bound) {
+        add('control_never_bound', tag, params[bindIdx], bindIdx, null);
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * The four decisions a server-paged source forces, kept apart.
+ *
+ * `fetchUsageByAgent(query, page, limit)` returns `{data, total}`, and a
+ * request for a paged, searchable list of it has three separate mechanisms to
+ * get right and one envelope to keep. Every one of them can be answered the
+ * wrong way while the surface renders perfectly:
+ *
+ *   - page   — a `$state` in the `page` argument, a page SIZE that is the
+ *              twenty the request asked for, and an Action in each direction
+ *              that moves the state by one and forces the fetch. The
+ *              alternative is a frozen `1` with app-table's own pager over
+ *              the one page that came back. Both draw a table with page
+ *              buttons; only one of them can reach row 21. Checked as
+ *              behaviour, never as composition — no component is required,
+ *              because which control fires the Action is taste.
+ *   - query  — a `$state` in the `query` argument with an Action that @Runs
+ *              it, or an @Filter over the fetched page. Both narrow what is
+ *              on screen. Only one of them searches the other pages.
+ *   - total  — `data.total` is outside `data`, so a Query that selects the
+ *              "data" path cannot reach it and the count has to be invented
+ *              from the rows in hand.
+ *
+ * Reported as four independent booleans and never summed. A generation that
+ * pages server-side and filters client-side has got one of two mechanisms
+ * right, and a single number would say the same thing as one that got
+ * neither. The existing structural checks stay separate again: these say
+ * which MECHANISM was chosen, not whether the surface is sound.
+ *
+ * Deliberately NOT part of `expect`. Asserting the answer here would make the
+ * question unfalsifiable — it would pass only when the answer was already
+ * yes, which is how three prompt experiments in a row measured nothing.
+ */
+function pagedMechanism(lines, spec) {
+  const src = SOURCES_BY_NAME.get(spec.source);
+  const argNames = Object.keys(src?.argsShape ?? {});
+  const at = (args, name) => {
+    const i = argNames.indexOf(name);
+    return i >= 0 ? (args[i] ?? '') : '';
+  };
+
+  /** Every Query, with its source, its positional argument texts and its path. */
+  const queries = [];
+  for (const l of lines) {
+    const m = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Query\s*\(\s*"([^"]+)"/.exec(l);
+    if (!m) continue;
+    const parts = topLevelArgs(l, 'Query');
+    const list = (parts[1] ?? '').trim().replace(/^\[/, '').replace(/\]$/, '');
+    queries.push({
+      name: m[1],
+      source: m[2],
+      args: splitTopLevel(list).map((a) => a.trim()),
+      path: (parts[3] ?? '').trim(),
+    });
+  }
+  const mine = queries.filter((q) => q.source === spec.source);
+  const detail = {
+    sourceUsed: [...new Set(queries.map((q) => q.source))],
+    pageArg: null, queryArg: null,
+    limitArg: null, limitResolved: null, limitFrom: null,
+    next: { action: null, runs: false }, prev: { action: null, runs: false },
+    clientPagination: false, clientFilter: false,
+  };
+
+  /** `$x = <literal>` — what a state starts as, for resolving a limit. */
+  const stateInit = new Map();
+  for (const l of lines) {
+    const m = /^\s*(\$[\w$]+)\s*=\s*(.+?)\s*$/.exec(l);
+    if (m) stateInit.set(m[1], m[2]);
+  }
+  /** A literal number, or a state that starts as one. Two hops, no cycles. */
+  const numberOf = (text, depth = 0) => {
+    const t = (text ?? '').trim();
+    if (/^-?\d+(?:\.\d+)?$/.test(t)) return Number(t);
+    if (depth < 2 && /^\$[\w$]+$/.test(t) && stateInit.has(t)) return numberOf(stateInit.get(t), depth + 1);
+    return null;
+  };
+
+  // Which Actions set which states, to what, and which Queries they force.
+  // The VALUE matters here and not only the name: "next page" and "back to
+  // page 1" both @Set the same state and @Run the same Query, and only one
+  // of them is a next button.
+  const setters = [];
+  for (const l of lines) {
+    const act = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Action\s*\(/.exec(l);
+    if (!act) continue;
+    const sets = [];
+    for (const m of l.matchAll(/@Set\(/g)) {
+      const args = topLevelArgs(l.slice(m.index), '@Set').map((a) => a.trim());
+      if (args.length >= 2) sets.push({ state: args[0], value: args[1] });
+    }
+    setters.push({
+      action: act[1],
+      sets,
+      states: sets.map((x) => x.state),
+      runs: [...l.matchAll(/@Run\(\s*([A-Za-z_$][\w$]*)/g)].map((x) => x[1]),
+    });
+  }
+  /** Is `state` written by an Action that also @Runs one of `names`? */
+  const drivenBy = (state, names) => setters.some(
+    (s) => s.states.includes(state) && s.runs.some((q) => names.includes(q)),
+  );
+
+  const names = mine.map((q) => q.name);
+  const stateIn = (text) => /^\$[\w$]+$/.test(text.trim()) ? text.trim() : null;
+
+  let searchMechanismCorrect = false;
+  for (const q of mine) {
+    const page = stateIn(at(q.args, 'page'));
+    if (page && !detail.pageArg) {
+      detail.pageArg = page;
+      // "20 rows at a time" is part of the request, so the page SIZE is part
+      // of the mechanism. A frozen 50 pages the data, just not the way it
+      // was asked for. An omitted limit is accepted because the service's
+      // own default is 20 (usage-service.js:111) — recorded as coming from
+      // the default rather than from a decision, so the two stay tellable
+      // apart in the corpus.
+      const raw = at(q.args, 'limit');
+      detail.limitArg = raw === '' ? null : raw;
+      if (raw === '' || raw === 'null') { detail.limitResolved = 20; detail.limitFrom = 'service default'; }
+      else { detail.limitResolved = numberOf(raw); detail.limitFrom = /^\$/.test(raw.trim()) ? 'state' : 'literal'; }
+    }
+    const search = stateIn(at(q.args, 'query'));
+    if (search) { detail.queryArg = search; if (drivenBy(search, names)) searchMechanismCorrect = true; }
+  }
+
+  // "next and previous buttons" is a behaviour, not a composition. What is
+  // checked is that some Action moves the page state by one in each
+  // direction AND forces the fetch — never which component fires it, which
+  // would be a claim about taste rather than about the mechanism. A guarded
+  // form (`@Max($page - 1, 1)`) still moves by one and still counts.
+  if (detail.pageArg) {
+    const pn = detail.pageArg.slice(1);
+    const plusOne = new RegExp(`\\$${pn}\\s*\\+\\s*1(?![\\d.])|\\b1\\s*\\+\\s*\\$${pn}\\b`);
+    const minusOne = new RegExp(`\\$${pn}\\s*-\\s*1(?![\\d.])`);
+    for (const s of setters) {
+      const wrote = s.sets.filter((x) => x.state === detail.pageArg).map((x) => x.value).join(' ; ');
+      if (!wrote) continue;
+      const runs = s.runs.some((q) => names.includes(q));
+      // Recorded even when the @Run is missing, so "no next button at all"
+      // and "a next button that does not refetch" stay different findings.
+      if (plusOne.test(wrote) && !detail.next.action) detail.next = { action: s.action, runs };
+      if (minusOne.test(wrote) && !detail.prev.action) detail.prev = { action: s.action, runs };
+    }
+  }
+
+  const paginationCorrect = Boolean(
+    detail.pageArg
+    && detail.limitResolved === 20
+    && detail.next.action && detail.next.runs
+    && detail.prev.action && detail.prev.runs,
+  );
+
+  // app-table's own pager over the single page that came back. Not wrong in
+  // itself — it is wrong as the ANSWER to "next and previous", which is what
+  // makes it worth telling apart from the server mechanism.
+  for (const l of lines) {
+    for (const call of componentCalls(l)) {
+      if (pascalToTag(call.name) !== 'app-table') continue;
+      const feeds = names.some((n) => (call.args[0] ?? '').includes(n));
+      if (feeds && /"(pages|more)"/.test(call.args[2] ?? '')) detail.clientPagination = true;
+    }
+  }
+  // An @Filter over rows this source already paged narrows the page, not the
+  // result set — page two still holds everything the box was meant to hide.
+  for (const l of lines) {
+    for (const m of l.matchAll(/@Filter\(\s*([A-Za-z_$][\w$]*)/g)) {
+      if (names.some((n) => m[1] === n || m[1].startsWith(`${n}.`))) detail.clientFilter = true;
+    }
+  }
+  if (detail.clientFilter) searchMechanismCorrect = false;
+
+  // `total` sits beside `data`, not inside it, so a Query that selects "data"
+  // has thrown it away before anything can read it.
+  const keepsEnvelope = mine.filter((q) => !q.path || q.path === 'null' || /total/.test(q.path));
+  const totalCorrect = keepsEnvelope.some(
+    (q) => lines.some((l) => new RegExp(`\\b${q.name}\\.total\\b`).test(l)),
+  );
+
+  return {
+    sourceCorrect: mine.length > 0,
+    paginationCorrect,
+    searchMechanismCorrect,
+    totalCorrect,
+    detail,
+  };
+}
+
+/** Split a bracket-and-string-aware comma list that is already unwrapped. */
+function splitTopLevel(text) {
+  const out = [];
+  let depth = 0, quote = null, start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) { if (c === quote && text[i - 1] !== '\\') quote = null; continue; }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '(' || c === '[' || c === '{') { depth++; continue; }
+    if (c === ')' || c === ']' || c === '}') { depth--; continue; }
+    if (c === ',' && depth === 0) { out.push(text.slice(start, i)); start = i + 1; }
+  }
+  if (text.slice(start).trim()) out.push(text.slice(start));
+  return out;
+}
+
 export function evaluateGeneration(text) {
   const diagnostics = [];
   const { statements, prose } = parseBuffer(text);
@@ -760,6 +1190,7 @@ export function evaluateGeneration(text) {
 
   return {
     statements: statements.length,
+    lines: statements.map((st) => st.raw ?? ''),
     prose,
     root: out.root,
     tags,
@@ -771,6 +1202,7 @@ export function evaluateGeneration(text) {
     redundantRuns: redundantRuns(statements),
     missingQueryRuns: missingQueryRuns(statements),
     unknownFilterFields: unknownFilterFields(statements),
+    positionalContract: positionalContract(statements),
     semanticMismatches: semanticMismatches(statements),
     chartKinds: [...chartKinds],
     diagnostics,
@@ -785,15 +1217,19 @@ export function check(kase, text) {
   const advisory = [];
   const runtime = [];
   const e = kase.expect ?? {};
+  // Which mechanism was chosen, reported apart from whether the surface is
+  // sound. Never added to `fail`: a case that gates on the answer it is
+  // measuring can only ever return the answer it was given.
+  const dimensions = e.mechanism ? pagedMechanism(r.lines, e.mechanism) : null;
 
   if (e.noSurface) {
     if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 11)');
     if (!r.prose.join('').trim()) fail.push('answered with nothing at all');
-    return { fail, advisory, runtime, r };
+    return { fail, advisory, runtime, dimensions, r };
   }
 
   if (!r.root) {
-    if (e.allowNoSurface) return { fail, advisory, runtime, r };
+    if (e.allowNoSurface) return { fail, advisory, runtime, dimensions, r };
     fail.push('no root — nothing rendered');
   }
 
@@ -837,6 +1273,28 @@ export function check(kase, text) {
     fail.push(`${uf.statement ?? '@Filter'} filters on "${uf.field}", which ${uf.source} does not `
       + 'return — it matches nothing, every time, and the surface renders as if there were no data');
   }
+  // Structural, and fatal for the same reason `unresolved` is: the surface
+  // renders, and the control in it cannot do the one thing it is there for.
+  for (const pc of r.positionalContract) {
+    const where = pc.statement ? `${pc.statement}: ` : '';
+    const at = pc.param ? `"${pc.param}" (slot ${pc.index + 1})` : `slot ${pc.index + 1}`;
+    if (pc.code === 'action_in_wrong_slot') {
+      fail.push(`${where}${pc.component} takes its Action last, but ${pc.detail} is at ${at} — `
+        + 'the control has no action and that slot holds something it cannot use');
+    } else if (pc.code === 'action_dropped') {
+      fail.push(`${where}${pc.component} has ${pc.detail} at ${at}, past the end of its parameter `
+        + 'list, so the Action is dropped and the control does nothing');
+    } else if (pc.code === 'state_in_non_binding_slot') {
+      fail.push(`${where}${pc.component} has ${pc.detail} at ${at}, which is not where a value is `
+        + 'bound — the arguments are off by a slot and what the user types goes nowhere');
+    } else if (pc.code === 'control_never_bound') {
+      fail.push(`${where}${pc.component} is wired to a state or an Action but its ${at} is not `
+        + 'read back from a $state, so what the user types is discarded on the next repaint');
+    } else if (pc.code === 'state_as_literal') {
+      fail.push(`${where}"${pc.detail}" is the state's NAME in quotes, not the state — every read `
+        + `of it gets those characters, and ${pc.detail} itself is never read`);
+    }
+  }
   for (const mr of r.missingQueryRuns) {
     fail.push(`${mr.action} sets ${mr.state}, which ${mr.query} reads as an argument, but does `
       + 'not @Run it — a $state changing never re-fetches on its own, so the control moves and '
@@ -854,7 +1312,7 @@ export function check(kase, text) {
       + `expected at least ${e.minChartKinds} — the same shape repeated answers one question twice`);
   }
 
-  return { fail, advisory, runtime, r };
+  return { fail, advisory, runtime, dimensions, r };
 }
 
 /**
@@ -986,6 +1444,8 @@ async function generate(prompt, { currentSurface, sessionId } = {}) {
 
   let text = '';
   let generatorCatalog = null;
+  /** The generator's own account of itself — see PROVENANCE_KEYS. */
+  let generator = null;
   // The stream says why it produced nothing, and this used to drop it on the
   // floor: everything that was not a dsl-chunk was skipped, so an agent that
   // failed outright reported as "answered with nothing at all" and the actual
@@ -1005,7 +1465,11 @@ async function generate(prompt, { currentSurface, sessionId } = {}) {
       const data = frame.match(/^data:\s*(.+)$/m)?.[1];
       if (!data) continue;
       if (event === 'surface') {
-        try { generatorCatalog = JSON.parse(data).catalogVersion ?? null; } catch { /* reported below */ }
+        try {
+          const meta = JSON.parse(data);
+          generatorCatalog = meta.catalogVersion ?? null;
+          generator = provenanceFrom(meta);
+        } catch { /* reported below */ }
         continue;
       }
       if (event === 'fail') {
@@ -1025,7 +1489,7 @@ async function generate(prompt, { currentSurface, sessionId } = {}) {
   if (!text.trim() && failures.length) {
     throw new Error(`the generator failed — ${failures.join('; ')}`);
   }
-  return { text, generatorCatalog, failures };
+  return { text, generatorCatalog, generator, failures };
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
@@ -1081,6 +1545,7 @@ if (compareTo) {
   }
   const before = evaluateDir(compareTo);
   const after = evaluateDir(FIXTURES);
+  const baselineProvenance = readProvenance(compareTo);
   const ids = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
 
   const bKinds = new Set(Object.values(before).flatMap((c) => c.kinds));
@@ -1089,6 +1554,22 @@ if (compareTo) {
   const lost = [...bKinds].filter((k) => !aKinds.has(k)).sort();
 
   console.log(`eval --compare\n  baseline: ${compareTo}\n  current : ${FIXTURES}\n`);
+  // Without this the reader has to remember what was deployed when, which is
+  // exactly the thing that made the last A/B unattributable.
+  if (baselineProvenance) {
+    console.log('baseline generator'
+      + `\n  prompt ${baselineProvenance.promptDigest ?? '?'}`
+      + `   spec ${baselineProvenance.specDigest ?? '?'}`
+      + `   code ${baselineProvenance.generatorDigest ?? '?'}`
+      + `   model ${baselineProvenance.model ?? '?'}`);
+    if (baselineProvenance.consistent === false) {
+      console.log('  NOT one condition — that run was recorded across a redeploy');
+    }
+    console.log('  (record a new run to print the current generator beside it)\n');
+  } else {
+    console.log('baseline generator: not recorded — that run predates provenance, '
+      + 'so any difference below cannot be attributed to a prompt change\n');
+  }
   console.log(`corpus breadth  ${bKinds.size}/${CATALOG_SIZE}  ->  ${aKinds.size}/${CATALOG_SIZE}`);
   console.log(`  newly generated : ${gained.join(', ') || 'none'}`);
   console.log(`  no longer used  : ${lost.join(', ') || 'none'}\n`);
@@ -1265,6 +1746,8 @@ const runRows = {};
 /** Cases whose recording was refused because the generator answered nothing. */
 const skipped = [];
 let failed = 0;
+/** case id -> the generator's own provenance for that generation. */
+const caseProvenance = {};
 /** What the repair turn did, when --repair asked for one. */
 const repairs = { offered: 0, cleared: 0, improved: 0, noBetter: 0, before: 0, after: 0 };
 /** Cases whose request never came back — a transport or route failure, not a sample. */
@@ -1278,6 +1761,7 @@ for (const kase of cases) {
     } else {
       const got = await withAgentReady(() => generate(kase.prompt, { sessionId: sessionFor(kase.id) }));
       text = got.text;
+      caseProvenance[kase.id] = got.generator;
       // The generator says which catalog it built against. Judging its output
       // with a different one is judging the wrong thing — and a silent
       // fallback to a stale bundled copy looks exactly like a model that will
@@ -1325,7 +1809,7 @@ for (const kase of cases) {
     } else skipped.push(kase.id);
   }
 
-  const { fail, advisory, runtime, r } = check(kase, text);
+  const { fail, advisory, runtime, dimensions, r } = check(kase, text);
 
   // Observational only — nothing below reads this to decide pass or fail.
   if (record) {
@@ -1344,6 +1828,23 @@ for (const kase of cases) {
       states: (r.states ?? []).length,
       diagnostics: counts,
       fatalDiagnostics: fatal,
+      generator: caseProvenance[kase.id] ?? null,
+      // Four booleans, never summed. Absent for a case with no mechanism
+      // expectation, rather than four falses that would read as four
+      // failures.
+      ...(dimensions ? { dimensions } : {}),
+      // The structural checks, kept beside them and kept apart from each
+      // other: which mechanism was chosen and whether the surface is sound
+      // are different questions, and a benchmark that merges them cannot say
+      // which half moved.
+      structural: {
+        missingQueryRuns: (r.missingQueryRuns ?? []).length,
+        redundantRuns: (r.redundantRuns ?? []).length,
+        unknownFilterFields: (r.unknownFilterFields ?? []).length,
+        positionalContract: (r.positionalContract ?? []).map((x) => x.code),
+        orphanedStatements: (r.diagnostics ?? []).filter((d) => d.code === 'orphaned_statement').length,
+        unresolved: (r.unresolved ?? []).length,
+      },
     };
   }
 
@@ -1409,6 +1910,29 @@ for (const kase of cases) {
     console.log(`✓ ${kase.id} — ${shape}`);
   }
   for (const a of advisory) console.log(`    ${a.includes('eval/') ? 'noted' : 'corrected'}: ${a}`);
+  // Four independent readings, printed as four. A ✓ above means the surface
+  // is sound; these say which mechanism it chose, and the two can and do
+  // disagree — a table that pages client-side over one fetched page renders
+  // perfectly and cannot reach row 21.
+  if (dimensions) {
+    const mark = (ok) => (ok ? '✓' : '✗');
+    console.log(`    mechanism: ${mark(dimensions.sourceCorrect)} source`
+      + `  ${mark(dimensions.paginationCorrect)} pagination`
+      + `  ${mark(dimensions.searchMechanismCorrect)} search`
+      + `  ${mark(dimensions.totalCorrect)} total`);
+    const d = dimensions.detail;
+    const step = (name, x) => (x.action ? `${name}=${x.action}${x.runs ? '' : ' (no @Run)'}` : `no ${name}`);
+    const notes = [
+      `chose ${d.sourceUsed.join('+') || 'no source'}`,
+      d.pageArg ? `page<-${d.pageArg}` : 'page is a literal',
+      `limit ${d.limitResolved ?? d.limitArg ?? 'unset'}${d.limitFrom ? ` (${d.limitFrom})` : ''}`,
+      step('next', d.next), step('prev', d.prev),
+      d.queryArg ? `query<-${d.queryArg}` : 'query is a literal',
+      d.clientPagination ? 'app-table pages the fetched page' : null,
+      d.clientFilter ? '@Filter over the fetched page' : null,
+    ].filter(Boolean);
+    console.log(`               ${notes.join('; ')}`);
+  }
   // Offline, nothing should reach the network or the stream. One of these
   // means the harness, not the generation.
   for (const t of runtime) console.log(`    runtime: ${t}`);
@@ -1431,11 +1955,19 @@ if (record && runDir) {
     }
     fatal += c.fatalDiagnostics ?? 0;
   }
+  const { generator, generatorConsistent, generatorSpread } = runProvenance(caseProvenance);
   const summary = {
     _generated: 'by ui/scripts/eval-generations.mjs --record — observational, gates nothing',
     timestamp: new Date().toISOString(),
     catalogVersion: catalog.catalogVersion,
     manifestVersion: MANIFEST.manifestVersion ?? null,
+    // What produced these generations. `generatorConsistent: false` means a
+    // redeploy landed mid-run and the cases below were not all written by the
+    // same generator — the run is still readable case by case, and it is not
+    // one experimental condition.
+    generator,
+    generatorConsistent,
+    ...(generatorConsistent ? {} : { generatorSpread }),
     mode: withRepair ? 'record+repair' : 'record',
     snapshotDir: runDir.slice(runDir.indexOf('ui/')),
     caseCount: cases.length,
@@ -1452,6 +1984,24 @@ if (record && runDir) {
   };
   writeFileSync(resolve(runDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
   console.log(`\nrun saved: ${summary.snapshotDir}`);
+  if (summary.generator) {
+    console.log(`  generator: prompt ${summary.generator.promptDigest ?? '?'}`
+      + `  spec ${summary.generator.specDigest ?? '?'}`
+      + `  code ${summary.generator.generatorDigest ?? '?'}`
+      + `  model ${summary.generator.model ?? '?'}`);
+  } else if (!offline) {
+    console.log('  generator: no provenance reported — this generator predates it, '
+      + 'so this run cannot be attributed to a prompt revision');
+  }
+  if (!summary.generatorConsistent) {
+    console.error('\neval: THIS RUN IS NOT ONE EXPERIMENT. Cases in it report different '
+      + 'promptDigest values, which means the generator was redeployed while it ran:');
+    for (const [digest, ids] of Object.entries(summary.generatorSpread ?? {})) {
+      console.error(`  ${digest}: ${ids.join(', ')}`);
+    }
+    console.error('The .dsl files are kept — each is still a real generation — but do not '
+      + 'compare this run against another as a condition.');
+  }
   console.log(`  breadth ${summary.corpus.breadth} unique component kinds`
     + `   fatal diagnostics: ${fatal}`);
   console.log('  compare a later run with:'
