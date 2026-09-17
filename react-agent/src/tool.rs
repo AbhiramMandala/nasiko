@@ -28,6 +28,15 @@ pub struct A2aToolArgs {
     pub message: String,
     #[serde(default)]
     pub context_id: Option<String>,
+    /// The model's own 0-100 judgement that this agent can complete this task.
+    ///
+    /// Declared required in the JSON schema but `Option` here: enforcement lives
+    /// in `react_loop.rs`, which inspects the raw arguments BEFORE the call is
+    /// dispatched. Making it non-optional would turn a missing score into a
+    /// serde deserialization failure that surfaces as an opaque tool error,
+    /// rather than the explicit, model-readable rejection the policy needs.
+    #[serde(default)]
+    pub confidence: Option<f64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -142,9 +151,15 @@ impl Tool for A2aTool {
                     "context_id": {
                         "type": "string",
                         "description": "Optional conversation context ID for multi-turn interaction"
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "How confident you are (0-100) that THIS agent can complete THIS task, based on its description and skills. Required. Calls below the platform's configured threshold are rejected and never reach the agent."
                     }
                 },
-                "required": ["message"]
+                "required": ["message", "confidence"]
             }),
         }
     }
@@ -373,6 +388,7 @@ mod tests {
             .call(A2aToolArgs {
                 message: "hi".into(),
                 context_id: None,
+                confidence: Some(100.0),
             })
             .await;
 
@@ -413,6 +429,7 @@ mod tests {
             .call(A2aToolArgs {
                 message: "hi".into(),
                 context_id: Some("sent-ctx".into()),
+                confidence: Some(100.0),
             })
             .await;
 
@@ -456,6 +473,7 @@ mod tests {
             .call(A2aToolArgs {
                 message: "hi".into(),
                 context_id: Some("sent-ctx".into()),
+                confidence: Some(100.0),
             })
             .await;
 
@@ -493,6 +511,7 @@ mod tests {
         let args = serde_json::to_string(&A2aToolArgs {
             message: "hi".into(),
             context_id: Some("sent-ctx".into()),
+            confidence: Some(100.0),
         })
         .unwrap();
         let result = toolset.call(&tool_name, args).await;
@@ -542,6 +561,7 @@ mod tests {
             .call(A2aToolArgs {
                 message: "hi".into(),
                 context_id: None,
+                confidence: Some(100.0),
             })
             .await;
 
@@ -598,6 +618,7 @@ mod tests {
             .call(A2aToolArgs {
                 message: "hi".into(),
                 context_id: Some("sent-ctx".into()),
+                confidence: Some(100.0),
             })
             .await;
 

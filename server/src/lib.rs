@@ -16,7 +16,6 @@ pub mod catalog;
 pub mod chat;
 pub mod coding_agent_otlp;
 pub mod coding_agent_telemetry;
-pub mod context_selection;
 pub mod flows;
 pub mod github;
 pub mod hitl;
@@ -27,6 +26,7 @@ pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
 pub mod openapi;
+pub mod orchestrator_rules;
 pub mod pool;
 pub mod rate_limit;
 pub mod registry_a2a;
@@ -265,12 +265,12 @@ where
         .merge(build_routes)
         .merge(degradable_routes)
         .merge(chat::router())
-        .merge(context_selection::router())
         .merge(coding_agent_telemetry::router())
         .merge(maf::router())
         .merge(secrets::router())
         .merge(llm_configs::router())
         .merge(settings::router())
+        .merge(orchestrator_rules::router())
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
         .merge(llm_router::custom_providers::router())

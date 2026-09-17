@@ -3,6 +3,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::guardrails::Guardrails;
 use crate::models::*;
 use crate::providers::{CompletionResult, LLMProvider, ProviderError};
 
@@ -28,12 +29,13 @@ impl AgentSelector {
         query: &str,
         conversation_history: &[ConversationMessage],
         agents: &[AgentCardSummary],
+        guardrails: &Guardrails,
     ) -> Result<(AgentSelection, CompletionResult), SelectorError> {
         if agents.is_empty() {
             return Err(SelectorError::NoAgentsAvailable);
         }
 
-        let system_prompt = self.build_system_prompt(agents);
+        let system_prompt = self.build_system_prompt(agents, guardrails);
         let user_prompt = self.build_user_prompt(query, conversation_history);
 
         let request = ChatCompletionRequest {
@@ -60,9 +62,13 @@ impl AgentSelector {
                         "properties": {
                             "agent_id":   { "type": "string", "description": "UUID of the selected agent" },
                             "agent_name": { "type": "string", "description": "Name of the selected agent" },
-                            "reasoning":  { "type": "string", "description": "Why this agent was selected" }
+                            "reasoning":  { "type": "string", "description": "Why this agent was selected" },
+                            "confidence": {
+                                "type": "number",
+                                "description": "0-100: how confident you are that THIS agent can complete THIS task, judged from its description and skills. Be honest — a low score is the correct answer when nothing fits."
+                            }
                         },
-                        "required": ["agent_id", "agent_name", "reasoning"],
+                        "required": ["agent_id", "agent_name", "reasoning", "confidence"],
                         "additionalProperties": false
                     }),
                 },
@@ -74,6 +80,17 @@ impl AgentSelector {
 
         let selection: AgentSelection = serde_json::from_str(&result.content)
             .map_err(|e| SelectorError::ParseError(e.to_string()))?;
+
+        // The confidence bar is checked BEFORE the hallucination fallback below:
+        // a selection the model itself rates as a poor match must be refused
+        // outright, not quietly redirected to `agents[0]`, which is how a
+        // refusal used to turn into an arbitrary pick.
+        if selection.confidence < f64::from(guardrails.min_confidence) {
+            return Err(SelectorError::BelowConfidenceBar {
+                best: selection.confidence,
+                required: guardrails.min_confidence,
+            });
+        }
 
         // Validate agent UUID exists in the candidate list; fall back to first if hallucinated.
         if !agents.iter().any(|a| a.id == selection.agent_id)
@@ -87,6 +104,7 @@ impl AgentSelector {
                         "LLM selected unknown agent '{}', falling back to '{}'",
                         selection.agent_name, first.name
                     ),
+                    confidence: selection.confidence,
                 },
                 result,
             ));
@@ -117,7 +135,7 @@ impl AgentSelector {
             .collect())
     }
 
-    fn build_system_prompt(&self, agents: &[AgentCardSummary]) -> String {
+    fn build_system_prompt(&self, agents: &[AgentCardSummary], guardrails: &Guardrails) -> String {
         let list: Vec<String> = agents
             .iter()
             .map(|a| {
@@ -141,9 +159,25 @@ impl AgentSelector {
             })
             .collect();
 
+        let rules = guardrails
+            .rules_prompt
+            .as_deref()
+            .map(|r| format!("\n\n{r}"))
+            .unwrap_or_default();
+
+        // "choose the closest option" is deliberately gone: paired with a
+        // confidence bar it is contradictory advice, and it is the instruction
+        // that made this selector always return *something*.
         format!(
-            "You are a routing assistant. Select the best agent to handle the user's query.\n\nAvailable agents:\n{}\n\nSelect the most specialized agent. If no perfect match, choose the closest option.",
-            list.join("\n\n")
+            "You are a routing assistant. Select the best agent to handle the user's query.{}\n\n\
+             Available agents:\n{}\n\n\
+             Select the most specialized agent that can actually do the task, and report your \
+             honest confidence from 0 to 100. If no agent genuinely fits, say so with a low \
+             confidence rather than picking the closest one — a score below {} means the request \
+             is refused, which is the correct outcome when nothing fits.",
+            rules,
+            list.join("\n\n"),
+            guardrails.min_confidence
         )
     }
 
@@ -212,6 +246,8 @@ fn extract_skills(skills_json: serde_json::Value) -> Vec<super::models::SkillSum
 pub enum SelectorError {
     #[error("no agents available")]
     NoAgentsAvailable,
+    #[error("best candidate scored {best:.0}%, below the required {required}%")]
+    BelowConfidenceBar { best: f64, required: u8 },
     #[error("provider error: {0}")]
     Provider(#[from] ProviderError),
     #[error("failed to parse selection: {0}")]

@@ -14,6 +14,13 @@ pub enum OrchestratorEvent {
         agent: String,
         message: String,
         turn: usize,
+        /// The model's own 0-100 judgement that this agent can do this task, as
+        /// it passed the confidence gate. Carried so a successful delegation is
+        /// as inspectable as a rejected one — without it the score was read,
+        /// checked and discarded, and the only way to see a score was to have a
+        /// call fail. `None` when no bar is configured (nothing was demanded, so
+        /// there is nothing to report).
+        confidence: Option<f64>,
     },
 
     /// Agent returned a result.

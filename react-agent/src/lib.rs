@@ -14,6 +14,9 @@ pub use context::{ContextConfig, ContextManager, ContextWindow};
 pub use error::OrchestratorError;
 pub use events::OrchestratorEvent;
 pub use guard::CallGuard;
-pub use react_loop::{OrchestrationResult, Orchestrator, OrchestratorConfig, TurnTrace};
+pub use react_loop::{
+    NO_AGENT_MATCH_MESSAGE, NO_AGENT_MATCH_SENTINEL, OrchestrationResult, Orchestrator,
+    OrchestratorConfig, TurnTrace, is_refusal_message,
+};
 pub use registry::{AgentInfo, AgentRegistry, AgentSkill, RegistrySource};
 pub use tool::A2aTool;

@@ -476,6 +476,18 @@ async fn create_maf(
                     }
                     _ => None,
                 },
+                // An explicit refusal must not fall through to the word-overlap
+                // catalog pick below: that fallback exists for "the router could
+                // not decide", and using it here would assign the step to an
+                // agent the router just judged unable to do it — reinstating the
+                // exact behaviour the confidence bar removes. Fail the step and
+                // name the bar, so the operator can lower it or write a better
+                // task description.
+                Err(nasiko_orchestrator::RouterError::NoSuitableAgent { best, required }) => {
+                    return bad_request(&format!(
+                        "step {idx}: no agent met the {required}% confidence bar for this task                          (best match scored {best:.0}%). Reword the step, deploy an agent that                          covers it, or lower the bar in Settings → Orchestrator."
+                    ));
+                }
                 Err(_) => None,
             };
 
@@ -665,6 +677,12 @@ async fn update_maf(
                             ));
                         }
                         (result.agent.id, result.agent.name, ep)
+                    }
+                    // Propagated, not fallen back on — see create_maf's own note.
+                    Err(nasiko_orchestrator::RouterError::NoSuitableAgent { best, required }) => {
+                        return bad_request(&format!(
+                            "step {idx}: no agent met the {required}% confidence bar for this task                              (best match scored {best:.0}%). Reword the step, deploy an agent that                              covers it, or lower the bar in Settings → Orchestrator."
+                        ));
                     }
                     Err(_) => {
                         let catalog = match fetch_user_agents(&state.db, user_id).await {

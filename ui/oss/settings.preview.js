@@ -50,8 +50,19 @@ export default {
       oidc_provider_label: "Microsoft",
       oidc_client_secret_configured: true,
       catalog_tabs: "devops, finance, support",
+      orchestrator_min_confidence: 80,
+      orchestrator_rules_enabled: true,
     }],
     ["PUT /api/settings", { ok: true }],
+    // Orchestrator section: the rules list is fetched separately from the
+    // settings row, so both have to be stubbed or the panel renders empty.
+    ["GET /api/orchestrator/rules", [
+      { id: "r-1", name: "No customer PII", description: "Never forward customer names, emails, or account numbers to an agent.", position: 0 },
+      { id: "r-2", name: "Finance first", description: "Route anything about invoices, billing, or spend to the finance agent before any other.", position: 1 },
+      { id: "r-3", name: "Cite the agent", description: "Always say which agent produced a result when relaying it.", position: 2 },
+    ]],
+    ["POST /api/orchestrator/rules", { id: "r-4", name: "New rule", description: "Added from the preview.", position: 3 }],
+    [{ method: "DELETE", path: /^\/api\/orchestrator\/rules\/[^/]+$/ }, { ok: true }],
     // secrets view.
     ["GET /api/secrets", listSecrets],
     ["POST /api/secrets", { status_code: 201, message: "Secret created successfully", data: null }],
@@ -82,6 +93,14 @@ export default {
     "limits": async (page) => {
       await page.click('app-module-nav [data-section="limits"]');
       await page.waitForSelector('[data-panel="limits"].is-active');
+      await page.waitForTimeout(300);
+    },
+    // The delegation policy + the org rules list, the two halves of the
+    // orchestrator guardrails, in one shot.
+    "orchestrator": async (page) => {
+      await page.click('app-module-nav [data-section="orchestrator"]');
+      await page.waitForSelector('[data-panel="orchestrator"].is-active');
+      await page.waitForSelector('#s-rules-list .rule-row');
       await page.waitForTimeout(300);
     },
     "registry": async (page) => {

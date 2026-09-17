@@ -369,6 +369,12 @@ class AgentSteps extends HTMLElement {
         });
         row.dataset.agent = d.agent;
         if (d.message) this.#addSection(row, 'Request', d.message, { markdown: true });
+        // The score this delegation cleared the confidence bar with. Shown as a
+        // plain section rather than a badge so it reads the same as Request /
+        // Output and needs no new styling. Absent when no bar is configured.
+        if (d.confidence != null) {
+          this.#addSection(row, 'Confidence', `${Math.round(d.confidence)}%`);
+        }
         this.#setLabel(`Calling ${d.agent}…`);
         break;
       }
@@ -428,10 +434,17 @@ class AgentSteps extends HTMLElement {
         break;
       }
       case 'policy_rejected': {
+        // Two different gates emit this event, and saying "flow policy" for both
+        // sent anyone debugging a blocked call to the flow limits (depth,
+        // fan-out, token budget) when the real cause was the orchestrator's
+        // confidence bar, which lives on a different settings page entirely.
+        const byConfidence = /confidence/i.test(d.reason || '');
         const row = this.#addRow(`policy:${this.#rows.size}`, {
           kind: 'policy',
           title: d.agent,
-          subtitle: 'blocked by flow policy',
+          subtitle: byConfidence
+            ? 'blocked — below the confidence bar'
+            : 'blocked by flow policy',
         });
         if (d.reason) this.#addSection(row, 'Reason', d.reason);
         this.#settle(row, { blocked: true });

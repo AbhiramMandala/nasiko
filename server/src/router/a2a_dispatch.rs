@@ -21,7 +21,7 @@ use nasiko_react_agent::{
 };
 use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse};
 
-use nasiko_orchestrator::{AgentSelector, ContextTiers, context_selection};
+use nasiko_orchestrator::{AgentSelector, SessionHistory};
 
 use nasiko_flow::FlowContext;
 
@@ -208,16 +208,7 @@ pub async fn a2a_dispatch_handler(
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
-    let history_store = state.history_vector_store();
-    let history = context_selection::fetch_for_user(
-        &state.db,
-        user_id,
-        history_sid,
-        &history_store,
-        &text,
-        &ContextTiers::from_config(&state.config),
-    )
-    .await;
+    let history = SessionHistory::fetch(history_sid, &state.db, 20).await;
 
     let query = history.with_current_query(&text);
 
@@ -234,6 +225,7 @@ pub async fn a2a_dispatch_handler(
                 client_owns_transcript: session_id.is_some(),
                 transcript_role: "user",
                 file_parts: vec![],
+                enforce_delegation: true,
             },
         )
         .await
@@ -386,6 +378,15 @@ pub(crate) struct OrchestratorTurn<'a> {
     pub(crate) transcript_role: &'a str,
     /// File parts uploaded with the request (multipart upload path).
     pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
+    /// Apply the mandatory-delegation policy to this turn.
+    ///
+    /// `true` for a real user turn: the orchestrator must reach an agent or
+    /// refuse. `false` for the HITL resume (`crate::hitl`), whose whole purpose
+    /// is to report the result of a call that already happened — its own prompt
+    /// explicitly tells the model NOT to call anyone again, so enforcing
+    /// delegation there would replace every resumed answer with the refusal
+    /// message and break HITL end to end.
+    pub(crate) enforce_delegation: bool,
 }
 
 pub(crate) async fn orchestrator_stream(
@@ -402,6 +403,7 @@ pub(crate) async fn orchestrator_stream(
         client_owns_transcript,
         transcript_role,
         file_parts,
+        enforce_delegation,
     } = turn;
     // Orchestrator-routed chats never had a `chat_sessions` row, unlike
     // `agent_proxy.rs`'s `ensure_chat_session` for direct agent chat — so
@@ -485,6 +487,10 @@ pub(crate) async fn orchestrator_stream(
         return Err(A2aDispatchError::NoAgents);
     }
 
+    // Operator guardrails, read fresh per turn so a Settings change takes effect
+    // without a restart (same rationale as the routing engine's own load).
+    let guardrails = nasiko_orchestrator::Guardrails::load(&state.db).await;
+
     let config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
@@ -497,6 +503,9 @@ pub(crate) async fn orchestrator_stream(
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         max_turns: 10,
         temperature: Some(0.2),
+        org_rules: guardrails.rules_prompt.clone(),
+        min_confidence: Some(guardrails.min_confidence),
+        require_delegation: enforce_delegation,
         ..Default::default()
     };
 
@@ -647,7 +656,7 @@ pub(crate) async fn orchestrator_stream(
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({"type": "thinking", "content": content})));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
-                        OrchestratorEvent::ToolCall { agent, message, turn } => {
+                        OrchestratorEvent::ToolCall { agent, message, turn, confidence } => {
                             // This ToolCall is the direct result of the reasoning
                             // turn `pending_usage` was reported for — attach the
                             // agent it resolved to before inserting.
@@ -705,6 +714,10 @@ pub(crate) async fn orchestrator_stream(
                                 "agent": agent,
                                 "message": message,
                                 "turn": turn,
+                                // The score this delegation actually cleared the bar with —
+                                // on the wire so it is visible in the UI's step row, not only
+                                // in server logs.
+                                "confidence": confidence,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
@@ -973,8 +986,21 @@ pub(crate) async fn orchestrator_stream(
                             // no recorded history to actually resume, even though the
                             // session row and user message (above) now exist.
                             if !full_reply.is_empty() {
+                                // A refusal is persisted so the human still sees it, but
+                                // tagged so it never re-enters the next turn's reasoning —
+                                // otherwise the model reads its own refusal back as this
+                                // conversation's established behaviour and keeps refusing.
+                                // Compared against the constant the guard substitutes, so
+                                // this cannot drift from the text actually emitted.
+                                let is_refusal =
+                                    nasiko_react_agent::is_refusal_message(&full_reply);
                                 super::usage_meta::insert_assistant_message(
-                                    &db, &context_id, &full_reply, &summary, &flow_id_cleanup,
+                                    &db,
+                                    &context_id,
+                                    &full_reply,
+                                    &summary,
+                                    &flow_id_cleanup,
+                                    is_refusal,
                                 )
                                 .await;
                             }
@@ -1719,6 +1745,7 @@ pub async fn a2a_upload_handler(
             client_owns_transcript: false,
             transcript_role: "user",
             file_parts: collected_files,
+            enforce_delegation: true,
         },
     )
     .await
@@ -1782,21 +1809,13 @@ async fn ensure_orchestrator_chat_session(
         return;
     }
 
-    // 10s dedup guard: mirrors the one in agent_proxy.rs — the CLI's A2A
-    // method negotiation can hit this path twice for the same logical
-    // message when it retries under a different JSON-RPC method name.
-    let _ = sqlx::query(
-        "INSERT INTO chat_messages (session_id, role, content) \
-         SELECT $1, $2, $3 WHERE NOT EXISTS ( \
-             SELECT 1 FROM chat_messages \
-             WHERE session_id = $1 AND role = $2 AND content = $3 \
-               AND timestamp > now() - INTERVAL '10 seconds')",
-    )
-    .bind(context_id)
-    .bind(role)
-    .bind(query)
-    .execute(&state.db)
-    .await;
+    let _ =
+        sqlx::query("INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)")
+            .bind(context_id)
+            .bind(role)
+            .bind(query)
+            .execute(&state.db)
+            .await;
 }
 
 pub(crate) async fn resolve_endpoint(

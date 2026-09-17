@@ -123,6 +123,17 @@ export class AppTextarea extends HTMLElement {
     // border-box (global reset), so scrollHeight — content + padding — is the
     // height to set; the box's border lives on the wrapper, not the textarea.
     let h = ta.scrollHeight;
+    // Nothing to measure: the element is not laid out, because it sits in a
+    // hidden container — a tab panel behind `display: none`, say. scrollHeight
+    // is 0 there, and writing that back pins the box shut, so it renders clipped
+    // the moment the container is shown and never recovers (the next `#grow` only
+    // runs on input, so the user has to type to unstick it). Clearing the inline
+    // height restores the `rows` height from the markup, which is correct until
+    // there is something real to measure.
+    if (!h) {
+      ta.style.height = '';
+      return;
+    }
     if (maxRows) {
       const cs = getComputedStyle(ta);
       const cap = maxRows * (parseFloat(cs.lineHeight) || 18)

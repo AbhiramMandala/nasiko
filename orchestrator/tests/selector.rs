@@ -1,4 +1,5 @@
 use nasiko_orchestrator::AgentSelector;
+use nasiko_orchestrator::Guardrails;
 use nasiko_orchestrator::models::{AgentCardSummary, SkillSummary};
 use nasiko_orchestrator::providers::LLMProvider;
 use uuid::Uuid;
@@ -115,7 +116,9 @@ fn skill_summary_round_trips_through_json() {
 #[tokio::test]
 async fn select_agent_with_empty_list_returns_error() {
     let selector = make_selector();
-    let result = selector.select_agent("some query", &[], &[]).await;
+    let result = selector
+        .select_agent("some query", &[], &[], &Guardrails::default())
+        .await;
     assert!(
         result.is_err(),
         "select_agent should return Err when no agents provided"
@@ -160,7 +163,12 @@ async fn select_agent_with_live_llm_returns_valid_selection() {
     ];
 
     let result = selector
-        .select_agent("write a Rust function", &[], &agents)
+        .select_agent(
+            "write a Rust function",
+            &[],
+            &agents,
+            &Guardrails::default(),
+        )
         .await;
     assert!(result.is_ok(), "expected Ok, got {result:?}");
     let (selection, _usage) = result.unwrap();

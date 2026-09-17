@@ -131,12 +131,18 @@ async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> (u64, u64, f64
 
 /// Persist the assistant reply with its usage columns so chips and the trace
 /// link survive a history reload.
+/// `is_refusal` tags the row so `SessionHistory::fetch` leaves it out of the next
+/// turn's reasoning context. The human still sees it in the transcript; the model
+/// does not see it as prior assistant output. Without this a single refusal makes
+/// the whole session refuse — it reads its own "No available agent can handle
+/// this request" back as the established behaviour of the conversation.
 pub async fn insert_assistant_message(
     db: &PgPool,
     session_id: &str,
     content: &str,
     summary: &UsageSummary,
     trace_id: &str,
+    is_refusal: bool,
 ) {
     let (input, output, cost, estimated) = if summary.has_tokens() {
         (
@@ -151,8 +157,9 @@ pub async fn insert_assistant_message(
     let result = sqlx::query(
         r#"INSERT INTO chat_messages
                (session_id, role, content, input_tokens, output_tokens, model,
-                duration_ms, cost_usd, usage_estimated, trace_id)
-           VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9)"#,
+                duration_ms, cost_usd, usage_estimated, trace_id,
+                metadata)
+           VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
     )
     .bind(session_id)
     .bind(content)
@@ -163,6 +170,7 @@ pub async fn insert_assistant_message(
     .bind(cost)
     .bind(estimated)
     .bind(trace_id)
+    .bind(is_refusal.then(|| serde_json::json!({ "orchestrator_refusal": true })))
     .execute(db)
     .await;
     if let Err(e) = result {
