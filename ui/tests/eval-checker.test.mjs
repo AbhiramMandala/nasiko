@@ -406,3 +406,66 @@ root = AppStack([box, btn, table], "md")
 Done.`;
   assert.deepEqual(check(kase({}), typeThenSubmit).fail, []);
 });
+
+test('an @Filter on a field the source does not return is caught', () => {
+  // The fleet rows carry agent_name and no model at all — AgentFinopsRow,
+  // observability/service.rs. Filtering on "model" matches nothing on every
+  // keystroke and the table renders as though the period had no usage, with
+  // no error at any layer. Three of twelve A/B generations did this.
+  const invented = `Here.
+$model = ""
+setModel = Action([@Set($model, $event)])
+box = AppSearch("md", null, false, false, "Search models...", $model, null, null, null, null, null, setModel)
+rowsQ = Query("fetchTokenopsDashboard", [{}], {attributions: {rows: []}}, "data")
+rows = @Filter(rowsQ.attributions.rows, "model", "contains", $model)
+table = AppTable(rows, 25, "pages", false)
+root = AppStack([box, table], "md")
+Done.`;
+  assert.match(check(kase({}), invented).fail.join(' '),
+    /filters on "model", which fetchTokenopsDashboard does not return/);
+
+  // agent_name is real on the same source, so the same shape passes.
+  assert.deepEqual(check(kase({}), invented.replace(/"model", "contains"/, '"agent_name", "contains"')).fail, []);
+
+  // The same field IS real on the by-model source, so this must stay silent.
+  const byModel = `Here.
+$model = ""
+setModel = Action([@Set($model, $event)])
+box = AppSearch("md", null, false, false, "Search models...", $model, null, null, null, null, null, setModel)
+rowsQ = Query("fetchUsageByModel", ["", 1, 20], [], "data")
+rows = @Filter(rowsQ, "model", "contains", $model)
+table = AppTable(rows, 20, "pages", true)
+root = AppStack([box, table], "md")
+Done.`;
+  assert.deepEqual(check(kase({}), byModel).fail, []);
+});
+
+test('the filter-field check follows chains and guesses at nothing', () => {
+  // A @Filter over a @Filter inherits its source — the second link has to be
+  // checked against the same response, not skipped.
+  const chained = `Here.
+$agent = ""
+$other = ""
+setAgent = Action([@Set($agent, $event)])
+setOther = Action([@Set($other, $event)])
+a = AppSearch("md", null, false, false, "Agent", $agent, null, null, null, null, null, setAgent)
+b = AppSearch("md", null, false, false, "Other", $other, null, null, null, null, null, setOther)
+rowsQ = Query("fetchTokenopsDashboard", [{}], {attributions: {rows: []}}, "data")
+first = @Filter(rowsQ.attributions.rows, "agent_name", "contains", $agent)
+second = @Filter(first, "provider", "contains", $other)
+table = AppTable(second, 25, "pages", false)
+root = AppStack([a, b, table], "md")
+Done.`;
+  const caught = check(kase({}), chained);
+  assert.match(caught.fail.join(' '), /second filters on "provider"/);
+  assert.doesNotMatch(caught.fail.join(' '), /"agent_name"/);
+
+  // A @Filter whose first argument is not a Query cannot be resolved to a
+  // source, and an unresolvable reference is left alone rather than guessed.
+  const literal = `Here.
+rows = @Filter([{name: "a"}, {name: "b"}], "name", "contains", "a")
+table = AppTable(rows, 25, "pages", false)
+root = AppStack([table], "md")
+Done.`;
+  assert.doesNotMatch(check(kase({}), literal).fail.join(' '), /does not return/);
+});

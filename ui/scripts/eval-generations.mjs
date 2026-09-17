@@ -177,8 +177,17 @@ export const CASES = [
   // states: real data, a table as the result, and filters that are actually
   // filters rather than decoration (more than one $state, written by more
   // than one Action). How they are grouped is measured, not required.
+  //
+  // The prompt asked for a MODEL filter until 17 September, and no generation
+  // could satisfy it: AgentFinopsRow carries agent_name and no model, and the
+  // `model` argument matches exactly rather than searching. Eight recorded
+  // runs were scored against a task with no correct answer, three of them
+  // inventing @Filter(rows, "model", …) on a field that is not there. The
+  // case now asks only for filters the fleet source can actually express —
+  // one server-side (range) and one client-side (agent_name), which is still
+  // both halves of the mechanism decision.
   { id: 'grouped-filters',
-    prompt: 'Show TokenOps usage in a table with filters for agent, model, and date range. '
+    prompt: 'Show TokenOps usage in a table, filterable by agent and by date range. '
       + 'Group the filters above the table.',
     expect: { minQueries: 1, minActions: 2, minStates: 2, tags: ['app-table'] } },
   // The other half of rule 20, and the half `grouped-filters` cannot reach.
@@ -650,6 +659,76 @@ function missingQueryRuns(statements) {
   return found;
 }
 
+/** Every field name anywhere in a source's declared response, at any depth. */
+function fieldsOf(sourceName) {
+  const seen = new Set();
+  (function walk(node) {
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (node && typeof node === 'object') {
+      for (const [key, value] of Object.entries(node)) {
+        if (!key.startsWith('$')) seen.add(key);
+        walk(value);
+      }
+    }
+  })(SOURCES_BY_NAME.get(sourceName)?.responseShape);
+  return seen;
+}
+
+/**
+ * An `@Filter` naming a field the source does not return.
+ *
+ * `@Filter(rows, "model", "contains", $model)` against the fleet dashboard
+ * matches nothing, every time: AgentFinopsRow carries agent_name and no model
+ * at all. The table renders empty, which reads as "no usage in this period"
+ * rather than as a filter pointed at a field that does not exist, and no
+ * layer says otherwise — the renderer checks the DSL against the catalog and
+ * never against the response.
+ *
+ * Three of the twelve A/B generations did this, two of them after being shown
+ * the field list.
+ *
+ * Only field validity, nothing about intent. The chain is followed back to
+ * the Query it started from — `@Filter(@Filter(q, …), …)` is two links — and
+ * a first argument that does not resolve to a Query is left alone rather than
+ * guessed at. Read off the same generated manifest ALLOWED_SOURCES comes
+ * from, so the fields checked are the fields the model was shown.
+ */
+function unknownFilterFields(statements) {
+  const lines = statements.map((st) => st.raw ?? '');
+
+  /** statement name -> the source its value ultimately comes from. */
+  const sourceOfName = new Map();
+  for (const l of lines) {
+    const q = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Query\s*\(\s*"([^"]+)"/.exec(l);
+    if (q) sourceOfName.set(q[1], q[2]);
+  }
+  // A @Filter over a @Filter inherits the source. Repeat until nothing new
+  // resolves, so the order statements appear in does not matter.
+  for (let pass = 0; pass < lines.length; pass++) {
+    let grew = false;
+    for (const l of lines) {
+      const f = /^\s*([A-Za-z_$][\w$]*)\s*=\s*@Filter\(\s*([A-Za-z_$][\w$]*)/.exec(l);
+      if (!f || sourceOfName.has(f[1])) continue;
+      const from = sourceOfName.get(f[2]);
+      if (from) { sourceOfName.set(f[1], from); grew = true; }
+    }
+    if (!grew) break;
+  }
+
+  const found = [];
+  for (const l of lines) {
+    for (const m of l.matchAll(/@Filter\(\s*([A-Za-z_$][\w$]*)[^,]*,\s*"([^"]+)"/g)) {
+      const source = sourceOfName.get(m[1]);
+      if (!source) continue;
+      const fields = fieldsOf(source);
+      if (!fields.size || fields.has(m[2])) continue;
+      const named = /^\s*([A-Za-z_$][\w$]*)\s*=/.exec(l);
+      found.push({ statement: named ? named[1] : null, source, field: m[2] });
+    }
+  }
+  return found;
+}
+
 export function evaluateGeneration(text) {
   const diagnostics = [];
   const { statements, prose } = parseBuffer(text);
@@ -691,6 +770,7 @@ export function evaluateGeneration(text) {
     actions: statements.filter((s) => /=\s*Action\(/.test(s.raw ?? '')).length,
     redundantRuns: redundantRuns(statements),
     missingQueryRuns: missingQueryRuns(statements),
+    unknownFilterFields: unknownFilterFields(statements),
     semanticMismatches: semanticMismatches(statements),
     chartKinds: [...chartKinds],
     diagnostics,
@@ -752,6 +832,10 @@ export function check(kase, text) {
   for (const sm of r.semanticMismatches) {
     advisory.push(`diagnostic eval/semantic_control_argument_mismatch: ${sm.control} writes `
       + `${sm.state}, passed to ${sm.source}'s "${sm.argument}" (${sm.query}). ${sm.reason}`);
+  }
+  for (const uf of r.unknownFilterFields) {
+    fail.push(`${uf.statement ?? '@Filter'} filters on "${uf.field}", which ${uf.source} does not `
+      + 'return — it matches nothing, every time, and the surface renders as if there were no data');
   }
   for (const mr of r.missingQueryRuns) {
     fail.push(`${mr.action} sets ${mr.state}, which ${mr.query} reads as an argument, but does `
