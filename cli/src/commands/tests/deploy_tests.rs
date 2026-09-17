@@ -1,4 +1,5 @@
 use super::*;
+use crate::util::dir_references_mcp_gateway;
 
 // ─── resolve_image_deploy_version ────────────────────────────────────────────
 

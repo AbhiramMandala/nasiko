@@ -581,6 +581,29 @@ async fn resolve(
         ResolveOutcome::AlreadyDecided(row) => (row, true),
     };
 
+    // Persist the human's own answer as a `chat_messages` turn — resolving a pause otherwise
+    // left no trace in the session's own transcript at all: `hitl_requests.human_response` holds
+    // it, but nothing ever wrote it into the table the web UI's session view (and `nasiko
+    // sessions`/`history`) actually renders from, so a session with an answered pause silently
+    // jumped from the agent's question straight to whatever it said after resuming, with the
+    // human's own reply invisible. Only on a real resolution (`!already_resolved`), so a
+    // duplicate/idempotent resolve of an already-answered row can't append it twice. Guarded the
+    // same way `agent_proxy.rs`'s own user-message insert is (a short dedup window, not a plain
+    // unconditional insert): defensive here too, since a client could in principle retry this
+    // same POST. Fire-and-forget and silently a no-op for any origin with no
+    // `chat_sessions`-registered session at all (e.g. MAF) — this is specifically for the chat
+    // experience, not a correctness-critical write.
+    if !already_resolved && let Some(session_id) = crate::hitl::stable_session_id(&row) {
+        let answer = crate::hitl::answer_text(&row);
+        if !answer.is_empty() {
+            crate::chat::spawn_dedup_user_message_insert(
+                state.db.clone(),
+                session_id.to_string(),
+                answer,
+            );
+        }
+    }
+
     let mut body = to_response(&row);
     if let Some(obj) = body.as_object_mut() {
         obj.insert("already_resolved".to_string(), json!(already_resolved));

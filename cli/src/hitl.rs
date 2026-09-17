@@ -10,6 +10,19 @@ use nasiko_utils::term;
 
 use crate::api::Client;
 
+/// Wraps `text` in the ANSI SGR `code` when colors are enabled (honors `NO_COLOR`, via
+/// [`term::use_color`]); returns `text` unchanged otherwise. Centralizes what
+/// `nasiko-utils::term`'s own status/box helpers already do, so every hand-colored HITL prompt
+/// string here — the ones `term::print_box` can't reach because they're inside the body it
+/// prints verbatim — respects `NO_COLOR` the same way.
+fn colorize(code: &str, text: &str) -> String {
+    if term::use_color() {
+        format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
 /// A pause raised mid-turn/mid-step, wherever it was discovered — the
 /// `"type":"hitl"` SSE data part for `chat`, or the `hitl[]` entry on a MAF
 /// execution response for `maf`. `id` is always the real `hitl_requests.id`
@@ -45,8 +58,8 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
             let connector = pause.question.get("connector_id").and_then(|v| v.as_str());
             let msg = message("message");
             let mut panel = format!(
-                "{who} wants to run  \x1b[1m{}\x1b[0m",
-                tool.unwrap_or("(unknown tool)")
+                "{who} wants to run  {}",
+                colorize("1", tool.unwrap_or("(unknown tool)"))
             );
             if let Some(c) = connector {
                 panel.push_str(&format!("\nvia connector  {c}"));
@@ -121,8 +134,7 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
             dialoguer::Input::<String>::new()
                 .with_prompt("Once you've finished, press Enter to continue")
                 .allow_empty(true)
-                .interact_text()
-                .ok();
+                .interact_text()?;
             serde_json::json!({ "auth_action": "confirm" })
         }
         // "input_required" and any forward-compatible unknown kind: a plain question, or —
@@ -147,10 +159,9 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
                 Some(opts) => prompt_single_select(&opts)?,
                 None => {
                     let answer = dialoguer::Input::<String>::new()
-                        .with_prompt("\x1b[1;36m❯ you\x1b[0m")
+                        .with_prompt(colorize("1;36", "❯ you"))
                         .allow_empty(true)
-                        .interact_text()
-                        .unwrap_or_default();
+                        .interact_text()?;
                     serde_json::json!({ "answer": answer })
                 }
             }
@@ -161,11 +172,14 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
         Client::from_active_cluster()?.post_json(&format!("/hitl/{}/resolve", pause.id), &body)?;
 
     if resp.get("already_resolved").and_then(|v| v.as_bool()) == Some(true) {
-        eprintln!("  \x1b[2m(already resolved by someone else)\x1b[0m");
+        eprintln!("  {}", colorize("2", "(already resolved by someone else)"));
     } else {
         eprintln!(
-            "  \x1b[2m(HITL ID: {} — for reference only)\x1b[0m",
-            pause.id
+            "  {}",
+            colorize(
+                "2",
+                &format!("(HITL ID: {} — for reference only)", pause.id)
+            )
         );
     }
     println!();
@@ -221,11 +235,10 @@ fn prompt_single_select(opts: &StructuredOptions) -> Result<serde_json::Value> {
             .with_prompt("Choose one")
             .items(&opts.labels)
             .default(0)
-            .interact()
-            .unwrap_or(0);
+            .interact()?;
         opts.labels[choice].clone()
     };
-    eprintln!("  \x1b[32m✓\x1b[0m {answer}");
+    eprintln!("  {} {answer}", colorize("32", "✓"));
     Ok(serde_json::json!({ "answer": answer }))
 }
 
@@ -244,9 +257,15 @@ fn select_with_inline_custom(labels: &[String]) -> Result<String> {
     // (see its module doc) so `nasiko chat ... | tee log` never gets raw cursor/clear codes
     // mixed into piped stdout.
     eprintln!(
-        "\x1b[1m? Choose one\x1b[0m \x1b[2m(\u{2191}/\u{2193} to move, enter to confirm)\x1b[0m"
+        "{} {}",
+        colorize("1", "? Choose one"),
+        colorize("2", "(\u{2191}/\u{2193} to move, enter to confirm)")
     );
-    run_select_with_inline_custom(labels)
+    let (selected, custom) = run_combo_select(labels, false)?;
+    Ok(match selected.first() {
+        Some(&i) => labels[i].clone(),
+        None => custom.unwrap_or_default(),
+    })
 }
 
 /// RAII guard so raw mode (and bracketed paste) are always turned back off — on a normal
@@ -274,75 +293,6 @@ impl Drop for RawMode {
     }
 }
 
-fn run_select_with_inline_custom(labels: &[String]) -> Result<String> {
-    use crossterm::cursor::{MoveToColumn, RestorePosition, SavePosition};
-    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, read};
-    use crossterm::execute;
-    use crossterm::terminal::{Clear, ClearType};
-    use std::io::{Write, stderr};
-
-    let custom_idx = labels.len();
-    let row_count = labels.len() + 1;
-    let mut cursor_idx = 0usize;
-    let mut buffer = String::new();
-    let mut out = stderr();
-
-    let _raw = RawMode::enable()?;
-    // Saved once, before the first frame; every redraw restores to exactly this spot and
-    // clears everything below it, rather than moving the cursor up by a fixed row count. That
-    // sidesteps tracking "how many terminal rows did the last frame use" entirely, so a long
-    // custom answer or label that wraps to two physical lines can never desync the redraw the
-    // way `MoveUp(row_count)` did.
-    execute!(out, SavePosition)?;
-    loop {
-        execute!(out, RestorePosition, Clear(ClearType::FromCursorDown))?;
-        for (i, label) in labels.iter().enumerate() {
-            execute!(out, MoveToColumn(0))?;
-            if i == cursor_idx {
-                write!(out, "\x1b[36m❯ {label}\x1b[0m")?;
-            } else {
-                write!(out, "  {label}")?;
-            }
-            write!(out, "\r\n")?;
-        }
-        execute!(out, MoveToColumn(0))?;
-        if cursor_idx == custom_idx {
-            write!(out, "\x1b[36m❯ Something else: {buffer}\x1b[0m▏")?;
-        } else {
-            write!(out, "  Something else…")?;
-        }
-        write!(out, "\r\n")?;
-        out.flush()?;
-
-        match read()? {
-            Event::Paste(text) if cursor_idx == custom_idx => {
-                buffer.push_str(&text.replace(['\n', '\r'], " "));
-            }
-            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    anyhow::bail!("cancelled");
-                }
-                KeyCode::Up => cursor_idx = cursor_idx.checked_sub(1).unwrap_or(row_count - 1),
-                KeyCode::Down => cursor_idx = (cursor_idx + 1) % row_count,
-                KeyCode::Enter => {
-                    return Ok(if cursor_idx == custom_idx {
-                        buffer
-                    } else {
-                        labels[cursor_idx].clone()
-                    });
-                }
-                KeyCode::Backspace if cursor_idx == custom_idx => {
-                    buffer.pop();
-                }
-                KeyCode::Char(c) if cursor_idx == custom_idx => buffer.push(c),
-                KeyCode::Esc => anyhow::bail!("cancelled"),
-                _ => {}
-            },
-            _ => {}
-        }
-    }
-}
-
 /// Multi-select: checkboxes for the offered labels, plus — when custom input is allowed — a
 /// trailing "Other" checkbox whose free-text field opens the instant it's checked (via
 /// [`multi_select_with_inline_custom`]) rather than as a separate step after confirming the whole
@@ -355,8 +305,7 @@ fn prompt_multi_select(opts: &StructuredOptions) -> Result<serde_json::Value> {
         let chosen = dialoguer::MultiSelect::with_theme(&ColorfulTheme::default())
             .with_prompt("Select all that apply (space to toggle, enter to confirm)")
             .items(&opts.labels)
-            .interact()
-            .unwrap_or_default();
+            .interact()?;
         let selected = chosen.into_iter().map(|i| opts.labels[i].clone()).collect();
         (selected, None)
     };
@@ -367,7 +316,7 @@ fn prompt_multi_select(opts: &StructuredOptions) -> Result<serde_json::Value> {
         (false, None) => selected.join(", "),
         (false, Some(c)) => format!("{}, {c}", selected.join(", ")),
     };
-    eprintln!("  \x1b[32m✓\x1b[0m {summary}");
+    eprintln!("  {} {summary}", colorize("32", "✓"));
 
     Ok(match custom {
         Some(custom) => serde_json::json!({ "answer": selected, "custom_answer": custom }),
@@ -386,69 +335,133 @@ fn prompt_multi_select(opts: &StructuredOptions) -> Result<serde_json::Value> {
 fn multi_select_with_inline_custom(labels: &[String]) -> Result<(Vec<String>, Option<String>)> {
     // stderr, not stdout: same reasoning as `select_with_inline_custom`.
     eprintln!(
-        "\x1b[1m? Select all that apply\x1b[0m \x1b[2m(space to toggle, \u{2191}/\u{2193} to move, enter to confirm)\x1b[0m"
+        "{} {}",
+        colorize("1", "? Select all that apply"),
+        colorize(
+            "2",
+            "(space to toggle, \u{2191}/\u{2193} to move, enter to confirm)"
+        )
     );
-    run_multi_select_with_inline_custom(labels)
+    let (selected, custom) = run_combo_select(labels, true)?;
+    let selected = selected.into_iter().map(|i| labels[i].clone()).collect();
+    Ok((selected, custom))
 }
 
-fn run_multi_select_with_inline_custom(labels: &[String]) -> Result<(Vec<String>, Option<String>)> {
-    use crossterm::cursor::{MoveToColumn, RestorePosition, SavePosition};
+/// Shared raw-mode combo loop behind both [`select_with_inline_custom`] (`multi: false`) and
+/// [`multi_select_with_inline_custom`] (`multi: true`) — the redraw (relative-cursor-movement
+/// framing, tracked via `prev_rows`), Ctrl+C/Esc/arrow-key handling, and paste-into-buffer logic
+/// are identical between the two widgets; only the row glyph, what Enter returns, Space, and the
+/// Backspace/typing activation rule differ, and those are branched on `multi` below. Returns the
+/// indices of predefined labels the human picked (single-select: at most one, via Enter on a
+/// non-custom row) plus the free-text custom answer if the trailing row was used instead
+/// (single-select) or in addition (multi-select, "Other" plus any checked labels).
+fn run_combo_select(labels: &[String], multi: bool) -> Result<(Vec<usize>, Option<String>)> {
+    use crossterm::cursor::{MoveToColumn, MoveUp};
     use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, read};
     use crossterm::execute;
     use crossterm::terminal::{Clear, ClearType};
     use std::io::{Write, stderr};
 
-    let other_idx = labels.len();
+    let custom_idx = labels.len();
     let row_count = labels.len() + 1;
     let mut checked = vec![false; labels.len()];
-    let mut other_checked = false;
+    let mut custom_checked = false;
     let mut cursor_idx = 0usize;
     let mut buffer = String::new();
     let mut out = stderr();
 
     let _raw = RawMode::enable()?;
-    // See `run_select_with_inline_custom`'s comment: restoring to one saved spot and clearing
-    // below it avoids tracking a fixed row count, which would desync on a wrapped line.
-    execute!(out, SavePosition)?;
+    // Tracks exactly how many physical terminal rows the previous frame occupied — including a
+    // long custom answer or label wrapping to more than one physical row — so the next redraw can
+    // move the cursor up by that many rows before clearing. This replaced a `SavePosition`/
+    // `RestorePosition` scheme (ANSI DECSC/DECRC): those save an *absolute* screen coordinate,
+    // which goes stale the moment the terminal scrolls — a real risk here, since 8+ option rows
+    // routinely exceed a modest terminal's visible height — leaving stale rows on screen instead
+    // of being overwritten (confirmed live: a multi-select with several options showed the first
+    // couple of rows duplicated many times over). Relative cursor movement has no such ambiguity.
+    let mut prev_rows = 0usize;
     loop {
-        execute!(out, RestorePosition, Clear(ClearType::FromCursorDown))?;
-        // Matches dialoguer's own `ColorfulTheme` checkbox styling exactly (green ✔ / magenta
-        // ⬚, cyan label when focused, no arrow) so this combo widget looks identical to the
-        // plain `MultiSelect` path just above it.
+        let cols = term::terminal_cols().max(1);
+        if prev_rows > 0 {
+            execute!(
+                out,
+                MoveUp(prev_rows.min(u16::MAX as usize) as u16),
+                MoveToColumn(0),
+                Clear(ClearType::FromCursorDown)
+            )?;
+        } else {
+            execute!(out, Clear(ClearType::FromCursorDown))?;
+        }
+
+        // Multi-select matches dialoguer's own `ColorfulTheme` checkbox styling (green ✔ /
+        // magenta ⬚, cyan label when focused); single-select has no checkbox, just a `❯` cursor.
+        let mut lines: Vec<String> = Vec::with_capacity(row_count);
         for (i, label) in labels.iter().enumerate() {
-            execute!(out, MoveToColumn(0))?;
-            let glyph = if checked[i] {
-                "\x1b[32m✔\x1b[0m"
+            if multi {
+                let glyph = if checked[i] {
+                    colorize("32", "✔")
+                } else {
+                    colorize("35", "⬚")
+                };
+                let text = if i == cursor_idx {
+                    colorize("36", label)
+                } else {
+                    label.clone()
+                };
+                lines.push(format!("{glyph} {text}"));
+            } else if i == cursor_idx {
+                lines.push(colorize("36", &format!("❯ {label}")));
             } else {
-                "\x1b[35m⬚\x1b[0m"
-            };
-            if i == cursor_idx {
-                write!(out, "{glyph} \x1b[36m{label}\x1b[0m")?;
-            } else {
-                write!(out, "{glyph} {label}")?;
+                lines.push(format!("  {label}"));
             }
-            write!(out, "\r\n")?;
         }
-        execute!(out, MoveToColumn(0))?;
-        let other_glyph = if other_checked {
-            "\x1b[32m✔\x1b[0m"
+        if multi {
+            let glyph = if custom_checked {
+                colorize("32", "✔")
+            } else {
+                colorize("35", "⬚")
+            };
+            let text = if cursor_idx == custom_idx {
+                colorize("36", "Other")
+            } else {
+                "Other".to_string()
+            };
+            let mut line = format!("{glyph} {text}");
+            if custom_checked {
+                line.push_str(&colorize("36", &format!(": {buffer}")));
+                line.push('▏');
+            }
+            lines.push(line);
+        } else if cursor_idx == custom_idx {
+            lines.push(format!(
+                "{}▏",
+                colorize("36", &format!("❯ Something else: {buffer}"))
+            ));
         } else {
-            "\x1b[35m⬚\x1b[0m"
-        };
-        if cursor_idx == other_idx {
-            write!(out, "{other_glyph} \x1b[36mOther\x1b[0m")?;
-        } else {
-            write!(out, "{other_glyph} Other")?;
+            lines.push("  Something else…".to_string());
         }
-        if other_checked {
-            write!(out, "\x1b[36m: {buffer}\x1b[0m▏")?;
+
+        prev_rows = 0;
+        for line in &lines {
+            write!(out, "{line}\r\n")?;
+            prev_rows += term::visible_width(line).max(1).div_ceil(cols);
         }
-        write!(out, "\r\n")?;
         out.flush()?;
 
+        // Single-select: the custom field is "active" exactly when the cursor sits on it —
+        // there's no separate checked state. Multi-select: activity is the persistent
+        // "Other" checkbox, independent of where the cursor currently is.
+        let custom_active = if multi {
+            custom_checked
+        } else {
+            cursor_idx == custom_idx
+        };
+
         match read()? {
-            Event::Paste(text) if cursor_idx == other_idx => {
-                other_checked = true;
+            Event::Paste(text) if cursor_idx == custom_idx => {
+                if multi {
+                    custom_checked = true;
+                }
                 buffer.push_str(&text.replace(['\n', '\r'], " "));
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
@@ -458,41 +471,46 @@ fn run_multi_select_with_inline_custom(labels: &[String]) -> Result<(Vec<String>
                 KeyCode::Up => cursor_idx = cursor_idx.checked_sub(1).unwrap_or(row_count - 1),
                 KeyCode::Down => cursor_idx = (cursor_idx + 1) % row_count,
                 KeyCode::Enter => {
-                    let selected = labels
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| checked[*i])
-                        .map(|(_, label)| label.clone())
-                        .collect();
-                    let custom = (other_checked && !buffer.trim().is_empty()).then_some(buffer);
-                    return Ok((selected, custom));
+                    if multi {
+                        let selected = (0..labels.len()).filter(|&i| checked[i]).collect();
+                        let custom =
+                            (custom_checked && !buffer.trim().is_empty()).then_some(buffer);
+                        return Ok((selected, custom));
+                    }
+                    return Ok(if cursor_idx == custom_idx {
+                        (vec![], Some(buffer))
+                    } else {
+                        (vec![cursor_idx], None)
+                    });
                 }
-                KeyCode::Char(' ') => {
-                    if cursor_idx == other_idx {
-                        if other_checked {
+                // Multi-select only: Space is a toggle everywhere, except it types a literal
+                // space once "Other" is already checked (so free text can contain spaces).
+                // Single-select has no toggle concept, so Space falls through to the generic
+                // typing arm below like any other character.
+                KeyCode::Char(' ') if multi => {
+                    if cursor_idx == custom_idx {
+                        if custom_checked {
                             buffer.push(' ');
                         } else {
-                            other_checked = true;
+                            custom_checked = true;
                         }
                     } else {
                         checked[cursor_idx] = !checked[cursor_idx];
                     }
                 }
-                KeyCode::Backspace if cursor_idx == other_idx && other_checked => {
-                    if buffer.pop().is_none() {
-                        other_checked = false;
+                KeyCode::Backspace if cursor_idx == custom_idx && custom_active => {
+                    if buffer.pop().is_none() && multi {
+                        custom_checked = false;
                     }
                 }
-                // Typing any other character on "Other" before it's checked starts editing
-                // right away — matching the single-select combo's "type immediately" promise —
-                // instead of being silently swallowed until the user happens to press Space
-                // first. Space itself keeps its dedicated arm above (a bare toggle, consistent
-                // with every other checkbox row) rather than also falling through to this one.
-                KeyCode::Char(c) if cursor_idx == other_idx && !other_checked => {
-                    other_checked = true;
+                // Multi-select only: typing on "Other" before it's checked starts editing right
+                // away — matching the single-select combo's "type immediately" promise — instead
+                // of being silently swallowed until the human happens to press Space first.
+                KeyCode::Char(c) if cursor_idx == custom_idx && multi && !custom_checked => {
+                    custom_checked = true;
                     buffer.push(c);
                 }
-                KeyCode::Char(c) if cursor_idx == other_idx && other_checked => buffer.push(c),
+                KeyCode::Char(c) if cursor_idx == custom_idx && custom_active => buffer.push(c),
                 KeyCode::Esc => anyhow::bail!("cancelled"),
                 _ => {}
             },

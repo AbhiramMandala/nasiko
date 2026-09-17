@@ -50,7 +50,11 @@ impl Drop for StatusHandle {
     }
 }
 
-fn use_color() -> bool {
+/// Whether ANSI color/SGR codes should be emitted, per the `NO_COLOR` convention
+/// (<https://no-color.org>). Shared so every caller that colors terminal output —
+/// this module's own status/box helpers and `nasiko chat`'s HITL prompts — honors
+/// the same env var consistently instead of each hardcoding its own check.
+pub fn use_color() -> bool {
     std::env::var_os("NO_COLOR").is_none()
 }
 
@@ -172,6 +176,9 @@ fn format_elapsed(duration: Duration) -> String {
 /// (`\x1b]8;;url\x1b\\...\x1b]8;;\x1b\\`) escape sequences — both appear in box content (colored
 /// labels, `nasiko chat`'s linkified replies) and would otherwise throw off [`print_box`]'s
 /// padding and word-wrap width, which must size by what's actually on screen, not byte length.
+/// Counts by `char`, not real display width, so CJK/fullwidth/emoji (which render 2 columns
+/// wide in most terminals) undercount and can throw off box alignment — not worth pulling in
+/// `unicode-width` for; known ceiling, not a bug to chase.
 pub fn visible_width(s: &str) -> usize {
     let mut width = 0;
     let mut chars = s.chars().peekable();
@@ -278,7 +285,7 @@ pub fn print_box(title: Option<&str>, body: &str, color: &str) {
 }
 
 /// Returns the terminal column count, falling back to `$COLUMNS`, then 80.
-fn terminal_cols() -> usize {
+pub fn terminal_cols() -> usize {
     crossterm::terminal::size()
         .ok()
         .map(|(w, _)| w as usize)

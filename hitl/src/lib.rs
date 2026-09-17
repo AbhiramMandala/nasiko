@@ -15,7 +15,8 @@ pub use dispatcher::{DispatcherConfig, NotifyError, ResumeNotifier};
 pub use notifier::RuntimeResumeNotifier;
 pub use repo::{NewAuthRequired, NewSessionGrant, NewToolApproval, ResolveDecision};
 pub use store::{
-    FailureKind, HitlError, HitlStore, PgHitlStore, ResolveOutcome, resolve_display_row,
+    FailureKind, HitlError, HitlStore, PgHitlStore, ResolveOutcome, is_valid_mcp_mirror_link,
+    resolve_display_row,
 };
 pub use types::{
     AUTH_ACTION_CONFIRM, AUTH_ACTION_START, AUTH_OUTCOME_CONFIRMED, AUTH_OUTCOME_DENIED,

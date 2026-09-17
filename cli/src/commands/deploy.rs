@@ -182,6 +182,11 @@ fn deploy_from_directory(
         .or_else(|| card.get("name").and_then(|n| n.as_str()).map(String::from))
         .unwrap_or_else(|| "agent".into());
 
+    // Checked once up front, same signal `upload.rs`'s `source_references_mcp_gateway` uses for
+    // `nasiko upload` — this path builds straight from `root` and never zips it, so it walks the
+    // directory directly instead of scanning zip entries.
+    let references_mcp_gateway = crate::util::dir_references_mcp_gateway(root);
+
     // Find the agent first, so we can catch a same-version redeploy below.
     let agent_file = root.join(AGENT_FILE);
     let existing = find_existing_agent_binding(client, &agent_file, &agent_name)?;
@@ -255,6 +260,9 @@ fn deploy_from_directory(
                 eprintln!("  ! Deployed, but failed to update AgentCard.json's version: {e}");
             }
             println!("\n✓ Deployed {agent_name}:{version} (id: {id})");
+            if references_mcp_gateway {
+                print_mcp_gateway_hint(&agent_name);
+            }
             return Ok(());
         }
         None => {
@@ -298,7 +306,21 @@ fn deploy_from_directory(
         eprintln!("  ! Deployed, but failed to update AgentCard.json's version: {e}");
     }
     println!("\n✓ Deployed {agent_name}:{version} (id: {agent_id})");
+    if references_mcp_gateway {
+        print_mcp_gateway_hint(&agent_name);
+    }
     Ok(())
+}
+
+/// Same "give it tool access" suggestion `upload.rs` prints for a source that references the MCP
+/// gateway — kept here too since `deploy_from_directory` has its own two success points.
+fn print_mcp_gateway_hint(agent_name: &str) {
+    println!(
+        "\nThis agent's source references the MCP gateway — to give it tool access:\n\
+         \x20 nasiko mcp catalog                                      # find a connector\n\
+         \x20 nasiko mcp connect --connector-id <id>                  # connect your account (if not already)\n\
+         \x20 nasiko mcp agent-tools enable {agent_name} <id>                   # grant this agent access"
+    );
 }
 
 // Same eight values `deploy_with_version_flags` threads into
