@@ -26,7 +26,6 @@ const HELP_TEXT: &str = "\
   use        Switch active cluster
   clusters   List configured control planes
   auth       Authentication (login/status/logout)
-  budget     PACMS conversation-history budget tier (get/set)
 
 \x1b[33mCreate:\x1b[0m
   new        Scaffold a new agent project
@@ -43,6 +42,8 @@ const HELP_TEXT: &str = "\
   create-session  Create a new session on the active cluster
   history    Show message history for a session
   delete-session  Delete a session
+  context-strategy  How your chat history is selected (pacms/topk/lastk)
+  budget     How much chat history a request carries (low/medium/high)
 
 \x1b[33mOperate:\x1b[0m
   push       Build + push image to cluster registry (no deploy)

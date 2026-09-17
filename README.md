@@ -476,6 +476,8 @@ pull from the artifact registry.
 | `nasiko stop` / `start` / `restart` / `scale <n>` | Agent lifecycle |
 | `nasiko rm --name <agent>` | Terminate + deregister an agent (positional `id` only accepts a UUID) |
 | `nasiko chat <agent>` | Interactive or one-shot A2A chat |
+| `nasiko context-strategy get\|set <pacms\|topk\|lastk>` | How your chat history is selected (see below) |
+| `nasiko budget get\|set <low\|medium\|high>` | How much of it a request may carry |
 | `nasiko secrets set` | Configure encrypted per-agent secrets |
 | `nasiko mcp` | Manage MCP Gateway connectors and tool permissions |
 | `nasiko observe` | Observability: sessions, traces, spans, stats, FinOps |
@@ -484,6 +486,34 @@ pull from the artifact registry.
 | `nasiko github` | GitHub integration (status/repos/connect/disconnect/clone) |
 
 Run `nasiko --help` for the full, workflow-ordered command list.
+
+### Conversation-history context selection
+
+Multi-turn chats replay earlier turns back to the agent. Two per-user settings control how
+much of that history a request carries, and how the slice is chosen. Both apply to your own
+account only — no admin rights needed — and take effect on the next message.
+
+```sh
+nasiko context-strategy set pacms     # how the slice is chosen
+nasiko budget set medium              # how big the slice may be
+nasiko context-strategy get           # Context strategy: pacms
+nasiko budget get                     # PACMS budget: medium
+```
+
+| Strategy | Picks | Ordering | Embeddings |
+|---|---|---|---|
+| `pacms` (default) | A token-budget-fitting, query-relevant, coverage-diversified subset, always keeping the most recent few turns | chronological | yes |
+| `topk` | The *k* query/answer pairs most similar to your message | by relevance, not chronological | yes |
+| `lastk` | The last *k* messages, whatever they are | chronological | no |
+
+The tier sets the size: `pacms` reads it as a **token budget**, `topk`/`lastk` as an **item
+count**. What each tier is worth is operator-configured, so it varies by deployment —
+defaults are 500/1000/5000 tokens and 1/5/20 items for low/medium/high (`PACMS_BUDGET_*`
+and `CONTEXT_K_*`).
+
+`pacms` and `topk` call the embeddings API, so they need `OPENAI_API_KEY` set on the
+server; both degrade to plain recency if it is unavailable rather than failing the request.
+`lastk` never embeds.
 
 ## Environment Variables
 
