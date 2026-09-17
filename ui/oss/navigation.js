@@ -58,6 +58,13 @@ const BASE_ITEMS = () => [
   { title: "Builds", url: "/builds", icon: "cube", module: "agents" },
   { title: "Secrets", url: "/secrets", icon: "lock", module: "settings" },
   { title: "Settings", url: "/settings", icon: "settings", rail: true, module: "settings" },
+  // backup-restore.html is a multi-tenant-ui page (ee/tenant-server's BFF),
+  // not one of ui/oss's own — it 404s outside that BFF, so it's only listed
+  // when window.nasikoChrome (injected by the BFF at serve time, see
+  // ee/tenant-server/src/mtui.rs) says this page is being served through it.
+  ...(window.nasikoChrome?.workspaceSwitcher
+    ? [{ title: "Backup & Restore", url: "/backup-restore.html", icon: "cloudDownload", module: "settings" }]
+    : []),
 ];
 
 // Rail entry for the views Weave generated and the user chose to keep. Absent
@@ -300,6 +307,11 @@ const fetchModuleNav = async (module) => {
         : orchestratorOnly ? 'Session' : 'All sessions';
       base = { ...base, groups: [...base.groups, { label, items: sessions }] };
     }
+  }
+  // Same BFF-only gate as the top-level nav entry above — plain page link
+  // (not a `section`), since backup-restore.html is its own document.
+  if (base && module === 'settings' && window.nasikoChrome?.workspaceSwitcher) {
+    base = { ...base, groups: [...base.groups, { label: 'Backup', items: [{ label: 'Backup & Restore', url: '/backup-restore.html' }] }] };
   }
   const ext = await extension();
   if (!ext.moduleNav) return base;
