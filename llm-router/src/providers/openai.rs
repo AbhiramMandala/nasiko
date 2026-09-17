@@ -3,13 +3,17 @@
 //! precedence (resolved wins when set, else the request's), force non-streaming on the
 //! non-stream path, call the provider, and report the bare resolved model.
 //!
-//! Streaming is implemented in step 7; until then `chat_stream` returns an error.
+//! This spoke also serves every custom (DB-registered) endpoint, including Azure
+//! OpenAI. The bodies are identical across those; only the envelope — URL layout and
+//! credential header — differs, and that lives in [`ProviderDialect`] rather than in a
+//! forked copy of this file.
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::json;
 
+use super::dialect::ProviderDialect;
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError};
 use crate::ir::{ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse};
@@ -19,11 +23,23 @@ pub struct OpenAiProvider {
     http: reqwest::Client,
     /// API base, e.g. `https://api.openai.com/v1` (overridable for tests).
     base: String,
+    /// Envelope this endpoint speaks — URL layout + credential header.
+    dialect: ProviderDialect,
 }
 
 impl OpenAiProvider {
+    /// A plain OpenAI-compatible endpoint at `base`.
     pub fn new(http: reqwest::Client, base: String) -> Self {
-        Self { http, base }
+        Self::with_dialect(http, base, ProviderDialect::OpenAi)
+    }
+
+    /// An OpenAI-shaped endpoint at `base` reached through `dialect`.
+    pub fn with_dialect(http: reqwest::Client, base: String, dialect: ProviderDialect) -> Self {
+        Self {
+            http,
+            base,
+            dialect,
+        }
     }
 
     /// Map a non-2xx provider response to a [`ProviderError`]. 429 and 5xx are
@@ -35,6 +51,25 @@ impl OpenAiProvider {
             retryable: status.as_u16() == 429 || status.is_server_error(),
         }
     }
+}
+
+/// The OpenAI `{"error":{"param":…,"code":"unsupported_…"}}` rejection shape: the name
+/// of a parameter the model does not accept, or `None` for any other 400.
+fn openai_droppable_param(body: &str) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_str(body).ok()?;
+    let error = body.get("error")?;
+    let code = error
+        .get("code")
+        .and_then(|c| c.as_str())
+        .unwrap_or_default();
+    // Only these codes mean "this param/value isn't accepted here" — safe to drop.
+    if !matches!(code, "unsupported_value" | "unsupported_parameter") {
+        return None;
+    }
+    error
+        .get("param")
+        .and_then(|p| p.as_str())
+        .map(str::to_string)
 }
 
 #[async_trait]
@@ -58,9 +93,12 @@ impl ProviderClient for OpenAiProvider {
         out.stream = Some(false);
 
         let resp = self
-            .http
-            .post(format!("{}/chat/completions", self.base))
-            .bearer_auth(&cfg.api_key)
+            .dialect
+            .authorize(
+                self.http
+                    .post(self.dialect.chat_url(&self.base, &cfg.model)),
+                &cfg.api_key,
+            )
             .json(&out)
             .send()
             .await
@@ -102,9 +140,12 @@ impl ProviderClient for OpenAiProvider {
         );
 
         let resp = self
-            .http
-            .post(format!("{}/chat/completions", self.base))
-            .bearer_auth(&cfg.api_key)
+            .dialect
+            .authorize(
+                self.http
+                    .post(self.dialect.chat_url(&self.base, &cfg.model)),
+                &cfg.api_key,
+            )
             .json(&out)
             .send()
             .await
@@ -149,9 +190,12 @@ impl ProviderClient for OpenAiProvider {
         out.model = Some(cfg.model.clone());
 
         let resp = self
-            .http
-            .post(format!("{}/embeddings", self.base))
-            .bearer_auth(&cfg.api_key)
+            .dialect
+            .authorize(
+                self.http
+                    .post(self.dialect.embeddings_url(&self.base, &cfg.model)),
+                &cfg.api_key,
+            )
             .json(&out)
             .send()
             .await
@@ -176,6 +220,10 @@ impl ProviderClient for OpenAiProvider {
     /// that's the shape, return the param so the executor can drop it and retry the same
     /// model (dropping a param makes OpenAI apply its default — e.g. temperature → 1).
     /// This is general: any param OpenAI rejects this way is handled without special-casing.
+    ///
+    /// A dialect that reports the same class of failure differently (Azure names the
+    /// field in a bare message) gets a second look through
+    /// [`ProviderDialect::extra_droppable_param`].
     fn droppable_param(&self, err: &ProviderError) -> Option<String> {
         let ProviderError::Status {
             status, message, ..
@@ -186,18 +234,7 @@ impl ProviderClient for OpenAiProvider {
         if *status != 400 {
             return None;
         }
-        let body: serde_json::Value = serde_json::from_str(message).ok()?;
-        let error = body.get("error")?;
-        let code = error
-            .get("code")
-            .and_then(|c| c.as_str())
-            .unwrap_or_default();
-        // Only these codes mean "this param/value isn't accepted here" — safe to drop.
-        if !matches!(code, "unsupported_value" | "unsupported_parameter") {
-            return None;
-        }
-        let param = error.get("param").and_then(|p| p.as_str())?;
-        Some(param.to_string())
+        openai_droppable_param(message).or_else(|| self.dialect.extra_droppable_param(message))
     }
 }
 
@@ -221,7 +258,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: None,
+            custom_endpoint: None,
             is_coding_agent: false,
         }
     }
@@ -278,6 +315,85 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn azure_dialect_addresses_the_deployment_with_an_api_key_header() {
+        // The whole point of the dialect: same body, different envelope. Azure puts the
+        // deployment in the path, demands `?api-version=`, and takes the credential in
+        // `api-key` — `Authorization: Bearer` there means an Entra ID token and fails.
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock(
+                "POST",
+                "/openai/deployments/prod-gpt4o/chat/completions?api-version=2024-10-21",
+            )
+            .match_header("api-key", "sk-test")
+            .match_header("authorization", mockito::Matcher::Missing)
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "model": "prod-gpt4o", "stream": false }),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion",
+                    "model": "gpt-4o-2024-08-06",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "hi" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let provider = OpenAiProvider::with_dialect(
+            reqwest::Client::new(),
+            server.url(),
+            ProviderDialect::AzureOpenAi {
+                api_version: "2024-10-21".into(),
+            },
+        );
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+        .unwrap();
+        // The resolved "model" is the Azure deployment name.
+        let resp = provider
+            .chat(&req, &resolved("prod-gpt4o", None))
+            .await
+            .unwrap();
+
+        m.assert_async().await;
+        assert_eq!(resp.model, "prod-gpt4o");
+    }
+
+    #[test]
+    fn azure_param_rejection_without_a_param_field_is_still_droppable() {
+        // Azure rejects a param its api-version doesn't know with a bare message and no
+        // `param` field, so the OpenAI shape alone would miss it and the call would fail
+        // instead of retrying without the param.
+        let azure = OpenAiProvider::with_dialect(
+            reqwest::Client::new(),
+            "https://acme.openai.azure.com".into(),
+            ProviderDialect::AzureOpenAi {
+                api_version: "2023-05-15".into(),
+            },
+        );
+        let err = ProviderError::Status {
+            status: 400,
+            message: r#"{"error":{"code":"BadRequest","message":"Unrecognized request argument supplied: max_completion_tokens"}}"#.into(),
+            retryable: false,
+        };
+        assert_eq!(
+            azure.droppable_param(&err).as_deref(),
+            Some("max_completion_tokens")
+        );
+        // The plain dialect does not read Azure's shape.
+        let plain = OpenAiProvider::new(reqwest::Client::new(), "https://x".into());
+        assert_eq!(plain.droppable_param(&err), None);
     }
 
     #[tokio::test]

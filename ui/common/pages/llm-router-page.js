@@ -51,6 +51,7 @@ class LlmRouterPage extends HTMLElement {
   #view = 'list'; // 'list' | 'form' | 'custom-form'
   #editingConfig = null; // null = create, config object = edit
   #editingCustom = null; // null = create, provider object = edit
+  #customKind = 'openai'; // endpoint dialect for the add-custom-provider form
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -176,7 +177,8 @@ class LlmRouterPage extends HTMLElement {
           </div>
           <div class="tier-rows">
             <div class="tier-row"><span class="tier-label">Endpoint</span><span class="tier-model">${escHtml(p.base_url)}</span></div>
-            ${p.default_model ? `<div class="tier-row"><span class="tier-label">Default model</span><span class="tier-model">${escHtml(p.default_model)}</span></div>` : ''}
+            ${p.kind === 'azure-openai' ? `<div class="tier-row"><span class="tier-label">Type</span><span class="tier-model">Azure OpenAI (api-version ${escHtml(p.api_version || '—')})</span></div>` : ''}
+            ${p.default_model ? `<div class="tier-row"><span class="tier-label">${p.kind === 'azure-openai' ? 'Default deployment' : 'Default model'}</span><span class="tier-model">${escHtml(p.default_model)}</span></div>` : ''}
             <div class="tier-row"><span class="tier-label">Last sync</span><span class="tier-model">${escHtml(when)}</span></div>
           </div>
           ${p.last_sync_error ? `<p class="form-error">${escHtml(p.last_sync_error)}</p>` : ''}
@@ -187,6 +189,10 @@ class LlmRouterPage extends HTMLElement {
   #customFormHtml() {
     const c = this.#editingCustom;
     const isEdit = !!c;
+    // Azure needs an api-version and speaks in deployment names, so the labels,
+    // hints and placeholders around it change with the endpoint type. On a new
+    // provider this is the initial state; #onChange re-renders it on switch.
+    const isAzure = (c?.kind || this.#customKind) === 'azure-openai';
     return `
       <div class="form-head">
         <app-button class="back-btn" variant="tertiary" icon-only size="sm"
@@ -196,9 +202,22 @@ class LlmRouterPage extends HTMLElement {
       <form class="config-form" id="custom-form">
         <app-input id="cp-display" name="display_name" label="Name"
           placeholder="e.g. Internal gateway" value="${escAttr(c?.display_name || '')}" required></app-input>
+        <app-select id="cp-kind" name="kind" label="Endpoint type"
+          options='[{"value":"openai","label":"OpenAI-compatible"},{"value":"azure-openai","label":"Azure OpenAI"}]'
+          value="${escAttr(c?.kind || 'openai')}"
+          hint="Azure routes by deployment name and authenticates differently, so it needs its own setting."
+          ${isEdit ? 'disabled' : ''}></app-select>
         <app-input id="cp-base" name="base_url" label="Base URL"
-          placeholder="https://gateway.internal/v1" value="${escAttr(c?.base_url || '')}"
-          hint="OpenAI-compatible base URL (the part before /chat/completions)." required></app-input>
+          placeholder="${isAzure ? 'https://my-resource.openai.azure.com' : 'https://gateway.internal/v1'}"
+          value="${escAttr(c?.base_url || '')}"
+          hint="${isAzure
+            ? 'Your Azure OpenAI resource URL — the platform appends /openai/deployments/… itself.'
+            : 'OpenAI-compatible base URL (the part before /chat/completions).'}" required></app-input>
+        <div id="cp-api-version-field" ${isAzure ? '' : 'hidden'}>
+          <app-input id="cp-api-version" name="api_version" label="API version"
+            placeholder="e.g. 2024-10-21" value="${escAttr(c?.api_version || '')}"
+            hint="Azure requires an api-version on every call. Use one your deployments support."></app-input>
+        </div>
         <app-input id="cp-key" name="api_key" type="password" reveal
           label="API key" placeholder="${isEdit ? 'Leave blank to keep current key' : 'Paste the API key'}"
           autocomplete="off" hint="Stored encrypted; used to call the endpoint."
@@ -423,6 +442,8 @@ class LlmRouterPage extends HTMLElement {
       this.#testConnection();
     } else if (action === 'new-custom-provider') {
       this.#editingCustom = null;
+      // A fresh form starts on the default endpoint type, not whatever the last one used.
+      this.#customKind = 'openai';
       this.#view = 'custom-form';
       this.#render();
     } else if (action === 'back') {
@@ -469,6 +490,12 @@ class LlmRouterPage extends HTMLElement {
   }
 
   #onChange(e) {
+    if (e.target.name === 'kind') {
+      // Re-render so every Azure-specific label, hint and field follows the choice.
+      this.#customKind = e.target.value;
+      this.#render();
+      return;
+    }
     if (e.target.name === 'secret-mode') {
       const useNew = e.target.value === 'new';
       this.querySelector('#saved-secret-field').hidden = useNew;
@@ -618,19 +645,24 @@ class LlmRouterPage extends HTMLElement {
     const isEdit = !!this.#editingCustom;
     this.#customError(null);
     const key = form.querySelector('#cp-key').value;
+    const kind = form.querySelector('#cp-kind')?.value || 'openai';
+    const apiVersion = form.querySelector('#cp-api-version')?.value.trim() || '';
     const base = {
       display_name: form.querySelector('#cp-display').value.trim(),
       base_url: form.querySelector('#cp-base').value.trim(),
+      // Only Azure carries an api-version; sending an empty one would blank a stored value.
+      ...(apiVersion ? { api_version: apiVersion } : {}),
     };
     let result;
     try {
       if (isEdit) {
+        // `kind` is immutable, so it is not sent on edit; blank key ⇒ keep current key.
         await call('updateCustomProvider', this.#editingCustom.id, {
           ...base,
           ...(key ? { api_key: key } : {}),
         });
       } else {
-        result = await call('createCustomProvider', { ...base, api_key: key });
+        result = await call('createCustomProvider', { ...base, kind, api_key: key });
       }
     } catch (err) {
       this.#customError(err?.message || 'Failed to save custom provider');
@@ -674,7 +706,11 @@ class LlmRouterPage extends HTMLElement {
     if (!form) return;
     const base_url = form.querySelector('#cp-base').value.trim();
     const api_key = form.querySelector('#cp-key').value;
+    const kind = form.querySelector('#cp-kind')?.value || 'openai';
+    const apiVersion = form.querySelector('#cp-api-version')?.value.trim() || '';
+    const resultEl = this.querySelector('#test-result');
     this.#customError(null);
+    if (resultEl) resultEl.hidden = true;
     if (!base_url || !api_key) {
       this.#customError('Base URL and API key are required to test.');
       return;
@@ -682,9 +718,13 @@ class LlmRouterPage extends HTMLElement {
     const btn = this.querySelector('[data-action="test-connection"]');
     if (btn) btn.setAttribute('loading', '');
     try {
-      const res = await call('testCustomProvider', { base_url, api_key });
+      const res = await call('testCustomProvider', {
+        base_url,
+        api_key,
+        kind,
+        ...(apiVersion ? { api_version: apiVersion } : {}),
+      });
       const models = (res?.data ?? res ?? {}).models ?? [];
-      const resultEl = this.querySelector('#test-result');
       resultEl.innerHTML = `
         <div class="test-result-box">
           <p><strong>Models discovered: ${models.length}</strong></p>

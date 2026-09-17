@@ -21,10 +21,12 @@ use crate::resolver::ResolvedConfig;
 
 /// Construct the provider client for a resolved config. Used by the handler and the
 /// fallback executor. Built-in providers use their base URL from [`GatewayConfig`];
-/// a custom (DB-registered) provider is OpenAI-compatible and uses the base URL
-/// carried on the resolved config. A non-built-in provider with no `base_url` is a
-/// server-side gap (500) — the resolver populates it for every registered custom
-/// provider, so a missing one means the row was dropped mid-flight.
+/// a custom (DB-registered) provider is OpenAI-shaped and uses the endpoint carried on
+/// the resolved config — its base URL plus the [`ProviderDialect`] describing how that
+/// endpoint wants to be addressed (plain OpenAI, Azure OpenAI, …). A non-built-in
+/// provider with no endpoint is a server-side gap (500) — the resolver populates it for
+/// every registered custom provider, so a missing one means the row was dropped
+/// mid-flight.
 pub fn provider_for(
     resolved: &ResolvedConfig,
     http: &reqwest::Client,
@@ -49,20 +51,23 @@ pub fn provider_for(
             cfg.openrouter_http_referer.clone(),
             cfg.openrouter_x_title.clone(),
         ))),
-        other => match &resolved.base_url {
-            // Custom providers speak the OpenAI wire shape at their own base URL.
-            Some(base_url) => Ok(Box::new(OpenAiProvider::new(
+        other => match &resolved.custom_endpoint {
+            // Custom providers carry OpenAI-shaped bodies; the dialect supplies the
+            // envelope (URL layout + credential header) for their endpoint.
+            Some(endpoint) => Ok(Box::new(OpenAiProvider::with_dialect(
                 http.clone(),
-                base_url.clone(),
+                endpoint.base_url.clone(),
+                endpoint.dialect.clone(),
             ))),
             None => Err(GatewayError::Internal(format!(
-                "provider '{other}' has no base URL (unregistered custom provider?)"
+                "provider '{other}' has no endpoint (unregistered custom provider?)"
             ))),
         },
     }
 }
 
 pub mod anthropic;
+pub mod dialect;
 pub mod fallback;
 pub mod gemini;
 pub mod openai;
@@ -70,6 +75,7 @@ pub mod openrouter;
 pub(crate) mod sse;
 
 pub use anthropic::AnthropicProvider;
+pub use dialect::{KIND_AZURE_OPENAI, KIND_OPENAI, ProviderDialect};
 pub use gemini::GeminiProvider;
 pub use openai::OpenAiProvider;
 pub use openrouter::OpenRouterProvider;
@@ -235,6 +241,14 @@ mod tests {
     }
 
     fn resolved(provider: &str, base_url: Option<&str>) -> ResolvedConfig {
+        resolved_with(provider, base_url, ProviderDialect::OpenAi)
+    }
+
+    fn resolved_with(
+        provider: &str,
+        base_url: Option<&str>,
+        dialect: ProviderDialect,
+    ) -> ResolvedConfig {
         ResolvedConfig {
             provider: provider.into(),
             model: "m".into(),
@@ -249,7 +263,10 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: base_url.map(str::to_string),
+            custom_endpoint: base_url.map(|base_url| crate::resolver::CustomEndpoint {
+                base_url: base_url.to_string(),
+                dialect,
+            }),
             is_coding_agent: false,
         }
     }
@@ -258,10 +275,24 @@ mod tests {
     fn provider_for_custom_builds_against_overridden_base_url() {
         let http = reqwest::Client::new();
         let cfg = GatewayConfig::default();
-        // A custom (non-built-in) provider with a base URL builds an OpenAI-compatible
-        // client against that URL.
+        // A custom (non-built-in) provider with an endpoint builds an OpenAI-shaped
+        // client against that URL — in either dialect.
         assert!(provider_for(&resolved("my-gateway", Some("https://gw/v1")), &http, &cfg).is_ok());
-        // ...but with no base URL it is a server-side gap (the resolver should have
+        assert!(
+            provider_for(
+                &resolved_with(
+                    "azure-prod",
+                    Some("https://acme.openai.azure.com"),
+                    ProviderDialect::AzureOpenAi {
+                        api_version: "2024-10-21".into()
+                    }
+                ),
+                &http,
+                &cfg
+            )
+            .is_ok()
+        );
+        // ...but with no endpoint it is a server-side gap (the resolver should have
         // populated it), surfaced as an Internal error rather than a mis-target.
         assert!(matches!(
             provider_for(&resolved("my-gateway", None), &http, &cfg),

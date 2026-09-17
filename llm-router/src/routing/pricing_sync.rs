@@ -119,6 +119,11 @@ fn portkey_slug(label: &str, api_base: &str) -> String {
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))
         .unwrap_or_default();
+    // Azure resources live on a per-customer host, so they match by suffix rather
+    // than by an exact host.
+    if host.ends_with(".openai.azure.com") {
+        return "azure-openai".to_string();
+    }
     match host.as_str() {
         "api.openai.com" => "openai",
         "api.deepseek.com" => "deepseek",

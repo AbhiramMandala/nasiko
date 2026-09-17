@@ -27,28 +27,47 @@ use nasiko_secrets::SecretsCrypto;
 use sqlx::PgPool;
 
 use crate::config::GatewayConfig;
+use crate::providers::ProviderDialect;
 
-/// A `custom_providers` row as the catalog + pricing sweeps need it: an
-/// OpenAI-compatible endpoint registered in the DB rather than via env config. The
+/// A `custom_providers` row as the catalog + pricing sweeps need it: an endpoint
+/// registered in the DB rather than via env config, plus the dialect it speaks. The
 /// api key is already decrypted (platform-settings scope).
 #[derive(Debug, Clone)]
 pub(crate) struct CustomProviderEntry {
     pub label: String,
     pub base_url: String,
+    pub dialect: ProviderDialect,
     pub api_key: String,
     pub default_model: Option<String>,
     pub catalog_sync_enabled: bool,
 }
 
 /// The raw `custom_providers` columns the sweeps read.
-type CustomProviderRow = (String, String, String, Option<String>, bool);
+type CustomProviderRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    bool,
+);
 
 fn row_to_entry(row: CustomProviderRow) -> Option<CustomProviderEntry> {
-    let (label, base_url, encrypted_api_key, default_model, catalog_sync_enabled) = row;
+    let (
+        label,
+        base_url,
+        kind,
+        api_version,
+        encrypted_api_key,
+        default_model,
+        catalog_sync_enabled,
+    ) = row;
     match SecretsCrypto::for_platform_settings().decrypt(&encrypted_api_key) {
         Ok(api_key) => Some(CustomProviderEntry {
             label,
             base_url,
+            dialect: ProviderDialect::from_kind(&kind, api_version.as_deref()),
             api_key,
             default_model,
             catalog_sync_enabled,
@@ -68,7 +87,8 @@ fn row_to_entry(row: CustomProviderRow) -> Option<CustomProviderEntry> {
 /// an empty list so the built-in sweep still runs.
 pub(crate) async fn load_custom_providers(db: &PgPool) -> Vec<CustomProviderEntry> {
     let rows: Vec<CustomProviderRow> = match sqlx::query_as(
-        "SELECT label, base_url, encrypted_api_key, default_model, catalog_sync_enabled \
+        "SELECT label, base_url, kind, api_version, encrypted_api_key, default_model, \
+                catalog_sync_enabled \
          FROM custom_providers WHERE deleted_at IS NULL",
     )
     .fetch_all(db)
@@ -92,7 +112,8 @@ async fn load_custom_provider(
     label: &str,
 ) -> Result<Option<CustomProviderEntry>, sqlx::Error> {
     let row: Option<CustomProviderRow> = sqlx::query_as(
-        "SELECT label, base_url, encrypted_api_key, default_model, catalog_sync_enabled \
+        "SELECT label, base_url, kind, api_version, encrypted_api_key, default_model, \
+                catalog_sync_enabled \
          FROM custom_providers WHERE label = $1 AND deleted_at IS NULL",
     )
     .bind(label)
@@ -125,7 +146,7 @@ pub(crate) fn priceable_providers(
     // which is expected and harmless).
     let mut out: Vec<(String, String)> = listable_providers(cfg, &[])
         .into_iter()
-        .map(|(label, base, _key)| (label, base))
+        .map(|(label, base, _key, _dialect)| (label, base))
         .collect();
     if !cfg.platform_gemini_api_key.is_empty() {
         out.push(("gemini".to_string(), cfg.gemini_api_base.clone()));
@@ -148,7 +169,7 @@ pub(crate) fn priceable_providers(
 pub(crate) fn listable_providers(
     cfg: &GatewayConfig,
     custom: &[CustomProviderEntry],
-) -> Vec<(String, String, String)> {
+) -> Vec<(String, String, String, ProviderDialect)> {
     let mut out = Vec::new();
     if !cfg.platform_openai_api_key.is_empty() {
         // Any OpenAI-compatible endpoint (OpenAI, DeepSeek, vLLM, …) shares this shape.
@@ -156,6 +177,7 @@ pub(crate) fn listable_providers(
             "openai".to_string(),
             cfg.openai_api_base.clone(),
             cfg.platform_openai_api_key.clone(),
+            ProviderDialect::OpenAi,
         ));
     }
     if !cfg.platform_anthropic_api_key.is_empty() {
@@ -163,11 +185,19 @@ pub(crate) fn listable_providers(
             "anthropic".to_string(),
             cfg.anthropic_api_base.clone(),
             cfg.platform_anthropic_api_key.clone(),
+            // Anthropic's listing is OpenAI-shaped apart from its credential header,
+            // which `fetch_models` applies by provider name.
+            ProviderDialect::OpenAi,
         ));
     }
     for c in custom {
         if c.catalog_sync_enabled {
-            out.push((c.label.clone(), c.base_url.clone(), c.api_key.clone()));
+            out.push((
+                c.label.clone(),
+                c.base_url.clone(),
+                c.api_key.clone(),
+                c.dialect.clone(),
+            ));
         }
     }
     out
@@ -193,13 +223,15 @@ async fn fetch_models(
     provider: &str,
     url: &str,
     api_key: &str,
+    dialect: &ProviderDialect,
 ) -> Option<HashSet<String>> {
     let req = http.get(url).timeout(FETCH_TIMEOUT);
     let req = match provider {
+        // Anthropic is a built-in whose listing takes its own credential headers.
         "anthropic" => req
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01"),
-        _ => req.bearer_auth(api_key),
+        _ => dialect.authorize(req, api_key),
     };
     let resp = req
         .send()
@@ -277,9 +309,10 @@ async fn fetch_and_sync(
     provider: &str,
     base: &str,
     key: &str,
+    dialect: &ProviderDialect,
 ) -> Result<(usize, HashSet<String>), SyncSkip> {
-    let url = format!("{base}/models");
-    let Some(models) = fetch_models(http, provider, &url, key).await else {
+    let url = dialect.models_url(base);
+    let Some(models) = fetch_models(http, provider, &url, key, dialect).await else {
         return Err(SyncSkip::Unavailable);
     };
     if models.is_empty() {
@@ -342,7 +375,16 @@ async fn sync_and_record(
     http: &reqwest::Client,
     entry: &CustomProviderEntry,
 ) -> Result<usize, sqlx::Error> {
-    match fetch_and_sync(db, http, &entry.label, &entry.base_url, &entry.api_key).await {
+    match fetch_and_sync(
+        db,
+        http,
+        &entry.label,
+        &entry.base_url,
+        &entry.api_key,
+        &entry.dialect,
+    )
+    .await
+    {
         Ok((n, models)) => {
             let default_error = default_model_error(entry, &models);
             record_sync_status(db, &entry.label, "ok", default_error.as_deref()).await;
@@ -391,8 +433,8 @@ pub async fn sync_one(
 pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig) -> usize {
     let mut synced = 0;
     // Built-in providers: no last_sync bookkeeping (their health is env config).
-    for (provider, base, key) in listable_providers(cfg, &[]) {
-        match fetch_and_sync(db, http, &provider, &base, &key).await {
+    for (provider, base, key, dialect) in listable_providers(cfg, &[]) {
+        match fetch_and_sync(db, http, &provider, &base, &key, &dialect).await {
             Ok(_) => synced += 1,
             Err(SyncSkip::Unavailable) => {} // already logged by fetch_models
             Err(SyncSkip::NoModels) => tracing::warn!(
@@ -478,6 +520,7 @@ mod tests {
         CustomProviderEntry {
             label: label.into(),
             base_url: format!("https://{label}.internal/v1"),
+            dialect: ProviderDialect::OpenAi,
             api_key: format!("sk-{label}"),
             default_model: Some("m".into()),
             catalog_sync_enabled: sync_enabled,

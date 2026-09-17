@@ -280,12 +280,13 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
         } else {
             true
         };
-        // A same-provider fallback inherits the primary's base URL, so a custom
-        // provider's own fallback still targets its endpoint; a cross-provider
-        // fallback uses the built-in base URL (and a custom cross-provider name has
-        // no platform key, so it is already skipped by the `is_empty` guard above).
-        let base_url = if provider == primary.provider {
-            primary.base_url.clone()
+        // A same-provider fallback inherits the primary's endpoint, so a custom
+        // provider's own fallback still targets it in the same dialect; a
+        // cross-provider fallback uses the built-in base URL (and a custom
+        // cross-provider name has no platform key, so it is already skipped by the
+        // `is_empty` guard above).
+        let custom_endpoint = if provider == primary.provider {
+            primary.custom_endpoint.clone()
         } else {
             None
         };
@@ -305,7 +306,7 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             tier2_model: None,
             tier3_model: None,
             platform_paid,
-            base_url,
+            custom_endpoint,
             is_coding_agent: primary.is_coding_agent,
         });
     }
@@ -347,7 +348,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: None,
+            custom_endpoint: None,
             is_coding_agent: false,
         }
     }
@@ -394,19 +395,28 @@ mod tests {
     }
 
     #[test]
-    fn same_provider_custom_fallback_inherits_base_url() {
+    fn same_provider_custom_fallback_inherits_endpoint() {
         // A same-provider fallback for a custom provider reuses the primary key and
-        // carries the primary's base URL so the attempt still targets the endpoint.
-        let mut p = primary("my-gateway", vec!["my-gateway/llama-3.1-8b"]);
-        p.base_url = Some("https://gw.internal/v1".into());
+        // carries the primary's endpoint — URL *and* dialect — so the attempt still
+        // targets it the same way.
+        let mut p = primary("azure-prod", vec!["azure-prod/prod-gpt4o-mini"]);
+        let dialect = crate::providers::ProviderDialect::AzureOpenAi {
+            api_version: "2024-10-21".into(),
+        };
+        p.custom_endpoint = Some(crate::resolver::CustomEndpoint {
+            base_url: "https://acme.openai.azure.com".into(),
+            dialect: dialect.clone(),
+        });
         let attempts = build_attempts(&p, &cfg("sk-platform"));
         assert_eq!(attempts.len(), 2);
-        assert_eq!(attempts[1].provider, "my-gateway");
+        assert_eq!(attempts[1].provider, "azure-prod");
         assert_eq!(attempts[1].api_key, "primary-key"); // same-provider ⇒ reuse key
-        assert_eq!(
-            attempts[1].base_url.as_deref(),
-            Some("https://gw.internal/v1")
-        );
+        let endpoint = attempts[1]
+            .custom_endpoint
+            .as_ref()
+            .expect("same-provider fallback keeps the endpoint");
+        assert_eq!(endpoint.base_url, "https://acme.openai.azure.com");
+        assert_eq!(endpoint.dialect, dialect);
     }
 
     #[tokio::test]
@@ -455,7 +465,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: None,
+            custom_endpoint: None,
             is_coding_agent: false,
         };
         let req: ChatRequest =
@@ -509,7 +519,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: None,
+            custom_endpoint: None,
             is_coding_agent: false,
         };
         let req: EmbeddingsRequest =
@@ -587,7 +597,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: None,
+            custom_endpoint: None,
             is_coding_agent: false,
         };
         let req: ChatRequest =
@@ -663,7 +673,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: None,
+            custom_endpoint: None,
             is_coding_agent: false,
         };
         let req: ChatRequest = serde_json::from_value(json!({
@@ -712,7 +722,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: None,
+            custom_endpoint: None,
             is_coding_agent: false,
         };
         let req: ChatRequest =

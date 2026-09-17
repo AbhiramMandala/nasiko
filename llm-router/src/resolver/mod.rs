@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use crate::config::GatewayConfig;
 use crate::error::GatewayError;
+use crate::providers::ProviderDialect;
 
 mod cache;
 pub use cache::ConfigCache;
@@ -92,10 +93,11 @@ pub struct ResolvedConfig {
     /// `user_secrets` key). Recorded on usage rows so platform-paid spend can be
     /// metered separately from bring-your-own-key spend.
     pub platform_paid: bool,
-    /// Base URL for a custom (DB-registered) provider. `None` ⇒ use the built-in
-    /// base URL from [`GatewayConfig`]. Resolved from the `custom_providers` row so
-    /// the destination URL follows the resolved config rather than only env config.
-    pub base_url: Option<String>,
+    /// The custom (DB-registered) endpoint this call goes to. `None` ⇒ a built-in
+    /// provider at its env-configured base URL. Resolved from the `custom_providers`
+    /// row so both the destination URL and the wire dialect follow the resolved
+    /// config rather than only env config.
+    pub custom_endpoint: Option<CustomEndpoint>,
     /// Whether this agent is a coding-agent CLI integration. See
     /// [`AgentConfigResult::is_coding_agent`] — the chat handler uses this to derive
     /// model-routing boundary signals from the transcript instead of the (permanently
@@ -134,15 +136,27 @@ pub struct AgentConfigResult {
     pub is_coding_agent: bool,
 }
 
-/// An admin-registered, OpenAI-compatible custom provider (`custom_providers`
-/// table), resolved by its `label`. Read per request through [`RegistryStore`] —
-/// deliberately uncached so a key rotation or delete takes effect immediately on
-/// every replica (the api key is decrypted in the impl, so mocks can supply
-/// plaintext).
+/// Where a custom endpoint lives and how it wants to be addressed. Carried on
+/// [`ResolvedConfig`] so the provider client can build the right URL and credential
+/// header without re-reading the DB.
+#[derive(Debug, Clone)]
+pub struct CustomEndpoint {
+    /// The endpoint's base URL (used in place of the built-in one).
+    pub base_url: String,
+    /// Wire dialect: plain OpenAI-compatible, Azure OpenAI, …
+    pub dialect: ProviderDialect,
+}
+
+/// An admin-registered custom provider (`custom_providers` table), resolved by its
+/// `label`. Read per request through [`RegistryStore`] — deliberately uncached so a
+/// key rotation or delete takes effect immediately on every replica (the api key is
+/// decrypted in the impl, so mocks can supply plaintext).
 #[derive(Debug, Clone)]
 pub struct CustomProvider {
-    /// The endpoint's OpenAI-compatible base URL (used in place of the built-in one).
+    /// The endpoint's base URL (used in place of the built-in one).
     pub base_url: String,
+    /// Wire dialect this endpoint speaks, from the row's `kind`/`api_version`.
+    pub dialect: ProviderDialect,
     /// The decrypted platform-owned API key for this endpoint.
     pub api_key: String,
     /// Last-resort model, used in place of the global `DEFAULT_MODEL`. See §4.3.
@@ -346,14 +360,14 @@ impl RegistryStore for PgRegistry {
         &self,
         label: &str,
     ) -> Result<Option<CustomProvider>, sqlx::Error> {
-        let row: Option<(String, String, Option<String>)> = sqlx::query_as(
-            "SELECT base_url, encrypted_api_key, default_model \
+        let row: Option<(String, String, Option<String>, String, Option<String>)> = sqlx::query_as(
+            "SELECT base_url, kind, api_version, encrypted_api_key, default_model \
              FROM custom_providers WHERE label = $1 AND deleted_at IS NULL",
         )
         .bind(label)
         .fetch_optional(&self.db)
         .await?;
-        let Some((base_url, encrypted_api_key, default_model)) = row else {
+        let Some((base_url, kind, api_version, encrypted_api_key, default_model)) = row else {
             return Ok(None);
         };
         // Shared platform credential (not a per-user secret) → platform-settings scope.
@@ -362,6 +376,7 @@ impl RegistryStore for PgRegistry {
             .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
         Ok(Some(CustomProvider {
             base_url,
+            dialect: ProviderDialect::from_kind(&kind, api_version.as_deref()),
             api_key,
             default_model,
         }))
@@ -446,7 +461,10 @@ pub async fn resolve(
         tier2_model: plan.tier2_model,
         tier3_model: plan.tier3_model,
         platform_paid,
-        base_url: custom.as_ref().map(|c| c.base_url.clone()),
+        custom_endpoint: custom.as_ref().map(|c| CustomEndpoint {
+            base_url: c.base_url.clone(),
+            dialect: c.dialect.clone(),
+        }),
         is_coding_agent,
     };
     tracing::info!(
@@ -1179,6 +1197,7 @@ mod tests {
     fn custom(base_url: &str, api_key: &str, default_model: &str) -> CustomProvider {
         CustomProvider {
             base_url: base_url.into(),
+            dialect: ProviderDialect::OpenAi,
             api_key: api_key.into(),
             default_model: Some(default_model.into()),
         }
@@ -1212,7 +1231,11 @@ mod tests {
         assert_eq!(r.model, "llama-3.1-70b");
         assert_eq!(r.litellm_model, "my-gateway/llama-3.1-70b");
         assert_eq!(r.api_key, "sk-gateway");
-        assert_eq!(r.base_url.as_deref(), Some("https://gw.internal/v1"));
+        let endpoint = r
+            .custom_endpoint
+            .expect("custom provider resolves an endpoint");
+        assert_eq!(endpoint.base_url, "https://gw.internal/v1");
+        assert_eq!(endpoint.dialect, ProviderDialect::OpenAi);
     }
 
     #[tokio::test]
