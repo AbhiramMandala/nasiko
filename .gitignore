@@ -48,10 +48,6 @@ values.json
 /docs/MCP_SERVER_UPLOAD_EE_IMPLEMENTATION_PLAN.md
 /docs/MCP_UPLOAD_PLAN_OSS.md
 .preview-shots/
-
-# Vendored third-party eval dataset, not product code.
-/LongMemEval-main/
-
 /_to_delete/
 # The same holder, anywhere. The Cowork device mount cannot unlink, so a file
 # that has to go gets moved into one of these instead of deleted; a stray one

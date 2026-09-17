@@ -26,6 +26,7 @@ const HELP_TEXT: &str = "\
   use        Switch active cluster
   clusters   List configured control planes
   auth       Authentication (login/status/logout)
+  budget     PACMS conversation-history budget tier (get/set)
 
 \x1b[33mCreate:\x1b[0m
   new        Scaffold a new agent project
@@ -152,6 +153,16 @@ enum CpCommands {
         #[command(subcommand)]
         command: AuthCommands,
     },
+    /// Manage your PACMS conversation-history budget tier (low/medium/high)
+    Budget {
+        #[command(subcommand)]
+        command: BudgetCommands,
+    },
+    /// Manage your conversation-history context-selection strategy (pacms/topk/lastk)
+    ContextStrategy {
+        #[command(subcommand)]
+        command: ContextStrategyCommands,
+    },
     /// Internal Claude Code credential helper
     #[command(name = "__claude-token", hide = true)]
     ClaudeToken,
@@ -190,6 +201,28 @@ enum AuthCommands {
     Logout,
     /// Print the authenticated user's profile
     Whoami,
+}
+
+#[derive(Subcommand)]
+enum BudgetCommands {
+    /// Show your current PACMS budget tier
+    Get,
+    /// Set your PACMS budget tier
+    Set {
+        /// low, medium, or high
+        level: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ContextStrategyCommands {
+    /// Show your current context-selection strategy
+    Get,
+    /// Set your context-selection strategy
+    Set {
+        /// pacms, topk, or lastk
+        strategy: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -254,6 +287,16 @@ fn main() -> Result<()> {
                 AuthCommands::Status => commands::auth::status(),
                 AuthCommands::Logout => commands::auth::logout(),
                 AuthCommands::Whoami => commands::auth::whoami(),
+            },
+            CpCommands::Budget { command } => match command {
+                BudgetCommands::Get => commands::context_selection::budget_get(),
+                BudgetCommands::Set { level } => commands::context_selection::budget_set(&level),
+            },
+            CpCommands::ContextStrategy { command } => match command {
+                ContextStrategyCommands::Get => commands::context_selection::strategy_get(),
+                ContextStrategyCommands::Set { strategy } => {
+                    commands::context_selection::strategy_set(&strategy)
+                }
             },
             CpCommands::ClaudeToken => commands::claude::credential(),
             CpCommands::CodingAgentToken { agent } => match agent.as_str() {

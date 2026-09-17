@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_observability::ObservabilityProvider;
-use nasiko_orchestrator::{RoutingEngine, TextEmbeddingCache};
+use nasiko_orchestrator::{RoutingEngine, TextEmbeddingCache, VectorStore};
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
@@ -66,6 +66,22 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The embedding client the chat handlers hand to
+    /// `context_selection::fetch_for_user`. Built per call (it is a thin
+    /// handle over the shared `history_embedding_cache`, not a connection),
+    /// so the two call sites don't each re-derive the provider settings.
+    pub fn history_vector_store(&self) -> VectorStore {
+        VectorStore::for_embedding(
+            self.config.openai_api_key.clone().unwrap_or_default(),
+            self.config
+                .openai_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com".into()),
+            self.config.embedding_model.clone(),
+            self.history_embedding_cache.clone(),
+        )
+    }
+
     pub async fn from_config(
         config: Config,
         auth: Arc<dyn AuthService>,

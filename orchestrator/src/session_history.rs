@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
-use crate::context_strategy::ContextSelectionStrategy;
+use crate::context_selection::ContextSelectionStrategy;
 use crate::pacms_selector::PacmsSelector;
 use crate::vector_store::{VectorStore, cosine_similarity};
 
@@ -28,11 +28,10 @@ pub struct SessionHistory {
 }
 
 /// Per-call tuning knobs for [`SessionHistory::fetch_context`], bundled so
-/// the dispatcher's argument count stays reasonable. Engine-side callers
-/// source these from `RouterConfig`; direct server call sites source them
-/// from `Config` — both already carry the `pacms_*` values `fetch_pacms`
-/// used before this strategy dispatch existed.
-pub struct ContextFetchConfig {
+/// the dispatcher's argument count stays reasonable. Built for callers by
+/// `ContextTiers::resolve` — nothing outside this crate constructs one, so
+/// the operator-configured tier table is the only way in.
+pub(crate) struct ContextFetchConfig {
     /// `fetch_pacms`'s candidate pool size (ignored by `TopK`/`LastK`).
     pub pool_size: usize,
     /// `fetch_pacms`'s token budget, already resolved from the user's
@@ -165,7 +164,7 @@ impl SessionHistory {
     /// no complete pairs yet — the same "a transient failure degrades to
     /// recency instead of breaking the request" contract `fetch_pacms`
     /// already has via its own internal `select_lastk` fallback.
-    pub async fn fetch_context(
+    pub(crate) async fn fetch_context(
         strategy: ContextSelectionStrategy,
         session_id: &str,
         pool: &PgPool,

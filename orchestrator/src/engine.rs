@@ -7,15 +7,13 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use crate::agent_registry;
-use crate::context_strategy::ContextSelectionStrategy;
+use crate::context_selection::{self, ContextTiers};
 use crate::error::RouterError;
 use crate::models::AgentCardSummary;
-use crate::pacms_budget::PacmsBudgetLevel;
 use crate::providers::LLMProvider;
 use crate::reranker::Reranker;
 use crate::selector::AgentSelector;
 use crate::selector::ConversationMessage;
-use crate::session_history::{ContextFetchConfig, SessionHistory};
 use crate::types::{AgentCard, RouteRequest, RouteResult, RouterLogEntry};
 use crate::vector_store::{EmbeddingCache, TextEmbeddingCache, VectorStore};
 
@@ -33,28 +31,9 @@ pub struct RouterConfig {
     pub shortlist_threshold: usize,
     /// Max candidates passed into Stage 3 (LLM selector).
     pub shortlist_size: usize,
-    /// How many recent chat messages the PACMS context selector draws
-    /// candidates from (see `SessionHistory::fetch_pacms`).
-    pub history_pool_size: usize,
-    /// Token budget for a user on the PACMS "low" tier.
-    pub history_budget_low: usize,
-    /// Token budget for a user on the PACMS "medium" tier (the default).
-    pub history_budget_medium: usize,
-    /// Token budget for a user on the PACMS "high" tier.
-    pub history_budget_high: usize,
-    /// How many of the most-recent pooled messages are always kept
-    /// regardless of relevance/coverage score.
-    pub history_mandatory_recent: usize,
-    /// Item count for a user on the "low" tier — shared by the `TopK`
-    /// strategy's query/answer-pair count (see `SessionHistory::fetch_topk`)
-    /// and the `LastK` strategy's recency window (both `LastK` itself and
-    /// `TopK`'s fallback when embeddings are unavailable). Same tier
-    /// `history_budget_low` etc. read; resolved via `PacmsBudgetLevel::k`.
-    pub context_k_low: usize,
-    /// Item count for a user on the "medium" tier (the default).
-    pub context_k_medium: usize,
-    /// Item count for a user on the "high" tier.
-    pub context_k_high: usize,
+    /// What each stored `PacmsBudgetLevel` tier means in this deployment —
+    /// the token/item counts the user's chosen tier resolves against.
+    pub context_tiers: ContextTiers,
 }
 
 impl Default for RouterConfig {
@@ -62,14 +41,7 @@ impl Default for RouterConfig {
         Self {
             shortlist_threshold: 15,
             shortlist_size: 10,
-            history_pool_size: 150,
-            history_budget_low: 500,
-            history_budget_medium: 1000,
-            history_budget_high: 5000,
-            history_mandatory_recent: 3,
-            context_k_low: 1,
-            context_k_medium: 5,
-            context_k_high: 20,
+            context_tiers: ContextTiers::default(),
         }
     }
 }
@@ -120,14 +92,7 @@ impl OssRoutingEngine {
         let router_config = RouterConfig {
             shortlist_threshold: config.router_shortlist_threshold,
             shortlist_size: config.router_shortlist_size,
-            history_pool_size: config.pacms_history_pool_size,
-            history_budget_low: config.pacms_budget_low,
-            history_budget_medium: config.pacms_budget_medium,
-            history_budget_high: config.pacms_budget_high,
-            history_mandatory_recent: config.pacms_history_mandatory_recent,
-            context_k_low: config.context_k_low,
-            context_k_medium: config.context_k_medium,
-            context_k_high: config.context_k_high,
+            context_tiers: ContextTiers::from_config(config),
         };
         Self::new(
             router_config,
@@ -148,35 +113,9 @@ impl RoutingEngine for OssRoutingEngine {
     async fn route(&self, req: RouteRequest, pool: &PgPool) -> Result<RouteResult, RouterError> {
         let t0 = Instant::now();
 
-        // Resolve the caller's PACMS budget tier and context-selection
-        // strategy first (two cheap indexed row lookups) so the history
-        // fetch below can run in parallel with the agents fetch rather than
-        // after it.
-        let (budget_level, strategy) = tokio::join!(
-            PacmsBudgetLevel::for_user(pool, req.user_id),
-            ContextSelectionStrategy::for_user(pool, req.user_id),
-        );
-        let token_budget = budget_level.tokens(
-            self.config.history_budget_low,
-            self.config.history_budget_medium,
-            self.config.history_budget_high,
-        );
-        let k = budget_level.k(
-            self.config.context_k_low,
-            self.config.context_k_medium,
-            self.config.context_k_high,
-        );
-        let history_cfg = ContextFetchConfig {
-            pool_size: self.config.history_pool_size,
-            token_budget,
-            mandatory_recent: self.config.history_mandatory_recent,
-            topk_count: k,
-            lastk_limit: k,
-        };
-
         // Fetch available agents + conversation history in parallel. History
-        // is selected per the user's `strategy` — see
-        // `SessionHistory::fetch_context`.
+        // is selected per the caller's own stored strategy and budget tier —
+        // see `context_selection::fetch_for_user`.
         let history_store = VectorStore::for_embedding(
             self.api_key.clone(),
             self.base_url.clone(),
@@ -185,13 +124,13 @@ impl RoutingEngine for OssRoutingEngine {
         );
         let (agents, history) = tokio::join!(
             agent_registry::get_agents_for_user(req.user_id, pool),
-            SessionHistory::fetch_context(
-                strategy,
-                &req.session_id,
+            context_selection::fetch_for_user(
                 pool,
+                req.user_id,
+                &req.session_id,
                 &history_store,
                 &req.query,
-                &history_cfg,
+                &self.config.context_tiers,
             ),
         );
         let agents = agents?;

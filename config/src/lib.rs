@@ -404,6 +404,31 @@ impl Config {
             hitl_resume_retry_delay_secs: env_parse("HITL_RESUME_RETRY_DELAY_SECS", 2),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
+            multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")
+                .map(|v| v == "true")
+                .unwrap_or(false),
+            allow_personal_emails: std::env::var("ALLOW_PERSONAL_EMAILS")
+                .map(|v| v == "true")
+                .unwrap_or(false),
+            nasiko_bff_url: std::env::var("NASIKO_BFF_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
+            router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
+            pacms_history_pool_size: env_parse("PACMS_HISTORY_POOL_SIZE", 150),
+            pacms_budget_low: env_parse("PACMS_BUDGET_LOW", 500),
+            pacms_budget_medium: env_parse("PACMS_BUDGET_MEDIUM", 1000),
+            pacms_budget_high: env_parse("PACMS_BUDGET_HIGH", 5000),
+            pacms_history_mandatory_recent: env_parse("PACMS_HISTORY_MANDATORY_RECENT", 3),
+            context_k_low: env_parse("CONTEXT_K_LOW", 1),
+            context_k_medium: env_parse("CONTEXT_K_MEDIUM", 5),
+            context_k_high: env_parse("CONTEXT_K_HIGH", 20),
+            embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
+            router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
+            github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
+            github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
             app_base_url: env_or("APP_BASE_URL", ""),
             docker_agent_network: std::env::var("DOCKER_AGENT_NETWORK")
                 .ok()
@@ -453,31 +478,6 @@ impl Config {
                 .collect(),
             oidc_scopes: env_or("OIDC_SCOPES", "openid profile email"),
             oidc_provider_label: env_or("OIDC_PROVIDER_LABEL", ""),
-            multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")
-                .map(|v| v == "true")
-                .unwrap_or(false),
-            allow_personal_emails: std::env::var("ALLOW_PERSONAL_EMAILS")
-                .map(|v| v == "true")
-                .unwrap_or(false),
-            nasiko_bff_url: std::env::var("NASIKO_BFF_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
-            router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
-            pacms_history_pool_size: env_parse("PACMS_HISTORY_POOL_SIZE", 150),
-            pacms_budget_low: env_parse("PACMS_BUDGET_LOW", 500),
-            pacms_budget_medium: env_parse("PACMS_BUDGET_MEDIUM", 1000),
-            pacms_budget_high: env_parse("PACMS_BUDGET_HIGH", 5000),
-            pacms_history_mandatory_recent: env_parse("PACMS_HISTORY_MANDATORY_RECENT", 3),
-            context_k_low: env_parse("CONTEXT_K_LOW", 1),
-            context_k_medium: env_parse("CONTEXT_K_MEDIUM", 5),
-            context_k_high: env_parse("CONTEXT_K_HIGH", 20),
-            embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
-            router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
-            github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
-            github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
             oidc_central_callback_url: std::env::var("OIDC_CENTRAL_CALLBACK_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
