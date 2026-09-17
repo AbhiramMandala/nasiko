@@ -28,7 +28,10 @@
  *       "imports": ["*.js"],
  *       "pages": ["*.html"]                 // page shells the generators rewrite
  *     },
- *     "mounts": { "/components/": "components" },  // server mount -> subdir
+ *     "mounts": {                           // server mount -> subdir, or an
+ *       "/components/": "components",       //   ORDERED list of candidates
+ *       "/services/": ["web/services", "other/services"]
+ *     },
  *     "privateElements": ["users-page"]     // custom elements this edition owns
  *   }
  */
@@ -66,9 +69,14 @@ function load(name) {
     lintGlobs: (raw.sources?.lint ?? []).map((g) => `${dir}/${g}`),
     importGlobs: (raw.sources?.imports ?? []).map((g) => `${dir}/${g}`),
     pageGlobs: (raw.sources?.pages ?? []).map((g) => `${dir}/${g}`),
+    // A mount may declare several candidate directories. One URL prefix really
+    // can resolve to different directories in different binaries — `/components/`
+    // is `ee/components` under `ee/server` and `multi-tenant/web/components`
+    // under the multi-tenant surface, which embeds both — so a single value
+    // would be correct for one binary and wrong for the other.
     mounts: Object.entries(raw.mounts ?? {}).map(([spec, sub]) => ({
       spec,
-      prefix: `${dir}/${sub}/`,
+      prefixes: (Array.isArray(sub) ? sub : [sub]).map((s) => `${dir}/${s}/`),
     })),
     privateElements: raw.privateElements ?? [],
     // Optional: the module that must import every *-service.js in its directory,
@@ -117,12 +125,22 @@ export const editionOf = (rel) => EDITIONS.find((e) => rel.startsWith(`${e.dir}/
  * edition reaching for a private one's mount.
  */
 export function resolveMount(spec) {
+  let first = null;
   for (const ed of EDITIONS) {
     for (const m of ed.mounts) {
-      if (spec.startsWith(m.spec)) return m.prefix + spec.slice(m.spec.length);
+      if (!spec.startsWith(m.spec)) continue;
+      for (const prefix of m.prefixes) {
+        const candidate = prefix + spec.slice(m.spec.length);
+        // First hit on disk wins, matching the overlay's own precedence. The
+        // first candidate is remembered regardless, so a specifier that
+        // resolves nowhere still reports a concrete path to look for rather
+        // than going unchecked.
+        if (existsSync(resolve(REPO, candidate))) return candidate;
+        first ??= candidate;
+      }
     }
   }
-  return null;
+  return first;
 }
 
 /** Declared layer name for a repo-relative path inside an edition, or null. */
