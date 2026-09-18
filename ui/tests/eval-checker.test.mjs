@@ -21,6 +21,10 @@ import {
 const PAIR_A = CASES.find((c) => c.id === 'month-typed');
 const PAIR_B = CASES.find((c) => c.id === 'month-picked');
 
+/** The second pair, on a value no specialised control is in reach of. */
+const MODEL_A = CASES.find((c) => c.id === 'model-searched');
+const MODEL_B = CASES.find((c) => c.id === 'model-picked');
+
 const GOOD = `Sure — building that now.
 totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 requestsQ = Query("fetchUsageSummary", [], 0, "request_count")
@@ -996,4 +1000,107 @@ test('the four pair readings never reach the pass/fail line', () => {
   const { fail, controlPair } = check(PAIR_A, dsl);
   assert.deepEqual(four(controlPair), [false, false, true, false]);
   assert.deepEqual(fail, []);
+});
+
+/*
+ * The second control-kind pair — app-search against app-segmented-control.
+ *
+ * The month pair never reached the question: "type the month as YYYY-MM"
+ * produced app-date-field and app-input and no app-search at all. This pair
+ * uses a model NAME, which has no format, no calendar and no identifier
+ * convention, so no specialised control is in reach; and it says "search box"
+ * and "by name", the wording that produced app-search in 28 of 28 recorded
+ * generations.
+ *
+ * `fetchSpendTimeseries.model` is `text [exact]`, so arm A trips the
+ * semantic_control_argument_mismatch advisory and arm B does not. That is
+ * expected, is advisory-only, and must not reach any of the four readings —
+ * which the last test here asserts directly.
+ */
+const SEARCHED = `Sure — building that now.
+root = AppStack([heading, controls, chart], "md")
+heading = AppText("Spend by model", "title")
+$model = ""
+setModel = Action([@Set($model, $event), @Run(spendQ)])
+modelBox = AppSearch("md", null, false, false, "Search models...", $model, null, null, null, null, "Model", setModel)
+controls = AppRow([modelBox], "md")
+spendQ = Query("fetchSpendTimeseries", [{range: "7d", model: $model}], {points: []}, "data")
+chart = AppChart({labels: spendQ.points.bucket_start, datasets: [{label: "Spend (USD)", data: spendQ.points.spend_usd}]}, "line", false, "currency", "USD", null, null, "auto", "No spend for that model")
+Done.`;
+
+const PICKED_MODEL = SEARCHED
+  .replace('$model = ""', '$model = "claude-sonnet-4-5"')
+  .replace(
+    'modelBox = AppSearch("md", null, false, false, "Search models...", $model, null, null, null, null, "Model", setModel)',
+    'modelPicker = AppSegmentedControl([{value: "claude-sonnet-4-5", label: "Sonnet 4.5"}, {value: "claude-haiku-4-5", label: "Haiku 4.5"}, {value: "claude-opus-4-1", label: "Opus 4.1"}], $model, "md", false, null, null, "Model", setModel)',
+  )
+  .replace('AppRow([modelBox], "md")', 'AppRow([modelPicker], "md")');
+
+const quad = (c) => [c.sourceCorrect, c.argumentCorrect, c.controlKindCorrect, c.workingRefetchCorrect];
+
+test('the app-search arm reads all four true and is clean', () => {
+  const r = evaluateGeneration(SEARCHED);
+  const { fail, controlPair } = check(MODEL_A, SEARCHED);
+  assert.deepEqual(quad(controlPair), [true, true, true, true]);
+  assert.deepEqual(fail, []);
+  assert.deepEqual(r.positionalContract, []);
+  assert.deepEqual(r.missingQueryRuns, []);
+  assert.deepEqual(r.redundantRuns, []);
+  assert.deepEqual(r.unknownFilterFields, []);
+  assert.deepEqual(r.unresolved, []);
+  assert.equal(controlPair.detail.runAuthoredUnreachable, 0);
+  // The accessible name is aria-label, the one mechanism both arms have.
+  const line = SEARCHED.split('\n').find((l) => l.includes('AppSearch('));
+  assert.ok(!/\blabel\s*:/.test(line), line);
+  assert.ok(line.includes('"Model", setModel)'), line);
+});
+
+test('the app-segmented-control arm reads all four true and is clean', () => {
+  const r = evaluateGeneration(PICKED_MODEL);
+  const { fail, controlPair } = check(MODEL_B, PICKED_MODEL);
+  assert.deepEqual(quad(controlPair), [true, true, true, true]);
+  assert.deepEqual(fail, []);
+  assert.deepEqual(r.positionalContract, []);
+  assert.deepEqual(r.missingQueryRuns, []);
+  assert.deepEqual(r.unresolved, []);
+  // Same aria-label approach: `label` is passed null, the name is aria-label.
+  const line = PICKED_MODEL.split('\n').find((l) => l.includes('AppSegmentedControl('));
+  assert.ok(line.includes('null, "Model", setModel)'), line);
+});
+
+test('the two arms differ only in the control statement', () => {
+  const strip = (dsl) => dsl.split('\n')
+    .filter((l) => !/AppSearch\(|AppSegmentedControl\(|AppRow\(|\$model = /.test(l));
+  assert.deepEqual(strip(SEARCHED), strip(PICKED_MODEL));
+});
+
+test('each arm rejects the other arm on the control reading alone', () => {
+  const a = check(MODEL_A, PICKED_MODEL).controlPair;
+  assert.deepEqual(quad(a), [true, true, false, true]);
+  const b = check(MODEL_B, SEARCHED).controlPair;
+  assert.deepEqual(quad(b), [true, true, false, true]);
+});
+
+test('a frozen model literal fails the argument reading', () => {
+  const dsl = SEARCHED.replace('model: $model}', 'model: "claude-opus-4-1"}');
+  const { controlPair } = check(MODEL_A, dsl);
+  assert.equal(controlPair.sourceCorrect, true);
+  assert.equal(controlPair.argumentCorrect, false);
+  assert.equal(controlPair.workingRefetchCorrect, false);
+});
+
+test('the search setter without @Run fails only the refetch reading', () => {
+  const dsl = SEARCHED.replace('Action([@Set($model, $event), @Run(spendQ)])', 'Action([@Set($model, $event)])');
+  const { controlPair } = check(MODEL_A, dsl);
+  assert.deepEqual(quad(controlPair), [true, true, true, false]);
+  assert.equal(controlPair.detail.setterRunsQuery, false);
+});
+
+test('the exact-match advisory fires on the search arm and reaches none of the four', () => {
+  const { fail, advisory, controlPair } = check(MODEL_A, SEARCHED);
+  assert.ok(advisory.some((a) => /semantic_control_argument_mismatch/.test(a)), advisory.join(' | '));
+  assert.deepEqual(quad(controlPair), [true, true, true, true]);
+  assert.deepEqual(fail, []);
+  // …and does not fire on the picker arm, which is why it must stay advisory.
+  assert.equal(check(MODEL_B, PICKED_MODEL).advisory.length, 0);
 });

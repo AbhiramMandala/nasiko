@@ -313,6 +313,48 @@ export const CASES = [
       minQueries: 1, minActions: 1, minStates: 1,
       controlPair: { source: 'fetchSpendCalendar', argument: 'month', control: 'app-segmented-control' },
     } },
+  // The control-kind pair, second attempt. The first one never reached the
+  // question: "let me type the month as YYYY-MM" produced app-date-field 6/12
+  // and app-input 6/12 and app-search 0/12, so there was no app-search arm to
+  // compare. That pair is closed as exploratory and stays in the corpus.
+  //
+  // What it taught is what selects a control, measured over 101 recorded
+  // generations: every prompt containing "search box" or "search ... by name"
+  // produced app-search — 2/2, 4/4, 22/22 — and every prompt saying "type"
+  // produced something else. So arm A says "search box" and "by name", and
+  // says nothing about typing, entering, pasting, identifiers or formats.
+  //
+  // fetchSpendTimeseries.model is the argument that makes the pair clean. It
+  // is a plain exact-match string with no format, no calendar and no
+  // identifier convention, so no specialised control is in reach: a model
+  // NAME is what app-search is for, and a named set of three is what a
+  // segmented control is for. The source appears in no worked example at all
+  // (zero mentions in agent.yaml) and its handful of incidental generations
+  // never bound a control to it, so neither arm has a same-source template.
+  //
+  // Everything else is held still: same source, same `model` argument, same
+  // `range: "7d"` literal, same series, same line chart, same heading, same
+  // single $model state, and aria-label as the accessible name in both —
+  // app-search has no `label` parameter and a request implying a visible one
+  // would push the choice toward the other arm.
+  //
+  // `expect` stays a floor. The four readings live in `controlPair` and never
+  // gate, because a case that asserts the answer it measures can only return
+  // the answer it was given.
+  { id: 'model-searched',
+    prompt: 'Spend over the last 7 days for one model. '
+      + 'Use a search box to find the model by name.',
+    expect: {
+      minQueries: 1, minActions: 1, minStates: 1,
+      controlPair: { source: 'fetchSpendTimeseries', argument: 'model', control: 'app-search' },
+    } },
+  { id: 'model-picked',
+    prompt: 'Spend over the last 7 days for one model. Use a segmented control to choose '
+      + 'between claude-sonnet-4-5, claude-haiku-4-5, and claude-opus-4-1.',
+    expect: {
+      minQueries: 1, minActions: 1, minStates: 1,
+      controlPair: { source: 'fetchSpendTimeseries', argument: 'model', control: 'app-segmented-control' },
+    } },
   // Not a dashboard request. agent.yaml rule 11 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.
