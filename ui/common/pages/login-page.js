@@ -192,6 +192,8 @@ class LoginPage extends HTMLElement {
     });
   }
 
+  #lockoutTimer = null;
+
   #setupForm() {
     const form = this.querySelector('#login-form');
     const errorMsg = this.querySelector('#error-msg');
@@ -212,6 +214,18 @@ class LoginPage extends HTMLElement {
 
         if (!res.ok) {
           const data = await res.json().catch(() => null);
+
+          // Account locked — disable button and show countdown.
+          if (data?.code === 'account_locked' && data?.retry_after_secs) {
+            this.#startLockoutCountdown(data.retry_after_secs, submitBtn, errorMsg);
+            return;
+          }
+
+          // Last attempt warning.
+          if (data?.remaining_attempts === 1) {
+            throw new Error('Incorrect password. 1 attempt remaining before your account is locked.');
+          }
+
           throw new Error(data?.error || 'Invalid credentials');
         }
 
@@ -226,6 +240,32 @@ class LoginPage extends HTMLElement {
       e.preventDefault();
       submit();
     });
+  }
+
+  #startLockoutCountdown(totalSecs, submitBtn, errorMsg) {
+    submitBtn.setAttribute('disabled', '');
+    let remaining = totalSecs;
+
+    const tick = () => {
+      const mins = Math.floor(remaining / 60);
+      const secs = remaining % 60;
+      const time = `${mins}:${String(secs).padStart(2, '0')}`;
+      errorMsg.textContent = `Account locked. Try again in ${time}`;
+      errorMsg.classList.add('visible');
+
+      if (remaining <= 0) {
+        clearInterval(this.#lockoutTimer);
+        this.#lockoutTimer = null;
+        submitBtn.removeAttribute('disabled');
+        errorMsg.textContent = 'You can try signing in again.';
+        return;
+      }
+      remaining--;
+    };
+
+    tick();
+    if (this.#lockoutTimer) clearInterval(this.#lockoutTimer);
+    this.#lockoutTimer = setInterval(tick, 1000);
   }
 }
 

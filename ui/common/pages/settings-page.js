@@ -1,5 +1,4 @@
-import { showToast, toast } from '/common/utils/toast.js';
-import { escHtml } from '/common/utils/escape.js';
+import { showToast } from '/common/utils/toast.js';
 import { withLoading } from '/common/utils/async-button.js';
 import { initialView, syncView } from '/common/utils/module-view.js';
 
@@ -16,8 +15,6 @@ import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-input/app-input.js';
 import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-badge/app-badge.js';
-import '/common/design-system/app-switch/app-switch.js';
-import '/common/design-system/app-textarea/app-textarea.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -30,20 +27,10 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 // support. Adding a control here means adding it there too.
 const TABS = [
   { key: 'general', label: 'General', sub: 'Routing defaults and platform behaviour.' },
-  { key: 'orchestrator', label: 'Orchestrator', sub: 'Delegation policy and organization-wide rules.' },
   { key: 'limits', label: 'Flow limits', sub: 'Cascade guards applied to every inter-agent call.' },
   { key: 'registry', label: 'Registry', sub: 'External OCI registry used for agent images.' },
   { key: 'sso', label: 'Single sign-on', sub: 'Configure your identity provider for SSO, SCIM, and directory sync.' },
 ];
-
-// Mirrors oss/server/src/orchestrator_rules.rs's MAX_RULE_NAME_CHARS /
-// MAX_RULE_DESCRIPTION_CHARS. Enforced here via `maxlength` (the browser
-// refuses to type or paste past it, so there is nothing to reject on submit)
-// and shown as a live count — every rule is rendered into both orchestrators'
-// prompt on every request, so an operator adding a dozen lengthy rules pays
-// for it on every single call, not just once.
-const MAX_RULE_NAME_CHARS = 50;
-const MAX_RULE_DESCRIPTION_CHARS = 500;
 
 // The IdP picker is presentation only: the real provider is derived
 // server-side from the issuer URL (nasiko_identity_ee::detect), and
@@ -91,12 +78,6 @@ class SettingsPage extends HTMLElement {
   #ssoConfigured = false;
   /** True once a provider is stored — the IdP picker is one-way from then on. */
   #idpLocked = false;
-  /** Organization orchestrator rules, as last fetched from the server. */
-  #rules = [];
-  /** Rules added since the last save — not yet written. */
-  #pendingAdds = [];
-  /** Ids of stored rules marked for removal — not yet written. */
-  #pendingDeletes = new Set();
 
   async connectedCallback() {
     if (this.#initialized) return;
@@ -104,10 +85,10 @@ class SettingsPage extends HTMLElement {
 
     // Ensure user info is loaded before checking role.
     await authService.fetchCurrentUser();
-    const isAdmin = authService.isSuperuser();
+    const isAdmin = authService.isAdmin();
 
     // Non-admin users see only their secrets — admin-level platform settings
-    // (General, Flow limits, Registry, SSO) are superuser-gated on the API.
+    // (General, Flow limits, Registry, SSO) require admin role.
     if (!isAdmin) {
       await import('/common/features/secrets-manager.js');
       await import('/common/features/app-module-nav.js');
@@ -181,63 +162,6 @@ class SettingsPage extends HTMLElement {
                 <a href="/settings.html?view=secrets">Secrets</a> pages.</div>
             </div>
             <div class="setting-control"></div>
-          </div>
-        </div>
-
-        <div class="panel${this.#section === 'orchestrator' ? ' is-active' : ''}" data-panel="orchestrator">
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="s-min-confidence">Minimum delegation confidence</label>
-              <div class="hint">How sure the orchestrator must be that an agent can do the task
-                before calling it. Below this the call is blocked and the user is told no agent can
-                handle the request &mdash; the orchestrator never answers from its own knowledge.
-                <br><br>
-                It scores each agent on a banded scale, so the useful settings are the boundaries:
-                <br><strong>90</strong> &mdash; only when one of the agent's listed skills names the
-                exact task.
-                <br><strong>70</strong> &mdash; also when the task is squarely in the agent's
-                described domain, including a general-purpose agent standing in where no specialist
-                fits. A good default.
-                <br><strong>40</strong> &mdash; also loosely related work.
-                <br><strong>0</strong> &mdash; no bar; delegation is still required.
-                <br><br>
-                A value mid-band (80, say) splits one category, so similar requests get different
-                answers.</div>
-            </div>
-            <div class="setting-control">
-              <app-input type="number" id="s-min-confidence" data-field="orchestrator_min_confidence" min="0" max="100" aria-label="Minimum delegation confidence"></app-input>
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="s-rules-enabled">Apply organization rules</label>
-              <div class="hint">When on, every rule below is sent to the orchestrator as part of its
-                instructions. When off, none of them are — the rules are kept, just not applied.</div>
-            </div>
-            <div class="setting-control">
-              <app-switch id="s-rules-enabled" aria-label="Apply organization rules"></app-switch>
-            </div>
-          </div>
-          <div class="rules-section">
-            <div class="rules-heading">
-              Organization rules
-              <span id="s-rules-unsaved" class="rules-unsaved" hidden>unsaved changes</span>
-            </div>
-            <div id="s-rules-list" class="rules-list"></div>
-            <div class="rules-add">
-              <div class="rules-add-title">Add a rule</div>
-              <!-- Real labels, not placeholders: a placeholder disappears the moment
-                   you type, so two stacked boxes gave no lasting sign which was the
-                   name and which the description. The paired example values carry the
-                   relationship too — the name is a short handle, the description is
-                   the instruction the orchestrator actually receives. -->
-              <app-input type="text" id="s-rule-name" label="Rule title" maxlength="${MAX_RULE_NAME_CHARS}"
-                         count="0/${MAX_RULE_NAME_CHARS}" placeholder="e.g. Cite the agent"></app-input>
-              <app-textarea id="s-rule-description" rows="2" label="Rule description"
-                            maxlength="${MAX_RULE_DESCRIPTION_CHARS}"
-                            placeholder="e.g. Always say which agent produced a result"></app-textarea>
-              <app-button id="btn-add-rule" type="button" variant="secondary" size="sm">Add rule</app-button>
-            </div>
           </div>
         </div>
 
@@ -364,6 +288,15 @@ class SettingsPage extends HTMLElement {
               </div>
               <div class="setting-control" id="s-sso-status-badges"></div>
             </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label>Disable SSO</label>
+                <div class="hint">Removes the SSO configuration. Users will need to sign in with a local password. Existing SSO users will not be deleted.</div>
+              </div>
+              <div class="setting-control">
+                <app-button variant="ghost-danger" size="sm" id="btn-disable-sso">Disable SSO</app-button>
+              </div>
+            </div>
           </div>
 
           <div id="scim-section" hidden>
@@ -426,21 +359,7 @@ class SettingsPage extends HTMLElement {
     const idpSelect = this.querySelector('#s-idp-kind');
     idpSelect.addEventListener('change', () => this.#updateIdpFields(idpSelect.value));
 
-    // `app-textarea` derives its own live count from `maxlength` alone; `app-input`
-    // does not, so the rule-title field needs its `count` attribute kept in sync here.
-    const ruleNameEl = this.querySelector('#s-rule-name');
-    ruleNameEl.addEventListener('input', () => {
-      ruleNameEl.setAttribute('count', `${ruleNameEl.value.length}/${MAX_RULE_NAME_CHARS}`);
-    });
-
-    this.querySelector('#btn-add-rule').addEventListener('click', () => this.#addRule());
-    // One delegated listener on the list, not one per row: the list is
-    // re-rendered after every mutation, which would strip per-row handlers.
-    this.querySelector('#s-rules-list').addEventListener('click', (e) => {
-      const id = e.target.closest('[data-delete-rule]')?.dataset.deleteRule;
-      if (id) this.#deleteRule(id);
-    });
-
+    this.querySelector('#btn-disable-sso')?.addEventListener('click', () => this.#disableSso());
     this.querySelector('#btn-generate-scim-token').addEventListener('click', () => this.#generateScimToken());
     this.querySelector('#btn-copy-scim-url').addEventListener('click', () => {
       navigator.clipboard.writeText(this.querySelector('#s-scim-endpoint').textContent);
@@ -526,12 +445,6 @@ class SettingsPage extends HTMLElement {
     this.querySelectorAll('[data-field]').forEach(el => {
       if (this.#settings[el.dataset.field] != null) el.value = this.#settings[el.dataset.field];
     });
-
-    // <app-switch> exposes `checked`, not `value`, so it carries no `data-field`
-    // and the generic hydrate loop above skips it — set and read it explicitly
-    // (same reason the IdP picker is handled by hand).
-    this.querySelector('#s-rules-enabled').checked = Boolean(s.orchestrator_rules_enabled);
-    this.#loadRules();
 
     // The secret itself is never returned — only whether one is stored.
     const secretState = this.querySelector('#s-oidc-secret-state');
@@ -672,126 +585,31 @@ class SettingsPage extends HTMLElement {
     });
   }
 
-  /** Fetch and render the organization rules. */
-  async #loadRules() {
+  async #disableSso() {
+    const { confirmDialog } = await import('/common/design-system/app-modal/app-modal.js');
+    const confirmed = await confirmDialog({
+      title: 'Disable Single Sign-On',
+      message: 'This removes the SSO configuration. Users will need to sign in with a local '
+        + 'password. Existing SSO users are not deleted but will not be able to sign in until '
+        + 'a local password is set for them.',
+      confirmLabel: 'Disable SSO',
+      danger: true,
+    });
+    if (!confirmed) return;
+
     try {
-      // Normalised to an array rather than trusted: the route answers with a
-      // bare list, but a generic stub or an error page can hand back an envelope
-      // ({data, total}) instead, and `#effectiveRules` calls `.filter` on this
-      // straight away — which turned a merely-empty rules list into a TypeError
-      // that took the whole Settings page down.
-      const res = await call('fetchOrchestratorRules');
-      this.#rules = Array.isArray(res) ? res : (Array.isArray(res?.data) ? res.data : []);
-    } catch (e) {
-      console.error('SettingsPage: failed to load orchestrator rules:', e);
-      this.#rules = [];
-    }
-    this.#pendingAdds = [];
-    this.#pendingDeletes = new Set();
-    this.#renderRules();
-  }
-
-  /** Rules as they would be after a save: server rows minus removals, plus additions. */
-  #effectiveRules() {
-    return [
-      ...this.#rules.filter(r => !this.#pendingDeletes.has(r.id)),
-      ...this.#pendingAdds,
-    ];
-  }
-
-  #renderRules() {
-    const list = this.querySelector('#s-rules-list');
-    if (!list) return;
-    const rows = this.#effectiveRules();
-    if (!rows.length) {
-      list.innerHTML = '<div class="rules-empty">No rules yet. Rules you add here are sent to the orchestrator whenever the toggle above is on.</div>';
-      this.#markUnsaved();
-      return;
-    }
-    // Rule text is operator-authored and lands in an LLM system prompt; it is
-    // still untrusted as markup, so escape both fields on the way to innerHTML.
-    // `key` addresses a row whether it is stored (its id) or only staged (its
-    // index in the pending list), so Remove works the same on both.
-    list.innerHTML = rows.map((r, i) => `
-      <div class="rule-row${r.id ? '' : ' is-pending'}">
-        <div class="rule-text">
-          <div class="rule-name">${escHtml(r.name)}${r.id ? '' : ' <span class="rule-badge">unsaved</span>'}</div>
-          <div class="rule-desc">${escHtml(r.description)}</div>
-        </div>
-        <app-button type="button" variant="tertiary" size="sm" data-delete-rule="${escHtml(r.id || `new:${i - this.#rules.filter(x => !this.#pendingDeletes.has(x.id)).length}`)}">Remove</app-button>
-      </div>
-    `).join('');
-    this.#markUnsaved();
-  }
-
-  /** Nudge the save bar when rule edits are staged but not yet written. */
-  #markUnsaved() {
-    const dirty = this.#pendingAdds.length > 0 || this.#pendingDeletes.size > 0;
-    const note = this.querySelector('#s-rules-unsaved');
-    if (note) note.hidden = !dirty;
-  }
-
-  /**
-   * Stage a new rule. Deliberately NOT a write: every other control on this page
-   * waits for "Save changes", and a list that persisted on its own button made
-   * the page behave two different ways at once — a rule was already stored while
-   * the toggle right above it was not.
-   */
-  #addRule() {
-    const nameEl = this.querySelector('#s-rule-name');
-    const descEl = this.querySelector('#s-rule-description');
-    const name = nameEl.value.trim();
-    const description = descEl.value.trim();
-    // Mirrors the server's own check (orchestrator_rules.rs::validate) so the
-    // common mistake is caught without a round-trip; the server still enforces it.
-    if (!name || !description) {
-      showToast('A rule needs both a name and a description');
-      return;
-    }
-    this.#pendingAdds.push({ name, description });
-    nameEl.value = '';
-    // app-textarea recounts itself when `.value` is set; app-input does not
-    // (its counter only updates on the `input` event), so clearing it here
-    // programmatically would otherwise leave the last-typed count on screen.
-    nameEl.setAttribute('count', `0/${MAX_RULE_NAME_CHARS}`);
-    descEl.value = '';
-    this.#renderRules();
-  }
-
-  /** Stage a removal — `new:<n>` drops a staged addition, anything else a stored row. */
-  #deleteRule(key) {
-    if (key.startsWith('new:')) {
-      this.#pendingAdds.splice(Number(key.slice(4)), 1);
-    } else {
-      this.#pendingDeletes.add(key);
-    }
-    this.#renderRules();
-  }
-
-  /**
-   * Write the staged rule edits. Removals first, then additions, so a rule
-   * removed and re-added under the same name in one sitting cannot collide.
-   * Positions are renumbered from the final order — they drive prompt order
-   * server-side, and leaving gaps after a removal would be harmless but untidy.
-   *
-   * Reconciled as each call completes, not just once at the end: if a call
-   * partway through throws (a transient failure, say), everything before it
-   * already succeeded, and leaving it staged meant retrying "Save changes"
-   * re-sent an already-succeeded delete — which now 404s, since the row is
-   * already gone — permanently blocking every further save attempt until a
-   * full page reload resynced from the server. Clearing each item the moment
-   * its call succeeds means a retry only re-attempts what is actually left.
-   */
-  async #saveRules() {
-    for (const id of [...this.#pendingDeletes]) {
-      await call('deleteOrchestratorRule', id);
-      this.#pendingDeletes.delete(id);
-      this.#rules = this.#rules.filter(r => r.id !== id);
-    }
-    let position = this.#rules.length;
-    while (this.#pendingAdds.length) {
-      await call('createOrchestratorRule', { ...this.#pendingAdds[0], position: position++ });
-      this.#pendingAdds.shift();
+      await callOptional('saveOidcSettings', {
+        oidc_issuer_url: '',
+        oidc_client_id: '',
+        oidc_client_secret: '',
+        oidc_redirect_uri: '',
+        oidc_scopes: '',
+        allow_provider_switch: true,
+      });
+      showToast('SSO disabled');
+      this.#load();
+    } catch (err) {
+      showToast(err.message || 'Failed to disable SSO');
     }
   }
 
@@ -829,37 +647,18 @@ class SettingsPage extends HTMLElement {
       for (const key of Object.keys(general)) {
         if (key.startsWith('oidc_')) delete general[key];
       }
-      // Explicit for the same reason as #load: a switch has no `.value`, so the
-      // data-field loop above cannot see it. Always sent, never omitted — this
-      // is a boolean whose `false` is as meaningful as its `true`, and the
-      // server's PUT replaces the whole row.
-      general.orchestrator_rules_enabled =
-        this.querySelector('#s-rules-enabled').checked;
-
       const idpKind = this.querySelector('#s-idp-kind').value;
       if (idpKind) oidc.provider_kind = idpKind;
 
-      try {
-        const calls = [call('saveSettings', general)];
-        if (Object.keys(oidc).length) {
-          calls.push(callOptional('saveOidcSettings', oidc));
-        }
-        await Promise.all(calls);
-        // Rules are their own endpoint, but the same button owns them — the page
-        // must not save half of the Orchestrator tab. Sequenced after the settings
-        // PUT so a failure here leaves the staged edits on screen to retry rather
-        // than silently dropping them.
-        await this.#saveRules();
-        showToast('Settings saved');
-        // Reload so the SSO tab's derived status (provider_kind, badges, SCIM
-        // section visibility) reflects what was just saved.
-        this.#load();
-      } catch (err) {
-        // `message` on an ApiError is written to be shown to a user (e.g. the
-        // 400 from an out-of-range orchestrator_min_confidence) — surface it
-        // instead of letting the rejection go unhandled and silent.
-        toast.error(err?.message || 'Could not save settings.');
+      const calls = [call('saveSettings', general)];
+      if (Object.keys(oidc).length) {
+        calls.push(callOptional('saveOidcSettings', oidc));
       }
+      await Promise.all(calls);
+      showToast('Settings saved');
+      // Reload so the SSO tab's derived status (provider_kind, badges, SCIM
+      // section visibility) reflects what was just saved.
+      this.#load();
     })();
   }
 }

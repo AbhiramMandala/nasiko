@@ -61,6 +61,11 @@ class AuthService {
     return _cachedUser?.is_superuser === true;
   }
 
+  // Admin = superuser OR role 'admin'. Truthful only after fetchCurrentUser().
+  isAdmin() {
+    return _cachedUser?.is_superuser === true || _cachedUser?.role === 'admin';
+  }
+
   // Truthful only after fetchCurrentUser() has resolved (app-header awaits it
   // before rendering). The cookie is HttpOnly, so a server round-trip is the
   // only way to learn auth state — there is nothing local to check.
@@ -69,7 +74,9 @@ class AuthService {
   }
 
   getUsers() {
-    return _cachedUser ? [{ username: _cachedUser.name, email: _cachedUser.email }] : [];
+    return _cachedUser
+      ? [{ username: _cachedUser.name, email: _cachedUser.email, auth_provider: _cachedUser.auth_provider }]
+      : [];
   }
 
   async fetchCurrentUser() {
@@ -94,7 +101,18 @@ class AuthService {
         name: claims.username || claims.sub || 'User',
         email: claims.email || '',
         is_superuser: claims.is_superuser === true,
+        auth_provider: null,
       };
+      // Enrich with auth_provider from /api/users/me (EE-only field).
+      // Best-effort: if this fails the user just sees the password option.
+      try {
+        const meRes = await fetch('/api/users/me');
+        if (meRes.ok) {
+          const me = await meRes.json();
+          if (me.auth_provider) _cachedUser.auth_provider = me.auth_provider;
+          if (me.role) _cachedUser.role = me.role;
+        }
+      } catch { /* non-critical */ }
       writeCache(_cachedUser);
       return _cachedUser;
     } catch {

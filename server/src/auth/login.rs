@@ -158,6 +158,15 @@ async fn login(
             Json(serde_json::json!({"error": "account disabled"})),
         )
             .into_response(),
+        Err(nasiko_auth::AuthError::AccountLocked { retry_after_secs }) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": "account temporarily locked due to too many failed login attempts",
+                "code": "account_locked",
+                "retry_after_secs": retry_after_secs,
+            })),
+        )
+            .into_response(),
         // A backend failure must surface as 500 — never as an auth rejection (AUTH-10).
         // The raw error is logged, not returned in the body.
         Err(nasiko_auth::AuthError::Database(e)) => {
@@ -167,6 +176,13 @@ async fn login(
                 Json(serde_json::json!({"error": "internal error"})),
             )
                 .into_response()
+        }
+        Err(nasiko_auth::AuthError::InvalidCredentials { remaining_attempts }) => {
+            let mut body = serde_json::json!({"error": "invalid credentials"});
+            if let Some(remaining) = remaining_attempts {
+                body["remaining_attempts"] = serde_json::json!(remaining);
+            }
+            (StatusCode::UNAUTHORIZED, Json(body)).into_response()
         }
         Err(_) => (
             StatusCode::UNAUTHORIZED,

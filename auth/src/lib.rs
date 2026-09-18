@@ -133,11 +133,18 @@ pub enum AuthError {
     #[error("token revoked")]
     Revoked,
     /// Bad username/access-key or wrong secret. Maps to 401.
+    /// `remaining_attempts` is `Some` when login lockout is approaching.
     #[error("invalid credentials")]
-    InvalidCredentials,
+    InvalidCredentials {
+        remaining_attempts: Option<i32>,
+    },
     /// Account is deactivated. Maps to 401/403.
     #[error("account disabled")]
     Disabled,
+    /// Too many failed login attempts — account temporarily locked.
+    /// `retry_after_secs` is the number of seconds until the lockout expires.
+    #[error("account locked")]
+    AccountLocked { retry_after_secs: u64 },
     /// Requested user/agent/record does not exist. Maps to 404.
     #[error("not found")]
     NotFound,

@@ -50,7 +50,7 @@ async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::res
             return Some(
                 (
                     StatusCode::CONFLICT,
-                    Json(serde_json::json!({"error": "cannot deactivate the last admin"})),
+                    Json(serde_json::json!({"error": "cannot remove the last admin"})),
                 )
                     .into_response(),
             );
@@ -575,8 +575,8 @@ pub async fn update_user(
     }
 }
 
-/// Delete a user. Rejects self-deletion, deleting a superuser, or a user who
-/// still owns agents (reassign or delete those first).
+/// Delete a user. Rejects self-deletion, deleting the last admin, or a user
+/// who still owns agents (reassign or delete those first).
 #[utoipa::path(
     delete,
     path = "/api/users/{id}",
@@ -586,7 +586,8 @@ pub async fn update_user(
     ),
     responses(
         (status = 204, description = "Deleted"),
-        (status = 403, description = "Cannot delete your own account or a superuser"),
+        (status = 403, description = "Cannot delete your own account"),
+        (status = 409, description = "Cannot delete the last admin"),
         (status = 404, description = "No such user"),
         (status = 409, description = "User still owns agents"),
     ),
@@ -605,19 +606,9 @@ pub(crate) async fn delete_user(
             .into_response();
     }
 
-    let is_super: Option<bool> = sqlx::query_scalar("SELECT is_superuser FROM users WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-
-    if is_super == Some(true) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "cannot delete superuser"})),
-        )
-            .into_response();
+    // Prevent deleting the last admin (covers both role='admin' and is_superuser).
+    if let Some(err) = check_last_admin(&state, id).await {
+        return err;
     }
 
     // Prevent deletion if the user owns any non-deleted agents.

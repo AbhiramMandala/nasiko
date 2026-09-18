@@ -322,9 +322,9 @@ export class AppUserMenu extends HTMLElement {
           </div>
         </div>
         <div class="dropdown-footer">
-          <button class="dropdown-button" data-change-password>
+          ${this.#isSsoUser() ? '' : `<button class="dropdown-button" data-change-password>
             ${icons.lock('btn-icon', 14)} Change Password
-          </button>
+          </button>`}
           <button class="dropdown-button is-danger" data-logout>
             ${icons.logOut('btn-icon', 14)} Sign Out
           </button>
@@ -351,6 +351,12 @@ export class AppUserMenu extends HTMLElement {
       setTheme(btn.dataset.themeChoice);
       themeButtons.forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
     }));
+  }
+
+  #isSsoUser() {
+    const currentUser = this.getAttribute('current-user');
+    const user = this.#users.find(u => u.username === currentUser);
+    return user?.auth_provider === 'oidc' || user?.auth_provider === 'github';
   }
 
   #showDropdown() {
