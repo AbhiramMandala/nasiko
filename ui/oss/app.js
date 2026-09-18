@@ -65,16 +65,16 @@ const BASE_ROUTES = [
 // ── Route extension chain (same pattern as nav-ext.js) ──────────────────
 // One link per overlay, base first, each with a no-op in ui/oss/ so every
 // specifier resolves on every surface. An overlay replaces only the file
-// carrying its own suffix, so `ee/multi-tenant/web` can add routes without
-// shadowing `ee/web`'s away — which a shared `routes-ext.js` name did
-// (NAS-637). Registry names are written out here rather than derived from the
-// suffix, so `routeExtensionEe` is greppable from both ends.
+// carrying its own suffix, so a higher overlay can add routes without shadowing
+// a lower one's away — which a shared `routes-ext.js` name did (NAS-637).
+// Registry names are written out here rather than derived from the suffix, so
+// `routeExtensionEe` is greppable from both ends.
 // See common/core/extension-chain.js.
 
 const ROUTE_LAYERS = [
-  ['/routes-ext.js',    'routeExtension'],   // base       — ui/oss (no-op)
-  ['/routes-ext-ee.js', 'routeExtensionEe'], // enterprise — ui/ee/web
-  ['/routes-ext-mt.js', 'routeExtensionMt'], // multi-tenant — ui/ee/multi-tenant/web
+  ['/routes-ext.js',    'routeExtension'],   // base, this tree's own no-op
+  ['/routes-ext-ee.js', 'routeExtensionEe'], // the enterprise overlay
+  ['/routes-ext-mt.js', 'routeExtensionMt'], // the multi-tenant overlay
 ];
 
 const routeChain = extensionChain(ROUTE_LAYERS, 'app');

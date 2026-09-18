@@ -5,16 +5,16 @@
  *
  * `app.js` imported `/routes-ext.js` and `navigation.js` imported
  * `/nav-ext.js`, each resolving to exactly one file through the rust-embed
- * overlay: the OSS no-op, or `ui/ee/web/`'s real one shadowing it. That works
+ * overlay: this tree's no-op, or an overlay's real one shadowing it. That works
  * only for as long as *one* overlay defines each name.
  *
- * The multi-tenant surface (`ee/tenant-server/src/mtui.rs`) embeds
- * `ee/multi-tenant/web` ABOVE `ee/web`. The day it grows a `routes-ext.js` of
- * its own, that file shadows EE's rather than extending it and all of EE's
- * routes disappear. Nothing throws — the import succeeds, it simply resolves to
- * the wrong file — so the symptom is a working app with pages missing from it.
- * Same for `nav-ext.js` and the EE nav tree. That is NAS-637, and it was cheap
- * to fix only while no third layer existed.
+ * Distributions stack more than one. Where a higher overlay grows a
+ * `routes-ext.js` of its own, that file shadows the lower overlay's rather than
+ * extending it, and every route the lower one registered disappears. Nothing
+ * throws — the import succeeds, it simply resolves to the wrong file — so the
+ * symptom is a working app with pages missing from it. Same for `nav-ext.js`
+ * and the nav tree. That is NAS-637, and it was cheap to fix only while no
+ * third layer existed.
  *
  * ## The shape
  *

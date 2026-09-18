@@ -9,7 +9,7 @@
  *
  * It registers nothing, so the chain skips it. A distribution that wants to add
  * routes does NOT edit this file — it supplies its own suffixed file in its own
- * overlay; `ee/ui/web/routes-ext-ee.js` is the worked example.
+ * overlay; the enterprise overlay's `routes-ext-ee.js` is the worked example.
  *
  * Same pattern as nav-ext.js.
  */

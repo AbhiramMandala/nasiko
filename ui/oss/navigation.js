@@ -14,8 +14,8 @@
  * that wasn't had silently drifted into a user-visible bug.
  *
  * Now both editions share this file, and edition-specific navigation lives in
- * the `/nav-ext*.js` chain, resolved through the same overlay: `ui/oss/` holds
- * a documented no-op for every link, `ee/ui/web/nav-ext-ee.js` supplies the EE
+ * the `/nav-ext*.js` chain, resolved through the same overlay: this tree holds
+ * a documented no-op for every link and the enterprise overlay supplies the EE
  * tree. Nothing 404s, and there is exactly one copy of every data function.
  */
 
@@ -212,8 +212,8 @@ const sessionItems = async ({
  *
  * One link per overlay, base first, each with a no-op in ui/oss/ so every
  * specifier resolves on every surface. An overlay replaces only the file
- * carrying its own suffix, so `ee/multi-tenant/web` can add nav entries without
- * shadowing `ee/web`'s away — which a shared `nav-ext.js` name did (NAS-637).
+ * carrying its own suffix, so a higher overlay can add nav entries without
+ * shadowing a lower one's away — which a shared `nav-ext.js` name did (NAS-637).
  * The hooks are still resolved through data-sources under a per-layer name, so
  * the seam keeps the DI contract and stays reachable from `__dataSources`; the
  * names are literals here rather than derived from the suffix so they can be
@@ -222,9 +222,9 @@ const sessionItems = async ({
  * @type {Array<[string, string]>}
  */
 const NAV_LAYERS = [
-  ['/nav-ext.js',    'navExtension'],   // base         — ui/oss (no-op)
-  ['/nav-ext-ee.js', 'navExtensionEe'], // enterprise   — ui/ee/web
-  ['/nav-ext-mt.js', 'navExtensionMt'], // multi-tenant — ui/ee/multi-tenant/web
+  ['/nav-ext.js',    'navExtension'],   // base, this tree's own no-op
+  ['/nav-ext-ee.js', 'navExtensionEe'], // the enterprise overlay
+  ['/nav-ext-mt.js', 'navExtensionMt'], // the multi-tenant overlay
 ];
 
 const extensions = extensionChain(NAV_LAYERS, 'navigation');
