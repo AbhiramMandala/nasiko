@@ -245,10 +245,11 @@ pub async fn a2a_dispatch_handler(
             return Err(A2aDispatchError::AgentNotFound(target.to_string()));
         }
         // Supplemental context for this one, already-chosen agent, ranked against the real
-        // query text (in addition to any pinned content) — a no-op on OSS. This only affects
-        // the outbound `query` local, never `raw_text`/`text`, which is what any persistence
-        // in `agent_stream` would read — see `crate::prompt_context` module docs.
-        let injected_query = match state
+        // query text (in addition to any pinned content) — a no-op on OSS. Kept in a separate
+        // `outbound_query` local, distinct from `query`: `agent_stream` persists/traces `query`
+        // verbatim (`flows.title`, `gen_ai.input.messages`) and must never record injected
+        // context as if the user had typed it — see `crate::prompt_context` module docs.
+        let outbound_query = match state
             .prompt_context
             .context_for_agent(agent.id, &query)
             .await
@@ -259,7 +260,8 @@ pub async fn a2a_dispatch_handler(
         agent_stream(
             &state,
             agent,
-            &injected_query,
+            &query,
+            &outbound_query,
             &task_id,
             &context_id,
             user_id,
@@ -1116,7 +1118,15 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
 async fn agent_stream(
     state: &AppState,
     agent: AgentRow,
+    // The user's actual message — persisted (`flows.title`) and traced (`gen_ai.input.messages`)
+    // verbatim. Deliberately separate from `outbound_query`: anything server-injected (e.g.
+    // enterprise-only supplemental context, see `prompt_context` module docs) must reach the
+    // agent without also being recorded as "what the user said" in the flow UI or an
+    // observability/audit trail.
     query: &str,
+    // What's actually sent to the agent in the A2A request body — `query`, or `query` with
+    // injected context prepended. Never read for persistence/tracing.
+    outbound_query: &str,
     task_id: &str,
     context_id: &str,
     user_id: Uuid,
@@ -1213,9 +1223,13 @@ async fn agent_stream(
     // (or reject `message/stream`) fall through to the non-streaming branch,
     // which retries with `message/send`.
     let req_body = if file_parts.is_empty() {
-        nasiko_types::a2a::build_stream_request(query, Some(context_id))
+        nasiko_types::a2a::build_stream_request(outbound_query, Some(context_id))
     } else {
-        nasiko_types::a2a::build_stream_request_with_parts(query, Some(context_id), file_parts)
+        nasiko_types::a2a::build_stream_request_with_parts(
+            outbound_query,
+            Some(context_id),
+            file_parts,
+        )
     };
 
     // No per-request MCP credential: the agent authenticates to /api/mcp with
@@ -1429,7 +1443,8 @@ async fn agent_stream(
         // The agent rejected `message/stream` (e.g. method not found) —
         // retry once with plain `message/send`.
         if resp_body.get("error").is_some() {
-            let retry_body = nasiko_types::a2a::build_send_request(query, Some(&context_id));
+            let retry_body =
+                nasiko_types::a2a::build_send_request(outbound_query, Some(&context_id));
             let retry = build_agent_req()
                 .json(&retry_body)
                 .send()
