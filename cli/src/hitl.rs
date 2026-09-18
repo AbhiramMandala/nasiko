@@ -499,7 +499,14 @@ fn run_combo_select(labels: &[String], multi: bool) -> Result<(Vec<usize>, Optio
                     }
                 }
                 KeyCode::Backspace if cursor_idx == custom_idx && custom_active => {
-                    if buffer.pop().is_none() && multi {
+                    // A separate `let` (not `buffer.pop().is_none() && multi` inlined into an
+                    // `if`) deliberately, so clippy's `collapsible_if` can't fold this into the
+                    // match guard above — `pop()`'s removal is a side effect that must run
+                    // whenever this arm is reached, not something conditional on `multi`, which
+                    // collapsing into the guard would make it (a guard that evaluates false
+                    // never commits to the arm, even though the pop already happened).
+                    let popped = buffer.pop();
+                    if popped.is_none() && multi {
                         custom_checked = false;
                     }
                 }
