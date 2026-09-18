@@ -26,8 +26,8 @@ pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
 pub mod openapi;
-pub mod orchestrator_rules;
 pub mod pool;
+pub mod prompt_context;
 pub mod rate_limit;
 pub mod registry_a2a;
 pub mod router;
@@ -270,7 +270,6 @@ where
         .merge(secrets::router())
         .merge(llm_configs::router())
         .merge(settings::router())
-        .merge(orchestrator_rules::router())
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
         .merge(llm_router::custom_providers::router())

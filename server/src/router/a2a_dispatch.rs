@@ -225,7 +225,6 @@ pub async fn a2a_dispatch_handler(
                 client_owns_transcript: session_id.is_some(),
                 transcript_role: "user",
                 file_parts: vec![],
-                enforce_delegation: true,
             },
         )
         .await
@@ -245,10 +244,22 @@ pub async fn a2a_dispatch_handler(
         if !crate::acl::can_access_agent(&state, &claims, agent.id).await {
             return Err(A2aDispatchError::AgentNotFound(target.to_string()));
         }
+        // Supplemental context for this one, already-chosen agent, ranked against the real
+        // query text (in addition to any pinned content) — a no-op on OSS. This only affects
+        // the outbound `query` local, never `raw_text`/`text`, which is what any persistence
+        // in `agent_stream` would read — see `crate::prompt_context` module docs.
+        let injected_query = match state
+            .prompt_context
+            .context_for_agent(agent.id, &query)
+            .await
+        {
+            Some(context) => format!("{context}\n\n{query}"),
+            None => query.clone(),
+        };
         agent_stream(
             &state,
             agent,
-            &query,
+            &injected_query,
             &task_id,
             &context_id,
             user_id,
@@ -378,15 +389,6 @@ pub(crate) struct OrchestratorTurn<'a> {
     pub(crate) transcript_role: &'a str,
     /// File parts uploaded with the request (multipart upload path).
     pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
-    /// Apply the mandatory-delegation policy to this turn.
-    ///
-    /// `true` for a real user turn: the orchestrator must reach an agent or
-    /// refuse. `false` for the HITL resume (`crate::hitl`), whose whole purpose
-    /// is to report the result of a call that already happened — its own prompt
-    /// explicitly tells the model NOT to call anyone again, so enforcing
-    /// delegation there would replace every resumed answer with the refusal
-    /// message and break HITL end to end.
-    pub(crate) enforce_delegation: bool,
 }
 
 pub(crate) async fn orchestrator_stream(
@@ -403,7 +405,6 @@ pub(crate) async fn orchestrator_stream(
         client_owns_transcript,
         transcript_role,
         file_parts,
-        enforce_delegation,
     } = turn;
     // Orchestrator-routed chats never had a `chat_sessions` row, unlike
     // `agent_proxy.rs`'s `ensure_chat_session` for direct agent chat — so
@@ -487,9 +488,30 @@ pub(crate) async fn orchestrator_stream(
         return Err(A2aDispatchError::NoAgents);
     }
 
-    // Operator guardrails, read fresh per turn so a Settings change takes effect
-    // without a restart (same rationale as the routing engine's own load).
-    let guardrails = nasiko_orchestrator::Guardrails::load(&state.db).await;
+    // Supplemental per-agent context (e.g. admin-authored knowledge), gathered before the LLM
+    // has chosen anything — ranked against `query` (the same text about to reach the LLM) in
+    // addition to any pinned content, folded into the preamble next to each candidate's own
+    // listing so the planner can answer a zero-leg question ("how many leave days do I get")
+    // directly, or route with that context already in hand. A no-op on OSS
+    // (`NoopPromptContextProvider`); see `crate::prompt_context`.
+    let agent_ids: Vec<Uuid> = agent_summaries.iter().map(|s| s.id).collect();
+    let supplemental_context = state
+        .prompt_context
+        .context_for_agents(&agent_ids, query)
+        .await;
+    let preamble = if supplemental_context.is_empty() {
+        None
+    } else {
+        let mut text = String::from("## Known facts about specific agents\n");
+        for info in &agents {
+            if let Ok(id) = Uuid::parse_str(&info.id)
+                && let Some(facts) = supplemental_context.get(&id)
+            {
+                text.push_str(&format!("\n{}:\n{facts}\n", info.name));
+            }
+        }
+        Some(text)
+    };
 
     let config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
@@ -503,9 +525,7 @@ pub(crate) async fn orchestrator_stream(
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         max_turns: 10,
         temperature: Some(0.2),
-        org_rules: guardrails.rules_prompt.clone(),
-        min_confidence: Some(guardrails.min_confidence),
-        require_delegation: enforce_delegation,
+        preamble,
         ..Default::default()
     };
 
@@ -656,7 +676,7 @@ pub(crate) async fn orchestrator_stream(
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({"type": "thinking", "content": content})));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
-                        OrchestratorEvent::ToolCall { agent, message, turn, confidence } => {
+                        OrchestratorEvent::ToolCall { agent, message, turn } => {
                             // This ToolCall is the direct result of the reasoning
                             // turn `pending_usage` was reported for — attach the
                             // agent it resolved to before inserting.
@@ -714,10 +734,6 @@ pub(crate) async fn orchestrator_stream(
                                 "agent": agent,
                                 "message": message,
                                 "turn": turn,
-                                // The score this delegation actually cleared the bar with —
-                                // on the wire so it is visible in the UI's step row, not only
-                                // in server logs.
-                                "confidence": confidence,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
@@ -780,13 +796,12 @@ pub(crate) async fn orchestrator_stream(
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(payload));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
-                        OrchestratorEvent::PolicyRejected { agent, reason, turn, kind } => {
+                        OrchestratorEvent::PolicyRejected { agent, reason, turn } => {
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
                                 "type": "policy_rejected",
                                 "agent": agent,
                                 "reason": reason,
                                 "turn": turn,
-                                "kind": kind,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
@@ -987,21 +1002,8 @@ pub(crate) async fn orchestrator_stream(
                             // no recorded history to actually resume, even though the
                             // session row and user message (above) now exist.
                             if !full_reply.is_empty() {
-                                // A refusal is persisted so the human still sees it, but
-                                // tagged so it never re-enters the next turn's reasoning —
-                                // otherwise the model reads its own refusal back as this
-                                // conversation's established behaviour and keeps refusing.
-                                // Compared against the constant the guard substitutes, so
-                                // this cannot drift from the text actually emitted.
-                                let is_refusal =
-                                    nasiko_react_agent::is_refusal_message(&full_reply);
                                 super::usage_meta::insert_assistant_message(
-                                    &db,
-                                    &context_id,
-                                    &full_reply,
-                                    &summary,
-                                    &flow_id_cleanup,
-                                    is_refusal,
+                                    &db, &context_id, &full_reply, &summary, &flow_id_cleanup,
                                 )
                                 .await;
                             }
@@ -1746,7 +1748,6 @@ pub async fn a2a_upload_handler(
             client_owns_transcript: false,
             transcript_role: "user",
             file_parts: collected_files,
-            enforce_delegation: true,
         },
     )
     .await

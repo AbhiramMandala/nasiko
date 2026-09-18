@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_observability::ObservabilityProvider;
-use nasiko_orchestrator::{RoutingEngine, TextEmbeddingCache, VectorStore};
+use nasiko_orchestrator::RoutingEngine;
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
+use crate::prompt_context::PromptContextProvider;
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
 use nasiko_config::Config;
@@ -29,11 +29,10 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
-    /// PACMS candidate/query embedding cache for the history enrichment done
-    /// directly in `a2a_dispatch.rs` (shared across requests, like the one
-    /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
-    /// see `TextEmbeddingCache` docs).
-    pub history_embedding_cache: TextEmbeddingCache,
+    /// Supplemental per-agent prompt context (e.g. admin-authored knowledge) added before an
+    /// agent runs. OSS default is a no-op; the EE composition root replaces it, the same way it
+    /// replaces `routing_engine`. See `prompt_context` module docs.
+    pub prompt_context: Arc<dyn PromptContextProvider>,
     /// Tempo+Loki observability provider with DB-backed model pricing.
     /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
     /// addresses; queries fail soft when the stack is absent.
@@ -66,22 +65,6 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// The embedding client the chat handlers hand to
-    /// `context_selection::fetch_for_user`. Built per call (it is a thin
-    /// handle over the shared `history_embedding_cache`, not a connection),
-    /// so the two call sites don't each re-derive the provider settings.
-    pub fn history_vector_store(&self) -> VectorStore {
-        VectorStore::for_embedding(
-            self.config.openai_api_key.clone().unwrap_or_default(),
-            self.config
-                .openai_base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.openai.com".into()),
-            self.config.embedding_model.clone(),
-            self.history_embedding_cache.clone(),
-        )
-    }
-
     pub async fn from_config(
         config: Config,
         auth: Arc<dyn AuthService>,
@@ -148,7 +131,8 @@ impl AppState {
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
             nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone()),
         );
-        let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
+        let prompt_context: Arc<dyn PromptContextProvider> =
+            Arc::new(crate::prompt_context::NoopPromptContextProvider);
 
         let flow_config = FlowConfig {
             max_depth: config.flow_max_depth as u32,
@@ -239,7 +223,7 @@ impl AppState {
             genai_metrics,
             config: Arc::new(config),
             routing_engine,
-            history_embedding_cache,
+            prompt_context,
             observability,
             github_svc,
             build_tx,
