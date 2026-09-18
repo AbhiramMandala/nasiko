@@ -26,6 +26,7 @@ import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-tabs/app-tabs.js';
 import '/common/design-system/app-menu/app-menu.js';
+import '/common/design-system/app-trace-tree/app-trace-tree.js';
 import '/common/features/app-module-nav.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
@@ -81,7 +82,8 @@ class ObservabilitySessionPage extends HTMLElement {
   #renderedTurnKey = null;
   /// Chat messages keyed by trace_id, for the question/answer text.
   #messages = [];
-  #spans = [];          // flattened {node, depth, traceId} for the current turn
+  #tree = [];           // <app-trace-tree> nodes for the current turn
+  #traceOf = new Map(); // node id -> the trace it came from (the span fetch needs both)
   #span = null;         // currently-selected span's detail payload
   #selected = null;     // {traceId, spanId}
   /// Span ids whose children are folded away in the trace tree.
@@ -128,16 +130,17 @@ class ObservabilitySessionPage extends HTMLElement {
       const step = e.target.closest('[data-step]');
       if (step) { this.#step(Number(step.dataset.step)); return; }
 
-      const fold = e.target.closest('[data-fold]');
-      if (fold) {
-        const id = fold.dataset.fold;
-        this.#collapsed.has(id) ? this.#collapsed.delete(id) : this.#collapsed.add(id);
-        this.#loadTurnTrace();
-        return;
-      }
+    });
 
-      const row = e.target.closest('.span-row');
-      if (row) this.#selectSpan(row.dataset.traceId, row.dataset.spanId);
+    // Folding is a view change over a tree the page already holds, so it
+    // re-renders rather than re-fetching every trace the way it used to.
+    this.addEventListener('trace-tree-toggle', (e) => {
+      e.detail.expanded ? this.#collapsed.delete(e.detail.id) : this.#collapsed.add(e.detail.id);
+      this.#renderTraces();
+    });
+
+    this.addEventListener('trace-tree-select', (e) => {
+      this.#selectSpan(this.#traceOf.get(e.detail.id), e.detail.id);
     });
 
     this.addEventListener('menu-select', (e) => {
@@ -176,7 +179,8 @@ class ObservabilitySessionPage extends HTMLElement {
     this.#turnIndex = 0;
     this.#renderedTurnKey = null;
     this.#messages = [];
-    this.#spans = [];
+    this.#tree = [];
+    this.#traceOf.clear();
     this.#span = null;
     this.#selected = null;
     this.#collapsed.clear();
@@ -551,7 +555,7 @@ class ObservabilitySessionPage extends HTMLElement {
   async #loadTurnTrace() {
     const turn = this.#turn();
     if (!turn) {
-      this.#spans = [];
+      this.#tree = [];
       this.#renderTraces();
       return;
     }
@@ -576,41 +580,53 @@ class ObservabilitySessionPage extends HTMLElement {
     // message-less trace roots that trace's spans here too.
     const roots = details.flatMap((detail, i) =>
       (detail?.spans ?? []).map((node) => ({ node, traceId: turn.traceIds[i] })));
-    const turnRoot = {
-      span_id: TURN_ROOT_ID,
-      name: this.#sessionId,
-      operation: 'session.run',
-      // Wall-clock for the whole turn, not the sum of its parts: spans overlap.
-      latency_ms: turn.durationMs ?? null,
-      // One errored span anywhere under the turn makes the turn an error.
-      status_code: roots.some((r) => this.#subtreeHasError(r.node)) ? 'ERROR' : 'OK',
-      children: roots.map((r) => r.node),
-    };
 
-    const flat = [];
+    // Folding and indentation belong to <app-trace-tree>; the page's job is to
+    // hand it the whole tree and remember which trace each node came from,
+    // because the span fetch is keyed on both.
+    this.#traceOf = new Map([[TURN_ROOT_ID, turn.traceId]]);
     const seen = new Set();
-    const walk = (node, depth, traceId) => {
-      const key = `${traceId}:${node.span_id}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      flat.push({ node, depth, traceId });
-      if (this.#collapsed.has(node.span_id)) return;
-      (node.children || []).forEach((c) => walk(c, depth + 1, traceId));
-    };
-    flat.push({ node: turnRoot, depth: 0, traceId: turn.traceId });
-    if (!this.#collapsed.has(TURN_ROOT_ID)) {
-      roots.forEach(({ node, traceId }) => walk(node, 1, traceId));
-    }
-    this.#spans = flat;
+    this.#tree = [{
+      id: TURN_ROOT_ID,
+      label: this.#sessionId,
+      meta: 'session.run',
+      icon: 'trace',
+      // Wall-clock for the whole turn, not the sum of its parts: spans overlap.
+      duration: fmtMs(turn.durationMs ?? null),
+      // One errored span anywhere under the turn makes the turn an error.
+      status: roots.some((r) => this.#subtreeHasError(r.node)) ? 'error' : 'ok',
+      children: roots
+        .map(({ node, traceId }) => this.#treeNode(node, traceId, seen))
+        .filter(Boolean),
+    }];
     this.#renderTraces();
-    if (!flat.length) return;
 
     // Keep whatever the reader picked; only auto-select when nothing is
     // selected yet or a poll dropped the selected span from the tree.
-    const stillThere = this.#selected
-      && flat.some((f) => f.node.span_id === this.#selected.spanId);
-    if (stillThere) return;
+    if (this.#selected && this.#traceOf.has(this.#selected.spanId)) return;
     this.#selectSpan(turn.traceId, TURN_ROOT_ID);
+  }
+
+  /**
+   * One span mapped onto the tree component's generic node shape. `seen` is
+   * keyed on trace + span so a span that legitimately appears in two traces is
+   * kept, while a cyclic `children` chain terminates.
+   */
+  #treeNode(node, traceId, seen) {
+    const key = `${traceId}:${node.span_id}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    this.#traceOf.set(node.span_id, traceId);
+    return {
+      id: node.span_id,
+      label: node.name,
+      meta: node.operation ?? null,
+      icon: this.#spanIcon(node),
+      status: this.#isError(node.status_code) ? 'error' : 'ok',
+      duration: fmtMs(node.latency_ms),
+      children: (node.children || [])
+        .map((c) => this.#treeNode(c, traceId, seen)).filter(Boolean),
+    };
   }
 
   /**
@@ -663,7 +679,7 @@ class ObservabilitySessionPage extends HTMLElement {
 
   #renderTraces() {
     const pane = this.querySelector('#traces-pane');
-    if (!this.#spans.length) {
+    if (!this.#tree.length) {
       this.#tracesState = 'empty';
       this.#renderTracesPlaceholder(
         'No traces for this turn',
@@ -676,35 +692,15 @@ class ObservabilitySessionPage extends HTMLElement {
     this.#syncPanes();
     pane.innerHTML = `
       ${this.#tracesTitle()}
-      ${this.#spans.map(({ node, depth, traceId }) => {
-        const kids = (node.children || []).length > 0;
-        const folded = this.#collapsed.has(node.span_id);
-        return `
-        <div class="span-line" style="padding-left:${depth * 16}px">
-          ${kids
-            ? `<button type="button" class="span-fold" data-fold="${escAttr(node.span_id)}"
-                 aria-expanded="${folded ? 'false' : 'true'}"
-                 aria-label="${folded ? 'Expand' : 'Collapse'} ${escAttr(node.name)}"
-               >${folded ? icons.chevronRight('', 14) : icons.chevronDown('', 14)}</button>`
-            : '<span class="span-fold is-leaf" aria-hidden="true"></span>'}
-          <button class="span-row" type="button"
-            data-trace-id="${escHtml(traceId)}" data-span-id="${escHtml(node.span_id)}">
-            <span class="span-icon">${this.#spanIcon(node)}</span>
-            <span class="span-name">${escHtml(node.name)}</span>
-            ${node.operation ? `<span class="span-op">${escHtml(node.operation)}</span>` : ''}
-            <span class="status-dot${this.#isError(node.status_code) ? ' is-error' : ''}"></span>
-            <app-badge variant="neutral">${icons.clock('', 12)} ${fmtMs(node.latency_ms)}</app-badge>
-          </button>
-        </div>`;
-      }).join('')}
+      <app-trace-tree label="Trace spans"
+        spans='${escAttr(JSON.stringify(this.#tree))}'
+        collapsed='${escAttr(JSON.stringify([...this.#collapsed]))}'
+        value="${escAttr(this.#selected?.spanId ?? '')}"></app-trace-tree>
     `;
-    this.#markSelected();
   }
 
   #markSelected() {
-    this.querySelectorAll('.span-row').forEach((row) => {
-      row.classList.toggle('is-selected', row.dataset.spanId === this.#selected?.spanId);
-    });
+    this.querySelector('app-trace-tree')?.setAttribute('value', this.#selected?.spanId ?? '');
   }
 
   // ── Span detail ──────────────────────────────────────────────────────────
@@ -1023,12 +1019,12 @@ class ObservabilitySessionPage extends HTMLElement {
     // ponytail: provider picks the LLM glyph, not a per-vendor mark — the icon
     // set carries no OpenAI/Anthropic logos and the name is on the row already.
     if (node.provider || node.model || node.name?.toLowerCase().includes('chatcompletion')) {
-      return icons.cube('', 14);
+      return 'cube';
     }
     if (this.#isToolSpan(node.attributes) || node.name?.toLowerCase().startsWith('tool')) {
-      return icons.terminal('', 14);
+      return 'terminal';
     }
-    return icons.trace('', 14);
+    return 'trace';
   }
 
   /** True when this span or anything beneath it failed. */

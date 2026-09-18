@@ -200,6 +200,13 @@
       "status": "blocked",
       "reason": "A navigation trail. A generated surface is one route with nothing above it — the shell owns navigation, and a trail the surface invents would name places that do not exist."
     },
+    "app-trace-tree": {
+      "status": "ready",
+      "dslSummary": "A nested run where every node has a duration and an outcome: a trace's spans, a call graph, a build's steps. Use it when the nesting is the point — for a flat sequence of runs, AppTable or AppList says more per row.",
+      "actionParam": true,
+      "actionEvent": "trace-tree-select",
+      "note": "Fully controlled: pass the whole tree in `spans`, the selected id in `value` and the folded ids in `collapsed`; it renders them and emits trace-tree-select / trace-tree-toggle rather than changing any of the three."
+    },
     "app-list": {
       "status": "ready",
       "dslSummary": "A few rows read downward rather than across. Use it instead of AppTable when there are no columns worth aligning — five agents with a status dot, the last handful of runs. A table earns its search, pager and sort headers at roughly ten rows and two columns worth sorting.",

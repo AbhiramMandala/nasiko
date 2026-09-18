@@ -298,8 +298,8 @@ export default {
     },
     "tool-span-selected": async (page) => {
       await withSession(page);
-      await page.waitForSelector(".span-row");
-      const rows = await page.$$(".span-row");
+      await page.waitForSelector("app-trace-tree .row");
+      const rows = await page.$$("app-trace-tree .row");
       if (rows[2]) await rows[2].click();
       await page.waitForTimeout(300);
     },

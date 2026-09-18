@@ -324,43 +324,6 @@
      only thing left here is the leading glyph's tint. */
   app-badge svg { color: var(--color-text-muted); }
 
-  /* ── Traces pane ──────────────────────────────────────────────────────── */
-  /* Row = fold control + the selectable span button. The indent lives on the
-     line so the chevron column stays aligned with its depth. */
-  .span-line {
-    display: flex;
-    align-items: center;
-    gap: var(--s-4);
-  }
-
-  .span-fold {
-    flex: none;
-    width: 18px;
-    height: 18px;
-    display: inline-grid;
-    place-items: center;
-    border: none;
-    background: none;
-    padding: 0;
-    border-radius: var(--r-4);
-    color: var(--color-text-muted);
-    cursor: pointer;
-
-    &:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
-    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
-    &.is-leaf { cursor: default; }
-  }
-
-  /* The operation name beside the span name — `agent.plan`, `openai.chat`. */
-  .span-op {
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
   .kv {
     display: grid;
     grid-template-columns: max-content 1fr;
@@ -370,71 +333,6 @@
   }
   .kv dt { color: var(--color-text-muted); }
   .kv dd { margin: 0; color: var(--color-text-main); }
-
-  .span-row {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap:  var(--s-12);
-    width: 100%;
-    text-align: left;
-    padding: var(--s-4);
-    border: 1px solid transparent;
-    border-radius: var(--r-8);
-    cursor: pointer;
-    font-size: var(--font-size-sm);
-    color: var(--color-text-main);
-    background: transparent;
-
-
-    &.is-selected {
-      background: var(--yellow-100);
-      border-color: var(--fg-brand-highlight, var(--yellow-400));
-    }
-  }
-
-  /* The row is a flex line with a growing `.span-name`; the latency badge must
-     not be what gives way when the name is long. */
-  .span-row app-badge { flex-shrink: 0; }
-
-  .span-tree {
-    color: var(--color-text-muted);
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-    flex-shrink: 0;
-  }
-
-  .span-icon {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    border: 1px solid var(--color-border);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-
-    & svg { width: 14px; height: 14px; }
-  }
-
-  .span-name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--fg-success);
-    flex-shrink: 0;
-
-    &.is-error { background: var(--fg-error); }
-  }
 
   /* ── Span detail pane ─────────────────────────────────────────────────── */
   .detail-head {
