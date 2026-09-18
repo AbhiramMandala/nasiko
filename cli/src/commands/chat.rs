@@ -176,12 +176,8 @@ pub fn chat(
         print_history(&history);
     }
 
-    // Ctrl-C / Ctrl-D breaks the loop and leaves gracefully instead of erroring out.
-    while let Ok(input) = dialoguer::Input::<String>::new()
-        .with_prompt("\x1b[1;36m❯ you\x1b[0m")
-        .allow_empty(true)
-        .interact_text()
-    {
+    // Ctrl-C breaks the loop and leaves gracefully instead of erroring out.
+    while let Ok(input) = status::read_text_line("\x1b[1;36m❯ you\x1b[0m") {
         if input.trim().is_empty() {
             continue;
         }
@@ -1163,12 +1159,8 @@ pub fn agent_chat(url: &str, message: Option<&str>, session_id: Option<&str>) ->
     }
 
     let mut ctx_id: Option<String> = initial_ctx;
-    // Ctrl-C / Ctrl-D breaks the loop and leaves gracefully instead of erroring out.
-    while let Ok(input) = dialoguer::Input::<String>::new()
-        .with_prompt("\x1b[1;36m❯ you\x1b[0m")
-        .allow_empty(true)
-        .interact_text()
-    {
+    // Ctrl-C breaks the loop and leaves gracefully instead of erroring out.
+    while let Ok(input) = status::read_text_line("\x1b[1;36m❯ you\x1b[0m") {
         let input = input.trim();
         if input.is_empty() {
             continue;

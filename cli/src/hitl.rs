@@ -23,6 +23,67 @@ fn colorize(code: &str, text: &str) -> String {
     }
 }
 
+/// RAII guard that installs a no-op `SIGINT` handler for its lifetime, restoring the default
+/// disposition on drop. Exists because every `dialoguer` widget used in this file — via
+/// `console::Term::read_key`, which is hardcoded to `ctrlc_key: false` — turns a Ctrl+C keypress
+/// into `libc::raise(SIGINT)` rather than a catchable `Key::CtrlC` (`console`'s own
+/// `read_single_key`, `unix_term.rs`; there is no dialoguer-level flag to opt out of this). With
+/// the default disposition, that raise kills the whole process instantly — before `console` ever
+/// returns control to `dialoguer`, before `dialoguer` can return an `Err` for this module's `?`
+/// fixes to catch. Confirmed live: an interrupted `auth_required`/free-text prompt silently
+/// killed the entire `nasiko chat` session with zero output, though the HITL row itself still
+/// stayed correctly `pending` either way — this guard fixes the "silently kills your whole
+/// session" half, not a correctness gap in the S1/C1 fixes themselves.
+///
+/// With a no-op handler installed instead, `raise(SIGINT)` returns normally rather than
+/// terminating, so the interrupted read genuinely returns `Err(Interrupted)` up through
+/// `console`/`dialoguer` like any other I/O failure — which the `?` on every
+/// `interact()`/`interact_text()` call in this file already handles correctly. Scoped narrowly
+/// (installed only around the prompts that need it, restored the instant they're done) rather
+/// than applied CLI-wide, so Ctrl+C keeps behaving normally — quitting immediately — everywhere
+/// else in `nasiko` (a long-running deploy, `commands::chat`'s own outer per-turn prompt, etc.).
+/// A no-op on non-Unix targets: POSIX `SIGINT` doesn't apply there, and this is not a platform
+/// this crate is otherwise built for (see `oss/cli/Cargo.toml`'s `cfg(unix)` gate on `libc`).
+#[cfg(unix)]
+struct SigintGuard;
+
+#[cfg(unix)]
+impl SigintGuard {
+    fn install() -> Self {
+        // SAFETY: `sigint_noop` is `extern "C" fn(c_int)`, the exact signature `signal(2)`
+        // requires; it touches no shared state, so it's sound to run at any point, including
+        // mid-syscall on another thread.
+        unsafe {
+            libc::signal(libc::SIGINT, sigint_noop as *const () as libc::sighandler_t);
+        }
+        Self
+    }
+}
+
+#[cfg(unix)]
+extern "C" fn sigint_noop(_signum: libc::c_int) {}
+
+#[cfg(unix)]
+impl Drop for SigintGuard {
+    fn drop(&mut self) {
+        // SAFETY: restores the disposition every process starts with; sound for the same reason
+        // as `install`'s call.
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct SigintGuard;
+
+#[cfg(not(unix))]
+impl SigintGuard {
+    fn install() -> Self {
+        Self
+    }
+}
+
 /// A pause raised mid-turn/mid-step, wherever it was discovered — the
 /// `"type":"hitl"` SSE data part for `chat`, or the `hitl[]` entry on a MAF
 /// execution response for `maf`. `id` is always the real `hitl_requests.id`
@@ -43,6 +104,13 @@ pub struct HitlPause {
 /// resolved (`already_resolved: true` in a 200 response) is a normal
 /// outcome, not an error — printed and treated as done.
 pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
+    // Covers every dialoguer-based prompt below (including `prompt_single_select`/
+    // `prompt_multi_select`, called from within this function) so a Ctrl+C on any of them is a
+    // catchable error instead of an instant, silent process kill — see `SigintGuard`'s own doc
+    // comment. Harmless overlap with `run_combo_select`'s own crossterm raw-mode Ctrl+C
+    // trapping: raw mode already stops the terminal from generating SIGINT at all, so this
+    // guard's handler simply never fires during that widget's turn.
+    let _sigint_guard = SigintGuard::install();
     let who = pause.agent.as_deref().unwrap_or("agent");
     let message = |key: &str| {
         pause
@@ -131,10 +199,7 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
             }
             println!();
             term::print_box(Some("⏸ AUTHORIZATION NEEDED"), &panel, "33");
-            dialoguer::Input::<String>::new()
-                .with_prompt("Once you've finished, press Enter to continue")
-                .allow_empty(true)
-                .interact_text()?;
+            term::read_text_line("Once you've finished, press Enter to continue")?;
             serde_json::json!({ "auth_action": "confirm" })
         }
         // "input_required" and any forward-compatible unknown kind: a plain question, or —
@@ -158,10 +223,7 @@ pub fn prompt_and_resolve_hitl(pause: &HitlPause) -> Result<()> {
                 Some(opts) if opts.multi_select => prompt_multi_select(&opts)?,
                 Some(opts) => prompt_single_select(&opts)?,
                 None => {
-                    let answer = dialoguer::Input::<String>::new()
-                        .with_prompt(colorize("1;36", "❯ you"))
-                        .allow_empty(true)
-                        .interact_text()?;
+                    let answer = term::read_text_line(&colorize("1;36", "❯ you"))?;
                     serde_json::json!({ "answer": answer })
                 }
             }
