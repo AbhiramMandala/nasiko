@@ -1,22 +1,14 @@
 //! Admin API for custom LLM providers (`custom_providers` table).
 //!
-//! An admin registers an endpoint by Base URL + API key, plus the wire dialect it
-//! speaks (`kind`: plain OpenAI-compatible, or Azure OpenAI). On create the server
-//! fetches its model list into `provider_models` (reusing the LLM router's catalog
-//! sync — no second fetcher), and the background catalog-sync loop keeps it fresh. The
-//! discovered models then flow into the LLM config screen exactly like the built-in
-//! providers'. The endpoint can be chat-tested before registering via
-//! `POST /custom-providers/test`, which stores nothing.
-//!
-//! Every URL and credential header here comes from
-//! [`ProviderDialect`](nasiko_llm_router::providers::ProviderDialect), the same seam
-//! the dispatch path uses — so what the probe reaches at registration is exactly what
-//! a call will reach later.
+//! An admin registers an OpenAI-compatible endpoint by Base URL + API key + default
+//! model. On create the server chat-tests the endpoint, fetches its model list into
+//! `provider_models` (reusing the LLM router's catalog sync — no second fetcher), and
+//! the background catalog-sync loop keeps it fresh. The discovered models then flow
+//! into the LLM config screen exactly like the built-in providers'.
 //!
 //! - `GET    /api/custom-providers`            — list (key masked). Any authenticated user.
 //! - `GET    /api/custom-providers/{id}/models`— discovered models for the provider.
 //! - `POST   /api/custom-providers`            — register (superuser).
-//! - `POST   /api/custom-providers/test`       — probe an endpoint without storing (superuser).
 //! - `PATCH  /api/custom-providers/{id}`       — update (superuser).
 //! - `DELETE /api/custom-providers/{id}`       — soft delete, blocked if referenced (superuser).
 //! - `POST   /api/custom-providers/{id}/sync`  — refresh the model list now (superuser).
@@ -33,7 +25,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use nasiko_llm_router::providers::{KIND_AZURE_OPENAI, KIND_OPENAI, ProviderDialect};
 use nasiko_secrets::SecretsCrypto;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -78,10 +69,6 @@ pub(crate) struct ProviderView {
     pub label: String,
     pub display_name: String,
     pub base_url: String,
-    /// Wire dialect: `openai` or `azure-openai`.
-    pub kind: String,
-    /// Azure `api-version`; `None` for plain OpenAI-compatible endpoints.
-    pub api_version: Option<String>,
     pub default_model: Option<String>,
     pub catalog_sync_enabled: bool,
     /// Whether an encrypted key is stored (the key itself is never returned).
@@ -92,7 +79,7 @@ pub(crate) struct ProviderView {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-const VIEW_COLS: &str = "id, label, display_name, base_url, kind, api_version, default_model, \
+const VIEW_COLS: &str = "id, label, display_name, base_url, default_model, \
      catalog_sync_enabled, (encrypted_api_key <> '') AS api_key_set, \
      last_sync_at, last_sync_status, last_sync_error, created_at";
 
@@ -100,13 +87,6 @@ const VIEW_COLS: &str = "id, label, display_name, base_url, kind, api_version, d
 pub(crate) struct CreateRequest {
     pub display_name: String,
     pub base_url: String,
-    /// Wire dialect: `openai` (default) or `azure-openai`.
-    #[serde(default = "default_kind")]
-    pub kind: String,
-    /// Azure `api-version` (e.g. `2024-10-21`). Required when `kind` is
-    /// `azure-openai`, ignored otherwise.
-    #[serde(default)]
-    pub api_version: Option<String>,
     pub api_key: String,
     #[serde(default = "default_true")]
     pub catalog_sync_enabled: bool,
@@ -116,26 +96,10 @@ fn default_true() -> bool {
     true
 }
 
-fn default_kind() -> String {
-    KIND_OPENAI.to_string()
-}
-
-/// The `api_version` column value for a dialect — `None` for anything but Azure, so
-/// the column stays null wherever it is meaningless.
-fn azure_api_version(dialect: &ProviderDialect) -> Option<&str> {
-    match dialect {
-        ProviderDialect::AzureOpenAi { api_version } => Some(api_version),
-        ProviderDialect::OpenAi => None,
-    }
-}
-
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct UpdateRequest {
     pub display_name: Option<String>,
     pub base_url: Option<String>,
-    /// Azure `api-version`. The dialect (`kind`) itself is immutable — switching it
-    /// would silently repoint every config on this label at a different URL shape.
-    pub api_version: Option<String>,
     /// A new key rotates the stored credential; omitted ⇒ the existing key is kept.
     pub api_key: Option<String>,
     pub default_model: Option<String>,
@@ -191,37 +155,10 @@ fn slugify(name: &str) -> String {
     }
 }
 
-/// The dialect for a create/test request, or a client-facing reason why not. An
-/// unknown kind and a missing Azure `api-version` are both 400s here rather than a
-/// constraint violation surfacing as a 500 from the insert.
-fn validate_dialect(kind: &str, api_version: Option<&str>) -> Result<ProviderDialect, String> {
-    let api_version = api_version.map(str::trim).filter(|v| !v.is_empty());
-    match kind.trim() {
-        KIND_OPENAI => Ok(ProviderDialect::OpenAi),
-        KIND_AZURE_OPENAI => match api_version {
-            Some(v) => Ok(ProviderDialect::AzureOpenAi {
-                api_version: v.to_string(),
-            }),
-            None => Err(format!(
-                "api_version is required for kind '{KIND_AZURE_OPENAI}' (e.g. 2024-10-21)"
-            )),
-        },
-        other => Err(format!(
-            "unknown kind '{other}' (expected '{KIND_OPENAI}' or '{KIND_AZURE_OPENAI}')"
-        )),
-    }
-}
-
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct TestRequest {
     pub base_url: String,
     pub api_key: String,
-    /// Wire dialect: `openai` (default) or `azure-openai`.
-    #[serde(default = "default_kind")]
-    pub kind: String,
-    /// Azure `api-version`; required when `kind` is `azure-openai`.
-    #[serde(default)]
-    pub api_version: Option<String>,
     /// Optional model to chat-test. When absent, only the model list is fetched.
     #[serde(default)]
     pub model: Option<String>,
@@ -234,26 +171,14 @@ pub(crate) async fn test_endpoint(
     _claims: Claims,
     Json(body): Json<TestRequest>,
 ) -> Response {
-    let dialect = match validate_dialect(&body.kind, body.api_version.as_deref()) {
-        Ok(d) => d,
-        Err(msg) => return err(StatusCode::BAD_REQUEST, msg),
-    };
-    let base_url = dialect.normalize_base(&body.base_url);
+    let base_url = body.base_url.trim().trim_end_matches('/');
     if base_url.is_empty() || body.api_key.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "base_url and api_key are required");
     }
 
     // Chat test (optional — only when a model is provided).
     let chat_ok = if let Some(ref model) = body.model {
-        match probe_chat(
-            &state.http_client,
-            &dialect,
-            &base_url,
-            &body.api_key,
-            model,
-        )
-        .await
-        {
+        match probe_chat(&state.http_client, base_url, &body.api_key, model).await {
             Ok(()) => true,
             Err(reason) => {
                 return ApiResponse::ok(
@@ -268,7 +193,7 @@ pub(crate) async fn test_endpoint(
     };
 
     // Fetch model list.
-    let models = fetch_model_list(&state.http_client, &dialect, &base_url, &body.api_key).await;
+    let models = fetch_model_list(&state.http_client, base_url, &body.api_key).await;
 
     ApiResponse::ok(
         json!({ "chat_ok": chat_ok, "models": models }),
@@ -277,16 +202,12 @@ pub(crate) async fn test_endpoint(
     .into_response()
 }
 
-/// Fetch the model list from the dialect's listing endpoint.
-async fn fetch_model_list(
-    http: &reqwest::Client,
-    dialect: &ProviderDialect,
-    base_url: &str,
-    api_key: &str,
-) -> Vec<String> {
-    let url = dialect.models_url(base_url);
-    let resp = match dialect
-        .authorize(http.get(&url), api_key)
+/// Fetch the model list from an OpenAI-compatible `/models` endpoint.
+async fn fetch_model_list(http: &reqwest::Client, base_url: &str, api_key: &str) -> Vec<String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let resp = match http
+        .get(&url)
+        .bearer_auth(api_key)
         .timeout(PROBE_TIMEOUT)
         .send()
         .await
@@ -308,27 +229,25 @@ async fn fetch_model_list(
         .unwrap_or_default()
 }
 
-/// Chat-test the endpoint with one tiny chat completion. A model listing answering
-/// proves nothing about chat, and a later parse error is non-retryable (hard 500), so
-/// a failed test is a 400. Returns a client-facing reason on failure.
-///
-/// No token cap is sent: `max_tokens` is rejected outright by reasoning models, and
-/// `max_completion_tokens` by older Azure api-versions, so either one would fail
-/// endpoints that chat perfectly well. A single-word prompt is cheap uncapped.
+/// Chat-test the endpoint with one tiny `POST /chat/completions`. `GET /models`
+/// answering proves nothing about chat, and a later parse error is non-retryable
+/// (hard 500), so a failed test is a create-time 400. Returns a client-facing reason
+/// on failure.
 async fn probe_chat(
     http: &reqwest::Client,
-    dialect: &ProviderDialect,
     base_url: &str,
     api_key: &str,
     model: &str,
 ) -> Result<(), String> {
-    let url = dialect.chat_url(base_url, model);
-    let resp = dialect
-        .authorize(http.post(&url), api_key)
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let resp = http
+        .post(&url)
+        .bearer_auth(api_key)
         .timeout(PROBE_TIMEOUT)
         .json(&json!({
             "model": model,
             "messages": [{ "role": "user", "content": "ping" }],
+            "max_tokens": 1,
         }))
         .send()
         .await
@@ -403,22 +322,14 @@ pub(crate) async fn list_models(
     }
 }
 
-/// Register a custom provider. Superuser only. The internal label is auto-generated
-/// from the display name; the model list is discovered by catalog sync (and can also
-/// be probed first via `POST /custom-providers/test`), so no model is required here.
+/// Register a custom provider. Superuser only.
 pub(crate) async fn create(
     State(state): State<AppState>,
     claims: Claims,
     Json(body): Json<CreateRequest>,
 ) -> Response {
-    let dialect = match validate_dialect(&body.kind, body.api_version.as_deref()) {
-        Ok(d) => d,
-        Err(msg) => return err(StatusCode::BAD_REQUEST, msg),
-    };
     let display_name = body.display_name.trim();
-    // The dialect owns URL normalization (Azure accepts both portal forms of the
-    // resource URL), so what is stored is what dispatch will address.
-    let base_url = dialect.normalize_base(&body.base_url);
+    let base_url = body.base_url.trim().trim_end_matches('/');
     if display_name.is_empty() || base_url.is_empty() {
         return err(
             StatusCode::BAD_REQUEST,
@@ -451,15 +362,13 @@ pub(crate) async fn create(
         };
         match sqlx::query_as::<_, (Uuid,)>(
             "INSERT INTO custom_providers \
-               (label, display_name, base_url, kind, api_version, encrypted_api_key, \
+               (label, display_name, base_url, encrypted_api_key, \
                 catalog_sync_enabled, created_by) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
         )
         .bind(&candidate)
         .bind(display_name)
-        .bind(&base_url)
-        .bind(dialect.kind())
-        .bind(azure_api_version(&dialect))
+        .bind(base_url)
         .bind(&encrypted)
         .bind(body.catalog_sync_enabled)
         .bind(created_by)
@@ -501,7 +410,7 @@ pub(crate) async fn create(
         &state.db,
         &state.http_client,
         &label,
-        &base_url,
+        base_url,
     )
     .await;
 
@@ -514,60 +423,30 @@ pub(crate) async fn create(
 
 /// Update a custom provider. Superuser only. A provided `api_key` rotates the stored
 /// credential; the resolver reads the row per request, so a rotation takes effect on
-/// the next call with no restart. `kind` is deliberately not updatable — changing the
-/// dialect repoints every config on this label at a different URL shape, which is a
-/// delete-and-re-register, not an edit.
+/// the next call with no restart.
 pub(crate) async fn update(
     State(state): State<AppState>,
     _claims: Claims,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateRequest>,
 ) -> Response {
-    // The dialect is immutable, but normalizing an updated base URL needs it, so read
-    // the stored kind first.
-    let current: Option<(String,)> = match sqlx::query_as(
-        "SELECT kind FROM custom_providers WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal("update kind lookup", e),
-    };
-    let Some((kind,)) = current else {
-        return err(StatusCode::NOT_FOUND, "no such custom provider");
-    };
-    // `api_version` is validated against the stored kind: supplying one for a plain
-    // OpenAI endpoint is a no-op, and blanking Azure's would violate the DB CHECK.
-    let api_version = body
-        .api_version
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty());
-    if kind == KIND_AZURE_OPENAI && body.api_version.is_some() && api_version.is_none() {
-        return err(
-            StatusCode::BAD_REQUEST,
-            format!("api_version cannot be cleared for kind '{KIND_AZURE_OPENAI}'"),
-        );
-    }
-    let dialect = ProviderDialect::from_kind(&kind, api_version);
-
     // COALESCE keeps the existing value for any field left null; the key is
     // re-encrypted only when a new one is supplied.
     let encrypted = body
         .api_key
         .as_deref()
         .map(|k| SecretsCrypto::for_platform_settings().encrypt(k.trim()));
-    let base_url = body.base_url.as_deref().map(|b| dialect.normalize_base(b));
+    let base_url = body
+        .base_url
+        .as_deref()
+        .map(|b| b.trim().trim_end_matches('/').to_string());
     let result = sqlx::query(
         "UPDATE custom_providers SET \
            display_name = COALESCE($2, display_name), \
            base_url = COALESCE($3, base_url), \
            encrypted_api_key = COALESCE($4, encrypted_api_key), \
            default_model = COALESCE($5, default_model), \
-           catalog_sync_enabled = COALESCE($6, catalog_sync_enabled), \
-           api_version = COALESCE($7, api_version) \
+           catalog_sync_enabled = COALESCE($6, catalog_sync_enabled) \
          WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(id)
@@ -576,7 +455,6 @@ pub(crate) async fn update(
     .bind(encrypted)
     .bind(body.default_model.as_deref().map(str::trim))
     .bind(body.catalog_sync_enabled)
-    .bind(api_version)
     .execute(&state.db)
     .await;
     match result {
@@ -671,44 +549,5 @@ pub(crate) async fn sync_now(
             ApiResponse::ok(json!({ "discovered_models": n }), "Sync complete").into_response()
         }
         Err(e) => internal("sync", e),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dialect_validation_rejects_unknown_kinds_and_missing_azure_version() {
-        assert_eq!(
-            validate_dialect(KIND_OPENAI, None),
-            Ok(ProviderDialect::OpenAi)
-        );
-        // An api_version supplied for a plain endpoint is simply ignored.
-        assert_eq!(
-            validate_dialect(KIND_OPENAI, Some("2024-10-21")),
-            Ok(ProviderDialect::OpenAi)
-        );
-        assert_eq!(
-            validate_dialect(KIND_AZURE_OPENAI, Some(" 2024-10-21 ")),
-            Ok(ProviderDialect::AzureOpenAi {
-                api_version: "2024-10-21".into()
-            })
-        );
-        // Azure without a version is a 400 here, not a constraint violation later.
-        assert!(validate_dialect(KIND_AZURE_OPENAI, None).is_err());
-        assert!(validate_dialect(KIND_AZURE_OPENAI, Some("   ")).is_err());
-        assert!(validate_dialect("bedrock", None).is_err());
-    }
-
-    #[test]
-    fn only_azure_rows_store_an_api_version() {
-        assert_eq!(azure_api_version(&ProviderDialect::OpenAi), None);
-        assert_eq!(
-            azure_api_version(&ProviderDialect::AzureOpenAi {
-                api_version: "2024-10-21".into()
-            }),
-            Some("2024-10-21")
-        );
     }
 }

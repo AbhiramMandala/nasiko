@@ -142,6 +142,7 @@ const MODULE_NAVS = {
       // four rows highlighted and did nothing, pinning the content to Secrets.
       { label: 'Workspace', items: [
         { label: 'General', section: 'general', url: '/settings' },
+        { label: 'Orchestrator', section: 'orchestrator', url: '/settings' },
         { label: 'Flow limits', section: 'limits', url: '/settings' },
         { label: 'Registry', section: 'registry', url: '/settings' },
       ]},
