@@ -92,6 +92,31 @@ export class Router {
   /** Path this router was on before the navigation being handled, so
    *  route-persistence can save the scroll position of the page being left. */
   #previousPath = null;
+  /**
+   * Which navigation is the current one.
+   *
+   * `#handleRoute` is async — it awaits the page module and then hands the DOM
+   * swap to `startViewTransition`, which runs the callback a frame or more
+   * later. Nothing stopped a second navigation from arriving in that gap, and
+   * back-then-forward arrives in about 20ms. Two handlers then ran interleaved
+   * and the LOSER got the last word: the handler for the page you had already
+   * left swapped its page in, at the URL of the page you had come back to.
+   * Every handler takes a ticket on entry and checks it before touching the
+   * DOM; a stale one does nothing. See NAS-739.
+   * @type {number}
+   */
+  #navToken = 0;
+  /**
+   * The pattern the newest navigation is heading for, set synchronously on
+   * entry — as opposed to `#currentPattern`, which is what is mounted right
+   * now and lags behind by the width of a view transition. The same-pattern
+   * short-circuit has to compare against intent: during a back/forward pair
+   * `#currentPattern` still said `/mcp` while a handler was already on its way
+   * to `/agents`, so the forward leg concluded it had nothing to do and
+   * returned, leaving the outgoing swap to land unopposed.
+   * @type {string|null}
+   */
+  #intendedPattern = null;
   /** @type {boolean} */
   #started = false;
   /** @type {Set<string>} Paths that should NOT be intercepted (login, OAuth, etc.) */
@@ -332,6 +357,15 @@ export class Router {
     // Auth guard
     if (this.#authGuard && !this.#authGuard(path)) return;
 
+    // Take a ticket. Everything below that touches the DOM checks it first,
+    // because by the time it runs a newer navigation may have superseded this
+    // one. Taken after the guards so a rejected navigation does not cancel the
+    // one already in flight.
+    const token = ++this.#navToken;
+    const superseded = () => this.#navToken !== token;
+    const previousIntent = this.#intendedPattern;
+    this.#intendedPattern = route.pattern;
+
     // Emit loading-start for the loading bar
     document.dispatchEvent(new CustomEvent('loading-start', { bubbles: true }));
 
@@ -357,7 +391,12 @@ export class Router {
     // If the same route pattern is already active (e.g. same page, different
     // query params), let the page handle the update itself rather than
     // tearing it down and rebuilding it.
-    if (this.#currentPattern === route.pattern && this.#currentPage) {
+    //
+    // `previousIntent` rather than `#currentPattern`: what is mounted lags a
+    // navigation behind while a view transition is in flight, and reading it
+    // made a back/forward pair mistake "the page I am leaving is still on
+    // screen" for "I am already here".
+    if (previousIntent === route.pattern && this.#currentPattern === route.pattern && this.#currentPage) {
       // Notify the page that the URL changed (query params, etc.)
       this.#currentPage.dispatchEvent(new CustomEvent('route-update', {
         detail: { path: location.pathname, search: location.search, params },
@@ -375,8 +414,16 @@ export class Router {
       return;
     }
 
+    // The import is the long await. A navigation that arrived during it owns
+    // the outlet now, and it has already emitted its own loading-start; ending
+    // the bar here would end the newer one's.
+    if (superseded()) return;
+
     // Swap pages
     const swap = () => {
+      // A transition callback from a navigation that has since been overtaken.
+      // Letting it run is what put the wrong page at the right URL.
+      if (superseded()) return;
       if (this.#currentPage) {
         this.#currentPage.remove(); // triggers disconnectedCallback
       }
@@ -392,7 +439,27 @@ export class Router {
       }
     };
 
-    if (animate && document.startViewTransition) {
+    // A navigation that arrives while a transition is still running used to
+    // nest a second `startViewTransition` inside the first. The browser skips
+    // the first — expected, and already handled below — but the second then
+    // never ran its update callback at all: no swap, no `updateCallbackDone`,
+    // no `finished`, no rejection either. The outlet simply kept whatever was
+    // already in it, which during a back/forward pair is the page you just
+    // left, sitting at the URL of the page you came back to. Abandon the
+    // running transition and swap without animation: a back/forward pair 20ms
+    // apart has nothing worth animating anyway. NAS-739.
+    const transitionWasRunning = this.#activeTransition !== null;
+    if (transitionWasRunning) {
+      const abandoned = this.#activeTransition;
+      this.#activeTransition = null;
+      try {
+        abandoned.skipTransition();
+      } catch {
+        // Already finished; nothing to skip.
+      }
+    }
+
+    if (animate && !transitionWasRunning && document.startViewTransition) {
       // Name the page on both sides of the swap so the capture is scoped to it
       // rather than falling back to the full-viewport `root` snapshot. The
       // outgoing page has to be named before `startViewTransition` (the old
@@ -403,6 +470,14 @@ export class Router {
       if (this.#currentPage) this.#currentPage.style.viewTransitionName = VT_PAGE_NAME;
 
       const transition = document.startViewTransition(() => {
+        // Guard the whole callback, not just the swap. A superseded handler
+        // whose `swap()` correctly did nothing still ran the line below, and
+        // `#currentPage` by then is the page the NEWER navigation mounted — so
+        // it stamped `view-transition-name` on someone else's page. Nothing
+        // ever took it off again, because this transition is no longer the
+        // active one and `cleanup` declines to run. The next transition then
+        // captured a page wearing a name it did not own.
+        if (superseded()) return;
         swap();
         this.#currentPage.style.viewTransitionName = VT_PAGE_NAME;
       });
@@ -430,7 +505,13 @@ export class Router {
       };
       transition.finished.then(cleanup, cleanup);
     } else {
+      // No transition is capturing, so the names and the class the animated
+      // path leaves behind have to be cleared here — an abandoned transition's
+      // cleanup declines to run once it is no longer the active one.
+      document.documentElement.classList.remove(VT_SWAP_CLASS);
+      if (this.#currentPage) this.#currentPage.style.viewTransitionName = '';
       swap();
+      if (this.#currentPage) this.#currentPage.style.viewTransitionName = '';
       document.dispatchEvent(new CustomEvent('loading-end', { bubbles: true }));
     }
 
