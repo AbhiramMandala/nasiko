@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use crate::a2a::{A2aClient, PauseInfo};
 use crate::context::{ContextConfig, ContextManager};
 use crate::error::OrchestratorError;
-use crate::events::OrchestratorEvent;
+use crate::events::{OrchestratorEvent, PolicyRejectionKind};
 use crate::guard::CallGuard;
 use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
 use crate::tool::{A2aTool, A2aToolError};
@@ -69,16 +69,24 @@ fn tokens_per_tool_call(completion_tokens: Option<u64>, num_tool_calls: usize) -
         .unwrap_or(0)
 }
 
-/// Read the `confidence` argument off a tool call.
-///
 /// Accepts a JSON number or a numeric string: the argument is declared as a
 /// number in the tool schema, but models routinely emit `"85"` for numeric
 /// parameters, and rejecting a well-formed intent over its JSON type would block
 /// a legitimate call for a reason the model cannot see or correct.
-fn confidence_of(arguments: &serde_json::Value) -> Option<f64> {
-    let raw = arguments.get("confidence")?;
+///
+/// Shared with `tool.rs`'s `A2aToolArgs::confidence` deserializer: this gate
+/// reads the raw arguments before dispatch, but the same leniency must hold
+/// once more when `A2aToolArgs` is actually deserialized for the call, or a
+/// value this gate accepts fails one step later as an opaque JSON error
+/// instead of the successful call the gate just approved.
+pub(crate) fn parse_lenient_number(raw: &serde_json::Value) -> Option<f64> {
     raw.as_f64()
         .or_else(|| raw.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+}
+
+/// Read the `confidence` argument off a tool call.
+fn confidence_of(arguments: &serde_json::Value) -> Option<f64> {
+    arguments.get("confidence").and_then(parse_lenient_number)
 }
 
 /// Gate one tool call on the configured confidence bar.
@@ -141,6 +149,7 @@ async fn reject_below_bar_streaming(
                 agent: agent_display.to_string(),
                 reason: reason.clone(),
                 turn: turn_idx + 1,
+                kind: PolicyRejectionKind::Confidence,
             })
             .await;
         results_for_context.push(format!(
@@ -159,6 +168,7 @@ async fn reject_below_bar_streaming(
                 agent: agent_display.to_string(),
                 reason: reason.clone(),
                 turn: turn_idx + 1,
+                kind: PolicyRejectionKind::FlowGuard,
             })
             .await;
         results_for_context.push(format!(
@@ -331,7 +341,15 @@ fn enforce_delegation(
     // nothing to delegate and the guard used to answer it with "no available agent
     // can handle this request" — the worst possible reply to the most common
     // opening message. Answered from the roster, which is platform data.
-    if !delegated && final_text.trim() == CAPABILITIES_SENTINEL && !agents.is_empty() {
+    //
+    // Not gated on `delegated`: this is an exact match on the bare token, not a
+    // substring, so it only fires when the model's ENTIRE final answer is the
+    // literal sentinel — never something a real, grounded answer would produce
+    // after a successful call. Gating it on `!delegated` let that literal token
+    // reach the user verbatim whenever an earlier turn in the same run had
+    // already delegated once, which is exactly the "bare sentinel reaches a
+    // human" failure the check below this one exists to prevent.
+    if final_text.trim() == CAPABILITIES_SENTINEL && !agents.is_empty() {
         tracing::info!(
             turns = turn_idx + 1,
             "orchestrator answered a capability question from the agent roster"
@@ -348,12 +366,17 @@ fn enforce_delegation(
     // independently: the HITL resume disables enforcement but still sets a
     // confidence bar, so its prompt still teaches the token — and without this
     // branch a resumed turn that declined would render the literal string
-    // "NO_AGENT_MATCH" in the chat.
+    // "NO_AGENT_MATCH" in the chat. Also not gated on `delegated`, for the same
+    // reason: "whatever the policy state" includes a run where an earlier turn
+    // already delegated once.
     //
     // Exact match, not `contains`: the token quoted inside a real sentence is
     // the model talking *about* the policy, not invoking it, and replacing a
     // whole answer on a substring hit would discard agent-grounded content.
-    if !delegated && final_text.trim() == NO_AGENT_MATCH_SENTINEL {
+    // That distinction is what makes dropping the `delegated` gate safe here —
+    // `a_sentinel_after_a_successful_call_is_not_rewritten` covers the substring
+    // case, which still falls through to the raw-text return below unaffected.
+    if final_text.trim() == NO_AGENT_MATCH_SENTINEL {
         tracing::info!(
             turns = turn_idx + 1,
             "orchestrator declined: no agent met the confidence bar"
@@ -366,8 +389,10 @@ fn enforce_delegation(
     }
 
     // A greeting is answered, not delegated and not refused. Length-capped so the
-    // prefix cannot be used to smuggle a real answer past the guard.
-    if !delegated && let Some(greeting) = final_text.trim().strip_prefix(GREETING_SENTINEL) {
+    // prefix cannot be used to smuggle a real answer past the guard. Not gated on
+    // `delegated` either, for the same reason as the two checks above — a real,
+    // grounded answer has no reason to start with this literal prefix.
+    if let Some(greeting) = final_text.trim().strip_prefix(GREETING_SENTINEL) {
         let greeting = greeting.trim();
         if !greeting.is_empty() && greeting.chars().count() <= MAX_GREETING_CHARS {
             tracing::info!(turns = turn_idx + 1, "orchestrator answered a greeting");
@@ -2053,6 +2078,27 @@ mod delegation_policy_tests {
         assert_eq!(out, text);
     }
 
+    /// Regression, and the counterpart to the test above: a BARE sentinel (the
+    /// model's entire final answer, not the token referenced inside a real
+    /// sentence) must still be caught even after an earlier successful call in
+    /// the same run — this check used to be gated on `!delegated`, which let the
+    /// literal string "NO_AGENT_MATCH" reach the chat verbatim in that case.
+    #[test]
+    fn a_bare_sentinel_is_still_caught_after_an_earlier_delegation() {
+        let out = enforce_delegation(
+            NO_AGENT_MATCH_SENTINEL,
+            &policy(Some(80), true),
+            &[],
+            true,
+            1,
+        );
+        assert!(
+            !out.contains(NO_AGENT_MATCH_SENTINEL),
+            "leaked verbatim: {out}"
+        );
+        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
+    }
+
     // ── preamble ─────────────────────────────────────────────────────────
 
     /// An unconfigured deployment must see the prompt exactly as it was before
@@ -2433,6 +2479,22 @@ mod capability_question_tests {
         assert!(!out.contains(CAPABILITIES_SENTINEL));
     }
 
+    /// Regression: the bare-token check used to be gated on `!delegated`, so a
+    /// run where an earlier turn already called an agent would return the
+    /// literal token verbatim instead of the roster answer — the exact "bare
+    /// sentinel reaches a human" failure the NO_AGENT_MATCH check next to this
+    /// one is designed to prevent. `delegated: true` here is what a compound
+    /// turn looks like once one part of it has already delegated.
+    #[test]
+    fn the_capabilities_token_is_still_caught_after_an_earlier_delegation() {
+        let out = enforce_delegation(CAPABILITIES_SENTINEL, &strict(), &fleet(), true, 1);
+        assert!(
+            !out.contains(CAPABILITIES_SENTINEL),
+            "leaked verbatim: {out}"
+        );
+        assert!(out.contains("hr-agent"), "roster missing agents: {out}");
+    }
+
     /// A genuine refusal should name what the fleet *can* do, so a dead end
     /// becomes a menu rather than just "you failed".
     /// Both refusal paths must produce the same thing: a deliberate decline (the
@@ -2576,6 +2638,15 @@ mod greeting_tests {
         let out = enforce_delegation("GREETING:   Hello!  ", &strict(), &[], false, 0);
         assert_eq!(out, "Hello!");
         assert!(!out.contains(GREETING_SENTINEL));
+    }
+
+    /// Regression: this check used to be gated on `!delegated`, so a compound
+    /// turn that had already delegated once earlier would show the literal
+    /// "GREETING: ..." prefix verbatim instead of stripping it.
+    #[test]
+    fn the_greeting_prefix_is_stripped_even_after_an_earlier_delegation() {
+        let out = enforce_delegation("GREETING: Hello!", &strict(), &[], true, 1);
+        assert_eq!(out, "Hello!");
     }
 
     /// The one exemption whose text is model-authored AND unconstrained in topic,

@@ -438,11 +438,13 @@ class AgentSteps extends HTMLElement {
         // sent anyone debugging a blocked call to the flow limits (depth,
         // fan-out, token budget) when the real cause was the orchestrator's
         // confidence bar, which lives on a different settings page entirely.
-        const byConfidence = /confidence/i.test(d.reason || '');
+        // `d.kind` is the server's own discriminant (`PolicyRejectionKind`) —
+        // reading it beats guessing from `d.reason`'s prose, which broke the
+        // moment either gate's wording changed with nothing to catch it.
         const row = this.#addRow(`policy:${this.#rows.size}`, {
           kind: 'policy',
           title: d.agent,
-          subtitle: byConfidence
+          subtitle: d.kind === 'confidence'
             ? 'blocked — below the confidence bar'
             : 'blocked by flow policy',
         });

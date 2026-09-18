@@ -780,12 +780,13 @@ pub(crate) async fn orchestrator_stream(
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(payload));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
-                        OrchestratorEvent::PolicyRejected { agent, reason, turn } => {
+                        OrchestratorEvent::PolicyRejected { agent, reason, turn, kind } => {
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
                                 "type": "policy_rejected",
                                 "agent": agent,
                                 "reason": reason,
                                 "turn": turn,
+                                "kind": kind,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }

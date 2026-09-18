@@ -35,8 +35,23 @@ pub struct A2aToolArgs {
     /// dispatched. Making it non-optional would turn a missing score into a
     /// serde deserialization failure that surfaces as an opaque tool error,
     /// rather than the explicit, model-readable rejection the policy needs.
-    #[serde(default)]
+    ///
+    /// Deserialized with the same number-or-numeric-string leniency as
+    /// `react_loop.rs`'s own confidence gate (`parse_lenient_number`): a model
+    /// that sends `"confidence": "85"` clears that gate, and without matching
+    /// leniency here the call would fail this deserialization step instead —
+    /// an opaque JSON error in place of the successful call the gate just
+    /// approved, for the exact input shape the gate exists to tolerate.
+    #[serde(default, deserialize_with = "deserialize_lenient_confidence")]
     pub confidence: Option<f64>,
+}
+
+fn deserialize_lenient_confidence<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|v| crate::react_loop::parse_lenient_number(&v)))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -348,6 +363,40 @@ impl A2aTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── A2aToolArgs::confidence deserialization ─────────────────────────────
+    // Regression for a gate/dispatch mismatch: react_loop.rs::check_confidence
+    // tolerates a numeric-string confidence ("85") before this struct is ever
+    // built, so this struct must tolerate the exact same shape — otherwise a
+    // call the gate just approved fails here instead, with an opaque JSON
+    // error in place of the successful call the gate promised.
+
+    #[test]
+    fn confidence_accepts_a_json_number() {
+        let args: A2aToolArgs =
+            serde_json::from_str(r#"{"message":"hi","confidence":85}"#).unwrap();
+        assert_eq!(args.confidence, Some(85.0));
+    }
+
+    #[test]
+    fn confidence_accepts_a_numeric_string() {
+        let args: A2aToolArgs =
+            serde_json::from_str(r#"{"message":"hi","confidence":"85"}"#).unwrap();
+        assert_eq!(args.confidence, Some(85.0));
+    }
+
+    #[test]
+    fn confidence_absent_is_none_not_an_error() {
+        let args: A2aToolArgs = serde_json::from_str(r#"{"message":"hi"}"#).unwrap();
+        assert_eq!(args.confidence, None);
+    }
+
+    #[test]
+    fn confidence_non_numeric_string_degrades_to_none_not_an_error() {
+        let args: A2aToolArgs =
+            serde_json::from_str(r#"{"message":"hi","confidence":"very sure"}"#).unwrap();
+        assert_eq!(args.confidence, None);
+    }
 
     fn test_agent(endpoint: &str) -> AgentInfo {
         AgentInfo {

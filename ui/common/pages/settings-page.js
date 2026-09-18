@@ -36,6 +36,15 @@ const TABS = [
   { key: 'sso', label: 'Single sign-on', sub: 'Configure your identity provider for SSO, SCIM, and directory sync.' },
 ];
 
+// Mirrors oss/server/src/orchestrator_rules.rs's MAX_RULE_NAME_CHARS /
+// MAX_RULE_DESCRIPTION_CHARS. Enforced here via `maxlength` (the browser
+// refuses to type or paste past it, so there is nothing to reject on submit)
+// and shown as a live count — every rule is rendered into both orchestrators'
+// prompt on every request, so an operator adding a dozen lengthy rules pays
+// for it on every single call, not just once.
+const MAX_RULE_NAME_CHARS = 50;
+const MAX_RULE_DESCRIPTION_CHARS = 500;
+
 // The IdP picker is presentation only: the real provider is derived
 // server-side from the issuer URL (nasiko_identity_ee::detect), and
 // OidcSettingsUpdate has no field for it. Picking a kind here only switches
@@ -222,9 +231,10 @@ class SettingsPage extends HTMLElement {
                    name and which the description. The paired example values carry the
                    relationship too — the name is a short handle, the description is
                    the instruction the orchestrator actually receives. -->
-              <app-input type="text" id="s-rule-name" label="Rule name"
-                         placeholder="e.g. Cite the agent"></app-input>
-              <app-textarea id="s-rule-description" rows="2" label="What this rule tells the orchestrator"
+              <app-input type="text" id="s-rule-name" label="Rule title" maxlength="${MAX_RULE_NAME_CHARS}"
+                         count="0/${MAX_RULE_NAME_CHARS}" placeholder="e.g. Cite the agent"></app-input>
+              <app-textarea id="s-rule-description" rows="2" label="Rule description"
+                            maxlength="${MAX_RULE_DESCRIPTION_CHARS}"
                             placeholder="e.g. Always say which agent produced a result"></app-textarea>
               <app-button id="btn-add-rule" type="button" variant="secondary" size="sm">Add rule</app-button>
             </div>
@@ -415,6 +425,13 @@ class SettingsPage extends HTMLElement {
     // one of the `oidc_*` columns. See IDP_HINTS's comment.
     const idpSelect = this.querySelector('#s-idp-kind');
     idpSelect.addEventListener('change', () => this.#updateIdpFields(idpSelect.value));
+
+    // `app-textarea` derives its own live count from `maxlength` alone; `app-input`
+    // does not, so the rule-title field needs its `count` attribute kept in sync here.
+    const ruleNameEl = this.querySelector('#s-rule-name');
+    ruleNameEl.addEventListener('input', () => {
+      ruleNameEl.setAttribute('count', `${ruleNameEl.value.length}/${MAX_RULE_NAME_CHARS}`);
+    });
 
     this.querySelector('#btn-add-rule').addEventListener('click', () => this.#addRule());
     // One delegated listener on the list, not one per row: the list is
@@ -733,6 +750,10 @@ class SettingsPage extends HTMLElement {
     }
     this.#pendingAdds.push({ name, description });
     nameEl.value = '';
+    // app-textarea recounts itself when `.value` is set; app-input does not
+    // (its counter only updates on the `input` event), so clearing it here
+    // programmatically would otherwise leave the last-typed count on screen.
+    nameEl.setAttribute('count', `0/${MAX_RULE_NAME_CHARS}`);
     descEl.value = '';
     this.#renderRules();
   }
@@ -752,14 +773,25 @@ class SettingsPage extends HTMLElement {
    * removed and re-added under the same name in one sitting cannot collide.
    * Positions are renumbered from the final order — they drive prompt order
    * server-side, and leaving gaps after a removal would be harmless but untidy.
+   *
+   * Reconciled as each call completes, not just once at the end: if a call
+   * partway through throws (a transient failure, say), everything before it
+   * already succeeded, and leaving it staged meant retrying "Save changes"
+   * re-sent an already-succeeded delete — which now 404s, since the row is
+   * already gone — permanently blocking every further save attempt until a
+   * full page reload resynced from the server. Clearing each item the moment
+   * its call succeeds means a retry only re-attempts what is actually left.
    */
   async #saveRules() {
-    for (const id of this.#pendingDeletes) {
+    for (const id of [...this.#pendingDeletes]) {
       await call('deleteOrchestratorRule', id);
+      this.#pendingDeletes.delete(id);
+      this.#rules = this.#rules.filter(r => r.id !== id);
     }
-    const base = this.#rules.filter(r => !this.#pendingDeletes.has(r.id)).length;
-    for (const [i, rule] of this.#pendingAdds.entries()) {
-      await call('createOrchestratorRule', { ...rule, position: base + i });
+    let position = this.#rules.length;
+    while (this.#pendingAdds.length) {
+      await call('createOrchestratorRule', { ...this.#pendingAdds[0], position: position++ });
+      this.#pendingAdds.shift();
     }
   }
 

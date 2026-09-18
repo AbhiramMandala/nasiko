@@ -24,6 +24,15 @@ use crate::state::AppState;
 
 // ── Rules CRUD ────────────────────────────────────────────────────────────────
 
+/// Every rule is rendered into both orchestrators' system prompt on every
+/// single request (`nasiko_orchestrator::guardrails::format_rules`), so an
+/// unbounded rule set is an unbounded per-request cost, not just a large
+/// settings table. Generous enough that no real operator hits it by accident;
+/// low enough to bound the worst case.
+const MAX_RULE_NAME_CHARS: usize = 50;
+const MAX_RULE_DESCRIPTION_CHARS: usize = 500;
+const MAX_RULES: i64 = 50;
+
 #[derive(Debug, Deserialize)]
 pub struct RuleUpsert {
     pub name: String,
@@ -58,12 +67,27 @@ async fn list_rules(State(state): State<AppState>, _claims: Claims) -> impl Into
 
 /// Reject blank name/description before they reach the prompt: an empty rule
 /// renders as a dangling "- : " bullet in the orchestrator's system prompt,
-/// which is noise the model has to reason past on every single request.
+/// which is noise the model has to reason past on every single request. Also
+/// caps their length, for the same reason `MAX_RULES` caps the count.
 fn validate(body: &RuleUpsert) -> Result<(), Response> {
     if body.name.trim().is_empty() || body.description.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             "name and description are both required",
+        )
+            .into_response());
+    }
+    if body.name.trim().chars().count() > MAX_RULE_NAME_CHARS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("name must be {MAX_RULE_NAME_CHARS} characters or fewer"),
+        )
+            .into_response());
+    }
+    if body.description.trim().chars().count() > MAX_RULE_DESCRIPTION_CHARS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("description must be {MAX_RULE_DESCRIPTION_CHARS} characters or fewer"),
         )
             .into_response());
     }
@@ -79,6 +103,23 @@ async fn create_rule(
 ) -> impl IntoResponse {
     if let Err(resp) = validate(&body) {
         return resp;
+    }
+    match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM orchestrator_rules")
+        .fetch_one(&state.db)
+        .await
+    {
+        Ok(count) if count >= MAX_RULES => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("at most {MAX_RULES} rules are allowed; delete one before adding another"),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(%e, "create_rule: db error counting existing rules");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
     }
     let result = sqlx::query_as::<_, OrchestratorRule>(
         "INSERT INTO orchestrator_rules (name, description, position) \
@@ -147,5 +188,67 @@ async fn delete_rule(
             tracing::error!(%e, "delete_rule: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn upsert(name: &str, description: &str) -> RuleUpsert {
+        RuleUpsert {
+            name: name.to_string(),
+            description: description.to_string(),
+            position: 0,
+        }
+    }
+
+    #[test]
+    fn a_normal_rule_is_valid() {
+        assert!(validate(&upsert("No PII", "Never forward customer data.")).is_ok());
+    }
+
+    #[test]
+    fn an_empty_name_is_rejected() {
+        let err = validate(&upsert("", "some description")).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn a_whitespace_only_name_is_rejected() {
+        let err = validate(&upsert("   ", "some description")).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn an_empty_description_is_rejected() {
+        let err = validate(&upsert("a name", "")).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn a_name_at_the_cap_is_valid() {
+        let name = "a".repeat(MAX_RULE_NAME_CHARS);
+        assert!(validate(&upsert(&name, "description")).is_ok());
+    }
+
+    #[test]
+    fn a_name_over_the_cap_is_rejected() {
+        let name = "a".repeat(MAX_RULE_NAME_CHARS + 1);
+        let err = validate(&upsert(&name, "description")).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn a_description_at_the_cap_is_valid() {
+        let description = "a".repeat(MAX_RULE_DESCRIPTION_CHARS);
+        assert!(validate(&upsert("name", &description)).is_ok());
+    }
+
+    #[test]
+    fn a_description_over_the_cap_is_rejected() {
+        let description = "a".repeat(MAX_RULE_DESCRIPTION_CHARS + 1);
+        let err = validate(&upsert("name", &description)).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
     }
 }

@@ -69,11 +69,17 @@ pub enum OrchestratorEvent {
         context_compacted: bool,
     },
 
-    /// A call was blocked by flow policy (cycle, depth, budget, timeout).
+    /// A call was blocked before it reached the agent — either the confidence
+    /// bar (Settings → Orchestrator) or the flow guard's cascade limits
+    /// (cycle, depth, budget, timeout; Settings → Flow limits). `kind` says
+    /// which, so a consumer doesn't have to pattern-match `reason`'s prose to
+    /// tell them apart — the UI used to do exactly that, which meant a future
+    /// wording change to either message could silently misclassify.
     PolicyRejected {
         agent: String,
         reason: String,
         turn: usize,
+        kind: PolicyRejectionKind,
     },
 
     /// Token usage from an LLM call. Non-streaming turns report exact
@@ -97,4 +103,16 @@ pub enum OrchestratorEvent {
         agent_id: String,
         pause: PauseInfo,
     },
+}
+
+/// Which gate produced a [`OrchestratorEvent::PolicyRejected`] — see that
+/// variant's doc for why this exists as a field rather than being left for a
+/// consumer to infer from `reason`.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyRejectionKind {
+    /// The orchestrator's confidence bar.
+    Confidence,
+    /// The flow guard's cascade limits.
+    FlowGuard,
 }
