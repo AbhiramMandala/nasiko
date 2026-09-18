@@ -22,7 +22,16 @@ use crate::vector_store::{EmbeddingCache, VectorStore};
 
 #[async_trait]
 pub trait RoutingEngine: Send + Sync {
-    async fn route(&self, req: RouteRequest, pool: &PgPool) -> Result<RouteResult, RouterError>;
+    /// `guardrails` is loaded by the caller rather than by `route()` itself, so
+    /// a caller making several `route()` calls for one request (one per MAF
+    /// workflow step, for example) can load it once and share it, instead of
+    /// every call paying for its own settings/rules read.
+    async fn route(
+        &self,
+        req: RouteRequest,
+        pool: &PgPool,
+        guardrails: &Guardrails,
+    ) -> Result<RouteResult, RouterError>;
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -104,7 +113,12 @@ impl OssRoutingEngine {
 
 #[async_trait]
 impl RoutingEngine for OssRoutingEngine {
-    async fn route(&self, req: RouteRequest, pool: &PgPool) -> Result<RouteResult, RouterError> {
+    async fn route(
+        &self,
+        req: RouteRequest,
+        pool: &PgPool,
+        guardrails: &Guardrails,
+    ) -> Result<RouteResult, RouterError> {
         let t0 = Instant::now();
 
         // Fetch available agents + conversation history in parallel
@@ -117,12 +131,6 @@ impl RoutingEngine for OssRoutingEngine {
         if agents.is_empty() {
             return Err(RouterError::NoAgentsAvailable);
         }
-
-        // Read per-route, not once at construction: these are operator settings
-        // edited live from the Settings page, and this engine is built once at
-        // startup — caching them here would mean a restart before a changed
-        // confidence bar took effect.
-        let guardrails = Guardrails::load(pool).await;
 
         let registry_ms = t0.elapsed().as_millis() as i32;
 
@@ -178,10 +186,10 @@ impl RoutingEngine for OssRoutingEngine {
 
         let (selected_agent, fallback_used, reasoning, selector_usage) = match self
             .selector
-            .select_agent(&req.query, &history_msgs, &summaries, &guardrails)
+            .select_agent(&req.query, &history_msgs, &summaries, guardrails)
             .await
         {
-            Ok((sel, completion_result)) => {
+            Ok((sel, completion_result, hallucinated_fallback)) => {
                 let agent = candidates
                     .iter()
                     .find(|a| a.id == sel.agent_id)
@@ -189,7 +197,7 @@ impl RoutingEngine for OssRoutingEngine {
                     .unwrap_or_else(|| candidates[0].clone());
                 let reasoning = sel.reasoning.clone();
                 let usage = Some(completion_result);
-                (agent, false, reasoning, usage)
+                (agent, hallucinated_fallback, reasoning, usage)
             }
             // A refusal is a decision, not a failure: propagate it. The
             // first-candidate fallback below exists for infrastructure faults
@@ -203,6 +211,35 @@ impl RoutingEngine for OssRoutingEngine {
                     required,
                     agents_considered = candidates.len(),
                     "routing refused: no candidate met the confidence bar"
+                );
+                // A refusal is still a routing decision: log it like any other,
+                // so it isn't invisible to /api/orchestrator/stats and FinOps —
+                // only successful selections used to reach this log table.
+                spawn_router_log(
+                    pool,
+                    RouterLogEntry {
+                        request_id: Uuid::new_v4().to_string(),
+                        user_id: req.user_id,
+                        session_id: req.session_id,
+                        query: req.query,
+                        agents_considered: agents.len() as i32,
+                        selected_agent_id: None,
+                        selected_agent_name: None,
+                        selection_reasoning: None,
+                        fallback_used: false,
+                        total_latency_ms: t0.elapsed().as_millis() as i32,
+                        registry_fetch_ms: Some(registry_ms),
+                        stage1_candidates: Some(stage1_count as i32),
+                        stage2_candidates: Some(stage2_count as i32),
+                        embedding_model: Some(self.embedding_model.clone()),
+                        selection_llm_ms: Some(t3.elapsed().as_millis() as i32),
+                        file_count: req.file_parts.len() as i32,
+                        selection_token_usage_id: None,
+                        success: false,
+                        error_message: Some(format!(
+                            "no candidate met the {required}% confidence bar (best {best:.0}%)"
+                        )),
+                    },
                 );
                 return Err(RouterError::NoSuitableAgent { best, required });
             }
@@ -240,11 +277,10 @@ impl RoutingEngine for OssRoutingEngine {
             selection_llm_ms: Some(stage3_ms),
             file_count: req.file_parts.len() as i32,
             selection_token_usage_id,
+            success: true,
+            error_message: None,
         };
-        let pool2 = pool.clone();
-        tokio::spawn(async move {
-            write_router_log(&pool2, entry).await;
-        });
+        spawn_router_log(pool, entry);
 
         Ok(RouteResult {
             agent: selected_agent,
@@ -263,14 +299,14 @@ pub async fn write_router_log(pool: &PgPool, e: RouterLogEntry) {
             selection_reasoning, fallback_used, selection_token_usage_id,
             total_latency_ms, registry_fetch_ms, selection_llm_ms,
             stage1_candidates, stage2_candidates, embedding_model,
-            success, file_count, streaming
+            success, error_message, file_count, streaming
         ) VALUES (
             $1, $2, $3, $4,
             $5, $6, $7,
             $8, $9, $10,
             $11, $12, $13,
             $14, $15, $16,
-            true, $17, false
+            $17, $18, $19, false
         )"#,
     )
     .bind(&e.request_id)
@@ -289,6 +325,8 @@ pub async fn write_router_log(pool: &PgPool, e: RouterLogEntry) {
     .bind(e.stage1_candidates)
     .bind(e.stage2_candidates)
     .bind(&e.embedding_model)
+    .bind(e.success)
+    .bind(&e.error_message)
     .bind(e.file_count)
     .execute(pool)
     .await;
@@ -296,6 +334,14 @@ pub async fn write_router_log(pool: &PgPool, e: RouterLogEntry) {
     if let Err(err) = result {
         tracing::warn!(%err, "failed to write orchestrator log (non-fatal)");
     }
+}
+
+/// Fire-and-forget: write one `router_request_log` row without blocking the caller.
+fn spawn_router_log(pool: &PgPool, entry: RouterLogEntry) {
+    let pool = pool.clone();
+    tokio::spawn(async move {
+        write_router_log(&pool, entry).await;
+    });
 }
 
 /// Writes the Stage 3 selector's token usage to the `token_usage` table.

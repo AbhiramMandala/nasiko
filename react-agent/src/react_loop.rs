@@ -110,6 +110,67 @@ fn check_confidence(
     }
 }
 
+/// The confidence-bar and call-guard gate for one tool call, in
+/// `run_stream_inner`'s event-channel reporting style
+/// (`OrchestratorEvent::PolicyRejected` plus a message telling the model not
+/// to retry). Both of its branches call this — they differ in how a turn gets
+/// here, not in what a rejection looks like once it has, and this used to be
+/// a byte-for-byte copy in each, with no structural signal that a change to
+/// one needed the other.
+///
+/// `Err(())` means the call was rejected — already reported on `tx` and
+/// already pushed onto `results_for_context` — so the caller should `continue`
+/// its loop rather than call the tool.
+async fn reject_below_bar_streaming(
+    tc: &ToolCall,
+    agent_display: &str,
+    config: &OrchestratorConfig,
+    guard: Option<&dyn CallGuard>,
+    tx: &mpsc::Sender<OrchestratorEvent>,
+    turn_idx: usize,
+    results_for_context: &mut Vec<String>,
+) -> Result<(), ()> {
+    let name = &tc.function.name;
+
+    // Confidence bar first, before the flow guard: a call the model itself
+    // rates as a poor match should never consume fan-out or depth budget, and
+    // `before_call` increments both.
+    if let Err(reason) = check_confidence(&tc.function.arguments, config.min_confidence) {
+        let _ = tx
+            .send(OrchestratorEvent::PolicyRejected {
+                agent: agent_display.to_string(),
+                reason: reason.clone(),
+                turn: turn_idx + 1,
+            })
+            .await;
+        results_for_context.push(format!(
+            "[{}] BLOCKED: {}. Do NOT retry this agent with a different score \
+             unless you have a concrete reason to rate it higher.",
+            name, reason
+        ));
+        return Err(());
+    }
+
+    if let Some(g) = guard
+        && let Err(reason) = g.before_call(agent_display).await
+    {
+        let _ = tx
+            .send(OrchestratorEvent::PolicyRejected {
+                agent: agent_display.to_string(),
+                reason: reason.clone(),
+                turn: turn_idx + 1,
+            })
+            .await;
+        results_for_context.push(format!(
+            "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
+            name, reason
+        ));
+        return Err(());
+    }
+
+    Ok(())
+}
+
 /// The orchestrator's system prompt. One builder for both loops — `run()` and
 /// `run_stream_inner()` previously carried byte-identical copies of this text,
 /// so a change to the policy had to be made twice to take effect.
@@ -1252,41 +1313,18 @@ async fn run_stream_inner(
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    // Confidence bar first, before the flow guard: a call the model
-                    // itself rates as a poor match should never consume fan-out or
-                    // depth budget, and `before_call` increments both.
-                    if let Err(reason) =
-                        check_confidence(&tc.function.arguments, config.min_confidence)
+                    if reject_below_bar_streaming(
+                        tc,
+                        &agent_display,
+                        config,
+                        guard,
+                        tx,
+                        turn_idx,
+                        &mut results_for_context,
+                    )
+                    .await
+                    .is_err()
                     {
-                        let _ = tx
-                            .send(OrchestratorEvent::PolicyRejected {
-                                agent: agent_display.clone(),
-                                reason: reason.clone(),
-                                turn: turn_idx + 1,
-                            })
-                            .await;
-                        results_for_context.push(format!(
-                            "[{}] BLOCKED: {}. Do NOT retry this agent with a different score \
-                             unless you have a concrete reason to rate it higher.",
-                            name, reason
-                        ));
-                        continue;
-                    }
-
-                    if let Some(g) = guard
-                        && let Err(reason) = g.before_call(&agent_display).await
-                    {
-                        let _ = tx
-                            .send(OrchestratorEvent::PolicyRejected {
-                                agent: agent_display.clone(),
-                                reason: reason.clone(),
-                                turn: turn_idx + 1,
-                            })
-                            .await;
-                        results_for_context.push(format!(
-                            "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
-                            name, reason
-                        ));
                         continue;
                     }
 
@@ -1526,41 +1564,18 @@ async fn run_stream_inner(
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    // Confidence bar first, before the flow guard: a call the model
-                    // itself rates as a poor match should never consume fan-out or
-                    // depth budget, and `before_call` increments both.
-                    if let Err(reason) =
-                        check_confidence(&tc.function.arguments, config.min_confidence)
+                    if reject_below_bar_streaming(
+                        tc,
+                        &agent_display,
+                        config,
+                        guard,
+                        tx,
+                        turn_idx,
+                        &mut results_for_context,
+                    )
+                    .await
+                    .is_err()
                     {
-                        let _ = tx
-                            .send(OrchestratorEvent::PolicyRejected {
-                                agent: agent_display.clone(),
-                                reason: reason.clone(),
-                                turn: turn_idx + 1,
-                            })
-                            .await;
-                        results_for_context.push(format!(
-                            "[{}] BLOCKED: {}. Do NOT retry this agent with a different score \
-                             unless you have a concrete reason to rate it higher.",
-                            name, reason
-                        ));
-                        continue;
-                    }
-
-                    if let Some(g) = guard
-                        && let Err(reason) = g.before_call(&agent_display).await
-                    {
-                        let _ = tx
-                            .send(OrchestratorEvent::PolicyRejected {
-                                agent: agent_display.clone(),
-                                reason: reason.clone(),
-                                turn: turn_idx + 1,
-                            })
-                            .await;
-                        results_for_context.push(format!(
-                            "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
-                            name, reason
-                        ));
                         continue;
                     }
 

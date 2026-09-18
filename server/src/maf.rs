@@ -8,12 +8,12 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
-use nasiko_orchestrator::RouteRequest;
 use nasiko_orchestrator::maf::{
     llm::LlmClient,
     planner::{self, AgentInfo as PlannerAgentInfo},
     types::{MafDefinition, MafStep},
 };
+use nasiko_orchestrator::{Guardrails, RouteRequest};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -433,7 +433,10 @@ async fn create_maf(
         return bad_request("steps must not be empty");
     }
 
-    // Resolve any steps that lack an agent_id via the routing engine
+    // Resolve any steps that lack an agent_id via the routing engine. Loaded
+    // once here rather than once per step inside route(): the confidence bar
+    // and org rules are the same for every step of this request.
+    let guardrails = Guardrails::load(&state.db).await;
     let mut resolved_steps: Vec<MafStep> = Vec::with_capacity(req.steps.len());
     for (idx, step) in req.steps.into_iter().enumerate() {
         if step.task_description.trim().is_empty() {
@@ -469,7 +472,11 @@ async fn create_maf(
             // whole request with a 400, which is what made *every* workflow
             // uncreatable on such a fleet. Treat it exactly like a routing
             // failure and fall through to the catalog fallback below.
-            let routed = match state.routing_engine.route(route_req, &state.db).await {
+            let routed = match state
+                .routing_engine
+                .route(route_req, &state.db, &guardrails)
+                .await
+            {
                 Ok(result) => match result.agent.url {
                     Some(endpoint) if !endpoint.is_empty() => {
                         Some((result.agent.id, result.agent.name, endpoint))
@@ -485,7 +492,9 @@ async fn create_maf(
                 // task description.
                 Err(nasiko_orchestrator::RouterError::NoSuitableAgent { best, required }) => {
                     return bad_request(&format!(
-                        "step {idx}: no agent met the {required}% confidence bar for this task                          (best match scored {best:.0}%). Reword the step, deploy an agent that                          covers it, or lower the bar in Settings → Orchestrator."
+                        "step {idx}: no agent met the {required}% confidence bar for this task \
+                         (best match scored {best:.0}%). Reword the step, deploy an agent that \
+                         covers it, or lower the bar in Settings → Orchestrator."
                     ));
                 }
                 Err(_) => None,
@@ -639,6 +648,9 @@ async fn update_maf(
             return bad_request("steps must not be empty");
         }
 
+        // Loaded once here rather than once per step inside route() — see
+        // create_maf's own note.
+        let guardrails = Guardrails::load(&state.db).await;
         let mut resolved: Vec<MafStep> = Vec::with_capacity(steps.len());
         for (idx, step) in steps.iter().enumerate() {
             if step.task_description.trim().is_empty() {
@@ -667,7 +679,11 @@ async fn update_maf(
                     user_id,
                     file_parts: vec![],
                 };
-                match state.routing_engine.route(route_req, &state.db).await {
+                match state
+                    .routing_engine
+                    .route(route_req, &state.db, &guardrails)
+                    .await
+                {
                     Ok(result) => {
                         let ep = result.agent.url.unwrap_or_default();
                         if ep.is_empty() {
@@ -681,7 +697,9 @@ async fn update_maf(
                     // Propagated, not fallen back on — see create_maf's own note.
                     Err(nasiko_orchestrator::RouterError::NoSuitableAgent { best, required }) => {
                         return bad_request(&format!(
-                            "step {idx}: no agent met the {required}% confidence bar for this task                              (best match scored {best:.0}%). Reword the step, deploy an agent that                              covers it, or lower the bar in Settings → Orchestrator."
+                            "step {idx}: no agent met the {required}% confidence bar for this task \
+                             (best match scored {best:.0}%). Reword the step, deploy an agent that \
+                             covers it, or lower the bar in Settings → Orchestrator."
                         ));
                     }
                     Err(_) => {

@@ -125,6 +125,73 @@ async fn select_agent_with_empty_list_returns_error() {
     );
 }
 
+// ── select_agent: hallucinated agent_id ────────────────────────────────────────
+// Regression for a mislabeled fallback: when the model names an agent_id that
+// doesn't exist in the candidate list, select_agent substitutes the first real
+// candidate but was returning `fallback_used = false` for it — indistinguishable
+// in router_logs from a genuine, confident, non-fallback pick. The returned
+// `bool` must be `true` for this path.
+
+#[tokio::test]
+async fn select_agent_flags_hallucinated_id_as_fallback_used() {
+    let mut server = mockito::Server::new_async().await;
+    let ghost_id = Uuid::new_v4();
+    let real_agent = dummy_agent("real-agent", "Does real things", vec![]);
+
+    let selection_json = serde_json::json!({
+        "agent_id": ghost_id,
+        "agent_name": "ghost-agent",
+        "reasoning": "looks like a great fit",
+        "confidence": 90,
+    })
+    .to_string();
+
+    let body = serde_json::json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "test-model",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": selection_json },
+            "finish_reason": "stop",
+        }],
+        "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 },
+    })
+    .to_string();
+
+    server
+        .mock("POST", "/v1/chat/completions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(body)
+        .create_async()
+        .await;
+
+    let provider = LLMProvider::new(reqwest::Client::new(), "sk-test".to_string(), server.url());
+    let selector = AgentSelector::new(provider, "test-model".to_string());
+
+    let (selection, _usage, hallucinated_fallback) = selector
+        .select_agent(
+            "do the thing",
+            &[],
+            std::slice::from_ref(&real_agent),
+            &Guardrails::default(),
+        )
+        .await
+        .expect("a hallucinated agent_id should resolve via fallback, not error");
+
+    assert!(
+        hallucinated_fallback,
+        "a hallucinated agent_id must be flagged as a fallback"
+    );
+    assert_eq!(
+        selection.agent_id, real_agent.id,
+        "should substitute the first real candidate"
+    );
+    assert_ne!(selection.agent_id, ghost_id);
+}
+
 // ── select_agent: live LLM tests ──────────────────────────────────────────────
 
 #[tokio::test]
@@ -171,7 +238,7 @@ async fn select_agent_with_live_llm_returns_valid_selection() {
         )
         .await;
     assert!(result.is_ok(), "expected Ok, got {result:?}");
-    let (selection, _usage) = result.unwrap();
+    let (selection, _usage, _hallucinated_fallback) = result.unwrap();
     assert!(!selection.reasoning.is_empty());
 }
 

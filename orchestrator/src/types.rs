@@ -54,4 +54,9 @@ pub struct RouterLogEntry {
     pub file_count: i32,
     /// UUID of token_usage record tracking the Stage 3 LLM selector call.
     pub selection_token_usage_id: Option<Uuid>,
+    /// `false` for a routing decision that ended in a refusal (e.g. no
+    /// candidate cleared the confidence bar) rather than an agent selection.
+    pub success: bool,
+    /// Set when `success` is `false`, to say why routing did not produce a pick.
+    pub error_message: Option<String>,
 }

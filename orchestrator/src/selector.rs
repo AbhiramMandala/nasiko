@@ -24,13 +24,19 @@ impl AgentSelector {
     }
 
     /// Select best agent using structured output (response_format json_schema).
+    ///
+    /// The returned `bool` is `true` when the model named an agent id that
+    /// doesn't exist in `agents` and this substituted the first candidate in
+    /// its place — the caller's `fallback_used` should follow it, since the
+    /// returned `confidence` is the score the model gave the hallucinated
+    /// pick, not the substitute.
     pub async fn select_agent(
         &self,
         query: &str,
         conversation_history: &[ConversationMessage],
         agents: &[AgentCardSummary],
         guardrails: &Guardrails,
-    ) -> Result<(AgentSelection, CompletionResult), SelectorError> {
+    ) -> Result<(AgentSelection, CompletionResult, bool), SelectorError> {
         if agents.is_empty() {
             return Err(SelectorError::NoAgentsAvailable);
         }
@@ -107,10 +113,11 @@ impl AgentSelector {
                     confidence: selection.confidence,
                 },
                 result,
+                true,
             ));
         }
 
-        Ok((selection, result))
+        Ok((selection, result, false))
     }
 
     /// Fetch running agents directly from DB — used by the orchestrator path.
@@ -165,6 +172,22 @@ impl AgentSelector {
             .map(|r| format!("\n\n{r}"))
             .unwrap_or_default();
 
+        // Naming the cutoff is skipped when it is 0: "a score below 0 means
+        // the request is refused" is impossible on a 0-100 scale. This exact
+        // incoherent phrasing was already found, on the sibling chat-path
+        // prompt, to make a model stop calibrating and always answer 100 —
+        // see the identical guard in
+        // oss/react-agent/src/react_loop.rs::build_delegation_policy.
+        let threshold = if guardrails.min_confidence > 0 {
+            format!(
+                " — a score below {} means the request is refused, which is the correct outcome \
+                 when nothing fits.",
+                guardrails.min_confidence
+            )
+        } else {
+            ".".to_string()
+        };
+
         // "choose the closest option" is deliberately gone: paired with a
         // confidence bar it is contradictory advice, and it is the instruction
         // that made this selector always return *something*.
@@ -173,11 +196,10 @@ impl AgentSelector {
              Available agents:\n{}\n\n\
              Select the most specialized agent that can actually do the task, and report your \
              honest confidence from 0 to 100. If no agent genuinely fits, say so with a low \
-             confidence rather than picking the closest one — a score below {} means the request \
-             is refused, which is the correct outcome when nothing fits.",
+             confidence rather than picking the closest one{}",
             rules,
             list.join("\n\n"),
-            guardrails.min_confidence
+            threshold
         )
     }
 
@@ -279,5 +301,46 @@ mod skill_extraction_tests {
         assert_eq!(skills[0].examples, vec!["hitl auth test".to_string()]);
         // A skill that documents none is not a parse failure — it just has nothing to relay.
         assert!(skills[1].examples.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod system_prompt_tests {
+    use super::*;
+
+    fn selector() -> AgentSelector {
+        AgentSelector::new(
+            LLMProvider::new(reqwest::Client::new(), String::new(), String::new()),
+            "test-model".to_string(),
+        )
+    }
+
+    fn guardrails(min_confidence: u8) -> Guardrails {
+        Guardrails {
+            min_confidence,
+            rules_prompt: None,
+        }
+    }
+
+    /// Regression: at a bar of 0, "a score below 0 means the request is
+    /// refused" is impossible on a 0-100 scale — the same bug already found
+    /// and fixed on the chat path
+    /// (`oss/react-agent/src/react_loop.rs::a_zero_bar_emits_no_threshold_language`),
+    /// where the incoherent sentence was observed to make the model stop
+    /// calibrating and always answer 100.
+    #[test]
+    fn a_zero_bar_emits_no_threshold_language() {
+        let out = selector().build_system_prompt(&[], &guardrails(0));
+        assert!(
+            !out.contains("below 0"),
+            "a zero bar must not produce impossible instructions: {out}"
+        );
+    }
+
+    /// A real bar is still stated, so the model knows what gets rejected.
+    #[test]
+    fn a_real_bar_is_still_named() {
+        let out = selector().build_system_prompt(&[], &guardrails(80));
+        assert!(out.contains("below 80"));
     }
 }

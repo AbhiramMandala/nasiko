@@ -1,4 +1,4 @@
-import { showToast } from '/common/utils/toast.js';
+import { showToast, toast } from '/common/utils/toast.js';
 import { escHtml } from '/common/utils/escape.js';
 import { withLoading } from '/common/utils/async-button.js';
 import { initialView, syncView } from '/common/utils/module-view.js';
@@ -807,20 +807,27 @@ class SettingsPage extends HTMLElement {
       const idpKind = this.querySelector('#s-idp-kind').value;
       if (idpKind) oidc.provider_kind = idpKind;
 
-      const calls = [call('saveSettings', general)];
-      if (Object.keys(oidc).length) {
-        calls.push(callOptional('saveOidcSettings', oidc));
+      try {
+        const calls = [call('saveSettings', general)];
+        if (Object.keys(oidc).length) {
+          calls.push(callOptional('saveOidcSettings', oidc));
+        }
+        await Promise.all(calls);
+        // Rules are their own endpoint, but the same button owns them — the page
+        // must not save half of the Orchestrator tab. Sequenced after the settings
+        // PUT so a failure here leaves the staged edits on screen to retry rather
+        // than silently dropping them.
+        await this.#saveRules();
+        showToast('Settings saved');
+        // Reload so the SSO tab's derived status (provider_kind, badges, SCIM
+        // section visibility) reflects what was just saved.
+        this.#load();
+      } catch (err) {
+        // `message` on an ApiError is written to be shown to a user (e.g. the
+        // 400 from an out-of-range orchestrator_min_confidence) — surface it
+        // instead of letting the rejection go unhandled and silent.
+        toast.error(err?.message || 'Could not save settings.');
       }
-      await Promise.all(calls);
-      // Rules are their own endpoint, but the same button owns them — the page
-      // must not save half of the Orchestrator tab. Sequenced after the settings
-      // PUT so a failure here leaves the staged edits on screen to retry rather
-      // than silently dropping them.
-      await this.#saveRules();
-      showToast('Settings saved');
-      // Reload so the SSO tab's derived status (provider_kind, badges, SCIM
-      // section visibility) reflects what was just saved.
-      this.#load();
     })();
   }
 }

@@ -91,6 +91,16 @@ async fn update_settings(
     _claims: Claims,
     Json(body): Json<SettingsUpdate>,
 ) -> impl IntoResponse {
+    if let Some(c) = body.orchestrator_min_confidence
+        && !(0..=100).contains(&c)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "orchestrator_min_confidence must be between 0 and 100",
+        )
+            .into_response();
+    }
+
     let result = sqlx::query_as::<_, Settings>(
         r#"INSERT INTO settings (
                id, router_model, default_provider, max_flow_depth, max_flow_fan_out,
