@@ -102,22 +102,13 @@
     .kpi-skel { animation: none; opacity: 0.6; }
   }
 
-  /* A failed dashboard fetch replaces the whole strip with this — same
-     tokens as app-table's own `.error`, so a load failure reads the same
-     wherever it shows up on this page. */
-  .kpi-error {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--s-16);
-    background: var(--bg-error);
-    color: var(--fg-error);
-    border: var(--bw-1) solid var(--border-error);
-    border-radius: var(--r-8);
-    padding: var(--s-16);
-    font-size: var(--font-size-sm);
-  }
+  /* A failed dashboard fetch replaces the whole strip with the shared failure
+     block (`errorStateHtml`), which brings its own look. All this rule has to
+     do is let it span the strip's columns instead of sitting in the first
+     one. The red-panel treatment it used to carry is gone with it: that was
+     this page's own copy of app-table's old `.error` banner, and the point of
+     the shared block is that there is no longer a per-page copy to drift. */
+  .kpi-strip > app-empty-state { grid-column: 1 / -1; }
 
   .page-head {
     display: flex;

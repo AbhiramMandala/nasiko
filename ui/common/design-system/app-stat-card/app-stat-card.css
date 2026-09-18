@@ -31,6 +31,10 @@
     @media (prefers-reduced-motion: reduce) {
       .stat-card.is-loading .skel-line { animation: none; opacity: 0.6; }
     }
+    /* Matches the loading card's floor, so a tile that fails does not
+       collapse to a shorter box than the one that was sitting there. */
+    .stat-card.is-error { min-height: 100px; padding: var(--s-8); }
+
     .label { margin: 0 0 var(--s-8); color: var(--color-text-muted); font-size: var(--font-size-sm); }
     .value { margin: 0; font-size: var(--font-size-3xl); font-weight: 700; line-height: 1.1; }
     .delta {

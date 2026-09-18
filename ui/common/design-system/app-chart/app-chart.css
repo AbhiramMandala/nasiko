@@ -172,6 +172,10 @@
     color: var(--fg-secondary);
 
     & p { margin: 0; max-width: 44ch; }
+
+    /* `app-empty-state` brings its own padding in `inline` form; keeping this
+       box's as well would double it and push a short message off centre. */
+    &:has(app-empty-state) { padding: 0; }
   }
 
   /* Loading placeholder for the canvas forms (line/bar/donut): a few thin

@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "b663b6eaa08a",
+  "catalogVersion": "b6d2c0e34d1a",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 41,
@@ -371,7 +371,8 @@
         "description",
         "tags",
         "href",
-        "loading"
+        "loading",
+        "error"
       ],
       "attributes": {
         "name": {
@@ -410,7 +411,11 @@
         },
         "loading": {
           "type": "boolean",
-          "description": "Renders the shimmer placeholder instead of content. The skeleton lives here, not in the consuming page, so the card's geometry has exactly one definition and the loading and loaded states cannot drift apart."
+          "description": "Renders the shimmer placeholder instead of content. The skeleton lives here, not in the consuming page, so the card's geometry has exactly one definition and the loading and loaded states cannot drift apart. (The attribute below was added after the catalog first shipped and sits last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
+        },
+        "error": {
+          "type": "string",
+          "description": "*We* could not load this card's data — distinct from `status=\"error\"`, which means the agent itself is unhealthy and the card loaded fine. Two different facts that happened to want a similar look, and only the second was expressible. Present (bare, or with a message overriding the default copy) replaces the whole card body with the shared failure block — icon, one line, Retry. `loading` wins over it."
         }
       },
       "slots": [
@@ -431,7 +436,12 @@
           "attribute": "data-slot"
         }
       ],
-      "events": []
+      "events": [
+        {
+          "name": "card-retry",
+          "description": "Retry pressed on the `error` state — bubbles. The card is handed its data, so the owner refetches."
+        }
+      ]
     },
     "app-chart": {
       "element": "app-chart",
@@ -452,7 +462,8 @@
         "segmented",
         "average-line",
         "format-y2",
-        "flush-top"
+        "flush-top",
+        "error"
       ],
       "attributes": {
         "type": {
@@ -543,10 +554,19 @@
         "flush-top": {
           "type": "boolean",
           "description": "The plot's own canvas-painted background (see `plotBackground`) normally rounds all four corners, like any other surface card. Set this when another element sits directly above the chart with no gap (the day grid on the concentration panel) and the two should read as one continuous card: it squares the top two corners off, leaving only the bottom two rounded. Applies to the loading skeleton and empty state too (app-chart.css) — those are plain divs shown instead of the canvas, not something `plotBackground` paints, so they need their own override rather than inheriting this one."
+        },
+        "error": {
+          "type": "string",
+          "description": "The fetch failed. Present (bare, or with a message overriding the default copy) swaps the plot for the shared inline failure block — icon, one line, Retry — instead of leaving the skeleton spinning forever or, worse, showing the empty-state copy, which tells the user their data does not exist when in truth we could not ask. `loading` wins over it; it wins over empty."
         }
       },
       "slots": [],
-      "events": [],
+      "events": [
+        {
+          "name": "chart-retry",
+          "description": "Retry pressed on the failure state — bubbles. The chart is handed its data, so it cannot refetch; the owner listens and reloads."
+        }
+      ],
       "dataProp": "data",
       "note": "Chart data is a JS property, not an attribute (app-chart.js:189). Two shapes by `type`: canvas forms (line/bar/donut) need Chart.js {labels, datasets}; row forms (hbar/progress) take a bare array of {label, value}. The renderer passes it through unchanged."
     },
@@ -918,7 +938,9 @@
       "summary": "Placeholder shown when a list or view has no content yet.",
       "paramOrder": [
         "heading",
-        "description"
+        "description",
+        "variant",
+        "inline"
       ],
       "attributes": {
         "heading": {
@@ -928,6 +950,18 @@
         "description": {
           "type": "string",
           "description": "Supporting description text"
+        },
+        "variant": {
+          "type": "enum",
+          "values": [
+            "default",
+            "error"
+          ],
+          "description": "`default` (nothing here yet) | `error` (we could not load it). `error` tints the icon with the status red and defaults to the alert glyph; `default` defaults to the info glyph. The distinction is the whole point: \"there is nothing\" and \"we don't know\" look identical today across most of the product, and a user reading the first when it is really the second concludes their data does not exist."
+        },
+        "inline": {
+          "type": "boolean",
+          "description": "Drop the dashed frame and the surface fill, for use *inside* another component's box (a table body, a chart plot area, a stat strip) where the host already draws the container. Standalone page-level empty states leave it off and keep the frame."
         }
       },
       "slots": [
@@ -2024,7 +2058,8 @@
         "trend",
         "loading",
         "format",
-        "currency"
+        "currency",
+        "error"
       ],
       "attributes": {
         "label": {
@@ -2073,10 +2108,19 @@
           "type": "string",
           "default": "USD",
           "description": "ISO code for `format=\"currency\"` (default `USD`)"
+        },
+        "error": {
+          "type": "string",
+          "description": "The fetch failed. Present (bare, or with a message overriding the default copy) replaces the card's contents with the shared failure block — icon, one line, Retry. Without it a failed card printed a plain `—`, the exact dash it prints for a metric that is honestly zero, so the tile could not say \"we could not get this\". `loading` wins over it."
         }
       },
       "slots": [],
-      "events": []
+      "events": [
+        {
+          "name": "stat-card-retry",
+          "description": "Retry pressed on the failure state — bubbles. The card is handed its value, so the owner refetches."
+        }
+      ]
     },
     "app-stat-row": {
       "element": "app-stat-row",
@@ -2084,7 +2128,8 @@
       "paramOrder": [
         "items",
         "loading",
-        "variant"
+        "variant",
+        "error"
       ],
       "attributes": {
         "items": {
@@ -2117,11 +2162,20 @@
           "values": [
             "chips"
           ],
-          "description": "`chips` lays the same metrics out as a wrapping row of `label: value` pills instead of hairline-separated columns — for strips that sit under a page title rather than heading a dashboard. Purely a layout change: same `items`, same cells, no second markup path. `pct` meters and `sub` captions are column-shaped and are not drawn in chips."
+          "description": "`chips` lays the same metrics out as a wrapping row of `label: value` pills instead of hairline-separated columns — for strips that sit under a page title rather than heading a dashboard. Purely a layout change: same `items`, same cells, no second markup path. `pct` meters and `sub` captions are column-shaped and are not drawn in chips. (The attribute below was added after the catalog first shipped and sits last on purpose: the DSL passes attributes positionally in @attr order, so a new one must append — see catalog-compat.mjs.)"
+        },
+        "error": {
+          "type": "string",
+          "description": "The fetch failed. Present (bare, or with a message overriding the default copy) replaces the whole strip with one failure block and one Retry, because one request filled every cell and one is what failed. Without it a failed strip printed a dash per metric — the same dash an honest zero prints, so \"we could not get this\" and \"this is nothing\" were indistinguishable. `loading` wins over it."
         }
       },
       "slots": [],
-      "events": []
+      "events": [
+        {
+          "name": "stat-row-retry",
+          "description": "Retry pressed on the failure state — bubbles. The strip is handed its metrics, so the owner refetches."
+        }
+      ]
     },
     "app-switch": {
       "element": "app-switch",
@@ -2222,7 +2276,8 @@
         "search-placeholder",
         "detail",
         "empty-message",
-        "loading"
+        "loading",
+        "error"
       ],
       "attributes": {
         "limit": {
@@ -2253,6 +2308,10 @@
         "loading": {
           "type": "boolean",
           "description": "Hold the skeleton: the owner has not got rows yet and will hand them over later. Present suppresses the fetch entirely, so a table waiting on data upstream never flashes its empty state first; removing it fetches. Every other data component in the design system has this, and a caller who reasonably assumed this one did too was writing an argument that landed in the next slot along."
+        },
+        "error": {
+          "type": "string",
+          "description": "The fetch failed. Present (bare, or with a message overriding the default copy) draws the shared failure block in the table body — icon, one line, Retry — under a live header row, in place of the rows. Set automatically when this table's own `dataFn` throws; settable by an owner that feeds the table itself. `loading` wins over it."
         }
       },
       "slots": [],
@@ -2264,6 +2323,10 @@
         {
           "name": "loading-end",
           "description": "After each fetch — bubbles."
+        },
+        {
+          "name": "table-retry",
+          "description": "Retry pressed on the failure state — bubbles. The table also refetches through its own `dataFn` first, where it has one; the event is for an owner that supplies rows itself."
         }
       ],
       "dataProp": "dataFn",

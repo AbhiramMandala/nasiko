@@ -96,8 +96,19 @@ class ExecutionsPage extends HTMLElement {
       this.#renderList();
       this.#pollIfActive();
     } catch (err) {
-      this.querySelector('#list-area').innerHTML =
-        `<p class="load-error">Failed to load executions: ${escHtml(err.message)}</p>`;
+      // Was a bare line of text where the list should be. The raw message
+      // moves into the description so the detail survives the restyle.
+      const area = this.querySelector('#list-area');
+      area.innerHTML = `
+        <app-empty-state variant="error"
+          heading="Couldn't load executions"
+          description="${escAttr(err?.message || 'The request failed.')}">
+          <app-button id="exec-retry" variant="tertiary">Retry</app-button>
+        </app-empty-state>`;
+      area.querySelector('#exec-retry')?.addEventListener('click', () => {
+        area.innerHTML = this.#skeleton();
+        this.#load();
+      });
     }
   }
 

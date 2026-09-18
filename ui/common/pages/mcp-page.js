@@ -37,6 +37,7 @@ import '/common/design-system/app-switch/app-switch.js';
 import { call } from '../core/data-sources.js';
 import { initialView } from '../utils/module-view.js';
 import { readSearchParams, setSearchParams } from '../utils/url-policy.js';
+import { errorStateHtml } from '/common/utils/data-component-utils.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -198,7 +199,16 @@ class McpPage extends HTMLElement {
       tabs.innerHTML = '';
       const grid = this.querySelector('#catalog-grid');
       grid.removeAttribute('aria-busy');
-      grid.innerHTML = `<div class="tk-msg">Failed to load connectable services</div>`;
+      // Was a bare line of text with no icon, no frame and no way back. One
+      // request fills this grid, so one block says it failed — the same block
+      // the empty states beside it use, in its error variant.
+      grid.innerHTML = `
+        <app-empty-state variant="error"
+          heading="Couldn't load the catalog"
+          description="Something went wrong loading connectable servers and toolkits.">
+          <app-button id="catalog-retry" variant="tertiary">Retry</app-button>
+        </app-empty-state>`;
+      grid.querySelector('#catalog-retry')?.addEventListener('click', () => this.#load());
       return;
     }
     const d = connResp?.data ?? {};
@@ -1054,7 +1064,10 @@ class McpPage extends HTMLElement {
       const resp = await call('fetchAgentMcpConnectors', this.#selectedAgentId);
       this.#agentConnectors = resp?.data?.connectors || [];
     } catch (e) {
-      body.innerHTML = `<div class="agent-access-empty"><p>Failed to load connector access: ${escHtml(e.message)}</p></div>`;
+      body.innerHTML = `<div class="agent-access-empty">${
+        errorStateHtml("Couldn't load this agent's connector access")}</div>`;
+      body.querySelector('[data-retry]')
+        ?.addEventListener('click', () => this.#loadAgentAccessForConnector(connectorId));
       return;
     }
     this.#agentTools = new Map();
@@ -1125,7 +1138,9 @@ class McpPage extends HTMLElement {
         const resp = await call('fetchAgentMcpConnectorTools', this.#selectedAgentId, connectorId);
         this.#agentTools.set(connectorId, resp?.data?.tools || []);
       } catch (e) {
-        editor.innerHTML = `<div class="form-error">Failed to load tools: ${escHtml(e.message)}</div>`;
+        editor.innerHTML = errorStateHtml("Couldn't load this server's tools");
+        editor.querySelector('[data-retry]')
+          ?.addEventListener('click', () => this.#renderToolsEditor(connectorId));
         return;
       }
     }

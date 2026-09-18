@@ -42,6 +42,15 @@
  * @attr {boolean} loading - Renders the shimmer placeholder instead of content. The
  *   skeleton lives here, not in the consuming page, so the card's geometry has exactly
  *   one definition and the loading and loaded states cannot drift apart.
+ * (The attribute below was added after the catalog first shipped and sits last
+ *  on purpose: the DSL passes attributes positionally in @attr order, so a new
+ *  one must append — see catalog-compat.mjs.)
+ * @attr {string} error - *We* could not load this card's data — distinct from
+ *   `status="error"`, which means the agent itself is unhealthy and the card
+ *   loaded fine. Two different facts that happened to want a similar look, and
+ *   only the second was expressible. Present (bare, or with a message
+ *   overriding the default copy) replaces the whole card body with the shared
+ *   failure block — icon, one line, Retry. `loading` wins over it.
  * @slot [data-slot="leading"] - A media box (an avatar, a provider glyph) at the leading edge
  *   of the title row, before the status dot.
  * @slot [data-slot="actions"] - Header controls (an action menu, an icon button) pinned to the
@@ -55,7 +64,9 @@
  *   on a later render would find nothing and silently destroy them.
  *   Slotted nodes are captured once and cached: render() relocates them and then
  *   rewrites innerHTML, so re-querying on a later render would find nothing.
- * @fires — none. A card with an href navigates to it on click or Enter; the two
+ * @fires card-retry - Retry pressed on the `error` state — bubbles. The card is
+ *          handed its data, so the owner refetches.
+ * @fires — none otherwise. A card with an href navigates to it on click or Enter; the two
  *          footer buttons keep their own hrefs and are not intercepted (each
  *          renders an inner `<a href>`, which the activation guard skips). A card
  *          without one only needs `role`/`tabindex` from the consumer, and Enter
@@ -68,6 +79,8 @@ import '../app-button/app-button.js';
 import { icons } from '../../utils/icons.js';
 import { escHtml, escAttr } from '../../utils/escape.js';
 import { navigate as routerNavigate } from '../../core/router.js';
+import { errorStateHtml, bindRetry } from '../../utils/data-component-utils.js';
+import '../app-empty-state/app-empty-state.js';
 
 import { warnOnce } from '../../utils/deprecate.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -84,7 +97,8 @@ export class AppCard extends HTMLElement {
   static get observedAttributes() {
     return ['agent-id', 'name', 'card-title', 'version', 'status', 'description',
             'tags', 'max-visible-tags', 'details-href', 'chat-href', 'href',
-            'error-title', 'error-body', 'deploy-label', 'deploy-hint', 'loading'];
+            'error-title', 'error-body', 'deploy-label', 'deploy-hint', 'loading',
+            'error'];
   }
 
   #initialized = false;
@@ -95,6 +109,7 @@ export class AppCard extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
 
+    bindRetry(this, 'card-retry');
     this.render();
 
     // Own the navigation the page used to do by event delegation. Explicit
@@ -108,12 +123,16 @@ export class AppCard extends HTMLElement {
   }
 
   #onActivate = (e) => {
+    // A failed card navigates nowhere: the href is built from data we never
+    // received, and the only thing to click is Retry.
+    if (this.hasAttribute('error')) return;
     if (e.target.closest('a[href], button')) return;
     const href = this.#cardHref();
     if (href) routerNavigate(href);
   };
 
   #onKeydown = (e) => {
+    if (this.hasAttribute('error')) return;
     if (e.key !== 'Enter' || e.target.closest('a[href], button')) return;
     const href = this.#cardHref();
     if (href) routerNavigate(href);
@@ -195,6 +214,16 @@ export class AppCard extends HTMLElement {
       return;
     }
     this.removeAttribute('aria-busy');
+
+    // Nothing about this card was fetched, so there is no name, no status and
+    // no href to honour — and a card that navigates somewhere on the strength
+    // of data it never received is worse than one that does not.
+    if (this.hasAttribute('error')) {
+      this.removeAttribute('role');
+      this.removeAttribute('tabindex');
+      this.innerHTML = errorStateHtml(this.getAttribute('error') || "Couldn't load this card");
+      return;
+    }
 
     // A loaded card that navigates is a link target in its own right, matching
     // what agents-page put on the div it used to build. A card with no href

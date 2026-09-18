@@ -93,6 +93,7 @@ import '/common/design-system/app-segmented-control/app-segmented-control.js';
 import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-table/app-table.js';
 import { call } from '../core/data-sources.js';
+import { errorStateHtml } from '/common/utils/data-component-utils.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -606,26 +607,26 @@ class TokenopsPage extends HTMLElement {
    * `refresh()`).
    */
   #renderLoadFailure() {
+    // The strip is this page's own markup (its delta chips have no equivalent
+    // in `app-stat-row`), so it borrows the block rather than the component —
+    // same icon, same wording shape, same Retry as every other failure.
     const strip = this.querySelector('#kpi-strip');
     strip.removeAttribute('aria-busy');
-    strip.innerHTML = `
-      <div class="kpi-error" role="alert">
-        <span>Couldn't load usage data.</span>
-        <app-button id="kpi-retry" variant="tertiary" size="sm">Retry</app-button>
-      </div>`;
-    strip.querySelector('#kpi-retry')?.addEventListener('click', () => this.#load());
+    strip.innerHTML = errorStateHtml("Couldn't load usage data");
+    strip.querySelector('[data-retry]')?.addEventListener('click', () => this.#load());
 
-    // Both charts already know how to show an empty state (`empty-text`), and
-    // the failure wording rides the same attribute. Setting the flags rather
-    // than the attribute is what keeps that honest: each render resets the
-    // text, so writing it here worked only if written *after* the render, and
-    // one of the two calls a render and the other does not.
+    // The charts carry a real failure state now, so the flags drive `error`
+    // rather than overwriting the empty copy with failure wording. Setting the
+    // flags rather than the attribute is still what keeps it honest: each
+    // render resets the state, so writing it here worked only if written
+    // *after* the render, and one of the two calls a render and the other
+    // does not.
     this.#spendFailed = true;
     this.#dayFailed = true;
 
     const spendChart = this.querySelector('#spend-plot');
     spendChart.removeAttribute('loading');
-    spendChart.setAttribute('empty-text', "Couldn't load this chart");
+    spendChart.setAttribute('error', "Couldn't load this chart");
     spendChart.data = { labels: [], datasets: [] };
 
     this.#dayDrill = null;
@@ -931,8 +932,12 @@ class TokenopsPage extends HTMLElement {
    */
   #renderSpend() {
     const chart = this.querySelector('#spend-plot');
-    chart.setAttribute('empty-text', this.#spendFailed
-      ? "Couldn't load this chart" : 'No usage in this window');
+    // Two states, two attributes. They used to share `empty-text`, which made
+    // a failed fetch indistinguishable from a quiet window to anything but a
+    // reader of the string — no icon, no Retry, no `role="alert"`.
+    chart.toggleAttribute('error', this.#spendFailed);
+    if (this.#spendFailed) chart.setAttribute('error', "Couldn't load this chart");
+    chart.setAttribute('empty-text', 'No usage in this window');
     const points = this.#spend.points;
     const fmtLabel = this.#spend.bucket === 'hour'
       ? new Intl.DateTimeFormat('en', { hour: 'numeric' })
@@ -1018,8 +1023,9 @@ class TokenopsPage extends HTMLElement {
   #renderConcentration() {
     const legend = this.querySelector('#conc-legend');
     const chart = this.querySelector('#conc-plot');
-    chart.setAttribute('empty-text', this.#dayFailed
-      ? "Couldn't load this chart" : 'No spend on this day');
+    chart.toggleAttribute('error', this.#dayFailed);
+    if (this.#dayFailed) chart.setAttribute('error', "Couldn't load this chart");
+    chart.setAttribute('empty-text', 'No spend on this day');
     const note = this.querySelector('#conc-note');
     const day = this.#dayDrill;
     const hours = day?.hours ?? [];

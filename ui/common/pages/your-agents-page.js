@@ -133,11 +133,10 @@ class YourAgentsPage extends HTMLElement {
     this.querySelector("#status-tabs").innerHTML = "";
     this.querySelector("#agents-grid").innerHTML = `
       <div class="empty-wrap">
-        <app-empty-state
+        <app-empty-state variant="error"
           heading="Couldn't load agents"
-          description="Something went wrong loading your deployed agents."
-          icon='${icons.alertTriangle("", 40)}'>
-          <app-button id="agents-retry" variant="primary">Retry</app-button>
+          description="Something went wrong loading your deployed agents.">
+          <app-button id="agents-retry" variant="tertiary">Retry</app-button>
         </app-empty-state>
       </div>`;
     this.querySelector("#agents-retry")?.addEventListener("click", () => this.#load());

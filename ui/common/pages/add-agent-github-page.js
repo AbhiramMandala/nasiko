@@ -10,6 +10,8 @@ import { escAttr, escHtml } from '/common/utils/escape.js';
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./add-agent-github-page.css', import.meta.url));
 import { navigate as routerNavigate } from '../core/router.js';
+import { errorStateHtml } from '/common/utils/data-component-utils.js';
+import '/common/design-system/app-empty-state/app-empty-state.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -250,7 +252,9 @@ class AddAgentGithubPage extends HTMLElement {
       this.#allRepos = Array.isArray(body) ? body : (body?.repositories || []);
       this.#renderRepos(this.#allRepos);
     } catch (err) {
-      repoList.innerHTML = `<p class="repo-load-error">Failed to load repos: ${escHtml(err.message)}</p>`;
+      repoList.innerHTML = errorStateHtml("Couldn't load your repositories");
+      repoList.querySelector('[data-retry]')
+        ?.addEventListener('click', () => this.#loadRepos());
     }
   }
 

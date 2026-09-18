@@ -1,4 +1,5 @@
 import { icons } from '/common/utils/icons.js';
+import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 
 import { loadCss } from '/common/utils/css.js';
@@ -36,12 +37,16 @@ class SessionTracePage extends HTMLElement {
 
   async #redirect(traceId) {
     let sessionId = new URLSearchParams(location.search).get('session_id') || '';
+    let failed = false;
     if (!sessionId) {
       try {
         const trace = await call('fetchTraceDetail', traceId);
         sessionId = trace?.project_session_id || '';
       } catch {
-        // Fall through to the manual escape hatch below.
+        // Used to fall through to "this trace isn't linked to a session yet",
+        // which is a statement about the trace. A failed lookup says nothing
+        // about the trace — it may well be linked.
+        failed = true;
       }
     }
     if (sessionId) {
@@ -57,11 +62,18 @@ class SessionTracePage extends HTMLElement {
         <a class="back-link" href="javascript:history.back()">${icons.chevronLeft('', 16)} Back</a>
         <h1>${escHtml(traceId)}</h1>
       </div>
-      <app-empty-state
-        heading="This trace isn't linked to a session yet"
-        description="Agent spans reach the trace backend a few seconds after a reply finishes. Try refreshing in a moment, or open the session from Execution history."
-        icon='${icons.faceFrown("", 40)}'></app-empty-state>
+      ${failed ? `
+        <app-empty-state variant="error"
+          heading="Couldn't look up this trace"
+          description="Something went wrong reaching the trace backend.">
+          <app-button id="trace-retry" variant="tertiary">Retry</app-button>
+        </app-empty-state>` : `
+        <app-empty-state
+          heading="This trace isn't linked to a session yet"
+          description="Agent spans reach the trace backend a few seconds after a reply finishes. Try refreshing in a moment, or open the session from Execution history."
+          icon='${icons.faceFrown("", 40)}'></app-empty-state>`}
     `;
+    this.querySelector('#trace-retry')?.addEventListener('click', () => this.#redirect(traceId));
   }
 
 }

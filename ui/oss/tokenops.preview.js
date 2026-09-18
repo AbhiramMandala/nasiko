@@ -4,8 +4,11 @@
 //   GET /api/observability/finops/spend-calendar     month heatmap (no panel yet)
 //   GET /api/observability/finops/spend-calendar/day "Spend concentration" drill-down
 //   GET /api/observability/finops/attributions       standalone table source (not called yet)
-// Every fixture function is self-contained — a preview fixture runs without
-// this module's scope, so it may not reach a shared helper.
+// A preview fixture is `toString()`d and eval'd in the page, so it runs
+// WITHOUT this module's scope — reaching a shared helper or const throws
+// "qparam is not defined" at run time and the page renders its error state.
+// `scoped()` below re-declares the shared bits as a literal prelude inside
+// each handler, so the data stays declared once here.
 function qparam(req, name) {
   return new URL(String(req?.url ?? ""), "http://x").searchParams.get(name);
 }
@@ -55,9 +58,16 @@ const ORG_UNITS = [
   { id: "ou-3", parent_id: "ou-1", name: "Finance", depth: 2, lead_id: null, lead_username: null, source: "manual", provider: null, external_id: null, idp_synced_at: null, member_count: 12, created_at: "2026-01-02T00:00:00Z" },
 ];
 
+/** Handlers are stringified; this inlines the shared scope back into each one. */
+const SCOPE =
+  `const qparam=${qparam};const pctChange=${pctChange};` +
+  `const AGENTS=${JSON.stringify(AGENTS)};const WORKFLOWS=${JSON.stringify(WORKFLOWS)};` +
+  `const PROVIDERS=${JSON.stringify(PROVIDERS)};const ORG_UNITS=${JSON.stringify(ORG_UNITS)};`;
+const scoped = (fn) => `(req) => {${SCOPE} return (${fn})(req); }`;
+
 export default {
   fetch: [
-    [{ method: "GET", path: /^\/api\/observability\/finops\/dashboard/ }, (req) => {
+    [{ method: "GET", path: /^\/api\/observability\/finops\/dashboard/ }, scoped((req) => {
       const view = qparam(req, "view") === "workflow" ? "workflow" : "agent";
       const rows = view === "workflow" ? WORKFLOWS : AGENTS;
 
@@ -98,12 +108,12 @@ export default {
         status_code: 200,
         message: "FinOps dashboard retrieved successfully",
       };
-    }],
+    })],
 
     // "Spend over time" — one point per day of a 31-day look-back, two
     // deliberate spikes so the plot has a visible shape (no anomaly styling
     // any more; the backend has no anomaly service — see doc point 7).
-    [{ method: "GET", path: /^\/api\/observability\/finops\/spend-timeseries/ }, () => {
+    [{ method: "GET", path: /^\/api\/observability\/finops\/spend-timeseries/ }, scoped(() => {
       const days = 31;
       const spikes = new Set([13, 27]);
       const points = Array.from({ length: days }, (_, i) => {
@@ -121,7 +131,7 @@ export default {
         };
       });
       return { data: { bucket: "day", points }, status_code: 200, message: "ok" };
-    }],
+    })],
 
     // Click-a-day hourly drill-down — powers "Spend concentration".
     // Real /finops/spend-calendar/day payloads (confirmed against a live
@@ -130,7 +140,7 @@ export default {
     // tokenops-page.js only reads the day-level fields today (`day.top_agents`
     // / `day.others_spend_usd`), so this fixture carries the per-hour ones
     // for contract accuracy without the UI consuming them yet.
-    [{ method: "GET", path: /^\/api\/observability\/finops\/spend-calendar\/day/ }, (req) => {
+    [{ method: "GET", path: /^\/api\/observability\/finops\/spend-calendar\/day/ }, scoped((req) => {
       const dateStr = qparam(req, "date") || new Date().toISOString().slice(0, 10);
       const curve = [1, 1, 1, 1, 1, 2, 4, 8, 12, 14, 13, 11, 12, 13, 12, 10, 8, 7, 5, 3, 3, 3, 2, 2];
       const weight = curve.reduce((a, b) => a + b, 0);
@@ -169,12 +179,12 @@ export default {
         status_code: 200,
         message: "ok",
       };
-    }],
+    })],
 
     // Month heatmap — no panel calls this yet (see tokenops-page.js header
     // note), fixture kept in step with the other four so the contract does
     // not drift before that UI exists.
-    [{ method: "GET", path: /^\/api\/observability\/finops\/spend-calendar(?!\/day)/ }, (req) => {
+    [{ method: "GET", path: /^\/api\/observability\/finops\/spend-calendar(?!\/day)/ }, scoped((req) => {
       const month = qparam(req, "month") || new Date().toISOString().slice(0, 7);
       const [y, m] = month.split("-").map(Number);
       const daysInMonth = new Date(y, m, 0).getDate();
@@ -190,26 +200,26 @@ export default {
       const max = Math.max(...days.map((d) => d.spend_usd));
       days.forEach((d) => { d.intensity = Math.round((d.spend_usd / max) * 100) / 100; });
       return { data: { days, highlighted_dates: [] }, status_code: 200, message: "ok" };
-    }],
+    })],
 
-    [{ method: "GET", path: /^\/api\/observability\/finops\/attributions/ }, (req) => {
+    [{ method: "GET", path: /^\/api\/observability\/finops\/attributions/ }, scoped((req) => {
       const view = qparam(req, "view") === "workflow" ? "workflow" : "agent";
       return { data: { view, rows: view === "workflow" ? WORKFLOWS : AGENTS }, status_code: 200, message: "ok" };
-    }],
+    })],
 
     // Provider/Model dropdown source — see the header note on PROVIDER_FILTER_VALUE.
-    [{ method: "GET", path: /^\/api\/llm-router\/providers/ }, () => ({
+    [{ method: "GET", path: /^\/api\/llm-router\/providers/ }, scoped(() => ({
       data: PROVIDERS, status_code: 200, message: "Providers retrieved successfully",
-    })],
+    }))],
 
     // Org unit dropdown source — a dev-mode stand-in for an EE deployment
     // (this preview file has no OSS/EE distinction of its own), so the
     // filter renders enabled in the local preview even though a real OSS
     // build 404s here and leaves it disabled.
-    [{ method: "GET", path: /^\/api\/org\/units/ }, (req) => {
+    [{ method: "GET", path: /^\/api\/org\/units/ }, scoped((req) => {
       const q = (qparam(req, "q") || "").toLowerCase();
       const rows = q ? ORG_UNITS.filter((u) => u.name.toLowerCase().includes(q)) : ORG_UNITS;
       return { data: rows, status_code: 200, message: `${rows.length} org units retrieved` };
-    }],
+    })],
   ],
 };

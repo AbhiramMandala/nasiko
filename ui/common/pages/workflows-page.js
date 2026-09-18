@@ -81,8 +81,19 @@ class WorkflowsPage extends HTMLElement {
       }
       this.#renderGrid();
     } catch (err) {
-      this.querySelector('#wf-grid').innerHTML =
-        `<p class="load-error">Failed to load workflows: ${escHtml(err.message)}</p>`;
+      // Was a bare line of text where the grid should be — the page's tabs and
+      // layout survived, but nothing said this was retryable or looked like
+      // anything else in the product. The raw message moves into the
+      // description so the detail is not lost.
+      const grid = this.querySelector('#wf-grid');
+      grid.className = 'empty-wrap';
+      grid.innerHTML = `
+        <app-empty-state variant="error"
+          heading="Couldn't load workflows"
+          description="${escAttr(err?.message || 'The request failed.')}">
+          <app-button id="wf-retry" variant="tertiary">Retry</app-button>
+        </app-empty-state>`;
+      grid.querySelector('#wf-retry')?.addEventListener('click', () => this.#load());
     }
   }
 

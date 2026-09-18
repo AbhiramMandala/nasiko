@@ -74,11 +74,10 @@ class FlowDetailPage extends HTMLElement {
       console.error('FlowDetailPage: failed to load flow:', e);
       this.innerHTML = `${this.#toolbar()}
         <div class="empty-wrap">
-          <app-empty-state
+          <app-empty-state variant="error"
             heading="Couldn't load this flow"
-            description="Something went wrong fetching this trace."
-            icon='${icons.alertTriangle("", 40)}'>
-            <app-button id="flow-retry" variant="primary">Retry</app-button>
+            description="Something went wrong fetching this trace.">
+            <app-button id="flow-retry" variant="tertiary">Retry</app-button>
           </app-empty-state>
         </div>`;
       this.querySelector('#flow-retry')?.addEventListener('click', () => this.#load(flowId));

@@ -389,8 +389,18 @@ class OrchestratorPage extends HTMLElement {
         `;
       }).join('');
     } catch {
-      grid.innerHTML = '';
-      this.querySelector('#recent-agents')?.remove();
+      // The section used to delete itself — not even the designed empty
+      // state, just gone, so a failed fetch was indistinguishable from a
+      // deployment with nothing running. The composer above still works, so
+      // this says what broke and offers a way back without taking the page.
+      grid.innerHTML = `
+        <app-empty-state inline variant="error" description="Couldn't load your agents">
+          <app-button id="recent-retry" variant="tertiary" size="sm">Retry</app-button>
+        </app-empty-state>`;
+      grid.querySelector('#recent-retry')?.addEventListener('click', () => {
+        grid.innerHTML = Array.from({ length: 3 }, () => '<app-card loading></app-card>').join('');
+        this.#loadRecentAgents();
+      });
     }
   }
 

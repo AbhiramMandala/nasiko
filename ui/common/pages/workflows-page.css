@@ -83,11 +83,9 @@
     text-overflow: ellipsis;
   }
 
-  .load-error {
-    margin: 0;
-    font-size: var(--font-size-sm);
-    color: var(--color-error);
-  }
+  /* `.load-error` was a bare red line where the grid should be. The failure
+     is `<app-empty-state variant="error">` now, which brings its own look —
+     the same one every other failure on the product draws. */
 
   /* ── Empty state ────────────────────────────────────────────────────────
      The tile, heading, description and the CTA are <app-empty-state> and

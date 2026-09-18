@@ -37,8 +37,16 @@
  *   loading, draws a short right-aligned skeleton bar instead of a wide
  *   left-aligned one, so the loading state previews the real column shape.
  * @prop {Function} dataFn - The fetcher, if not named via `data-fn`.
+ * @attr {string} error - The fetch failed. Present (bare, or with a message
+ *   overriding the default copy) draws the shared failure block in the table
+ *   body — icon, one line, Retry — under a live header row, in place of the
+ *   rows. Set automatically when this table's own `dataFn` throws; settable by
+ *   an owner that feeds the table itself. `loading` wins over it.
  * @fires loading-start - Before each fetch — bubbles.
  * @fires loading-end - After each fetch — bubbles.
+ * @fires table-retry - Retry pressed on the failure state — bubbles. The table
+ *   also refetches through its own `dataFn` first, where it has one; the event
+ *   is for an owner that supplies rows itself.
  * @note Columns are inferred from the data when `columns` is unset — keys become
  *       humanised labels and all-numeric columns right-align. Cells with no
  *       `render` are displayed through `autoFormat` (utils/units.js): a
@@ -51,7 +59,8 @@
  *       ordering is reachable again after a sort.
  */
 import { icons } from '../../utils/icons.js';
-import { createEventTracker, debounce } from '../../utils/data-component-utils.js';
+import { createEventTracker, debounce, errorStateHtml } from '../../utils/data-component-utils.js';
+import '../app-empty-state/app-empty-state.js';
 import { resolveOptional as resolveDataSource } from '../../core/data-sources.js';
 import { escAttr, escHtml } from '../../utils/escape.js';
 import { autoFormat } from '../../utils/units.js';
@@ -192,7 +201,7 @@ export class AppTable extends HTMLElement {
 
   static get observedAttributes() {
     return ['limit', 'data-fn', 'search-placeholder', 'search', 'detail',
-            'empty-message', 'pagination', 'loading'];
+            'empty-message', 'pagination', 'loading', 'error'];
   }
 
   connectedCallback() {
@@ -260,8 +269,6 @@ export class AppTable extends HTMLElement {
               data-page="next" aria-label="Next page">${IC_NEXT}</app-button>
           </nav>
         ` : ''}
-
-        <div class="error" role="alert" hidden></div>
       </div>
 
       ${this.#showDetail ? `
@@ -273,6 +280,17 @@ export class AppTable extends HTMLElement {
   }
 
   #setupEventListeners() {
+    // Delegated from the host, through the tracker rather than `bindRetry`:
+    // this method re-runs after every chrome rebuild, and a raw
+    // addEventListener would stack one more Retry handler each time.
+    this.#events.add(this, 'click', (e) => {
+      if (!e.target.closest('[data-retry]')) return;
+      this.dispatchEvent(new CustomEvent('table-retry', { bubbles: true }));
+      // A table with its own `dataFn` can act on Retry itself; one fed by its
+      // owner cannot, and the event above is that owner's cue.
+      if (this.dataFn) this.refresh();
+      else this.removeAttribute('error');
+    });
     if (this.showSearch) {
       const searchField = this.querySelector('.search-field');
       if (searchField) {
@@ -354,6 +372,12 @@ export class AppTable extends HTMLElement {
             `Check the <script> order too: data functions must be defined before the page component.`,
         );
       }
+      // An owner-fed table (no `data-fn`, `.dataFn` assigned later) normally
+      // paints nothing here — an empty body before the owner has handed rows
+      // over would flash the empty state. A declared `error` is the one thing
+      // that must still be drawn: the owner already knows the fetch failed,
+      // and staying blank is the frozen-skeleton bug this state exists to end.
+      if (this.hasAttribute('error')) this.#renderTable();
       return;
     }
 
@@ -361,6 +385,8 @@ export class AppTable extends HTMLElement {
     this.#showSkeletons();
 
     const scroll = this.querySelector('.scroll');
+    // A retry that succeeds must not leave the previous failure latched.
+    this.removeAttribute('error');
     if (scroll) scroll.classList.add('is-loading');
 
     this.dispatchEvent(new CustomEvent('loading-start', { bubbles: true, detail: { message: 'Loading data...' } }));
@@ -385,7 +411,7 @@ export class AppTable extends HTMLElement {
       this.#updatePagination();
     } catch (error) {
       console.error('app-table: Error fetching data:', error);
-      this.#showError('Failed to load data. Please try again.');
+      this.#showError("Couldn't load this table");
     } finally {
       if (scroll) scroll.classList.remove('is-loading');
       this.removeAttribute('aria-busy');
@@ -453,7 +479,8 @@ export class AppTable extends HTMLElement {
     const tbody = this.querySelector('.tbody');
     if (!thead || !tbody) return;
 
-    if (!this.#data || this.#data.length === 0) {
+    const failed = this.hasAttribute('error');
+    if (failed || !this.#data || this.#data.length === 0) {
       // Keep the header row. Blanking it left a <colgroup> sizing columns that
       // had no headers above them, so an empty table read as a broken one.
       this.#renderColgroup(this.columns);
@@ -468,7 +495,13 @@ export class AppTable extends HTMLElement {
       // to clamp. Span the real column count (1 when none is known yet).
       const span = this.columns?.length
         || this.querySelector('.thead tr')?.children.length || 1;
-      tbody.innerHTML = `<tr><td class="empty" colspan="${span}">${message}</td></tr>`;
+      // A failure and an empty result are different answers and no longer
+      // share a cell: the failure is checked first, because a throw leaves
+      // `#data` empty too and would otherwise read as "nothing here yet".
+      const body = failed
+        ? errorStateHtml(this.getAttribute('error') || "Couldn't load this table")
+        : `<app-empty-state inline description="${escAttr(message)}"></app-empty-state>`;
+      tbody.innerHTML = `<tr><td class="empty" colspan="${span}">${body}</td></tr>`;
       return;
     }
 
@@ -673,17 +706,21 @@ export class AppTable extends HTMLElement {
     modal.open();
   }
 
+  /**
+   * Failure is an attribute now, not a hidden banner below the table.
+   *
+   * The banner said "Failed to load data" in a strip under an otherwise
+   * normal-looking empty table — two contradictory answers on screen at once,
+   * and the one the eye lands on first was the wrong one. The state belongs
+   * where the rows would have been.
+   */
   #showError(message) {
-    const el = this.querySelector('.error');
-    if (el) {
-      el.textContent = message;
-      el.hidden = false;
-    }
+    this.setAttribute('error', message);
+    this.#renderTable();
   }
 
   #hideError() {
-    const el = this.querySelector('.error');
-    if (el) el.hidden = true;
+    this.removeAttribute('error');
   }
 
   attributeChangedCallback(name, oldValue, newValue) {
@@ -700,6 +737,12 @@ export class AppTable extends HTMLElement {
         this.dataFn = resolveDataSource(newValue) || null;
         this.#currentPage = 1;
         this.refresh();
+        break;
+      case 'error':
+        // Owner-set (it feeds the rows itself) or self-set from a throw; both
+        // land here and repaint the body. Skip while `loading` holds — the
+        // skeleton is the more recent truth.
+        if (!this.hasAttribute('loading')) this.#renderTable();
         break;
       case 'loading':
         // Held: draw the skeleton the element already owns. Released: fetch.

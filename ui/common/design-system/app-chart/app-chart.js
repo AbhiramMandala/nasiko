@@ -114,6 +114,14 @@
  *   empty state too (app-chart.css) — those are plain divs shown instead of
  *   the canvas, not something `plotBackground` paints, so they need their
  *   own override rather than inheriting this one.
+ * @attr {string} error - The fetch failed. Present (bare, or with a message
+ *   overriding the default copy) swaps the plot for the shared inline
+ *   failure block — icon, one line, Retry — instead of leaving the skeleton
+ *   spinning forever or, worse, showing the empty-state copy, which tells the
+ *   user their data does not exist when in truth we could not ask.
+ *   `loading` wins over it; it wins over empty.
+ * @fires chart-retry - Retry pressed on the failure state — bubbles. The chart
+ *   is handed its data, so it cannot refetch; the owner listens and reloads.
  * @prop {object|Array} data - Canvas forms take Chart.js shape:
  *   `{ labels: string[], datasets: [{ label, data }] }`, where a dataset may
  *   also carry `axis: 'y2'` (bind to the right-hand scale — line only),
@@ -140,6 +148,9 @@ import { escHtml, escAttr } from '../../utils/escape.js';
 import { onThemeChange } from '../../utils/theme.js';
 import { timeAxisLabels } from '../../utils/units.js';
 import { loadCss } from '/common/utils/css.js';
+import { errorStateHtml, bindRetry } from '../../utils/data-component-utils.js';
+import '../app-button/app-button.js';
+import '../app-empty-state/app-empty-state.js';
 const styles = await loadCss(new URL('./app-chart.css', import.meta.url));
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -511,7 +522,8 @@ export class AppChart extends HTMLElement {
   static get observedAttributes() {
     return ['type', 'stacked', 'segmented', 'average-line', 'height', 'format',
             'format-y2', 'currency', 'center-value',
-            'center-label', 'legend', 'empty-text', 'loading', 'label', 'flush-top'];
+            'center-label', 'legend', 'empty-text', 'loading', 'label', 'flush-top',
+            'error'];
   }
 
   #initialized = false;
@@ -532,6 +544,9 @@ export class AppChart extends HTMLElement {
   connectedCallback() {
     if (!this.#initialized) {
       this.#initialized = true;
+      // Delegated and bound once, before the first render: the button lives
+      // inside markup render() replaces wholesale.
+      bindRetry(this, 'chart-retry');
       this.render();
     }
     // Subscribed here rather than in the one-time block: teardown runs on every
@@ -651,8 +666,24 @@ export class AppChart extends HTMLElement {
     }
     this.removeAttribute('aria-busy');
 
+    // Ordered loading > error > empty > data. Empty last of the three on
+    // purpose: a failed request usually leaves `data` empty too, so checking
+    // emptiness first would show "No data" for every failure.
+    if (this.hasAttribute('error')) {
+      const msg = this.getAttribute('error') || "Couldn't load this chart";
+      // Same ground and same box as the empty state — `.chart-empty` is the
+      // plot-shaped placeholder, not a statement about which placeholder.
+      this.innerHTML = `<div class="chart-empty" ${box}>${errorStateHtml(msg)}</div>`;
+      return;
+    }
+
     if (this.#isEmpty()) {
-      this.innerHTML = `<div class="chart-empty" ${box}><p>${escHtml(this.getAttribute('empty-text') || 'No data')}</p></div>`;
+      // Through `app-empty-state` rather than a bare `<p>`, so the icon, the
+      // measure and the type match the failure block directly above and every
+      // other empty state in the product.
+      this.innerHTML = `<div class="chart-empty" ${box}>`
+        + `<app-empty-state inline description="${escAttr(this.getAttribute('empty-text') || 'No data')}"></app-empty-state>`
+        + `</div>`;
       return;
     }
 

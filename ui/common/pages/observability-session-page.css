@@ -55,6 +55,11 @@
      parking two stub sentences in two tall blank panes. */
   .panes.traces-empty {
     grid-template-columns: 1fr;
+    /* The 480px floor above reserves the reading area for a trace tree beside
+       a span-detail pane. With neither — no spans, or the backend could not
+       be reached — it only stretches one short sentence down the middle of a
+       tall empty box. Let the pane size to what it actually has to say. */
+    min-height: 0;
 
     & #detail-pane { display: none; }
   }

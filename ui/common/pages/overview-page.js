@@ -94,6 +94,7 @@ import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-table/app-table.js';
 import { attachTooltip } from '/common/design-system/app-tooltip/app-tooltip.js';
 import { call } from '../core/data-sources.js';
+import { errorStateHtml } from '/common/utils/data-component-utils.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -307,6 +308,14 @@ class OverviewPage extends HTMLElement {
   /** No agents at all in the window → the first-run screen. */
   #empty = false;
   #pending = null;
+  /** The shared `spend-timeseries` call failed. Kept as a flag rather than
+   *  written onto the charts at the catch, because all three renders reset
+   *  their own state — writing the attribute there would be undone by the
+   *  render that follows. */
+  #seriesFailed = false;
+  /** Spend-over-time's own filtered series failed. Separate from the above:
+   *  the shared payload can be fine while the filtered one is not. */
+  #spendSeriesFailed = false;
   /** Bumped per load; every response checks it before writing, so a slow
    *  August answer cannot overwrite the September numbers. */
   #loadId = 0;
@@ -639,8 +648,12 @@ class OverviewPage extends HTMLElement {
       resp = await this.#pending;
     } catch (e) {
       // The table surfaces the failure itself — its dataFn awaits the same
-      // rejected promise.
+      // rejected promise. Nothing else on the page did: this returned with the
+      // KPI skeleton and all three chart skeletons still up, and they stayed
+      // up forever, because every `removeAttribute('loading')` lives in a
+      // render that only the success path reaches.
       this.#reportError(e, 'dashboard');
+      if (id === this.#loadId) this.#renderLoadFailure();
       return;
     }
     if (id !== this.#loadId) return;
@@ -701,10 +714,12 @@ class OverviewPage extends HTMLElement {
         bucket: data.bucket || 'day',
         points: Array.isArray(data.points) ? data.points : [],
       };
+      this.#spendSeriesFailed = false;
     } catch (e) {
       this.#reportError(e, 'spend-timeseries');
       if (id !== this.#loadId) return;
       this.#spendSeries = { bucket: 'day', points: [] };
+      this.#spendSeriesFailed = true;
     }
     this.#renderSpend();
   }
@@ -715,10 +730,15 @@ class OverviewPage extends HTMLElement {
       if (id !== this.#loadId) return;
       const data = resp?.data ?? resp ?? {};
       this.#spend = { bucket: data.bucket || 'day', points: Array.isArray(data.points) ? data.points : [] };
+      this.#seriesFailed = false;
     } catch (e) {
       this.#reportError(e, 'spend-timeseries');
       if (id !== this.#loadId) return;
       this.#spend = { bucket: 'day', points: [] };
+      // Without this the three panels drew "No activity in this window" for a
+      // failed request — a sentence about the window, when the truth is that
+      // we never got an answer about it.
+      this.#seriesFailed = true;
     }
     this.#renderActivity();
     this.#renderLatency();
@@ -773,7 +793,39 @@ class OverviewPage extends HTMLElement {
 
   // ── KPI strip ─────────────────────────────────────────────────────────────
 
+  /**
+   * The dashboard call feeds the KPI strip and all three chart panels, and
+   * every one of them leaves its loading state inside a render that only the
+   * success path reaches. Called from that call's `catch`, so a failed
+   * dashboard shows a real "couldn't load" with a Retry instead of four
+   * skeletons that never resolve.
+   *
+   * The attributions table needs nothing here — its own `dataFn` awaits the
+   * same rejected `#pending` and draws its own failure state.
+   */
+  #renderLoadFailure() {
+    // The strip is this page's own markup, not `app-stat-row` (its delta
+    // chips have no equivalent there), so it borrows the shared block rather
+    // than the component.
+    const strip = this.querySelector('#kpi-strip');
+    strip.removeAttribute('aria-busy');
+    strip.innerHTML = errorStateHtml("Couldn't load your dashboard");
+    strip.querySelector('[data-retry]')?.addEventListener('click', () => this.#load());
+
+    for (const sel of ['#latency-plot', '#activity-plot', '#spend-plot']) {
+      const chart = this.querySelector(sel);
+      chart.removeAttribute('loading');
+      chart.setAttribute('error', "Couldn't load this chart");
+      chart.data = { labels: [], datasets: [] };
+    }
+  }
+
   #renderKpis() {
+    // A load that got this far succeeded, so any failure still latched on the
+    // charts from the previous attempt is stale.
+    for (const sel of ['#latency-plot', '#activity-plot', '#spend-plot']) {
+      this.querySelector(sel)?.removeAttribute('error');
+    }
     const s = this.#summary;
     const k = this.#kpis || {};
     const kpi = (name) => k[name] ?? { current: null, change_pct: null };
@@ -848,6 +900,9 @@ class OverviewPage extends HTMLElement {
    */
   #renderLatency() {
     const chart = this.querySelector('#latency-plot');
+    // Failure and emptiness are different answers and no longer share the
+    // empty copy — `error` brings the icon, the wording and Retry.
+    chart.toggleAttribute('error', this.#seriesFailed);
     const points = this.#spend.points;
     const measured = LATENCY_SERIES.some((sr) => points.some((pt) => pt[sr.key] != null));
 
@@ -944,6 +999,9 @@ class OverviewPage extends HTMLElement {
    */
   #renderActivity() {
     const chart = this.querySelector('#activity-plot');
+    // Failure and emptiness are different answers and no longer share the
+    // empty copy — `error` brings the icon, the wording and Retry.
+    chart.toggleAttribute('error', this.#seriesFailed);
     const points = this.#spend.points;
     const mode = ACTIVITY_MODES.find((m) => m.value === this.#activity) ?? ACTIVITY_MODES[0];
 
@@ -985,6 +1043,11 @@ class OverviewPage extends HTMLElement {
    */
   #renderSpend() {
     const chart = this.querySelector('#spend-plot');
+    // Whichever series this panel is actually reading is the one whose
+    // failure it must report — a filtered panel is not broken because the
+    // shared payload is, and vice versa.
+    chart.toggleAttribute('error',
+      this.#spendSeries ? this.#spendSeriesFailed : this.#seriesFailed);
     // Its own filtered series when the panel carries a filter, otherwise the
     // payload the other two panels share.
     const src = this.#spendSeries ?? this.#spend;

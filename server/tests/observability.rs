@@ -618,6 +618,56 @@ async fn observe_finops_dashboard_returns_zeroed_summary() {
     server.cleanup().await;
 }
 
+/// `summary.total_agents` off the finops dashboard — the field both the overview
+/// and tokenops pages read to pick between their first-run screen and the real
+/// dashboard.
+async fn finops_total_agents(server: &common::TestServer, uid: &str) -> i64 {
+    let res = server
+        .client
+        .get(server.url("/api/observability/finops/dashboard"))
+        .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    body["data"]["summary"]["total_agents"].as_i64().unwrap()
+}
+
+/// An `is_internal` agent (Weave's dashboard-generator) must not pass for a
+/// deployed fleet: alone it reports zero agents, so the overview and tokenops
+/// pages keep their first-run screen. Alongside a real agent it counts again.
+#[tokio::test]
+#[serial]
+async fn finops_dashboard_excludes_internal_agent_only_when_it_is_alone() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let owner: Uuid = uid.parse().unwrap();
+
+    let internal = seed_agent(&server, owner, "weave-dashboard-generator").await;
+    sqlx::query("UPDATE agents SET is_internal = true WHERE id = $1")
+        .bind(internal)
+        .execute(&server.db)
+        .await
+        .expect("mark internal");
+
+    assert_eq!(
+        finops_total_agents(&server, uid).await,
+        0,
+        "an internal agent alone must read as an empty fleet"
+    );
+
+    seed_agent(&server, owner, "finops-real-agent").await;
+    assert_eq!(
+        finops_total_agents(&server, uid).await,
+        2,
+        "with a real agent deployed the internal one counts again"
+    );
+
+    server.cleanup().await;
+}
+
 // ─── 404 for unknown agents ───────────────────────────────────────────────────
 
 #[tokio::test]

@@ -41,20 +41,25 @@ test('a component downstream of a failed query says so, not "No data"', () => {
 
   const failed = run(dsl, { complete: true, failedQueries: new Set(['spendQ']) });
   const [chart, table] = failed.root.children;
-  assert.match(chart.props['empty-text'], /Could not load/);
+  // Through `error`, not the empty message: the components have a real
+  // failure state now (icon, one line, Retry), and dressing a failure up as
+  // an empty result was the workaround that state replaced.
+  assert.match(chart.props.error, /Couldn't load/);
+  assert.equal(chart.props['empty-text'], undefined, 'the empty copy is not a failure channel');
   // The transitive step is the point: the failure is on spendQ, the message
   // lands on the chart that reads it.
-  assert.equal(table.props['empty-message'], undefined, 'a healthy query is untouched');
+  assert.equal(table.props.error, undefined, 'a healthy query is untouched');
 
   // And with nothing failing, neither is touched — an empty result still reads
   // as empty, which is true.
   const healthy = run(dsl, { complete: true });
-  assert.equal(healthy.root.children[0].props['empty-text'], undefined);
+  assert.equal(healthy.root.children[0].props.error, undefined);
 });
 
 test('a hand-written empty message survives a failed query', () => {
   // Overriding wording the author chose would be a worse default than the one
-  // it replaced.
+  // it replaced — and it is no longer even the channel: the failure goes to
+  // `error`, so the author's empty copy is simply not in the way.
   const out = run([
     'root = AppStack([chart], "md")',
     'spendQ = Query("fetchSpendTimeseries", [], {points: []}, "data.points")',
@@ -64,6 +69,7 @@ test('a hand-written empty message survives a failed query', () => {
     'chart = AppChart({labels: spendQ.bucket_start, datasets: []}, "line", false, "currency", "USD", null, null, null, "No spend in the last 7 days")',
   ].join('\n'), { complete: true, failedQueries: new Set(['spendQ']) });
   assert.equal(out.root.children[0].props['empty-text'], 'No spend in the last 7 days');
+  assert.match(out.root.children[0].props.error, /Couldn't load/);
 });
 
 

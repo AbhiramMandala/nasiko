@@ -478,7 +478,8 @@ test('every component that takes children can say where they go', () => {
 // position"); these are the same reading everywhere else.
 
 test('an enum violation says where in the signature the value landed', () => {
-  // The real failure: app-chart has 15 positional parameters, rule 16 asks for
+  // The real failure: app-chart has 16 positional parameters (15 before the
+  // failure state's `error` was appended), rule 16 asks for
   // `empty-text` on every chart, and reaching it means seven nulls in the
   // right pattern. A live generation put the empty message in `format-y2`.
   // "not one of number, currency, percent, compact, duration" is true and
@@ -488,7 +489,7 @@ test('an enum violation says where in the signature the value landed', () => {
     + 'null, null, null, null, false, "No spend in the last 7 days")');
   const enumViolation = diagnostics.find((d) => d.code === 'enum_violation');
   assert.ok(enumViolation, 'the value is still wrong for the slot it is in');
-  assert.match(enumViolation.message, /argument 14 of 15/,
+  assert.match(enumViolation.message, /argument 14 of 16/,
     'the position is what makes this actionable');
   assert.match(enumViolation.message, /out of step/);
 });

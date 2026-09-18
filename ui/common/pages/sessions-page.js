@@ -352,11 +352,14 @@ class SessionsPage extends HTMLElement {
         showToast('Could not load more sessions.');
         return;
       }
-      this.#renderState(`<app-empty-state
+      // `variant="error"` rather than a hand-passed icon: this page already
+      // told failure apart from empty, but it did so in its own dialect. The
+      // variant is what makes it the same failure the rest of the product
+      // draws, and it brings the icon, the tint and `role="alert"` along.
+      this.#renderState(`<app-empty-state variant="error"
         heading="Failed to load sessions"
-        description="Something went wrong while loading your chat sessions."
-        icon='${icons.xCircle()}'>
-        <app-button variant="secondary" size="sm" id="btn-retry">Retry</app-button>
+        description="Something went wrong while loading your chat sessions.">
+        <app-button variant="tertiary" size="sm" id="btn-retry">Retry</app-button>
       </app-empty-state>`);
       this.querySelector('#btn-retry')?.addEventListener('click', () => {
         this.#mountTable();

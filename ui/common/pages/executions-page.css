@@ -74,13 +74,13 @@
     overflow-wrap: anywhere;
   }
 
-  .filter-empty,
-  .load-error {
+  .filter-empty {
     margin: 0;
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
   }
-  .load-error { color: var(--color-error); }
+  /* `.load-error` was a bare red line where the list should be. The failure
+     is `<app-empty-state variant="error">` now, which brings its own look. */
 
   /* The empty states are <app-empty-state> (icon, heading, description) with an
      <app-button> CTA in its action slot, and the loading rows are

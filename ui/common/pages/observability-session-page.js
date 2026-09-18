@@ -31,6 +31,7 @@ import { escAttr, escHtml } from '/common/utils/escape.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { call } from '../core/data-sources.js';
 import '/common/features/agent-steps.js';
+import { errorStateHtml } from '/common/utils/data-component-utils.js';
 
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -148,6 +149,7 @@ class ObservabilitySessionPage extends HTMLElement {
     // keeps the page mounted and only fires `route-update` — without this,
     // clicking a row moved the URL and left the old session on screen.
     this.addEventListener('route-update', this.#onRouteUpdate);
+    this.addEventListener('stat-row-retry', this.#onStripRetry);
 
     this.#enter();
   }
@@ -197,8 +199,21 @@ class ObservabilitySessionPage extends HTMLElement {
     this.#load();
   }
 
+  /**
+   * Retry on the KPI strip's failure state. Bound on the host and delegated,
+   * because the strip rewrites its own contents on every render — the button
+   * that fires this does not survive one.
+   */
+  #onStripRetry = () => {
+    const kpis = this.querySelector('#kpi-strip');
+    kpis.removeAttribute('error');
+    kpis.setAttribute('loading', '6');
+    this.#load();
+  };
+
   disconnectedCallback() {
     this.removeEventListener('route-update', this.#onRouteUpdate);
+    this.removeEventListener('stat-row-retry', this.#onStripRetry);
     clearTimeout(this.#pollTimer);
   }
 
@@ -260,9 +275,14 @@ class ObservabilitySessionPage extends HTMLElement {
       this.#renderTracesPlaceholder(
         'Traces unavailable',
         'The trace backend could not be reached for this session.',
-        icons.xCircle(),
       );
       this.#renderKpis();
+      // The turn strip's own skeleton is only ever cleared by `#renderTurn`,
+      // which the success path below reaches and this one does not — so it
+      // kept shimmering forever, leaving ~120px of dead animation between
+      // the failed KPI strip and the Traces panel. There are no turns to
+      // show and nothing still coming.
+      this.querySelector('#turn-strip').innerHTML = '';
       return;
     }
     this.#session = resp?.data?.session ?? null;
@@ -303,6 +323,17 @@ class ObservabilitySessionPage extends HTMLElement {
   #renderKpis() {
     const s = this.#session;
     const strip = this.querySelector('#kpi-strip');
+    // A failed session fetch and a session that simply has no metrics used to
+    // fold the strip away identically. They are different answers: one says
+    // there is nothing to count, the other that we could not count. The strip
+    // fails as one block because one request filled all of it.
+    if (!s && this.#tracesState === 'error') {
+      strip.hidden = false;
+      strip.removeAttribute('loading');
+      strip.setAttribute('error', "Couldn't load these metrics");
+      return;
+    }
+    strip.removeAttribute('error');
     // No session, no metrics. Leaving the skeleton up would claim the numbers
     // are still loading, so fold the whole thing away.
     if (!s) {
@@ -534,7 +565,6 @@ class ObservabilitySessionPage extends HTMLElement {
       this.#renderTracesPlaceholder(
         'Traces unavailable',
         'The trace backend could not be reached for this turn.',
-        icons.xCircle(),
       );
       return;
     }
@@ -588,11 +618,28 @@ class ObservabilitySessionPage extends HTMLElement {
    * without a span to select, so `.traces-empty` folds it away and this one
    * empty state takes both columns.
    */
+  /**
+   * The trace pane's placeholder, for all three of its non-data states.
+   *
+   * Which one it is comes off `#tracesState`, which every caller has already
+   * set on the line above — rather than from an icon each passes in. That is
+   * what keeps the failure states drawing the shared failure look instead of
+   * each picking a glyph: the two that set `error` used to hand over
+   * `icons.xCircle()`, which reads as a plain absence, so "the backend could
+   * not be reached" was dressed the same way as "nothing was recorded here".
+   *
+   * @param {string} heading
+   * @param {string} description
+   * @param {string} [icon] Markup for the glyph, for the non-error states
+   *   only; `variant="error"` brings its own.
+   */
   #renderTracesPlaceholder(heading, description, icon) {
+    const failed = this.#tracesState === 'error';
     this.querySelector('#traces-pane').innerHTML = `
       ${this.#tracesTitle()}
-      <app-empty-state heading="${escHtml(heading)}" description="${escHtml(description)}"
-        icon='${icon}'></app-empty-state>
+      <app-empty-state ${failed ? 'variant="error"' : ''}
+        heading="${escHtml(heading)}" description="${escHtml(description)}"
+        ${failed ? '' : `icon='${icon || ''}'`}></app-empty-state>
     `;
     this.#syncPanes();
   }
@@ -681,7 +728,11 @@ class ObservabilitySessionPage extends HTMLElement {
       resp = await call('fetchSpanDetail', traceId, spanId);
     } catch (e) {
       console.error('Span fetch failed:', e);
-      pane.innerHTML = '<div class="pane-empty">Failed to load span details</div>';
+      // Was a bare line where the skeleton had been — true, but nothing
+      // that looked like the rest of the product and no way to try again.
+      pane.innerHTML = errorStateHtml("Couldn't load this span");
+      pane.querySelector('[data-retry]')
+        ?.addEventListener('click', () => this.#selectSpan(traceId, spanId));
       return;
     }
     this.#span = resp?.data?.span ?? null;

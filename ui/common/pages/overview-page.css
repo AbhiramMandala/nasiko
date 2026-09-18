@@ -114,6 +114,11 @@
     margin-block: var(--s-24);
   }
 
+  /* A failed dashboard replaces the whole strip with the shared failure
+     block, which brings its own look. All this does is stop it sitting in a
+     tile-sized flex slot at the left edge. */
+  .kpi-strip > app-empty-state { flex: 1 1 100%; }
+
   /* Each metric is its own bordered card in the design, not a bare row on the
      page ground — five cards read as five readings, where five unframed rows
      read as one wrapped sentence of numbers. */

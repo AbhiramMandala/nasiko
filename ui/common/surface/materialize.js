@@ -546,6 +546,14 @@ export function materialize(statements, componentIndex, ctx = {}) {
     // than the default it replaced.
     if (degraded.has(statementId)) {
       const attrs = entry.def.attributes ?? {};
+      // A component that has a real failure state gets told the truth: the
+      // request failed, here is Retry. The empty-message swap below is the
+      // fallback for the ones that still only know "nothing here" — it reads
+      // as a failure but is drawn as an absence, which is the whole reason
+      // `error` was added.
+      if ('error' in attrs) {
+        if (typeof props.error !== 'string') props.error = "Couldn't load this data";
+      } else
       for (const name of ['empty-text', 'empty-message']) {
         // A *sentence* the generator chose is kept — that is the author's
         // wording and overriding it would be worse than the default. Anything

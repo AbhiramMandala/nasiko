@@ -274,6 +274,9 @@
      card's two-line description clamp) — left at 192 the grid collapses by
      ~86px the moment the real cards arrive. */
   .recent-agents-grid app-card[loading] { min-height: 106px; }
+  /* A failed fetch replaces the three cards with one block, so it spans the
+     grid rather than sitting in the first 240px column. */
+  .recent-agents-grid app-empty-state { grid-column: 1 / -1; }
   .agent-card-go {
     color: var(--color-text-muted);
     display: flex;

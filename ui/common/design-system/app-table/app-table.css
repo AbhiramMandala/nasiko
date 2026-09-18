@@ -123,13 +123,12 @@
   .td.is-plain { background: var(--bg-base); }
   .tbody tr:hover .td.is-plain { background: var(--bg-subtle); }
 
-  .empty {
-    padding: var(--s-48) var(--s-16);
-    text-align: center;
-    color: var(--fg-secondary);
-    font-style: italic;
-    font-size: var(--font-size-sm);
-  }
+  /* The empty and failure states are both an `<app-empty-state inline>` in
+     this cell now, so the cell contributes the span and nothing else — the
+     padding, centring and type come from the shared block, the same one the
+     charts and the stat strip draw. The italics went with it: they were this
+     table's alone. */
+  .empty { padding: 0; text-align: center; }
 
   .detail-list { display: flex; flex-direction: column; gap: var(--s-12); }
   .detail-item {
@@ -181,13 +180,7 @@
   }
   .pagination app-button { flex-shrink: 0; }
 
-  .error {
-    background: var(--bg-error);
-    color: var(--fg-error);
-    border: var(--bw-1) solid var(--border-error);
-    border-radius: var(--r-8);
-    padding: var(--s-16);
-    font-size: var(--font-size-sm);
-    &[hidden] { display: none; }
-  }
+  /* `.error` was a banner strip below the table, shown while the body still
+     read "Nothing here yet" — two answers at once. The failure is now drawn
+     in the body itself (see #renderTable), so the strip is gone. */
 }

@@ -86,10 +86,26 @@ class BuildDetailPage extends HTMLElement {
 
   async #load() {
     let build = null;
+    // "Not found" and "we could not ask" are different answers and used to
+    // share one message: a network failure told the user their build had been
+    // pruned. A 404 is the server saying it is gone; anything else is us not
+    // knowing, and only the second is worth retrying.
+    let failed = false;
     try {
       const res = await apiFetch(`/builds/${this.#buildId}`);
       if (res.ok) build = await res.json();
-    } catch { /* fall through to not-found */ }
+      else if (res.status !== 404) failed = true;
+    } catch { failed = true; }
+    if (failed) {
+      this.innerHTML = `${this.#toolbar()}
+        <app-empty-state variant="error"
+          heading="Couldn't load this build"
+          description="Something went wrong fetching it. The build itself may be fine.">
+          <app-button id="build-retry" variant="tertiary">Retry</app-button>
+        </app-empty-state>`;
+      this.querySelector('#build-retry')?.addEventListener('click', () => this.#load());
+      return;
+    }
     if (!build) {
       this.innerHTML = `${this.#toolbar()}
         <app-empty-state

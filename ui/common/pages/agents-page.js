@@ -83,15 +83,21 @@ class AgentsPage extends HTMLElement {
     this.#renderGrid();
   }
 
+  /**
+   * One request fills this grid, so one block says it failed — there are no
+   * cards to hang a per-card state on. `variant="error"` rather than a
+   * hand-passed alert icon: the variant is what makes this the same failure
+   * the charts, tables and stat strips draw, and it carries the icon, the
+   * tint and `role="alert"` with it.
+   */
   #renderLoadFailure() {
     this.querySelector("#category-tabs").innerHTML = "";
     this.querySelector("#agents-grid").innerHTML = `
       <div class="empty-wrap">
-        <app-empty-state
+        <app-empty-state variant="error"
           heading="Couldn't load agents"
-          description="Something went wrong loading the agent catalog."
-          icon='${icons.alertTriangle("", 40)}'>
-          <app-button id="agents-retry" variant="primary">Retry</app-button>
+          description="Something went wrong loading the agent catalog.">
+          <app-button id="agents-retry" variant="tertiary">Retry</app-button>
         </app-empty-state>
       </div>`;
     this.querySelector("#agents-retry")?.addEventListener("click", () => this.#loadAgents());

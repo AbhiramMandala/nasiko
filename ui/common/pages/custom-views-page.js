@@ -69,6 +69,10 @@ class CustomViewsPage extends HTMLElement {
   #unsubscribe = null;
   /** False until a list call has answered, so "empty" and "not asked yet" differ. */
   #loaded = false;
+  /** The views request failed. Distinct from `viewsAvailable() === false`,
+   *  which is an OSS build with no shelf at all — that is a true answer, this
+   *  is the absence of one. */
+  #failed = false;
 
   connectedCallback() {
     if (!this.#initialized) {
@@ -101,10 +105,23 @@ class CustomViewsPage extends HTMLElement {
     // is to be the current list, and it is reached by navigation — coming back
     // to it after saving something in another tab should show that something.
     // `ensureViews` covers the very first visit; after that this is a refetch.
-    (this.#loaded ? refreshViews() : ensureViews()).catch(() => {}).then(() => {
-      this.#loaded = true;
-      this.#paint();
-    });
+    this.#hydrate();
+  }
+
+  /**
+   * Fetch the shelf and repaint. Its own method so Retry has something to
+   * call — the rejection used to be swallowed whole here, which left a failed
+   * load rendering "No saved views yet": a user with a shelf full of views
+   * being told they have none.
+   */
+  #hydrate() {
+    (this.#loaded ? refreshViews() : ensureViews())
+      .then(() => { this.#failed = false; })
+      .catch(() => { this.#failed = true; })
+      .then(() => {
+        this.#loaded = true;
+        this.#paint();
+      });
   }
 
   disconnectedCallback() {
@@ -164,7 +181,18 @@ class CustomViewsPage extends HTMLElement {
       // has no shelf at all — telling that user to press Save view would be
       // pointing at a button they will never see.
       if (!this.#loaded) {
-        grid.innerHTML = '<app-empty-state heading="Loading your views…"></app-empty-state>';
+        // Skeleton cards, not a line of text: the shelf keeps its shape, so
+        // nothing jumps when the real cards land. Same component in its
+        // loading state, so the two cannot drift.
+        grid.innerHTML = Array.from({ length: 3 }, () => '<app-card loading></app-card>').join('');
+      } else if (this.#failed) {
+        grid.innerHTML = `
+          <app-empty-state variant="error"
+            heading="Couldn't load your views"
+            description="Something went wrong fetching your saved views.">
+            <app-button id="views-retry" variant="tertiary">Retry</app-button>
+          </app-empty-state>`;
+        grid.querySelector('#views-retry')?.addEventListener('click', () => this.#hydrate());
       } else if (viewsAvailable() === false) {
         grid.innerHTML = `
           <app-empty-state heading="Saved views aren't available on this deployment"

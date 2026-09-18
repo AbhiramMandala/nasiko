@@ -16,6 +16,13 @@
  *   shape — a fractional number is shown to two decimals, an ISO-8601 string
  *   as local time, everything else verbatim; `text` opts out entirely.
  * @attr {string} currency - ISO code for `format="currency"` (default `USD`)
+ * @attr {string} error - The fetch failed. Present (bare, or with a message
+ *   overriding the default copy) replaces the card's contents with the shared
+ *   failure block — icon, one line, Retry. Without it a failed card printed a
+ *   plain `—`, the exact dash it prints for a metric that is honestly zero, so
+ *   the tile could not say "we could not get this". `loading` wins over it.
+ * @fires stat-card-retry - Retry pressed on the failure state — bubbles. The
+ *   card is handed its value, so the owner refetches.
  * @note Every attribute is escaped on the way in. These values are routinely
  *   bound straight from an API field — an agent name, a cost, a model id — and
  *   a generated surface can bind any of them, so this element is a sink for
@@ -25,15 +32,23 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-stat-card.css', import.meta.url));
 import { escHtml, escAttr } from '../../utils/escape.js';
 import { applyFormat } from '../../utils/units.js';
+import { errorStateHtml, bindRetry } from '../../utils/data-component-utils.js';
+import '../app-button/app-button.js';
+import '../app-empty-state/app-empty-state.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 
 export class AppStatCard extends HTMLElement {
   static get observedAttributes() {
-    return ['label', 'value', 'delta', 'trend', 'loading', 'format', 'currency'];
+    return ['label', 'value', 'delta', 'trend', 'loading', 'format', 'currency', 'error'];
   }
   #initialized = false;
-  connectedCallback() { if (this.#initialized) return; this.#initialized = true; this.render(); }
+  connectedCallback() {
+    if (this.#initialized) return;
+    this.#initialized = true;
+    bindRetry(this, 'stat-card-retry');
+    this.render();
+  }
   attributeChangedCallback() { if (this.isConnected) this.render(); }
   render() {
     if (this.hasAttribute('loading')) {
@@ -50,6 +65,15 @@ export class AppStatCard extends HTMLElement {
       return;
     }
     this.removeAttribute('aria-busy');
+    // Before the value, and before the label: a card that could not be
+    // fetched has no value to show and its label would frame the failure as
+    // if the number below it were real.
+    if (this.hasAttribute('error')) {
+      this.innerHTML = `<div class="stat-card is-error">`
+        + errorStateHtml(this.getAttribute('error') || "Couldn't load this metric")
+        + `</div>`;
+      return;
+    }
     const label = this.getAttribute('label') || '';
     // Attributes are strings, always — a generated surface binding a cost
     // hands over "0.023456789012" and the type is gone by the time it lands

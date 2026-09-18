@@ -831,7 +831,7 @@ const SPECS = [
   {
     group: 'Data display',
     tag: 'app-card',
-    blurb: 'THE card \u2014 the only one. Status dot, version, tag chips with +N overflow, two-line description, and either the default Details/Chat footer or a slotted one. Status dot carries the state. Deploying shows a spinner with its own copy; error, stopped and loading states included.',
+    blurb: 'THE card \u2014 the only one. Status dot, version, tag chips with +N overflow, two-line description, and either the default Details/Chat footer or a slotted one. Status dot carries the state. Deploying shows a spinner with its own copy; error, stopped and loading states included. The last two are the pair worth reading together: status="failed" means the agent is broken and the card loaded fine, [error] means *we* could not load the card at all \u2014 two different facts that want a similar look, and only the first used to be expressible. A failed card also navigates nowhere, since its href was built from data that never arrived.',
     demo: `<app-grid min-width="300px" gap="md">
   <app-card agent-id="a1" name="Document analyzer" version="1.1.0" status="running"
     description="Provides code structure, documentation quality, dependencies, and summarizes repo functionality."
@@ -850,6 +850,7 @@ const SPECS = [
     <app-button data-slot="footer" variant="primary" size="sm" href="/agents">Redeploy</app-button>
   </app-card>
   <app-card loading></app-card>
+  <app-card error></app-card>
 </app-grid>`,
   },
   {
@@ -861,6 +862,7 @@ const SPECS = [
   <app-stat-card label="Spend" value="$412.90" delta="-4%" trend="down"></app-stat-card>
   <app-stat-card label="p95 latency" value="840ms" delta="0%" trend="neutral"></app-stat-card>
   <app-stat-card label="Loading" loading></app-stat-card>
+  <app-stat-card label="Failed" error></app-stat-card>
 </app-grid>`,
   },
   {
@@ -887,6 +889,7 @@ const SPECS = [
     {"label":"Providers connected","value":"1"},
     {"label":"Default config","value":"testing"}]'></app-stat-row>
   <app-stat-row loading="4"></app-stat-row>
+  <app-stat-row error></app-stat-row>
 </app-stack>`,
   },
   {
@@ -942,10 +945,16 @@ const SPECS = [
   {
     group: 'Data display',
     tag: 'app-chart',
-    blurb: 'Empty and loading states.',
+    blurb: 'The three states, in order of precedence: loading, then [error] '
+      + '(the fetch failed — icon, one line, Retry, and a bubbling chart-retry '
+      + 'for the owner to act on), then empty. Error is checked before empty '
+      + 'because a failed request leaves the data empty too, so the other order '
+      + 'shows "no data" for every failure — which tells the user their data does '
+      + 'not exist when the truth is that we could not ask.',
     demo: `<app-row gap="md">
-  <app-chart type="hbar" empty-text="No spend recorded yet"></app-chart>
   <app-chart loading></app-chart>
+  <app-chart type="hbar" error></app-chart>
+  <app-chart type="hbar" empty-text="Not enough data to chart yet"></app-chart>
 </app-row>`,
   },
   {
@@ -956,6 +965,8 @@ const SPECS = [
   <app-table id="ds-table" search search-placeholder="Filter agents\u2026" limit="5" detail
     empty-message="No agents deployed yet"></app-table>
   <span class="demo-note">Click a header to sort, a row for its detail panel, a page number to jump.</span>
+  <app-table id="ds-table-failed" error pagination="none"></app-table>
+  <span class="demo-note">A failed fetch: the same block, in the body, under a live header — not a banner below an otherwise empty-looking table.</span>
   <app-table id="ds-table-flat" pagination="none" limit="4"></app-table>
   <span class="demo-note">pagination="none" \u2014 the same table with no pager.</span>
 </app-stack>`,
@@ -1058,6 +1069,22 @@ const SPECS = [
   },
   {
     group: 'State & feedback',
+    tag: 'app-empty-state',
+    blurb: 'The same block in its failure form: variant="error" for "we could not '
+      + 'load this", against the plain empty state beside it. The distinction is the '
+      + 'whole point — a user who sees "nothing here" when the truth is "we could not '
+      + 'ask" concludes their data does not exist. Both get a default icon; `inline` '
+      + 'drops the frame for use inside a table body, a chart box or a stat strip, '
+      + 'which is how every data component below draws it.',
+    demo: `<app-row gap="md">
+  <app-empty-state description="No results found"></app-empty-state>
+  <app-empty-state variant="error" description="Couldn't load this">
+    <app-button variant="tertiary" size="sm">Retry</app-button>
+  </app-empty-state>
+</app-row>`,
+  },
+  {
+    group: 'State & feedback',
     tag: 'app-skeleton',
     blurb: 'Shimmer placeholder. lines / height / radius.',
     demo: `<app-skeleton lines="4"></app-skeleton>`,
@@ -1150,7 +1177,7 @@ class DesignSystemPage extends HTMLElement {
       btn.addEventListener('click', () => modal?.close());
     }
 
-    // Both tables get their columns and fetcher here rather than in markup:
+    // The tables get their columns and fetcher here rather than in markup:
     // `columns` and `dataFn` are properties, and there is no data-source
     // registry on this page to name.
     for (const id of ['#ds-table', '#ds-table-flat']) {
@@ -1160,6 +1187,13 @@ class DesignSystemPage extends HTMLElement {
       table.dataFn = dsTableFetch;
       table.refresh();
     }
+
+    // The failure demo takes the columns but no fetcher, so the header row it
+    // draws above the failure block is the real one — that header staying put
+    // is half of what the state is for. A `dataFn` here would refetch on
+    // Retry and clear the demo.
+    const failedTable = this.querySelector('#ds-table-failed');
+    if (failedTable) failedTable.columns = DS_TABLE_COLUMNS;
 
     // `data` is a property on <app-chart>, so the demos cannot declare it in
     // markup the way the attribute-driven components can.

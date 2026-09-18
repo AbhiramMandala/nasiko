@@ -2078,6 +2078,24 @@ impl ObservabilityService {
         if let Some(accessible) = &accessible {
             agents.retain(|(id, _, _, _)| accessible.contains(id));
         }
+        // `is_internal` agents (Weave's dashboard-generator) are platform-owned,
+        // not the caller's fleet, so a workspace holding nothing else has still
+        // deployed nothing -- and the overview/tokenops pages read exactly that
+        // off `total_agents` to decide between their first-run screen and a real
+        // dashboard. Dropping them makes the list empty, which the early return
+        // below turns into the zeroed payload those pages expect. Once the caller
+        // has an agent of their own the internal one stays in, so its spend is
+        // still attributed.
+        let internal: HashSet<uuid::Uuid> =
+            sqlx::query_scalar("SELECT id FROM agents WHERE is_internal AND deleted_at IS NULL")
+                .fetch_all(&self.db)
+                .await
+                .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+                .into_iter()
+                .collect();
+        if !agents.is_empty() && agents.iter().all(|(id, _, _, _)| internal.contains(id)) {
+            agents.clear();
+        }
         let total_agents = agents.len();
 
         let start = parse_iso_or_default(start_time, 30);

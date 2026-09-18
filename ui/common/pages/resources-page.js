@@ -14,6 +14,7 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./resources-page.css', import.meta.url));
 import { icons } from '../utils/icons.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
+import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-stat-row/app-stat-row.js';
 import '/common/design-system/app-badge/app-badge.js';
@@ -100,13 +101,23 @@ class ResourcesPage extends HTMLElement {
       strip.hidden = true;
       this.querySelector('#banner').innerHTML = '';
       this.querySelector('#head-meta').innerHTML = '';
+      // `variant="error"` rather than a plain empty state: this page already
+      // had the three-state machine, but its failure drew as an absence —
+      // no icon, no tint, nothing announced, and no way back. A 503 on a
+      // Kubernetes runtime is a real answer worth retrying.
       this.querySelector('#groups').innerHTML = `
         <section class="pane">
-          <app-empty-state
+          <app-empty-state variant="error"
             heading="Resource stats unavailable"
-            description="${escHtml(this.#error)}"
-          ></app-empty-state>
+            description="${escHtml(this.#error)}">
+            <app-button id="res-retry" variant="tertiary">Retry</app-button>
+          </app-empty-state>
         </section>`;
+      this.querySelector('#res-retry')?.addEventListener('click', () => {
+        this.#state = 'loading';
+        this.querySelector('#kpi-strip').setAttribute('loading', '4');
+        this.#load();
+      });
       return;
     }
     // A poll can recover after a failure, so undo the error-state teardown.

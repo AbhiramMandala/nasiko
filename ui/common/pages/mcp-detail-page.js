@@ -367,7 +367,20 @@ class McpDetailPage extends HTMLElement {
       consumers = consumers?.data ?? consumers;
       shares = shares?.data ?? shares;
     } catch {
-      section.hidden = true;
+      // The section used to hide itself, which is exactly what it does when
+      // the caller is not permitted to see grants at all — so "you don't have
+      // access" and "something broke" were the same invisible outcome. Stay
+      // on screen and say which one this is.
+      section.hidden = false;
+      section.innerHTML = `
+        <h2 class="mdp-section-title">Grants</h2>
+        <app-empty-state variant="error"
+          heading="Couldn't load grants for this server"
+          description="Something went wrong fetching who this connector is shared with.">
+          <app-button id="mdp-grants-retry" variant="tertiary" size="sm">Retry</app-button>
+        </app-empty-state>`;
+      section.querySelector('#mdp-grants-retry')
+        ?.addEventListener('click', () => this.#loadGrants());
       return;
     }
     // `access_reasons` is the resolved, one-row-per-person view (owner,
