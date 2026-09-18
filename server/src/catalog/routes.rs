@@ -1102,8 +1102,8 @@ pub(crate) async fn delete(
         tracing::warn!(%e, %id, "delete agent: gateway token revoke failed");
     }
 
-    // Let enterprise-only, agent-keyed state clean itself up (e.g. L1A's domain mapping, which
-    // has no FK a soft delete could cascade through) — see `agent_lifecycle` module docs.
+    // Let enterprise-only, agent-keyed state clean itself up (e.g. a reserved name that has no
+    // FK a soft delete could cascade through) — see `agent_lifecycle` module docs.
     state.agent_deletion_hook.on_agent_deleted(id).await;
 
     // Every real deploy path keys the running container on the agent's UUID, never the
