@@ -268,6 +268,51 @@ export const CASES = [
       minQueries: 1, minStates: 2, tags: ['app-table'],
       mechanism: { source: 'fetchUsageByAgent' },
     } },
+  // The control-kind pair. One source, one argument, one required refetch,
+  // and the ONLY difference between the two prompts is which control the
+  // reader is offered.
+  //
+  // Everything measured so far says `@Run` production tracks the control
+  // kind rather than the source's argument list — app-search 10/32 against
+  // 40/44 for every other kind, and inside grouped-filters 8/18 against
+  // 20/20, sometimes in one surface. Every one of those numbers is
+  // observational: control kind has never been varied with the source and
+  // the argument held still. These two cases do that and nothing else.
+  //
+  // fetchSpendCalendar is the source that makes it clean. `month` is
+  // REQUIRED and is a plain string sent verbatim, so typing "2026-08" and
+  // picking "2026-08" are byte-identical requests; and the response carries
+  // only the month that was asked for, so there is no client-side mechanism
+  // to choose instead. The mechanism decision that tangled every earlier
+  // experiment is absent, and what is left is whether the refetch gets
+  // wired. The source has also never been generated once in the whole
+  // corpus and appears in no worked example, so neither arm has a
+  // same-source template to copy.
+  //
+  // `expect` is a floor and says nothing about the control or the @Run. The
+  // four readings are recorded by `controlPair` and never gate, because a
+  // case that asserts the answer it measures can only return the answer it
+  // was given.
+  //
+  // Accessible naming is `aria-label` in both arms on purpose: app-search
+  // has no `label` parameter (nameFrom: aria-label, placeholder) while
+  // app-segmented-control does (nameFrom: label, aria-label), and a request
+  // implying a visible label would push the choice toward one arm. That
+  // asymmetry is what contaminated agent-by-id.
+  { id: 'month-typed',
+    prompt: 'Daily spend for one calendar month, as a bar chart. '
+      + 'Let me type the month I want as YYYY-MM.',
+    expect: {
+      minQueries: 1, minActions: 1, minStates: 1,
+      controlPair: { source: 'fetchSpendCalendar', argument: 'month', control: 'app-search' },
+    } },
+  { id: 'month-picked',
+    prompt: 'Daily spend for one calendar month, as a bar chart. '
+      + 'Let me pick between July, August and September 2026.',
+    expect: {
+      minQueries: 1, minActions: 1, minStates: 1,
+      controlPair: { source: 'fetchSpendCalendar', argument: 'month', control: 'app-segmented-control' },
+    } },
   // Not a dashboard request. agent.yaml rule 11 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.
@@ -1159,6 +1204,144 @@ function splitTopLevel(text) {
   return out;
 }
 
+/** Every component call with its statement name and its arguments by slot. */
+function controlsIn(lines) {
+  const out = [];
+  for (const l of lines) {
+    const named = /^\s*([A-Za-z_$][\w$]*)\s*=/.exec(l);
+    for (const call of componentCalls(l)) {
+      const tag = pascalToTag(call.name);
+      const def = catalog.components?.[tag];
+      const params = def?.paramOrder ?? [];
+      if (!params.length) continue;
+      const slot = {};
+      for (let i = 0; i < params.length && i < call.args.length; i++) slot[params[i]] = call.args[i];
+      out.push({ statement: named ? named[1] : null, tag, params, slot, args: call.args });
+    }
+  }
+  return out;
+}
+
+/**
+ * One argument, two ways of asking for it.
+ *
+ * The corpus says `@Run` production tracks the control kind rather than the
+ * source's argument list: across every generated control whose state IS a
+ * Query argument, app-search carries `@Run` 31% of the time and every other
+ * kind 91%, and inside one case app-search ran 8/18 while
+ * app-segmented-control ran 20/20 — sometimes in the same surface. Those are
+ * associations in observational data, and control kind was never varied while
+ * everything else was held still.
+ *
+ * This measures exactly that. Two prompts differing only in the control
+ * affordance they ask for, over one source, one argument and one required
+ * refetch. `fetchSpendCalendar.month` is REQUIRED and is a plain string sent
+ * verbatim, so typing "2026-08" and picking "2026-08" are the same request —
+ * and a different month's days are simply absent from the response, so there
+ * is no client-side mechanism to choose instead. The mechanism decision the
+ * earlier experiments tangled with is removed, and what is left is the wiring.
+ *
+ * Four readings, never summed. A run can name the source, bind the argument
+ * and still leave the control inert, and `agent-by-id` is the proof: five
+ * runs there authored `@Run` inside an Action that had landed in `pattern`,
+ * `step`, `list` or `aria-label`, or past the end of the signature. Counting
+ * the token reported 5/10; counting reachable refetches reported 0/10. So
+ * `workingRefetchCorrect` asks where the Action actually SITS, not whether
+ * the characters `@Run` appear.
+ */
+function controlPairDimensions(lines, spec) {
+  const detail = {
+    sourceUsed: [], argState: null, argRaw: null,
+    controlUsed: null, controlStatement: null,
+    setter: null, actionInSlot: null, setterRunsQuery: false,
+    positionalFindings: [], runAuthoredUnreachable: 0, clientFilterOnDate: false,
+  };
+
+  const queries = [];
+  for (const l of lines) {
+    const m = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Query\s*\(\s*"([^"]+)"/.exec(l);
+    if (!m) continue;
+    const parts = topLevelArgs(l, 'Query');
+    queries.push({ name: m[1], source: m[2], args: (parts[1] ?? '').trim() });
+  }
+  detail.sourceUsed = [...new Set(queries.map((q) => q.source))];
+  const mine = queries.filter((q) => q.source === spec.source);
+  const sourceCorrect = mine.length > 0;
+
+  // Object call style: the argument is a key. `{month: $month}` binds it;
+  // `{month: "2026-09"}` does not, and that difference is the whole point.
+  let owner = null;
+  for (const q of mine) {
+    const m = new RegExp(`\\b${spec.argument}\\s*:\\s*([^,}]+)`).exec(q.args);
+    if (!m) continue;
+    detail.argRaw = m[1].trim();
+    const st = /^(\$[\w$]+)$/.exec(detail.argRaw);
+    if (st) { detail.argState = st[1]; owner = q; break; }
+  }
+  const argumentCorrect = Boolean(detail.argState);
+
+  const controls = controlsIn(lines);
+  // The control that BINDS the state, not merely one that mentions it. When
+  // the argument was never bound there is still a control to identify —
+  // "did it build the kind that was asked for" has to stay answerable
+  // independently of "did it reach the argument", or the four readings stop
+  // being four.
+  const boundTo = (st) => controls.find((c) => {
+    const v = c.slot.value ?? c.slot.checked;
+    return v && v.trim() === st;
+  });
+  const bound = (detail.argState && boundTo(detail.argState))
+    ?? controls.find((c) => {
+      const def = catalog.components?.[c.tag];
+      const v = c.slot.value ?? c.slot.checked;
+      return def?.actionParam === true && v && /^\$[\w$]+$/.test(v.trim());
+    });
+  if (bound) { detail.controlUsed = bound.tag; detail.controlStatement = bound.statement; }
+  else detail.controlUsed = controls.map((c) => c.tag).join('+') || null;
+  const controlKindCorrect = Boolean(bound && bound.tag === spec.control);
+
+  const actions = new Map();
+  for (const l of lines) {
+    const a = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Action\s*\(/.exec(l);
+    if (!a) continue;
+    actions.set(a[1], {
+      sets: [...l.matchAll(/@Set\(\s*(\$[\w$]+)/g)].map((x) => x[1]),
+      runs: [...l.matchAll(/@Run\(\s*([A-Za-z_$][\w$]*)/g)].map((x) => x[1]),
+    });
+  }
+  // An Action nothing can fire. The failure that made an earlier arm read 5/10
+  // when the true figure was 0/10.
+  const reachable = new Set(controls.map((c) => (c.slot.action ?? '').trim()).filter(Boolean));
+  for (const [name, a] of actions) {
+    if (a.runs.length && !reachable.has(name)) detail.runAuthoredUnreachable++;
+  }
+
+  const findings = positionalContract(lines.map((raw) => ({ raw })));
+  detail.positionalFindings = findings
+    .filter((f) => bound && f.statement === bound.statement)
+    .map((f) => f.code);
+
+  let setter = null;
+  if (detail.argState) {
+    for (const [name, a] of actions) if (a.sets.includes(detail.argState)) { setter = name; break; }
+  }
+  detail.setter = setter;
+  detail.actionInSlot = bound ? (bound.slot.action ?? null) : null;
+  if (setter && owner) detail.setterRunsQuery = (actions.get(setter)?.runs ?? []).includes(owner.name);
+
+  detail.clientFilterOnDate = lines.some((l) => /@Filter\([^,]+,\s*"date"/.test(l));
+
+  const workingRefetchCorrect = Boolean(
+    detail.argState                                             // 1
+    && setter                                                   // 2
+    && detail.actionInSlot && detail.actionInSlot.trim() === setter // 3
+    && detail.setterRunsQuery                                   // 4
+    && detail.positionalFindings.length === 0,                  // 5
+  );
+
+  return { sourceCorrect, argumentCorrect, controlKindCorrect, workingRefetchCorrect, detail };
+}
+
 export function evaluateGeneration(text) {
   const diagnostics = [];
   const { statements, prose } = parseBuffer(text);
@@ -1221,15 +1404,19 @@ export function check(kase, text) {
   // sound. Never added to `fail`: a case that gates on the answer it is
   // measuring can only ever return the answer it was given.
   const dimensions = e.mechanism ? pagedMechanism(r.lines, e.mechanism) : null;
+  // The control-kind pair. Same four-readings-never-summed discipline as
+  // `dimensions`, and kept in its own field so neither case's numbers can be
+  // mistaken for the other's.
+  const controlPair = e.controlPair ? controlPairDimensions(r.lines, e.controlPair) : null;
 
   if (e.noSurface) {
     if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 11)');
     if (!r.prose.join('').trim()) fail.push('answered with nothing at all');
-    return { fail, advisory, runtime, dimensions, r };
+    return { fail, advisory, runtime, dimensions, controlPair, r };
   }
 
   if (!r.root) {
-    if (e.allowNoSurface) return { fail, advisory, runtime, dimensions, r };
+    if (e.allowNoSurface) return { fail, advisory, runtime, dimensions, controlPair, r };
     fail.push('no root — nothing rendered');
   }
 
@@ -1312,7 +1499,7 @@ export function check(kase, text) {
       + `expected at least ${e.minChartKinds} — the same shape repeated answers one question twice`);
   }
 
-  return { fail, advisory, runtime, dimensions, r };
+  return { fail, advisory, runtime, dimensions, controlPair, r };
 }
 
 /**
@@ -1809,7 +1996,7 @@ for (const kase of cases) {
     } else skipped.push(kase.id);
   }
 
-  const { fail, advisory, runtime, dimensions, r } = check(kase, text);
+  const { fail, advisory, runtime, dimensions, controlPair, r } = check(kase, text);
 
   // Observational only — nothing below reads this to decide pass or fail.
   if (record) {
@@ -1833,6 +2020,7 @@ for (const kase of cases) {
       // expectation, rather than four falses that would read as four
       // failures.
       ...(dimensions ? { dimensions } : {}),
+      ...(controlPair ? { controlPair } : {}),
       // The structural checks, kept beside them and kept apart from each
       // other: which mechanism was chosen and whether the surface is sound
       // are different questions, and a benchmark that merges them cannot say
@@ -1844,6 +2032,11 @@ for (const kase of cases) {
         positionalContract: (r.positionalContract ?? []).map((x) => x.code),
         orphanedStatements: (r.diagnostics ?? []).filter((d) => d.code === 'orphaned_statement').length,
         unresolved: (r.unresolved ?? []).length,
+        fatalDiagnostics: fatal,
+        // An Action holding an @Run that nothing can fire. Counting the token
+        // instead of the wire reported 5/10 on a case whose true figure was
+        // 0/10, so it is recorded on every run, not only the paired ones.
+        runAuthoredUnreachable: controlPair?.detail.runAuthoredUnreachable ?? null,
       },
     };
   }
@@ -1932,6 +2125,25 @@ for (const kase of cases) {
       d.clientFilter ? '@Filter over the fetched page' : null,
     ].filter(Boolean);
     console.log(`               ${notes.join('; ')}`);
+  }
+  if (controlPair) {
+    const mark = (ok) => (ok ? '✓' : '✗');
+    const d = controlPair.detail;
+    console.log(`    pair: ${mark(controlPair.sourceCorrect)} source`
+      + `  ${mark(controlPair.argumentCorrect)} argument`
+      + `  ${mark(controlPair.controlKindCorrect)} control`
+      + `  ${mark(controlPair.workingRefetchCorrect)} working refetch`);
+    const notes = [
+      `chose ${d.sourceUsed.join('+') || 'no source'}`,
+      `month<-${d.argRaw ?? 'unset'}`,
+      `control ${d.controlUsed ?? 'none'}`,
+      d.setter ? `setter ${d.setter}${d.actionInSlot === d.setter ? '' : ' (NOT in the action slot)'}` : 'no setter',
+      d.setterRunsQuery ? 'refetches' : 'no @Run on it',
+      d.positionalFindings.length ? `positional: ${d.positionalFindings.join('+')}` : null,
+      d.runAuthoredUnreachable ? `${d.runAuthoredUnreachable} @Run(s) nothing can fire` : null,
+      d.clientFilterOnDate ? '@Filter on "date"' : null,
+    ].filter(Boolean);
+    console.log(`          ${notes.join('; ')}`);
   }
   // Offline, nothing should reach the network or the stream. One of these
   // means the harness, not the generation.

@@ -17,6 +17,10 @@ import {
   check, evaluateGeneration, provenanceFrom, runProvenance, CASES, ALLOWED_SOURCES,
 } from '../scripts/eval-generations.mjs';
 
+/** The control-kind pair: one source, one argument, two affordances. */
+const PAIR_A = CASES.find((c) => c.id === 'month-typed');
+const PAIR_B = CASES.find((c) => c.id === 'month-picked');
+
 const GOOD = `Sure — building that now.
 totalCostQ = Query("fetchUsageSummary", [], 0, "total_cost_usd")
 requestsQ = Query("fetchUsageSummary", [], 0, "request_count")
@@ -869,5 +873,127 @@ test('the tightened pagination check leaves the other three dimensions alone', (
   assert.equal(dimensions.sourceCorrect, true);
   assert.equal(dimensions.searchMechanismCorrect, true);
   assert.equal(dimensions.totalCorrect, true);
+  assert.deepEqual(fail, []);
+});
+
+/*
+ * The control-kind pair.
+ *
+ * `fetchSpendCalendar.month` is REQUIRED and is a plain string sent verbatim,
+ * so typing "2026-08" and picking "2026-08" are the same request, and the
+ * response carries only the month asked for — there is no client-side
+ * mechanism to choose instead. Which leaves exactly one thing to get right,
+ * and these assert that the evaluator can see it.
+ *
+ * The distinction that matters here is between an `@Run` that exists and an
+ * `@Run` that can fire. On `agent-by-id`, five runs authored the token inside
+ * an Action that had landed in `pattern`, `step`, `list` or `aria-label`, or
+ * past the end of a 24-slot signature. Counting tokens said 5/10; counting
+ * reachable refetches said 0/10.
+ */
+const TYPED = `Sure — building that now.
+root = AppStack([heading, monthBox, chart], "md")
+heading = AppText("Daily spend", "title")
+$month = "2026-09"
+setMonth = Action([@Set($month, $event), @Run(daysQ)])
+monthBox = AppSearch("md", null, false, false, "YYYY-MM", $month, null, null, null, null, "Month", setMonth)
+daysQ = Query("fetchSpendCalendar", [{month: $month}], {days: []}, "data")
+chart = AppChart({labels: daysQ.days.date, datasets: [{label: "Spend (USD)", data: daysQ.days.spend_usd}]}, "bar", false, "currency", "USD", null, null, "auto", "No spend for that month")
+Done.`;
+
+const PICKED = TYPED.replace(
+  'monthBox = AppSearch("md", null, false, false, "YYYY-MM", $month, null, null, null, null, "Month", setMonth)',
+  'monthPicker = AppSegmentedControl([{value: "2026-07", label: "Jul"}, {value: "2026-08", label: "Aug"}, {value: "2026-09", label: "Sep"}], $month, "md", false, null, null, "Month", setMonth)',
+).replace('[heading, monthBox, chart]', '[heading, monthPicker, chart]');
+
+const four = (c) => [c.sourceCorrect, c.argumentCorrect, c.controlKindCorrect, c.workingRefetchCorrect];
+
+test('an AppSearch arm that wires the refetch reads all four true', () => {
+  const { fail, controlPair } = check(PAIR_A, TYPED);
+  assert.deepEqual(four(controlPair), [true, true, true, true]);
+  assert.deepEqual(fail, []);
+  // No visible label anywhere — app-search has no such parameter, and the
+  // accessible name comes through aria-label, which both arms support.
+  assert.equal(controlPair.detail.controlUsed, 'app-search');
+  // app-search has no `label` parameter at all; the accessible name is the
+  // aria-label slot, which app-segmented-control supports too. That shared
+  // mechanism is what keeps the two arms comparable.
+  const searchLine = TYPED.split('\n').find((l) => l.includes('AppSearch('));
+  assert.ok(!/\blabel\s*:/.test(searchLine), searchLine);
+  assert.ok(searchLine.includes('"Month", setMonth)'), searchLine);
+});
+
+test('an AppSegmentedControl arm that wires the refetch reads all four true', () => {
+  const { fail, controlPair } = check(PAIR_B, PICKED);
+  assert.deepEqual(four(controlPair), [true, true, true, true]);
+  assert.deepEqual(fail, []);
+  assert.equal(controlPair.detail.controlUsed, 'app-segmented-control');
+});
+
+test('an @Run in an Action that is not in the action slot does not count', () => {
+  // app-search takes its Action at slot 12; this one sits in `aria-label`.
+  const dsl = TYPED.replace(
+    'null, null, "Month", setMonth)',
+    'null, null, setMonth, null)',
+  );
+  const { controlPair } = check(PAIR_A, dsl);
+  assert.equal(controlPair.argumentCorrect, true);
+  assert.equal(controlPair.workingRefetchCorrect, false);
+  assert.notEqual(controlPair.detail.actionInSlot, 'setMonth');
+  assert.ok(controlPair.detail.positionalFindings.includes('action_in_wrong_slot'),
+    JSON.stringify(controlPair.detail.positionalFindings));
+});
+
+test('an @Run authored but unreachable is counted and does not count as working', () => {
+  // The Action exists, holds a correct @Run, and no control fires it.
+  const dsl = TYPED.replace(
+    'monthBox = AppSearch("md", null, false, false, "YYYY-MM", $month, null, null, null, null, "Month", setMonth)',
+    'monthBox = AppSearch("md", null, false, false, "YYYY-MM", $month, null, null, null, null, "Month", null)',
+  );
+  const { controlPair } = check(PAIR_A, dsl);
+  assert.equal(controlPair.workingRefetchCorrect, false);
+  assert.equal(controlPair.detail.runAuthoredUnreachable, 1);
+  // …and the token is still there, which is exactly why the token is not
+  // what gets counted.
+  assert.ok(dsl.includes('@Run(daysQ)'));
+});
+
+test('the argument bound but no @Run reads argument-correct and refetch-wrong', () => {
+  const dsl = TYPED.replace('Action([@Set($month, $event), @Run(daysQ)])', 'Action([@Set($month, $event)])');
+  const { controlPair } = check(PAIR_A, dsl);
+  assert.deepEqual(four(controlPair), [true, true, true, false]);
+  assert.equal(controlPair.detail.setterRunsQuery, false);
+});
+
+test('the wrong control kind fails only the control reading', () => {
+  // A correct segmented surface scored against the AppSearch arm.
+  const { controlPair } = check(PAIR_A, PICKED);
+  assert.deepEqual(four(controlPair), [true, true, false, true]);
+  assert.equal(controlPair.detail.controlUsed, 'app-segmented-control');
+});
+
+test('a frozen month literal fails the argument reading and everything after it', () => {
+  const dsl = TYPED.replace('[{month: $month}]', '[{month: "2026-09"}]');
+  const { controlPair } = check(PAIR_A, dsl);
+  assert.equal(controlPair.sourceCorrect, true);
+  assert.equal(controlPair.argumentCorrect, false);
+  assert.equal(controlPair.workingRefetchCorrect, false);
+  assert.equal(controlPair.detail.argRaw, '"2026-09"');
+});
+
+test('the wrong source fails the source reading', () => {
+  const dsl = TYPED.replace('"fetchSpendCalendar"', '"fetchSpendTimeseries"');
+  const { controlPair } = check(PAIR_A, dsl);
+  assert.equal(controlPair.sourceCorrect, false);
+  assert.deepEqual(controlPair.detail.sourceUsed, ['fetchSpendTimeseries']);
+});
+
+test('the four pair readings never reach the pass/fail line', () => {
+  const dsl = TYPED
+    .replace('"fetchSpendCalendar"', '"fetchSpendTimeseries"')
+    .replace('[{month: $month}]', '[{range: "7d"}]')
+    .replace('Action([@Set($month, $event), @Run(daysQ)])', 'Action([@Set($month, $event)])');
+  const { fail, controlPair } = check(PAIR_A, dsl);
+  assert.deepEqual(four(controlPair), [false, false, true, false]);
   assert.deepEqual(fail, []);
 });
