@@ -7,6 +7,7 @@
 pub mod acl;
 pub mod admin;
 pub mod admission;
+pub mod agent_lifecycle;
 pub mod agent_proxy;
 pub mod agents;
 pub mod auth;

@@ -8,6 +8,7 @@ use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
+use crate::agent_lifecycle::AgentDeletionHook;
 use crate::prompt_context::PromptContextProvider;
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
@@ -33,6 +34,10 @@ pub struct AppState {
     /// agent runs. OSS default is a no-op; the EE composition root replaces it, the same way it
     /// replaces `routing_engine`. See `prompt_context` module docs.
     pub prompt_context: Arc<dyn PromptContextProvider>,
+    /// Fired once, best-effort, after an agent is deleted — a chance for enterprise-only,
+    /// agent-keyed state to clean itself up (e.g. freeing an L1A domain name for reuse). OSS
+    /// default is a no-op; the EE composition root replaces it. See `agent_lifecycle` module docs.
+    pub agent_deletion_hook: Arc<dyn AgentDeletionHook>,
     /// Tempo+Loki observability provider with DB-backed model pricing.
     /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
     /// addresses; queries fail soft when the stack is absent.
@@ -133,6 +138,8 @@ impl AppState {
         );
         let prompt_context: Arc<dyn PromptContextProvider> =
             Arc::new(crate::prompt_context::NoopPromptContextProvider);
+        let agent_deletion_hook: Arc<dyn AgentDeletionHook> =
+            Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook);
 
         let flow_config = FlowConfig {
             max_depth: config.flow_max_depth as u32,
@@ -224,6 +231,7 @@ impl AppState {
             config: Arc::new(config),
             routing_engine,
             prompt_context,
+            agent_deletion_hook,
             observability,
             github_svc,
             build_tx,
