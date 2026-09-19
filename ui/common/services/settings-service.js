@@ -27,39 +27,4 @@ const saveSettings = async (settings) => {
   });
 };
 
-// Organization-wide orchestrator rules (oss/server/src/orchestrator_rules.rs).
-// Read by any authenticated user; writes are superuser-only server-side, so a
-// non-admin simply never sees the editing controls.
-const fetchOrchestratorRules = async () => {
-  return fetchApi('/orchestrator/rules');
-};
-
-const createOrchestratorRule = async (rule) => {
-  return fetchApi('/orchestrator/rules', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(rule),
-  });
-};
-
-const updateOrchestratorRule = async (id, rule) => {
-  return fetchApi(`/orchestrator/rules/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(rule),
-  });
-};
-
-const deleteOrchestratorRule = async (id) => {
-  return fetchApi(`/orchestrator/rules/${id}`, { method: 'DELETE' });
-};
-
-registerAll({
-  fetchUserSearch,
-  fetchSettings,
-  saveSettings,
-  fetchOrchestratorRules,
-  createOrchestratorRule,
-  updateOrchestratorRule,
-  deleteOrchestratorRule,
-}, { replace: true });
+registerAll({ fetchUserSearch, fetchSettings, saveSettings }, { replace: true });

@@ -106,15 +106,6 @@ pub struct AgentSelection {
     pub agent_id: Uuid,
     pub agent_name: String,
     pub reasoning: String,
-    /// The model's own 0-100 judgement that the selected agent can complete the
-    /// task. Gated against the operator's bar in [`crate::selector`].
-    ///
-    /// Defaulted for resilience, not for leniency: a provider that drops the
-    /// field (or a non-strict-schema endpoint) yields 0, which fails the bar and
-    /// refuses the request. Defaulting to 100 would let a schema quirk silently
-    /// disable the policy.
-    #[serde(default)]
-    pub confidence: f64,
 }
 
 /// Skill with name + description, used in routing prompts

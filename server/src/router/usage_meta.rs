@@ -134,8 +134,10 @@ async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> (u64, u64, f64
 /// `is_refusal` tags the row so `SessionHistory::fetch` leaves it out of the next
 /// turn's reasoning context. The human still sees it in the transcript; the model
 /// does not see it as prior assistant output. Without this a single refusal makes
-/// the whole session refuse — it reads its own "No available agent can handle
-/// this request" back as the established behaviour of the conversation.
+/// the whole session refuse: the model reads its own refusal back and treats
+/// declining as the established behaviour of this conversation. Only a
+/// `DelegationPolicy` ever produces one, and only it can recognise one — this
+/// function is told, it does not decide.
 pub async fn insert_assistant_message(
     db: &PgPool,
     session_id: &str,

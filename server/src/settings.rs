@@ -1,17 +1,17 @@
 use axum::{
-    Json, Router, extract::State, http::StatusCode, response::IntoResponse,
+    Json, Router, extract::State, http::StatusCode, middleware, response::IntoResponse,
     routing::get,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Claims;
+use crate::auth::rbac::require_superuser;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
-    // Write route requires admin role — the middleware is applied here so the
-    // state is available when the router is merged into the app.
     let write_settings = Router::new()
-        .route("/settings", axum::routing::put(update_settings));
+        .route("/settings", axum::routing::put(update_settings))
+        .layer(middleware::from_fn(require_superuser));
 
     Router::new()
         .route("/settings", get(get_settings))
@@ -77,17 +77,9 @@ async fn get_settings(State(state): State<AppState>, _claims: Claims) -> impl In
 
 async fn update_settings(
     State(state): State<AppState>,
-    claims: Claims,
+    _claims: Claims,
     Json(body): Json<SettingsUpdate>,
 ) -> impl IntoResponse {
-    let identity: nasiko_auth::Identity = claims.into();
-    if !state.auth.can_manage_users(&identity).await {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "requires admin role"})),
-        )
-            .into_response();
-    }
     let result = sqlx::query_as::<_, Settings>(
         r#"INSERT INTO settings (
                id, router_model, default_provider, max_flow_depth, max_flow_fan_out,

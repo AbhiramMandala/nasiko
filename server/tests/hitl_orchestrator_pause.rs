@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 //  the orchestrator's
 // `OrchestratorEvent::AwaitingHuman` arm in `a2a_dispatch.rs`, exercised through the real
-// `/api/orchestrator/a2a` HTTP surface: a real LLM turn-0 tool-call response, a real
+// `/api/orchestrator/a2a` HTTP surface: a real LLM turn-0 streaming tool-call response, a real
 // sub-agent that pauses, and a real `hitl_requests` insert against the actual `0007_hitl.sql`
 // schema — not a unit test of the classifier in isolation.
 
@@ -52,43 +52,25 @@ async fn seed_running_agent(
     .expect("seed_running_agent")
 }
 
-/// A non-streaming OpenAI-compatible completion carrying one tool call — the shape
-/// `rig::providers::openai::completion::CompletionResponse` parses (mirrors
-/// `oss/bench-support/src/mock_llm.rs::flat_completion`, plus `tool_calls`).
-///
-/// Turn 0 used to stream (`use_non_streaming = turn_idx > 0`), and this fixture used to be an SSE
-/// delta chunk. The mandatory-delegation policy now forces EVERY turn non-streaming
-/// (`use_non_streaming = turn_idx > 0 || config.require_delegation`), because streamed text
-/// reaches the client as it is generated and a direct answer could not be withheld after the
-/// fact — so a real user turn, which is what these tests drive, never takes the streaming path
-/// any more.
-///
-/// `confidence` is mandatory in the tool schema and gated in `react_loop.rs::check_confidence`
-/// before the call is dispatched; without it here every one of these tests would get a
-/// `PolicyRejected` instead of the agent call it is asserting on.
-fn tool_call_completion(tool_name: &str, message: &str) -> String {
-    let arguments = json!({ "message": message, "confidence": 95 }).to_string();
-    json!({
-        "id": "mock-completion",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "mock-model",
+/// One OpenAI-compatible streaming SSE chunk carrying a single, complete tool call — the shape
+/// `rig-core-0.11.1`'s `send_compatible_streaming_request` recognizes as "entire tool call in one
+/// delta" (name and arguments both present in the same delta, per
+/// `providers/openai/streaming.rs`), so no follow-up chunk is needed. This is what turn 0 of
+/// `run_stream_inner` always goes through (`use_non_streaming = turn_idx > 0`) — the path the
+/// tracker's own Step 5 notes left without a black-box test (T5).
+fn streaming_tool_call_chunk(tool_name: &str, message: &str) -> String {
+    let arguments = json!({ "message": message }).to_string();
+    let chunk = json!({
         "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": null,
+            "delta": {
                 "tool_calls": [{
-                    "id": "call_0",
-                    "type": "function",
+                    "index": 0,
                     "function": { "name": tool_name, "arguments": arguments }
                 }]
-            },
-            "finish_reason": "tool_calls"
-        }],
-        "usage": { "prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20 }
-    })
-    .to_string()
+            }
+        }]
+    });
+    format!("data: {chunk}\n\n")
 }
 
 /// A non-streaming A2A `SendMessage` reply in the `input_required` state — the sub-agent's own
@@ -139,7 +121,7 @@ unsafe fn set_openai_env(base_url: &str) {
 }
 
 /// T6: full path through the real `/api/orchestrator/a2a` HTTP surface — a real (mocked) LLM
-/// turn-0 tool call, a real (mocked) sub-agent that pauses — asserts exactly one
+/// turn-0 streaming tool call, a real (mocked) sub-agent that pauses — asserts exactly one
 /// `hitl_requests` row is created with the sub-agent's own task/context ids, verifiably distinct
 /// from the outer turn's `context_id`, not just "a row exists".
 #[tokio::test]
@@ -173,7 +155,7 @@ async fn hitl_pause_persists_request_and_emits_awaiting_human_event() {
     let llm_mock = llm_mock_server
         .mock("POST", "/chat/completions")
         .with_status(200)
-        .with_body(tool_call_completion(&tool_name, "please open a PR"))
+        .with_body(streaming_tool_call_chunk(&tool_name, "please open a PR"))
         .expect(1)
         .create_async()
         .await;
@@ -341,7 +323,7 @@ async fn hitl_pause_duplicate_for_same_task_is_idempotent_not_a_failure() {
     let llm_mock = llm_mock_server
         .mock("POST", "/chat/completions")
         .with_status(200)
-        .with_body(tool_call_completion(&tool_name, "please open a PR"))
+        .with_body(streaming_tool_call_chunk(&tool_name, "please open a PR"))
         .expect(1)
         .create_async()
         .await;
@@ -470,7 +452,7 @@ async fn hitl_resolve_resumes_sub_agent_then_triggers_new_orchestrator_turn() {
         .mock("POST", "/chat/completions")
         .match_body(mockito::Matcher::Regex("please help with the repo".into()))
         .with_status(200)
-        .with_body(tool_call_completion(&tool_name, "please open a PR"))
+        .with_body(streaming_tool_call_chunk(&tool_name, "please open a PR"))
         .expect(1)
         .create_async()
         .await;

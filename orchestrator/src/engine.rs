@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::agent_registry;
 use crate::error::RouterError;
-use crate::guardrails::Guardrails;
 use crate::models::AgentCardSummary;
+use crate::policy::RoutingPolicy;
 use crate::providers::LLMProvider;
 use crate::reranker::Reranker;
 use crate::selector::AgentSelector;
@@ -22,15 +22,16 @@ use crate::vector_store::{EmbeddingCache, VectorStore};
 
 #[async_trait]
 pub trait RoutingEngine: Send + Sync {
-    /// `guardrails` is loaded by the caller rather than by `route()` itself, so
-    /// a caller making several `route()` calls for one request (one per MAF
-    /// workflow step, for example) can load it once and share it, instead of
-    /// every call paying for its own settings/rules read.
+    /// `policy` is resolved by the caller rather than by `route()` itself, so a
+    /// caller making several `route()` calls for one request (one per MAF
+    /// workflow step, for example) can resolve it once and share it, instead of
+    /// every call paying for its own lookup. A caller with no policy to apply
+    /// passes `None`, and routing is unconstrained.
     async fn route(
         &self,
         req: RouteRequest,
         pool: &PgPool,
-        guardrails: &Guardrails,
+        policy: Option<&dyn RoutingPolicy>,
     ) -> Result<RouteResult, RouterError>;
 }
 
@@ -117,7 +118,7 @@ impl RoutingEngine for OssRoutingEngine {
         &self,
         req: RouteRequest,
         pool: &PgPool,
-        guardrails: &Guardrails,
+        policy: Option<&dyn RoutingPolicy>,
     ) -> Result<RouteResult, RouterError> {
         let t0 = Instant::now();
 
@@ -186,7 +187,7 @@ impl RoutingEngine for OssRoutingEngine {
 
         let (selected_agent, fallback_used, reasoning, selector_usage) = match self
             .selector
-            .select_agent(&req.query, &history_msgs, &summaries, guardrails)
+            .select_agent(&req.query, &history_msgs, &summaries, policy)
             .await
         {
             Ok((sel, completion_result, hallucinated_fallback)) => {
@@ -204,13 +205,12 @@ impl RoutingEngine for OssRoutingEngine {
             // (provider down, unparseable response) where delegating to *some*
             // agent still beats erroring — but applying it here would hand the
             // request to an agent the model just said cannot do the job, which
-            // is precisely what the confidence bar is for.
-            Err(crate::selector::SelectorError::BelowConfidenceBar { best, required }) => {
+            // is precisely what a policy is for.
+            Err(crate::selector::SelectorError::PolicyRefused(reason)) => {
                 tracing::info!(
-                    best,
-                    required,
+                    %reason,
                     agents_considered = candidates.len(),
-                    "routing refused: no candidate met the confidence bar"
+                    "routing refused by the operator's policy"
                 );
                 // A refusal is still a routing decision: log it like any other,
                 // so it isn't invisible to /api/orchestrator/stats and FinOps —
@@ -236,12 +236,12 @@ impl RoutingEngine for OssRoutingEngine {
                         file_count: req.file_parts.len() as i32,
                         selection_token_usage_id: None,
                         success: false,
-                        error_message: Some(format!(
-                            "no candidate met the {required}% confidence bar (best {best:.0}%)"
-                        )),
+                        // The policy's own wording, relayed rather than
+                        // rephrased — this crate does not know what it checked.
+                        error_message: Some(reason.clone()),
                     },
                 );
-                return Err(RouterError::NoSuitableAgent { best, required });
+                return Err(RouterError::PolicyRefused { reason });
             }
             Err(e) => {
                 tracing::warn!(%e, "Stage 3 selector failed, using first candidate as fallback");

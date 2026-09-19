@@ -1,5 +1,4 @@
 use nasiko_orchestrator::AgentSelector;
-use nasiko_orchestrator::Guardrails;
 use nasiko_orchestrator::models::{AgentCardSummary, SkillSummary};
 use nasiko_orchestrator::providers::LLMProvider;
 use uuid::Uuid;
@@ -116,9 +115,7 @@ fn skill_summary_round_trips_through_json() {
 #[tokio::test]
 async fn select_agent_with_empty_list_returns_error() {
     let selector = make_selector();
-    let result = selector
-        .select_agent("some query", &[], &[], &Guardrails::default())
-        .await;
+    let result = selector.select_agent("some query", &[], &[], None).await;
     assert!(
         result.is_err(),
         "select_agent should return Err when no agents provided"
@@ -172,12 +169,7 @@ async fn select_agent_flags_hallucinated_id_as_fallback_used() {
     let selector = AgentSelector::new(provider, "test-model".to_string());
 
     let (selection, _usage, hallucinated_fallback) = selector
-        .select_agent(
-            "do the thing",
-            &[],
-            std::slice::from_ref(&real_agent),
-            &Guardrails::default(),
-        )
+        .select_agent("do the thing", &[], std::slice::from_ref(&real_agent), None)
         .await
         .expect("a hallucinated agent_id should resolve via fallback, not error");
 
@@ -230,12 +222,7 @@ async fn select_agent_with_live_llm_returns_valid_selection() {
     ];
 
     let result = selector
-        .select_agent(
-            "write a Rust function",
-            &[],
-            &agents,
-            &Guardrails::default(),
-        )
+        .select_agent("write a Rust function", &[], &agents, None)
         .await;
     assert!(result.is_ok(), "expected Ok, got {result:?}");
     let (selection, _usage, _hallucinated_fallback) = result.unwrap();

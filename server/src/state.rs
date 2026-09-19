@@ -8,8 +8,6 @@ use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
-use crate::agent_lifecycle::AgentDeletionHook;
-use crate::prompt_context::SwappablePromptContext;
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
 use nasiko_config::Config;
@@ -30,17 +28,11 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
-    /// Supplemental per-agent prompt context (e.g. admin-authored knowledge) added before an
-    /// agent runs. OSS default is a no-op; the EE composition root installs the real
-    /// implementation through this cell (`SwappablePromptContext::install`, not a plain
-    /// reassignment) so background tasks that already hold an earlier `AppState` clone (e.g. the
-    /// HITL resume dispatcher, spawned before the EE composition root runs) see the swap too —
-    /// see `prompt_context` module docs for why a plain `Arc<dyn Trait>` field can't do this.
-    pub prompt_context: Arc<SwappablePromptContext>,
-    /// Fired once, best-effort, after an agent is deleted — a chance for enterprise-only,
-    /// agent-keyed state to clean itself up (e.g. freeing a name it reserved for reuse). OSS
-    /// default is a no-op; the EE composition root replaces it. See `agent_lifecycle` module docs.
-    pub agent_deletion_hook: Arc<dyn AgentDeletionHook>,
+    /// Where both orchestrators read the operator's policy from — the chat-path
+    /// delegation policy and the routing engine's bar and prompt text. OSS wires
+    /// `NoOrchestratorPolicy`, which imposes nothing; the EE composition root
+    /// replaces it, the same way it replaces `routing_engine`.
+    pub orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource>,
     /// Tempo+Loki observability provider with DB-backed model pricing.
     /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
     /// addresses; queries fail soft when the stack is absent.
@@ -139,11 +131,8 @@ impl AppState {
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
             nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone()),
         );
-        let prompt_context = Arc::new(SwappablePromptContext::new(Arc::new(
-            crate::prompt_context::NoopPromptContextProvider,
-        )));
-        let agent_deletion_hook: Arc<dyn AgentDeletionHook> =
-            Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook);
+        let orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource> =
+            Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
 
         let flow_config = FlowConfig {
             max_depth: config.flow_max_depth as u32,
@@ -234,8 +223,7 @@ impl AppState {
             genai_metrics,
             config: Arc::new(config),
             routing_engine,
-            prompt_context,
-            agent_deletion_hook,
+            orchestrator_policy,
             observability,
             github_svc,
             build_tx,

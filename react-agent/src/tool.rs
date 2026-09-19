@@ -7,6 +7,7 @@ use serde_json::json;
 
 use crate::a2a::{A2aClient, A2aClientError, AgentStreamEvent, PauseInfo, SendOutcome};
 use crate::events::OrchestratorEvent;
+use crate::policy::DelegationPolicy;
 use crate::registry::AgentInfo;
 
 /// Wraps a remote A2A agent as a Rig `Tool` so the orchestrator LLM can invoke it.
@@ -21,6 +22,9 @@ pub struct A2aTool {
     /// File parts from the user's upload, forwarded to the agent alongside
     /// the LLM-generated text message. Pre-serialized as JSON values.
     file_parts: Vec<serde_json::Value>,
+    /// Operator policy, which may require extra arguments on this tool. `None`
+    /// leaves the schema as the loop itself defines it.
+    policy: Option<Arc<dyn DelegationPolicy>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,31 +32,13 @@ pub struct A2aToolArgs {
     pub message: String,
     #[serde(default)]
     pub context_id: Option<String>,
-    /// The model's own 0-100 judgement that this agent can complete this task.
-    ///
-    /// Declared required in the JSON schema but `Option` here: enforcement lives
-    /// in `react_loop.rs`, which inspects the raw arguments BEFORE the call is
-    /// dispatched. Making it non-optional would turn a missing score into a
-    /// serde deserialization failure that surfaces as an opaque tool error,
-    /// rather than the explicit, model-readable rejection the policy needs.
-    ///
-    /// Deserialized with the same number-or-numeric-string leniency as
-    /// `react_loop.rs`'s own confidence gate (`parse_lenient_number`): a model
-    /// that sends `"confidence": "85"` clears that gate, and without matching
-    /// leniency here the call would fail this deserialization step instead —
-    /// an opaque JSON error in place of the successful call the gate just
-    /// approved, for the exact input shape the gate exists to tolerate.
-    #[serde(default, deserialize_with = "deserialize_lenient_confidence")]
-    pub confidence: Option<f64>,
 }
 
-fn deserialize_lenient_confidence<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(value.and_then(|v| crate::react_loop::parse_lenient_number(&v)))
-}
+// No `deny_unknown_fields`, deliberately: a `DelegationPolicy` may add its own
+// required arguments to this tool's schema (see `tool_schema_extra`), and it
+// reads them off the RAW arguments before the call is dispatched. They are not
+// this struct's business, and refusing to deserialize them here would turn a
+// policy argument into an opaque tool failure.
 
 #[derive(Debug, thiserror::Error)]
 pub enum A2aToolError {
@@ -86,7 +72,60 @@ impl A2aTool {
             client,
             progress: None,
             file_parts: vec![],
+            policy: None,
         }
+    }
+
+    /// Apply the operator's delegation policy to this tool's schema.
+    ///
+    /// Takes the `Option` the config already holds rather than a bare policy, so
+    /// the unconfigured case is one call site fewer to get wrong: every caller
+    /// passes `config.policy.clone()` unconditionally.
+    pub fn with_policy(mut self, policy: Option<Arc<dyn DelegationPolicy>>) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// The tool's JSON-Schema parameters, with any arguments the policy demands
+    /// merged in.
+    ///
+    /// `message` and `context_id` are the loop's own and are never overwritten:
+    /// a policy that could rewrite the whole schema could break dispatch, so it
+    /// only ever adds.
+    fn parameters_schema(&self) -> serde_json::Value {
+        let mut properties = serde_json::Map::new();
+        properties.insert(
+            "message".to_string(),
+            json!({
+                "type": "string",
+                "description": "The query or instruction to send to this agent"
+            }),
+        );
+        properties.insert(
+            "context_id".to_string(),
+            json!({
+                "type": "string",
+                "description": "Optional conversation context ID for multi-turn interaction"
+            }),
+        );
+        let mut required = vec!["message".to_string()];
+
+        if let Some(extra) = self.policy.as_ref().and_then(|p| p.tool_schema_extra()) {
+            for (name, schema) in extra.properties {
+                properties.entry(name).or_insert(schema);
+            }
+            for name in extra.required {
+                if !required.contains(&name) {
+                    required.push(name);
+                }
+            }
+        }
+
+        json!({
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        })
     }
 
     /// Attach file parts from the user's upload to forward to the agent.
@@ -156,26 +195,7 @@ impl Tool for A2aTool {
         ToolDefinition {
             name: self.name(),
             description,
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "The query or instruction to send to this agent"
-                    },
-                    "context_id": {
-                        "type": "string",
-                        "description": "Optional conversation context ID for multi-turn interaction"
-                    },
-                    "confidence": {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 100,
-                        "description": "How confident you are (0-100) that THIS agent can complete THIS task, based on its description and skills. Required. Calls below the platform's configured threshold are rejected and never reach the agent."
-                    }
-                },
-                "required": ["message", "confidence"]
-            }),
+            parameters: self.parameters_schema(),
         }
     }
 
@@ -364,40 +384,6 @@ impl A2aTool {
 mod tests {
     use super::*;
 
-    // ── A2aToolArgs::confidence deserialization ─────────────────────────────
-    // Regression for a gate/dispatch mismatch: react_loop.rs::check_confidence
-    // tolerates a numeric-string confidence ("85") before this struct is ever
-    // built, so this struct must tolerate the exact same shape — otherwise a
-    // call the gate just approved fails here instead, with an opaque JSON
-    // error in place of the successful call the gate promised.
-
-    #[test]
-    fn confidence_accepts_a_json_number() {
-        let args: A2aToolArgs =
-            serde_json::from_str(r#"{"message":"hi","confidence":85}"#).unwrap();
-        assert_eq!(args.confidence, Some(85.0));
-    }
-
-    #[test]
-    fn confidence_accepts_a_numeric_string() {
-        let args: A2aToolArgs =
-            serde_json::from_str(r#"{"message":"hi","confidence":"85"}"#).unwrap();
-        assert_eq!(args.confidence, Some(85.0));
-    }
-
-    #[test]
-    fn confidence_absent_is_none_not_an_error() {
-        let args: A2aToolArgs = serde_json::from_str(r#"{"message":"hi"}"#).unwrap();
-        assert_eq!(args.confidence, None);
-    }
-
-    #[test]
-    fn confidence_non_numeric_string_degrades_to_none_not_an_error() {
-        let args: A2aToolArgs =
-            serde_json::from_str(r#"{"message":"hi","confidence":"very sure"}"#).unwrap();
-        assert_eq!(args.confidence, None);
-    }
-
     fn test_agent(endpoint: &str) -> AgentInfo {
         AgentInfo {
             id: "agent-under-test".to_string(),
@@ -437,7 +423,6 @@ mod tests {
             .call(A2aToolArgs {
                 message: "hi".into(),
                 context_id: None,
-                confidence: Some(100.0),
             })
             .await;
 
@@ -478,7 +463,6 @@ mod tests {
             .call(A2aToolArgs {
                 message: "hi".into(),
                 context_id: Some("sent-ctx".into()),
-                confidence: Some(100.0),
             })
             .await;
 
@@ -522,7 +506,6 @@ mod tests {
             .call(A2aToolArgs {
                 message: "hi".into(),
                 context_id: Some("sent-ctx".into()),
-                confidence: Some(100.0),
             })
             .await;
 
@@ -560,7 +543,6 @@ mod tests {
         let args = serde_json::to_string(&A2aToolArgs {
             message: "hi".into(),
             context_id: Some("sent-ctx".into()),
-            confidence: Some(100.0),
         })
         .unwrap();
         let result = toolset.call(&tool_name, args).await;
@@ -610,7 +592,6 @@ mod tests {
             .call(A2aToolArgs {
                 message: "hi".into(),
                 context_id: None,
-                confidence: Some(100.0),
             })
             .await;
 
@@ -667,7 +648,6 @@ mod tests {
             .call(A2aToolArgs {
                 message: "hi".into(),
                 context_id: Some("sent-ctx".into()),
-                confidence: Some(100.0),
             })
             .await;
 

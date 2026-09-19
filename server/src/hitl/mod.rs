@@ -1150,12 +1150,12 @@ async fn trigger_new_orchestrator_turn(
             // under a role the transcript does not render.
             transcript_role: crate::router::a2a_dispatch::INTERNAL_TRANSCRIPT_ROLE,
             file_parts: Vec::new(),
-            // Exempt: `reasoning_query` above explicitly instructs the model NOT to
-            // call any agent again, because the call this turn reports on already
-            // succeeded in an earlier turn. Enforcing delegation here would see a
-            // turn with no agent call and replace the agent's own result with the
-            // "no agent available" refusal — breaking every HITL resume.
-            enforce_delegation: false,
+            // `reasoning_query` above explicitly instructs the model NOT to call any
+            // agent again, because the call this turn reports on already succeeded in
+            // an earlier turn. A policy that demands an agent call per turn would see
+            // a turn with no call and replace the agent's own result with a refusal —
+            // breaking every HITL resume — so it is told what kind of turn this is.
+            kind: crate::orchestrator_policy::TurnKind::Continuation,
         },
     )
     .await;

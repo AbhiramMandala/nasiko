@@ -72,7 +72,7 @@ fn oss_routing_engine_new_with_custom_config() {
 #[tokio::test]
 #[ignore = "requires live DB and LLM API"]
 async fn route_returns_error_when_no_agents_in_db() {
-    use nasiko_orchestrator::{Guardrails, RouteRequest, RoutingEngine};
+    use nasiko_orchestrator::{RouteRequest, RoutingEngine};
 
     let db_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/nasiko".to_string());
@@ -95,7 +95,7 @@ async fn route_returns_error_when_no_agents_in_db() {
     };
 
     // With no running agents in DB, should return NoAgentsAvailable
-    let result = engine.route(req, &pool, &Guardrails::default()).await;
+    let result = engine.route(req, &pool, None).await;
     // Either succeeds (if agents exist) or fails with NoAgentsAvailable
     match result {
         Ok(_) | Err(nasiko_orchestrator::RouterError::NoAgentsAvailable) => {}

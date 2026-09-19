@@ -14,13 +14,14 @@ pub enum OrchestratorEvent {
         agent: String,
         message: String,
         turn: usize,
-        /// The model's own 0-100 judgement that this agent can do this task, as
-        /// it passed the confidence gate. Carried so a successful delegation is
-        /// as inspectable as a rejected one — without it the score was read,
-        /// checked and discarded, and the only way to see a score was to have a
-        /// call fail. `None` when no bar is configured (nothing was demanded, so
-        /// there is nothing to report).
-        confidence: Option<f64>,
+        /// Whatever score the delegation policy attached to this call
+        /// (`DelegationPolicy::call_score`). Deliberately unnamed as to what it
+        /// measures — that is the policy's business, and this crate only relays
+        /// it. Carried so a permitted delegation is as inspectable as a blocked
+        /// one: without it a score was read, checked and discarded, and the only
+        /// way to see one was to have a call fail. `None` when no policy is
+        /// configured, or when it asked for no such judgement.
+        policy_score: Option<f64>,
     },
 
     /// Agent returned a result.
@@ -69,12 +70,12 @@ pub enum OrchestratorEvent {
         context_compacted: bool,
     },
 
-    /// A call was blocked before it reached the agent — either the confidence
-    /// bar (Settings → Orchestrator) or the flow guard's cascade limits
-    /// (cycle, depth, budget, timeout; Settings → Flow limits). `kind` says
-    /// which, so a consumer doesn't have to pattern-match `reason`'s prose to
-    /// tell them apart — the UI used to do exactly that, which meant a future
-    /// wording change to either message could silently misclassify.
+    /// A call was blocked before it reached the agent — either by the operator's
+    /// delegation policy or by the flow guard's cascade limits (cycle, depth,
+    /// budget, timeout; Settings → Flow limits). `kind` says which, so a
+    /// consumer doesn't have to pattern-match `reason`'s prose to tell them
+    /// apart — the UI used to do exactly that, which meant a wording change to
+    /// either message could silently misclassify.
     PolicyRejected {
         agent: String,
         reason: String,
@@ -111,8 +112,8 @@ pub enum OrchestratorEvent {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyRejectionKind {
-    /// The orchestrator's confidence bar.
-    Confidence,
+    /// The operator's delegation policy (`DelegationPolicy::check_tool_call`).
+    Delegation,
     /// The flow guard's cascade limits.
     FlowGuard,
 }

@@ -3,8 +3,8 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::guardrails::Guardrails;
 use crate::models::*;
+use crate::policy::{RoutingPolicy, SelectionSchemaExtra};
 use crate::providers::{CompletionResult, LLMProvider, ProviderError};
 
 /// Stage 3: LLM-based final agent selection using structured output.
@@ -28,20 +28,20 @@ impl AgentSelector {
     /// The returned `bool` is `true` when the model named an agent id that
     /// doesn't exist in `agents` and this substituted the first candidate in
     /// its place — the caller's `fallback_used` should follow it, since the
-    /// returned `confidence` is the score the model gave the hallucinated
-    /// pick, not the substitute.
+    /// selection the policy approved was the hallucinated pick, not the
+    /// substitute.
     pub async fn select_agent(
         &self,
         query: &str,
         conversation_history: &[ConversationMessage],
         agents: &[AgentCardSummary],
-        guardrails: &Guardrails,
+        policy: Option<&dyn RoutingPolicy>,
     ) -> Result<(AgentSelection, CompletionResult, bool), SelectorError> {
         if agents.is_empty() {
             return Err(SelectorError::NoAgentsAvailable);
         }
 
-        let system_prompt = self.build_system_prompt(agents, guardrails);
+        let system_prompt = self.build_system_prompt(agents, policy);
         let user_prompt = self.build_user_prompt(query, conversation_history);
 
         let request = ChatCompletionRequest {
@@ -63,20 +63,7 @@ impl AgentSelector {
                 json_schema: JsonSchema {
                     name: "agent_selection".to_string(),
                     strict: Some(true),
-                    schema: json!({
-                        "type": "object",
-                        "properties": {
-                            "agent_id":   { "type": "string", "description": "UUID of the selected agent" },
-                            "agent_name": { "type": "string", "description": "Name of the selected agent" },
-                            "reasoning":  { "type": "string", "description": "Why this agent was selected" },
-                            "confidence": {
-                                "type": "number",
-                                "description": "0-100: how confident you are that THIS agent can complete THIS task, judged from its description and skills. Be honest — a low score is the correct answer when nothing fits."
-                            }
-                        },
-                        "required": ["agent_id", "agent_name", "reasoning", "confidence"],
-                        "additionalProperties": false
-                    }),
+                    schema: selection_schema(policy),
                 },
             }),
             stream_options: None,
@@ -84,18 +71,22 @@ impl AgentSelector {
 
         let result = self.provider.chat_completion(&request).await?;
 
-        let selection: AgentSelection = serde_json::from_str(&result.content)
+        // Parsed twice on purpose: once as the raw object the policy judges —
+        // it reads the fields it asked for, which this crate has no reason to
+        // know the shape of — and once as the pick the engine acts on.
+        let raw: serde_json::Value = serde_json::from_str(&result.content)
+            .map_err(|e| SelectorError::ParseError(e.to_string()))?;
+        let selection: AgentSelection = serde_json::from_value(raw.clone())
             .map_err(|e| SelectorError::ParseError(e.to_string()))?;
 
-        // The confidence bar is checked BEFORE the hallucination fallback below:
-        // a selection the model itself rates as a poor match must be refused
-        // outright, not quietly redirected to `agents[0]`, which is how a
-        // refusal used to turn into an arbitrary pick.
-        if selection.confidence < f64::from(guardrails.min_confidence) {
-            return Err(SelectorError::BelowConfidenceBar {
-                best: selection.confidence,
-                required: guardrails.min_confidence,
-            });
+        // The policy is consulted BEFORE the hallucination fallback below: a
+        // selection it refuses must be refused outright, not quietly redirected
+        // to `agents[0]`, which is how a refusal used to turn into an arbitrary
+        // pick.
+        if let Some(p) = policy
+            && let Err(reason) = p.check_selection(&raw)
+        {
+            return Err(SelectorError::PolicyRefused(reason));
         }
 
         // Validate agent UUID exists in the candidate list; fall back to first if hallucinated.
@@ -110,7 +101,6 @@ impl AgentSelector {
                         "LLM selected unknown agent '{}', falling back to '{}'",
                         selection.agent_name, first.name
                     ),
-                    confidence: selection.confidence,
                 },
                 result,
                 true,
@@ -142,7 +132,11 @@ impl AgentSelector {
             .collect())
     }
 
-    fn build_system_prompt(&self, agents: &[AgentCardSummary], guardrails: &Guardrails) -> String {
+    fn build_system_prompt(
+        &self,
+        agents: &[AgentCardSummary],
+        policy: Option<&dyn RoutingPolicy>,
+    ) -> String {
         let list: Vec<String> = agents
             .iter()
             .map(|a| {
@@ -166,40 +160,19 @@ impl AgentSelector {
             })
             .collect();
 
-        let rules = guardrails
-            .rules_prompt
-            .as_deref()
-            .map(|r| format!("\n\n{r}"))
-            .unwrap_or_default();
+        // Both halves come from the policy already worded, so this crate never
+        // holds an operator-facing sentence it cannot itself enforce.
+        let prefix = policy.map(|p| p.prompt_prefix()).unwrap_or_default();
+        let closing = policy
+            .and_then(|p| p.closing_instruction())
+            .unwrap_or_else(|| DEFAULT_CLOSING_INSTRUCTION.to_string());
 
-        // Naming the cutoff is skipped when it is 0: "a score below 0 means
-        // the request is refused" is impossible on a 0-100 scale. This exact
-        // incoherent phrasing was already found, on the sibling chat-path
-        // prompt, to make a model stop calibrating and always answer 100 —
-        // see the identical guard in
-        // oss/react-agent/src/react_loop.rs::build_delegation_policy.
-        let threshold = if guardrails.min_confidence > 0 {
-            format!(
-                " — a score below {} means the request is refused, which is the correct outcome \
-                 when nothing fits.",
-                guardrails.min_confidence
-            )
-        } else {
-            ".".to_string()
-        };
-
-        // "choose the closest option" is deliberately gone: paired with a
-        // confidence bar it is contradictory advice, and it is the instruction
-        // that made this selector always return *something*.
         format!(
             "You are a routing assistant. Select the best agent to handle the user's query.{}\n\n\
-             Available agents:\n{}\n\n\
-             Select the most specialized agent that can actually do the task, and report your \
-             honest confidence from 0 to 100. If no agent genuinely fits, say so with a low \
-             confidence rather than picking the closest one{}",
-            rules,
+             Available agents:\n{}\n\n{}",
+            prefix,
             list.join("\n\n"),
-            threshold
+            closing
         )
     }
 
@@ -217,6 +190,58 @@ impl AgentSelector {
         prompt.push_str(&format!("Current query: {}", query));
         prompt
     }
+}
+
+/// What the selector tells the model to do when no policy replaces it.
+///
+/// Deliberately permissive: with no bar to clear, refusing to pick is worse than
+/// picking imperfectly, because nothing downstream can act on the refusal.
+const DEFAULT_CLOSING_INSTRUCTION: &str =
+    "Select the most specialized agent. If no perfect match, choose the closest option.";
+
+/// The structured-output schema for one selection: what the engine needs back,
+/// plus whatever the policy asked the model to judge its own pick on.
+fn selection_schema(policy: Option<&dyn RoutingPolicy>) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "agent_id".to_string(),
+        json!({ "type": "string", "description": "UUID of the selected agent" }),
+    );
+    properties.insert(
+        "agent_name".to_string(),
+        json!({ "type": "string", "description": "Name of the selected agent" }),
+    );
+    properties.insert(
+        "reasoning".to_string(),
+        json!({ "type": "string", "description": "Why this agent was selected" }),
+    );
+    let mut required = vec![
+        "agent_id".to_string(),
+        "agent_name".to_string(),
+        "reasoning".to_string(),
+    ];
+
+    if let Some(SelectionSchemaExtra {
+        properties: extra,
+        required: extra_required,
+    }) = policy.and_then(|p| p.selection_schema_extra())
+    {
+        for (name, schema) in extra {
+            properties.entry(name).or_insert(schema);
+        }
+        for name in extra_required {
+            if !required.contains(&name) {
+                required.push(name);
+            }
+        }
+    }
+
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,8 +293,11 @@ fn extract_skills(skills_json: serde_json::Value) -> Vec<super::models::SkillSum
 pub enum SelectorError {
     #[error("no agents available")]
     NoAgentsAvailable,
-    #[error("best candidate scored {best:.0}%, below the required {required}%")]
-    BelowConfidenceBar { best: f64, required: u8 },
+    /// The caller's `RoutingPolicy` refused the model's pick. The string is the
+    /// policy's own wording, relayed rather than rephrased — this crate has no
+    /// idea what the policy was checking for.
+    #[error("the routing policy refused this selection: {0}")]
+    PolicyRefused(String),
     #[error("provider error: {0}")]
     Provider(#[from] ProviderError),
     #[error("failed to parse selection: {0}")]
@@ -315,32 +343,106 @@ mod system_prompt_tests {
         )
     }
 
-    fn guardrails(min_confidence: u8) -> Guardrails {
-        Guardrails {
-            min_confidence,
-            rules_prompt: None,
+    /// Answers every hook with something recognisable, so the assertions below
+    /// are about the WIRING rather than about any particular policy: what a
+    /// policy decides belongs to whatever implementation is plugged in, but the
+    /// fact that its text and its refusal actually reach the model and the
+    /// caller belongs to this crate.
+    #[derive(Debug)]
+    struct StubPolicy;
+
+    impl RoutingPolicy for StubPolicy {
+        fn prompt_prefix(&self) -> String {
+            "\n\n## Stub Rules\n\n- Be stubby.".to_string()
+        }
+        fn closing_instruction(&self) -> Option<String> {
+            Some("Score it honestly.".to_string())
+        }
+        fn selection_schema_extra(&self) -> Option<SelectionSchemaExtra> {
+            let mut properties = serde_json::Map::new();
+            properties.insert("stub_score".to_string(), json!({ "type": "number" }));
+            Some(SelectionSchemaExtra {
+                properties,
+                required: vec!["stub_score".to_string()],
+            })
+        }
+        fn check_selection(&self, selection: &serde_json::Value) -> Result<(), String> {
+            match selection.get("stub_score").and_then(|v| v.as_f64()) {
+                Some(v) if v >= 50.0 => Ok(()),
+                _ => Err("the stub refused this pick".to_string()),
+            }
         }
     }
 
-    /// Regression: at a bar of 0, "a score below 0 means the request is
-    /// refused" is impossible on a 0-100 scale — the same bug already found
-    /// and fixed on the chat path
-    /// (`oss/react-agent/src/react_loop.rs::a_zero_bar_emits_no_threshold_language`),
-    /// where the incoherent sentence was observed to make the model stop
-    /// calibrating and always answer 100.
+    /// With no policy the selector must behave exactly as it did before the seam
+    /// existed — same instruction, and nothing asked for that nothing reads.
     #[test]
-    fn a_zero_bar_emits_no_threshold_language() {
-        let out = selector().build_system_prompt(&[], &guardrails(0));
-        assert!(
-            !out.contains("below 0"),
-            "a zero bar must not produce impossible instructions: {out}"
+    fn no_policy_keeps_the_built_in_instruction() {
+        let out = selector().build_system_prompt(&[], None);
+        assert!(out.ends_with(DEFAULT_CLOSING_INSTRUCTION), "{out}");
+    }
+
+    /// The schema an unconfigured deployment sends, pinned against the literal
+    /// this crate shipped before the seam existed — not against a restatement
+    /// of it. Asserting only the field names would pass while a description,
+    /// `additionalProperties`, or the ordering silently drifted, and this is a
+    /// `strict` schema: every one of those is part of the contract the provider
+    /// enforces.
+    #[test]
+    fn no_policy_sends_the_pre_seam_schema_verbatim() {
+        assert_eq!(
+            selection_schema(None),
+            json!({
+                "type": "object",
+                "properties": {
+                    "agent_id":   { "type": "string", "description": "UUID of the selected agent" },
+                    "agent_name": { "type": "string", "description": "Name of the selected agent" },
+                    "reasoning":  { "type": "string", "description": "Why this agent was selected" }
+                },
+                "required": ["agent_id", "agent_name", "reasoning"],
+                "additionalProperties": false
+            })
         );
     }
 
-    /// A real bar is still stated, so the model knows what gets rejected.
+    /// A policy owns the wording at both ends: its own preamble text, and the
+    /// closing instruction it replaces the built-in one with.
     #[test]
-    fn a_real_bar_is_still_named() {
-        let out = selector().build_system_prompt(&[], &guardrails(80));
-        assert!(out.contains("below 80"));
+    fn a_policy_supplies_both_halves_of_the_prompt() {
+        let out = selector().build_system_prompt(&[], Some(&StubPolicy));
+
+        assert!(out.contains("- Be stubby."), "{out}");
+        assert!(out.ends_with("Score it honestly."), "{out}");
+        assert!(
+            !out.contains(DEFAULT_CLOSING_INSTRUCTION),
+            "a policy's instruction replaces the built-in one, not argues with it:\n{out}"
+        );
+    }
+
+    /// The engine's own three fields are never overwritten, and the policy's are
+    /// added — it can extend the schema, not rewrite it.
+    #[test]
+    fn a_policy_adds_to_the_selection_schema_without_replacing_it() {
+        let schema = selection_schema(Some(&StubPolicy));
+
+        assert!(schema["properties"]["agent_id"].is_object());
+        assert!(schema["properties"]["stub_score"].is_object());
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("agent_id")));
+        assert!(required.contains(&json!("stub_score")));
+    }
+
+    /// The refusal reaches the caller as the policy worded it, not rephrased.
+    #[test]
+    fn a_refused_selection_relays_the_policy_reason_verbatim() {
+        let err = StubPolicy
+            .check_selection(&json!({ "stub_score": 10 }))
+            .expect_err("10 is below the stub's own bar");
+        assert_eq!(err, "the stub refused this pick");
+        assert!(
+            SelectorError::PolicyRefused(err.clone())
+                .to_string()
+                .contains("the stub refused this pick")
+        );
     }
 }

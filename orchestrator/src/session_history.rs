@@ -17,14 +17,15 @@ impl SessionHistory {
         // Take the LATEST `limit` messages, then restore chronological order —
         // `ORDER BY timestamp ASC LIMIT n` would pin the window to the oldest
         // messages and never advance in long sessions.
-        // `orchestrator_refusal` rows are excluded from reasoning context on
-        // purpose. A refusal ("No available agent can handle this request…") is
-        // persisted so the human still sees it in the transcript, but feeding it
-        // back as prior assistant output teaches the model that refusing is what
-        // this conversation does — observed live as a session that refused once
-        // and then refused every following turn, including ones a deployed agent
-        // plainly covered. The row stays in `chat_messages`; it just never
-        // becomes part of the next turn's prompt.
+        // Rows tagged `orchestrator_refusal` are excluded from reasoning context
+        // on purpose. A refusal is persisted so the human still sees it in the
+        // transcript, but feeding it back as prior assistant output teaches the
+        // model that refusing is what this conversation does — observed live as a
+        // session that refused once and then refused every following turn,
+        // including ones a deployed agent plainly covered. The row stays in
+        // `chat_messages`; it just never becomes part of the next turn's prompt.
+        // Nothing here writes that tag: it is set by whatever policy produced the
+        // refusal, and with no policy configured no row ever carries it.
         let mut messages: Vec<ChatMessage> = sqlx::query_as::<_, (String, String)>(
             "SELECT role, content FROM chat_messages \
              WHERE session_id = $1 \

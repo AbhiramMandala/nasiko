@@ -369,11 +369,14 @@ class AgentSteps extends HTMLElement {
         });
         row.dataset.agent = d.agent;
         if (d.message) this.#addSection(row, 'Request', d.message, { markdown: true });
-        // The score this delegation cleared the confidence bar with. Shown as a
-        // plain section rather than a badge so it reads the same as Request /
-        // Output and needs no new styling. Absent when no bar is configured.
-        if (d.confidence != null) {
-          this.#addSection(row, 'Confidence', `${Math.round(d.confidence)}%`);
+        // Whatever score the operator's delegation policy attached to this
+        // call. Labelled for where it came from rather than for what it
+        // measures — that is the policy's business, and this component only
+        // relays it. A plain section rather than a badge so it reads the same as
+        // Request / Output and needs no new styling. Absent when no policy is
+        // configured, which is every open-source deployment.
+        if (d.policy_score != null) {
+          this.#addSection(row, 'Policy score', `${Math.round(d.policy_score)}%`);
         }
         this.#setLabel(`Calling ${d.agent}…`);
         break;
@@ -436,16 +439,16 @@ class AgentSteps extends HTMLElement {
       case 'policy_rejected': {
         // Two different gates emit this event, and saying "flow policy" for both
         // sent anyone debugging a blocked call to the flow limits (depth,
-        // fan-out, token budget) when the real cause was the orchestrator's
-        // confidence bar, which lives on a different settings page entirely.
+        // fan-out, token budget) when the real cause was the operator's
+        // delegation policy, which is configured somewhere else entirely.
         // `d.kind` is the server's own discriminant (`PolicyRejectionKind`) —
         // reading it beats guessing from `d.reason`'s prose, which broke the
         // moment either gate's wording changed with nothing to catch it.
         const row = this.#addRow(`policy:${this.#rows.size}`, {
           kind: 'policy',
           title: d.agent,
-          subtitle: d.kind === 'confidence'
-            ? 'blocked — below the confidence bar'
+          subtitle: d.kind === 'delegation'
+            ? 'blocked by the delegation policy'
             : 'blocked by flow policy',
         });
         if (d.reason) this.#addSection(row, 'Reason', d.reason);

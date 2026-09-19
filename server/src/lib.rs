@@ -26,6 +26,7 @@ pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
 pub mod openapi;
+pub mod orchestrator_policy;
 pub mod pool;
 pub mod rate_limit;
 pub mod registry_a2a;
@@ -191,11 +192,8 @@ where
     // `protected`'s outer layer), no per-route role check needed.
     let pool_routes = Router::new().nest("/pool", pool::degradable_router());
 
-    // User management: admin role or superuser.
-    let user_routes = user_router.layer(middleware::from_fn_with_state(
-        state.clone(),
-        auth::rbac::require_user_manager,
-    ));
+    // User management: superuser only
+    let user_routes = user_router.layer(middleware::from_fn(auth::rbac::require_superuser));
 
     // Agent deploy MUTATIONS (upload, restart-deployment, update/rollback):
     // deployer+ only. Reads are in `degradable_routes` below.

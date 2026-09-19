@@ -8,12 +8,12 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
+use nasiko_orchestrator::RouteRequest;
 use nasiko_orchestrator::maf::{
     llm::LlmClient,
     planner::{self, AgentInfo as PlannerAgentInfo},
     types::{MafDefinition, MafStep},
 };
-use nasiko_orchestrator::{Guardrails, RouteRequest};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -433,10 +433,10 @@ async fn create_maf(
         return bad_request("steps must not be empty");
     }
 
-    // Resolve any steps that lack an agent_id via the routing engine. Loaded
-    // once here rather than once per step inside route(): the confidence bar
-    // and org rules are the same for every step of this request.
-    let guardrails = Guardrails::load(&state.db).await;
+    // Resolve any steps that lack an agent_id via the routing engine. Resolved
+    // once here rather than once per step inside route(): the operator's policy
+    // is the same for every step of this request.
+    let policy = state.orchestrator_policy.routing_policy(&state.db).await;
     let mut resolved_steps: Vec<MafStep> = Vec::with_capacity(req.steps.len());
     for (idx, step) in req.steps.into_iter().enumerate() {
         if step.task_description.trim().is_empty() {
@@ -474,7 +474,7 @@ async fn create_maf(
             // failure and fall through to the catalog fallback below.
             let routed = match state
                 .routing_engine
-                .route(route_req, &state.db, &guardrails)
+                .route(route_req, &state.db, policy.as_deref())
                 .await
             {
                 Ok(result) => match result.agent.url {
@@ -487,14 +487,13 @@ async fn create_maf(
                 // catalog pick below: that fallback exists for "the router could
                 // not decide", and using it here would assign the step to an
                 // agent the router just judged unable to do it — reinstating the
-                // exact behaviour the confidence bar removes. Fail the step and
-                // name the bar, so the operator can lower it or write a better
-                // task description.
-                Err(nasiko_orchestrator::RouterError::NoSuitableAgent { best, required }) => {
+                // exact behaviour a policy is there to remove. Fail the step and
+                // relay the policy's own wording, rather than rephrasing it:
+                // this crate does not know what was checked for, so it cannot
+                // say what to do about it.
+                Err(nasiko_orchestrator::RouterError::PolicyRefused { reason }) => {
                     return bad_request(&format!(
-                        "step {idx}: no agent met the {required}% confidence bar for this task \
-                         (best match scored {best:.0}%). Reword the step, deploy an agent that \
-                         covers it, or lower the bar in Settings → Orchestrator."
+                        "step {idx}: the routing policy refused every agent for this task. {reason}"
                     ));
                 }
                 Err(_) => None,
@@ -648,9 +647,9 @@ async fn update_maf(
             return bad_request("steps must not be empty");
         }
 
-        // Loaded once here rather than once per step inside route() — see
+        // Resolved once here rather than once per step inside route() — see
         // create_maf's own note.
-        let guardrails = Guardrails::load(&state.db).await;
+        let policy = state.orchestrator_policy.routing_policy(&state.db).await;
         let mut resolved: Vec<MafStep> = Vec::with_capacity(steps.len());
         for (idx, step) in steps.iter().enumerate() {
             if step.task_description.trim().is_empty() {
@@ -681,7 +680,7 @@ async fn update_maf(
                 };
                 match state
                     .routing_engine
-                    .route(route_req, &state.db, &guardrails)
+                    .route(route_req, &state.db, policy.as_deref())
                     .await
                 {
                     Ok(result) => {
@@ -695,11 +694,10 @@ async fn update_maf(
                         (result.agent.id, result.agent.name, ep)
                     }
                     // Propagated, not fallen back on — see create_maf's own note.
-                    Err(nasiko_orchestrator::RouterError::NoSuitableAgent { best, required }) => {
+                    Err(nasiko_orchestrator::RouterError::PolicyRefused { reason }) => {
                         return bad_request(&format!(
-                            "step {idx}: no agent met the {required}% confidence bar for this task \
-                             (best match scored {best:.0}%). Reword the step, deploy an agent that \
-                             covers it, or lower the bar in Settings → Orchestrator."
+                            "step {idx}: the routing policy refused every agent for this task. \
+                             {reason}"
                         ));
                     }
                     Err(_) => {

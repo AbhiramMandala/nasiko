@@ -13,6 +13,7 @@ use crate::context::{ContextConfig, ContextManager};
 use crate::error::OrchestratorError;
 use crate::events::{OrchestratorEvent, PolicyRejectionKind};
 use crate::guard::CallGuard;
+use crate::policy::DelegationPolicy;
 use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
 use crate::tool::{A2aTool, A2aToolError};
 
@@ -69,67 +70,17 @@ fn tokens_per_tool_call(completion_tokens: Option<u64>, num_tool_calls: usize) -
         .unwrap_or(0)
 }
 
-/// Accepts a JSON number or a numeric string: the argument is declared as a
-/// number in the tool schema, but models routinely emit `"85"` for numeric
-/// parameters, and rejecting a well-formed intent over its JSON type would block
-/// a legitimate call for a reason the model cannot see or correct.
-///
-/// Shared with `tool.rs`'s `A2aToolArgs::confidence` deserializer: this gate
-/// reads the raw arguments before dispatch, but the same leniency must hold
-/// once more when `A2aToolArgs` is actually deserialized for the call, or a
-/// value this gate accepts fails one step later as an opaque JSON error
-/// instead of the successful call the gate just approved.
-pub(crate) fn parse_lenient_number(raw: &serde_json::Value) -> Option<f64> {
-    raw.as_f64()
-        .or_else(|| raw.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
-}
-
-/// Read the `confidence` argument off a tool call.
-fn confidence_of(arguments: &serde_json::Value) -> Option<f64> {
-    arguments.get("confidence").and_then(parse_lenient_number)
-}
-
-/// Gate one tool call on the configured confidence bar.
-///
-/// `Err(reason)` is both the `PolicyRejected` event's reason and the text fed
-/// back into the model's context, so it states the number it gave and the number
-/// it needed — a bare "blocked" teaches the model nothing and it simply retries
-/// the same call.
-///
-/// A missing `confidence` is a rejection, not a pass: the argument is required
-/// by the schema, and treating its absence as "allowed" would let a model opt
-/// out of the entire policy by omitting one field.
-fn check_confidence(
-    arguments: &serde_json::Value,
-    min_confidence: Option<u8>,
-) -> Result<(), String> {
-    let Some(min) = min_confidence else {
-        return Ok(());
-    };
-    match confidence_of(arguments) {
-        Some(c) if c >= f64::from(min) => Ok(()),
-        Some(c) => Err(format!(
-            "confidence {c:.0}% is below the {min}% required to delegate to this agent"
-        )),
-        None => Err(format!(
-            "no confidence score was provided; every agent call must include a `confidence` \
-             argument of at least {min}"
-        )),
-    }
-}
-
-/// The confidence-bar and call-guard gate for one tool call, in
-/// `run_stream_inner`'s event-channel reporting style
-/// (`OrchestratorEvent::PolicyRejected` plus a message telling the model not
-/// to retry). Both of its branches call this — they differ in how a turn gets
-/// here, not in what a rejection looks like once it has, and this used to be
-/// a byte-for-byte copy in each, with no structural signal that a change to
-/// one needed the other.
+/// The policy + call-guard gate for one tool call, in `run_stream_inner`'s
+/// event-channel reporting style (`OrchestratorEvent::PolicyRejected` plus a
+/// message telling the model not to retry). Both of its branches call this —
+/// they differ in how a turn gets here, not in what a rejection looks like once
+/// it has, and this used to be a byte-for-byte copy in each, with no structural
+/// signal that a change to one needed the other.
 ///
 /// `Err(())` means the call was rejected — already reported on `tx` and
 /// already pushed onto `results_for_context` — so the caller should `continue`
 /// its loop rather than call the tool.
-async fn reject_below_bar_streaming(
+async fn reject_blocked_call(
     tc: &ToolCall,
     agent_display: &str,
     config: &OrchestratorConfig,
@@ -140,21 +91,23 @@ async fn reject_below_bar_streaming(
 ) -> Result<(), ()> {
     let name = &tc.function.name;
 
-    // Confidence bar first, before the flow guard: a call the model itself
-    // rates as a poor match should never consume fan-out or depth budget, and
-    // `before_call` increments both.
-    if let Err(reason) = check_confidence(&tc.function.arguments, config.min_confidence) {
+    // Operator policy first, before the flow guard: a call the policy rejects
+    // should never consume fan-out or depth budget, and `before_call`
+    // increments both.
+    if let Some(policy) = &config.policy
+        && let Err(reason) = policy.check_tool_call(&tc.function.arguments)
+    {
         let _ = tx
             .send(OrchestratorEvent::PolicyRejected {
                 agent: agent_display.to_string(),
                 reason: reason.clone(),
                 turn: turn_idx + 1,
-                kind: PolicyRejectionKind::Confidence,
+                kind: PolicyRejectionKind::Delegation,
             })
             .await;
         results_for_context.push(format!(
-            "[{}] BLOCKED: {}. Do NOT retry this agent with a different score \
-             unless you have a concrete reason to rate it higher.",
+            "[{}] BLOCKED: {}. Do NOT retry this agent with different arguments \
+             unless you have a concrete reason to.",
             name, reason
         ));
         return Err(());
@@ -224,8 +177,21 @@ fn build_preamble(config: &OrchestratorConfig, agents: &[AgentInfo]) -> String {
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let org_rules = config.org_rules.as_deref().unwrap_or("");
-    let delegation_policy = build_delegation_policy(config);
+    // Each section carries its OWN separator rather than taking one from the
+    // template, so an absent section leaves nothing behind — not even the blank
+    // line a `{placeholder}` wrapped in newlines would. With no policy the
+    // prompt below is byte-identical to the one this crate built before the seam
+    // existed, which `no_policy_leaves_the_preamble_untouched` pins against the
+    // exact joins rather than against trimmed text.
+    let policy = config.policy.as_ref();
+    let delegation_policy = match policy.map(|p| p.preamble_policy()) {
+        Some(text) if !text.trim().is_empty() => format!("{text}\n\n"),
+        _ => String::new(),
+    };
+    let policy_footer = match policy.map(|p| p.preamble_footer()) {
+        Some(text) if !text.trim().is_empty() => format!("\n\n{text}"),
+        _ => String::new(),
+    };
 
     format!(
         r#"You are a ReAct orchestrator. Fulfill user requests by reasoning and delegating to specialized agents.
@@ -236,9 +202,7 @@ fn build_preamble(config: &OrchestratorConfig, agents: &[AgentInfo]) -> String {
 
 {agent_list}
 
-{delegation_policy}
-
-## Protocol
+{delegation_policy}## Protocol
 
 1. Analyze the user's request. Determine which agent(s) can help.
 2. Call the appropriate agent tool with a clear, specific message.
@@ -253,377 +217,28 @@ fn build_preamble(config: &OrchestratorConfig, agents: &[AgentInfo]) -> String {
 - Pass the user's own wording through when the request is itself the thing to relay — an exact
   phrase, a quoted string, a command, an identifier, a fixed test input. Paraphrasing it loses
   information the agent matches on, and the agent then answers a question the user never asked.
-- If no agent fits, tell the user directly.
-
-{org_rules}"#
+- If no agent fits, tell the user directly.{policy_footer}"#
     )
 }
 
-/// Output cap for a turn that has not delegated yet, while the policy is on.
+/// The last gate before a final answer reaches the user: the configured policy,
+/// if any, gets to replace it.
 ///
-/// Such a turn has only short legitimate outputs: a tool call (~40 tokens of
-/// arguments), or one of the sentinels — `NO_AGENT_MATCH` (~4 tokens),
-/// `CAPABILITIES`, `GREETING:` (capped at 200 chars), `NEED_INPUT:` (a question).
-/// Prose longer than this is an answer the guard is about to discard, so the
-/// provider is billed for generating text nobody will ever read — observed at
-/// 434 output tokens for one refused question.
-///
-/// Sized for the tool-call case, not the sentinel case: ~10 parallel calls fit,
-/// well past the fan-out a single completion realistically emits. Truncating a
-/// tool call mid-arguments would break the turn, so the headroom matters more
-/// than the last few tokens of savings.
-///
-/// Caps output only. The input (the agent roster and policy, ~2,400 tokens) is
-/// re-sent every turn regardless and dominates the bill — this trims the smaller
-/// half.
-const UNDELEGATED_TURN_MAX_TOKENS: u64 = 400;
-
-// Enforced at compile time rather than in a test: this is a fixed relationship
-// between two constants, so it can never be false at runtime without being false
-// at build time. ~40 tokens per tool call (name + short message + confidence) —
-// the cap must clear a realistic parallel fan-out, because truncating a call
-// mid-arguments breaks the turn, while over-sizing only forgoes a few tokens of
-// savings on text that gets discarded anyway.
-const _: () = assert!(UNDELEGATED_TURN_MAX_TOKENS >= 40 * 8);
-// A greeting is capped at MAX_GREETING_CHARS (~50 tokens) and must fit too.
-const _: () = assert!(UNDELEGATED_TURN_MAX_TOKENS as usize > MAX_GREETING_CHARS / 4);
-
-/// Is this text one of the refusals this module produces?
-///
-/// Callers persist refusals differently from real answers (they are kept out of
-/// the next turn's reasoning context — see `SessionHistory::fetch`), so they need
-/// to recognise one. Exported rather than left to an equality check at the call
-/// site: `a2a_dispatch.rs` compared against `NO_AGENT_MATCH_MESSAGE` exactly, and
-/// the moment `refusal_with_roster` began appending the agent list that check
-/// silently stopped matching — refusals were no longer tagged, went back into
-/// history, and the session taught itself to keep refusing. Recognition lives
-/// beside construction so they cannot drift apart again.
-pub fn is_refusal_message(text: &str) -> bool {
-    text.starts_with(NO_AGENT_MATCH_MESSAGE)
-}
-
-/// One line per agent: its name and what it does, straight from the agent cards.
-/// Purely mechanical — no model-authored text — which is what lets it be shown
-/// under a policy that forbids the orchestrator writing answers itself.
-fn render_roster(agents: &[AgentInfo]) -> String {
-    agents
-        .iter()
-        .map(|a| format!("- **{}** — {}", a.name, a.description.trim()))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The last gate before a final answer reaches the user: under
-/// `require_delegation`, an answer the orchestrator produced without a single
-/// successful agent call is replaced with [`NO_AGENT_MATCH_MESSAGE`].
-///
-/// Returns the text to actually send, so callers cannot forget to use the result.
-///
-/// This is the enforcement half of the policy. The system prompt asks the model
-/// to refuse; this guarantees it, because a prompt instruction is advisory and a
-/// model that ignores it would otherwise answer from its own knowledge — the
-/// precise failure the policy exists to prevent.
-///
-/// Two ways to arrive here legitimately:
-///   * the model emitted [`NO_AGENT_MATCH_SENTINEL`] — a deliberate refusal,
-///   * the model answered anyway — a policy violation, logged at `warn`.
-///
-/// Both produce the same user-visible text; only the second is a bug worth
-/// alerting on, which is why they are distinguished rather than collapsed.
-fn enforce_delegation(
-    final_text: &str,
+/// Returns the text to actually send, so callers cannot forget to use the
+/// result. With no policy the model's own answer is what ships, which is the
+/// open-source behaviour.
+fn finalize_answer(
+    text: &str,
     config: &OrchestratorConfig,
     agents: &[AgentInfo],
     delegated: bool,
     turn_idx: usize,
 ) -> String {
-    // "What can you do for me?" is about the fleet, not a task for it, so there is
-    // nothing to delegate and the guard used to answer it with "no available agent
-    // can handle this request" — the worst possible reply to the most common
-    // opening message. Answered from the roster, which is platform data.
-    //
-    // Not gated on `delegated`: this is an exact match on the bare token, not a
-    // substring, so it only fires when the model's ENTIRE final answer is the
-    // literal sentinel — never something a real, grounded answer would produce
-    // after a successful call. Gating it on `!delegated` let that literal token
-    // reach the user verbatim whenever an earlier turn in the same run had
-    // already delegated once, which is exactly the "bare sentinel reaches a
-    // human" failure the check below this one exists to prevent.
-    if final_text.trim() == CAPABILITIES_SENTINEL && !agents.is_empty() {
-        tracing::info!(
-            turns = turn_idx + 1,
-            "orchestrator answered a capability question from the agent roster"
-        );
-        return format!(
-            "I work by delegating to the agents deployed here. These are available:\n\n{}\n\n\
-             Ask me anything in those areas and I'll route it to the right one.",
-            render_roster(agents)
-        );
+    match &config.policy {
+        Some(policy) => policy.review_final_answer(text, agents, delegated, turn_idx),
+        None => text.to_string(),
     }
-
-    // A bare sentinel must never reach a human, whatever the policy state. This
-    // runs even with `require_delegation` off because the two are configured
-    // independently: the HITL resume disables enforcement but still sets a
-    // confidence bar, so its prompt still teaches the token — and without this
-    // branch a resumed turn that declined would render the literal string
-    // "NO_AGENT_MATCH" in the chat. Also not gated on `delegated`, for the same
-    // reason: "whatever the policy state" includes a run where an earlier turn
-    // already delegated once.
-    //
-    // Exact match, not `contains`: the token quoted inside a real sentence is
-    // the model talking *about* the policy, not invoking it, and replacing a
-    // whole answer on a substring hit would discard agent-grounded content.
-    // That distinction is what makes dropping the `delegated` gate safe here —
-    // `a_sentinel_after_a_successful_call_is_not_rewritten` covers the substring
-    // case, which still falls through to the raw-text return below unaffected.
-    if final_text.trim() == NO_AGENT_MATCH_SENTINEL {
-        tracing::info!(
-            turns = turn_idx + 1,
-            "orchestrator declined: no agent met the confidence bar"
-        );
-        // Same roster as the suppressed-answer path below. This is the *more*
-        // common refusal (a well-behaved model reaches it deliberately), so
-        // returning the bare message here left the usual dead end less helpful
-        // than the policy-violation one — backwards.
-        return refusal_with_roster(agents);
-    }
-
-    // A greeting is answered, not delegated and not refused. Length-capped so the
-    // prefix cannot be used to smuggle a real answer past the guard. Not gated on
-    // `delegated` either, for the same reason as the two checks above — a real,
-    // grounded answer has no reason to start with this literal prefix.
-    if let Some(greeting) = final_text.trim().strip_prefix(GREETING_SENTINEL) {
-        let greeting = greeting.trim();
-        if !greeting.is_empty() && greeting.chars().count() <= MAX_GREETING_CHARS {
-            tracing::info!(turns = turn_idx + 1, "orchestrator answered a greeting");
-            return greeting.to_string();
-        }
-    }
-
-    // A clarifying question is the one legitimate way to end a turn without
-    // calling an agent: the model is not answering from its own knowledge, it is
-    // asking for something it needs before it can delegate at all. Checked before
-    // the guard below, and allowed through with the prefix stripped.
-    if let Some(question) = final_text.trim().strip_prefix(NEED_INPUT_SENTINEL) {
-        let question = question.trim();
-        if !question.is_empty() {
-            tracing::info!(
-                turns = turn_idx + 1,
-                "orchestrator asked the user for a missing detail before delegating"
-            );
-            return question.to_string();
-        }
-    }
-
-    if !config.require_delegation || delegated {
-        // A model that emits the sentinel *after* a successful call is describing
-        // a gap in what the agents could do, not refusing to delegate — leave its
-        // own wording alone rather than overwriting a real, agent-grounded answer.
-        return final_text.to_string();
-    }
-
-    if final_text.trim().contains(NO_AGENT_MATCH_SENTINEL) {
-        tracing::info!(
-            turns = turn_idx + 1,
-            "orchestrator declined: no agent met the confidence bar"
-        );
-    } else {
-        // The suppressed text is logged (truncated) because without it this branch
-        // is undiagnosable: an operator sees "no available agent can handle this
-        // request" in the chat and has no way to learn what the model actually
-        // wrote, or whether the substitution was even the right call. That is
-        // exactly how a suppressed clarifying question stayed hidden.
-        let preview: String = final_text.trim().chars().take(200).collect();
-        tracing::warn!(
-            turns = turn_idx + 1,
-            answer_chars = final_text.len(),
-            suppressed = %preview,
-            "orchestrator answered without delegating despite require_delegation; \
-             substituting the refusal message"
-        );
-    }
-
-    refusal_with_roster(agents)
 }
-
-/// The refusal, plus what the fleet *can* do.
-///
-/// The bare message told the user only that they had failed, leaving no way to
-/// tell "nothing covers this" apart from "something is broken", and no hint at
-/// what to ask instead. The roster is mechanical, so this adds information
-/// without the orchestrator authoring any of it. Falls back to the bare message
-/// when there is no roster to show (an empty fleet never reaches here in
-/// practice — dispatch rejects it earlier with a 503 — so this is defensive).
-fn refusal_with_roster(agents: &[AgentInfo]) -> String {
-    if agents.is_empty() {
-        return NO_AGENT_MATCH_MESSAGE.to_string();
-    }
-    format!(
-        "{NO_AGENT_MATCH_MESSAGE}\n\nHere is what the deployed agents can do:\n\n{}",
-        render_roster(agents)
-    )
-}
-
-/// The mandatory-delegation section, empty when the policy is off so an
-/// unconfigured deployment's prompt is byte-identical to what it was before.
-fn build_delegation_policy(config: &OrchestratorConfig) -> String {
-    if !config.require_delegation && config.min_confidence.is_none() {
-        return String::new();
-    }
-
-    let mut out = String::from("## Delegation Policy (MANDATORY)\n\n");
-
-    if config.require_delegation {
-        // Deliberately leads with "delegating is the expected outcome". The first
-        // version of this section led with the prohibition ("you have no knowledge
-        // of your own") and then described the refusal path in detail — which a
-        // small model (gpt-4o-mini, the default OPENAI_MODEL) read as an invitation
-        // to decline. Observed live: "route this to the HR assistant agent and ask
-        // what the holidays are", with an `hr-agent` deployed whose description
-        // literally reads "Public holidays, working day calculations, ...", refused
-        // in one turn and 4 output tokens — the model never attempted a tool call.
-        // Prohibition still comes, but after the instruction to delegate.
-        out.push_str(
-            "Delegating is the normal, expected outcome of almost every request. Read the agent \
-             list above and call the agent whose description or skills cover the user's topic. If \
-             the user names an agent, call that agent.\n\n\
-             Your answers must be grounded in what the agents return — never answer from your own \
-             training, even a question you could answer yourself. Relay and combine agent results; \
-             do not substitute your own knowledge for them.\n\n",
-        );
-    }
-
-    if let Some(min) = config.min_confidence {
-        // States what a passing score looks like, not just the cutoff. Naming only
-        // the cutoff gave the model a hurdle with no sense of where a normal match
-        // sits, and it defaulted to assuming it fell short.
-        out.push_str(
-            "On every call pass a `confidence` argument from 0 to 100: your honest judgement that \
-             this agent can complete this task, based on its description and skills — not on \
-             whether you personally know the answer. Use the whole scale:\n\
-             - 90-100: one of the agent's listed skills names this exact task\n\
-             - 70-89: the task falls squarely in the agent's described domain\n\
-             - 40-69: related to its domain, but not something it clearly does\n\
-             - 0-39: outside this agent's domain\n\
-             Score each agent on its own merits. Do not default to 100.\n\n\
-             An agent described as general-purpose, or as able to use whatever tools it is given, \
-             genuinely covers tasks that no specialist lists — that IS its domain, so score it \
-             70-89 rather than marking it down for not naming the task. Prefer a specialist when \
-             one fits; otherwise fall back to a general-purpose agent instead of refusing.\n\n",
-        );
-        // Naming the cutoff is skipped when it is 0. The old text said "score it
-        // {min} or above" and "reserve scores below {min}" — at min = 0 that reads
-        // as "score it 0 or above" (every possible value) and "reserve scores
-        // below 0" (impossible), collapsing the whole paragraph into noise, which
-        // is one reason every call came back at 100. It also anchored the model on
-        // the threshold at any value, which is why the scale above replaces it.
-        if min > 0 {
-            out.push_str(&format!(
-                "Calls scoring below {min} are rejected automatically and never reach the agent.\n\n",
-            ));
-        }
-    }
-
-    // The refusal token is taught ONLY when delegation is actually enforced.
-    // Teaching it to a turn that is allowed to answer on its own (the HITL
-    // resume, which sets a bar but no enforcement) invites the model to refuse a
-    // turn whose answer is already agent-grounded — its own prompt tells it not
-    // to call anyone again, which under a refusal instruction reads as "nothing
-    // qualifies, so decline".
-    //
-    // Phrased as a last resort and kept to one line on purpose: the more room this
-    // path gets, the more readily a small model takes it (see the note above).
-    if config.require_delegation {
-        // An underspecified request must not become a refusal. The agent itself is
-        // usually the right place for a missing detail to surface (agents can pause
-        // and ask a human), so calling with what the user gave is preferred; the
-        // clarify path exists for when no sensible call can be formed at all.
-        out.push_str(&format!(
-            "If the request is missing a detail an agent's example suggests it wants (a country, a \
-             date, a name), prefer calling the agent anyway with what the user gave you — the \
-             agent can ask for the rest itself. Only when you cannot form any sensible call, ask \
-             the user for the missing detail by replying `{NEED_INPUT}: <your question>` — for \
-             example `{NEED_INPUT}: which country and year should I look up?`. Do NOT use this to \
-             avoid delegating a request you could act on.\n\n",
-            NEED_INPUT = NEED_INPUT_SENTINEL.trim_end_matches(':'),
-        ));
-        out.push_str(&format!(
-            "If the user is only greeting you or making small talk (\"hi\", \"thanks\", \"good \
-             afternoon\"), reply `{GREETING}: <a short friendly reply>` — one sentence, and never \
-             use it to answer a question.\n\n",
-            GREETING = GREETING_SENTINEL.trim_end_matches(':'),
-        ));
-        out.push_str(&format!(
-            "If the user asks what you can do, what agents exist, how you can help, what a \
-             PARTICULAR agent does, or which agent handles some topic — any question about this \
-             platform rather than a task for it — reply with exactly this token and nothing else: \
-             {CAPABILITIES_SENTINEL}\n\n",
-        ));
-        out.push_str(&format!(
-            "Last resort only — if NO agent in the list covers the request at all, reply with \
-             exactly this token and nothing else: {NO_AGENT_MATCH_SENTINEL}\n",
-        ));
-    }
-
-    out
-}
-
-/// What the orchestrator says when no agent clears the confidence bar. Surfaced
-/// verbatim to the user in place of a model-authored answer, so it must read as
-/// a finished reply rather than an error code.
-pub const NO_AGENT_MATCH_MESSAGE: &str = "No available agent can handle this request. I only answer by delegating to the agents \
-     deployed on this platform, and none of them is a confident match for what you asked.";
-
-/// The token the system prompt tells the model to emit when it judges that no
-/// agent qualifies. Detecting it lets a deliberate refusal be reported as such
-/// rather than being caught by the delegation guard as a stray direct answer —
-/// both end in `NO_AGENT_MATCH_MESSAGE`, but only one of them is a policy
-/// violation worth logging.
-pub const NO_AGENT_MATCH_SENTINEL: &str = "NO_AGENT_MATCH";
-
-/// Prefix the model uses to ask the user for a missing detail instead of
-/// answering or refusing: `NEED_INPUT: which country and year?`.
-///
-/// Mandatory delegation had no room for the one legitimate reason to finish a
-/// turn without calling an agent — needing something from the human first.
-/// Observed live: "ask the HR agent what the holidays are", against an `hr-agent`
-/// whose Public Holidays skill advertises `"What are the public holidays in
-/// Germany for 2025?"`, produced a ~25-token reply (not the 4-token sentinel),
-/// which the guard then replaced with "no available agent can handle this
-/// request". The model was almost certainly asking which country and year; the
-/// user was told no agent existed. A clarifying question is not the model
-/// answering from its own knowledge, so it must survive the guard.
-pub const NEED_INPUT_SENTINEL: &str = "NEED_INPUT:";
-
-/// The token the model emits for a question about what this platform can do
-/// ("what can you do for me?", "which agents do you have?").
-///
-/// Such a question has no agent to delegate to — it is about the fleet, not a
-/// task for it — so mandatory delegation answered the single most common opening
-/// message with "no available agent can handle this request". The answer is
-/// assembled from the agent roster the server already holds, so producing it is
-/// the platform reporting its own configuration, NOT the orchestrator answering
-/// from its own knowledge: the exemption is sound, not a loophole.
-pub const CAPABILITIES_SENTINEL: &str = "CAPABILITIES";
-
-/// Prefix for a reply to a greeting or pleasantry: `GREETING: Hi! What can I
-/// help you with?`.
-///
-/// "hi" and "good afternoon" are neither a task to delegate nor a question about
-/// the fleet, so they fell through to the guard and were answered with "no
-/// available agent can handle this request". A greeting makes no factual claim,
-/// so letting the model word it asserts nothing the user could be misled by —
-/// the same reasoning that already allows a model-authored clarifying question.
-pub const GREETING_SENTINEL: &str = "GREETING:";
-
-/// Longest reply the greeting exemption will pass through.
-///
-/// This is the one exemption whose text is both model-authored and unconstrained
-/// in topic, so it is the one an answer could hide behind ("GREETING: Hi! The
-/// capital of France is Paris."). A greeting is a sentence; anything longer is an
-/// answer wearing a greeting's prefix, and falls through to the guard. A cap is
-/// crude, but it is checkable, and the alternative is trusting the prefix alone.
-const MAX_GREETING_CHARS: usize = 200;
 
 /// Configuration for the orchestrator.
 #[derive(Debug, Clone)]
@@ -637,26 +252,14 @@ pub struct OrchestratorConfig {
     pub base_url: Option<String>,
     /// API key. If None, uses OPENAI_API_KEY env var.
     pub api_key: Option<String>,
-    /// Organization-wide rules injected into the system prompt, already
-    /// formatted by the caller (`oss/server/src/orchestrator_rules.rs`). `None`
-    /// when the operator's rules toggle is off or no rules are defined.
+    /// Operator policy governing what this orchestration is allowed to do —
+    /// see [`DelegationPolicy`]. `None` imposes nothing, which is what an
+    /// unconfigured deployment runs with.
     ///
     /// Separate from `preamble` on purpose: `preamble` is the caller's own
-    /// framing of what this orchestrator is for, while these are operator
-    /// policy that outlives any one caller.
-    pub org_rules: Option<String>,
-    /// Percentage (0-100) a tool call's self-reported `confidence` must reach
-    /// before the call is allowed through. `None` disables the check entirely.
-    pub min_confidence: Option<u8>,
-    /// Refuse to answer from the model's own knowledge: a turn that ends
-    /// without a successful agent call yields `NO_AGENT_MATCH_MESSAGE` instead
-    /// of whatever the model wrote.
-    ///
-    /// Callers that feed an already-delegated result back in (the HITL resume in
-    /// `oss/server/src/hitl/mod.rs`) must set this `false` — that turn is
-    /// *supposed* to answer without calling anyone, because the agent call it is
-    /// reporting on already happened in an earlier turn.
-    pub require_delegation: bool,
+    /// framing of what this orchestrator is for, while a policy is operator
+    /// rules that outlive any one caller.
+    pub policy: Option<Arc<dyn DelegationPolicy>>,
 }
 
 impl Default for OrchestratorConfig {
@@ -669,9 +272,7 @@ impl Default for OrchestratorConfig {
             temperature: Some(0.2),
             base_url: None,
             api_key: None,
-            org_rules: None,
-            min_confidence: None,
-            require_delegation: false,
+            policy: None,
         }
     }
 }
@@ -797,8 +398,17 @@ impl Orchestrator {
                 .preamble(preamble.clone())
                 .tools(tool_defs.clone());
 
-            if self.config.require_delegation && !delegated {
-                req = req.max_tokens(UNDELEGATED_TURN_MAX_TOKENS);
+            // Nothing the policy will accept from an undelegated turn is long,
+            // and anything long is about to be discarded — so stop paying to
+            // generate it.
+            if !delegated
+                && let Some(cap) = self
+                    .config
+                    .policy
+                    .as_ref()
+                    .and_then(|p| p.undelegated_max_tokens())
+            {
+                req = req.max_tokens(cap);
             }
 
             if let Some(temp) = self.config.temperature {
@@ -857,11 +467,11 @@ impl Orchestrator {
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    // Confidence bar first — see the streaming path's own note.
-                    if let Err(reason) =
-                        check_confidence(&tc.function.arguments, self.config.min_confidence)
+                    // Operator policy first — see the streaming path's own note.
+                    if let Some(policy) = &self.config.policy
+                        && let Err(reason) = policy.check_tool_call(&tc.function.arguments)
                     {
-                        tracing::warn!(tool = %name, %reason, "confidence gate blocked");
+                        tracing::warn!(tool = %name, %reason, "delegation policy blocked");
                         trace.tool_calls.push(ToolCallTrace {
                             tool_name: name.clone(),
                             arguments: tc.function.arguments.clone(),
@@ -971,7 +581,7 @@ impl Orchestrator {
                 turns.push(trace);
             } else {
                 // No tool calls — this is the final text response
-                let final_text = enforce_delegation(
+                let final_text = finalize_answer(
                     &text_parts.join("\n"),
                     &self.config,
                     &agents,
@@ -1097,7 +707,8 @@ impl Orchestrator {
         let mut defs = Vec::new();
 
         for agent in agents {
-            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone());
+            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone())
+                .with_policy(self.config.policy.clone());
             defs.push(ToolDyn::definition(&tool, String::new()).await);
             builder = builder.static_tool(tool);
         }
@@ -1177,7 +788,8 @@ async fn run_stream_inner(
         // Streaming loop: each agent call relays live progress into the stream.
         let tool = A2aTool::new(agent.clone(), agents_ctx.a2a_client.clone())
             .with_progress(tx.clone())
-            .with_file_parts(file_parts.to_vec());
+            .with_file_parts(file_parts.to_vec())
+            .with_policy(config.policy.clone());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
         builder = builder.static_tool(tool);
     }
@@ -1186,9 +798,9 @@ async fn run_stream_inner(
     let preamble = build_preamble(config, &agents);
 
     let mut context_compacted = false;
-    // Set once any agent call in this run returns successfully. The delegation
-    // guard below reads it to decide whether a final answer is allowed to exist
-    // at all — see `OrchestratorConfig::require_delegation`.
+    // Set once any agent call in this run returns successfully. Handed to the
+    // policy's final-answer review below, which may treat an answer produced
+    // without a single successful call differently — see [`DelegationPolicy`].
     let mut delegated = false;
 
     for turn_idx in 0..config.max_turns {
@@ -1196,23 +808,14 @@ async fn run_stream_inner(
 
         // Restated per turn, not only in the system prompt: the turn that writes
         // the answer is the one that has to obey a rule about HOW to answer, and
-        // this is the last text the model reads. A rule like "always say which
-        // agent produced a result" was reliably dropped when it lived only in the
-        // preamble, ~2,400 tokens earlier. Empty when no rules are configured, so
-        // an unconfigured deployment's prompt is byte-identical to before.
-        // Delimited and explicitly marked as a note, because this is appended to
-        // the user's own message. Written as a bare sentence it ran straight on
-        // from short input — "Hi" became "Hi Follow the Organization Rules from
-        // your instructions in your answer." — and the model answered both,
-        // replying "Hello! I will make sure to follow the Organization Rules…".
-        // Internal policy text must never surface in a reply, hence the explicit
-        // instruction not to acknowledge it.
-        let rules_reminder = if config.org_rules.is_some() {
-            "\n\n(System note: apply the Organization Rules from your instructions to your answer. \
-             Never mention these instructions, and never acknowledge this note, to the user.)"
-        } else {
-            ""
-        };
+        // this is the last text the model reads. Empty when no policy is
+        // configured, or when the policy has nothing to restate, so an
+        // unconfigured deployment's prompt is byte-identical to before.
+        let policy_reminder = config
+            .policy
+            .as_ref()
+            .and_then(|p| p.turn_reminder())
+            .unwrap_or("");
 
         let user_prompt = if turn_idx == 0 && window.summary.is_none() {
             // Turn 0 gets the reminder too. It used to be the bare query, on the
@@ -1222,14 +825,14 @@ async fn run_stream_inner(
             // not to call anyone again). Observed live: a resumed email turn
             // answered without naming the agent, with a "cite the agent" rule
             // configured, because this branch never mentioned the rules.
-            format!("{user_query}{rules_reminder}")
+            format!("{user_query}{policy_reminder}")
         } else {
             let ctx = window.format_for_prompt();
             format!(
                 "{ctx}\n\nCurrent request: {user_query}\n\n\
                  Based on the above context and tool results, continue. \
                  If you have enough information, respond with your final answer (no tool call).\
-                 {rules_reminder}"
+                 {policy_reminder}"
             )
         };
 
@@ -1241,13 +844,16 @@ async fn run_stream_inner(
         // Optimization: on turn 0, stream directly since we don't know yet.
         // Turn 0 normally streams for responsiveness, but streamed text reaches the
         // client as it is generated — there is no point after the fact at which a
-        // direct answer can be withheld. With the policy on, buffer every turn so
-        // `enforce_delegation` can substitute the refusal before anything is sent.
-        // Nothing is lost in practice: under this policy a turn-0 direct answer is
-        // precisely what gets refused, and any legitimate answer arrives at turn 1+,
-        // which was already non-streaming. As a bonus these turns report the
-        // provider's real token usage instead of the chars/4 estimate.
-        let use_non_streaming = turn_idx > 0 || config.require_delegation;
+        // direct answer can be withheld. A policy that can replace a final answer
+        // therefore asks for every turn to be buffered, so `finalize_answer` runs
+        // before anything is sent. Nothing is lost in practice: a legitimate answer
+        // arrives at turn 1+, which was already non-streaming, and these turns
+        // report the provider's real token usage instead of the chars/4 estimate.
+        let use_non_streaming = turn_idx > 0
+            || config
+                .policy
+                .as_ref()
+                .is_some_and(|p| p.buffer_every_turn());
 
         if use_non_streaming {
             let mut req = model
@@ -1255,10 +861,16 @@ async fn run_stream_inner(
                 .preamble(preamble.clone())
                 .tools(tool_defs.clone());
 
-            // Nothing legitimate on an undelegated turn is long, and anything
-            // long is about to be discarded — so stop paying to generate it.
-            if config.require_delegation && !delegated {
-                req = req.max_tokens(UNDELEGATED_TURN_MAX_TOKENS);
+            // Nothing the policy will accept from an undelegated turn is long,
+            // and anything long is about to be discarded — so stop paying to
+            // generate it.
+            if !delegated
+                && let Some(cap) = config
+                    .policy
+                    .as_ref()
+                    .and_then(|p| p.undelegated_max_tokens())
+            {
+                req = req.max_tokens(cap);
             }
 
             if let Some(temp) = config.temperature {
@@ -1338,7 +950,7 @@ async fn run_stream_inner(
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    if reject_below_bar_streaming(
+                    if reject_blocked_call(
                         tc,
                         &agent_display,
                         config,
@@ -1353,21 +965,23 @@ async fn run_stream_inner(
                         continue;
                     }
 
-                    let confidence = confidence_of(&tc.function.arguments);
+                    let policy_score = config
+                        .policy
+                        .as_ref()
+                        .and_then(|p| p.call_score(&tc.function.arguments));
                     tracing::info!(
                         target: "nasiko::orchestrator",
                         agent = %agent_display,
-                        confidence = confidence.unwrap_or(-1.0),
-                        required = config.min_confidence.unwrap_or(0),
+                        policy_score = policy_score.unwrap_or(-1.0),
                         turn = turn_idx + 1,
-                        "delegation allowed: agent cleared the confidence bar"
+                        "delegating to agent: the call cleared every configured gate"
                     );
                     let _ = tx
                         .send(OrchestratorEvent::ToolCall {
                             agent: agent_display.clone(),
                             message: msg,
                             turn: turn_idx + 1,
-                            confidence,
+                            policy_score,
                         })
                         .await;
 
@@ -1459,13 +1073,8 @@ async fn run_stream_inner(
                 );
             } else {
                 // Final answer from non-streaming — emit as Content chunks
-                let final_text = enforce_delegation(
-                    &text_parts.join("\n"),
-                    config,
-                    &agents,
-                    delegated,
-                    turn_idx,
-                );
+                let final_text =
+                    finalize_answer(&text_parts.join("\n"), config, &agents, delegated, turn_idx);
                 for chunk in final_text.chars().collect::<Vec<_>>().chunks(200) {
                     let s: String = chunk.iter().collect();
                     let _ = tx.send(OrchestratorEvent::Content { content: s }).await;
@@ -1488,10 +1097,16 @@ async fn run_stream_inner(
                 .preamble(preamble.clone())
                 .tools(tool_defs.clone());
 
-            // Nothing legitimate on an undelegated turn is long, and anything
-            // long is about to be discarded — so stop paying to generate it.
-            if config.require_delegation && !delegated {
-                req = req.max_tokens(UNDELEGATED_TURN_MAX_TOKENS);
+            // Nothing the policy will accept from an undelegated turn is long,
+            // and anything long is about to be discarded — so stop paying to
+            // generate it.
+            if !delegated
+                && let Some(cap) = config
+                    .policy
+                    .as_ref()
+                    .and_then(|p| p.undelegated_max_tokens())
+            {
+                req = req.max_tokens(cap);
             }
 
             if let Some(temp) = config.temperature {
@@ -1589,7 +1204,7 @@ async fn run_stream_inner(
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    if reject_below_bar_streaming(
+                    if reject_blocked_call(
                         tc,
                         &agent_display,
                         config,
@@ -1604,21 +1219,23 @@ async fn run_stream_inner(
                         continue;
                     }
 
-                    let confidence = confidence_of(&tc.function.arguments);
+                    let policy_score = config
+                        .policy
+                        .as_ref()
+                        .and_then(|p| p.call_score(&tc.function.arguments));
                     tracing::info!(
                         target: "nasiko::orchestrator",
                         agent = %agent_display,
-                        confidence = confidence.unwrap_or(-1.0),
-                        required = config.min_confidence.unwrap_or(0),
+                        policy_score = policy_score.unwrap_or(-1.0),
                         turn = turn_idx + 1,
-                        "delegation allowed: agent cleared the confidence bar"
+                        "delegating to agent: the call cleared every configured gate"
                     );
                     let _ = tx
                         .send(OrchestratorEvent::ToolCall {
                             agent: agent_display.clone(),
                             message: msg,
                             turn: turn_idx + 1,
-                            confidence,
+                            policy_score,
                         })
                         .await;
 
@@ -1711,11 +1328,12 @@ async fn run_stream_inner(
             } else {
                 // Final answer — already streamed token-by-token via Content events.
                 //
-                // No delegation guard here, and none is needed: whenever the policy
-                // is on, `use_non_streaming` is forced true for every turn, so this
-                // branch is unreachable under it. That is exactly why the policy
-                // forces it — text emitted here has already reached the client
-                // chunk-by-chunk and cannot be recalled.
+                // No policy review here, and none is needed: a policy that can
+                // replace a final answer sets `buffer_every_turn`, which forces
+                // `use_non_streaming` true for every turn and makes this branch
+                // unreachable under it. That is exactly why it forces it — text
+                // emitted here has already reached the client chunk-by-chunk and
+                // cannot be recalled.
                 let final_text = text_parts.join("");
                 context.push_assistant(&final_text);
 
@@ -1947,81 +1565,97 @@ mod awaiting_human_tests {
 }
 
 #[cfg(test)]
-mod delegation_policy_tests {
+mod policy_seam_tests {
     use super::*;
-    use serde_json::json;
+    use crate::policy::ToolSchemaExtra;
 
-    fn policy(min: Option<u8>, require: bool) -> OrchestratorConfig {
+    /// Records which hooks the loop actually reaches, and answers every one of
+    /// them with something recognisable. Asserting on the *effects* here is what
+    /// makes this a test of the seam rather than of a policy: the behaviour it
+    /// checks belongs to whatever implementation is plugged in, but the wiring
+    /// belongs to this crate, and a hook that quietly stops being called is
+    /// invisible any other way.
+    #[derive(Debug)]
+    struct StubPolicy;
+
+    impl DelegationPolicy for StubPolicy {
+        fn preamble_policy(&self) -> String {
+            "## Stub Policy".to_string()
+        }
+        fn preamble_footer(&self) -> String {
+            "## Stub Footer".to_string()
+        }
+        fn turn_reminder(&self) -> Option<&str> {
+            Some("\n\n(stub reminder)")
+        }
+        fn tool_schema_extra(&self) -> Option<ToolSchemaExtra> {
+            None
+        }
+        fn check_tool_call(&self, arguments: &serde_json::Value) -> Result<(), String> {
+            match arguments.get("ok") {
+                Some(serde_json::Value::Bool(true)) => Ok(()),
+                _ => Err("stub rejected this call".to_string()),
+            }
+        }
+        fn call_score(&self, _arguments: &serde_json::Value) -> Option<f64> {
+            Some(42.0)
+        }
+        fn review_final_answer(
+            &self,
+            _text: &str,
+            _agents: &[AgentInfo],
+            _delegated: bool,
+            _turn_idx: usize,
+        ) -> String {
+            "stub replaced the answer".to_string()
+        }
+        fn undelegated_max_tokens(&self) -> Option<u64> {
+            Some(123)
+        }
+        fn buffer_every_turn(&self) -> bool {
+            true
+        }
+        fn is_refusal(&self, text: &str) -> bool {
+            text == "stub replaced the answer"
+        }
+    }
+
+    fn with_policy() -> OrchestratorConfig {
         OrchestratorConfig {
-            min_confidence: min,
-            require_delegation: require,
+            policy: Some(Arc::new(StubPolicy)),
             ..Default::default()
         }
     }
 
-    // ── check_confidence ─────────────────────────────────────────────────
-
+    /// The open-source default: no policy, and the prompt carries no trace of
+    /// one. This is the guarantee that makes the seam free to exist here — an
+    /// unconfigured deployment is byte-identical to one built before it.
     #[test]
-    fn no_bar_configured_lets_everything_through() {
-        assert!(check_confidence(&json!({}), None).is_ok());
+    fn no_policy_leaves_the_preamble_untouched() {
+        let preamble = build_preamble(&OrchestratorConfig::default(), &[]);
+
+        // Byte-exact, NOT trimmed. An earlier version of this test trimmed, and
+        // so could not see that the two empty placeholders were each leaving a
+        // stray blank line behind — "the same apart from whitespace" is not the
+        // same prompt. Both joins are pinned literally: an empty roster renders
+        // as `Agents\n\n` + `` + `\n\n` + `Protocol`, exactly as it did before
+        // this seam existed, and the built-in rules are the last thing in the
+        // string with nothing after them.
+        assert!(
+            preamble.contains("## Available Agents\n\n\n\n## Protocol"),
+            "an absent policy section must leave nothing behind, not a blank line:\n{preamble:?}"
+        );
+        assert!(
+            preamble.ends_with("- If no agent fits, tell the user directly."),
+            "an absent footer must leave nothing behind, not a trailing blank line:\n{preamble:?}"
+        );
     }
 
     #[test]
-    fn a_score_at_the_bar_passes() {
-        assert!(check_confidence(&json!({"confidence": 80}), Some(80)).is_ok());
-    }
-
-    #[test]
-    fn a_score_below_the_bar_is_rejected_with_both_numbers() {
-        let err =
-            check_confidence(&json!({"confidence": 42}), Some(80)).expect_err("42 is below 80");
-        assert!(err.contains("42"), "reason should name the score: {err}");
-        assert!(err.contains("80"), "reason should name the bar: {err}");
-    }
-
-    /// The whole policy would be opt-out if omitting one field meant "allowed".
-    #[test]
-    fn a_missing_score_is_a_rejection_not_a_pass() {
-        assert!(check_confidence(&json!({"message": "hi"}), Some(80)).is_err());
-    }
-
-    /// Models routinely emit numeric parameters as strings; refusing those would
-    /// block a legitimate call for a reason the model cannot see or correct.
-    #[test]
-    fn a_numeric_string_score_is_accepted() {
-        assert!(check_confidence(&json!({"confidence": "95"}), Some(80)).is_ok());
-        assert!(check_confidence(&json!({"confidence": "12"}), Some(80)).is_err());
-    }
-
-    #[test]
-    fn a_non_numeric_score_is_rejected() {
-        assert!(check_confidence(&json!({"confidence": "very sure"}), Some(80)).is_err());
-    }
-
-    /// A successful delegation must be as inspectable as a rejected one: the
-    /// score that cleared the bar rides the `ToolCall` event so it reaches the
-    /// SSE stream and the UI step row. It used to be read, checked and dropped,
-    /// leaving no way to see what the picked agent actually scored.
-    #[test]
-    fn a_passing_score_is_carried_on_the_event_not_discarded() {
-        let args = json!({ "message": "check the logs", "confidence": 93 });
-        assert!(check_confidence(&args, Some(80)).is_ok());
-        assert_eq!(confidence_of(&args), Some(93.0));
-    }
-
-    /// With no bar configured nothing was demanded, so there is nothing to report.
-    #[test]
-    fn no_score_present_reads_as_none() {
-        assert_eq!(confidence_of(&json!({ "message": "hi" })), None);
-    }
-
-    // ── enforce_delegation ───────────────────────────────────────────────
-
-    #[test]
-    fn policy_off_returns_the_model_answer_untouched() {
-        let out = enforce_delegation(
+    fn no_policy_returns_the_model_answer_verbatim() {
+        let out = finalize_answer(
             "Paris is the capital of France.",
-            &policy(None, false),
+            &OrchestratorConfig::default(),
             &[],
             false,
             0,
@@ -2029,667 +1663,47 @@ mod delegation_policy_tests {
         assert_eq!(out, "Paris is the capital of France.");
     }
 
-    /// The core guarantee: with the policy on and nothing delegated, the model's
-    /// own answer never reaches the user.
+    /// Position is the whole reason these are two hooks rather than one: the
+    /// policy section explains the roster it follows, while the footer has to be
+    /// the last thing the model reads to survive at all.
     #[test]
-    fn an_undelegated_answer_is_replaced_with_the_refusal() {
-        let out = enforce_delegation(
+    fn a_policy_lands_in_both_prompt_positions_in_order() {
+        let preamble = build_preamble(&with_policy(), &[]);
+
+        let policy_at = preamble.find("## Stub Policy").expect("policy section");
+        let protocol_at = preamble.find("## Protocol").expect("protocol section");
+        let footer_at = preamble.find("## Stub Footer").expect("footer section");
+
+        assert!(policy_at < protocol_at, "policy precedes the protocol");
+        assert!(footer_at > protocol_at, "the footer trails every built-in");
+        assert!(preamble.trim_end().ends_with("## Stub Footer"));
+    }
+
+    #[test]
+    fn a_policy_gets_the_last_word_on_the_final_answer() {
+        let out = finalize_answer(
             "Paris is the capital of France.",
-            &policy(Some(80), true),
+            &with_policy(),
             &[],
             false,
             0,
         );
-        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
+        assert_eq!(out, "stub replaced the answer");
     }
 
+    /// The gate reads raw arguments, before deserialization, so a rejection is
+    /// an explicit reason the model can act on rather than an opaque JSON error.
     #[test]
-    fn a_deliberate_sentinel_refusal_also_yields_the_refusal_message() {
-        let out = enforce_delegation(
-            NO_AGENT_MATCH_SENTINEL,
-            &policy(Some(80), true),
-            &[],
-            false,
-            0,
-        );
-        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
-    }
-
-    /// Synthesis after a successful agent call is the normal, wanted path — the
-    /// guard must not eat a real agent-grounded answer.
-    #[test]
-    fn an_answer_after_a_successful_call_is_preserved() {
-        let out = enforce_delegation(
-            "The log agent found 3 OOMKills.",
-            &policy(Some(80), true),
-            &[],
-            true,
-            1,
-        );
-        assert_eq!(out, "The log agent found 3 OOMKills.");
-    }
-
-    /// A sentinel emitted *after* a successful call describes a gap in what the
-    /// agents could do, not a refusal to delegate — leave the model's wording be.
-    #[test]
-    fn a_sentinel_after_a_successful_call_is_not_rewritten() {
-        let text = format!("{NO_AGENT_MATCH_SENTINEL} for the second half of the request");
-        let out = enforce_delegation(&text, &policy(Some(80), true), &[], true, 1);
-        assert_eq!(out, text);
-    }
-
-    /// Regression, and the counterpart to the test above: a BARE sentinel (the
-    /// model's entire final answer, not the token referenced inside a real
-    /// sentence) must still be caught even after an earlier successful call in
-    /// the same run — this check used to be gated on `!delegated`, which let the
-    /// literal string "NO_AGENT_MATCH" reach the chat verbatim in that case.
-    #[test]
-    fn a_bare_sentinel_is_still_caught_after_an_earlier_delegation() {
-        let out = enforce_delegation(
-            NO_AGENT_MATCH_SENTINEL,
-            &policy(Some(80), true),
-            &[],
-            true,
-            1,
-        );
+    fn the_gate_sees_raw_tool_arguments() {
+        let policy = StubPolicy;
         assert!(
-            !out.contains(NO_AGENT_MATCH_SENTINEL),
-            "leaked verbatim: {out}"
+            policy
+                .check_tool_call(&serde_json::json!({"ok": true}))
+                .is_ok()
         );
-        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
-    }
-
-    // ── preamble ─────────────────────────────────────────────────────────
-
-    /// An unconfigured deployment must see the prompt exactly as it was before
-    /// this feature existed — no stray policy heading, no behaviour change.
-    #[test]
-    fn an_unconfigured_deployment_gets_no_policy_section() {
-        assert_eq!(build_delegation_policy(&policy(None, false)), "");
-    }
-
-    /// Regression: the first version of this section led with the prohibition and
-    /// gave the refusal path a paragraph of its own. gpt-4o-mini read that as an
-    /// invitation to decline — "route this to the HR assistant agent and ask what
-    /// the holidays are", against a running `hr-agent` whose description reads
-    /// "Public holidays, working day calculations, ...", was refused in a single
-    /// turn and 4 output tokens, with no tool call attempted. The section must
-    /// state that delegating is the expected outcome BEFORE it mentions refusing.
-    #[test]
-    fn the_policy_leads_with_delegating_not_refusing() {
-        let out = build_delegation_policy(&policy(Some(80), true));
-
-        let delegate_at = out
-            .find("Delegating is the normal")
-            .expect("the section must say delegating is the normal outcome");
-        let refuse_at = out
-            .find(NO_AGENT_MATCH_SENTINEL)
-            .expect("the refusal token is still taught");
-        assert!(
-            delegate_at < refuse_at,
-            "the instruction to delegate must come before the refusal path:\n{out}"
-        );
-        assert!(
-            out.contains("Last resort only"),
-            "the refusal must be framed as a last resort: {out}"
-        );
-    }
-
-    /// The bar alone is a hurdle with no sense of where a normal match sits, which
-    /// is what let the model assume it fell short. The section must also say what
-    /// a PASSING score looks like.
-    /// Regression: the instruction used to read "score it {min} or above" and
-    /// "reserve scores below {min}". At a bar of 0 that is "score it 0 or above"
-    /// (every value) and "reserve scores below 0" (impossible) — incoherent
-    /// guidance, and every call came back at 100.
-    #[test]
-    fn a_zero_bar_emits_no_threshold_language() {
-        let out = build_delegation_policy(&policy(Some(0), true));
-        assert!(
-            !out.contains("below 0"),
-            "a zero bar must not produce impossible instructions: {out}"
-        );
-        assert!(
-            !out.contains("rejected automatically"),
-            "nothing is rejected at a zero bar, so do not claim it is: {out}"
-        );
-        assert!(
-            out.contains("90-100"),
-            "the calibration scale still applies at a zero bar: {out}"
-        );
-    }
-
-    /// A real bar is still stated, so the model knows what gets rejected.
-    #[test]
-    fn a_real_bar_is_still_named() {
-        let out = build_delegation_policy(&policy(Some(80), true));
-        assert!(out.contains("below 80 are rejected"), "{out}");
-    }
-
-    /// Regression: the scale rewarded agents whose listed skills name the exact
-    /// task, which systematically penalised general-purpose agents — they list no
-    /// specific task by design, so the better one is at being general the lower it
-    /// scored. Observed live: "send an email to …" refused repeatedly against a
-    /// running MCP agent described as completing "arbitrary tasks", which had
-    /// successfully sent that same email minutes earlier.
-    #[test]
-    fn a_general_purpose_agent_is_not_penalised_for_being_general() {
-        let out = build_delegation_policy(&policy(Some(80), true));
-        assert!(
-            out.contains("general-purpose"),
-            "the scale must account for general-purpose agents: {out}"
-        );
-        assert!(
-            out.contains("instead of refusing"),
-            "falling back to a general agent must beat refusing: {out}"
-        );
-    }
-
-    /// Anchoring the model on the cutoff produced a cluster at the top of the
-    /// range. The scale gives it somewhere else to land.
-    #[test]
-    fn the_scale_discourages_defaulting_to_one_hundred() {
-        let out = build_delegation_policy(&policy(Some(80), true));
-        assert!(out.contains("Do not default to 100"), "{out}");
-        assert!(
-            out.contains("0-39"),
-            "the low end must be described too: {out}"
-        );
-    }
-
-    /// The bar alone is a hurdle with no sense of where a normal match sits. The
-    /// section must describe what each band of the scale means — originally a
-    /// single "score it {min} or above" sentence, which anchored everything at the
-    /// top of the range.
-    #[test]
-    fn the_policy_says_what_a_passing_score_looks_like() {
-        let out = build_delegation_policy(&policy(Some(80), true));
-        assert!(
-            out.contains("names this exact task"),
-            "the top band must be described: {out}"
-        );
-        assert!(
-            out.contains("squarely in the agent's described domain"),
-            "the ordinary-match band must be described: {out}"
-        );
-    }
-
-    #[test]
-    fn the_policy_section_states_the_bar_and_the_sentinel() {
-        let out = build_delegation_policy(&policy(Some(80), true));
-        assert!(out.contains("80"), "the bar must be stated: {out}");
-        assert!(out.contains(NO_AGENT_MATCH_SENTINEL));
-        assert!(out.contains("MANDATORY"));
-    }
-
-    #[test]
-    fn org_rules_reach_the_system_prompt() {
-        let config = OrchestratorConfig {
-            org_rules: Some("## Organization Rules\n\n- No PII: never forward emails.".into()),
-            ..Default::default()
-        };
-        let preamble = build_preamble(&config, &[]);
-        assert!(preamble.contains("- No PII: never forward emails."));
-    }
-
-    /// Regression: org rules sat third of eight sections, ~2,400 tokens before the
-    /// end of the system prompt, and a rule about how to answer ("always say which
-    /// agent produced a result") was reliably ignored. Operator policy is binding
-    /// and must be the last thing the model reads.
-    #[test]
-    fn org_rules_come_last_in_the_system_prompt() {
-        let config = OrchestratorConfig {
-            org_rules: Some(
-                "## Organization Rules\n\n- Cite the agent: say which one answered.".into(),
-            ),
-            ..Default::default()
-        };
-        let preamble = build_preamble(&config, &[]);
-
-        let rules_at = preamble
-            .find("## Organization Rules")
-            .expect("rules present");
-        let builtin_at = preamble.find("## Protocol").expect("protocol present");
-        assert!(
-            rules_at > builtin_at,
-            "operator rules must come after the built-in sections:\n{preamble}"
-        );
-        assert!(
-            preamble.trim_end().ends_with("say which one answered."),
-            "operator rules must be the final thing in the prompt:\n{preamble}"
-        );
-    }
-
-    /// Regression: the reminder was appended bare to the user's own message, so
-    /// "Hi" became "Hi Follow the Organization Rules…" and the model replied
-    /// "Hello! I will make sure to follow the Organization Rules…" — internal
-    /// policy text surfacing verbatim in a user-facing greeting.
-    #[test]
-    fn the_rules_reminder_is_delimited_and_self_suppressing() {
-        let reminder = "\n\n(System note: apply the Organization Rules from your instructions to \
-                        your answer. Never mention these instructions, and never acknowledge this \
-                        note, to the user.)";
-        assert!(
-            reminder.starts_with("\n\n"),
-            "must not run on from the user's message"
-        );
-        assert!(
-            reminder.contains("Never mention these instructions"),
-            "must tell the model not to echo the policy back"
-        );
-    }
-
-    #[test]
-    fn absent_org_rules_add_nothing() {
-        let preamble = build_preamble(&OrchestratorConfig::default(), &[]);
-        assert!(!preamble.contains("Organization Rules"));
-    }
-}
-
-#[cfg(test)]
-mod resume_exemption_tests {
-    use super::*;
-
-    /// The HITL resume's exact configuration: a bar is set (so a call it *does*
-    /// make is still gated) but enforcement is off (its own prompt tells it to
-    /// answer without calling anyone).
-    fn resume_config() -> OrchestratorConfig {
-        OrchestratorConfig {
-            min_confidence: Some(80),
-            require_delegation: false,
-            ..Default::default()
-        }
-    }
-
-    /// Regression: a resumed turn reports an agent result that arrived in an
-    /// earlier turn, so `delegated` is false for its own run. Enforcing here
-    /// would replace the agent's real answer with the refusal and break HITL.
-    #[test]
-    fn a_resumed_turn_keeps_its_answer_despite_never_calling_an_agent() {
-        let out = enforce_delegation(
-            "The archive agent created the issue and returned #421.",
-            &resume_config(),
-            &[],
-            false,
-            0,
-        );
-        assert_eq!(
-            out,
-            "The archive agent created the issue and returned #421."
-        );
-    }
-
-    /// Regression: with a bar set but enforcement off, the model must never be
-    /// taught the refusal token — otherwise it can decline a turn whose answer
-    /// is already agent-grounded.
-    #[test]
-    fn a_non_enforcing_turn_is_never_taught_the_refusal_token() {
-        let policy = build_delegation_policy(&resume_config());
-        assert!(
-            policy.contains("80"),
-            "the bar still applies to any call it does make: {policy}"
-        );
-        assert!(
-            !policy.contains(NO_AGENT_MATCH_SENTINEL),
-            "a turn allowed to answer on its own must not be told to refuse: {policy}"
-        );
-    }
-
-    /// Belt and braces: even if a sentinel escapes anyway, a human must never
-    /// see the raw token.
-    #[test]
-    fn a_raw_sentinel_never_reaches_the_user_even_unenforced() {
-        let out = enforce_delegation(NO_AGENT_MATCH_SENTINEL, &resume_config(), &[], false, 0);
-        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
-    }
-
-    /// The token quoted inside a real sentence is the model talking about the
-    /// policy, not invoking it — replacing on a substring hit would discard
-    /// agent-grounded content.
-    #[test]
-    fn the_token_mentioned_inside_prose_is_not_treated_as_a_refusal() {
-        let text = format!("The agent replied with the string {NO_AGENT_MATCH_SENTINEL} verbatim.");
-        let out = enforce_delegation(&text, &resume_config(), &[], false, 0);
-        assert_eq!(out, text);
-    }
-}
-
-#[cfg(test)]
-mod clarifying_question_tests {
-    use super::*;
-
-    fn strict() -> OrchestratorConfig {
-        OrchestratorConfig {
-            min_confidence: Some(80),
-            require_delegation: true,
-            ..Default::default()
-        }
-    }
-
-    /// Regression: mandatory delegation left no room for the model to ask for a
-    /// missing detail, so an underspecified request ("what are the holidays?"
-    /// with no country) came back as "no available agent can handle this
-    /// request" — telling the user the agent did not exist when it did.
-    #[test]
-    fn a_clarifying_question_survives_the_guard() {
-        let out = enforce_delegation(
-            "NEED_INPUT: which country and year should I look up?",
-            &strict(),
-            &[],
-            false,
-            0,
-        );
-        assert_eq!(out, "which country and year should I look up?");
-    }
-
-    /// The prefix must not leak into the chat bubble.
-    #[test]
-    fn the_prefix_is_stripped_not_shown() {
-        let out = enforce_delegation("NEED_INPUT:   which country?  ", &strict(), &[], false, 0);
-        assert_eq!(out, "which country?");
-        assert!(!out.contains(NEED_INPUT_SENTINEL));
-    }
-
-    /// The prefix is not an escape hatch for answering: with no question after
-    /// it there is nothing to ask, so the guard still applies.
-    #[test]
-    fn a_bare_prefix_with_no_question_still_refuses() {
-        let out = enforce_delegation("NEED_INPUT:", &strict(), &[], false, 0);
-        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
-    }
-
-    /// A direct answer is still suppressed — the clarify path must not weaken the
-    /// core guarantee.
-    #[test]
-    fn a_direct_answer_is_still_suppressed() {
-        let out = enforce_delegation("Paris is the capital of France.", &strict(), &[], false, 0);
-        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
-    }
-
-    /// The model has to be told the clarify path exists, or it will never use it.
-    #[test]
-    fn the_policy_teaches_the_clarify_path() {
-        let policy = build_delegation_policy(&strict());
-        assert!(
-            policy.contains("NEED_INPUT"),
-            "clarify path missing: {policy}"
-        );
-        assert!(
-            policy.contains("prefer calling the agent anyway"),
-            "calling the agent must remain the preferred route: {policy}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod capability_question_tests {
-    use super::*;
-
-    fn strict() -> OrchestratorConfig {
-        OrchestratorConfig {
-            min_confidence: Some(80),
-            require_delegation: true,
-            ..Default::default()
-        }
-    }
-
-    fn fleet() -> Vec<AgentInfo> {
-        vec![
-            AgentInfo {
-                id: "1".into(),
-                name: "hr-agent".into(),
-                description: "Public holidays, working day calculations, world clock".into(),
-                endpoint: "http://localhost:1".into(),
-                skills: vec![],
-            },
-            AgentInfo {
-                id: "2".into(),
-                name: "finance-agent".into(),
-                description: "Exchange rates and crypto prices".into(),
-                endpoint: "http://localhost:2".into(),
-                skills: vec![],
-            },
-        ]
-    }
-
-    /// Regression: "what can you do for me?" is about the fleet, not a task for
-    /// it, so nothing could be delegated and mandatory delegation answered the
-    /// most common opening message with "no available agent can handle this
-    /// request". It must answer from the roster instead.
-    #[test]
-    fn a_capability_question_is_answered_from_the_roster() {
-        let out = enforce_delegation(CAPABILITIES_SENTINEL, &strict(), &fleet(), false, 0);
-
-        assert!(out.contains("hr-agent"), "roster missing agents: {out}");
-        assert!(out.contains("finance-agent"), "roster incomplete: {out}");
-        assert!(
-            out.contains("Public holidays"),
-            "each agent's own description must carry through: {out}"
-        );
-        assert!(
-            !out.contains(NO_AGENT_MATCH_MESSAGE),
-            "a capability question is not a refusal: {out}"
-        );
-    }
-
-    /// The token itself must never reach the chat bubble.
-    #[test]
-    fn the_capabilities_token_is_not_shown_verbatim() {
-        let out = enforce_delegation(CAPABILITIES_SENTINEL, &strict(), &fleet(), false, 0);
-        assert!(!out.contains(CAPABILITIES_SENTINEL));
-    }
-
-    /// Regression: the bare-token check used to be gated on `!delegated`, so a
-    /// run where an earlier turn already called an agent would return the
-    /// literal token verbatim instead of the roster answer — the exact "bare
-    /// sentinel reaches a human" failure the NO_AGENT_MATCH check next to this
-    /// one is designed to prevent. `delegated: true` here is what a compound
-    /// turn looks like once one part of it has already delegated.
-    #[test]
-    fn the_capabilities_token_is_still_caught_after_an_earlier_delegation() {
-        let out = enforce_delegation(CAPABILITIES_SENTINEL, &strict(), &fleet(), true, 1);
-        assert!(
-            !out.contains(CAPABILITIES_SENTINEL),
-            "leaked verbatim: {out}"
-        );
-        assert!(out.contains("hr-agent"), "roster missing agents: {out}");
-    }
-
-    /// A genuine refusal should name what the fleet *can* do, so a dead end
-    /// becomes a menu rather than just "you failed".
-    /// Both refusal paths must produce the same thing: a deliberate decline (the
-    /// model emits the token) used to return the bare message while a suppressed
-    /// answer got the roster, which made the ordinary dead end the less helpful
-    /// of the two.
-    #[test]
-    fn both_refusal_paths_list_the_agents() {
-        let deliberate = enforce_delegation(NO_AGENT_MATCH_SENTINEL, &strict(), &fleet(), false, 0);
-        let suppressed = enforce_delegation("Here is a long essay…", &strict(), &fleet(), false, 0);
-        assert_eq!(deliberate, suppressed);
-        assert!(
-            deliberate.contains("hr-agent"),
-            "roster missing: {deliberate}"
-        );
-    }
-
-    #[test]
-    fn a_refusal_lists_the_available_agents() {
-        let out = enforce_delegation("Here is a long essay…", &strict(), &fleet(), false, 0);
-
-        assert!(
-            out.starts_with(NO_AGENT_MATCH_MESSAGE),
-            "refusal first: {out}"
-        );
-        assert!(
-            out.contains("hr-agent"),
-            "refusal should name agents: {out}"
-        );
-    }
-
-    /// With no roster to show there is nothing to add, and the bare message is
-    /// still correct.
-    #[test]
-    fn an_empty_fleet_falls_back_to_the_bare_message() {
-        let out = enforce_delegation("Here is a long essay…", &strict(), &[], false, 0);
-        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
-    }
-
-    /// The capability exemption must not become a way to answer a real question:
-    /// only the exact token qualifies.
-    #[test]
-    fn the_exemption_requires_the_exact_token() {
-        let out = enforce_delegation(
-            "CAPABILITIES include knowing that Paris is the capital of France.",
-            &strict(),
-            &fleet(),
-            false,
-            0,
-        );
-        assert!(out.starts_with(NO_AGENT_MATCH_MESSAGE));
-    }
-
-    /// Regression: the caller recognised a refusal by comparing against
-    /// `NO_AGENT_MATCH_MESSAGE` exactly. Appending the roster broke that silently
-    /// — refusals stopped being tagged, re-entered the next turn's context, and
-    /// the session taught itself to keep refusing (observed live: one successful
-    /// email send, then five identical refusals in a row).
-    ///
-    /// Asserts against what the guard ACTUALLY returns, not against the constant,
-    /// which is the only form of this test that would have caught it.
-    #[test]
-    fn every_refusal_the_guard_produces_is_recognised_as_one() {
-        let with_roster = enforce_delegation("an essay", &strict(), &fleet(), false, 0);
-        let deliberate = enforce_delegation(NO_AGENT_MATCH_SENTINEL, &strict(), &fleet(), false, 0);
-        let bare = enforce_delegation("an essay", &strict(), &[], false, 0);
-
-        for refusal in [&with_roster, &deliberate, &bare] {
-            assert!(
-                is_refusal_message(refusal),
-                "guard produced a refusal the caller cannot recognise: {refusal}"
-            );
-        }
-    }
-
-    /// A real agent-grounded answer must never be mistaken for a refusal, or it
-    /// would be dropped from the session's history.
-    #[test]
-    fn a_real_answer_is_not_mistaken_for_a_refusal() {
-        assert!(!is_refusal_message(
-            "Here are the public holidays in Germany."
-        ));
-        assert!(!is_refusal_message(""));
-    }
-
-    /// Regression: "What does the devops agent do?" and "Which agent handles
-    /// Kubernetes?" were refused, though the roster answers both outright. The
-    /// token covered "what agents exist" but not "what does agent X do".
-    #[test]
-    fn per_agent_questions_route_to_the_capability_answer() {
-        let policy = build_delegation_policy(&strict());
-        assert!(
-            policy.contains("PARTICULAR agent does"),
-            "asking about one agent must reach the roster: {policy}"
-        );
-        assert!(
-            policy.contains("which agent handles"),
-            "asking who handles a topic must reach the roster: {policy}"
-        );
-    }
-
-    #[test]
-    fn the_policy_teaches_the_capabilities_token() {
-        let policy = build_delegation_policy(&strict());
-        assert!(
-            policy.contains(CAPABILITIES_SENTINEL),
-            "the model must be told the token exists: {policy}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod greeting_tests {
-    use super::*;
-
-    fn strict() -> OrchestratorConfig {
-        OrchestratorConfig {
-            min_confidence: Some(70),
-            require_delegation: true,
-            ..Default::default()
-        }
-    }
-
-    /// Regression: "hi" and "good afternoon" are neither a task nor a question
-    /// about the fleet, so they fell through to the guard and were answered with
-    /// "no available agent can handle this request".
-    #[test]
-    fn a_greeting_is_answered_not_refused() {
-        let out = enforce_delegation(
-            "GREETING: Hi! What can I help you with?",
-            &strict(),
-            &[],
-            false,
-            0,
-        );
-        assert_eq!(out, "Hi! What can I help you with?");
-    }
-
-    #[test]
-    fn the_greeting_prefix_is_never_shown() {
-        let out = enforce_delegation("GREETING:   Hello!  ", &strict(), &[], false, 0);
-        assert_eq!(out, "Hello!");
-        assert!(!out.contains(GREETING_SENTINEL));
-    }
-
-    /// Regression: this check used to be gated on `!delegated`, so a compound
-    /// turn that had already delegated once earlier would show the literal
-    /// "GREETING: ..." prefix verbatim instead of stripping it.
-    #[test]
-    fn the_greeting_prefix_is_stripped_even_after_an_earlier_delegation() {
-        let out = enforce_delegation("GREETING: Hello!", &strict(), &[], true, 1);
-        assert_eq!(out, "Hello!");
-    }
-
-    /// The one exemption whose text is model-authored AND unconstrained in topic,
-    /// so it is the one an answer could hide behind. Over the cap it is treated as
-    /// an answer, not a greeting.
-    #[test]
-    fn an_answer_hiding_behind_the_greeting_prefix_is_still_suppressed() {
-        let smuggled = format!(
-            "GREETING: Hi! {}",
-            "The capital of France is Paris. ".repeat(12)
-        );
-        assert!(smuggled.chars().count() > MAX_GREETING_CHARS);
-
-        let out = enforce_delegation(&smuggled, &strict(), &[], false, 0);
-        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
-    }
-
-    /// An empty greeting is not a greeting.
-    #[test]
-    fn a_bare_prefix_falls_through_to_the_guard() {
-        let out = enforce_delegation("GREETING:", &strict(), &[], false, 0);
-        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
-    }
-
-    /// A plain direct answer is still suppressed — the exemption must not widen
-    /// the hole it sits next to.
-    #[test]
-    fn a_direct_answer_is_still_suppressed() {
-        let out = enforce_delegation("Paris is the capital of France.", &strict(), &[], false, 0);
-        assert_eq!(out, NO_AGENT_MATCH_MESSAGE);
-    }
-
-    #[test]
-    fn the_policy_teaches_the_greeting_token() {
-        let policy = build_delegation_policy(&strict());
-        assert!(
-            policy.contains("GREETING"),
-            "greeting path missing: {policy}"
-        );
-        assert!(
-            policy.contains("never \n             use it to answer a question")
-                || policy.contains("never use it to answer a question"),
-            "the model must be told not to answer with it: {policy}"
-        );
+        let err = policy
+            .check_tool_call(&serde_json::json!({"message": "hi"}))
+            .expect_err("the stub rejects anything without ok=true");
+        assert_eq!(err, "stub rejected this call");
     }
 }
