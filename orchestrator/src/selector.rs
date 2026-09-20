@@ -83,10 +83,19 @@ impl AgentSelector {
         // selection it refuses must be refused outright, not quietly redirected
         // to `agents[0]`, which is how a refusal used to turn into an arbitrary
         // pick.
+        //
+        // The completion rides the error. A refused selection cost exactly as
+        // much as an accepted one — the provider was called, the tokens were
+        // billed — and dropping the usage here made the refusal free in FinOps
+        // and invisible in `token_usage`, which is precisely the wrong shape for
+        // a policy an operator is tuning by watching what it spends.
         if let Some(p) = policy
             && let Err(reason) = p.check_selection(&raw)
         {
-            return Err(SelectorError::PolicyRefused(reason));
+            return Err(SelectorError::PolicyRefused {
+                reason,
+                usage: Box::new(result),
+            });
         }
 
         // Validate agent UUID exists in the candidate list; fall back to first if hallucinated.
@@ -293,11 +302,17 @@ fn extract_skills(skills_json: serde_json::Value) -> Vec<super::models::SkillSum
 pub enum SelectorError {
     #[error("no agents available")]
     NoAgentsAvailable,
-    /// The caller's `RoutingPolicy` refused the model's pick. The string is the
+    /// The caller's `RoutingPolicy` refused the model's pick. `reason` is the
     /// policy's own wording, relayed rather than rephrased — this crate has no
-    /// idea what the policy was checking for.
-    #[error("the routing policy refused this selection: {0}")]
-    PolicyRefused(String),
+    /// idea what the policy was checking for. `usage` is the completion that
+    /// produced the refused pick, so the caller can account for tokens that were
+    /// spent whether or not the selection survived; boxed to keep the error
+    /// small, since every `select_agent` result carries it.
+    #[error("the routing policy refused this selection: {reason}")]
+    PolicyRefused {
+        reason: String,
+        usage: Box<CompletionResult>,
+    },
     #[error("provider error: {0}")]
     Provider(#[from] ProviderError),
     #[error("failed to parse selection: {0}")]
@@ -432,6 +447,43 @@ mod system_prompt_tests {
         assert!(required.contains(&json!("stub_score")));
     }
 
+    /// Stands in for the completion a refused selection was produced by — the
+    /// provider call that has already been paid for by the time the policy gets
+    /// a look at it.
+    fn completion_result() -> CompletionResult {
+        CompletionResult {
+            content: "{}".to_string(),
+            finish_reason: Some("stop".to_string()),
+            usage: crate::models::CompletionUsage {
+                prompt_tokens: 900,
+                completion_tokens: 40,
+                total_tokens: 940,
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            },
+            latency_ms: 120,
+            provider: "openai".to_string(),
+            model: "test-model".to_string(),
+        }
+    }
+
+    /// Regression: the refusal used to be `PolicyRefused(String)`, so the
+    /// completion that produced the refused pick — already billed by the
+    /// provider — was dropped on the floor and the request showed up in FinOps
+    /// as having cost nothing.
+    #[test]
+    fn a_refusal_carries_the_tokens_it_already_spent() {
+        let err = SelectorError::PolicyRefused {
+            reason: "nope".to_string(),
+            usage: Box::new(completion_result()),
+        };
+        let SelectorError::PolicyRefused { usage, .. } = err else {
+            unreachable!("constructed as a refusal")
+        };
+        assert_eq!(usage.usage.total_tokens, 940);
+        assert_eq!(usage.model, "test-model");
+    }
+
     /// The refusal reaches the caller as the policy worded it, not rephrased.
     #[test]
     fn a_refused_selection_relays_the_policy_reason_verbatim() {
@@ -440,9 +492,12 @@ mod system_prompt_tests {
             .expect_err("10 is below the stub's own bar");
         assert_eq!(err, "the stub refused this pick");
         assert!(
-            SelectorError::PolicyRefused(err.clone())
-                .to_string()
-                .contains("the stub refused this pick")
+            SelectorError::PolicyRefused {
+                reason: err.clone(),
+                usage: Box::new(completion_result()),
+            }
+            .to_string()
+            .contains("the stub refused this pick")
         );
     }
 }

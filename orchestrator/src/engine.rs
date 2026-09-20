@@ -206,12 +206,20 @@ impl RoutingEngine for OssRoutingEngine {
             // agent still beats erroring — but applying it here would hand the
             // request to an agent the model just said cannot do the job, which
             // is precisely what a policy is for.
-            Err(crate::selector::SelectorError::PolicyRefused(reason)) => {
+            Err(crate::selector::SelectorError::PolicyRefused { reason, usage }) => {
                 tracing::info!(
                     %reason,
                     agents_considered = candidates.len(),
                     "routing refused by the operator's policy"
                 );
+                // The refused selection cost exactly what an accepted one
+                // costs — the provider call already happened — so its tokens
+                // are recorded on the same path and by the same helper. Written
+                // before the log row rather than after, because the row points
+                // at it; skipping this is what made a tuning session's rejected
+                // calls free in FinOps.
+                let selection_token_usage_id =
+                    write_selector_token_usage(pool, req.user_id, &req.session_id, &usage).await;
                 // A refusal is still a routing decision: log it like any other,
                 // so it isn't invisible to /api/orchestrator/stats and FinOps —
                 // only successful selections used to reach this log table.
@@ -234,7 +242,7 @@ impl RoutingEngine for OssRoutingEngine {
                         embedding_model: Some(self.embedding_model.clone()),
                         selection_llm_ms: Some(t3.elapsed().as_millis() as i32),
                         file_count: req.file_parts.len() as i32,
-                        selection_token_usage_id: None,
+                        selection_token_usage_id,
                         success: false,
                         // The policy's own wording, relayed rather than
                         // rephrased — this crate does not know what it checked.

@@ -115,7 +115,15 @@ pub trait DelegationPolicy: Debug + Send + Sync {
     ///
     /// A policy that discards long undelegated answers is paying to generate
     /// text nobody reads; this is how it stops.
-    fn undelegated_max_tokens(&self) -> Option<u64> {
+    ///
+    /// `user_query_chars` is the length of the request the turn is answering,
+    /// and it is passed because no constant can be a safe cap on its own. An
+    /// undelegated turn is precisely the turn that emits the agent tool call,
+    /// and the Rules section above tells the model to pass the user's own
+    /// wording through — so the one long thing such a turn legitimately writes
+    /// scales with the request. A cap below it truncates the call mid-arguments
+    /// and breaks the very turn it was meant to make cheaper.
+    fn undelegated_max_tokens(&self, _user_query_chars: usize) -> Option<u64> {
         None
     }
 

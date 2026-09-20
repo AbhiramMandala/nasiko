@@ -400,13 +400,14 @@ impl Orchestrator {
 
             // Nothing the policy will accept from an undelegated turn is long,
             // and anything long is about to be discarded — so stop paying to
-            // generate it.
+            // generate it. Sized against the query, because this is also the
+            // turn that relays it into a tool call.
             if !delegated
                 && let Some(cap) = self
                     .config
                     .policy
                     .as_ref()
-                    .and_then(|p| p.undelegated_max_tokens())
+                    .and_then(|p| p.undelegated_max_tokens(user_query.chars().count()))
             {
                 req = req.max_tokens(cap);
             }
@@ -863,12 +864,13 @@ async fn run_stream_inner(
 
             // Nothing the policy will accept from an undelegated turn is long,
             // and anything long is about to be discarded — so stop paying to
-            // generate it.
+            // generate it. Sized against the query, because this is also the
+            // turn that relays it into a tool call.
             if !delegated
                 && let Some(cap) = config
                     .policy
                     .as_ref()
-                    .and_then(|p| p.undelegated_max_tokens())
+                    .and_then(|p| p.undelegated_max_tokens(user_query.chars().count()))
             {
                 req = req.max_tokens(cap);
             }
@@ -1099,12 +1101,13 @@ async fn run_stream_inner(
 
             // Nothing the policy will accept from an undelegated turn is long,
             // and anything long is about to be discarded — so stop paying to
-            // generate it.
+            // generate it. Sized against the query, because this is also the
+            // turn that relays it into a tool call.
             if !delegated
                 && let Some(cap) = config
                     .policy
                     .as_ref()
-                    .and_then(|p| p.undelegated_max_tokens())
+                    .and_then(|p| p.undelegated_max_tokens(user_query.chars().count()))
             {
                 req = req.max_tokens(cap);
             }
@@ -1609,8 +1612,8 @@ mod policy_seam_tests {
         ) -> String {
             "stub replaced the answer".to_string()
         }
-        fn undelegated_max_tokens(&self) -> Option<u64> {
-            Some(123)
+        fn undelegated_max_tokens(&self, user_query_chars: usize) -> Option<u64> {
+            Some(123 + user_query_chars as u64)
         }
         fn buffer_every_turn(&self) -> bool {
             true
