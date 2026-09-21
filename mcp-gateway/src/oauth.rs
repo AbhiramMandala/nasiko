@@ -827,11 +827,12 @@ pub async fn fetch_protected_resource_metadata(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as B64Std;
 
     use super::*;
-    use crate::config::McpConfig;
+    use crate::config::{McpConfig, ToolSearchMode};
     use crate::provider::{GenericMcpProvider, Providers};
 
     /// Install a valid `SECRETS_ENCRYPTION_KEY` so `SecretsCrypto::for_user`
@@ -866,6 +867,11 @@ mod tests {
                 oauth_state_signing_key: "test".to_string(),
                 description_model: "gpt-4o-mini".to_string(),
                 hitl_request_ttl_days: 7,
+                tool_search_mode: ToolSearchMode::Semantic,
+                tool_search_tool_limit: 0,
+                tool_search_meta_limit: 0,
+                openai_api_key: None,
+                embedding_model: "".to_string(),
             },
             providers: Providers {
                 composio: None,
@@ -874,6 +880,7 @@ mod tests {
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
             endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
             llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
+            search_index: Arc::new(crate::search::NoopSearchIndex),
         }
     }
 

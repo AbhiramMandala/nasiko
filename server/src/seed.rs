@@ -613,38 +613,34 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
         }
     }
 
-    // Phase 2: bulk-sync tools for newly seeded toolkits in a single pass
-    // through the Composio catalog (~48 pages, not 48 × N).
+    // Phase 2: sync tools per-toolkit using the v3.1 API (server-side filtered).
+    // The previous bulk scan (v3 `/api/v3/tools`) hit a 50-page safety cap and
+    // missed tools — e.g. gmail has 63 tools but only 23 were synced.  The v3.1
+    // per-toolkit endpoint returns only that toolkit's tools, no cap risk.
     if newly_seeded.is_empty() {
         return;
     }
     let Some(provider) = &state.mcp.providers.composio else {
         return;
     };
-    // Downcast to ComposioProvider to access the bulk method.
-    let composio = provider
-        .as_any()
-        .downcast_ref::<nasiko_mcp_gateway::provider::ComposioProvider>();
-    let Some(composio) = composio else {
-        warn!("composio provider is not ComposioProvider, skipping bulk tool sync");
-        return;
-    };
-    let toolkit_names: Vec<String> = newly_seeded.keys().cloned().collect();
     info!(
-        count = toolkit_names.len(),
-        "bulk-syncing tools for newly seeded toolkits"
+        count = newly_seeded.len(),
+        "syncing tools for newly seeded toolkits (per-toolkit v3.1 API)"
     );
-    let tools_by_toolkit = composio.list_tools_for_toolkits(&toolkit_names).await;
-    for (toolkit, tools) in &tools_by_toolkit {
-        let Some(cid) = newly_seeded.get(toolkit) else {
-            continue;
+    for (toolkit, cid) in &newly_seeded {
+        let tools = match provider.list_toolkit_tools(toolkit).await {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(toolkit = %toolkit, %e, "failed to fetch tools for toolkit");
+                continue;
+            }
         };
         if tools.is_empty() {
             continue;
         }
-        let parsed: Vec<(String, Option<String>)> = tools
+        let parsed: Vec<(String, Option<String>, Option<serde_json::Value>)> = tools
             .iter()
-            .map(|t| (t.name.clone(), t.description.clone()))
+            .map(|t| (t.name.clone(), t.description.clone(), t.input_schema.clone()))
             .collect();
         match nasiko_mcp_gateway::repo::upsert_connector_tools(&state.db, *cid, &parsed).await {
             Ok(()) => {
@@ -657,6 +653,38 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
             }
             Err(e) => warn!(toolkit = %toolkit, %e, "failed to sync tools"),
         }
+    }
+
+    // Phase 3: backfill tools for any existing Composio connector whose
+    // mcp_connector_tools is empty — handles restarts after a failed sync or
+    // cleared table.  Newly seeded connectors were already handled above.
+    match nasiko_mcp_gateway::repo::list_composio_connectors(&state.db).await {
+        Ok(all_composio) => {
+            for conn in all_composio {
+                if newly_seeded.values().any(|id| *id == conn.id) {
+                    continue; // already synced above
+                }
+                let tools =
+                    nasiko_mcp_gateway::repo::list_connector_tools(&state.db, conn.id).await;
+                if matches!(&tools, Ok(t) if t.is_empty()) {
+                    info!(connector = %conn.name, "backfilling empty tool catalog");
+                    if let Some(owner) = conn.owner_id
+                        && let Err(e) = nasiko_mcp_gateway::permissions::sync_connector_tools_by_id(
+                            &state.mcp, owner, conn.id,
+                        )
+                        .await
+                    {
+                        warn!(connector = %conn.name, %e, "backfill sync failed");
+                    }
+                }
+            }
+        }
+        Err(e) => warn!(%e, "failed to list composio connectors for backfill"),
+    }
+
+    // Rebuild the search index once after all tool syncs are done.
+    if let Err(e) = state.mcp.search_index.rebuild(&state.db).await {
+        warn!(%e, "search index rebuild after seed failed");
     }
 }
 

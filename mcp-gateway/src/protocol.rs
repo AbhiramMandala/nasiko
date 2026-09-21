@@ -115,7 +115,14 @@ pub fn handle_initialize(req_id: &Value) -> Value {
     )
 }
 
-/// `tools/list` — aggregate, namespace, permission-filter, merge.
+/// `tools/list` — query-aware search (semantic/BM25) or eager fan-out (none mode).
+///
+/// When search is enabled (`MCP_TOOL_SEARCH_MODE != none`):
+/// - With traceparent: resolves the user's query from `flows.title`, runs flat
+///   search, returns top-k matched tools + pinned tools + `nasiko_search_tools`.
+/// - Without traceparent (agent startup): returns only `nasiko_search_tools`.
+///
+/// When search is disabled (`none`): delegates to `aggregate_tools` (legacy fan-out).
 pub async fn handle_tools_list(
     state: &McpState,
     user_id: Uuid,
@@ -125,33 +132,115 @@ pub async fn handle_tools_list(
     perms: &PermissionContext,
     traceparent: Option<&str>,
 ) -> Value {
-    match aggregator::aggregate_tools(
-        state,
-        user_id,
-        servers,
-        connected_toolkits,
-        perms,
-        traceparent,
-    )
-    .await
-    {
-        Ok(tools) => ok(req_id, json!({ "tools": tools })),
-        Err(e) => err(req_id, e.json_rpc_code(), e.to_json_rpc().message),
+    use crate::config::ToolSearchMode;
+
+    if state.config.tool_search_mode == ToolSearchMode::None {
+        // Rollback path: eager fan-out (existing behavior).
+        return match aggregator::aggregate_tools(
+            state,
+            user_id,
+            servers,
+            connected_toolkits,
+            perms,
+            traceparent,
+        )
+        .await
+        {
+            Ok(tools) => ok(req_id, json!({ "tools": tools })),
+            Err(e) => err(req_id, e.json_rpc_code(), e.to_json_rpc().message),
+        };
     }
+
+    // ── Search path ────────────────────────────────────────────────────────
+    let mut tools: Vec<Value> = Vec::new();
+
+    // Resolve the user's query from the flow record (if traceparent present).
+    let user_query = resolve_flow_title(state, traceparent).await;
+
+    if let Some(ref query) = user_query {
+        // Get the connector IDs this user can access.
+        let accessible_ids: Vec<Uuid> = match state
+            .authorizer
+            .list_accessible_connectors(&state.db, user_id)
+            .await
+        {
+            Ok(connectors) => connectors.iter().map(|c| c.id).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to list accessible connectors for search");
+                Vec::new()
+            }
+        };
+
+        let matches = state
+            .search_index
+            .search_tools(
+                query,
+                &accessible_ids,
+                perms,
+                state.config.tool_search_tool_limit,
+            )
+            .await;
+
+        for m in matches {
+            tools.push(tool_match_to_json(&m));
+        }
+    }
+
+    // Always include the search meta-tool so the agent can discover more tools.
+    tools.push(nasiko_search_tools_definition());
+
+    ok(req_id, json!({ "tools": tools }))
 }
 
-/// Whether a connector-connection lookup means an `auth_required` pause should fire. `Err` (a
-/// transient DB blip) must NOT be treated the same as `Ok(None)`/a non-`ACTIVE` row — a DB error
-/// says nothing about whether the user is actually connected, so it must not, by itself, tell the
-/// user to re-authenticate a connector that could be perfectly fine.
-fn needs_auth_required(
-    result: &crate::error::Result<Option<crate::repo::McpUserConnection>>,
-) -> bool {
-    match result {
-        Ok(Some(c)) => !c.status.eq_ignore_ascii_case("ACTIVE"),
-        Ok(None) => true,
-        Err(_) => false,
+/// Resolve `flows.title` (the user's original query) from a traceparent header.
+async fn resolve_flow_title(state: &McpState, traceparent: Option<&str>) -> Option<String> {
+    let tp = traceparent?;
+    let flow_id = nasiko_flow::FlowContext::from_traceparent(tp)?.flow_id;
+    sqlx::query_scalar::<_, Option<String>>("SELECT title FROM flows WHERE flow_id = $1")
+        .bind(&flow_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+}
+
+/// Convert a `ToolMatch` to the JSON format expected by `tools/list`.
+fn tool_match_to_json(m: &crate::search::ToolMatch) -> Value {
+    let mut obj = json!({
+        "name": m.tool_name,
+    });
+    if let Some(ref desc) = m.description {
+        obj["description"] = json!(desc);
     }
+    if let Some(ref schema) = m.input_schema {
+        obj["inputSchema"] = schema.clone();
+    }
+    obj
+}
+
+/// The `nasiko_search_tools` meta-tool definition — always included in
+/// `tools/list` so agents can search for tools not in the initial set.
+fn nasiko_search_tools_definition() -> Value {
+    json!({
+        "name": "nasiko_search_tools",
+        "description": "Search for available tools by describing what you need. Use this when you need a capability not already in your tool list.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Describe what you want to do, e.g. 'send an email' or 'create a GitHub issue'"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of tools to return",
+                    "default": 10
+                }
+            },
+            "required": ["query"]
+        }
+    })
 }
 
 /// `tools/call` — route, enforce two-layer permissions, forward to the backend.
@@ -169,6 +258,48 @@ pub async fn handle_tools_call(
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
+
+    // ── nasiko_search_tools meta-tool ────────────────────────────────────
+    if tool_name == "nasiko_search_tools" {
+        let query = arguments
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let limit = arguments
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(state.config.tool_search_meta_limit as u64)
+            as usize;
+
+        let accessible_ids: Vec<Uuid> = match state
+            .authorizer
+            .list_accessible_connectors(&state.db, user_id)
+            .await
+        {
+            Ok(connectors) => connectors.iter().map(|c| c.id).collect(),
+            Err(e) => {
+                return err(
+                    req_id,
+                    codes::INTERNAL_ERROR,
+                    format!("failed to resolve accessible connectors: {e}"),
+                );
+            }
+        };
+
+        let matches = state
+            .search_index
+            .search_tools(query, &accessible_ids, perms, limit)
+            .await;
+
+        let tools: Vec<Value> = matches.iter().map(tool_match_to_json).collect();
+        return ok(
+            req_id,
+            json!({
+                "tools": tools,
+                "search_mode": format!("{:?}", state.config.tool_search_mode),
+            }),
+        );
+    }
 
     let (server, original) = match router::route_tool(tool_name, &resolved.servers) {
         Ok(pair) => pair,
@@ -202,92 +333,6 @@ pub async fn handle_tools_call(
                     traceparent,
                 )
                 .await;
-            }
-            // A bare Composio-slug tool `route_tool` couldn't place (no `{prefix}__`
-            // to match `unusable_reason_for_prefix` above, which is generic-connector
-            // only anyway) whose toolkit corresponds to a real connector that just
-            // isn't an ACTIVE connection for this user yet. `toolkit_to_connector`
-            // (what `route_tool` actually searched) is ACTIVE-only by construction —
-            // see `session.rs`'s `current_connected_accounts` — so a connector stuck
-            // at e.g. `INITIATED` (registered, never finished OAuth) is invisible to
-            // it and always falls through to here. Never having connected is
-            // functionally the same "a human is needed" signal as a credential that
-            // broke after working (`detect_composio_auth_required` below), so it gets
-            // the identical AUTH_REQUIRED pause instead of a bare routing error with
-            // nothing a human can act on.
-            let toolkit = toolkit_from_composio_slug(tool_name);
-            if let Ok(Some(connector)) =
-                crate::repo::get_composio_connector_by_name(&state.db, &toolkit).await
-            {
-                // `Err` (a transient DB blip) and `Ok(None)` (genuinely no connection row) are
-                // distinct outcomes — collapsing them via `.ok().flatten()` used to treat a
-                // momentary DB error as "not connected," filing a spurious `auth_required` pause
-                // and telling the user to re-authenticate a connector that's actually fine.
-                let connection_result =
-                    crate::repo::get_user_connection(&state.db, user_id, connector.id).await;
-                if let Err(e) = &connection_result {
-                    tracing::warn!(
-                        error = %e, connector_id = %connector.id,
-                        "handle_tools_call: db error checking connector connection status; \
-                         skipping the auth_required check rather than falsely reporting not connected"
-                    );
-                }
-                if needs_auth_required(&connection_result) {
-                    return handle_auth_required(
-                        state,
-                        user_id,
-                        req_id,
-                        perms.agent_id,
-                        connector.id,
-                        &connector.name,
-                        traceparent,
-                    )
-                    .await;
-                }
-            }
-            // A bare Composio META-tool (`COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_MULTI_EXECUTE_TOOL`,
-            // ...) is unroutable when the user has *zero* active Composio connections at all —
-            // Composio's whole backend isn't wired into `resolved.servers` in that state, so even
-            // discovery itself fails (verified live: "Unknown tool 'COMPOSIO_SEARCH_TOOLS'").
-            // `toolkit_from_composio_slug` extracts `"composio"` from these names (not a real
-            // per-integration connector), so the check just above can never catch this — there's
-            // no specific toolkit to look up. Fall back to whichever Composio connector this
-            // AGENT has actually been granted (`perms.enabled_connectors`, exactly the set
-            // `nasiko mcp agent-tools enable` writes to `mcp_agent_connector_access`) but that
-            // has no active user connection (cross-checked against `resolved.toolkit_to_connector`,
-            // which is active-connections-only by construction — see the check above's own
-            // comment). Exactly one such candidate is unambiguously the one needing auth; more
-            // than one is a genuine ambiguity this can't guess through, so it falls through to
-            // the generic error below, same as today.
-            if tool_name.starts_with("COMPOSIO_") {
-                let mut candidates = Vec::new();
-                for &connector_id in &perms.enabled_connectors {
-                    if resolved
-                        .toolkit_to_connector
-                        .values()
-                        .any(|&id| id == connector_id)
-                    {
-                        continue; // already an active connection — not the gap being diagnosed
-                    }
-                    if let Ok(Some(connector)) =
-                        crate::repo::get_connector_by_id(&state.db, connector_id).await
-                        && connector.is_composio()
-                    {
-                        candidates.push(connector);
-                    }
-                }
-                if let [connector] = candidates.as_slice() {
-                    return handle_auth_required(
-                        state,
-                        user_id,
-                        req_id,
-                        perms.agent_id,
-                        connector.id,
-                        &connector.name,
-                        traceparent,
-                    )
-                    .await;
-                }
             }
             return err(req_id, codes::INVALID_PARAMS, e.to_string());
         }
@@ -557,7 +602,30 @@ pub async fn handle_tools_call(
         }
     }
 
-    tracing::info!(tool = %tool_name, forwarded_as = %original, kind = ?server.kind, "routing tool call");
+    // ── Composio MULTI_EXECUTE wrapping ─────────────────────────────────────
+    // Direct Composio toolkit tools (GMAIL_SEND_EMAIL etc.) must be wrapped in
+    // COMPOSIO_MULTI_EXECUTE_TOOL — the Composio MCP endpoint does not
+    // recognize individual tool slugs (POC finding, §4.1 of design doc).
+    // Meta-tools (COMPOSIO_SEARCH_TOOLS, COMPOSIO_MANAGE_CONNECTIONS,
+    // COMPOSIO_MULTI_EXECUTE_TOOL itself) are NOT wrapped.
+    let is_composio_toolkit_tool = server.kind == ServerType::Composio
+        && resolved
+            .toolkit_to_connector
+            .contains_key(&toolkit_from_composio_slug(tool_name));
+
+    let (forward_name, forward_args) = if is_composio_toolkit_tool {
+        let wrapped = json!({
+            "tools": [{
+                "tool_slug": original,
+                "arguments": arguments
+            }]
+        });
+        ("COMPOSIO_MULTI_EXECUTE_TOOL".to_string(), wrapped)
+    } else {
+        (original.clone(), arguments.clone())
+    };
+
+    tracing::info!(tool = %tool_name, forwarded_as = %forward_name, kind = ?server.kind, "routing tool call");
 
     match state
         .providers
@@ -565,8 +633,8 @@ pub async fn handle_tools_call(
         .call_tool(
             server,
             req_id,
-            &original,
-            &arguments,
+            &forward_name,
+            &forward_args,
             DEFAULT_CALL_TIMEOUT,
             traceparent,
         )
@@ -594,6 +662,7 @@ pub async fn handle_tools_call(
                 }
             }
         }
+        Ok(response) if is_composio_toolkit_tool => unwrap_multi_execute_response(response),
         Ok(response) => response,
         Err(e) => {
             // Self-heal: an uploaded_build connector's container can move
@@ -716,20 +785,18 @@ async fn detect_composio_auth_required(
 
 /// A tool call's connector needs the user to (re-)authenticate
 /// (`ConnectorUnusable::AuthRequired`, from M1's credential-failure
-/// plumbing, or a Composio toolkit that was never connected in the first
-/// place — `handle_tools_call`'s routing-failure branch) — persist a pending
-/// `hitl_requests` row (M2's store) and return `codes::AUTH_REQUIRED` instead
-/// of the generic "connector not available" error, so the agent (and,
-/// through it, the human) gets a distinguishable, actionable signal instead
-/// of an indistinguishable dead end.
+/// plumbing) — persist a pending `hitl_requests` row (M2's store) and return
+/// `codes::AUTH_REQUIRED` instead of the generic "connector not available"
+/// error, so the agent (and, through it, the human) gets a distinguishable,
+/// actionable signal instead of an indistinguishable dead end.
 ///
-/// For a Composio connector, also mints (or reuses) a real, clickable OAuth
-/// link via `connect::composio_connect` — the same call `POST /api/mcp/connect`
-/// makes — so an inline pause is actually self-service instead of pointing the
-/// human at a separate command. Best-effort: a generic (non-Composio) connector,
-/// or a failed mint call, still gets the pause, just without a link in `question`.
-/// Does not push or auto-retry anything itself — that's the resume dispatcher's
-/// job once the human resolves this row.
+/// Deliberately does not build a fresh OAuth `auth_url` here (that's
+/// `oauth::begin_authorization`, a side-effecting discovery/DCR call plus a
+/// connector-row mutation — out of scope for detection) and does not push or
+/// auto-retry anything (the resume dispatcher doesn't exist yet). The human
+/// re-authenticates via the existing `POST /api/mcp/connect` flow; a future
+/// milestone can enrich `question`/wire in the dispatcher without touching
+/// this detection path.
 async fn handle_auth_required(
     state: &McpState,
     user_id: Uuid,
@@ -761,7 +828,7 @@ async fn handle_auth_required(
         return generic_error();
     };
 
-    let mut question = json!({
+    let question = json!({
         "connector_id": connector_id,
         "connector": connector_name,
         "message": format!(
@@ -769,34 +836,6 @@ async fn handle_auth_required(
              A human must re-authenticate before this tool can be used again."
         ),
     });
-
-    // Best-effort: a Composio connector gets a real, clickable re-auth link inline —
-    // same call `POST /api/mcp/connect` makes, safe to call again on an already
-    // `INITIATED` row (reuses the cached link if still fresh, mints a new one
-    // otherwise; never duplicates or errors on retry). A generic (non-Composio)
-    // connector, or any failure minting the link, leaves `question` exactly as
-    // built above — the pause itself must never be lost over this enrichment.
-    if let Ok(Some(connector)) = crate::repo::get_connector_by_id(&state.db, connector_id).await
-        && connector.is_composio()
-    {
-        match crate::connect::composio_connect(state, user_id, &connector, None).await {
-            Ok(crate::connect::ConnectOutcome::Initiated {
-                oauth_url: Some(url),
-                ..
-            }) => {
-                if let Some(obj) = question.as_object_mut() {
-                    obj.insert("auth_url".to_string(), json!(url));
-                }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(
-                    connector = %connector_name, %connector_id, error = %e,
-                    "failed to mint a composio re-auth link for an inline HITL pause"
-                );
-            }
-        }
-    }
 
     match nasiko_hitl::repo::create_pending_auth_required_with_ttl(
         &state.db,
@@ -1065,12 +1104,107 @@ fn connector_disabled(
         .unwrap_or(false)
 }
 
+/// Unwrap a `COMPOSIO_MULTI_EXECUTE_TOOL` response back to a normal tool
+/// response the agent expects.
+///
+/// MULTI_EXECUTE returns:
+/// ```json
+/// { "jsonrpc": "2.0", "id": 1, "result": {
+///     "content": [{ "type": "text", "text": "[{\"data\": {...}, ...}]" }]
+/// }}
+/// ```
+///
+/// We extract the inner JSON from the first `content[].text` entry and return
+/// it as a standard `result.content[].text` with the unwrapped payload.
+/// Unwrap a `COMPOSIO_MULTI_EXECUTE_TOOL` response back to the clean tool
+/// result the agent expects.
+///
+/// MULTI_EXECUTE returns:
+/// ```text
+/// result.content[0].text = JSON string of {
+///   "data": { "results": [{ "response": { "successful": bool, "data": {…} }, … }] },
+///   "successful": bool
+/// }
+/// ```
+///
+/// We extract `data.results[0].response.data` (the actual tool output) and
+/// return it as a clean `result.content[0].text`.
+fn unwrap_multi_execute_response(response: Value) -> Value {
+    let text = response
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|entry| entry.get("text"))
+        .and_then(|t| t.as_str());
+
+    let Some(text) = text else {
+        return response;
+    };
+
+    // Parse the stringified JSON object from MULTI_EXECUTE.
+    let Ok(parsed) = serde_json::from_str::<Value>(text) else {
+        return response;
+    };
+
+    // Extract the first tool result from data.results[0].
+    let first_result = parsed
+        .get("data")
+        .and_then(|d| d.get("results"))
+        .and_then(|r| r.as_array())
+        .and_then(|arr| arr.first());
+
+    let inner_text = match first_result {
+        Some(result) => {
+            let tool_response = result.get("response");
+            let successful = tool_response
+                .and_then(|r| r.get("successful"))
+                .and_then(|s| s.as_bool())
+                .unwrap_or(false);
+
+            if successful {
+                // Success: return response.data (the actual tool output).
+                let data = tool_response
+                    .and_then(|r| r.get("data"))
+                    .cloned()
+                    .unwrap_or(json!({"success": true}));
+                serde_json::to_string(&data).unwrap_or_else(|_| text.to_string())
+            } else {
+                // Failure: return a clean error message.
+                let error = result
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .or_else(|| {
+                        tool_response
+                            .and_then(|r| r.get("data"))
+                            .and_then(|d| d.get("message"))
+                            .and_then(|m| m.as_str())
+                    })
+                    .unwrap_or("tool execution failed");
+                serde_json::to_string(&json!({"error": error}))
+                    .unwrap_or_else(|_| text.to_string())
+            }
+        }
+        None => text.to_string(),
+    };
+
+    // Rebuild as a standard MCP tool response.
+    let mut out = response.clone();
+    out["result"] = json!({
+        "content": [{
+            "type": "text",
+            "text": inner_text
+        }]
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-
+    use std::sync::Arc;
     use super::*;
-    use crate::config::McpConfig;
+    use crate::config::{McpConfig, ToolSearchMode};
     use crate::permissions::PermissionRule;
     use crate::provider::{GenericMcpProvider, Providers};
     use crate::types::Stance;
@@ -1098,6 +1232,11 @@ mod tests {
                 oauth_state_signing_key: "test".to_string(),
                 description_model: "gpt-4o-mini".to_string(),
                 hitl_request_ttl_days: 7,
+                tool_search_mode: ToolSearchMode::Semantic,
+                tool_search_tool_limit: 0,
+                tool_search_meta_limit: 0,
+                openai_api_key: None,
+                embedding_model: "".to_string(),
             },
             providers: Providers {
                 composio: None,
@@ -1106,6 +1245,7 @@ mod tests {
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
             endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
             llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
+            search_index: Arc::new(crate::search::NoopSearchIndex),
         }
     }
 
@@ -1635,51 +1775,56 @@ mod tests {
         );
     }
 
-    // ─── needs_auth_required (S3: DB error vs. genuinely-not-connected) ────────────────────
+    // ─── MULTI_EXECUTE unwrap tests ────────────────────────────────────────
 
-    fn user_connection(status: &str) -> crate::repo::McpUserConnection {
-        let now = chrono::Utc::now();
-        crate::repo::McpUserConnection {
-            id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
-            connector_id: Uuid::new_v4(),
-            status: status.to_string(),
-            connected_account_id: None,
-            redirect_url: None,
-            oauth_url: None,
-            encrypted_credential: None,
-            encrypted_refresh_token: None,
-            token_expires_at: None,
-            scope: None,
-            created_at: now,
-            updated_at: now,
-        }
+    #[test]
+    fn unwrap_multi_execute_extracts_successful_data() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "test",
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": "{\"data\":{\"results\":[{\"response\":{\"successful\":true,\"data\":{\"invitations\":[]}},\"tool_slug\":\"GITHUB_LIST_REPO_INVITATIONS_FOR_AUTH_USER\",\"index\":0}],\"total_count\":1,\"success_count\":1,\"error_count\":0},\"error\":null,\"log_id\":\"log_test\",\"successful\":true}"
+                }],
+                "isError": false
+            }
+        });
+
+        let unwrapped = unwrap_multi_execute_response(response);
+        let text = unwrapped["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["invitations"], json!([]), "should extract the inner data");
     }
 
     #[test]
-    fn active_connection_does_not_need_auth() {
-        assert!(!needs_auth_required(&Ok(Some(user_connection("ACTIVE")))));
-        // Case-insensitive, matching the live check's `eq_ignore_ascii_case`.
-        assert!(!needs_auth_required(&Ok(Some(user_connection("active")))));
+    fn unwrap_multi_execute_extracts_error() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "test",
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": "{\"data\":{\"results\":[{\"response\":{\"successful\":false,\"data\":{\"message\":\"Not Found\",\"status_code\":404}},\"error\":\"Not Found\",\"tool_slug\":\"TEST\",\"index\":0}],\"total_count\":1,\"success_count\":0,\"error_count\":1},\"error\":\"1 out of 1 tools failed\",\"log_id\":\"log_test\",\"successful\":false}"
+                }],
+                "isError": true
+            }
+        });
+
+        let unwrapped = unwrap_multi_execute_response(response);
+        let text = unwrapped["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert!(parsed.get("error").is_some(), "should extract error: {parsed}");
     }
 
     #[test]
-    fn expired_or_missing_connection_needs_auth() {
-        assert!(needs_auth_required(&Ok(Some(user_connection("EXPIRED")))));
-        assert!(needs_auth_required(&Ok(None)));
-    }
-
-    /// The actual S3 bug: a DB error must never be treated the same as "genuinely not
-    /// connected" — collapsing them (the old `.ok().flatten().is_some_and(...)` chain) fired a
-    /// spurious `auth_required` pause on a transient blip, telling the user to re-authenticate a
-    /// connector that might be perfectly fine.
-    #[test]
-    fn db_error_does_not_trigger_a_false_auth_required() {
-        // `PoolTimedOut`, not `RowNotFound` — this stands in for a real transient blip
-        // (`get_user_connection` uses `fetch_optional`, which never produces `RowNotFound`;
-        // that variant means "a `fetch_one` found nothing," not a connectivity failure).
-        let db_err: crate::error::Result<Option<crate::repo::McpUserConnection>> =
-            Err(sqlx::Error::PoolTimedOut.into());
-        assert!(!needs_auth_required(&db_err));
+    fn unwrap_passes_through_when_no_result_content() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": "test",
+            "error": { "code": -32600, "message": "Invalid Request" }
+        });
+        let unwrapped = unwrap_multi_execute_response(response.clone());
+        assert_eq!(unwrapped, response);
     }
 }

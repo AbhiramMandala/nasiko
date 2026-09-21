@@ -629,12 +629,8 @@ async fn sync_tools(
     if parsed.is_empty() {
         return;
     }
-    let tools_for_db: Vec<(String, Option<String>)> = parsed
-        .into_iter()
-        .map(|(name, desc, _)| (name, desc))
-        .collect();
     if let Err(e) =
-        nasiko_mcp_gateway::repo::upsert_connector_tools(db, connector_id, &tools_for_db).await
+        nasiko_mcp_gateway::repo::upsert_connector_tools(db, connector_id, &parsed).await
     {
         tracing::warn!(connector_id = %connector_id, %e, "failed to sync tools after build");
     }

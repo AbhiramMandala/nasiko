@@ -39,6 +39,7 @@ pub mod protocol;
 pub mod provider;
 pub mod repo;
 pub mod router;
+pub mod search;
 pub mod session;
 pub mod state;
 pub mod types;

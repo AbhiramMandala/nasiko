@@ -143,6 +143,7 @@ pub struct McpConnectorTool {
     pub connector_id: Uuid,
     pub tool_name: String,
     pub description: Option<String>,
+    pub input_schema: Option<Value>,
     pub default_stance: String,
     pub last_synced_at: Option<DateTime<Utc>>,
 }
@@ -976,23 +977,26 @@ pub async fn list_recent_connector_ids(
 
 // ─── Tool catalog ─────────────────────────────────────────────────────────────
 
-/// Replace a connector's synced tool catalog with `tools` (name, description).
+/// Replace a connector's synced tool catalog with `tools` (name, description, input_schema).
 pub async fn upsert_connector_tools(
     db: &PgPool,
     connector_id: Uuid,
-    tools: &[(String, Option<String>)],
+    tools: &[(String, Option<String>, Option<Value>)],
 ) -> Result<()> {
     let mut tx = db.begin().await?;
-    for (name, desc) in tools {
+    for (name, desc, schema) in tools {
         sqlx::query(
-            r#"INSERT INTO mcp_connector_tools (connector_id, tool_name, description, last_synced_at)
-               VALUES ($1, $2, $3, now())
+            r#"INSERT INTO mcp_connector_tools (connector_id, tool_name, description, input_schema, last_synced_at)
+               VALUES ($1, $2, $3, $4, now())
                ON CONFLICT (connector_id, tool_name) DO UPDATE SET
-                 description = EXCLUDED.description, last_synced_at = now()"#,
+                 description = EXCLUDED.description,
+                 input_schema = EXCLUDED.input_schema,
+                 last_synced_at = now()"#,
         )
         .bind(connector_id)
         .bind(name)
         .bind(desc)
+        .bind(schema)
         .execute(&mut *tx)
         .await?;
     }

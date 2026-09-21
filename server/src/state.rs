@@ -8,8 +8,6 @@ use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
-use crate::agent_lifecycle::SwappableAgentDeletionHook;
-use crate::prompt_context::SwappablePromptContext;
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
 use nasiko_config::Config;
@@ -30,19 +28,6 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
-    /// Supplemental per-agent prompt context (e.g. admin-authored knowledge) added before an
-    /// agent runs. OSS default is a no-op; the EE composition root installs the real
-    /// implementation through this cell (`SwappablePromptContext::install`, not a plain
-    /// reassignment) so background tasks that already hold an earlier `AppState` clone (e.g. the
-    /// HITL resume dispatcher, spawned before the EE composition root runs) see the swap too —
-    /// see `prompt_context` module docs for why a plain `Arc<dyn Trait>` field can't do this.
-    pub prompt_context: Arc<SwappablePromptContext>,
-    /// Fired once, best-effort, after an agent is deleted — a chance for enterprise-only,
-    /// agent-keyed state to clean itself up (e.g. freeing a name it reserved for reuse). OSS
-    /// default is a no-op; the EE composition root installs the real implementation through this
-    /// cell (`SwappableAgentDeletionHook::install`, not a plain reassignment) for the same reason
-    /// `prompt_context` does — see that field's doc comment and `agent_lifecycle` module docs.
-    pub agent_deletion_hook: Arc<SwappableAgentDeletionHook>,
     /// Tempo+Loki observability provider with DB-backed model pricing.
     /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
     /// addresses; queries fail soft when the stack is absent.
@@ -141,13 +126,6 @@ impl AppState {
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
             nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone()),
         );
-        let prompt_context = Arc::new(SwappablePromptContext::new(Arc::new(
-            crate::prompt_context::NoopPromptContextProvider,
-        )));
-        let agent_deletion_hook =
-            Arc::new(crate::agent_lifecycle::SwappableAgentDeletionHook::new(
-                Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook),
-            ));
 
         let flow_config = FlowConfig {
             max_depth: config.flow_max_depth as u32,
@@ -222,6 +200,11 @@ impl AppState {
             runtime.clone(),
             db.clone(),
         ));
+        // Build the initial search index from whatever tools are already in the DB.
+        // The seed task (spawned later) will rebuild again after syncing new tools.
+        if let Err(e) = mcp.search_index.rebuild(&db).await {
+            tracing::warn!(%e, "initial search index build failed — search will return empty until next sync");
+        }
 
         let state = Self {
             runtime,
@@ -238,8 +221,6 @@ impl AppState {
             genai_metrics,
             config: Arc::new(config),
             routing_engine,
-            prompt_context,
-            agent_deletion_hook,
             observability,
             github_svc,
             build_tx,

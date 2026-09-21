@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nasiko_mcp_gateway::config::McpConfig;
+use nasiko_mcp_gateway::config::{McpConfig, ToolSearchMode};
 use nasiko_mcp_gateway::permissions::{PermissionContext, PermissionRule};
 use nasiko_mcp_gateway::provider::{GenericMcpProvider, Providers};
 use nasiko_mcp_gateway::repo::McpConnector;
@@ -151,6 +151,11 @@ impl TestDb {
                 oauth_state_signing_key: "test".to_string(),
                 description_model: "gpt-4o-mini".to_string(),
                 hitl_request_ttl_days: 7,
+                tool_search_mode: ToolSearchMode::Semantic,
+                tool_search_tool_limit: 0,
+                tool_search_meta_limit: 0,
+                openai_api_key: None,
+                embedding_model: "".to_string(),
             },
             providers: Providers {
                 composio: None,
@@ -161,6 +166,7 @@ impl TestDb {
                 nasiko_mcp_gateway::endpoint_refresh::NoopEndpointRefresher,
             ),
             llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
+            search_index: Arc::new(nasiko_mcp_gateway::search::NoopSearchIndex),
         };
 
         Self {
