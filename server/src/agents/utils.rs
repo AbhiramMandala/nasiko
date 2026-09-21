@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::agent_lifecycle::AgentDeletionHook;
+use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::build::BuildStatus;
 
 /// Fetch the agent's card from its runtime endpoint and persist the fields
@@ -207,7 +207,7 @@ pub(crate) async fn fetch_agent_card_with_retry(
 pub(crate) async fn delete_agent_or_mark_failed(
     db: &sqlx::PgPool,
     agent_id: Uuid,
-    deletion_hook: &Arc<dyn AgentDeletionHook>,
+    deletion_hook: &Arc<SwappableAgentDeletionHook>,
 ) {
     let has_prior_success: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM agent_builds WHERE agent_id = $1 AND status = 'success')",
@@ -224,12 +224,20 @@ pub(crate) async fn delete_agent_or_mark_failed(
                 .execute(db)
                 .await;
     } else {
-        let _ = sqlx::query("DELETE FROM agents WHERE id = $1")
+        let deleted = sqlx::query("DELETE FROM agents WHERE id = $1")
             .bind(agent_id)
             .execute(db)
-            .await;
-        deletion_hook.on_agent_deleted(agent_id).await;
-        tracing::info!(%agent_id, "deleted new-agent row after build failure (no prior successful builds)");
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .unwrap_or(false);
+        // Only fire the hook if the row was actually removed — a transient DB error on the
+        // DELETE above must not free enterprise-only, agent-keyed state (e.g. an L1A domain
+        // name) for an agent that still exists. Mirrors `catalog/routes.rs::delete()`'s
+        // `RETURNING` + existence check for the same reason.
+        if deleted {
+            deletion_hook.on_agent_deleted(agent_id).await;
+            tracing::info!(%agent_id, "deleted new-agent row after build failure (no prior successful builds)");
+        }
     }
 }
 

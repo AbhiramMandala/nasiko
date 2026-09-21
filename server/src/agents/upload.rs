@@ -926,7 +926,7 @@ pub async fn execute_upload_and_deploy(
     writable: bool,
     writable_path: Option<String>,
     default_memory: String,
-    deletion_hook: std::sync::Arc<dyn crate::agent_lifecycle::AgentDeletionHook>,
+    deletion_hook: std::sync::Arc<crate::agent_lifecycle::SwappableAgentDeletionHook>,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1114,7 +1114,7 @@ async fn restore_prior_state_or_clean_up(
     prior_version: &Option<String>,
     prior_image: &Option<String>,
     prior_status: &Option<String>,
-    deletion_hook: &std::sync::Arc<dyn crate::agent_lifecycle::AgentDeletionHook>,
+    deletion_hook: &std::sync::Arc<crate::agent_lifecycle::SwappableAgentDeletionHook>,
 ) {
     match (prior_version, prior_status) {
         (Some(pv), Some(ps)) => {
@@ -1171,7 +1171,7 @@ pub async fn execute_clone_and_deploy(
     prior_version: Option<String>,
     prior_image: Option<String>,
     prior_status: Option<String>,
-    deletion_hook: std::sync::Arc<dyn crate::agent_lifecycle::AgentDeletionHook>,
+    deletion_hook: std::sync::Arc<crate::agent_lifecycle::SwappableAgentDeletionHook>,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1682,7 +1682,7 @@ async fn fail_github_clone_terminal(
     prior_version: &Option<String>,
     prior_image: &Option<String>,
     prior_status: &Option<String>,
-    deletion_hook: &std::sync::Arc<dyn crate::agent_lifecycle::AgentDeletionHook>,
+    deletion_hook: &std::sync::Arc<crate::agent_lifecycle::SwappableAgentDeletionHook>,
 ) {
     set_build_status(db, build_id, BuildStatus::Failed).await;
     set_upload_status(db, upload_id, name, owner_id, "failed", None, Some(reason)).await;

@@ -6,7 +6,7 @@ use sqlx::PgPool;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::agent_lifecycle::AgentDeletionHook;
+use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::state::AppState;
 
 const MAX_ATTEMPTS: i32 = 3;
@@ -183,7 +183,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
 async fn recover_stuck_jobs(
     db: &PgPool,
     in_flight: &[Uuid],
-    deletion_hook: &Arc<dyn AgentDeletionHook>,
+    deletion_hook: &Arc<SwappableAgentDeletionHook>,
 ) {
     // Permanently fail exhausted jobs (>= MAX_ATTEMPTS attempts already made).
     // RETURNING agent_id, connector_id so we can also drive the target to a
@@ -672,7 +672,7 @@ async fn reset_panicked_job(
     db: &PgPool,
     job_id: Uuid,
     old_attempt: i32,
-    deletion_hook: &Arc<dyn AgentDeletionHook>,
+    deletion_hook: &Arc<SwappableAgentDeletionHook>,
 ) {
     if old_attempt >= MAX_ATTEMPTS {
         mark_job(db, job_id, "failed", Some("job panicked during execution")).await;
@@ -717,7 +717,7 @@ async fn reset_panicked_job(
 async fn fail_agent_terminal(
     db: &PgPool,
     agent_id: Uuid,
-    deletion_hook: &Arc<dyn AgentDeletionHook>,
+    deletion_hook: &Arc<SwappableAgentDeletionHook>,
 ) {
     let _ = sqlx::query(
         "UPDATE agent_builds SET status = 'failed', updated_at = now() \

@@ -171,7 +171,11 @@ async fn clone_pre_build_rejection_restores_existing_agent_instead_of_deleting()
         Some("1.0.0".to_string()),
         Some("nasiko/existing:1.0.0".to_string()),
         Some("running".to_string()),
-        Arc::new(nasiko_server::agent_lifecycle::NoopAgentDeletionHook),
+        Arc::new(
+            nasiko_server::agent_lifecycle::SwappableAgentDeletionHook::new(Arc::new(
+                nasiko_server::agent_lifecycle::NoopAgentDeletionHook,
+            )),
+        ),
     )
     .await;
 
@@ -258,7 +262,11 @@ async fn clone_genuine_deploy_failure_on_existing_agent_restores_instead_of_dele
         Some("1.0.0".to_string()),
         Some("nasiko/existing:1.0.0".to_string()),
         Some("running".to_string()),
-        Arc::new(nasiko_server::agent_lifecycle::NoopAgentDeletionHook),
+        Arc::new(
+            nasiko_server::agent_lifecycle::SwappableAgentDeletionHook::new(Arc::new(
+                nasiko_server::agent_lifecycle::NoopAgentDeletionHook,
+            )),
+        ),
     )
     .await;
 
@@ -276,6 +284,19 @@ async fn clone_genuine_deploy_failure_on_existing_agent_restores_instead_of_dele
     assert_eq!(row.2, "running");
 
     server.cleanup().await;
+}
+
+#[derive(Default)]
+struct RecordingDeletionHook(std::sync::Mutex<Vec<Uuid>>);
+
+#[async_trait::async_trait]
+impl nasiko_server::agent_lifecycle::AgentDeletionHook for RecordingDeletionHook {
+    async fn on_agent_deleted(&self, agent_id: Uuid) {
+        self.0
+            .lock()
+            .expect("recording hook lock poisoned")
+            .push(agent_id);
+    }
 }
 
 #[tokio::test]
@@ -305,6 +326,15 @@ async fn clone_pre_build_rejection_on_brand_new_agent_still_cleans_up() {
     std::fs::write(&tar_path, &tar_gz).unwrap();
 
     let build_id = Uuid::new_v4();
+    // Records what it was called with rather than a Noop, so this test actually observes the
+    // hook firing with the right agent id — not just that the agent row disappeared (which the
+    // hook contributes nothing to, and would pass identically if the hook call were deleted).
+    let recorder = Arc::new(RecordingDeletionHook::default());
+    let deletion_hook = Arc::new(
+        nasiko_server::agent_lifecycle::SwappableAgentDeletionHook::new(
+            recorder.clone() as Arc<dyn nasiko_server::agent_lifecycle::AgentDeletionHook>
+        ),
+    );
     execute_clone_and_deploy(
         server.runtime.clone() as Arc<dyn nasiko_runtime::ContainerRuntime>,
         server.db.clone(),
@@ -328,7 +358,7 @@ async fn clone_pre_build_rejection_on_brand_new_agent_still_cleans_up() {
         None,
         None,
         None,
-        Arc::new(nasiko_server::agent_lifecycle::NoopAgentDeletionHook),
+        deletion_hook,
     )
     .await;
 
@@ -340,6 +370,15 @@ async fn clone_pre_build_rejection_on_brand_new_agent_still_cleans_up() {
     assert!(
         !exists,
         "a brand-new agent with nothing to restore should still be cleaned up"
+    );
+    assert_eq!(
+        recorder
+            .0
+            .lock()
+            .expect("recording hook lock poisoned")
+            .as_slice(),
+        &[agent_id],
+        "the deletion hook must fire exactly once, with the deleted agent's id"
     );
 
     server.cleanup().await;

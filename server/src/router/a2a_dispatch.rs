@@ -506,9 +506,16 @@ pub(crate) async fn orchestrator_stream(
     // EE-installed context) does NOT itself carry the target agent's L1A. The planner may relay
     // some of what it saw into the sub-task text it writes, but that's LLM-mediated, not
     // guaranteed. Closing this needs either threading the injection seam down into
-    // `nasiko-react-agent`, or the proxy-based design in `MEMORY_TRD.md` §3.2 point (2) — real,
+    // `nasiko-react-agent`, or a proxy that injects on the minted sub-leg directly — real,
     // separate scope, not something this call site can add on its own.
-    let agent_ids: Vec<Uuid> = agent_summaries.iter().map(|s| s.id).collect();
+    // From `agents` (the post-endpoint-resolution roster actually rendered below), not
+    // `agent_summaries` — looking up context for a candidate that gets dropped for having no
+    // endpoint would waste a domain lookup (and possibly an embedding call) on an id the
+    // preamble loop below can never reach anyway.
+    let agent_ids: Vec<Uuid> = agents
+        .iter()
+        .filter_map(|a| Uuid::parse_str(&a.id).ok())
+        .collect();
     let supplemental_context = state
         .prompt_context
         .context_for_agents(&agent_ids, query)
