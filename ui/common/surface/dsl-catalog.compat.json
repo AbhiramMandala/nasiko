@@ -1,9 +1,9 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "50890cfc89ea",
+  "catalogVersion": "b6d2c0e34d1a",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
-  "componentCount": 42,
+  "componentCount": 41,
   "components": {
     "app-accordion": {
       "element": "app-accordion",
@@ -2744,78 +2744,6 @@
       ],
       "events": [],
       "note": "Only useful with Slot() — its content is entirely start/end slotted."
-    },
-    "app-trace-tree": {
-      "element": "app-trace-tree",
-      "summary": "A nested run where every node has a duration and an outcome: a trace's spans, a call graph, a build's steps. Use it when the nesting is the point — for a flat sequence of runs, AppTable or AppList says more per row.",
-      "actionParam": true,
-      "paramOrder": [
-        "spans",
-        "value",
-        "collapsed",
-        "label",
-        "action"
-      ],
-      "requiresName": true,
-      "nameFrom": [
-        "label"
-      ],
-      "attributes": {
-        "spans": {
-          "type": "json",
-          "shape": {
-            "fields": [
-              "id",
-              "label",
-              "meta",
-              "icon",
-              "status",
-              "duration",
-              "children"
-            ],
-            "optional": [
-              "meta",
-              "icon",
-              "status",
-              "duration",
-              "children"
-            ]
-          },
-          "description": "JSON array of root nodes, each `{ id, label, meta?, icon?, status?, duration?, children? }`: `id` is echoed in both events, `meta` is the mono line beside the label (an operation name), `icon` names a glyph from the shared set, `status` is `ok` (default) or `error`, `duration` is the formatted time on the trailing badge."
-        },
-        "value": {
-          "type": "string",
-          "description": "`id` of the selected row."
-        },
-        "collapsed": {
-          "type": "json",
-          "description": "JSON array of node ids whose children are hidden."
-        },
-        "label": {
-          "type": "string",
-          "description": "Accessible name for the `role=\"tree\"`."
-        }
-      },
-      "slots": [],
-      "events": [
-        {
-          "name": "trace-tree-select",
-          "description": "`{ id }` when a row is clicked or activated.",
-          "detail": [
-            "id"
-          ]
-        },
-        {
-          "name": "trace-tree-toggle",
-          "description": "`{ id, expanded }` from the disclosure chevron.",
-          "detail": [
-            "id",
-            "expanded"
-          ]
-        }
-      ],
-      "actionEvent": "trace-tree-select",
-      "note": "Fully controlled: pass the whole tree in `spans`, the selected id in `value` and the folded ids in `collapsed`; it renders them and emits trace-tree-select / trace-tree-toggle rather than changing any of the three."
     }
   },
   "routes": [

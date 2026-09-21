@@ -70,7 +70,6 @@ import '/common/design-system/app-textarea/app-textarea.js';
 import '/common/design-system/app-time-field/app-time-field.js';
 import '/common/design-system/app-toggle-group/app-toggle-group.js';
 import '/common/design-system/app-toggle/app-toggle.js';
-import '/common/design-system/app-trace-tree/app-trace-tree.js';
 import { confirmDialog } from '/common/design-system/app-modal/app-modal.js';
 import { toast } from '/common/utils/toast.js';
 import { register } from '/common/core/data-sources.js';
@@ -1006,18 +1005,6 @@ const SPECS = [
   <app-list-item value="c" heading="invoice-worker" indent="1" badge="child"></app-list-item>
   <app-list-item value="d" heading="devops-agent" disabled></app-list-item>
 </app-list>`,
-  },
-  {
-    group: 'Data display',
-    tag: 'app-trace-tree',
-    blurb: 'The observability span tree, as a primitive: any nested run whose nodes carry a duration and an outcome. Controlled \u2014 pass `spans`, `value` and `collapsed`; it emits trace-tree-select and trace-tree-toggle and changes nothing itself.',
-    demo: `<app-trace-tree label="Trace spans" value="c" style="max-width: 460px"
-  collapsed='["d"]'
-  spans='[{"id":"a","label":"ses_f76395acd95946a0b6","meta":"session.run","duration":"877ms","children":[
-    {"id":"b","label":"a2a.dispatch","meta":"invoke_agent","duration":"857ms","children":[
-      {"id":"c","label":"openai.chat","meta":"chat","icon":"cube","duration":"836ms"},
-      {"id":"d","label":"lookup_invoice","icon":"terminal","status":"error","duration":"12ms","children":[
-        {"id":"e","label":"http.get","duration":"9ms"}]}]}]}]'></app-trace-tree>`,
   },
   {
     group: 'Data display',
