@@ -51,7 +51,7 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-stat-row.css', import.meta.url));
 import { escHtml, escAttr } from '/common/utils/escape.js';
 import { applyFormat } from '/common/utils/units.js';
-import { errorStateHtml, bindRetry } from '/common/utils/data-component-utils.js';
+import { errorStateHtml, bindRetry } from '/common/design-system/app-empty-state/error-state.js';
 import '../app-button/app-button.js';
 import '../app-empty-state/app-empty-state.js';
 

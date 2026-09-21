@@ -32,7 +32,7 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-stat-card.css', import.meta.url));
 import { escHtml, escAttr } from '../../utils/escape.js';
 import { applyFormat } from '../../utils/units.js';
-import { errorStateHtml, bindRetry } from '../../utils/data-component-utils.js';
+import { errorStateHtml, bindRetry } from '../app-empty-state/error-state.js';
 import '../app-button/app-button.js';
 import '../app-empty-state/app-empty-state.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];

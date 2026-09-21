@@ -94,7 +94,7 @@ import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-table/app-table.js';
 import { attachTooltip } from '/common/design-system/app-tooltip/app-tooltip.js';
 import { call } from '../core/data-sources.js';
-import { errorStateHtml } from '/common/utils/data-component-utils.js';
+import { errorStateHtml } from '/common/design-system/app-empty-state/error-state.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

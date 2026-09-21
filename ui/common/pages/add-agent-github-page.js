@@ -10,7 +10,7 @@ import { escAttr, escHtml } from '/common/utils/escape.js';
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./add-agent-github-page.css', import.meta.url));
 import { navigate as routerNavigate } from '../core/router.js';
-import { errorStateHtml } from '/common/utils/data-component-utils.js';
+import { errorStateHtml } from '/common/design-system/app-empty-state/error-state.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];

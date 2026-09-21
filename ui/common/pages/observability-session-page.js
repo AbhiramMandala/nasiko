@@ -31,7 +31,7 @@ import { escAttr, escHtml } from '/common/utils/escape.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { call } from '../core/data-sources.js';
 import '/common/features/agent-steps.js';
-import { errorStateHtml } from '/common/utils/data-component-utils.js';
+import { errorStateHtml } from '/common/design-system/app-empty-state/error-state.js';
 
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];

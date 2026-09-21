@@ -79,7 +79,7 @@ import '../app-button/app-button.js';
 import { icons } from '../../utils/icons.js';
 import { escHtml, escAttr } from '../../utils/escape.js';
 import { navigate as routerNavigate } from '../../core/router.js';
-import { errorStateHtml, bindRetry } from '../../utils/data-component-utils.js';
+import { errorStateHtml, bindRetry } from '../app-empty-state/error-state.js';
 import '../app-empty-state/app-empty-state.js';
 
 import { warnOnce } from '../../utils/deprecate.js';

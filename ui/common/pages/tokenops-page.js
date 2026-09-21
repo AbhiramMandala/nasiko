@@ -93,7 +93,7 @@ import '/common/design-system/app-segmented-control/app-segmented-control.js';
 import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-table/app-table.js';
 import { call } from '../core/data-sources.js';
-import { errorStateHtml } from '/common/utils/data-component-utils.js';
+import { errorStateHtml } from '/common/design-system/app-empty-state/error-state.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 

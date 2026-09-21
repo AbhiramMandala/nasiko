@@ -59,7 +59,8 @@
  *       ordering is reachable again after a sort.
  */
 import { icons } from '../../utils/icons.js';
-import { createEventTracker, debounce, errorStateHtml } from '../../utils/data-component-utils.js';
+import { createEventTracker, debounce } from '../../utils/data-component-utils.js';
+import { errorStateHtml } from '../app-empty-state/error-state.js';
 import '../app-empty-state/app-empty-state.js';
 import { resolveOptional as resolveDataSource } from '../../core/data-sources.js';
 import { escAttr, escHtml } from '../../utils/escape.js';

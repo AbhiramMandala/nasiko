@@ -37,7 +37,7 @@ import '/common/design-system/app-switch/app-switch.js';
 import { call } from '../core/data-sources.js';
 import { initialView } from '../utils/module-view.js';
 import { readSearchParams, setSearchParams } from '../utils/url-policy.js';
-import { errorStateHtml } from '/common/utils/data-component-utils.js';
+import { errorStateHtml } from '/common/design-system/app-empty-state/error-state.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
