@@ -70,6 +70,30 @@ fn tokens_per_tool_call(completion_tokens: Option<u64>, num_tool_calls: usize) -
         .unwrap_or(0)
 }
 
+/// Does the operator's policy refuse this call? `Some(reason)` if so.
+///
+/// The decision only — no reporting — because the two loops report it in
+/// different shapes (`run_stream_inner` sends an event, `run` records a trace)
+/// and only the *decision* has to stay identical between them.
+fn policy_refusal(config: &OrchestratorConfig, tc: &ToolCall) -> Option<String> {
+    config
+        .policy
+        .as_ref()
+        .and_then(|p| p.check_tool_call(&tc.function.arguments).err())
+}
+
+/// What the model is told when a call is blocked, in the tool-result context.
+///
+/// One wording for both loops. They had drifted — one said `Blocked:` and the
+/// other `BLOCKED: … Do NOT retry`, so the same policy taught the model two
+/// different lessons depending on which entry point ran it.
+fn blocked_note(tool_name: &str, reason: &str) -> String {
+    format!(
+        "[{tool_name}] BLOCKED: {reason}. Do NOT retry this agent with different \
+         arguments unless you have a concrete reason to."
+    )
+}
+
 /// The policy + call-guard gate for one tool call, in `run_stream_inner`'s
 /// event-channel reporting style (`OrchestratorEvent::PolicyRejected` plus a
 /// message telling the model not to retry). Both of its branches call this —
@@ -77,10 +101,10 @@ fn tokens_per_tool_call(completion_tokens: Option<u64>, num_tool_calls: usize) -
 /// it has, and this used to be a byte-for-byte copy in each, with no structural
 /// signal that a change to one needed the other.
 ///
-/// `Err(())` means the call was rejected — already reported on `tx` and
-/// already pushed onto `results_for_context` — so the caller should `continue`
-/// its loop rather than call the tool.
-async fn reject_blocked_call(
+/// `true` means the call was blocked — already reported on `tx` and already
+/// pushed onto `results_for_context` — so the caller should `continue` its loop
+/// rather than call the tool.
+async fn call_is_blocked(
     tc: &ToolCall,
     agent_display: &str,
     config: &OrchestratorConfig,
@@ -88,15 +112,13 @@ async fn reject_blocked_call(
     tx: &mpsc::Sender<OrchestratorEvent>,
     turn_idx: usize,
     results_for_context: &mut Vec<String>,
-) -> Result<(), ()> {
+) -> bool {
     let name = &tc.function.name;
 
     // Operator policy first, before the flow guard: a call the policy rejects
     // should never consume fan-out or depth budget, and `before_call`
     // increments both.
-    if let Some(policy) = &config.policy
-        && let Err(reason) = policy.check_tool_call(&tc.function.arguments)
-    {
+    if let Some(reason) = policy_refusal(config, tc) {
         let _ = tx
             .send(OrchestratorEvent::PolicyRejected {
                 agent: agent_display.to_string(),
@@ -105,12 +127,8 @@ async fn reject_blocked_call(
                 kind: PolicyRejectionKind::Delegation,
             })
             .await;
-        results_for_context.push(format!(
-            "[{}] BLOCKED: {}. Do NOT retry this agent with different arguments \
-             unless you have a concrete reason to.",
-            name, reason
-        ));
-        return Err(());
+        results_for_context.push(blocked_note(name, &reason));
+        return true;
     }
 
     if let Some(g) = guard
@@ -124,14 +142,11 @@ async fn reject_blocked_call(
                 kind: PolicyRejectionKind::FlowGuard,
             })
             .await;
-        results_for_context.push(format!(
-            "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
-            name, reason
-        ));
-        return Err(());
+        results_for_context.push(blocked_note(name, &reason));
+        return true;
     }
 
-    Ok(())
+    false
 }
 
 /// The orchestrator's system prompt. One builder for both loops — `run()` and
@@ -469,16 +484,17 @@ impl Orchestrator {
                         .replace('_', "-");
 
                     // Operator policy first — see the streaming path's own note.
-                    if let Some(policy) = &self.config.policy
-                        && let Err(reason) = policy.check_tool_call(&tc.function.arguments)
-                    {
+                    // Shares `policy_refusal`/`blocked_note` with that path, so
+                    // the two entry points cannot reach different verdicts or
+                    // teach the model different lessons about the same block.
+                    if let Some(reason) = policy_refusal(&self.config, tc) {
                         tracing::warn!(tool = %name, %reason, "delegation policy blocked");
                         trace.tool_calls.push(ToolCallTrace {
                             tool_name: name.clone(),
                             arguments: tc.function.arguments.clone(),
                             result: Err(reason.clone()),
                         });
-                        results_for_context.push(format!("[{}] Blocked: {}", name, reason));
+                        results_for_context.push(blocked_note(name, &reason));
                         continue;
                     }
 
@@ -952,7 +968,7 @@ async fn run_stream_inner(
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    if reject_blocked_call(
+                    if call_is_blocked(
                         tc,
                         &agent_display,
                         config,
@@ -962,7 +978,6 @@ async fn run_stream_inner(
                         &mut results_for_context,
                     )
                     .await
-                    .is_err()
                     {
                         continue;
                     }
@@ -974,7 +989,7 @@ async fn run_stream_inner(
                     tracing::info!(
                         target: "nasiko::orchestrator",
                         agent = %agent_display,
-                        policy_score = policy_score.unwrap_or(-1.0),
+                        policy_score = ?policy_score,
                         turn = turn_idx + 1,
                         "delegating to agent: the call cleared every configured gate"
                     );
@@ -1207,7 +1222,7 @@ async fn run_stream_inner(
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    if reject_blocked_call(
+                    if call_is_blocked(
                         tc,
                         &agent_display,
                         config,
@@ -1217,7 +1232,6 @@ async fn run_stream_inner(
                         &mut results_for_context,
                     )
                     .await
-                    .is_err()
                     {
                         continue;
                     }
@@ -1229,7 +1243,7 @@ async fn run_stream_inner(
                     tracing::info!(
                         target: "nasiko::orchestrator",
                         agent = %agent_display,
-                        policy_score = policy_score.unwrap_or(-1.0),
+                        policy_score = ?policy_score,
                         turn = turn_idx + 1,
                         "delegating to agent: the call cleared every configured gate"
                     );
@@ -1331,12 +1345,19 @@ async fn run_stream_inner(
             } else {
                 // Final answer — already streamed token-by-token via Content events.
                 //
-                // No policy review here, and none is needed: a policy that can
-                // replace a final answer sets `buffer_every_turn`, which forces
-                // `use_non_streaming` true for every turn and makes this branch
-                // unreachable under it. That is exactly why it forces it — text
-                // emitted here has already reached the client chunk-by-chunk and
-                // cannot be recalled.
+                // No policy review here, and none is possible: the text has
+                // already reached the client chunk-by-chunk and cannot be
+                // recalled. A policy whose `review_final_answer` can change an
+                // answer must therefore return `true` from `buffer_every_turn`,
+                // which forces `use_non_streaming` above and makes this branch
+                // unreachable under it.
+                //
+                // Note the condition is "can change an answer", not "enforces
+                // something": a policy that rewrites only some turns still has
+                // to buffer all of them, because this branch cannot ask. That
+                // distinction is not academic — the enterprise policy returned
+                // `require_delegation` here, so the HITL resume streamed turn 0
+                // and silently skipped its own final-answer review.
                 let final_text = text_parts.join("");
                 context.push_assistant(&final_text);
 

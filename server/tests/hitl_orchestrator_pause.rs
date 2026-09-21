@@ -56,8 +56,15 @@ async fn seed_running_agent(
 /// `rig-core-0.11.1`'s `send_compatible_streaming_request` recognizes as "entire tool call in one
 /// delta" (name and arguments both present in the same delta, per
 /// `providers/openai/streaming.rs`), so no follow-up chunk is needed. This is what turn 0 of
-/// `run_stream_inner` always goes through (`use_non_streaming = turn_idx > 0`) — the path the
-/// tracker's own Step 5 notes left without a black-box test (T5).
+/// `run_stream_inner` goes through **when nothing asks it to buffer** — the path the tracker's
+/// own Step 5 notes left without a black-box test (T5).
+///
+/// That caveat is load-bearing now: `use_non_streaming` is `turn_idx > 0 ||
+/// policy.buffer_every_turn()`, and the enterprise delegation policy returns `true`, so on EE
+/// turn 0 takes the non-streaming branch and never sees this fixture. These tests run against
+/// the open-source server, whose `NoOrchestratorPolicy` configures no policy at all, so the
+/// streaming branch is still the one under test here — but the EE pause path is a different
+/// branch of the same loop, and it is not covered by this file.
 fn streaming_tool_call_chunk(tool_name: &str, message: &str) -> String {
     let arguments = json!({ "message": message }).to_string();
     let chunk = json!({

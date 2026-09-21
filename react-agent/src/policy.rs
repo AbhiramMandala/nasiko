@@ -132,6 +132,12 @@ pub trait DelegationPolicy: Debug + Send + Sync {
     /// Streamed text reaches the client as it is generated, so there is no later
     /// point at which [`Self::review_final_answer`] could withhold it. A policy
     /// that can reject a final answer must return `true`, or turn 0 escapes it.
+    ///
+    /// The test is "can this policy ever change an answer's text", not "does it
+    /// enforce something on this turn". The loop has no way to ask mid-stream,
+    /// so a policy that rewrites only *some* turns still has to buffer all of
+    /// them — returning a per-turn condition here silently disables
+    /// [`Self::review_final_answer`] for whichever turns it excluded.
     fn buffer_every_turn(&self) -> bool {
         false
     }

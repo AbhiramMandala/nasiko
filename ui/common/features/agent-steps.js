@@ -444,12 +444,19 @@ class AgentSteps extends HTMLElement {
         // `d.kind` is the server's own discriminant (`PolicyRejectionKind`) —
         // reading it beats guessing from `d.reason`'s prose, which broke the
         // moment either gate's wording changed with nothing to catch it.
+        //
+        // An unrecognised or absent `kind` says "blocked" and stops there. The
+        // whole point of the field is to remove a guess, so defaulting one
+        // branch to the other would have kept the original bug alive for
+        // exactly the events that carry no discriminant.
+        const BLOCKED_BY = {
+          delegation: 'blocked by the delegation policy',
+          flow_guard: 'blocked by flow policy',
+        };
         const row = this.#addRow(`policy:${this.#rows.size}`, {
           kind: 'policy',
           title: d.agent,
-          subtitle: d.kind === 'delegation'
-            ? 'blocked by the delegation policy'
-            : 'blocked by flow policy',
+          subtitle: BLOCKED_BY[d.kind] || 'blocked',
         });
         if (d.reason) this.#addSection(row, 'Reason', d.reason);
         this.#settle(row, { blocked: true });

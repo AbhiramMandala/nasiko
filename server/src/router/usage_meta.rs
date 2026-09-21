@@ -172,7 +172,17 @@ pub async fn insert_assistant_message(
     .bind(cost)
     .bind(estimated)
     .bind(trace_id)
-    .bind(is_refusal.then(|| serde_json::json!({ "orchestrator_refusal": true })))
+    // Built from the reader's own constant rather than spelled again here: the
+    // filter that consumes this tag lives in another crate, and a mismatch
+    // between the two spellings fails silently.
+    .bind(is_refusal.then(|| {
+        let mut m = serde_json::Map::new();
+        m.insert(
+            nasiko_orchestrator::session_history::REFUSAL_METADATA_KEY.to_string(),
+            serde_json::Value::Bool(true),
+        );
+        serde_json::Value::Object(m)
+    }))
     .execute(db)
     .await;
     if let Err(e) = result {
