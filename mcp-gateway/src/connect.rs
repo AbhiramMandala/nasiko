@@ -242,7 +242,11 @@ async fn resolve_target(
 }
 
 /// Composio OAuth connect: reuse an active/pending connection or initiate a new one.
-async fn composio_connect(
+/// `pub(crate)`: also called directly by `protocol.rs`'s `handle_auth_required` to mint a
+/// real, clickable re-auth link for an inline HITL pause, without `connect_service`'s extra
+/// `can_access_connector` re-check / `grant_user_agents_access` side effects — the caller
+/// there already knows the connector is real and already reachable by this call.
+pub(crate) async fn composio_connect(
     state: &McpState,
     user_id: Uuid,
     connector: &McpConnector,

@@ -956,3 +956,113 @@ async fn list_pending_is_unaffected_by_a_malformed_hitl_request_id() {
         "a row with a malformed hitl_request_id must still list normally, not error out"
     );
 }
+
+// ─── list_for_chat_session ──────────────────────────────────────────────────────────────────
+
+/// Regression test: `AgentProxy`/`DirectChat`-origin rows never set `chat_session_id` at all —
+/// `context_id` already IS their stable, caller-facing session id (no separate orchestrator-level
+/// session to distinguish it from). Querying by that same id (what `chat/routes.rs`'s
+/// session-load HITL discovery passes as `chat_session_id`) previously matched nothing for these
+/// origins — confirmed live: a real direct-chat session with two resolved `input_required` rows
+/// came back empty. The web UI's own session-history endpoint has always claimed to include
+/// "every HITL request tied to this session, pending or already resolved" — this is what makes
+/// that true for the two origins that actually produce most real HITL traffic.
+#[tokio::test]
+#[ignore = "requires PostgreSQL (DATABASE_URL)"]
+async fn list_for_chat_session_finds_agent_proxy_rows_by_their_context_id() {
+    let pool = pool().await;
+    let store = PgHitlStore::new(pool.clone());
+    let owner = fixture_user(&pool).await;
+    let agent = fixture_agent(&pool, owner).await;
+    let session_id = format!("ses_{}", Uuid::new_v4().simple());
+
+    let pending = store
+        .create(NewHitlRequest::agent_proxy(
+            HitlKind::InputRequired,
+            agent,
+            owner,
+            format!("task-{}", Uuid::new_v4()),
+            &session_id,
+            json!({"message": "which repo?"}),
+        ))
+        .await
+        .expect("create agent_proxy row");
+    store
+        .resolve(
+            pending.id,
+            json!({"answer": "nasiko-bishnu/test"}),
+            owner,
+            HitlStatus::Resolved,
+        )
+        .await
+        .expect("resolve");
+
+    let rows = store
+        .list_for_chat_session(&session_id, owner)
+        .await
+        .expect("list_for_chat_session");
+    assert!(
+        rows.iter().any(|r| r.id == pending.id),
+        "a resolved AgentProxy-origin row must be found by its context_id: {rows:?}"
+    );
+}
+
+/// Same coverage for `Orchestrator`-origin, which uses `chat_session_id` (not `context_id`) as
+/// its stable id — the pre-existing, already-working half of this query, kept passing after
+/// widening the `WHERE` clause to also match `context_id`.
+#[tokio::test]
+#[ignore = "requires PostgreSQL (DATABASE_URL)"]
+async fn list_for_chat_session_still_finds_orchestrator_rows_by_chat_session_id() {
+    let pool = pool().await;
+    let store = PgHitlStore::new(pool.clone());
+    let owner = fixture_user(&pool).await;
+    let agent = fixture_agent(&pool, owner).await;
+    let chat_session_id = format!("ses_{}", Uuid::new_v4().simple());
+    let sub_agent_context_id = format!("sub-ctx-{}", Uuid::new_v4());
+    // `chat_session_id` FK-references a real `chat_sessions` row (`ensure_orchestrator_chat_session`
+    // creates one in production before any HITL row can name it).
+    sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
+         VALUES ($1, $2, $3, '/api/orchestrator/a2a', 'test session')",
+    )
+    .bind(&chat_session_id)
+    .bind(owner)
+    .bind(agent)
+    .execute(&pool)
+    .await
+    .expect("seed chat_sessions row");
+
+    let row = store
+        .create(NewHitlRequest::orchestrator(
+            HitlKind::InputRequired,
+            agent,
+            owner,
+            format!("task-{}", Uuid::new_v4()),
+            &sub_agent_context_id,
+            &chat_session_id,
+            json!({"message": "which repo?"}),
+        ))
+        .await
+        .expect("create orchestrator row");
+
+    let rows = store
+        .list_for_chat_session(&chat_session_id, owner)
+        .await
+        .expect("list_for_chat_session");
+    assert!(
+        rows.iter().any(|r| r.id == row.id),
+        "an Orchestrator-origin row must still be found by its chat_session_id: {rows:?}"
+    );
+
+    // The sub-agent's own unstable per-dispatch context must never be treated as if it were a
+    // real, independent session — matching it here would risk cross-session leakage the day two
+    // different sessions' sub-dispatches happen to share a context value.
+    let rows_by_subcontext = store
+        .list_for_chat_session(&sub_agent_context_id, owner)
+        .await
+        .expect("list_for_chat_session");
+    assert!(
+        rows_by_subcontext.is_empty(),
+        "the sub-agent's own per-dispatch context_id must not double as a session lookup key: {rows_by_subcontext:?}"
+    );
+}
