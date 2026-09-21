@@ -243,6 +243,20 @@ fn nasiko_search_tools_definition() -> Value {
     })
 }
 
+/// Whether a connector-connection lookup means an `auth_required` pause should fire. `Err` (a
+/// transient DB blip) must NOT be treated the same as `Ok(None)`/a non-`ACTIVE` row — a DB error
+/// says nothing about whether the user is actually connected, so it must not, by itself, tell the
+/// user to re-authenticate a connector that could be perfectly fine.
+fn needs_auth_required(
+    result: &crate::error::Result<Option<crate::repo::McpUserConnection>>,
+) -> bool {
+    match result {
+        Ok(Some(c)) => !c.status.eq_ignore_ascii_case("ACTIVE"),
+        Ok(None) => true,
+        Err(_) => false,
+    }
+}
+
 /// `tools/call` — route, enforce two-layer permissions, forward to the backend.
 pub async fn handle_tools_call(
     state: &McpState,
@@ -333,6 +347,92 @@ pub async fn handle_tools_call(
                     traceparent,
                 )
                 .await;
+            }
+            // A bare Composio-slug tool `route_tool` couldn't place (no `{prefix}__`
+            // to match `unusable_reason_for_prefix` above, which is generic-connector
+            // only anyway) whose toolkit corresponds to a real connector that just
+            // isn't an ACTIVE connection for this user yet. `toolkit_to_connector`
+            // (what `route_tool` actually searched) is ACTIVE-only by construction —
+            // see `session.rs`'s `current_connected_accounts` — so a connector stuck
+            // at e.g. `INITIATED` (registered, never finished OAuth) is invisible to
+            // it and always falls through to here. Never having connected is
+            // functionally the same "a human is needed" signal as a credential that
+            // broke after working (`detect_composio_auth_required` below), so it gets
+            // the identical AUTH_REQUIRED pause instead of a bare routing error with
+            // nothing a human can act on.
+            let toolkit = toolkit_from_composio_slug(tool_name);
+            if let Ok(Some(connector)) =
+                crate::repo::get_composio_connector_by_name(&state.db, &toolkit).await
+            {
+                // `Err` (a transient DB blip) and `Ok(None)` (genuinely no connection row) are
+                // distinct outcomes — collapsing them via `.ok().flatten()` used to treat a
+                // momentary DB error as "not connected," filing a spurious `auth_required` pause
+                // and telling the user to re-authenticate a connector that's actually fine.
+                let connection_result =
+                    crate::repo::get_user_connection(&state.db, user_id, connector.id).await;
+                if let Err(e) = &connection_result {
+                    tracing::warn!(
+                        error = %e, connector_id = %connector.id,
+                        "handle_tools_call: db error checking connector connection status; \
+                         skipping the auth_required check rather than falsely reporting not connected"
+                    );
+                }
+                if needs_auth_required(&connection_result) {
+                    return handle_auth_required(
+                        state,
+                        user_id,
+                        req_id,
+                        perms.agent_id,
+                        connector.id,
+                        &connector.name,
+                        traceparent,
+                    )
+                    .await;
+                }
+            }
+            // A bare Composio META-tool (`COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_MULTI_EXECUTE_TOOL`,
+            // ...) is unroutable when the user has *zero* active Composio connections at all —
+            // Composio's whole backend isn't wired into `resolved.servers` in that state, so even
+            // discovery itself fails (verified live: "Unknown tool 'COMPOSIO_SEARCH_TOOLS'").
+            // `toolkit_from_composio_slug` extracts `"composio"` from these names (not a real
+            // per-integration connector), so the check just above can never catch this — there's
+            // no specific toolkit to look up. Fall back to whichever Composio connector this
+            // AGENT has actually been granted (`perms.enabled_connectors`, exactly the set
+            // `nasiko mcp agent-tools enable` writes to `mcp_agent_connector_access`) but that
+            // has no active user connection (cross-checked against `resolved.toolkit_to_connector`,
+            // which is active-connections-only by construction — see the check above's own
+            // comment). Exactly one such candidate is unambiguously the one needing auth; more
+            // than one is a genuine ambiguity this can't guess through, so it falls through to
+            // the generic error below, same as today.
+            if tool_name.starts_with("COMPOSIO_") {
+                let mut candidates = Vec::new();
+                for &connector_id in &perms.enabled_connectors {
+                    if resolved
+                        .toolkit_to_connector
+                        .values()
+                        .any(|&id| id == connector_id)
+                    {
+                        continue; // already an active connection — not the gap being diagnosed
+                    }
+                    if let Ok(Some(connector)) =
+                        crate::repo::get_connector_by_id(&state.db, connector_id).await
+                        && connector.is_composio()
+                    {
+                        candidates.push(connector);
+                    }
+                }
+                if let [connector] = candidates.as_slice() {
+                    return handle_auth_required(
+                        state,
+                        user_id,
+                        req_id,
+                        perms.agent_id,
+                        connector.id,
+                        &connector.name,
+                        traceparent,
+                    )
+                    .await;
+                }
             }
             return err(req_id, codes::INVALID_PARAMS, e.to_string());
         }
@@ -785,18 +885,20 @@ async fn detect_composio_auth_required(
 
 /// A tool call's connector needs the user to (re-)authenticate
 /// (`ConnectorUnusable::AuthRequired`, from M1's credential-failure
-/// plumbing) — persist a pending `hitl_requests` row (M2's store) and return
-/// `codes::AUTH_REQUIRED` instead of the generic "connector not available"
-/// error, so the agent (and, through it, the human) gets a distinguishable,
-/// actionable signal instead of an indistinguishable dead end.
+/// plumbing, or a Composio toolkit that was never connected in the first
+/// place — `handle_tools_call`'s routing-failure branch) — persist a pending
+/// `hitl_requests` row (M2's store) and return `codes::AUTH_REQUIRED` instead
+/// of the generic "connector not available" error, so the agent (and,
+/// through it, the human) gets a distinguishable, actionable signal instead
+/// of an indistinguishable dead end.
 ///
-/// Deliberately does not build a fresh OAuth `auth_url` here (that's
-/// `oauth::begin_authorization`, a side-effecting discovery/DCR call plus a
-/// connector-row mutation — out of scope for detection) and does not push or
-/// auto-retry anything (the resume dispatcher doesn't exist yet). The human
-/// re-authenticates via the existing `POST /api/mcp/connect` flow; a future
-/// milestone can enrich `question`/wire in the dispatcher without touching
-/// this detection path.
+/// For a Composio connector, also mints (or reuses) a real, clickable OAuth
+/// link via `connect::composio_connect` — the same call `POST /api/mcp/connect`
+/// makes — so an inline pause is actually self-service instead of pointing the
+/// human at a separate command. Best-effort: a generic (non-Composio) connector,
+/// or a failed mint call, still gets the pause, just without a link in `question`.
+/// Does not push or auto-retry anything itself — that's the resume dispatcher's
+/// job once the human resolves this row.
 async fn handle_auth_required(
     state: &McpState,
     user_id: Uuid,
@@ -828,7 +930,7 @@ async fn handle_auth_required(
         return generic_error();
     };
 
-    let question = json!({
+    let mut question = json!({
         "connector_id": connector_id,
         "connector": connector_name,
         "message": format!(
@@ -836,6 +938,34 @@ async fn handle_auth_required(
              A human must re-authenticate before this tool can be used again."
         ),
     });
+
+    // Best-effort: a Composio connector gets a real, clickable re-auth link inline —
+    // same call `POST /api/mcp/connect` makes, safe to call again on an already
+    // `INITIATED` row (reuses the cached link if still fresh, mints a new one
+    // otherwise; never duplicates or errors on retry). A generic (non-Composio)
+    // connector, or any failure minting the link, leaves `question` exactly as
+    // built above — the pause itself must never be lost over this enrichment.
+    if let Ok(Some(connector)) = crate::repo::get_connector_by_id(&state.db, connector_id).await
+        && connector.is_composio()
+    {
+        match crate::connect::composio_connect(state, user_id, &connector, None).await {
+            Ok(crate::connect::ConnectOutcome::Initiated {
+                oauth_url: Some(url),
+                ..
+            }) => {
+                if let Some(obj) = question.as_object_mut() {
+                    obj.insert("auth_url".to_string(), json!(url));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    connector = %connector_name, %connector_id, error = %e,
+                    "failed to mint a composio re-auth link for an inline HITL pause"
+                );
+            }
+        }
+    }
 
     match nasiko_hitl::repo::create_pending_auth_required_with_ttl(
         &state.db,
@@ -1773,6 +1903,54 @@ mod tests {
             json!(codes::TOOL_BLOCKED),
             "{disabled}"
         );
+    }
+
+    // ─── needs_auth_required (S3: DB error vs. genuinely-not-connected) ────────────────────
+
+    fn user_connection(status: &str) -> crate::repo::McpUserConnection {
+        let now = chrono::Utc::now();
+        crate::repo::McpUserConnection {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            connector_id: Uuid::new_v4(),
+            status: status.to_string(),
+            connected_account_id: None,
+            redirect_url: None,
+            oauth_url: None,
+            encrypted_credential: None,
+            encrypted_refresh_token: None,
+            token_expires_at: None,
+            scope: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn active_connection_does_not_need_auth() {
+        assert!(!needs_auth_required(&Ok(Some(user_connection("ACTIVE")))));
+        // Case-insensitive, matching the live check's `eq_ignore_ascii_case`.
+        assert!(!needs_auth_required(&Ok(Some(user_connection("active")))));
+    }
+
+    #[test]
+    fn expired_or_missing_connection_needs_auth() {
+        assert!(needs_auth_required(&Ok(Some(user_connection("EXPIRED")))));
+        assert!(needs_auth_required(&Ok(None)));
+    }
+
+    /// The actual S3 bug: a DB error must never be treated the same as "genuinely not
+    /// connected" — collapsing them (the old `.ok().flatten().is_some_and(...)` chain) fired a
+    /// spurious `auth_required` pause on a transient blip, telling the user to re-authenticate a
+    /// connector that might be perfectly fine.
+    #[test]
+    fn db_error_does_not_trigger_a_false_auth_required() {
+        // `PoolTimedOut`, not `RowNotFound` — this stands in for a real transient blip
+        // (`get_user_connection` uses `fetch_optional`, which never produces `RowNotFound`;
+        // that variant means "a `fetch_one` found nothing," not a connectivity failure).
+        let db_err: crate::error::Result<Option<crate::repo::McpUserConnection>> =
+            Err(sqlx::Error::PoolTimedOut.into());
+        assert!(!needs_auth_required(&db_err));
     }
 
     // ─── MULTI_EXECUTE unwrap tests ────────────────────────────────────────
