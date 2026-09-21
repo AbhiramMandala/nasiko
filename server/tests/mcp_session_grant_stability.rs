@@ -147,7 +147,7 @@ fn mcp_state(db: PgPool) -> McpState {
         authorizer: Arc::new(AllowAllAuthorizer),
         endpoint_refresher: Arc::new(nasiko_mcp_gateway::endpoint_refresh::NoopEndpointRefresher),
         llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
-        search_index: Arc::new(()),
+        search_index: Arc::new(nasiko_mcp_gateway::search::NoopSearchIndex),
     }
 }
 
