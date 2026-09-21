@@ -11,9 +11,8 @@ use tokio::sync::mpsc;
 use crate::a2a::{A2aClient, PauseInfo};
 use crate::context::{ContextConfig, ContextManager};
 use crate::error::OrchestratorError;
-use crate::events::{OrchestratorEvent, PolicyRejectionKind};
+use crate::events::OrchestratorEvent;
 use crate::guard::CallGuard;
-use crate::policy::DelegationPolicy;
 use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
 use crate::tool::{A2aTool, A2aToolError};
 
@@ -70,192 +69,6 @@ fn tokens_per_tool_call(completion_tokens: Option<u64>, num_tool_calls: usize) -
         .unwrap_or(0)
 }
 
-/// Does the operator's policy refuse this call? `Some(reason)` if so.
-///
-/// The decision only — no reporting — because the two loops report it in
-/// different shapes (`run_stream_inner` sends an event, `run` records a trace)
-/// and only the *decision* has to stay identical between them.
-fn policy_refusal(config: &OrchestratorConfig, tc: &ToolCall) -> Option<String> {
-    config
-        .policy
-        .as_ref()
-        .and_then(|p| p.check_tool_call(&tc.function.arguments).err())
-}
-
-/// What the model is told when a call is blocked, in the tool-result context.
-///
-/// One wording for both loops. They had drifted — one said `Blocked:` and the
-/// other `BLOCKED: … Do NOT retry`, so the same policy taught the model two
-/// different lessons depending on which entry point ran it.
-fn blocked_note(tool_name: &str, reason: &str) -> String {
-    format!(
-        "[{tool_name}] BLOCKED: {reason}. Do NOT retry this agent with different \
-         arguments unless you have a concrete reason to."
-    )
-}
-
-/// The policy + call-guard gate for one tool call, in `run_stream_inner`'s
-/// event-channel reporting style (`OrchestratorEvent::PolicyRejected` plus a
-/// message telling the model not to retry). Both of its branches call this —
-/// they differ in how a turn gets here, not in what a rejection looks like once
-/// it has, and this used to be a byte-for-byte copy in each, with no structural
-/// signal that a change to one needed the other.
-///
-/// `true` means the call was blocked — already reported on `tx` and already
-/// pushed onto `results_for_context` — so the caller should `continue` its loop
-/// rather than call the tool.
-async fn call_is_blocked(
-    tc: &ToolCall,
-    agent_display: &str,
-    config: &OrchestratorConfig,
-    guard: Option<&dyn CallGuard>,
-    tx: &mpsc::Sender<OrchestratorEvent>,
-    turn_idx: usize,
-    results_for_context: &mut Vec<String>,
-) -> bool {
-    let name = &tc.function.name;
-
-    // Operator policy first, before the flow guard: a call the policy rejects
-    // should never consume fan-out or depth budget, and `before_call`
-    // increments both.
-    if let Some(reason) = policy_refusal(config, tc) {
-        let _ = tx
-            .send(OrchestratorEvent::PolicyRejected {
-                agent: agent_display.to_string(),
-                reason: reason.clone(),
-                turn: turn_idx + 1,
-                kind: PolicyRejectionKind::Delegation,
-            })
-            .await;
-        results_for_context.push(blocked_note(name, &reason));
-        return true;
-    }
-
-    if let Some(g) = guard
-        && let Err(reason) = g.before_call(agent_display).await
-    {
-        let _ = tx
-            .send(OrchestratorEvent::PolicyRejected {
-                agent: agent_display.to_string(),
-                reason: reason.clone(),
-                turn: turn_idx + 1,
-                kind: PolicyRejectionKind::FlowGuard,
-            })
-            .await;
-        results_for_context.push(blocked_note(name, &reason));
-        return true;
-    }
-
-    false
-}
-
-/// The orchestrator's system prompt. One builder for both loops — `run()` and
-/// `run_stream_inner()` previously carried byte-identical copies of this text,
-/// so a change to the policy had to be made twice to take effect.
-fn build_preamble(config: &OrchestratorConfig, agents: &[AgentInfo]) -> String {
-    let custom = config.preamble.as_deref().unwrap_or("");
-
-    let agent_list: String = agents
-        .iter()
-        .map(|a| {
-            let skills = a
-                .skills
-                .iter()
-                .map(|s| {
-                    // The skill's own documented inputs. Without them the model invents wording
-                    // for a skill that may only answer to an exact phrase — and the agent then
-                    // answers a question the user never asked.
-                    let examples = if s.examples.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            "\n      send exactly: {}",
-                            s.examples
-                                .iter()
-                                .map(|e| format!("\"{e}\""))
-                                .collect::<Vec<_>>()
-                                .join(" | ")
-                        )
-                    };
-                    format!("    - {}: {}{}", s.name, s.description, examples)
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!(
-                "  • {} (tool: `{}`)\n    {}\n{}",
-                a.name,
-                A2aTool::tool_name(&a.name),
-                a.description,
-                skills
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    // Each section carries its OWN separator rather than taking one from the
-    // template, so an absent section leaves nothing behind — not even the blank
-    // line a `{placeholder}` wrapped in newlines would. With no policy the
-    // prompt below is byte-identical to the one this crate built before the seam
-    // existed, which `no_policy_leaves_the_preamble_untouched` pins against the
-    // exact joins rather than against trimmed text.
-    let policy = config.policy.as_ref();
-    let delegation_policy = match policy.map(|p| p.preamble_policy()) {
-        Some(text) if !text.trim().is_empty() => format!("{text}\n\n"),
-        _ => String::new(),
-    };
-    let policy_footer = match policy.map(|p| p.preamble_footer()) {
-        Some(text) if !text.trim().is_empty() => format!("\n\n{text}"),
-        _ => String::new(),
-    };
-
-    format!(
-        r#"You are a ReAct orchestrator. Fulfill user requests by reasoning and delegating to specialized agents.
-
-{custom}
-
-## Available Agents
-
-{agent_list}
-
-{delegation_policy}## Protocol
-
-1. Analyze the user's request. Determine which agent(s) can help.
-2. Call the appropriate agent tool with a clear, specific message.
-3. If the task requires multiple agents, call them sequentially — use earlier results to inform later calls.
-4. Once you have enough information, respond with a complete answer as plain text (no tool call).
-5. If an agent fails, reason about alternatives or inform the user.
-
-## Rules
-
-- Only relay facts from agent responses. Never fabricate.
-- Prefer the most specific agent for each sub-task.
-- Pass the user's own wording through when the request is itself the thing to relay — an exact
-  phrase, a quoted string, a command, an identifier, a fixed test input. Paraphrasing it loses
-  information the agent matches on, and the agent then answers a question the user never asked.
-- If no agent fits, tell the user directly.
-- When calling an agent tool, call it directly — do not first restate its message as your own chat reply. If that agent pauses to ask the user something, your own words would otherwise repeat the same question twice.{policy_footer}"#
-    )
-}
-
-/// The last gate before a final answer reaches the user: the configured policy,
-/// if any, gets to replace it.
-///
-/// Returns the text to actually send, so callers cannot forget to use the
-/// result. With no policy the model's own answer is what ships, which is the
-/// open-source behaviour.
-fn finalize_answer(
-    text: &str,
-    config: &OrchestratorConfig,
-    agents: &[AgentInfo],
-    delegated: bool,
-    turn_idx: usize,
-) -> String {
-    match &config.policy {
-        Some(policy) => policy.review_final_answer(text, agents, delegated, turn_idx),
-        None => text.to_string(),
-    }
-}
-
 /// Configuration for the orchestrator.
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
@@ -268,14 +81,6 @@ pub struct OrchestratorConfig {
     pub base_url: Option<String>,
     /// API key. If None, uses OPENAI_API_KEY env var.
     pub api_key: Option<String>,
-    /// Operator policy governing what this orchestration is allowed to do —
-    /// see [`DelegationPolicy`]. `None` imposes nothing, which is what an
-    /// unconfigured deployment runs with.
-    ///
-    /// Separate from `preamble` on purpose: `preamble` is the caller's own
-    /// framing of what this orchestrator is for, while a policy is operator
-    /// rules that outlive any one caller.
-    pub policy: Option<Arc<dyn DelegationPolicy>>,
 }
 
 impl Default for OrchestratorConfig {
@@ -288,7 +93,6 @@ impl Default for OrchestratorConfig {
             temperature: Some(0.2),
             base_url: None,
             api_key: None,
-            policy: None,
         }
     }
 }
@@ -386,11 +190,10 @@ impl Orchestrator {
 
         let model = self.build_model()?;
         let (toolset, tool_defs) = self.build_tools(&agents).await;
-        let preamble = build_preamble(&self.config, &agents);
+        let preamble = self.build_preamble(&agents);
 
         let mut turns = Vec::new();
         let mut context_compacted = false;
-        let mut delegated = false;
 
         // Preamble is STABLE across turns — provider can cache this prefix.
         // All dynamic context goes into user messages instead.
@@ -413,20 +216,6 @@ impl Orchestrator {
                 .completion_request(Message::user(&user_prompt))
                 .preamble(preamble.clone())
                 .tools(tool_defs.clone());
-
-            // Nothing the policy will accept from an undelegated turn is long,
-            // and anything long is about to be discarded — so stop paying to
-            // generate it. Sized against the query, because this is also the
-            // turn that relays it into a tool call.
-            if !delegated
-                && let Some(cap) = self
-                    .config
-                    .policy
-                    .as_ref()
-                    .and_then(|p| p.undelegated_max_tokens(user_query.chars().count()))
-            {
-                req = req.max_tokens(cap);
-            }
 
             if let Some(temp) = self.config.temperature {
                 req = req.temperature(temp);
@@ -483,21 +272,6 @@ impl Orchestrator {
                         .strip_prefix("call_agent_")
                         .unwrap_or(name)
                         .replace('_', "-");
-
-                    // Operator policy first — see the streaming path's own note.
-                    // Shares `policy_refusal`/`blocked_note` with that path, so
-                    // the two entry points cannot reach different verdicts or
-                    // teach the model different lessons about the same block.
-                    if let Some(reason) = policy_refusal(&self.config, tc) {
-                        tracing::warn!(tool = %name, %reason, "delegation policy blocked");
-                        trace.tool_calls.push(ToolCallTrace {
-                            tool_name: name.clone(),
-                            arguments: tc.function.arguments.clone(),
-                            result: Err(reason.clone()),
-                        });
-                        results_for_context.push(blocked_note(name, &reason));
-                        continue;
-                    }
 
                     // Enforce call guard
                     if let Some(g) = &self.guard
@@ -569,7 +343,6 @@ impl Orchestrator {
                                 g.after_call(&agent_display, tokens_per_call).await;
                             }
                             results_for_context.push(format!("[{}] Result: {}", name, output));
-                            delegated = true;
                         }
                         Err(e) => {
                             // Balance the before_call() depth increment even on
@@ -599,13 +372,7 @@ impl Orchestrator {
                 turns.push(trace);
             } else {
                 // No tool calls — this is the final text response
-                let final_text = finalize_answer(
-                    &text_parts.join("\n"),
-                    &self.config,
-                    &agents,
-                    delegated,
-                    turn_idx,
-                );
+                let final_text = text_parts.join("\n");
                 self.context.push_assistant(&final_text);
 
                 turns.push(TurnTrace {
@@ -725,13 +492,81 @@ impl Orchestrator {
         let mut defs = Vec::new();
 
         for agent in agents {
-            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone())
-                .with_policy(self.config.policy.clone());
+            let tool = A2aTool::new(agent.clone(), self.a2a_client.clone());
             defs.push(ToolDyn::definition(&tool, String::new()).await);
             builder = builder.static_tool(tool);
         }
 
         (builder.build(), defs)
+    }
+
+    fn build_preamble(&self, agents: &[AgentInfo]) -> String {
+        let custom = self.config.preamble.as_deref().unwrap_or("");
+
+        let agent_list: String = agents
+            .iter()
+            .map(|a| {
+                let skills = a
+                    .skills
+                    .iter()
+                    .map(|s| {
+                        // The skill's own documented inputs. Without them the model invents wording
+                        // for a skill that may only answer to an exact phrase — and the agent then
+                        // answers a question the user never asked.
+                        let examples = if s.examples.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                "\n      send exactly: {}",
+                                s.examples
+                                    .iter()
+                                    .map(|e| format!("\"{e}\""))
+                                    .collect::<Vec<_>>()
+                                    .join(" | ")
+                            )
+                        };
+                        format!("    - {}: {}{}", s.name, s.description, examples)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "  • {} (tool: `{}`)\n    {}\n{}",
+                    a.name,
+                    A2aTool::tool_name(&a.name),
+                    a.description,
+                    skills
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        format!(
+            r#"You are a ReAct orchestrator. Fulfill user requests by reasoning and delegating to specialized agents.
+
+{custom}
+
+## Available Agents
+
+{agent_list}
+
+## Protocol
+
+1. Analyze the user's request. Determine which agent(s) can help.
+2. Call the appropriate agent tool with a clear, specific message.
+3. If the task requires multiple agents, call them sequentially — use earlier results to inform later calls.
+4. Once you have enough information, respond with a complete answer as plain text (no tool call).
+5. If an agent fails, reason about alternatives or inform the user.
+
+## Rules
+
+- Only relay facts from agent responses. Never fabricate.
+- Prefer the most specific agent for each sub-task.
+- Pass the user's own wording through when the request is itself the thing to relay — an exact
+  phrase, a quoted string, a command, an identifier, a fixed test input. Paraphrasing it loses
+  information the agent matches on, and the agent then answers a question the user never asked.
+- If no agent fits, tell the user directly.
+- When calling an agent tool, call it directly — do not first restate its message as your own chat reply. If that agent pauses to ask the user something, your own words would otherwise repeat the same question twice."#
+        )
     }
 }
 
@@ -806,51 +641,92 @@ async fn run_stream_inner(
         // Streaming loop: each agent call relays live progress into the stream.
         let tool = A2aTool::new(agent.clone(), agents_ctx.a2a_client.clone())
             .with_progress(tx.clone())
-            .with_file_parts(file_parts.to_vec())
-            .with_policy(config.policy.clone());
+            .with_file_parts(file_parts.to_vec());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
         builder = builder.static_tool(tool);
     }
     let toolset = builder.build();
 
-    let preamble = build_preamble(config, &agents);
+    // Build preamble
+    let custom = config.preamble.as_deref().unwrap_or("");
+    let agent_list: String = agents
+        .iter()
+        .map(|a| {
+            let skills = a
+                .skills
+                .iter()
+                .map(|s| {
+                    // The skill's own documented inputs. Without them the model invents wording
+                    // for a skill that may only answer to an exact phrase — and the agent then
+                    // answers a question the user never asked.
+                    let examples = if s.examples.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "\n      send exactly: {}",
+                            s.examples
+                                .iter()
+                                .map(|e| format!("\"{e}\""))
+                                .collect::<Vec<_>>()
+                                .join(" | ")
+                        )
+                    };
+                    format!("    - {}: {}{}", s.name, s.description, examples)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "  • {} (tool: `{}`)\n    {}\n{}",
+                a.name,
+                A2aTool::tool_name(&a.name),
+                a.description,
+                skills
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let preamble = format!(
+        r#"You are a ReAct orchestrator. Fulfill user requests by reasoning and delegating to specialized agents.
+
+{custom}
+
+## Available Agents
+
+{agent_list}
+
+## Protocol
+
+1. Analyze the user's request. Determine which agent(s) can help.
+2. Call the appropriate agent tool with a clear, specific message.
+3. If the task requires multiple agents, call them sequentially — use earlier results to inform later calls.
+4. Once you have enough information, respond with a complete answer as plain text (no tool call).
+5. If an agent fails, reason about alternatives or inform the user.
+
+## Rules
+
+- Only relay facts from agent responses. Never fabricate.
+- Prefer the most specific agent for each sub-task.
+- Pass the user's own wording through when the request is itself the thing to relay — an exact
+  phrase, a quoted string, a command, an identifier, a fixed test input. Paraphrasing it loses
+  information the agent matches on, and the agent then answers a question the user never asked.
+- If no agent fits, tell the user directly.
+- When calling an agent tool, call it directly — do not first restate its message as your own chat reply. If that agent pauses to ask the user something, your own words would otherwise repeat the same question twice."#
+    );
 
     let mut context_compacted = false;
-    // Set once any agent call in this run returns successfully. Handed to the
-    // policy's final-answer review below, which may treat an answer produced
-    // without a single successful call differently — see [`DelegationPolicy`].
-    let mut delegated = false;
 
     for turn_idx in 0..config.max_turns {
         let window = context.window();
 
-        // Restated per turn, not only in the system prompt: the turn that writes
-        // the answer is the one that has to obey a rule about HOW to answer, and
-        // this is the last text the model reads. Empty when no policy is
-        // configured, or when the policy has nothing to restate, so an
-        // unconfigured deployment's prompt is byte-identical to before.
-        let policy_reminder = config
-            .policy
-            .as_ref()
-            .and_then(|p| p.turn_reminder())
-            .unwrap_or("");
-
         let user_prompt = if turn_idx == 0 && window.summary.is_none() {
-            // Turn 0 gets the reminder too. It used to be the bare query, on the
-            // assumption that turn 0 only ever plans a tool call and the answer
-            // comes later — but a turn that answers immediately lands here, and
-            // that is exactly what the HITL resume does (its own prompt tells it
-            // not to call anyone again). Observed live: a resumed email turn
-            // answered without naming the agent, with a "cite the agent" rule
-            // configured, because this branch never mentioned the rules.
-            format!("{user_query}{policy_reminder}")
+            user_query.to_string()
         } else {
             let ctx = window.format_for_prompt();
             format!(
                 "{ctx}\n\nCurrent request: {user_query}\n\n\
                  Based on the above context and tool results, continue. \
-                 If you have enough information, respond with your final answer (no tool call).\
-                 {policy_reminder}"
+                 If you have enough information, respond with your final answer (no tool call)."
             )
         };
 
@@ -860,37 +736,13 @@ async fn run_stream_inner(
         // Strategy: always try non-streaming first for tool-planning turns;
         // if the response has no tool calls (final answer), re-issue as streaming.
         // Optimization: on turn 0, stream directly since we don't know yet.
-        // Turn 0 normally streams for responsiveness, but streamed text reaches the
-        // client as it is generated — there is no point after the fact at which a
-        // direct answer can be withheld. A policy that can replace a final answer
-        // therefore asks for every turn to be buffered, so `finalize_answer` runs
-        // before anything is sent. Nothing is lost in practice: a legitimate answer
-        // arrives at turn 1+, which was already non-streaming, and these turns
-        // report the provider's real token usage instead of the chars/4 estimate.
-        let use_non_streaming = turn_idx > 0
-            || config
-                .policy
-                .as_ref()
-                .is_some_and(|p| p.buffer_every_turn());
+        let use_non_streaming = turn_idx > 0;
 
         if use_non_streaming {
             let mut req = model
                 .completion_request(Message::user(&user_prompt))
                 .preamble(preamble.clone())
                 .tools(tool_defs.clone());
-
-            // Nothing the policy will accept from an undelegated turn is long,
-            // and anything long is about to be discarded — so stop paying to
-            // generate it. Sized against the query, because this is also the
-            // turn that relays it into a tool call.
-            if !delegated
-                && let Some(cap) = config
-                    .policy
-                    .as_ref()
-                    .and_then(|p| p.undelegated_max_tokens(user_query.chars().count()))
-            {
-                req = req.max_tokens(cap);
-            }
 
             if let Some(temp) = config.temperature {
                 req = req.temperature(temp);
@@ -969,37 +821,28 @@ async fn run_stream_inner(
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    if call_is_blocked(
-                        tc,
-                        &agent_display,
-                        config,
-                        guard,
-                        tx,
-                        turn_idx,
-                        &mut results_for_context,
-                    )
-                    .await
+                    if let Some(g) = guard
+                        && let Err(reason) = g.before_call(&agent_display).await
                     {
+                        let _ = tx
+                            .send(OrchestratorEvent::PolicyRejected {
+                                agent: agent_display.clone(),
+                                reason: reason.clone(),
+                                turn: turn_idx + 1,
+                            })
+                            .await;
+                        results_for_context.push(format!(
+                            "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
+                            name, reason
+                        ));
                         continue;
                     }
 
-                    let policy_score = config
-                        .policy
-                        .as_ref()
-                        .and_then(|p| p.call_score(&tc.function.arguments));
-                    tracing::info!(
-                        target: "nasiko::orchestrator",
-                        agent = %agent_display,
-                        policy_score = ?policy_score,
-                        turn = turn_idx + 1,
-                        "delegating to agent: the call cleared every configured gate"
-                    );
                     let _ = tx
                         .send(OrchestratorEvent::ToolCall {
                             agent: agent_display.clone(),
                             message: msg,
                             turn: turn_idx + 1,
-                            policy_score,
                         })
                         .await;
 
@@ -1055,7 +898,6 @@ async fn run_stream_inner(
                                 })
                                 .await;
                             results_for_context.push(format!("[{}] Result: {}", name, output));
-                            delegated = true;
                         }
                         Err(e) => {
                             // Balance the before_call() depth increment even on
@@ -1091,8 +933,7 @@ async fn run_stream_inner(
                 );
             } else {
                 // Final answer from non-streaming — emit as Content chunks
-                let final_text =
-                    finalize_answer(&text_parts.join("\n"), config, &agents, delegated, turn_idx);
+                let final_text = text_parts.join("\n");
                 for chunk in final_text.chars().collect::<Vec<_>>().chunks(200) {
                     let s: String = chunk.iter().collect();
                     let _ = tx.send(OrchestratorEvent::Content { content: s }).await;
@@ -1114,19 +955,6 @@ async fn run_stream_inner(
                 .completion_request(Message::user(&user_prompt))
                 .preamble(preamble.clone())
                 .tools(tool_defs.clone());
-
-            // Nothing the policy will accept from an undelegated turn is long,
-            // and anything long is about to be discarded — so stop paying to
-            // generate it. Sized against the query, because this is also the
-            // turn that relays it into a tool call.
-            if !delegated
-                && let Some(cap) = config
-                    .policy
-                    .as_ref()
-                    .and_then(|p| p.undelegated_max_tokens(user_query.chars().count()))
-            {
-                req = req.max_tokens(cap);
-            }
 
             if let Some(temp) = config.temperature {
                 req = req.temperature(temp);
@@ -1223,37 +1051,28 @@ async fn run_stream_inner(
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    if call_is_blocked(
-                        tc,
-                        &agent_display,
-                        config,
-                        guard,
-                        tx,
-                        turn_idx,
-                        &mut results_for_context,
-                    )
-                    .await
+                    if let Some(g) = guard
+                        && let Err(reason) = g.before_call(&agent_display).await
                     {
+                        let _ = tx
+                            .send(OrchestratorEvent::PolicyRejected {
+                                agent: agent_display.clone(),
+                                reason: reason.clone(),
+                                turn: turn_idx + 1,
+                            })
+                            .await;
+                        results_for_context.push(format!(
+                            "[{}] BLOCKED by policy: {}. Do NOT retry this agent.",
+                            name, reason
+                        ));
                         continue;
                     }
 
-                    let policy_score = config
-                        .policy
-                        .as_ref()
-                        .and_then(|p| p.call_score(&tc.function.arguments));
-                    tracing::info!(
-                        target: "nasiko::orchestrator",
-                        agent = %agent_display,
-                        policy_score = ?policy_score,
-                        turn = turn_idx + 1,
-                        "delegating to agent: the call cleared every configured gate"
-                    );
                     let _ = tx
                         .send(OrchestratorEvent::ToolCall {
                             agent: agent_display.clone(),
                             message: msg,
                             turn: turn_idx + 1,
-                            policy_score,
                         })
                         .await;
 
@@ -1309,7 +1128,6 @@ async fn run_stream_inner(
                                 })
                                 .await;
                             results_for_context.push(format!("[{}] Result: {}", name, output));
-                            delegated = true;
                         }
                         Err(e) => {
                             // Balance the before_call() depth increment even on
@@ -1344,21 +1162,7 @@ async fn run_stream_inner(
                     &combined,
                 );
             } else {
-                // Final answer — already streamed token-by-token via Content events.
-                //
-                // No policy review here, and none is possible: the text has
-                // already reached the client chunk-by-chunk and cannot be
-                // recalled. A policy whose `review_final_answer` can change an
-                // answer must therefore return `true` from `buffer_every_turn`,
-                // which forces `use_non_streaming` above and makes this branch
-                // unreachable under it.
-                //
-                // Note the condition is "can change an answer", not "enforces
-                // something": a policy that rewrites only some turns still has
-                // to buffer all of them, because this branch cannot ask. That
-                // distinction is not academic — the enterprise policy returned
-                // `require_delegation` here, so the HITL resume streamed turn 0
-                // and silently skipped its own final-answer review.
+                // Final answer — already streamed token-by-token via Content events
                 let final_text = text_parts.join("");
                 context.push_assistant(&final_text);
 
@@ -1586,149 +1390,5 @@ mod awaiting_human_tests {
             }
             other => panic!("expected Err(AwaitingHuman), got {other:?}"),
         }
-    }
-}
-
-#[cfg(test)]
-mod policy_seam_tests {
-    use super::*;
-    use crate::policy::ToolSchemaExtra;
-
-    /// Records which hooks the loop actually reaches, and answers every one of
-    /// them with something recognisable. Asserting on the *effects* here is what
-    /// makes this a test of the seam rather than of a policy: the behaviour it
-    /// checks belongs to whatever implementation is plugged in, but the wiring
-    /// belongs to this crate, and a hook that quietly stops being called is
-    /// invisible any other way.
-    #[derive(Debug)]
-    struct StubPolicy;
-
-    impl DelegationPolicy for StubPolicy {
-        fn preamble_policy(&self) -> String {
-            "## Stub Policy".to_string()
-        }
-        fn preamble_footer(&self) -> String {
-            "## Stub Footer".to_string()
-        }
-        fn turn_reminder(&self) -> Option<&str> {
-            Some("\n\n(stub reminder)")
-        }
-        fn tool_schema_extra(&self) -> Option<ToolSchemaExtra> {
-            None
-        }
-        fn check_tool_call(&self, arguments: &serde_json::Value) -> Result<(), String> {
-            match arguments.get("ok") {
-                Some(serde_json::Value::Bool(true)) => Ok(()),
-                _ => Err("stub rejected this call".to_string()),
-            }
-        }
-        fn call_score(&self, _arguments: &serde_json::Value) -> Option<f64> {
-            Some(42.0)
-        }
-        fn review_final_answer(
-            &self,
-            _text: &str,
-            _agents: &[AgentInfo],
-            _delegated: bool,
-            _turn_idx: usize,
-        ) -> String {
-            "stub replaced the answer".to_string()
-        }
-        fn undelegated_max_tokens(&self, user_query_chars: usize) -> Option<u64> {
-            Some(123 + user_query_chars as u64)
-        }
-        fn buffer_every_turn(&self) -> bool {
-            true
-        }
-        fn is_refusal(&self, text: &str) -> bool {
-            text == "stub replaced the answer"
-        }
-    }
-
-    fn with_policy() -> OrchestratorConfig {
-        OrchestratorConfig {
-            policy: Some(Arc::new(StubPolicy)),
-            ..Default::default()
-        }
-    }
-
-    /// The open-source default: no policy, and the prompt carries no trace of
-    /// one. This is the guarantee that makes the seam free to exist here — an
-    /// unconfigured deployment is byte-identical to one built before it.
-    #[test]
-    fn no_policy_leaves_the_preamble_untouched() {
-        let preamble = build_preamble(&OrchestratorConfig::default(), &[]);
-
-        // Byte-exact, NOT trimmed. An earlier version of this test trimmed, and
-        // so could not see that the two empty placeholders were each leaving a
-        // stray blank line behind — "the same apart from whitespace" is not the
-        // same prompt. Both joins are pinned literally: an empty roster renders
-        // as `Agents\n\n` + `` + `\n\n` + `Protocol`, exactly as it did before
-        // this seam existed, and the built-in rules are the last thing in the
-        // string with nothing after them.
-        assert!(
-            preamble.contains("## Available Agents\n\n\n\n## Protocol"),
-            "an absent policy section must leave nothing behind, not a blank line:\n{preamble:?}"
-        );
-        assert!(
-            preamble.ends_with("your own words would otherwise repeat the same question twice."),
-            "an absent footer must leave nothing behind, not a trailing blank line:\n{preamble:?}"
-        );
-    }
-
-    #[test]
-    fn no_policy_returns_the_model_answer_verbatim() {
-        let out = finalize_answer(
-            "Paris is the capital of France.",
-            &OrchestratorConfig::default(),
-            &[],
-            false,
-            0,
-        );
-        assert_eq!(out, "Paris is the capital of France.");
-    }
-
-    /// Position is the whole reason these are two hooks rather than one: the
-    /// policy section explains the roster it follows, while the footer has to be
-    /// the last thing the model reads to survive at all.
-    #[test]
-    fn a_policy_lands_in_both_prompt_positions_in_order() {
-        let preamble = build_preamble(&with_policy(), &[]);
-
-        let policy_at = preamble.find("## Stub Policy").expect("policy section");
-        let protocol_at = preamble.find("## Protocol").expect("protocol section");
-        let footer_at = preamble.find("## Stub Footer").expect("footer section");
-
-        assert!(policy_at < protocol_at, "policy precedes the protocol");
-        assert!(footer_at > protocol_at, "the footer trails every built-in");
-        assert!(preamble.trim_end().ends_with("## Stub Footer"));
-    }
-
-    #[test]
-    fn a_policy_gets_the_last_word_on_the_final_answer() {
-        let out = finalize_answer(
-            "Paris is the capital of France.",
-            &with_policy(),
-            &[],
-            false,
-            0,
-        );
-        assert_eq!(out, "stub replaced the answer");
-    }
-
-    /// The gate reads raw arguments, before deserialization, so a rejection is
-    /// an explicit reason the model can act on rather than an opaque JSON error.
-    #[test]
-    fn the_gate_sees_raw_tool_arguments() {
-        let policy = StubPolicy;
-        assert!(
-            policy
-                .check_tool_call(&serde_json::json!({"ok": true}))
-                .is_ok()
-        );
-        let err = policy
-            .check_tool_call(&serde_json::json!({"message": "hi"}))
-            .expect_err("the stub rejects anything without ok=true");
-        assert_eq!(err, "stub rejected this call");
     }
 }
