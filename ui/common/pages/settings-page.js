@@ -85,10 +85,10 @@ class SettingsPage extends HTMLElement {
 
     // Ensure user info is loaded before checking role.
     await authService.fetchCurrentUser();
-    const isAdmin = authService.isSuperuser();
+    const isAdmin = authService.isAdmin();
 
     // Non-admin users see only their secrets — admin-level platform settings
-    // (General, Flow limits, Registry, SSO) are superuser-gated on the API.
+    // (General, Flow limits, Registry, SSO) require admin role.
     if (!isAdmin) {
       await import('/common/features/secrets-manager.js');
       await import('/common/features/app-module-nav.js');
@@ -288,6 +288,15 @@ class SettingsPage extends HTMLElement {
               </div>
               <div class="setting-control" id="s-sso-status-badges"></div>
             </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label>Disable SSO</label>
+                <div class="hint">Removes the SSO configuration. Users will need to sign in with a local password. Existing SSO users will not be deleted.</div>
+              </div>
+              <div class="setting-control">
+                <app-button variant="ghost-danger" size="sm" id="btn-disable-sso">Disable SSO</app-button>
+              </div>
+            </div>
           </div>
 
           <div id="scim-section" hidden>
@@ -350,6 +359,7 @@ class SettingsPage extends HTMLElement {
     const idpSelect = this.querySelector('#s-idp-kind');
     idpSelect.addEventListener('change', () => this.#updateIdpFields(idpSelect.value));
 
+    this.querySelector('#btn-disable-sso')?.addEventListener('click', () => this.#disableSso());
     this.querySelector('#btn-generate-scim-token').addEventListener('click', () => this.#generateScimToken());
     this.querySelector('#btn-copy-scim-url').addEventListener('click', () => {
       navigator.clipboard.writeText(this.querySelector('#s-scim-endpoint').textContent);
@@ -573,6 +583,34 @@ class SettingsPage extends HTMLElement {
         this.#loadScimTokens();
       });
     });
+  }
+
+  async #disableSso() {
+    const { confirmDialog } = await import('/common/design-system/app-modal/app-modal.js');
+    const confirmed = await confirmDialog({
+      title: 'Disable Single Sign-On',
+      message: 'This removes the SSO configuration. Users will need to sign in with a local '
+        + 'password. Existing SSO users are not deleted but will not be able to sign in until '
+        + 'a local password is set for them.',
+      confirmLabel: 'Disable SSO',
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    try {
+      await callOptional('saveOidcSettings', {
+        oidc_issuer_url: '',
+        oidc_client_id: '',
+        oidc_client_secret: '',
+        oidc_redirect_uri: '',
+        oidc_scopes: '',
+        allow_provider_switch: true,
+      });
+      showToast('SSO disabled');
+      this.#load();
+    } catch (err) {
+      showToast(err.message || 'Failed to disable SSO');
+    }
   }
 
   #save() {
