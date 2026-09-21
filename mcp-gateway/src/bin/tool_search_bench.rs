@@ -156,8 +156,8 @@ impl Bm25Index {
                         continue;
                     }
                     let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
-                    let tf_norm =
-                        (tf * (self.k1 + 1.0)) / (tf + self.k1 * (1.0 - self.b + self.b * dl / self.avgdl));
+                    let tf_norm = (tf * (self.k1 + 1.0))
+                        / (tf + self.k1 * (1.0 - self.b + self.b * dl / self.avgdl));
                     score += idf * tf_norm;
                 }
                 (id.clone(), score)
@@ -295,7 +295,10 @@ fn two_level_search(
             // comparable.  Without this, BM25 scores from a small connector
             // are structurally higher than from a large one.
             let min = hits.iter().map(|(_, s)| *s).fold(f64::INFINITY, f64::min);
-            let max = hits.iter().map(|(_, s)| *s).fold(f64::NEG_INFINITY, f64::max);
+            let max = hits
+                .iter()
+                .map(|(_, s)| *s)
+                .fold(f64::NEG_INFINITY, f64::max);
             let range = max - min;
             tools.extend(hits.into_iter().map(|(id, score)| {
                 let norm = if range > 0.0 {
@@ -354,7 +357,12 @@ impl Searcher for Bm25Searcher {
 struct SemanticSearcher(SemanticIndex);
 
 impl Searcher for SemanticSearcher {
-    fn search_text(&self, _: &str, query_embedding: Option<&[f32]>, limit: usize) -> Vec<(String, f64)> {
+    fn search_text(
+        &self,
+        _: &str,
+        query_embedding: Option<&[f32]>,
+        limit: usize,
+    ) -> Vec<(String, f64)> {
         match query_embedding {
             Some(emb) => self.0.search(emb, limit),
             None => vec![],
@@ -397,7 +405,11 @@ struct PerQuery {
 }
 
 fn compute_per_query(result: &SearchResult, entry: &QueryEntry, latency_us: f64) -> PerQuery {
-    let expected_conns: HashSet<&str> = entry.expected_connectors.iter().map(|s| s.as_str()).collect();
+    let expected_conns: HashSet<&str> = entry
+        .expected_connectors
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     let expected_tools: HashSet<&str> = entry.expected_tools.iter().map(|s| s.as_str()).collect();
 
     let connector_recall = if expected_conns.is_empty() {
@@ -528,8 +540,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // ── Load data ──────────────────────────────────────────────────────────
-    let catalog: Vec<CatalogEntry> =
-        serde_json::from_str(&std::fs::read_to_string(&cli.catalog)?)?;
+    let catalog: Vec<CatalogEntry> = serde_json::from_str(&std::fs::read_to_string(&cli.catalog)?)?;
     let mut queries: Vec<QueryEntry> =
         serde_json::from_str(&std::fs::read_to_string(&cli.dataset)?)?;
 
@@ -591,11 +602,7 @@ async fn main() -> anyhow::Result<()> {
         let items: Vec<(String, String)> = tools
             .iter()
             .map(|t| {
-                let text = format!(
-                    "{} {}",
-                    t.tool_name.replace('_', " "),
-                    t.description
-                );
+                let text = format!("{} {}", t.tool_name.replace('_', " "), t.description);
                 (t.tool_name.clone(), text)
             })
             .collect();
@@ -608,19 +615,15 @@ async fn main() -> anyhow::Result<()> {
     let all_tools_bm25_items: Vec<(String, String)> = all_tools
         .iter()
         .map(|t| {
-            let text = format!(
-                "{} {}",
-                t.tool_name.replace('_', " "),
-                t.description
-            );
+            let text = format!("{} {}", t.tool_name.replace('_', " "), t.description);
             (t.tool_name.clone(), text)
         })
         .collect();
     let flat_bm25 = Bm25Searcher(Bm25Index::build(&all_tools_bm25_items, 1.5, 0.75));
 
     // ── Build semantic indexes ─────────────────────────────────────────────
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .expect("OPENAI_API_KEY must be set for semantic search");
+    let api_key =
+        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set for semantic search");
 
     let http = reqwest::Client::new();
 
@@ -632,10 +635,8 @@ async fn main() -> anyhow::Result<()> {
     let connector_ids: Vec<String> = connectors.iter().map(|c| c.name.clone()).collect();
     let connector_embeddings =
         embed_batch(&http, &api_key, &cli.embed_model, &connector_texts).await?;
-    let connector_semantic = SemanticSearcher(SemanticIndex::new(
-        connector_ids,
-        connector_embeddings,
-    ));
+    let connector_semantic =
+        SemanticSearcher(SemanticIndex::new(connector_ids, connector_embeddings));
 
     eprintln!("Embedding {} tools…", all_tools.len());
     let tool_texts: Vec<String> = all_tools
@@ -643,8 +644,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|t| format!("{}: {}", t.tool_name.replace('_', " "), t.description))
         .collect();
     let tool_ids: Vec<String> = all_tools.iter().map(|t| t.tool_name.clone()).collect();
-    let tool_embeddings =
-        embed_batch(&http, &api_key, &cli.embed_model, &tool_texts).await?;
+    let tool_embeddings = embed_batch(&http, &api_key, &cli.embed_model, &tool_texts).await?;
 
     // Per-connector semantic indexes.
     let mut tool_semantic_by_connector: HashMap<String, Box<dyn Searcher>> = HashMap::new();
@@ -658,10 +658,8 @@ async fn main() -> anyhow::Result<()> {
 
         for (conn_name, tools) in &tools_by_connector {
             let ids: Vec<String> = tools.iter().map(|t| t.tool_name.clone()).collect();
-            let embeddings: Vec<Vec<f32>> = ids
-                .iter()
-                .map(|id| emb_map[id.as_str()].clone())
-                .collect();
+            let embeddings: Vec<Vec<f32>> =
+                ids.iter().map(|id| emb_map[id.as_str()].clone()).collect();
             tool_semantic_by_connector.insert(
                 conn_name.clone(),
                 Box::new(SemanticSearcher(SemanticIndex::new(ids, embeddings))),
@@ -674,8 +672,7 @@ async fn main() -> anyhow::Result<()> {
     // ── Pre-embed all queries ──────────────────────────────────────────────
     eprintln!("Embedding {} queries…", queries.len());
     let query_texts: Vec<String> = queries.iter().map(|q| q.query.clone()).collect();
-    let query_embeddings =
-        embed_batch(&http, &api_key, &cli.embed_model, &query_texts).await?;
+    let query_embeddings = embed_batch(&http, &api_key, &cli.embed_model, &query_texts).await?;
 
     // ── Run 6 approaches ───────────────────────────────────────────────────
 
@@ -732,18 +729,8 @@ async fn main() -> anyhow::Result<()> {
                     cli.top_k_connectors,
                     cli.top_k_tools,
                 ),
-                4 => flat_search(
-                    &entry.query,
-                    qemb_slice,
-                    &flat_bm25,
-                    cli.top_k_tools,
-                ),
-                5 => flat_search(
-                    &entry.query,
-                    qemb_slice,
-                    &flat_semantic,
-                    cli.top_k_tools,
-                ),
+                4 => flat_search(&entry.query, qemb_slice, &flat_bm25, cli.top_k_tools),
+                5 => flat_search(&entry.query, qemb_slice, &flat_semantic, cli.top_k_tools),
                 _ => unreachable!(),
             };
             let elapsed_us = start.elapsed().as_micros() as f64;
@@ -783,7 +770,17 @@ async fn main() -> anyhow::Result<()> {
     println!();
     println!(
         "{:<30} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>10} {:>10}",
-        "Approach", "Recall@5", "Recall@10", "Recall@15", "Recall@20", "Recall@25", "Precision", "MRR", "Hit@5", "p50(µs)", "p95(µs)"
+        "Approach",
+        "Recall@5",
+        "Recall@10",
+        "Recall@15",
+        "Recall@20",
+        "Recall@25",
+        "Precision",
+        "MRR",
+        "Hit@5",
+        "p50(µs)",
+        "p95(µs)"
     );
     println!("{}", "-".repeat(148));
     for r in &all_results {
@@ -805,7 +802,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Per-category breakdown.
-    let categories = ["exact_match", "synonym", "multi_tool", "multi_toolkit", "vague"];
+    let categories = [
+        "exact_match",
+        "synonym",
+        "multi_tool",
+        "multi_toolkit",
+        "vague",
+    ];
     for cat in &categories {
         println!("\n── {cat} ──");
         println!(
@@ -817,7 +820,13 @@ async fn main() -> anyhow::Result<()> {
             if let Some(m) = r.by_category.get(*cat) {
                 println!(
                     "{:<30} {:>10.4} {:>10.4} {:>10.4} {:>10.4} {:>8.4} {:>8.4}",
-                    r.name, m.tool_recall_at_5, m.tool_recall_at_15, m.tool_recall_at_20, m.tool_recall_at_25, m.mrr, m.hit_at_5,
+                    r.name,
+                    m.tool_recall_at_5,
+                    m.tool_recall_at_15,
+                    m.tool_recall_at_20,
+                    m.tool_recall_at_25,
+                    m.mrr,
+                    m.hit_at_5,
                 );
             }
         }
@@ -848,4 +857,3 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-

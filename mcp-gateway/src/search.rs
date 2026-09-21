@@ -120,7 +120,13 @@ impl Bm25SearchIndex {
         }
     }
 
-    fn score_query(qtokens: &[String], doc_tokens: &[String], df: &HashMap<String, usize>, n: f64, avgdl: f64) -> f64 {
+    fn score_query(
+        qtokens: &[String],
+        doc_tokens: &[String],
+        df: &HashMap<String, usize>,
+        n: f64,
+        avgdl: f64,
+    ) -> f64 {
         let k1 = 1.5;
         let b = 0.75;
         let dl = doc_tokens.len() as f64;
@@ -350,7 +356,10 @@ impl SemanticSearchIndex {
     async fn embed_query(&self, query: &str) -> std::result::Result<Vec<f32>, String> {
         use sha2::{Digest, Sha256};
 
-        let hash = format!("{:x}", Sha256::new().chain_update(query.as_bytes()).finalize());
+        let hash = format!(
+            "{:x}",
+            Sha256::new().chain_update(query.as_bytes()).finalize()
+        );
         let cache_key = format!("mcp:qemb:{}:{}", self.client.model, &hash[..16]);
 
         // Check Redis cache.
@@ -443,14 +452,12 @@ impl ToolSearchIndex for SemanticSearchIndex {
         let existing: HashMap<(Uuid, String), Vec<f32>> = load_embeddings(db).await?;
 
         // Find tools that need (re-)embedding: no embedding or model mismatch.
-        let existing_model: HashMap<(Uuid, String), String> =
-            load_embedding_models(db).await?;
+        let existing_model: HashMap<(Uuid, String), String> = load_embedding_models(db).await?;
 
         let mut texts_to_embed: Vec<(usize, String)> = Vec::new();
         for (i, tool) in tools.iter().enumerate() {
             let key = (tool.connector_id, tool.tool_name.clone());
-            let needs_embed =
-                !matches!((existing.get(&key), existing_model.get(&key)), (Some(_), Some(model)) if model == &self.client.model);
+            let needs_embed = !matches!((existing.get(&key), existing_model.get(&key)), (Some(_), Some(model)) if model == &self.client.model);
             if needs_embed {
                 texts_to_embed.push((
                     i,
@@ -569,10 +576,7 @@ async fn load_embedding_models(db: &PgPool) -> Result<HashMap<(Uuid, String), St
         .collect())
 }
 
-async fn upsert_embeddings(
-    db: &PgPool,
-    rows: &[(Uuid, String, Vec<u8>, String)],
-) -> Result<()> {
+async fn upsert_embeddings(db: &PgPool, rows: &[(Uuid, String, Vec<u8>, String)]) -> Result<()> {
     let mut tx = db.begin().await?;
     for (cid, name, embedding, model) in rows {
         sqlx::query(
@@ -631,13 +635,41 @@ mod tests {
 
     fn sample_tools() -> Vec<ToolEntry> {
         vec![
-            tool("gmail", "GMAIL_SEND_EMAIL", "Creates and sends an email from a gmail account"),
-            tool("gmail", "GMAIL_FETCH_EMAILS", "Fetches emails from a gmail account inbox"),
-            tool("gmail", "GMAIL_CREATE_EMAIL_DRAFT", "Creates a draft email in gmail"),
-            tool("slack", "SLACK_CHAT_POST_MESSAGE", "Sends a message to a slack channel or DM"),
-            tool("slack", "SLACK_LIST_CHANNELS", "Lists all channels in a slack workspace"),
-            tool("github", "GITHUB_CREATE_ISSUE", "Creates a new issue in a github repository"),
-            tool("github", "GITHUB_LIST_REPOS", "Lists repositories for the authenticated user"),
+            tool(
+                "gmail",
+                "GMAIL_SEND_EMAIL",
+                "Creates and sends an email from a gmail account",
+            ),
+            tool(
+                "gmail",
+                "GMAIL_FETCH_EMAILS",
+                "Fetches emails from a gmail account inbox",
+            ),
+            tool(
+                "gmail",
+                "GMAIL_CREATE_EMAIL_DRAFT",
+                "Creates a draft email in gmail",
+            ),
+            tool(
+                "slack",
+                "SLACK_CHAT_POST_MESSAGE",
+                "Sends a message to a slack channel or DM",
+            ),
+            tool(
+                "slack",
+                "SLACK_LIST_CHANNELS",
+                "Lists all channels in a slack workspace",
+            ),
+            tool(
+                "github",
+                "GITHUB_CREATE_ISSUE",
+                "Creates a new issue in a github repository",
+            ),
+            tool(
+                "github",
+                "GITHUB_LIST_REPOS",
+                "Lists repositories for the authenticated user",
+            ),
         ]
     }
 
@@ -681,10 +713,18 @@ mod tests {
         }
 
         let results = index
-            .search_tools("send an email", &all_connector_ids(), &permissive_perms(), 5)
+            .search_tools(
+                "send an email",
+                &all_connector_ids(),
+                &permissive_perms(),
+                5,
+            )
             .await;
 
-        assert!(!results.is_empty(), "should return results for 'send an email'");
+        assert!(
+            !results.is_empty(),
+            "should return results for 'send an email'"
+        );
         assert_eq!(
             results[0].tool_name, "GMAIL_SEND_EMAIL",
             "top result should be GMAIL_SEND_EMAIL"

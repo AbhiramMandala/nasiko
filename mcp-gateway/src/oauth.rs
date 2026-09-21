@@ -827,9 +827,9 @@ pub async fn fetch_protected_resource_metadata(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as B64Std;
+    use std::sync::Arc;
 
     use super::*;
     use crate::config::{McpConfig, ToolSearchMode};

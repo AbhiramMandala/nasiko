@@ -1,7 +1,4 @@
-use axum::{
-    Json, Router, extract::State, http::StatusCode, response::IntoResponse,
-    routing::get,
-};
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Claims;
@@ -10,8 +7,7 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     // Write route requires admin role — the middleware is applied here so the
     // state is available when the router is merged into the app.
-    let write_settings = Router::new()
-        .route("/settings", axum::routing::put(update_settings));
+    let write_settings = Router::new().route("/settings", axum::routing::put(update_settings));
 
     Router::new()
         .route("/settings", get(get_settings))

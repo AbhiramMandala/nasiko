@@ -135,9 +135,7 @@ pub enum AuthError {
     /// Bad username/access-key or wrong secret. Maps to 401.
     /// `remaining_attempts` is `Some` when login lockout is approaching.
     #[error("invalid credentials")]
-    InvalidCredentials {
-        remaining_attempts: Option<i32>,
-    },
+    InvalidCredentials { remaining_attempts: Option<i32> },
     /// Account is deactivated. Maps to 401/403.
     #[error("account disabled")]
     Disabled,

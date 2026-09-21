@@ -145,13 +145,11 @@ impl AuthService for AuthServiceImpl {
                     retry_after_secs: LOGIN_LOCKOUT_DURATION_SECS,
                 });
             }
-            let _ = sqlx::query(
-                "UPDATE users SET failed_login_attempts = $2 WHERE id = $1",
-            )
-            .bind(row.id)
-            .bind(attempts)
-            .execute(&self.db)
-            .await;
+            let _ = sqlx::query("UPDATE users SET failed_login_attempts = $2 WHERE id = $1")
+                .bind(row.id)
+                .bind(attempts)
+                .execute(&self.db)
+                .await;
             let remaining = LOGIN_LOCKOUT_THRESHOLD - attempts;
             return Err(AuthError::InvalidCredentials {
                 remaining_attempts: Some(remaining),

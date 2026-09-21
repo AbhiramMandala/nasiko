@@ -282,8 +282,7 @@ pub async fn handle_tools_call(
         let limit = arguments
             .get("limit")
             .and_then(|v| v.as_u64())
-            .unwrap_or(state.config.tool_search_meta_limit as u64)
-            as usize;
+            .unwrap_or(state.config.tool_search_meta_limit as u64) as usize;
 
         let accessible_ids: Vec<Uuid> = match state
             .authorizer
@@ -1311,8 +1310,7 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
                             .and_then(|m| m.as_str())
                     })
                     .unwrap_or("tool execution failed");
-                serde_json::to_string(&json!({"error": error}))
-                    .unwrap_or_else(|_| text.to_string())
+                serde_json::to_string(&json!({"error": error})).unwrap_or_else(|_| text.to_string())
             }
         }
         None => text.to_string(),
@@ -1331,13 +1329,13 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Arc;
     use super::*;
     use crate::config::{McpConfig, ToolSearchMode};
     use crate::permissions::PermissionRule;
     use crate::provider::{GenericMcpProvider, Providers};
     use crate::types::Stance;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn test_state() -> McpState {
         let db = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
@@ -1972,7 +1970,11 @@ mod tests {
         let unwrapped = unwrap_multi_execute_response(response);
         let text = unwrapped["result"]["content"][0]["text"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(parsed["invitations"], json!([]), "should extract the inner data");
+        assert_eq!(
+            parsed["invitations"],
+            json!([]),
+            "should extract the inner data"
+        );
     }
 
     #[test]
@@ -1992,7 +1994,10 @@ mod tests {
         let unwrapped = unwrap_multi_execute_response(response);
         let text = unwrapped["result"]["content"][0]["text"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(text).unwrap();
-        assert!(parsed.get("error").is_some(), "should extract error: {parsed}");
+        assert!(
+            parsed.get("error").is_some(),
+            "should extract error: {parsed}"
+        );
     }
 
     #[test]

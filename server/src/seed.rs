@@ -640,7 +640,13 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
         }
         let parsed: Vec<(String, Option<String>, Option<serde_json::Value>)> = tools
             .iter()
-            .map(|t| (t.name.clone(), t.description.clone(), t.input_schema.clone()))
+            .map(|t| {
+                (
+                    t.name.clone(),
+                    t.description.clone(),
+                    t.input_schema.clone(),
+                )
+            })
             .collect();
         match nasiko_mcp_gateway::repo::upsert_connector_tools(&state.db, *cid, &parsed).await {
             Ok(()) => {

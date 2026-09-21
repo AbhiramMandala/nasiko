@@ -403,10 +403,10 @@ pub async fn delete_credential(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use base64::Engine;
     use chrono::Utc;
     use nasiko_secrets::SecretsCrypto;
+    use std::sync::Arc;
     use uuid::Uuid;
 
     use super::{B64, ConnectorUnusable, McpState, build_server_config, normalize_for};
