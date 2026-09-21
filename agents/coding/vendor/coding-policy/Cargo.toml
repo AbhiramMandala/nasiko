@@ -1,0 +1,12 @@
+[package]
+name = "nasiko-coding-policy"
+version = "0.1.0"
+edition = "2024"
+
+# Standalone crate, own [workspace] — same reasoning as every example agent under
+# oss/agents/ (see oss/agents/coding/Cargo.toml's comment), even though this
+# crate itself lives one level up: keeps this buildable in isolation and out of
+# the root workspace, and lets any coding-style agent depend on it by path
+# without pulling it into their own workspace membership.
+
+[dependencies]
