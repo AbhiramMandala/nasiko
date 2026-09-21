@@ -621,7 +621,7 @@ async fn observe_finops_dashboard_returns_zeroed_summary() {
 /// `summary.total_agents` off the finops dashboard — the field both the overview
 /// and tokenops pages read to pick between their first-run screen and the real
 /// dashboard.
-async fn finops_total_agents(server: &common::TestServer, uid: &str) -> i64 {
+async fn finops_summary(server: &common::TestServer, uid: &str) -> Value {
     let res = server
         .client
         .get(server.url("/api/observability/finops/dashboard"))
@@ -631,7 +631,29 @@ async fn finops_total_agents(server: &common::TestServer, uid: &str) -> i64 {
         .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
-    body["data"]["summary"]["total_agents"].as_i64().unwrap()
+    body["data"]["summary"].clone()
+}
+
+async fn finops_total_agents(server: &common::TestServer, uid: &str) -> i64 {
+    finops_summary(server, uid).await["total_agents"]
+        .as_i64()
+        .unwrap()
+}
+
+/// One closed container session, so the agent has billable hours in the window
+/// the dashboard reports on.
+async fn seed_container_hours(server: &common::TestServer, agent: Uuid, name: &str) {
+    sqlx::query(
+        "INSERT INTO agent_instance_sessions \
+         (agent_id, agent_name, instance_key, runtime, started_at, last_seen_at, ended_at) \
+         VALUES ($1, $2, $3, 'docker', now() - interval '2 hours', now(), now())",
+    )
+    .bind(agent)
+    .bind(name)
+    .bind(format!("container-{agent}"))
+    .execute(&server.db)
+    .await
+    .expect("seed container session");
 }
 
 /// An `is_internal` agent (Weave's dashboard-generator) must not pass for a
@@ -652,17 +674,34 @@ async fn finops_dashboard_excludes_internal_agent_only_when_it_is_alone() {
         .await
         .expect("mark internal");
 
+    seed_container_hours(&server, internal, "weave-dashboard-generator").await;
+
+    // The fleet is empty AND the summary says so throughout. The internal
+    // agent's container hours have to come out with it: a first-run screen
+    // reporting zero agents and zero spend beside non-zero hours reads as a
+    // bug, and those hours are the one number the denied agent still fed.
+    let summary = finops_summary(&server, uid).await;
     assert_eq!(
-        finops_total_agents(&server, uid).await,
+        summary["total_agents"].as_i64().unwrap(),
         0,
         "an internal agent alone must read as an empty fleet"
     );
+    assert_eq!(
+        summary["total_container_hours"].as_f64().unwrap(),
+        0.0,
+        "hours from the agent we just denied must not survive into the summary"
+    );
 
     seed_agent(&server, owner, "finops-real-agent").await;
+    let summary = finops_summary(&server, uid).await;
     assert_eq!(
-        finops_total_agents(&server, uid).await,
+        summary["total_agents"].as_i64().unwrap(),
         2,
         "with a real agent deployed the internal one counts again"
+    );
+    assert!(
+        summary["total_container_hours"].as_f64().unwrap() > 0.0,
+        "and so do its hours"
     );
 
     server.cleanup().await;

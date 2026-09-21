@@ -2086,15 +2086,27 @@ impl ObservabilityService {
         // below turns into the zeroed payload those pages expect. Once the caller
         // has an agent of their own the internal one stays in, so its spend is
         // still attributed.
-        let internal: HashSet<uuid::Uuid> =
-            sqlx::query_scalar("SELECT id FROM agents WHERE is_internal AND deleted_at IS NULL")
-                .fetch_all(&self.db)
-                .await
-                .map_err(|e| ObservabilityError::Internal(e.to_string()))?
-                .into_iter()
-                .collect();
-        if !agents.is_empty() && agents.iter().all(|(id, _, _, _)| internal.contains(id)) {
-            agents.clear();
+        //
+        // Scoped to the agents actually in hand, and skipped entirely when there
+        // are none: an unscoped `SELECT id FROM agents WHERE is_internal` reads
+        // every internal agent in the deployment on every dashboard load, and ran
+        // even for the no-agent first-run case this exists to serve, where its
+        // answer cannot change anything.
+        let mut dropped_internal: HashSet<uuid::Uuid> = HashSet::new();
+        if !agents.is_empty() {
+            let ids: Vec<uuid::Uuid> = agents.iter().map(|(id, _, _, _)| *id).collect();
+            let internal_count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM agents \
+                 WHERE id = ANY($1) AND is_internal AND deleted_at IS NULL",
+            )
+            .bind(&ids)
+            .fetch_one(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+            if internal_count as usize == ids.len() {
+                dropped_internal = ids.into_iter().collect();
+                agents.clear();
+            }
         }
         let total_agents = agents.len();
 
@@ -2122,6 +2134,16 @@ impl ObservabilityService {
             });
         if let Some(accessible) = &accessible {
             hours_rows.retain(|row| accessible.contains(&row.agent_id));
+        }
+        // An agent we just denied the existence of cannot keep billing hours into
+        // the summary. Without this the first-run screen reports zero agents and
+        // zero spend beside a non-zero container-hours figure -- the one number
+        // the internal agent still contributed -- which reads as a bug rather
+        // than as an empty workspace. Deleted agents' hours are untouched: those
+        // are real history with no agent left to attribute them to, which is why
+        // `empty_finops_response` takes the total rather than zeroing it.
+        if !dropped_internal.is_empty() {
+            hours_rows.retain(|row| !dropped_internal.contains(&row.agent_id));
         }
         let total_container_hours = round6(hours_rows.iter().map(|r| r.hours).sum());
         let hours_by_agent: HashMap<uuid::Uuid, f64> =
