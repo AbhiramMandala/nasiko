@@ -1,0 +1,91 @@
+@scope (workflow-new-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+  /* Centered — this page has no module-nav column, so a left-hugging column
+     reads unbalanced in the wide card (matches workflow-detail-page). */
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-20);
+    max-width: 860px;
+    margin-inline: auto;
+  }
+
+  /* ── Header: back button beside the title block ──
+     The name is no longer an inline title field: it is a labelled form control
+     below, and the heading *reflects* it. One editable copy of the name, and a
+     page that reads as a form rather than as a document you rename in place. */
+  .page-head {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-12);
+  }
+  .head-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+  }
+  .title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 24px;
+    line-height: 32px;
+    font-weight: 500;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+  }
+  .subtitle {
+    margin: 0;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-muted);
+  }
+
+  .gen-notice {
+    padding: var(--s-12) var(--s-16);
+    border-radius: var(--r-8);
+    background: var(--bg-caution-subtle);
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-main);
+    text-wrap: pretty;
+  }
+
+  /* Drafting placeholder — a dotted plate the size of the step list it will be
+     replaced by, so resolving the plan doesn't jump the footer up the page. */
+  .generating {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 320px;
+    border-radius: var(--r-8);
+    background:
+      radial-gradient(var(--bg-surface-active) 1px, transparent 1px) 0 0 / 12px 12px,
+      var(--bg-surface);
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-muted);
+  }
+
+  /* ── Footer ── */
+  .foot-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    flex-wrap: wrap;
+  }
+
+  #wf-desc{
+    border: 1px solid var(--color-border);
+    border-radius: var(--s-12);
+  }
+  #wf-desc > form > .input-area{
+    background: var(--bg-base) !important;
+    
+  }
+ 
+}

@@ -4,7 +4,8 @@
  * Active tab shows in-flight runs with a live step timeline (the list rows
  * carry snapshotted step_results; the page re-polls the list every 1.5s
  * while anything is pending/running — there is no run SSE). History tab
- * lists finished runs, collapsed, with a status filter.
+ * lists finished runs, collapsed. Search, status and age filter either tab,
+ * client-side — the list endpoint takes no query parameters.
  *
  * @element executions-page
  */
@@ -14,6 +15,8 @@ import { fmtDuration, fmtTokens } from '/common/utils/units.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-search/app-search.js';
+import '/common/design-system/app-select/app-select.js';
 import '/common/design-system/app-skeleton/app-skeleton.js';
 import '/common/design-system/app-tabs/app-tabs.js';
 import '/common/features/wf-run-steps.js';
@@ -22,7 +25,6 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./executions-page.css', import.meta.url));
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
-import { attachSlidingIndicator } from '/common/utils/tab-indicator.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the
 // gutter was reserved and the nav never upgraded.
@@ -31,7 +33,26 @@ import '/common/features/app-module-nav.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const POLL_MS = 1500;
+/** Empty-screen illustration (Figma export, ui/common/images). */
+const RUNS_ART = '/common/images/executions_empty.svg';
 const ACTIVE = new Set(['pending', 'running']);
+/** Toolbar status → the run statuses it admits. 'running' covers pending too:
+ *  a queued run is one the user is waiting on, not a third thing to filter by. */
+const STATUS_FILTERS = { running: ACTIVE, success: new Set(['success']), failed: new Set(['failed']) };
+const STATUS_OPTIONS = JSON.stringify([
+  { value: 'all', label: 'All statuses' },
+  { value: 'running', label: 'Running' },
+  { value: 'success', label: 'Completed' },
+  { value: 'failed', label: 'Failed' },
+]);
+/** Toolbar age → the window in days it admits. */
+const TIME_WINDOWS = { '1d': 1, '7d': 7, '30d': 30 };
+const TIME_OPTIONS = JSON.stringify([
+  { value: 'any', label: 'Any time' },
+  { value: '1d', label: 'Last 24 hours' },
+  { value: '7d', label: 'Last 7 days' },
+  { value: '30d', label: 'Last 30 days' },
+]);
 /** Run status → <app-badge> variant. */
 const STATUS_VARIANTS = { success: 'success', failed: 'error', running: 'warning', pending: 'neutral' };
 
@@ -39,7 +60,9 @@ class ExecutionsPage extends HTMLElement {
   #initialized = false;
   #executions = [];
   #tab = 'active';
-  #statusFilter = 'all';
+  #query = '';
+  #status = 'all';
+  #time = 'any';
   #expanded = new Set();
   #pollTimer = null;
   #loaded = false;
@@ -50,35 +73,46 @@ class ExecutionsPage extends HTMLElement {
 
     this.innerHTML = `
       <app-module-nav module="orchestrator"></app-module-nav>
-      <h1 class="title-page page-title">All executions</h1>
+      <h1 class="title-page page-title">Workflow runs</h1>
       <app-tabs strip class="tabs">
         <button type="button" class="tab" role="tab" data-key="active" aria-selected="true">Active</button>
         <button type="button" class="tab" role="tab" data-key="history" aria-selected="false">History</button>
       </app-tabs>
+      <div class="toolbar">
+        <app-search id="ex-search" size="sm" class="ex-search"
+          placeholder="Search" aria-label="Search workflow runs"></app-search>
+        <app-select id="ex-status" size="sm" fit-content aria-label="Filter by status"
+          options='${STATUS_OPTIONS}' value="all"></app-select>
+        <app-select id="ex-time" size="sm" fit-content aria-label="Filter by age"
+          options='${TIME_OPTIONS}' value="any"></app-select>
+      </div>
       <div class="list-area" id="list-area">${this.#skeleton()}</div>
     `;
 
     // <app-tabs strip> flips aria-selected and slides the indicator; the page
     // keeps owning the single list area both tabs render into.
-    this.querySelector('.tabs').addEventListener('tab-change', (e) => {
+    this.querySelector('.tabs').addEventListener('tabs-change', (e) => {
       this.#tab = e.detail.key;
       this.#renderList();
     });
 
-    const area = this.querySelector('#list-area');
-    area.addEventListener('click', (e) => {
-      const filterBtn = e.target.closest('[data-filter]');
-      if (filterBtn) {
-        this.#statusFilter = filterBtn.dataset.filter;
-        this.#renderHistoryRuns(); // seg-ctrl stays mounted so its indicator slides
-        return;
-      }
+    // `input` covers typing and <app-search>'s own clear button, which re-fires it.
+    this.querySelector('#ex-search').addEventListener('input', (e) => {
+      this.#query = e.target.value.trim().toLowerCase();
+      this.#renderList();
+    });
+    this.querySelector('.toolbar').addEventListener('change', (e) => {
+      if (e.target.id === 'ex-status') this.#status = e.target.value;
+      if (e.target.id === 'ex-time') this.#time = e.target.value;
+      this.#renderList();
+    });
+
+    this.querySelector('#list-area').addEventListener('click', (e) => {
       const toggle = e.target.closest('[data-toggle]');
-      if (toggle) {
-        const id = toggle.dataset.toggle;
-        this.#expanded.has(id) ? this.#expanded.delete(id) : this.#expanded.add(id);
-        this.#tab === 'history' ? this.#renderHistoryRuns() : this.#renderList();
-      }
+      if (!toggle) return;
+      const id = toggle.dataset.toggle;
+      this.#expanded.has(id) ? this.#expanded.delete(id) : this.#expanded.add(id);
+      this.#renderList();
     });
 
     this.#load();
@@ -96,8 +130,19 @@ class ExecutionsPage extends HTMLElement {
       this.#renderList();
       this.#pollIfActive();
     } catch (err) {
-      this.querySelector('#list-area').innerHTML =
-        `<p class="load-error">Failed to load executions: ${escHtml(err.message)}</p>`;
+      // Was a bare line of text where the list should be. The raw message
+      // moves into the description so the detail survives the restyle.
+      const area = this.querySelector('#list-area');
+      area.innerHTML = `
+        <app-empty-state variant="error"
+          heading="Couldn't load executions"
+          description="${escAttr(err?.message || 'The request failed.')}">
+          <app-button id="exec-retry" variant="tertiary">Retry</app-button>
+        </app-empty-state>`;
+      area.querySelector('#exec-retry')?.addEventListener('click', () => {
+        area.innerHTML = this.#skeleton();
+        this.#load();
+      });
     }
   }
 
@@ -115,7 +160,9 @@ class ExecutionsPage extends HTMLElement {
   /** In-place update of open active cards; full re-render only when the
    *  active set changes (keeps per-step tab state stable while polling). */
   #refreshActive() {
-    const active = this.#executions.filter((e) => ACTIVE.has(e.status));
+    // Filtered, like the render it is refreshing — otherwise every poll sees a
+    // set that never matches what is on screen and rebuilds the whole list.
+    const active = this.#executions.filter((e) => ACTIVE.has(e.status) && this.#matches(e));
     const rendered = [...this.querySelectorAll('.run-card[data-card]')].map((c) => c.dataset.card);
     const sameSet = active.length === rendered.length && active.every((e) => rendered.includes(e.id));
     if (!sameSet) {
@@ -134,79 +181,68 @@ class ExecutionsPage extends HTMLElement {
     const area = this.querySelector('#list-area');
     if (!this.#loaded) return;
 
-    if (this.#tab === 'active') {
-      const active = this.#executions.filter((e) => ACTIVE.has(e.status));
-      if (!this.#executions.length) {
-        area.innerHTML = this.#emptyState({
-          icon: icons.workflow('', 40),
-          title: 'No workflow runs yet',
-          sub: 'Create your first workflow by chaining agents together.',
-          action: `<app-button variant="primary" href="/workflow-new">Create workflow ${icons.plus()}</app-button>`,
-        });
-        return;
-      }
-      if (!active.length) {
-        area.innerHTML = this.#emptyState({
-          icon: icons.play('', 40),
-          title: 'Your active runs will appear here',
-          sub: 'Monitor live workflow executions, track progress across each step, and inspect outputs as they are generated.',
-          action: `<app-button variant="primary" href="/workflows">Browse workflows</app-button>`,
-        });
-        return;
-      }
-      area.innerHTML = `<div class="run-list">${active.map((e) => this.#runCard(e, { open: true })).join('')}</div>`;
-      this.#hydrateSteps(active);
+    // Nothing has ever run: the page has no two states to tab between, so it is
+    // the section's empty screen and the strip comes down with it.
+    const noRuns = !this.#executions.length;
+    this.querySelector('.tabs').hidden = noRuns;
+    // Nothing to search or filter: the controls go inert rather than away, so
+    // the toolbar does not appear and disappear as the first run lands.
+    for (const el of this.querySelectorAll('.toolbar > *')) el.toggleAttribute('disabled', noRuns);
+    if (noRuns) {
+      area.innerHTML = `
+        <app-empty-state plain heading="No workflow runs yet"
+          description="Your workflow runs will appear here once you start executing a deployed workflow.">
+          <img data-slot="icon" class="runs-art" src="${RUNS_ART}" alt="" width="286" height="164" />
+          <app-button variant="secondary" size="md" href="/workflows">View workflows</app-button>
+        </app-empty-state>`;
       return;
     }
 
-    // History tab
-    const finished = this.#executions.filter((e) => !ACTIVE.has(e.status));
-    if (!finished.length) {
-      area.innerHTML = this.#emptyState({
-        icon: icons.workflow('', 40),
-        title: 'No finished runs yet',
-        sub: 'Completed and failed workflow runs land here with their full step timelines.',
-        action: `<app-button variant="primary" href="/workflows">Browse workflows</app-button>`,
-      });
+    const active = this.#tab === 'active';
+    const rows = this.#executions.filter((e) => ACTIVE.has(e.status) === active);
+    if (!rows.length) {
+      area.innerHTML = active
+        ? this.#emptyState({
+            icon: icons.play('', 40),
+            title: 'Your active runs will appear here',
+            sub: 'Monitor live workflow executions, track progress across each step, and inspect outputs as they are generated.',
+            action: `<app-button variant="primary" href="/workflows">Browse workflows</app-button>`,
+          })
+        : this.#emptyState({
+            icon: icons.workflow('', 40),
+            title: 'No finished runs yet',
+            sub: 'Completed and failed workflow runs land here with their full step timelines.',
+            action: `<app-button variant="primary" href="/workflows">Browse workflows</app-button>`,
+          });
       return;
     }
-    area.innerHTML = `
-      <fieldset class="seg-ctrl">
-        <legend>Status</legend>
-        ${[['all', 'All'], ['success', 'Completed'], ['failed', 'Failed']].map(([key, label]) => `
-          <label><input type="radio" name="status-filter" data-filter="${key}"
-            ${this.#statusFilter === key ? 'checked' : ''}>${label}</label>`).join('')}
-      </fieldset>
-      <div class="run-list"></div>`;
-    attachSlidingIndicator(area.querySelector('.seg-ctrl'), 'label', ':has(input:checked)', { pill: true });
-    this.#renderHistoryRuns();
+    const shown = rows.filter((e) => this.#matches(e));
+    if (!shown.length) {
+      area.innerHTML = '<p class="filter-empty">No runs match these filters.</p>';
+      return;
+    }
+    // An active run is opened by default — its step timeline is the reason to
+    // be on the tab at all; a finished one opens on request.
+    area.innerHTML = `<div class="run-list">${shown
+      .map((e) => this.#runCard(e, { open: active || this.#expanded.has(e.id) })).join('')}</div>`;
+    this.#hydrateSteps(active ? shown : shown.filter((e) => this.#expanded.has(e.id)));
   }
 
-  /** Fills `.run-list` only — the history seg-ctrl stays mounted so filter
-   *  switches animate its indicator instead of rebuilding the control. */
-  #renderHistoryRuns() {
-    const list = this.querySelector('.run-list');
-    if (!list) return;
-    const finished = this.#executions.filter((e) => !ACTIVE.has(e.status));
-    const filtered = this.#statusFilter === 'all'
-      ? finished
-      : finished.filter((e) => e.status === this.#statusFilter);
-    list.innerHTML = filtered.length
-      ? filtered.map((e) => this.#runCard(e, { open: this.#expanded.has(e.id) })).join('')
-      : '<p class="filter-empty">No runs match this filter.</p>';
-    this.#hydrateSteps(filtered.filter((e) => this.#expanded.has(e.id)));
+  /** Search over the workflow name and the run number, plus the two selects. */
+  #matches(exec) {
+    const admitted = STATUS_FILTERS[this.#status];
+    if (admitted && !admitted.has(exec.status)) return false;
+    const days = TIME_WINDOWS[this.#time];
+    if (days && Date.now() - new Date(exec.created_at).getTime() > days * 86_400_000) return false;
+    if (!this.#query) return true;
+    return `${exec.workflow_name || ''} #${exec.execution_number}`.toLowerCase().includes(this.#query);
   }
 
   /** wf-run-steps takes data via property — assign after the HTML lands. */
   #hydrateSteps(rows) {
     for (const exec of rows) {
       const el = this.querySelector(`wf-run-steps[data-exec="${CSS.escape(exec.id)}"]`);
-      if (el) {
-        el.steps = exec.step_results || [];
-        // Lets the timeline account for planning/synthesis, which belong to
-        // the run and appear in no step row.
-        el.totalTokens = exec.tokens_used || 0;
-      }
+      if (el) el.steps = exec.step_results || [];
     }
   }
 
@@ -246,7 +282,7 @@ class ExecutionsPage extends HTMLElement {
 
   #emptyState({ icon, title, sub, action }) {
     return `
-      <app-empty-state title="${title}" description="${sub}" icon='${icon}'>
+      <app-empty-state heading="${title}" description="${sub}" icon='${icon}'>
         ${action}
       </app-empty-state>`;
   }

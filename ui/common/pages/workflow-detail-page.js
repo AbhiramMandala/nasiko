@@ -60,7 +60,7 @@ class WorkflowDetailPage extends HTMLElement {
       this.innerHTML = `
         <div class="col">
           <app-empty-state
-            title="No workflow selected"
+            heading="No workflow selected"
             description="Open one from the workflows library to review its steps and runs."
             icon='${icons.workflow('', 40)}'>
             <app-button variant="tertiary" href="/workflows">Browse workflows</app-button>
@@ -73,7 +73,36 @@ class WorkflowDetailPage extends HTMLElement {
     const runError = params.get('run_error');
     if (runError) showToast(`Saved, but the run didn't start: ${runError}`);
 
+    // Paint the skeleton before the fetches, not after: under the SPA router
+    // this element arrives empty (the pre-upgrade markup in workflow.html only
+    // exists on a full document load), so every route in here — the library,
+    // a deep link, the create screen's save — cross-faded to a blank card for
+    // the length of two API calls and then popped the content in.
+    this.#renderSkeleton();
     this.#load(params.get('exec'));
+  }
+
+  /** Same shape as workflow.html's pre-upgrade markup, so both paint alike. */
+  #renderSkeleton() {
+    this.innerHTML = `
+      <div class="col">
+        <div class="skel-head">
+          <div class="skel-card__avatar"></div>
+          <div class="skel-card__line skel-card__line--w50"></div>
+        </div>
+        <div class="skel-card__line skel-card__line--w80"></div>
+        <div class="skel-card__tags">
+          <div class="skel-card__tag"></div><div class="skel-card__tag"></div>
+        </div>
+        <div class="skel-card">
+          <div class="skel-card__line skel-card__line--w40"></div>
+          <div class="skel-card__line skel-card__line--w80"></div>
+        </div>
+        <div class="skel-card">
+          <div class="skel-card__line skel-card__line--w40"></div>
+          <div class="skel-card__line skel-card__line--w80"></div>
+        </div>
+      </div>`;
   }
 
   disconnectedCallback() {
@@ -100,7 +129,7 @@ class WorkflowDetailPage extends HTMLElement {
       this.innerHTML = `
         <div class="col">
           <app-empty-state
-            title="Workflow not found"
+            heading="Workflow not found"
             description="It may have been deleted."
             icon='${icons.faceFrown('', 40)}'>
             <app-button variant="tertiary" size="sm" href="/workflows">Back to workflows</app-button>
@@ -210,7 +239,7 @@ class WorkflowDetailPage extends HTMLElement {
     if (!this.#executions.length) {
       list.innerHTML = `
         <app-empty-state
-          title="No runs yet"
+          heading="No runs yet"
           description="This workflow hasn't run yet. Hit Run to start the first execution."
         ></app-empty-state>`;
       return;
@@ -355,9 +384,6 @@ class WorkflowDetailPage extends HTMLElement {
     const stepsEl = this.querySelector('#run-steps');
     stepsEl.labels = this.#stepLabels();
     stepsEl.steps = exec.step_results || [];
-    // Lets the timeline account for planning/synthesis, which belong to the
-    // run and appear in no step row.
-    stepsEl.totalTokens = exec.tokens_used || 0;
 
     const outputSec = this.querySelector('#run-output');
     if (exec.output) {

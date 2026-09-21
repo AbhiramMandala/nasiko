@@ -1,0 +1,95 @@
+/* Both routes are the same component (workflows-page.js), so both tags are
+   scope roots — /workflow-drafts renders <workflow-drafts-page>. */
+@scope (workflows-page, workflow-drafts-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+  .page-title { margin-bottom: var(--s-20); }
+
+  /* Search, filter and the CTA share one row. The two controls stay mounted on
+     the empty screen (disabled there) — they are the section's controls, not
+     the list's — and the CTA holds the trailing edge. */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    flex-wrap: wrap;
+    margin-bottom: var(--s-24);
+  }
+  .wf-search { flex: 0 1 280px; min-width: 180px; }
+  /* The dark primary fill, the control height and the plus glyph are all
+     <app-button>'s; the page only pushes it to the far edge. */
+  .toolbar-cta { margin-left: auto; flex-shrink: 0; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--s-16);
+    align-content: start;
+  }
+
+  /* ── Workflow card ──────────────────────────────────────────────────────
+     The card is <app-card> (common/design-system/app-card): surface, hover
+     lift, name row, the <app-tag> meta chips, the two-line description clamp,
+     the loading shimmer and click/Enter navigation all live there. What is
+     left here is the two things the card has no notion of, both slotted into
+     its footer — which agents the sequence runs, and how the last run went. */
+
+  .wf-agents {
+    /* Pushes the status line to the footer's trailing edge; .card-foot is a
+       flex row that otherwise packs both against it. The agent list is the one
+       that gives way when the footer is tight — the status line is the shorter
+       string and the one worth reading whole. */
+    margin-right: auto;
+    flex: 1;
+    min-width: 0;
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .wf-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-8);
+    flex-shrink: 0;
+  }
+  .wf-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: var(--r-40);
+    background: var(--color-neutral);
+    flex-shrink: 0;
+  }
+  .wf-status.is-success .wf-dot { background: var(--color-success); }
+  .wf-status.is-failed .wf-dot { background: var(--color-error); }
+  .wf-status.is-running .wf-dot { background: var(--fg-brand); }
+  .wf-status-text {
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* `.load-error` was a bare red line where the grid should be. The failure
+     is `<app-empty-state variant="error">` now, which brings its own look —
+     the same one every other failure on the product draws. */
+
+  /* ── Empty state ────────────────────────────────────────────────────────
+     The tile, heading, description and the CTAs are <app-empty-state plain>
+     and <app-button>; only the illustration's box is the page's, because the
+     component sizes a line icon and this is artwork. */
+  .wf-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 80%;}
+  /* Figma export, 286×164 — capped at its natural size, fluid below it. */
+  .wf-art {
+    width: 100%;
+    max-width: 286px;
+    height: auto;
+  }
+}
