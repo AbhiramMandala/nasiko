@@ -15,6 +15,7 @@ pub async fn get_agents_for_user(
                ON g.agent_id = a.id
                AND g.grant_type::text <> 'agent_admin'
            WHERE a.status = 'running'
+             AND a.deleted_at IS NULL
              AND NOT a.is_internal
              AND (a.owner_id = $1 OR a.is_public = true OR g.grantee_id = $1::text)
            GROUP BY a.id"#,
@@ -220,5 +221,44 @@ mod tests {
         );
 
         cleanup(&pool, &[agent], &[owner, grantee]).await;
+    }
+
+    /// A soft-deleted agent must never be a routing candidate again, regardless of how the
+    /// caller would otherwise be authorized (ownership, here) — `agents.deleted_at` is set by
+    /// `catalog/routes.rs::delete()`, which never touches `status`, so without this filter a
+    /// deleted agent stays permanently "running" and routable forever.
+    #[tokio::test]
+    async fn soft_deleted_agent_is_never_a_routing_candidate() {
+        let Some(pool) = pool().await else {
+            return;
+        };
+        let suffix = Uuid::new_v4().simple().to_string();
+
+        let owner = create_user(&pool, &format!("owner4_{suffix}")).await;
+        let agent = create_private_agent(&pool, owner, &format!("soft-deleted-{suffix}")).await;
+
+        let visible_before = get_agents_for_user(owner, &pool)
+            .await
+            .expect("get_agents_for_user must not error");
+        assert!(
+            visible_before.iter().any(|a| a.id == agent),
+            "sanity check: the owner must see their own live agent before it's deleted"
+        );
+
+        sqlx::query("UPDATE agents SET deleted_at = now() WHERE id = $1")
+            .bind(agent)
+            .execute(&pool)
+            .await
+            .expect("soft-delete fixture agent");
+
+        let visible_after = get_agents_for_user(owner, &pool)
+            .await
+            .expect("get_agents_for_user must not error");
+        assert!(
+            !visible_after.iter().any(|a| a.id == agent),
+            "a soft-deleted agent must not remain a routing candidate for its owner"
+        );
+
+        cleanup(&pool, &[agent], &[owner]).await;
     }
 }
