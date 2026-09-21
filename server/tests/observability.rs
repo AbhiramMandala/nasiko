@@ -634,12 +634,6 @@ async fn finops_summary(server: &common::TestServer, uid: &str) -> Value {
     body["data"]["summary"].clone()
 }
 
-async fn finops_total_agents(server: &common::TestServer, uid: &str) -> i64 {
-    finops_summary(server, uid).await["total_agents"]
-        .as_i64()
-        .unwrap()
-}
-
 /// One closed container session, so the agent has billable hours in the window
 /// the dashboard reports on.
 async fn seed_container_hours(server: &common::TestServer, agent: Uuid, name: &str) {
