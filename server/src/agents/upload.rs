@@ -926,6 +926,7 @@ pub async fn execute_upload_and_deploy(
     writable: bool,
     writable_path: Option<String>,
     default_memory: String,
+    deletion_hook: std::sync::Arc<dyn crate::agent_lifecycle::AgentDeletionHook>,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1096,7 +1097,7 @@ pub async fn execute_upload_and_deploy(
                 Some("upload and deploy failed"),
             )
             .await;
-            super::utils::delete_agent_or_mark_failed(&db, agent_id).await;
+            super::utils::delete_agent_or_mark_failed(&db, agent_id, &deletion_hook).await;
             tracing::error!(build_id = %build_id, %e, "upload-and-deploy failed");
         }
     }
@@ -1113,6 +1114,7 @@ async fn restore_prior_state_or_clean_up(
     prior_version: &Option<String>,
     prior_image: &Option<String>,
     prior_status: &Option<String>,
+    deletion_hook: &std::sync::Arc<dyn crate::agent_lifecycle::AgentDeletionHook>,
 ) {
     match (prior_version, prior_status) {
         (Some(pv), Some(ps)) => {
@@ -1128,7 +1130,7 @@ async fn restore_prior_state_or_clean_up(
             .await;
         }
         _ => {
-            super::utils::delete_agent_or_mark_failed(db, agent_id).await;
+            super::utils::delete_agent_or_mark_failed(db, agent_id, deletion_hook).await;
         }
     }
 }
@@ -1169,6 +1171,7 @@ pub async fn execute_clone_and_deploy(
     prior_version: Option<String>,
     prior_image: Option<String>,
     prior_status: Option<String>,
+    deletion_hook: std::sync::Arc<dyn crate::agent_lifecycle::AgentDeletionHook>,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1416,6 +1419,7 @@ pub async fn execute_clone_and_deploy(
                     &prior_version,
                     &prior_image,
                     &prior_status,
+                    &deletion_hook,
                 )
                 .await;
                 // Prefixed so the client can offer "deploy as vX" instead of
@@ -1460,6 +1464,7 @@ pub async fn execute_clone_and_deploy(
                     &prior_version,
                     &prior_image,
                     &prior_status,
+                    &deletion_hook,
                 )
                 .await;
                 tracing::error!(build_id = %build_id, %reason, "clone-and-deploy failed");
@@ -1474,6 +1479,7 @@ pub async fn execute_clone_and_deploy(
                     &prior_version,
                     &prior_image,
                     &prior_status,
+                    &deletion_hook,
                 )
                 .await;
                 set_upload_status(&db, &upload_id, &name, owner_id, "failed", None, Some(&e)).await;
@@ -1523,6 +1529,7 @@ pub async fn execute_github_clone_and_deploy(
                 &prior_version,
                 &prior_image,
                 &prior_status,
+                &state.agent_deletion_hook,
             )
             .await;
             return;
@@ -1565,6 +1572,7 @@ pub async fn execute_github_clone_and_deploy(
                 &prior_version,
                 &prior_image,
                 &prior_status,
+                &state.agent_deletion_hook,
             )
             .await;
             return;
@@ -1590,6 +1598,7 @@ pub async fn execute_github_clone_and_deploy(
                 &prior_version,
                 &prior_image,
                 &prior_status,
+                &state.agent_deletion_hook,
             )
             .await;
             return;
@@ -1617,6 +1626,7 @@ pub async fn execute_github_clone_and_deploy(
             &prior_version,
             &prior_image,
             &prior_status,
+            &state.agent_deletion_hook,
         )
         .await;
         return;
@@ -1651,6 +1661,7 @@ pub async fn execute_github_clone_and_deploy(
         prior_version,
         prior_image,
         prior_status,
+        state.agent_deletion_hook.clone(),
     )
     .await;
 }
@@ -1671,10 +1682,19 @@ async fn fail_github_clone_terminal(
     prior_version: &Option<String>,
     prior_image: &Option<String>,
     prior_status: &Option<String>,
+    deletion_hook: &std::sync::Arc<dyn crate::agent_lifecycle::AgentDeletionHook>,
 ) {
     set_build_status(db, build_id, BuildStatus::Failed).await;
     set_upload_status(db, upload_id, name, owner_id, "failed", None, Some(reason)).await;
-    restore_prior_state_or_clean_up(db, agent_id, prior_version, prior_image, prior_status).await;
+    restore_prior_state_or_clean_up(
+        db,
+        agent_id,
+        prior_version,
+        prior_image,
+        prior_status,
+        deletion_hook,
+    )
+    .await;
 }
 
 // ─── GET /deploy-status/{build_id} (SSE) ─────────────────────────────────────

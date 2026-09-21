@@ -171,6 +171,7 @@ async fn clone_pre_build_rejection_restores_existing_agent_instead_of_deleting()
         Some("1.0.0".to_string()),
         Some("nasiko/existing:1.0.0".to_string()),
         Some("running".to_string()),
+        Arc::new(nasiko_server::agent_lifecycle::NoopAgentDeletionHook),
     )
     .await;
 
@@ -257,6 +258,7 @@ async fn clone_genuine_deploy_failure_on_existing_agent_restores_instead_of_dele
         Some("1.0.0".to_string()),
         Some("nasiko/existing:1.0.0".to_string()),
         Some("running".to_string()),
+        Arc::new(nasiko_server::agent_lifecycle::NoopAgentDeletionHook),
     )
     .await;
 
@@ -326,6 +328,7 @@ async fn clone_pre_build_rejection_on_brand_new_agent_still_cleans_up() {
         None,
         None,
         None,
+        Arc::new(nasiko_server::agent_lifecycle::NoopAgentDeletionHook),
     )
     .await;
 
