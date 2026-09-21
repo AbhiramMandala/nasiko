@@ -500,12 +500,6 @@ impl Orchestrator {
         (builder.build(), defs)
     }
 
-    /// `{custom}` (the caller-supplied preamble, e.g. L1A supplemental context in
-    /// `oss/server/src/router/a2a_dispatch.rs`) goes last, after the roster/protocol/rules —
-    /// those never change between turns, so keeping them as the prefix lets OpenAI's
-    /// prefix-based prompt caching hit across turns even when `{custom}` itself varies (a
-    /// query-ranked top-k slice does; see `MemoryConfig::l1a_inject_all_max_facts`, which keeps
-    /// the common small-domain case stable too).
     fn build_preamble(&self, agents: &[AgentInfo]) -> String {
         let custom = self.config.preamble.as_deref().unwrap_or("");
 
@@ -549,6 +543,8 @@ impl Orchestrator {
         format!(
             r#"You are a ReAct orchestrator. Fulfill user requests by reasoning and delegating to specialized agents.
 
+{custom}
+
 ## Available Agents
 
 {agent_list}
@@ -569,8 +565,7 @@ impl Orchestrator {
   phrase, a quoted string, a command, an identifier, a fixed test input. Paraphrasing it loses
   information the agent matches on, and the agent then answers a question the user never asked.
 - If no agent fits, tell the user directly.
-
-{custom}"#
+- When calling an agent tool, call it directly — do not first restate its message as your own chat reply. If that agent pauses to ask the user something, your own words would otherwise repeat the same question twice."#
         )
     }
 }
@@ -691,10 +686,10 @@ async fn run_stream_inner(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    // `{custom}` goes last — see `build_preamble`'s doc comment on why (prompt-cache prefix
-    // stability).
     let preamble = format!(
         r#"You are a ReAct orchestrator. Fulfill user requests by reasoning and delegating to specialized agents.
+
+{custom}
 
 ## Available Agents
 
@@ -716,8 +711,7 @@ async fn run_stream_inner(
   phrase, a quoted string, a command, an identifier, a fixed test input. Paraphrasing it loses
   information the agent matches on, and the agent then answers a question the user never asked.
 - If no agent fits, tell the user directly.
-
-{custom}"#
+- When calling an agent tool, call it directly — do not first restate its message as your own chat reply. If that agent pauses to ask the user something, your own words would otherwise repeat the same question twice."#
     );
 
     let mut context_compacted = false;
@@ -1396,38 +1390,5 @@ mod awaiting_human_tests {
             }
             other => panic!("expected Err(AwaitingHuman), got {other:?}"),
         }
-    }
-
-    /// The stable roster/protocol/rules block must stay the prefix and `{custom}` (e.g. L1A
-    /// supplemental context, which can be query-variable for large domains) must come last, so
-    /// OpenAI's prefix-based prompt caching hits on the stable part across turns even when
-    /// `{custom}` itself changes. See `build_preamble`'s doc comment.
-    #[test]
-    fn build_preamble_places_custom_content_after_the_stable_roster_and_rules() {
-        let config = OrchestratorConfig {
-            preamble: Some("## Known facts about specific agents\n\ntest-agent:\n- a fact".into()),
-            ..Default::default()
-        };
-        let agents = vec![test_agent("http://unused")];
-        let orchestrator = Orchestrator::new(config, RegistrySource::Static(agents.clone()));
-
-        let preamble = orchestrator.build_preamble(&agents);
-
-        let agents_pos = preamble
-            .find("## Available Agents")
-            .expect("roster header present");
-        let rules_pos = preamble.find("## Rules").expect("rules header present");
-        let custom_pos = preamble
-            .find("Known facts about specific agents")
-            .expect("custom preamble content present");
-
-        assert!(
-            agents_pos < rules_pos,
-            "roster must precede rules in the stable prefix"
-        );
-        assert!(
-            rules_pos < custom_pos,
-            "custom content must come after the stable roster/protocol/rules block"
-        );
     }
 }
