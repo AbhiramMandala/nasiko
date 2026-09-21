@@ -173,7 +173,7 @@ impl TempoClient {
             .into_iter()
             .map(|t| {
                 let started_at = t.start_time_unix_nano.as_deref().and_then(parse_nanos_str);
-                (t.trace_id, started_at, t.duration_ms)
+                (zero_pad_trace_id(&t.trace_id), started_at, t.duration_ms)
             })
             .collect();
 
@@ -239,6 +239,31 @@ fn otlp_id_to_hex(id: &str) -> String {
         .decode(id)
         .map(hex::encode)
         .unwrap_or_else(|_| id.to_string())
+}
+
+/// Tempo's `/api/search` endpoint returns `traceID` as a plain hex string
+/// with leading zero *nibbles* stripped (a real, observed Tempo behavior —
+/// unlike `/api/traces/{id}`'s OTLP JSON, which encodes IDs as base64 bytes
+/// that `otlp_id_to_hex` re-derives correctly via `hex::encode`, always
+/// exactly 32 chars for a 128-bit trace ID). Without this, a trace whose ID
+/// happens to start with `0` comes back as 31 (or fewer) hex chars — a
+/// different string than the same trace's ID everywhere else it's used
+/// (traceparent headers, `get_trace` calls), so it silently becomes a
+/// second, duplicate row wherever trace ID is used as a dedup/primary key
+/// (confirmed: this caused doubled rows, and inflated totals, in
+/// `trace_usage`). Left-pad back to the correct 32 hex chars before this ID
+/// is used as a key anywhere downstream.
+///
+/// Only touches strings that are actually shorter hex — never a real trace
+/// ID's shape (e.g. a test fixture, or some future non-hex ID Tempo returns)
+/// is left alone rather than corrupted into a 32-char string that matches
+/// nothing.
+fn zero_pad_trace_id(id: &str) -> String {
+    if id.len() < 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        format!("{id:0>32}")
+    } else {
+        id.to_string()
+    }
 }
 
 fn parse_nanos_str(s: &str) -> Option<DateTime<Utc>> {
@@ -408,7 +433,28 @@ fn parse_otlp_trace(
 mod tests {
     use serde_json::json;
 
-    use super::{OtlpTraceResponse, parse_otlp_trace};
+    use super::{OtlpTraceResponse, parse_otlp_trace, zero_pad_trace_id};
+
+    #[test]
+    fn zero_pad_trace_id_restores_a_stripped_leading_zero() {
+        assert_eq!(
+            zero_pad_trace_id("81423c37451c04a19701dbf92626ee4"),
+            "081423c37451c04a19701dbf92626ee4"
+        );
+    }
+
+    #[test]
+    fn zero_pad_trace_id_leaves_a_full_length_id_unchanged() {
+        let full = "d505d94088a7d0fdc5c7a32bb790ee26";
+        assert_eq!(zero_pad_trace_id(full), full);
+    }
+
+    #[test]
+    fn zero_pad_trace_id_leaves_non_hex_ids_unchanged() {
+        // Not a real trace ID's shape (e.g. a test fixture) — must not be
+        // corrupted into a 32-char string that matches nothing real.
+        assert_eq!(zero_pad_trace_id("t-cheap"), "t-cheap");
+    }
 
     #[test]
     fn otlp_replayed_span_is_emitted_and_counted_once() {
