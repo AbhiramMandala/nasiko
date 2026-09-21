@@ -417,6 +417,45 @@ async fn list_mafs(
     }
 }
 
+/// Resolves a workflow step's auto-assigned agent (no explicit `agent_id`) — shared by
+/// `create_maf` and `update_maf` so the rule is encoded once, not twice: routes via the engine,
+/// requires a non-empty endpoint, and re-checks access on the result. That re-check is
+/// defense-in-depth against `agent_registry::get_agents_for_user`'s candidate query being (or
+/// becoming) too permissive — not the primary authorization mechanism, which is that query
+/// itself — since unlike the explicit-`agent_id` case, nothing else in this path validates the
+/// routing engine's pick before it's used. `None` on any failure (routing error, no endpoint, or
+/// access denied) so every caller falls through to the catalog fallback uniformly: an unusable
+/// or inaccessible routed candidate is not something the caller asked for by id, so there's
+/// nothing to explain to them — just try the next mechanism.
+async fn route_with_access_check(
+    state: &AppState,
+    claims: &Claims,
+    user_id: Uuid,
+    task_description: &str,
+) -> Option<(Uuid, String, String)> {
+    let route_req = RouteRequest {
+        query: task_description.to_string(),
+        session_id: Uuid::new_v4().to_string(),
+        user_id,
+        file_parts: vec![],
+    };
+    let routed = match state.routing_engine.route(route_req, &state.db).await {
+        Ok(result) => match result.agent.url {
+            Some(endpoint) if !endpoint.is_empty() => {
+                Some((result.agent.id, result.agent.name, endpoint))
+            }
+            _ => None,
+        },
+        Err(_) => None,
+    };
+    match routed {
+        Some((id, name, endpoint)) if crate::acl::can_access_agent(state, claims, id).await => {
+            Some((id, name, endpoint))
+        }
+        _ => None,
+    }
+}
+
 // ─── 2. POST /maf/workflows ────────────────────────────────────────────────
 
 async fn create_maf(
@@ -456,46 +495,13 @@ async fn create_maf(
                 Err(e) => return internal_err(e),
             }
         } else {
-            // Auto-assign via routing engine
-            let route_req = RouteRequest {
-                query: step.task_description.clone(),
-                session_id: Uuid::new_v4().to_string(),
-                user_id,
-                file_parts: vec![],
-            };
-            // A routed agent is only usable if it actually has an endpoint. An
-            // agent row with an empty `url` (registered but never deployed, or
-            // a seed whose URL was never backfilled) used to hard-fail the
-            // whole request with a 400, which is what made *every* workflow
-            // uncreatable on such a fleet. Treat it exactly like a routing
-            // failure and fall through to the catalog fallback below.
-            let routed = match state.routing_engine.route(route_req, &state.db).await {
-                Ok(result) => match result.agent.url {
-                    Some(endpoint) if !endpoint.is_empty() => {
-                        Some((result.agent.id, result.agent.name, endpoint))
-                    }
-                    _ => None,
-                },
-                Err(_) => None,
-            };
-            // Defense-in-depth: the explicit-agent_id branch above re-checks access on its
-            // caller-provided id, so the routed result must too, rather than trusting the
-            // registry/routing-engine candidate query to have scoped it correctly on its own —
-            // exactly the class of bug closed in `agent_registry::get_agents_for_user` (a grant
-            // type meant to confer no access was, until that fix, still routable here). Same
-            // fall-through-to-catalog treatment as an endpoint-less or failed route, not a hard
-            // error: an inaccessible routed agent is not something the caller asked for by id, so
-            // there's nothing to explain to them — just try the next mechanism.
-            let routed = match routed {
-                Some((id, name, endpoint)) => {
-                    if crate::acl::can_access_agent(&state, &claims, id).await {
-                        Some((id, name, endpoint))
-                    } else {
-                        None
-                    }
-                }
-                None => None,
-            };
+            // Auto-assign via routing engine. An agent row with an empty `url` (registered but
+            // never deployed, or a seed whose URL was never backfilled) used to hard-fail the
+            // whole request with a 400, which is what made *every* workflow uncreatable on such
+            // a fleet — `route_with_access_check` treats that, a routing failure, and an
+            // inaccessible result all the same way: fall through to the catalog fallback below.
+            let routed =
+                route_with_access_check(&state, &claims, user_id, &step.task_description).await;
 
             match routed {
                 Some(agent) => agent,
@@ -666,25 +672,15 @@ async fn update_maf(
                     Err(e) => return internal_err(e),
                 }
             } else {
-                // Auto-assign via routing engine (same logic as create_maf)
-                let route_req = RouteRequest {
-                    query: step.task_description.clone(),
-                    session_id: Uuid::new_v4().to_string(),
-                    user_id,
-                    file_parts: vec![],
-                };
-                match state.routing_engine.route(route_req, &state.db).await {
-                    Ok(result) => {
-                        let ep = result.agent.url.unwrap_or_default();
-                        if ep.is_empty() {
-                            return bad_request(&format!(
-                                "step {idx}: auto-assigned agent '{}' has no endpoint",
-                                result.agent.name
-                            ));
-                        }
-                        (result.agent.id, result.agent.name, ep)
-                    }
-                    Err(_) => {
+                // Auto-assign via routing engine — same helper as create_maf, so this stays in
+                // sync with it (this branch used to hard-400 on an empty endpoint instead of
+                // falling through to the catalog fallback like create_maf does, and never
+                // re-checked access on the routed result at all; both are now the same code).
+                let routed =
+                    route_with_access_check(&state, &claims, user_id, &step.task_description).await;
+                match routed {
+                    Some(agent) => agent,
+                    None => {
                         let catalog = match fetch_user_agents(&state.db, user_id).await {
                             Ok(v) => v,
                             Err(e) => return internal_err(e),

@@ -69,15 +69,23 @@ mod tests {
     //!
     //! Requires infra: DATABASE_URL=postgres://nasiko:nasiko@localhost:5432/nasiko_dev
     //!   cargo test -p nasiko-orchestrator --lib agent_registry
+    //!
+    //! Skips (does not fail) when `DATABASE_URL` is unset — same convention as
+    //! `oss/server/src/catalog/import.rs::find_owned_agent_never_matches_a_different_owner` —
+    //! so `cargo test --workspace --lib --bins` (the CI "workspace unit tests" step, which runs
+    //! with `DATABASE_URL` deliberately unset to keep hermetic tests hermetic) doesn't hard-fail
+    //! trying to connect with a guessed fallback URL/credentials.
 
     use super::get_agents_for_user;
     use sqlx::PgPool;
     use uuid::Uuid;
 
-    async fn pool() -> PgPool {
-        let db_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/nasiko".to_string());
-        PgPool::connect(&db_url).await.unwrap()
+    async fn pool() -> Option<PgPool> {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("skipping: DATABASE_URL not set");
+            return None;
+        };
+        Some(PgPool::connect(&db_url).await.expect("connect to test DB"))
     }
 
     async fn create_user(pool: &PgPool, suffix: &str) -> Uuid {
@@ -138,7 +146,9 @@ mod tests {
 
     #[tokio::test]
     async fn agent_admin_grant_does_not_confer_routing_visibility() {
-        let pool = pool().await;
+        let Some(pool) = pool().await else {
+            return;
+        };
         let suffix = Uuid::new_v4().simple().to_string();
 
         let owner = create_user(&pool, &format!("owner_{suffix}")).await;
@@ -161,7 +171,9 @@ mod tests {
 
     #[tokio::test]
     async fn ordinary_user_grant_still_confers_routing_visibility() {
-        let pool = pool().await;
+        let Some(pool) = pool().await else {
+            return;
+        };
         let suffix = Uuid::new_v4().simple().to_string();
 
         let owner = create_user(&pool, &format!("owner2_{suffix}")).await;
@@ -187,7 +199,9 @@ mod tests {
         // A grantee holding BOTH an agent_admin grant and an ordinary access grant on the same
         // agent must still see it — the fix filters the agent_admin row out of the join, not the
         // whole grantee/agent pairing.
-        let pool = pool().await;
+        let Some(pool) = pool().await else {
+            return;
+        };
         let suffix = Uuid::new_v4().simple().to_string();
 
         let owner = create_user(&pool, &format!("owner3_{suffix}")).await;
