@@ -26,13 +26,11 @@ import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-tabs/app-tabs.js';
 import '/common/design-system/app-menu/app-menu.js';
-import '/common/design-system/app-trace-tree/app-trace-tree.js';
 import '/common/features/app-module-nav.js';
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { call } from '../core/data-sources.js';
 import '/common/features/agent-steps.js';
-import { errorStateHtml } from '/common/utils/data-component-utils.js';
 
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -58,6 +56,24 @@ const cacheTokens = (o) => {
 /// a folded trace with no tokens must not erase the tokens already counted.
 const addCounts = (a, b) => (a == null && b == null ? null : (a ?? 0) + (b ?? 0));
 
+/// Merge a content-less trace's usage into `turn` — a HITL resume or a
+/// proxy-only hop, folded into the turn it's really part of rather than
+/// shown as its own empty entry. Mutates `turn` in place; used both for
+/// folding backward into the previous turn and (see #buildTurns) forward
+/// into the next one when there's no previous turn yet to fold into.
+function foldTraceInto(turn, root, traceId) {
+  turn.traceIds.push(traceId);
+  turn.totalTokens = addCounts(turn.totalTokens, root.cumulative_token_count_total);
+  turn.inputTokens = addCounts(turn.inputTokens, root.input_tokens);
+  turn.outputTokens = addCounts(turn.outputTokens, root.output_tokens);
+  turn.cacheTokens = addCounts(turn.cacheTokens, cacheTokens(root));
+  turn.cost = addCounts(turn.cost, root.trace?.cost_summary?.total?.cost);
+  // Max, not sum: the folded trace usually overlaps the one it belongs to
+  // (same wall clock, different exporter), so summing double-counts.
+  turn.durationMs = root.latency_ms == null ? turn.durationMs
+    : Math.max(turn.durationMs ?? 0, root.latency_ms);
+}
+
 /// Dollars at 2dp, sub-cent amounts at 4dp. A fixed 2dp renders a $0.0010 turn
 /// as "$0.00", and a fixed 4dp renders a real session total as "$4.8200".
 const fmtUsd = (v) => {
@@ -82,8 +98,7 @@ class ObservabilitySessionPage extends HTMLElement {
   #renderedTurnKey = null;
   /// Chat messages keyed by trace_id, for the question/answer text.
   #messages = [];
-  #tree = [];           // <app-trace-tree> nodes for the current turn
-  #traceOf = new Map(); // node id -> the trace it came from (the span fetch needs both)
+  #spans = [];          // flattened {node, depth, traceId} for the current turn
   #span = null;         // currently-selected span's detail payload
   #selected = null;     // {traceId, spanId}
   /// Span ids whose children are folded away in the trace tree.
@@ -130,17 +145,16 @@ class ObservabilitySessionPage extends HTMLElement {
       const step = e.target.closest('[data-step]');
       if (step) { this.#step(Number(step.dataset.step)); return; }
 
-    });
+      const fold = e.target.closest('[data-fold]');
+      if (fold) {
+        const id = fold.dataset.fold;
+        this.#collapsed.has(id) ? this.#collapsed.delete(id) : this.#collapsed.add(id);
+        this.#loadTurnTrace();
+        return;
+      }
 
-    // Folding is a view change over a tree the page already holds, so it
-    // re-renders rather than re-fetching every trace the way it used to.
-    this.addEventListener('trace-tree-toggle', (e) => {
-      e.detail.expanded ? this.#collapsed.delete(e.detail.id) : this.#collapsed.add(e.detail.id);
-      this.#renderTraces();
-    });
-
-    this.addEventListener('trace-tree-select', (e) => {
-      this.#selectSpan(this.#traceOf.get(e.detail.id), e.detail.id);
+      const row = e.target.closest('.span-row');
+      if (row) this.#selectSpan(row.dataset.traceId, row.dataset.spanId);
     });
 
     this.addEventListener('menu-select', (e) => {
@@ -152,7 +166,6 @@ class ObservabilitySessionPage extends HTMLElement {
     // keeps the page mounted and only fires `route-update` — without this,
     // clicking a row moved the URL and left the old session on screen.
     this.addEventListener('route-update', this.#onRouteUpdate);
-    this.addEventListener('stat-row-retry', this.#onStripRetry);
 
     this.#enter();
   }
@@ -179,8 +192,7 @@ class ObservabilitySessionPage extends HTMLElement {
     this.#turnIndex = 0;
     this.#renderedTurnKey = null;
     this.#messages = [];
-    this.#tree = [];
-    this.#traceOf.clear();
+    this.#spans = [];
     this.#span = null;
     this.#selected = null;
     this.#collapsed.clear();
@@ -203,21 +215,8 @@ class ObservabilitySessionPage extends HTMLElement {
     this.#load();
   }
 
-  /**
-   * Retry on the KPI strip's failure state. Bound on the host and delegated,
-   * because the strip rewrites its own contents on every render — the button
-   * that fires this does not survive one.
-   */
-  #onStripRetry = () => {
-    const kpis = this.querySelector('#kpi-strip');
-    kpis.removeAttribute('error');
-    kpis.setAttribute('loading', '6');
-    this.#load();
-  };
-
   disconnectedCallback() {
     this.removeEventListener('route-update', this.#onRouteUpdate);
-    this.removeEventListener('stat-row-retry', this.#onStripRetry);
     clearTimeout(this.#pollTimer);
   }
 
@@ -279,14 +278,9 @@ class ObservabilitySessionPage extends HTMLElement {
       this.#renderTracesPlaceholder(
         'Traces unavailable',
         'The trace backend could not be reached for this session.',
+        icons.xCircle(),
       );
       this.#renderKpis();
-      // The turn strip's own skeleton is only ever cleared by `#renderTurn`,
-      // which the success path below reaches and this one does not — so it
-      // kept shimmering forever, leaving ~120px of dead animation between
-      // the failed KPI strip and the Traces panel. There are no turns to
-      // show and nothing still coming.
-      this.querySelector('#turn-strip').innerHTML = '';
       return;
     }
     this.#session = resp?.data?.session ?? null;
@@ -327,17 +321,6 @@ class ObservabilitySessionPage extends HTMLElement {
   #renderKpis() {
     const s = this.#session;
     const strip = this.querySelector('#kpi-strip');
-    // A failed session fetch and a session that simply has no metrics used to
-    // fold the strip away identically. They are different answers: one says
-    // there is nothing to count, the other that we could not count. The strip
-    // fails as one block because one request filled all of it.
-    if (!s && this.#tracesState === 'error') {
-      strip.hidden = false;
-      strip.removeAttribute('loading');
-      strip.setAttribute('error', "Couldn't load these metrics");
-      return;
-    }
-    strip.removeAttribute('error');
     // No session, no metrics. Leaving the skeleton up would claim the numbers
     // are still loading, so fold the whole thing away.
     if (!s) {
@@ -368,7 +351,13 @@ class ObservabilitySessionPage extends HTMLElement {
 
   /**
    * One turn per trace, except traces with no message of their own, which fold
-   * into the turn before them (HITL resumes and proxy-only hops).
+   * into the turn before them (HITL resumes and proxy-only hops) — or, when
+   * there is no previous turn yet (the content-less trace is first, or every
+   * trace so far has been content-less), into the next real turn instead.
+   * Without that second direction, a leading content-less trace had nothing
+   * to fold into and wrongly became its own blank turn — real usage numbers
+   * attached to a card with no question or answer, and the turn count one
+   * higher than the number of actual exchanges.
    * `chat_messages.trace_id` is what ties a turn's text to its spans; the
    * pairing walks the transcript in order so a user row is matched with the
    * assistant row that answered it.
@@ -385,6 +374,9 @@ class ObservabilitySessionPage extends HTMLElement {
     }
 
     this.#turns = [];
+    // Content-less traces seen before any real turn exists yet — held here
+    // and folded forward into the next real turn once one is pushed.
+    let pendingFold = [];
     for (const entry of traces) {
       const root = entry.root_span ?? {};
       const pair = byTrace.get(entry.trace_id);
@@ -393,27 +385,26 @@ class ObservabilitySessionPage extends HTMLElement {
       const question = this.#plainText(pair?.user?.content || root.input?.value);
       const answer = this.#plainText(pair?.assistant?.content || root.output?.value);
       const prev = this.#turns[this.#turns.length - 1];
-      // A trace carrying neither a question nor an answer is not a turn of its
-      // own — it is the rest of the turn before it (a HITL resume, a
-      // proxy-only hop). Fold it into that turn so the reader sees one chat
-      // entry with both traces under its root, not an empty second entry.
-      if (!question && !answer && prev) {
-        prev.traceIds.push(entry.trace_id);
-        prev.totalTokens = addCounts(prev.totalTokens, root.cumulative_token_count_total);
-        prev.inputTokens = addCounts(prev.inputTokens, root.input_tokens);
-        prev.outputTokens = addCounts(prev.outputTokens, root.output_tokens);
-        prev.cacheTokens = addCounts(prev.cacheTokens, cacheTokens(root));
-        prev.cost = addCounts(prev.cost, root.trace?.cost_summary?.total?.cost);
-        // Max, not sum: the folded trace usually overlaps the one it belongs
-        // to (same wall clock, different exporter), so summing double-counts.
-        prev.durationMs = root.latency_ms == null ? prev.durationMs
-          : Math.max(prev.durationMs ?? 0, root.latency_ms);
+      // A trace carrying neither a question nor an answer is not a turn of
+      // its own — it is the rest of some other turn (a HITL resume, a
+      // proxy-only hop). Fold it into the turn before it so the reader sees
+      // one chat entry with both traces under its root, not an empty second
+      // entry — or, with no previous turn yet, hold it for the next one.
+      if (!question && !answer) {
+        if (prev) {
+          foldTraceInto(prev, root, entry.trace_id);
+        } else {
+          pendingFold.push({ traceId: entry.trace_id, root });
+        }
         continue;
       }
-      this.#turns.push({
+      const turn = {
         traceId: entry.trace_id,
-        /// Every trace shown under this turn, primary first.
-        traceIds: [entry.trace_id],
+        // Built below: any content-less traces held from before this turn
+        // come first (they're chronologically earlier), then this trace —
+        // traceIds order must match wall-clock order, since the span-tree
+        // view later zips fetched trace details back to these ids by index.
+        traceIds: [],
         question,
         answer,
         startTime: root.start_time,
@@ -428,7 +419,33 @@ class ObservabilitySessionPage extends HTMLElement {
         cacheTokens: cacheTokens(root),
         cost: root.trace?.cost_summary?.total?.cost ?? null,
         durationMs: root.latency_ms ?? pair?.assistant?.duration_ms ?? null,
-      });
+      };
+      for (const p of pendingFold) foldTraceInto(turn, p.root, p.traceId);
+      pendingFold = [];
+      turn.traceIds.push(entry.trace_id);
+      this.#turns.push(turn);
+    }
+
+    // Every trace in the session was content-less — there is no real turn to
+    // fold into. Surface the accumulated usage as its own turn rather than
+    // silently dropping real data.
+    if (pendingFold.length) {
+      const turn = {
+        traceId: pendingFold[0].traceId,
+        traceIds: [],
+        question: '',
+        answer: '',
+        startTime: null,
+        toolCalls: null,
+        totalTokens: null,
+        inputTokens: null,
+        outputTokens: null,
+        cacheTokens: null,
+        cost: null,
+        durationMs: null,
+      };
+      for (const p of pendingFold) foldTraceInto(turn, p.root, p.traceId);
+      this.#turns.push(turn);
     }
 
     // ?trace_id= (from a chat's "Detailed trace") opens on that turn. Only on
@@ -555,7 +572,7 @@ class ObservabilitySessionPage extends HTMLElement {
   async #loadTurnTrace() {
     const turn = this.#turn();
     if (!turn) {
-      this.#tree = [];
+      this.#spans = [];
       this.#renderTraces();
       return;
     }
@@ -569,6 +586,7 @@ class ObservabilitySessionPage extends HTMLElement {
       this.#renderTracesPlaceholder(
         'Traces unavailable',
         'The trace backend could not be reached for this turn.',
+        icons.xCircle(),
       );
       return;
     }
@@ -580,53 +598,41 @@ class ObservabilitySessionPage extends HTMLElement {
     // message-less trace roots that trace's spans here too.
     const roots = details.flatMap((detail, i) =>
       (detail?.spans ?? []).map((node) => ({ node, traceId: turn.traceIds[i] })));
-
-    // Folding and indentation belong to <app-trace-tree>; the page's job is to
-    // hand it the whole tree and remember which trace each node came from,
-    // because the span fetch is keyed on both.
-    this.#traceOf = new Map([[TURN_ROOT_ID, turn.traceId]]);
-    const seen = new Set();
-    this.#tree = [{
-      id: TURN_ROOT_ID,
-      label: this.#sessionId,
-      meta: 'session.run',
-      icon: 'trace',
+    const turnRoot = {
+      span_id: TURN_ROOT_ID,
+      name: this.#sessionId,
+      operation: 'session.run',
       // Wall-clock for the whole turn, not the sum of its parts: spans overlap.
-      duration: fmtMs(turn.durationMs ?? null),
+      latency_ms: turn.durationMs ?? null,
       // One errored span anywhere under the turn makes the turn an error.
-      status: roots.some((r) => this.#subtreeHasError(r.node)) ? 'error' : 'ok',
-      children: roots
-        .map(({ node, traceId }) => this.#treeNode(node, traceId, seen))
-        .filter(Boolean),
-    }];
+      status_code: roots.some((r) => this.#subtreeHasError(r.node)) ? 'ERROR' : 'OK',
+      children: roots.map((r) => r.node),
+    };
+
+    const flat = [];
+    const seen = new Set();
+    const walk = (node, depth, traceId) => {
+      const key = `${traceId}:${node.span_id}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      flat.push({ node, depth, traceId });
+      if (this.#collapsed.has(node.span_id)) return;
+      (node.children || []).forEach((c) => walk(c, depth + 1, traceId));
+    };
+    flat.push({ node: turnRoot, depth: 0, traceId: turn.traceId });
+    if (!this.#collapsed.has(TURN_ROOT_ID)) {
+      roots.forEach(({ node, traceId }) => walk(node, 1, traceId));
+    }
+    this.#spans = flat;
     this.#renderTraces();
+    if (!flat.length) return;
 
     // Keep whatever the reader picked; only auto-select when nothing is
     // selected yet or a poll dropped the selected span from the tree.
-    if (this.#selected && this.#traceOf.has(this.#selected.spanId)) return;
+    const stillThere = this.#selected
+      && flat.some((f) => f.node.span_id === this.#selected.spanId);
+    if (stillThere) return;
     this.#selectSpan(turn.traceId, TURN_ROOT_ID);
-  }
-
-  /**
-   * One span mapped onto the tree component's generic node shape. `seen` is
-   * keyed on trace + span so a span that legitimately appears in two traces is
-   * kept, while a cyclic `children` chain terminates.
-   */
-  #treeNode(node, traceId, seen) {
-    const key = `${traceId}:${node.span_id}`;
-    if (seen.has(key)) return null;
-    seen.add(key);
-    this.#traceOf.set(node.span_id, traceId);
-    return {
-      id: node.span_id,
-      label: node.name,
-      meta: node.operation ?? null,
-      icon: this.#spanIcon(node),
-      status: this.#isError(node.status_code) ? 'error' : 'ok',
-      duration: fmtMs(node.latency_ms),
-      children: (node.children || [])
-        .map((c) => this.#treeNode(c, traceId, seen)).filter(Boolean),
-    };
   }
 
   /**
@@ -634,28 +640,11 @@ class ObservabilitySessionPage extends HTMLElement {
    * without a span to select, so `.traces-empty` folds it away and this one
    * empty state takes both columns.
    */
-  /**
-   * The trace pane's placeholder, for all three of its non-data states.
-   *
-   * Which one it is comes off `#tracesState`, which every caller has already
-   * set on the line above — rather than from an icon each passes in. That is
-   * what keeps the failure states drawing the shared failure look instead of
-   * each picking a glyph: the two that set `error` used to hand over
-   * `icons.xCircle()`, which reads as a plain absence, so "the backend could
-   * not be reached" was dressed the same way as "nothing was recorded here".
-   *
-   * @param {string} heading
-   * @param {string} description
-   * @param {string} [icon] Markup for the glyph, for the non-error states
-   *   only; `variant="error"` brings its own.
-   */
   #renderTracesPlaceholder(heading, description, icon) {
-    const failed = this.#tracesState === 'error';
     this.querySelector('#traces-pane').innerHTML = `
       ${this.#tracesTitle()}
-      <app-empty-state ${failed ? 'variant="error"' : ''}
-        heading="${escHtml(heading)}" description="${escHtml(description)}"
-        ${failed ? '' : `icon='${icon || ''}'`}></app-empty-state>
+      <app-empty-state heading="${escHtml(heading)}" description="${escHtml(description)}"
+        icon='${icon}'></app-empty-state>
     `;
     this.#syncPanes();
   }
@@ -679,7 +668,7 @@ class ObservabilitySessionPage extends HTMLElement {
 
   #renderTraces() {
     const pane = this.querySelector('#traces-pane');
-    if (!this.#tree.length) {
+    if (!this.#spans.length) {
       this.#tracesState = 'empty';
       this.#renderTracesPlaceholder(
         'No traces for this turn',
@@ -692,15 +681,35 @@ class ObservabilitySessionPage extends HTMLElement {
     this.#syncPanes();
     pane.innerHTML = `
       ${this.#tracesTitle()}
-      <app-trace-tree label="Trace spans"
-        spans='${escAttr(JSON.stringify(this.#tree))}'
-        collapsed='${escAttr(JSON.stringify([...this.#collapsed]))}'
-        value="${escAttr(this.#selected?.spanId ?? '')}"></app-trace-tree>
+      ${this.#spans.map(({ node, depth, traceId }) => {
+        const kids = (node.children || []).length > 0;
+        const folded = this.#collapsed.has(node.span_id);
+        return `
+        <div class="span-line" style="padding-left:${depth * 16}px">
+          ${kids
+            ? `<button type="button" class="span-fold" data-fold="${escAttr(node.span_id)}"
+                 aria-expanded="${folded ? 'false' : 'true'}"
+                 aria-label="${folded ? 'Expand' : 'Collapse'} ${escAttr(node.name)}"
+               >${folded ? icons.chevronRight('', 14) : icons.chevronDown('', 14)}</button>`
+            : '<span class="span-fold is-leaf" aria-hidden="true"></span>'}
+          <button class="span-row" type="button"
+            data-trace-id="${escHtml(traceId)}" data-span-id="${escHtml(node.span_id)}">
+            <span class="span-icon">${this.#spanIcon(node)}</span>
+            <span class="span-name">${escHtml(node.name)}</span>
+            ${node.operation ? `<span class="span-op">${escHtml(node.operation)}</span>` : ''}
+            <span class="status-dot${this.#isError(node.status_code) ? ' is-error' : ''}"></span>
+            <app-badge variant="neutral">${icons.clock('', 12)} ${fmtMs(node.latency_ms)}</app-badge>
+          </button>
+        </div>`;
+      }).join('')}
     `;
+    this.#markSelected();
   }
 
   #markSelected() {
-    this.querySelector('app-trace-tree')?.setAttribute('value', this.#selected?.spanId ?? '');
+    this.querySelectorAll('.span-row').forEach((row) => {
+      row.classList.toggle('is-selected', row.dataset.spanId === this.#selected?.spanId);
+    });
   }
 
   // ── Span detail ──────────────────────────────────────────────────────────
@@ -724,11 +733,7 @@ class ObservabilitySessionPage extends HTMLElement {
       resp = await call('fetchSpanDetail', traceId, spanId);
     } catch (e) {
       console.error('Span fetch failed:', e);
-      // Was a bare line where the skeleton had been — true, but nothing
-      // that looked like the rest of the product and no way to try again.
-      pane.innerHTML = errorStateHtml("Couldn't load this span");
-      pane.querySelector('[data-retry]')
-        ?.addEventListener('click', () => this.#selectSpan(traceId, spanId));
+      pane.innerHTML = '<div class="pane-empty">Failed to load span details</div>';
       return;
     }
     this.#span = resp?.data?.span ?? null;
@@ -1019,12 +1024,12 @@ class ObservabilitySessionPage extends HTMLElement {
     // ponytail: provider picks the LLM glyph, not a per-vendor mark — the icon
     // set carries no OpenAI/Anthropic logos and the name is on the row already.
     if (node.provider || node.model || node.name?.toLowerCase().includes('chatcompletion')) {
-      return 'cube';
+      return icons.cube('', 14);
     }
     if (this.#isToolSpan(node.attributes) || node.name?.toLowerCase().startsWith('tool')) {
-      return 'terminal';
+      return icons.terminal('', 14);
     }
-    return 'trace';
+    return icons.trace('', 14);
   }
 
   /** True when this span or anything beneath it failed. */
