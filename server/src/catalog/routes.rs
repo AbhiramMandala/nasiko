@@ -632,10 +632,6 @@ pub(crate) struct AgentDetailResponse {
     is_coding_agent: bool,
     #[serde(rename = "coding_agent_integration_id")]
     coding_agent_integration_id: Option<String>,
-    /// Per-agent payload-compression opt-in. The Settings toggle renders from this, so a
-    /// projection that omits it shows the switch off however the column reads.
-    #[serde(rename = "compress_enabled")]
-    compress_enabled: bool,
     status: String,
     version: String,
     description: String,
@@ -758,7 +754,6 @@ pub(crate) async fn get_one(
         can_manage,
         is_coding_agent: coding_agent_integration_id.is_some(),
         coding_agent_integration_id,
-        compress_enabled: agent.compress_enabled,
         status: agent.status.clone(),
         version: agent.version.clone(),
         description: agent.description.unwrap_or_default(),
@@ -982,7 +977,6 @@ pub(crate) async fn update(
              metadata = COALESCE($11, metadata),
              status = COALESCE($12, status),
              image = COALESCE($13, image),
-             compress_enabled = COALESCE($14, compress_enabled),
              updated_at = now()
            WHERE id = $1
            RETURNING *"#,
@@ -1004,7 +998,6 @@ pub(crate) async fn update(
     .bind(&body.metadata)
     .bind(&body.status)
     .bind(&agent_image)
-    .bind(body.compress_enabled)
     .fetch_optional(&mut *tx)
     .await;
 
@@ -1108,6 +1101,10 @@ pub(crate) async fn delete(
     if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke(&state.db, id).await {
         tracing::warn!(%e, %id, "delete agent: gateway token revoke failed");
     }
+
+    // Let enterprise-only, agent-keyed state clean itself up (e.g. a reserved name that has no
+    // FK a soft delete could cascade through) — see `agent_lifecycle` module docs.
+    state.agent_deletion_hook.on_agent_deleted(id).await;
 
     // Every real deploy path keys the running container on the agent's UUID, never the
     // display name (see build_agent_spec's doc comment) — so the UUID-keyed id must always

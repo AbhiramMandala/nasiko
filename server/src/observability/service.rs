@@ -13,8 +13,8 @@ use chrono::{DateTime, Datelike, Duration, SecondsFormat, TimeZone, Utc};
 use futures::stream::{self, StreamExt};
 use nasiko_config::Config;
 use nasiko_observability::{
-    CostBreakdown, ObservabilityError, ObservabilityProvider, TimeBucket, extract_token_attrs,
-    extract_usage_attrs,
+    CostBreakdown, ObservabilityError, ObservabilityProvider, TimeBucket,
+    extract_cache_token_attrs, extract_token_attrs,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -315,9 +315,8 @@ fn build_span_tree(
         if !seen.insert(&span.span_id) {
             continue;
         }
-        let u = extract_usage_attrs(&span.attributes);
-        let (input, output, model) = (u.input, u.output, u.model.clone());
-        let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
+        let (input, output, model) = extract_token_attrs(&span.attributes);
+        let (cache_read, cache_creation) = extract_cache_token_attrs(&span.attributes);
         trace_usage.0 += input;
         trace_usage.1 += output;
         trace_usage.2 += cache_read;
@@ -339,8 +338,9 @@ fn build_span_tree(
                 trace_usage.3,
             )
         } else {
-            let u = extract_usage_attrs(&s.attributes);
-            (u.input, u.output, u.model, u.cache_read, u.cache_creation)
+            let (input, output, model) = extract_token_attrs(&s.attributes);
+            let (cache_read, cache_creation) = extract_cache_token_attrs(&s.attributes);
+            (input, output, model, cache_read, cache_creation)
         };
         SpanNode {
             id: encode_span_id(&s.span_id),
@@ -1722,10 +1722,9 @@ impl ObservabilityService {
             if !seen_spans.insert(&span.span_id) {
                 continue;
             }
-            let u = extract_usage_attrs(&span.attributes);
-            let (input, output, model) = (u.input, u.output, u.model.clone());
-            let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
-            if u.is_empty() {
+            let (input, output, model) = extract_token_attrs(&span.attributes);
+            let (cache_read, cache_creation) = extract_cache_token_attrs(&span.attributes);
+            if input == 0 && output == 0 && cache_read == 0 && cache_creation == 0 {
                 continue;
             }
             cost.add_assign(
@@ -2079,6 +2078,36 @@ impl ObservabilityService {
         if let Some(accessible) = &accessible {
             agents.retain(|(id, _, _, _)| accessible.contains(id));
         }
+        // `is_internal` agents (Weave's dashboard-generator) are platform-owned,
+        // not the caller's fleet, so a workspace holding nothing else has still
+        // deployed nothing -- and the overview/tokenops pages read exactly that
+        // off `total_agents` to decide between their first-run screen and a real
+        // dashboard. Dropping them makes the list empty, which the early return
+        // below turns into the zeroed payload those pages expect. Once the caller
+        // has an agent of their own the internal one stays in, so its spend is
+        // still attributed.
+        //
+        // Scoped to the agents actually in hand, and skipped entirely when there
+        // are none: an unscoped `SELECT id FROM agents WHERE is_internal` reads
+        // every internal agent in the deployment on every dashboard load, and ran
+        // even for the no-agent first-run case this exists to serve, where its
+        // answer cannot change anything.
+        let mut dropped_internal: HashSet<uuid::Uuid> = HashSet::new();
+        if !agents.is_empty() {
+            let ids: Vec<uuid::Uuid> = agents.iter().map(|(id, _, _, _)| *id).collect();
+            let internal_count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM agents \
+                 WHERE id = ANY($1) AND is_internal AND deleted_at IS NULL",
+            )
+            .bind(&ids)
+            .fetch_one(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+            if internal_count as usize == ids.len() {
+                dropped_internal = ids.into_iter().collect();
+                agents.clear();
+            }
+        }
         let total_agents = agents.len();
 
         let start = parse_iso_or_default(start_time, 30);
@@ -2105,6 +2134,16 @@ impl ObservabilityService {
             });
         if let Some(accessible) = &accessible {
             hours_rows.retain(|row| accessible.contains(&row.agent_id));
+        }
+        // An agent we just denied the existence of cannot keep billing hours into
+        // the summary. Without this the first-run screen reports zero agents and
+        // zero spend beside a non-zero container-hours figure -- the one number
+        // the internal agent still contributed -- which reads as a bug rather
+        // than as an empty workspace. Deleted agents' hours are untouched: those
+        // are real history with no agent left to attribute them to, which is why
+        // `empty_finops_response` takes the total rather than zeroing it.
+        if !dropped_internal.is_empty() {
+            hours_rows.retain(|row| !dropped_internal.contains(&row.agent_id));
         }
         let total_container_hours = round6(hours_rows.iter().map(|r| r.hours).sum());
         let hours_by_agent: HashMap<uuid::Uuid, f64> =

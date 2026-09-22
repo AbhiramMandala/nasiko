@@ -75,7 +75,6 @@ test-unit:
     cargo test \
       -p nasiko \
       -p nasiko-auth \
-      -p nasiko-compress \
       -p nasiko-secrets \
       -p nasiko-config \
       -p nasiko-utils \
