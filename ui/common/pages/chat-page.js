@@ -344,13 +344,13 @@ class ChatPage extends HTMLElement {
     if (!messagesEl) return;
     messagesEl.innerHTML = `
       <div class="welcome-state">
-        <app-empty-state ${failed ? 'variant="error"' : ''}
+        <app-empty-state
           heading="${failed ? 'Failed to load sessions' : 'No sessions yet'}"
           description="${failed
             ? 'Something went wrong while loading your chat sessions.'
             : 'Every chat, across every agent, is listed here. Pick an agent to start one.'}"
-          ${failed ? '' : `icon='${icons.send()}'`}>
-          <app-button variant="${failed ? 'tertiary' : 'dark'}" size="sm" id="btn-sessions-empty"
+          icon='${failed ? icons.xCircle() : icons.send()}'>
+          <app-button variant="${failed ? 'secondary' : 'dark'}" size="sm" id="btn-sessions-empty"
             >${failed ? 'Retry' : 'Start a chat'}</app-button>
         </app-empty-state>
       </div>`;
@@ -759,12 +759,7 @@ class ChatPage extends HTMLElement {
     try {
       const res = await apiFetch(`/chat/sessions/${this.#sessionId}/messages`);
       if (!res.ok) {
-        // Blanking the pane rendered a failed history load as a brand-new
-        // conversation — the user's own messages apparently gone. A 404 IS a
-        // new conversation (the session has no messages yet); anything else
-        // is us failing to read one that exists.
-        if (res.status === 404) { messagesEl.innerHTML = ''; return; }
-        this.#renderHistoryFailure(messagesEl);
+        messagesEl.innerHTML = '';
         return;
       }
       const result = await res.json();
@@ -820,29 +815,8 @@ class ChatPage extends HTMLElement {
       this.#syncComposer();
     } catch (error) {
       console.error('Failed to load stored chat messages', error);
-      this.#renderHistoryFailure(messagesEl);
+      messagesEl.innerHTML = '<div class="pane-empty">Failed to load conversation history</div>';
     }
-  }
-
-  /**
-   * A failed history read. Both callers used to render an absence — one a
-   * bare line of text, the other a completely blank pane identical to a new
-   * conversation, which is the worst of the two: it tells the user their
-   * messages are gone.
-   */
-  #renderHistoryFailure(messagesEl) {
-    messagesEl.innerHTML = `
-      <div class="welcome-state">
-        <app-empty-state variant="error"
-          heading="Couldn't load this conversation"
-          description="Your messages are still there — we just couldn't fetch them.">
-          <app-button variant="tertiary" size="sm" id="btn-history-retry">Retry</app-button>
-        </app-empty-state>
-      </div>`;
-    messagesEl.querySelector('#btn-history-retry')?.addEventListener('click', () => {
-      messagesEl.innerHTML = '';
-      this.#loadMessages(messagesEl);
-    });
   }
 
   /** Typing dots for a turn draining out of sight. Same markup as the send
@@ -1055,6 +1029,10 @@ class ChatPage extends HTMLElement {
       body.usage = {
         input_tokens: usage?.input_tokens ?? null,
         output_tokens: usage?.output_tokens ?? null,
+        // Without these the reloaded chip would disagree with the one just shown live,
+        // shrinking by whatever the provider cache served.
+        cache_read_tokens: usage?.cache_read_tokens ?? null,
+        cache_creation_tokens: usage?.cache_creation_tokens ?? null,
         model: usage?.model ?? null,
         duration_ms: usage?.duration_ms ?? null,
         cost_usd: usage?.cost_usd ?? null,

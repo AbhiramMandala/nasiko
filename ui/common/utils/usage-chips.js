@@ -5,6 +5,15 @@
  * columns on a reloaded chat_messages row. Token/cost chips only exist for
  * platform-paid usage; a bring-your-own-key agent reply shows duration alone.
  * `estimated: true` (streamed orchestrator turns) prefixes figures with `~`.
+ *
+ * The headline count is the **whole** prompt plus the reply — cached tokens
+ * included. `input_tokens` carries only the fresh portion, so summing it with
+ * output alone made an unchanged turn appear to shrink as the provider cache
+ * warmed: the same six prompts replayed two minutes apart read 2,873 tokens
+ * and then 957, for prompts that were 5,305 and 5,309. A cache hit should show
+ * up as *cheaper* in the cost chip, never as *smaller* in the token chip. The
+ * split is in the tooltip, where it explains the price rather than distorting
+ * the size.
  */
 
 /** Normalize a chat_messages row into the usage_meta shape. */
@@ -12,10 +21,17 @@ export function usageFromMessage(m) {
   if (!m) return null;
   const hasTokens = m.input_tokens != null || m.output_tokens != null;
   if (!hasTokens && m.duration_ms == null) return null;
+  const input = m.input_tokens ?? 0;
+  const output = m.output_tokens ?? 0;
+  // Null on a bring-your-own-key reply, and on rows written before migration 0033.
+  const cacheRead = m.cache_read_tokens ?? 0;
+  const cacheCreation = m.cache_creation_tokens ?? 0;
   return {
-    input_tokens: m.input_tokens ?? 0,
-    output_tokens: m.output_tokens ?? 0,
-    total_tokens: hasTokens ? (m.input_tokens ?? 0) + (m.output_tokens ?? 0) : undefined,
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_tokens: cacheRead,
+    cache_creation_tokens: cacheCreation,
+    total_tokens: hasTokens ? input + cacheRead + cacheCreation + output : undefined,
     cost_usd: m.cost_usd,
     duration_ms: m.duration_ms,
     model: m.model,
@@ -38,7 +54,16 @@ export function usageChipsHtml(u) {
 
 function usageTitle(u) {
   const parts = [];
-  if (u.total_tokens > 0) parts.push(`${u.input_tokens} in / ${u.output_tokens} out`);
+  if (u.total_tokens > 0) {
+    const cached = (u.cache_read_tokens ?? 0) + (u.cache_creation_tokens ?? 0);
+    // Naming the cached share is the difference between "this turn was small" and
+    // "this turn was mostly served from cache, so it was cheap".
+    parts.push(
+      cached > 0
+        ? `${u.input_tokens} in (+${cached} cached) / ${u.output_tokens} out`
+        : `${u.input_tokens} in / ${u.output_tokens} out`,
+    );
+  }
   if (u.model) parts.push(u.model);
   if (u.estimated) parts.push("token counts are estimated");
   return parts.join(" · ");
