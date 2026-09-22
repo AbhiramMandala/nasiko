@@ -7,6 +7,7 @@
 pub mod acl;
 pub mod admin;
 pub mod admission;
+pub mod agent_lifecycle;
 pub mod agent_proxy;
 pub mod agents;
 pub mod auth;
@@ -27,6 +28,7 @@ pub mod multipart_util;
 pub mod observability;
 pub mod openapi;
 pub mod pool;
+pub mod prompt_context;
 pub mod rate_limit;
 pub mod registry_a2a;
 pub mod router;

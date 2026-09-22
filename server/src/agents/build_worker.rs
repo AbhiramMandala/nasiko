@@ -6,6 +6,7 @@ use sqlx::PgPool;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::state::AppState;
 
 const MAX_ATTEMPTS: i32 = 3;
@@ -52,7 +53,7 @@ pub struct BuildJob {
 /// agent or connector never overlap — [`claim_next_job`] skips a target that
 /// already has a build in flight.
 pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
-    recover_stuck_jobs(&state.db, &[]).await;
+    recover_stuck_jobs(&state.db, &[], &state.agent_deletion_hook).await;
 
     // First tick fires after the interval, not immediately — startup already ran recovery.
     let recovery_start = tokio::time::Instant::now() + Duration::from_secs(10 * 60);
@@ -98,7 +99,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
                 // without this call the target would stay in a non-terminal state forever
                 // with no path back (RUN-4, extended to MCP connectors).
                 if let Some(agent_id) = job.agent_id {
-                    fail_agent_terminal(&state.db, agent_id).await;
+                    fail_agent_terminal(&state.db, agent_id, &state.agent_deletion_hook).await;
                 } else if let Some(connector_id) = job.connector_id {
                     crate::mcp::build::fail_mcp_connector_terminal(&state.db, connector_id).await;
                 }
@@ -108,6 +109,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
 
             let state_clone = state.clone();
             let db = state.db.clone();
+            let deletion_hook = state.agent_deletion_hook.clone();
             let in_flight_task = in_flight.clone();
             in_flight
                 .lock()
@@ -124,7 +126,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
                     Ok(()) => {}
                     Err(ref e) if e.is_panic() => {
                         tracing::error!(job_id = %job_id, "build worker: job panicked — resetting immediately");
-                        reset_panicked_job(&db, job_id, old_attempt).await;
+                        reset_panicked_job(&db, job_id, old_attempt, &deletion_hook).await;
                     }
                     // Only reachable if the inner task is aborted, which nothing
                     // does — dropping its handle detaches rather than cancels.
@@ -156,7 +158,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
             _ = recovery_tick.tick() => {
                 let running: Vec<Uuid> =
                     in_flight.lock().expect("in-flight set poisoned").iter().copied().collect();
-                recover_stuck_jobs(&state.db, &running).await;
+                recover_stuck_jobs(&state.db, &running, &state.agent_deletion_hook).await;
                 // Fall through to the drain loop: recovered jobs are now pending.
             }
         }
@@ -178,7 +180,11 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
 /// reset to `pending`, re-claimed, and run a second time against the same image
 /// tag: exactly what `claim_next_job`'s same-target clause exists to prevent.
 /// Jobs from *other* replicas can't be vouched for this way and are still swept.
-async fn recover_stuck_jobs(db: &PgPool, in_flight: &[Uuid]) {
+async fn recover_stuck_jobs(
+    db: &PgPool,
+    in_flight: &[Uuid],
+    deletion_hook: &Arc<SwappableAgentDeletionHook>,
+) {
     // Permanently fail exhausted jobs (>= MAX_ATTEMPTS attempts already made).
     // RETURNING agent_id, connector_id so we can also drive the target to a
     // terminal state (RUN-4, extended to MCP connectors) — otherwise its
@@ -198,7 +204,7 @@ async fn recover_stuck_jobs(db: &PgPool, in_flight: &[Uuid]) {
         Ok(rows) => {
             for (agent_id, connector_id) in rows {
                 if let Some(agent_id) = agent_id {
-                    fail_agent_terminal(db, agent_id).await;
+                    fail_agent_terminal(db, agent_id, deletion_hook).await;
                 } else if let Some(connector_id) = connector_id {
                     crate::mcp::build::fail_mcp_connector_terminal(db, connector_id).await;
                 }
@@ -392,6 +398,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 writable,
                 writable_path,
                 state.config.agent_default_memory.clone(),
+                state.agent_deletion_hook.clone(),
             )
             .await;
         }
@@ -519,6 +526,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 None,
                 None,
                 None,
+                state.agent_deletion_hook.clone(),
             )
             .await;
         }
@@ -664,7 +672,12 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
 /// `old_attempt` is the pre-increment value from the claim. The DB now holds `old_attempt + 1`.
 /// If that value is at or above `MAX_ATTEMPTS`, the job is permanently failed;
 /// otherwise it is reset to `pending` for immediate retry.
-async fn reset_panicked_job(db: &PgPool, job_id: Uuid, old_attempt: i32) {
+async fn reset_panicked_job(
+    db: &PgPool,
+    job_id: Uuid,
+    old_attempt: i32,
+    deletion_hook: &Arc<SwappableAgentDeletionHook>,
+) {
     if old_attempt >= MAX_ATTEMPTS {
         mark_job(db, job_id, "failed", Some("job panicked during execution")).await;
         // Also terminalize the agent/connector so any waiting SSE/poll stops (RUN-4,
@@ -678,7 +691,7 @@ async fn reset_panicked_job(db: &PgPool, job_id: Uuid, old_attempt: i32) {
             .await
         {
             if let Some(agent_id) = agent_id {
-                fail_agent_terminal(db, agent_id).await;
+                fail_agent_terminal(db, agent_id, deletion_hook).await;
             } else if let Some(connector_id) = connector_id {
                 crate::mcp::build::fail_mcp_connector_terminal(db, connector_id).await;
             }
@@ -705,7 +718,11 @@ async fn reset_panicked_job(db: &PgPool, job_id: Uuid, old_attempt: i32) {
 /// rather than set to `status='failed'`, so no orphaned record is left. For existing
 /// agents that exceeded max attempts on an update/rollback the row is kept (the caller
 /// may still want to redeploy or inspect history).
-async fn fail_agent_terminal(db: &PgPool, agent_id: Uuid) {
+async fn fail_agent_terminal(
+    db: &PgPool,
+    agent_id: Uuid,
+    deletion_hook: &Arc<SwappableAgentDeletionHook>,
+) {
     let _ = sqlx::query(
         "UPDATE agent_builds SET status = 'failed', updated_at = now() \
          WHERE agent_id = $1 AND status = 'building'",
@@ -713,7 +730,7 @@ async fn fail_agent_terminal(db: &PgPool, agent_id: Uuid) {
     .bind(agent_id)
     .execute(db)
     .await;
-    super::utils::delete_agent_or_mark_failed(db, agent_id).await;
+    super::utils::delete_agent_or_mark_failed(db, agent_id, deletion_hook).await;
 }
 
 /// Reads the terminal status of `build_id` from whichever `*_builds` table
