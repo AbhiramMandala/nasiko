@@ -1,6 +1,12 @@
 /**
  * Create workflow — name it, describe the outcome, let the planner draft the
- * steps (POST /api/maf/generate), edit them, then save (POST /api/maf/workflows).
+ * steps (POST /api/maf/generate), edit them, then save.
+ *
+ * Two saves, two endpoints:
+ * - "Save as draft and test" → POST /api/maf/workflow/draft (status 'draft').
+ *   Re-saving passes the returned `draft_id` so one row is overwritten rather
+ *   than a new draft created per click. A draft is promoted later.
+ * - "Deploy" → POST /api/maf/workflows, which creates it 'active' straight away.
  *
  * The generate call has three designed failure modes: 503 (no OPENAI_API_KEY
  * on the server), 400 (the user has no agents), 422 (planner failure) — each
@@ -31,6 +37,12 @@ class WorkflowNewPage extends HTMLElement {
   #initialized = false;
   #drafting = false;
   #saved = null;
+  /** Set by the first draft save, so later ones overwrite that row. */
+  #draftId = null;
+  /** Snapshot of the form as last saved (or as first rendered) — see #dirty(). */
+  #clean = '';
+  /** Where the intercepted click was headed. */
+  #leaveTo = null;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -42,8 +54,8 @@ class WorkflowNewPage extends HTMLElement {
           <app-button variant="tertiary" size="sm" icon-only href="/workflows"
             aria-label="Back to workflows">${icons.chevronLeft()}</app-button>
           <div class="head-text">
-            <h1 class="title" id="page-title">Create workflow</h1>
-            <p class="subtitle" id="page-sub">${SUBTITLE}</p>
+            <h1 class="title">Create workflow</h1>
+            <p class="subtitle">${SUBTITLE}</p>
           </div>
         </header>
 
@@ -67,6 +79,15 @@ class WorkflowNewPage extends HTMLElement {
         </footer>
       </div>
 
+      <app-modal id="leave-modal" heading="Leave without saving?">
+        <p>Your changes haven't been saved. If you leave now, you'll lose the changes
+          made since your last save.</p>
+        <div data-slot="footer">
+          <app-button variant="secondary" size="sm" id="discard-btn">Discard workflow</app-button>
+          <app-button variant="primary" size="sm" id="save-draft-btn">Save draft</app-button>
+        </div>
+      </app-modal>
+
       <app-modal id="deployed-modal" heading="Workflow deployed">
         <p>Your workflow has been saved and is ready for the next step.</p>
         <div data-slot="footer">
@@ -87,7 +108,22 @@ class WorkflowNewPage extends HTMLElement {
     this.querySelector('#deploy-btn').addEventListener('click', () => this.#save({ deploy: true }));
     this.querySelector('#library-btn').addEventListener('click', () => routerNavigate('/workflows'));
     this.querySelector('#run-btn').addEventListener('click', () => this.#run());
+    this.querySelector('#discard-btn').addEventListener('click', () => this.#leave());
+    this.querySelector('#save-draft-btn').addEventListener('click', () => this.#saveDraftAndLeave());
+    // The warning glyph from the mockup — app-modal has no icon slot, and one
+    // call site doesn't earn one.
+    this.querySelector('#leave-modal header')
+      .insertAdjacentHTML('afterbegin', `<span class="warn-icon">${icons.alertTriangle('', 16)}</span>`);
+
+    document.addEventListener('click', this.#onLeaveClick, true);
+    window.addEventListener('beforeunload', this.#onBeforeUnload);
     this.#syncActions();
+    this.#clean = this.#snapshot();
+  }
+
+  disconnectedCallback() {
+    document.removeEventListener('click', this.#onLeaveClick, true);
+    window.removeEventListener('beforeunload', this.#onBeforeUnload);
   }
 
   async #loadAgents() {
@@ -105,11 +141,9 @@ class WorkflowNewPage extends HTMLElement {
     return this.querySelector('#wf-name').value.trim();
   }
 
-  /** Once the workflow has a name, the name IS the page title (mockup). */
+  /** The heading stays "Create workflow" — only the field's own label reacts. */
   #syncHeader() {
     const name = this.#name;
-    this.querySelector('#page-title').textContent = name || 'Create workflow';
-    this.querySelector('#page-sub').hidden = !!name;
     // Only on the empty→named edge: <app-input> re-renders on every attribute
     // write, and rebuilding the field under the caret on each keystroke is a
     // good way to lose an IME composition.
@@ -122,14 +156,19 @@ class WorkflowNewPage extends HTMLElement {
     this.#syncActions();
   }
 
-  /** Saving needs a name and at least one instruction — nothing else is usable. */
+  /**
+   * Both saves need a name — it is how a workflow is found again, and a draft
+   * with no name is a row nobody can identify in the library. Deploying
+   * additionally needs at least one step with instructions; a draft may be as
+   * half-filled as it likes beyond the name.
+   */
   #syncActions() {
-    const ready = !!this.#name
-      && !this.#drafting
+    const named = !!this.#name && !this.#drafting;
+    const ready = named
       && this.querySelector('#editor').steps.some((s) => s.taskDescription.trim());
-    for (const id of ['#save-btn', '#deploy-btn']) {
-      this.querySelector(id).toggleAttribute('disabled', !ready);
-    }
+    this.querySelector('#deploy-btn').toggleAttribute('disabled', !ready);
+    this.querySelector('#save-btn').toggleAttribute('disabled', !named);
+    this.querySelector('#save-draft-btn').toggleAttribute('disabled', !named);
   }
 
   #notice(html) {
@@ -189,35 +228,123 @@ class WorkflowNewPage extends HTMLElement {
   }
 
   /**
-   * ponytail: "draft" and "deploy" both POST the same workflow — `mafs` has no
-   * deployed flag yet (see the same note in workflows-page.js). Deploy is the
-   * one that opens the confirmation; wire the flag through here when it lands.
+   * `deploy` picks the endpoint: a draft stores the sentence (plus the steps on
+   * screen — the server ignores fields it doesn't know, so this is forwards-
+   * compatible with draft steps landing), a deploy creates the live workflow.
    */
-  async #save({ deploy }) {
+  async #save({ deploy, navigate = true }) {
     const btn = this.querySelector(deploy ? '#deploy-btn' : '#save-btn');
     const steps = this.querySelector('#editor').steps
       .map((s) => ({ task_description: s.taskDescription.trim(), agent_id: s.agentId || undefined }))
       .filter((s) => s.task_description);
-    if (!steps.length) {
-      this.#notice('Add at least one step with instructions before saving.');
-      return;
+    if (!this.#name) {
+      this.#notice('Name this workflow before saving it.');
+      return null;
+    }
+    if (deploy && !steps.length) {
+      this.#notice('Add at least one step with instructions before deploying.');
+      return null;
     }
     this.#notice('');
     btn.setAttribute('loading', '');
     try {
-      const workflow = await call('createWorkflow', {
-        name: this.#name || undefined,
-        description: this.querySelector('#wf-desc').value.trim() || undefined,
-        steps,
-      });
+      const workflow = deploy
+        ? await call('createWorkflow', {
+          name: this.#name,
+          description: this.querySelector('#wf-desc').value.trim() || undefined,
+          steps,
+        })
+        : await this.#saveDraft(steps);
       this.#saved = workflow;
+      this.#clean = this.#snapshot();
       btn.removeAttribute('loading');
       if (deploy) this.querySelector('#deployed-modal').show();
-      else routerNavigate(`/workflow?id=${encodeURIComponent(workflow.id)}`);
+      else if (navigate) routerNavigate(`/workflow?id=${encodeURIComponent(workflow.id)}`);
+      return workflow;
     } catch (err) {
       btn.removeAttribute('loading');
       showToast(`Save failed: ${err.message}`);
+      return null;
     }
+  }
+
+  /**
+   * The draft endpoint requires a non-empty instruction, and the description is
+   * optional on this screen — so a manually authored workflow falls back to its
+   * name, which is the only text guaranteed to be there.
+   *
+   * A 404 means the draft was deleted or promoted elsewhere; drop the stale id
+   * and save again as a new draft rather than losing what is on screen.
+   */
+  async #saveDraft(steps) {
+    const body = {
+      instruction: this.querySelector('#wf-desc').value.trim() || this.#name,
+      name: this.#name,
+      steps,
+    };
+    try {
+      const saved = await call('saveDraft', this.#draftId ? { ...body, draft_id: this.#draftId } : body);
+      this.#draftId = saved.id;
+      return saved;
+    } catch (err) {
+      if (!this.#draftId || err.status !== 404) throw err;
+      this.#draftId = null;
+      const saved = await call('saveDraft', body);
+      this.#draftId = saved.id;
+      return saved;
+    }
+  }
+
+  /** What's on screen, as a comparable string. Dirty = differs from the last save. */
+  #snapshot() {
+    return JSON.stringify([
+      this.#name,
+      this.querySelector('#wf-desc').value.trim(),
+      this.querySelector('#editor').steps.map((s) => [s.taskDescription.trim(), s.agentId || '']),
+    ]);
+  }
+
+  #dirty() {
+    return this.#snapshot() !== this.#clean;
+  }
+
+  /**
+   * Leaving with unsaved work opens the modal instead. Capture phase so this
+   * runs before the router's own document-level click handler — and covers
+   * the rail, the header and the back arrow alike, since they are all <a>.
+   */
+  #onLeaveClick = (e) => {
+    if (e.defaultPrevented || e.button !== 0) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest?.('a[href]');
+    if (!a || a.target === '_blank' || a.origin !== location.origin) return;
+    const to = a.pathname + a.search;
+    if (to === location.pathname + location.search) return;
+    if (!this.#dirty()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.#leaveTo = to;
+    this.querySelector('#leave-modal').show();
+  };
+
+  // ponytail: browser back/forward isn't guarded — popstate fires after the
+  // navigation, so blocking it needs a history sentinel. Add one if it bites.
+  #onBeforeUnload = (e) => {
+    if (this.#dirty()) e.preventDefault();
+  };
+
+  #leave() {
+    this.querySelector('#leave-modal').hide();
+    this.#clean = this.#snapshot(); // discarded — stop guarding the way out
+    routerNavigate(this.#leaveTo || '/workflows');
+  }
+
+  async #saveDraftAndLeave() {
+    const btn = this.querySelector('#save-draft-btn');
+    btn.setAttribute('loading', '');
+    const saved = await this.#save({ deploy: false, navigate: false });
+    btn.removeAttribute('loading');
+    if (saved) this.#leave();
   }
 
   async #run() {

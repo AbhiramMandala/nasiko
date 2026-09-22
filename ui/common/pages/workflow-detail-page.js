@@ -3,7 +3,9 @@
  *
  * Views (single 720px column, mirroring the mockup's review screen):
  * - review: editable name/description/steps (PUT /api/maf/workflow/{id}),
- *   output_generation display, run button, execution history.
+ *   output_generation display, run button, execution history. A draft shows
+ *   Deploy (POST /api/maf/workflow/{id}/promote) instead of Run — the server
+ *   refuses to run a draft, and promotion is what makes it runnable.
  * - run: live per-step timeline for one execution — polls
  *   GET /api/maf/execution/{id} every 1.5s while pending/running (no SSE).
  *
@@ -14,6 +16,7 @@
 import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
+import { confirmDialog } from '/common/design-system/app-modal/app-modal.js';
 import { timeAgo } from '/common/utils/date-utils.js';
 import { fmtDuration, fmtTokens } from '/common/utils/units.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
@@ -28,6 +31,8 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./workflow-detail-page.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
+import { isDeployed } from '/common/services/workflows-service.js';
+import { navigate } from '../core/router.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -39,7 +44,6 @@ class WorkflowDetailPage extends HTMLElement {
   #initialized = false;
   #workflowId = null;
   #workflow = null;
-  #executions = [];
   #execution = null;
   // Whether the run view on screen was pushed onto history by this page. If it
   // was, leaving it is a step back — pushing a review entry there instead made
@@ -47,7 +51,6 @@ class WorkflowDetailPage extends HTMLElement {
   // run → review → Back → run …).
   #runPushed = false;
   #pollTimer = null;
-  #dirty = false;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -118,12 +121,8 @@ class WorkflowDetailPage extends HTMLElement {
 
   async #load(execId) {
     try {
-      const [workflow, executions] = await Promise.all([
-        call('fetchWorkflow', this.#workflowId),
-        call('fetchWorkflowExecutions', this.#workflowId).catch(() => []),
-      ]);
+      const workflow = await call('fetchWorkflow', this.#workflowId);
       this.#workflow = workflow;
-      this.#executions = executions;
       document.title = `Nasiko — ${workflow.name}`;
     } catch {
       this.innerHTML = `
@@ -149,35 +148,31 @@ class WorkflowDetailPage extends HTMLElement {
     return labels;
   }
 
-  #showReview() {
+  /** @param {{edit?: boolean}} [opts] Start in edit mode (the Edit button). */
+  #showReview({ edit = false } = {}) {
     this.#stopPolling();
     this.#execution = null;
-    this.#dirty = false;
     const wf = this.#workflow;
     const steps = wf.maf_json?.steps || [];
-    const runs = wf.execution_count === 1 ? '1 run' : `${wf.execution_count} runs`;
+    const description = wf.description || wf.maf_json?.description || '';
 
     this.innerHTML = `
       <div class="col">
         <header class="page-head">
           <app-button variant="tertiary" size="sm" icon-only href="/workflows" data-back
             aria-label="Back">${icons.chevronLeft()}</app-button>
-          <input class="name-input" id="wf-name" value="${escHtml(wf.name)}" aria-label="Workflow name" />
-          <app-button variant="primary" size="md" id="run-btn">${icons.play('', 12)} Run</app-button>
+          <input class="name-input" id="wf-name" value="${escHtml(wf.name)}"
+            aria-label="Workflow name" ${edit ? '' : 'readonly'} />
         </header>
 
-        <textarea class="desc-input" id="wf-desc" rows="2"
-          placeholder="Describe what this workflow is for">${escHtml(wf.description || wf.maf_json?.description || '')}</textarea>
+        ${edit ? `
+          <textarea class="desc-input" id="wf-desc" rows="2"
+            placeholder="Describe what this workflow is for">${escHtml(description)}</textarea>`
+        : `<p class="desc-text">${escHtml(description)}</p>`}
 
-        <div class="badges">
-          <app-badge variant="neutral">${steps.length === 1 ? '1 step' : `${steps.length} steps`}</app-badge>
-          <app-badge variant="neutral">${escHtml(runs)}</app-badge>
-        </div>
-
-        <section class="sec">
-          <h2 class="sec-title">Steps</h2>
-          <wf-step-editor id="editor"></wf-step-editor>
-        </section>
+        ${edit
+          ? '<wf-step-editor id="editor"></wf-step-editor>'
+          : WorkflowDetailPage.#stepList(steps)}
 
         ${wf.maf_json?.output_generation ? `
           <section class="sec">
@@ -185,39 +180,75 @@ class WorkflowDetailPage extends HTMLElement {
             <p class="output-gen">${escHtml(wf.maf_json.output_generation)}</p>
           </section>` : ''}
 
-        <div class="save-bar" id="save-bar" hidden>
-          <span class="save-note">Unsaved changes</span>
-          <app-button variant="ghost" size="sm" id="discard-btn">Discard</app-button>
-          <app-button variant="primary" size="sm" id="save-btn">Save changes</app-button>
-        </div>
+        ${edit ? `
+          <div class="save-bar">
+            <app-button variant="tertiary" size="sm" id="discard-btn">Cancel</app-button>
+            <app-button variant="primary" size="sm" id="save-btn">Save changes</app-button>
+          </div>`
+        : `
+          <div class="page-actions">
+            <app-button variant="tertiary" size="md" id="edit-btn">${icons.editThin('', 12)} Edit</app-button>
+            ${isDeployed(wf) ? `
+              <app-button variant="primary" size="md" id="run-btn">${icons.play('', 12)} Run</app-button>`
+            : `
+              <app-button variant="primary" size="md" id="deploy-btn">Deploy</app-button>`}
+          </div>
 
-        <section class="sec">
-          <h2 class="sec-title">Executions</h2>
-          <div id="exec-list"></div>
-        </section>
+          <section class="danger-zone">
+            <h3 class="danger-title">Danger zone</h3>
+            <p class="danger-note">Remove this workflow from your deployed workflows.
+              Existing workflow runs will not be affected.</p>
+            <app-button variant="danger-secondary" size="md" id="delete-btn">Delete workflow</app-button>
+          </section>`}
       </div>
     `;
 
-    const editor = this.querySelector('#editor');
-    editor.steps = steps.map((s) => ({
-      taskDescription: s.task_description,
-      agentId: s.agent_id,
-      agentName: s.agent_name,
-    }));
-    this.#loadAgents();
+    if (edit) {
+      const editor = this.querySelector('#editor');
+      editor.steps = steps.map((s) => ({
+        taskDescription: s.task_description,
+        agentId: s.agent_id,
+        agentName: s.agent_name,
+      }));
+      this.#loadAgents();
+      this.querySelector('#save-btn').addEventListener('click', () => this.#saveEdits());
+      this.querySelector('#discard-btn').addEventListener('click', () => this.#showReview());
+      return;
+    }
+    this.querySelector('#edit-btn').addEventListener('click', () => this.#showReview({ edit: true }));
+    this.querySelector('#run-btn')?.addEventListener('click', () => this.#run());
+    this.querySelector('#deploy-btn')?.addEventListener('click', () => this.#deploy());
+    this.querySelector('#delete-btn').addEventListener('click', () => this.#delete());
+  }
 
-    const markDirty = () => {
-      this.#dirty = true;
-      this.querySelector('#save-bar').hidden = false;
-    };
-    editor.addEventListener('wf-steps-change', markDirty);
-    this.querySelector('#wf-name').addEventListener('input', markDirty);
-    this.querySelector('#wf-desc').addEventListener('input', markDirty);
+  async #delete() {
+    const confirmed = await confirmDialog({
+      title: `Delete workflow?`,
+      message: `"${this.#workflow.name}" will be permanently deleted. This action can't be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await call('deleteWorkflow', this.#workflowId);
+      navigate('/workflows');
+    } catch (err) {
+      showToast(`Delete failed: ${err.message}`);
+    }
+  }
 
-    this.querySelector('#run-btn').addEventListener('click', () => this.#run());
-    this.querySelector('#save-btn').addEventListener('click', () => this.#saveEdits());
-    this.querySelector('#discard-btn').addEventListener('click', () => this.#showReview());
-    this.#renderExecList();
+  /** Read-only face of the steps — the editor only mounts once Edit is hit. */
+  static #stepList(steps) {
+    if (!steps.length) {
+      return `<app-empty-state heading="No steps yet"
+        description="Hit Edit to add the first step."></app-empty-state>`;
+    }
+    return `<ol class="ro-steps">${steps.map((s, i) => `
+      <li class="ro-step">
+        <h3 class="ro-step-n">Step ${i + 1}</h3>
+        <p class="ro-step-task">${escHtml(s.task_description || '')}</p>
+        <p class="ro-step-agent">${escHtml(s.agent_name || 'Agent chosen at run time')}</p>
+      </li>`).join('')}</ol>`;
   }
 
   async #loadAgents() {
@@ -233,32 +264,6 @@ class WorkflowDetailPage extends HTMLElement {
     } catch { /* picker falls back to the persisted agent names */ }
   }
 
-  #renderExecList() {
-    const list = this.querySelector('#exec-list');
-    if (!list) return;
-    if (!this.#executions.length) {
-      list.innerHTML = `
-        <app-empty-state
-          heading="No runs yet"
-          description="This workflow hasn't run yet. Hit Run to start the first execution."
-        ></app-empty-state>`;
-      return;
-    }
-    list.innerHTML = this.#executions.map((e) => `
-      <button type="button" class="exec-row" data-exec="${escHtml(e.id)}">
-        <span class="exec-num">#${e.execution_number}</span>
-        <app-badge variant="${EXEC_VARIANTS[e.status] || 'neutral'}" dot>${escHtml(e.status)}</app-badge>
-        <span class="exec-meta">${escHtml(timeAgo(e.created_at))}</span>
-        <span class="exec-meta">${e.duration_ms != null ? fmtDuration(e.duration_ms) : ''}</span>
-        <span class="exec-meta">${fmtTokens(e.tokens_used)}</span>
-        <span class="exec-open">${icons.chevronRight('', 14)}</span>
-      </button>`).join('');
-    list.addEventListener('click', (e) => {
-      const row = e.target.closest('[data-exec]');
-      if (row) this.#openRun(row.dataset.exec, { push: true });
-    });
-  }
-
   async #saveEdits() {
     const btn = this.querySelector('#save-btn');
     const steps = this.querySelector('#editor').steps
@@ -270,7 +275,7 @@ class WorkflowDetailPage extends HTMLElement {
       .filter((s) => s.task_description);
     if (!steps.length) {
       showToast('A workflow needs at least one step with instructions.');
-      return;
+      return false;
     }
     btn.setAttribute('loading', '');
     try {
@@ -281,17 +286,33 @@ class WorkflowDetailPage extends HTMLElement {
       });
       showToast('Workflow updated');
       this.#showReview();
+      return true;
     } catch (err) {
       btn.removeAttribute('loading');
       showToast(`Save failed: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Draft → deployed. Promotion decomposes the stored instruction and routes an
+   * agent per step, so it takes ~10s and returns the same id with real steps —
+   * the page re-renders from that response rather than re-fetching.
+   */
+  async #deploy() {
+    const btn = this.querySelector('#deploy-btn');
+    btn?.setAttribute('loading', '');
+    try {
+      this.#workflow = await call('promoteWorkflow', this.#workflowId);
+      showToast('Workflow deployed');
+      this.#showReview();
+    } catch (err) {
+      btn?.removeAttribute('loading');
+      showToast(`Deploy failed: ${err.message}`);
     }
   }
 
   async #run() {
-    if (this.#dirty) {
-      showToast('Save or discard your edits before running.');
-      return;
-    }
     const btn = this.querySelector('#run-btn');
     btn?.setAttribute('loading', '');
     try {
@@ -347,8 +368,6 @@ class WorkflowDetailPage extends HTMLElement {
         </div>
       </div>`;
     this.querySelector('#run-back').addEventListener('click', async () => {
-      // A run just happened — refresh the history list before showing it.
-      this.#executions = await call('fetchWorkflowExecutions', this.#workflowId).catch(() => this.#executions);
       // This page pushed the run view, so leaving it is a step back and the
       // popstate handler renders the review. Otherwise the run view IS the
       // entry (opened from /executions or a deep link) and there is no review

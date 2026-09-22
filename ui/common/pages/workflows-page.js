@@ -3,9 +3,13 @@
  *   <workflows-page>        /workflows        Deployed (the section's landing page)
  *   <workflow-drafts-page>  /workflow-drafts  Drafts
  *
- * Data: GET /api/maf/workflows via window.fetchWorkflows; last-run status is
- * joined client-side from GET /api/maf/executions (the list API carries no
- * last-run info, only execution_count).
+ * Data: GET /api/maf/workflows (deployed) or GET /api/maf/workflow/drafts
+ * (drafts); last-run status is joined client-side from GET /api/maf/executions
+ * (the list API carries no last-run info, only execution_count).
+ *
+ * The drafts endpoint deliberately keeps promoted drafts, so an idea can be
+ * followed from the sentence typed to the runs it produced. The tabs here are
+ * disjoint instead — one workflow, one tab — so `isDeployed` filters them out.
  *
  * @element workflows-page
  * @element workflow-drafts-page
@@ -26,6 +30,7 @@ import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./workflows-page.css', import.meta.url));
 import { escAttr, escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
+import { isDeployed } from '/common/services/workflows-service.js';
 import { navigate as routerNavigate } from '../core/router.js';
 // The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
 // gutter it pins into. Nothing imported it, so under the client router the
@@ -45,11 +50,6 @@ const MENU_DRAFT = JSON.stringify([
   { id: 'open', label: 'Open workflow' },
   { id: 'delete', label: 'Delete workflow' },
 ]);
-
-// ponytail: the deployed/draft flag lands with the backend branch (`mafs` has
-// only active/deleted today). Until it does, every saved workflow reads as
-// deployed and Drafts shows its empty screen.
-const isDeployed = (wf) => wf.deployed ?? true;
 
 /** Per-mode copy and artwork — the only thing the two routes disagree on. */
 const MODES = {
@@ -131,7 +131,7 @@ class WorkflowsPage extends HTMLElement {
   async #load() {
     try {
       const [workflows, executions] = await Promise.all([
-        call('fetchWorkflows'),
+        call(this.mode === 'drafts' ? 'fetchDrafts' : 'fetchWorkflows'),
         call('fetchAllExecutions').catch(() => []),
       ]);
       // Executions come newest-first; keep the first row seen per workflow.
@@ -139,6 +139,7 @@ class WorkflowsPage extends HTMLElement {
       for (const exec of executions) {
         if (!this.#lastRun.has(exec.maf_id)) this.#lastRun.set(exec.maf_id, exec);
       }
+      // /maf/workflows is already active-only; the filter matters for drafts.
       this.#workflows = workflows.filter((wf) =>
         this.mode === 'drafts' ? !isDeployed(wf) : isDeployed(wf));
       this.#renderGrid();

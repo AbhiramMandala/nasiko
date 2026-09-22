@@ -29,7 +29,7 @@
     flex-direction: column;
     gap: var(--s-4);
   }
-  .title {
+  .head-text .title {
     margin: 0;
     font-family: var(--font-display);
     font-size: 24px;
@@ -38,7 +38,7 @@
     letter-spacing: 0.16px;
     color: var(--color-text-main);
   }
-  .subtitle {
+  .head-text .subtitle {
     margin: 0;
     font-size: 13px;
     line-height: 18px;
@@ -88,4 +88,13 @@
     
   }
  
+  #leave-modal header { justify-content: flex-start; }
+  #leave-modal header > button { margin-left: auto; }
+  #leave-modal .warn-icon { display: flex; color: var(--color-warning); }
+  #leave-modal .body p {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+    color: var(--color-text-muted);
+  }
 }
