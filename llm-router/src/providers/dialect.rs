@@ -24,12 +24,20 @@ pub enum ProviderDialect {
     /// Bearer` there means an Entra ID token, not an API key), and every call needs
     /// an `?api-version=`.
     AzureOpenAi { api_version: String },
+    /// AWS Bedrock Converse API. The model is in the URL path
+    /// (`/model/{model}/converse`), the credential is a bearer token, and the request
+    /// and response bodies are Bedrock's own shape (not OpenAI). Supports all Bedrock
+    /// models including INFERENCE_PROFILE-only ones (Claude, GPT-6, Grok, …) that the
+    /// OpenAI-compatible Mantle endpoint cannot serve.
+    BedrockConverse,
 }
 
 /// Stored `custom_providers.kind` for [`ProviderDialect::OpenAi`].
 pub const KIND_OPENAI: &str = "openai";
 /// Stored `custom_providers.kind` for [`ProviderDialect::AzureOpenAi`].
 pub const KIND_AZURE_OPENAI: &str = "azure-openai";
+/// Stored `custom_providers.kind` for [`ProviderDialect::BedrockConverse`].
+pub const KIND_BEDROCK_CONVERSE: &str = "bedrock-converse";
 
 /// The `api-version` used for the deployment *listing* only. Azure's data-plane
 /// deployments list is an older surface than the inference API and was dropped from
@@ -50,6 +58,7 @@ impl ProviderDialect {
                 // covers a row written around it.
                 api_version: api_version.unwrap_or("2024-10-21").to_string(),
             },
+            KIND_BEDROCK_CONVERSE => Self::BedrockConverse,
             _ => Self::OpenAi,
         }
     }
@@ -59,6 +68,7 @@ impl ProviderDialect {
         match self {
             Self::OpenAi => KIND_OPENAI,
             Self::AzureOpenAi { .. } => KIND_AZURE_OPENAI,
+            Self::BedrockConverse => KIND_BEDROCK_CONVERSE,
         }
     }
 
@@ -69,7 +79,7 @@ impl ProviderDialect {
     pub fn normalize_base(&self, base: &str) -> String {
         let base = base.trim().trim_end_matches('/');
         match self {
-            Self::OpenAi => base.to_string(),
+            Self::OpenAi | Self::BedrockConverse => base.to_string(),
             Self::AzureOpenAi { .. } => base
                 .strip_suffix("/openai")
                 .unwrap_or(base)
@@ -78,9 +88,28 @@ impl ProviderDialect {
         }
     }
 
-    /// Chat-completions URL for `model` (a deployment name under Azure).
+    /// Chat-completions URL for `model` (a deployment name under Azure, a model ID
+    /// under Bedrock Converse).
     pub fn chat_url(&self, base: &str, model: &str) -> String {
-        self.deployment_url(base, model, "chat/completions")
+        match self {
+            Self::BedrockConverse => {
+                let base = self.normalize_base(base);
+                format!("{base}/model/{model}/converse")
+            }
+            _ => self.deployment_url(base, model, "chat/completions"),
+        }
+    }
+
+    /// Streaming URL. Bedrock Converse has a separate `/converse-stream` endpoint;
+    /// OpenAI and Azure use the same URL with `stream: true` in the body.
+    pub fn chat_stream_url(&self, base: &str, model: &str) -> String {
+        match self {
+            Self::BedrockConverse => {
+                let base = self.normalize_base(base);
+                format!("{base}/model/{model}/converse-stream")
+            }
+            _ => self.chat_url(base, model),
+        }
     }
 
     /// Embeddings URL for `model` (a deployment name under Azure).
@@ -99,6 +128,13 @@ impl ProviderDialect {
                 "{}/openai/deployments?api-version={AZURE_DEPLOYMENTS_LIST_API_VERSION}",
                 self.normalize_base(base)
             ),
+            // Bedrock Runtime has no /models endpoint. The catalog sync uses the
+            // control-plane API which returns all Converse-capable models with
+            // their inference type (ON_DEMAND vs INFERENCE_PROFILE).
+            Self::BedrockConverse => {
+                let url = bedrock_control_plane_url(base);
+                format!("{url}/foundation-models")
+            }
         }
     }
 
@@ -109,7 +145,7 @@ impl ProviderDialect {
         api_key: &str,
     ) -> reqwest::RequestBuilder {
         match self {
-            Self::OpenAi => req.bearer_auth(api_key),
+            Self::OpenAi | Self::BedrockConverse => req.bearer_auth(api_key),
             Self::AzureOpenAi { .. } => req.header("api-key", api_key),
         }
     }
@@ -121,7 +157,7 @@ impl ProviderDialect {
     /// Feeds the same drop-and-retry path as the OpenAI shape.
     pub fn extra_droppable_param(&self, body: &str) -> Option<String> {
         match self {
-            Self::OpenAi => None,
+            Self::OpenAi | Self::BedrockConverse => None,
             Self::AzureOpenAi { .. } => {
                 let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
                 let message = parsed.get("error")?.get("message")?.as_str()?;
@@ -140,7 +176,41 @@ impl ProviderDialect {
             Self::AzureOpenAi { api_version } => {
                 format!("{base}/openai/deployments/{model}/{suffix}?api-version={api_version}")
             }
+            // BedrockConverse URLs are built directly by chat_url/chat_stream_url;
+            // this arm is never reached but must be exhaustive.
+            Self::BedrockConverse => format!("{base}/model/{model}/{suffix}"),
         }
+    }
+}
+
+/// Derive the Bedrock control-plane URL from a Bedrock Runtime base URL.
+/// `https://bedrock-runtime.us-west-2.amazonaws.com` → `https://bedrock.us-west-2.amazonaws.com`.
+pub fn bedrock_control_plane_url(runtime_base: &str) -> String {
+    if let Some(region) = bedrock_region(runtime_base) {
+        format!("https://bedrock.{region}.amazonaws.com")
+    } else {
+        runtime_base.trim_end_matches('/').to_string()
+    }
+}
+
+/// Extract the AWS region from a Bedrock Runtime base URL.
+/// `https://bedrock-runtime.us-west-2.amazonaws.com` → `us-west-2`.
+pub fn bedrock_region(base: &str) -> Option<&str> {
+    let host = base.split("//").nth(1)?.split('/').next()?;
+    host.strip_prefix("bedrock-runtime.")?.strip_suffix(".amazonaws.com")
+}
+
+/// Map an AWS region to the inference-profile prefix. INFERENCE_PROFILE models
+/// must be called with this prefix; ON_DEMAND models must NOT have it.
+pub fn bedrock_region_prefix(region: &str) -> &str {
+    if region.starts_with("us-") {
+        "us"
+    } else if region.starts_with("eu-") {
+        "eu"
+    } else if region.starts_with("ap-") {
+        "ap"
+    } else {
+        "us"
     }
 }
 
@@ -244,11 +314,59 @@ mod tests {
             ProviderDialect::OpenAi
         );
         assert_eq!(
+            ProviderDialect::from_kind(KIND_BEDROCK_CONVERSE, None),
+            ProviderDialect::BedrockConverse
+        );
+        assert_eq!(
             ProviderDialect::from_kind("something-new", None),
             ProviderDialect::OpenAi
         );
         assert_eq!(azure().kind(), KIND_AZURE_OPENAI);
         assert_eq!(ProviderDialect::OpenAi.kind(), KIND_OPENAI);
+        assert_eq!(ProviderDialect::BedrockConverse.kind(), KIND_BEDROCK_CONVERSE);
+    }
+
+    #[test]
+    fn bedrock_converse_urls_put_model_in_path() {
+        let d = ProviderDialect::BedrockConverse;
+        assert_eq!(
+            d.chat_url("https://bedrock-runtime.us-west-2.amazonaws.com", "us.openai.gpt-6-astra"),
+            "https://bedrock-runtime.us-west-2.amazonaws.com/model/us.openai.gpt-6-astra/converse"
+        );
+        assert_eq!(
+            d.chat_stream_url("https://bedrock-runtime.us-west-2.amazonaws.com", "deepseek.v3.2"),
+            "https://bedrock-runtime.us-west-2.amazonaws.com/model/deepseek.v3.2/converse-stream"
+        );
+    }
+
+    #[test]
+    fn bedrock_models_url_derives_control_plane_endpoint() {
+        let d = ProviderDialect::BedrockConverse;
+        assert_eq!(
+            d.models_url("https://bedrock-runtime.us-west-2.amazonaws.com"),
+            "https://bedrock.us-west-2.amazonaws.com/foundation-models"
+        );
+    }
+
+    #[test]
+    fn bedrock_region_extraction() {
+        assert_eq!(
+            bedrock_region("https://bedrock-runtime.us-west-2.amazonaws.com"),
+            Some("us-west-2")
+        );
+        assert_eq!(
+            bedrock_region("https://bedrock-runtime.eu-west-1.amazonaws.com"),
+            Some("eu-west-1")
+        );
+        assert_eq!(bedrock_region("https://api.openai.com/v1"), None);
+    }
+
+    #[test]
+    fn bedrock_region_prefix_mapping() {
+        assert_eq!(bedrock_region_prefix("us-west-2"), "us");
+        assert_eq!(bedrock_region_prefix("eu-west-1"), "eu");
+        assert_eq!(bedrock_region_prefix("ap-northeast-1"), "ap");
+        assert_eq!(bedrock_region_prefix("unknown"), "us");
     }
 
     #[test]

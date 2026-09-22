@@ -188,7 +188,7 @@ fn normalize_provider(name: &str) -> &str {
 
 /// Providers hidden from the catalog until their router integration is ready. A
 /// registered custom provider under one of these labels is exempt (see `custom_labels`).
-const HIDDEN_PROVIDERS: &[&str] = &["groq", "deepseek"];
+const HIDDEN_PROVIDERS: &[&str] = &["groq", "deepseek", "amazon-bedrock"];
 
 fn group_by_provider(
     rows: Vec<PricingRow>,

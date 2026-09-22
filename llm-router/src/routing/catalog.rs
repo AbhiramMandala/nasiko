@@ -216,6 +216,41 @@ fn parse_models_response(body: &serde_json::Value) -> HashSet<String> {
         .unwrap_or_default()
 }
 
+/// Parse the Bedrock control-plane `ListFoundationModels` response:
+/// `{"modelSummaries": [{"modelId": "…", "inferenceAPIsSupported": {"converse": {"sync": true}}, …}]}`.
+/// Only models that support the Converse API and are ACTIVE are included.
+fn parse_bedrock_foundation_models(body: &serde_json::Value) -> HashSet<String> {
+    body.get("modelSummaries")
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter(|m| {
+                    // Only ACTIVE models.
+                    let active = m
+                        .pointer("/modelLifecycle/status")
+                        .and_then(|s| s.as_str())
+                        == Some("ACTIVE");
+                    // Only models that support the Converse API.
+                    let converse_sync = m
+                        .pointer("/inferenceAPIsSupported/converse/sync")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let converse_stream = m
+                        .pointer("/inferenceAPIsSupported/converse/streaming")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    active && (converse_sync || converse_stream)
+                })
+                .filter_map(|m| {
+                    m.get("modelId")
+                        .and_then(|id| id.as_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Fetch one provider's model list. `None` on any failure — callers leave existing
 /// rows untouched.
 async fn fetch_models(
@@ -254,7 +289,13 @@ async fn fetch_models(
         return None;
     }
     let body: serde_json::Value = resp.json().await.ok()?;
-    Some(parse_models_response(&body))
+    // Bedrock's control-plane API has a different response shape from the
+    // OpenAI-compatible `/models` endpoint the other dialects use.
+    let models = match dialect {
+        ProviderDialect::BedrockConverse => parse_bedrock_foundation_models(&body),
+        _ => parse_models_response(&body),
+    };
+    Some(models)
 }
 
 /// Replace one provider's catalog rows with `models` (upsert + delete-stale).
@@ -608,5 +649,46 @@ mod tests {
         assert!(default_model_error(&e, &models).is_some());
         models.insert("m".to_string());
         assert!(default_model_error(&e, &models).is_none());
+    }
+
+    #[test]
+    fn parses_bedrock_foundation_models_response() {
+        let body = serde_json::json!({
+            "modelSummaries": [
+                {
+                    "modelId": "openai.gpt-6-astra",
+                    "modelLifecycle": { "status": "ACTIVE" },
+                    "inferenceAPIsSupported": { "converse": { "sync": true, "streaming": true } }
+                },
+                {
+                    "modelId": "deepseek.v3.2",
+                    "modelLifecycle": { "status": "ACTIVE" },
+                    "inferenceAPIsSupported": { "converse": { "sync": true, "streaming": true } }
+                },
+                {
+                    "modelId": "stability.sd3-5-large-v1:0",
+                    "modelLifecycle": { "status": "ACTIVE" },
+                    "inferenceAPIsSupported": { "converse": { "sync": false, "streaming": false } }
+                },
+                {
+                    "modelId": "old.deprecated-model",
+                    "modelLifecycle": { "status": "LEGACY" },
+                    "inferenceAPIsSupported": { "converse": { "sync": true, "streaming": true } }
+                }
+            ]
+        });
+        let models = parse_bedrock_foundation_models(&body);
+        assert_eq!(models.len(), 2);
+        assert!(models.contains("openai.gpt-6-astra"));
+        assert!(models.contains("deepseek.v3.2"));
+        // Image model (no converse) and legacy model are excluded.
+        assert!(!models.contains("stability.sd3-5-large-v1:0"));
+        assert!(!models.contains("old.deprecated-model"));
+    }
+
+    #[test]
+    fn parse_bedrock_garbage_yields_empty_set() {
+        assert!(parse_bedrock_foundation_models(&serde_json::json!({"nope": 1})).is_empty());
+        assert!(parse_bedrock_foundation_models(&serde_json::json!(null)).is_empty());
     }
 }

@@ -189,6 +189,7 @@ class LlmRouterPage extends HTMLElement {
           <div class="tier-rows">
             <div class="tier-row"><span class="tier-label">Endpoint</span><span class="tier-model">${escHtml(p.base_url)}</span></div>
             ${p.kind === 'azure-openai' ? `<div class="tier-row"><span class="tier-label">Type</span><span class="tier-model">Azure OpenAI (api-version ${escHtml(p.api_version || '—')})</span></div>` : ''}
+            ${p.kind === 'bedrock-converse' ? `<div class="tier-row"><span class="tier-label">Type</span><span class="tier-model">AWS Bedrock (Converse API)</span></div>` : ''}
             ${p.default_model ? `<div class="tier-row"><span class="tier-label">${p.kind === 'azure-openai' ? 'Default deployment' : 'Default model'}</span><span class="tier-model">${escHtml(p.default_model)}</span></div>` : ''}
             <div class="tier-row"><span class="tier-label">Last sync</span><span class="tier-model">${escHtml(when)}</span></div>
           </div>
@@ -207,7 +208,25 @@ class LlmRouterPage extends HTMLElement {
     // Azure needs an api-version and speaks in deployment names, so the labels,
     // hints and placeholders around it change with the endpoint type. On a new
     // provider this is the initial state; #onChange re-renders it on switch.
-    const isAzure = (c?.kind || this.#customKind) === 'azure-openai';
+    const currentKind = c?.kind || this.#customKind;
+    const isAzure = currentKind === 'azure-openai';
+    const isBedrock = currentKind === 'bedrock-converse';
+    const basePlaceholder = isBedrock
+      ? 'https://bedrock-runtime.us-west-2.amazonaws.com'
+      : isAzure ? 'https://my-resource.openai.azure.com' : 'https://gateway.internal/v1';
+    const baseHint = isBedrock
+      ? 'Your Bedrock Runtime endpoint. Models are discovered automatically from your account.'
+      : isAzure
+        ? 'Your Azure OpenAI resource URL — the platform appends /openai/deployments/… itself.'
+        : 'OpenAI-compatible base URL (the part before /chat/completions).';
+    const keyHint = isBedrock
+      ? 'Bedrock API key (starts with ABSK). Stored encrypted.'
+      : 'Stored encrypted; used to call the endpoint.';
+    const kindHint = isBedrock
+      ? 'Connects to all Bedrock models including Claude, GPT, and Grok via the Converse API.'
+      : isAzure
+        ? 'Azure routes by deployment name and authenticates differently, so it needs its own setting.'
+        : 'Any endpoint that speaks the OpenAI chat completions format.';
     return `
       <div class="form-head">
         <app-button class="back-btn" variant="tertiary" icon-only size="sm"
@@ -218,25 +237,23 @@ class LlmRouterPage extends HTMLElement {
         <app-input id="cp-display" name="display_name" label="Name"
           placeholder="e.g. Internal gateway" value="${escAttr(d?.display_name ?? c?.display_name ?? '')}" required></app-input>
         <app-select id="cp-kind" name="kind" label="Endpoint type"
-          options='[{"value":"openai","label":"OpenAI-compatible"},{"value":"azure-openai","label":"Azure OpenAI"}]'
-          value="${escAttr(c?.kind || this.#customKind)}"
-          hint="Azure routes by deployment name and authenticates differently, so it needs its own setting."
+          options='[{"value":"openai","label":"OpenAI-compatible"},{"value":"azure-openai","label":"Azure OpenAI"},{"value":"bedrock-converse","label":"AWS Bedrock"}]'
+          value="${escAttr(currentKind)}"
+          hint="${kindHint}"
           ${isEdit ? 'disabled' : ''}></app-select>
         <app-input id="cp-base" name="base_url" label="Base URL"
-          placeholder="${isAzure ? 'https://my-resource.openai.azure.com' : 'https://gateway.internal/v1'}"
+          placeholder="${basePlaceholder}"
           value="${escAttr(d?.base_url ?? c?.base_url ?? '')}"
-          hint="${isAzure
-            ? 'Your Azure OpenAI resource URL — the platform appends /openai/deployments/… itself.'
-            : 'OpenAI-compatible base URL (the part before /chat/completions).'}" required></app-input>
+          hint="${baseHint}" required></app-input>
         <div id="cp-api-version-field" ${isAzure ? '' : 'hidden'}>
           <app-input id="cp-api-version" name="api_version" label="API version"
             placeholder="e.g. 2024-10-21" value="${escAttr(d?.api_version ?? c?.api_version ?? '')}"
             hint="Azure requires an api-version on every call. Use one your deployments support."></app-input>
         </div>
         <app-input id="cp-key" name="api_key" type="password" reveal
-          label="API key" placeholder="${isEdit ? 'Leave blank to keep current key' : 'Paste the API key'}"
+          label="API key" placeholder="${isEdit ? 'Leave blank to keep current key' : isBedrock ? 'Paste the Bedrock API key' : 'Paste the API key'}"
           value="${escAttr(d?.api_key ?? '')}"
-          autocomplete="off" hint="Stored encrypted; used to call the endpoint."
+          autocomplete="off" hint="${keyHint}"
           ${isEdit ? '' : 'required'}></app-input>
         <div id="test-result" hidden></div>
         <app-alert id="custom-form-alert" variant="destructive" hidden></app-alert>
