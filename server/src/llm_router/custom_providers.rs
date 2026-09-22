@@ -310,9 +310,7 @@ async fn fetch_model_list(
             .map(|arr| {
                 arr.iter()
                     .filter(|m| {
-                        let active = m
-                            .pointer("/modelLifecycle/status")
-                            .and_then(|s| s.as_str())
+                        let active = m.pointer("/modelLifecycle/status").and_then(|s| s.as_str())
                             == Some("ACTIVE");
                         let converse_sync = m
                             .pointer("/inferenceAPIsSupported/converse/sync")
@@ -417,7 +415,11 @@ async fn probe_chat_converse(
         "inferenceConfig": { "maxTokens": 20 }
     });
 
-    let url = format!("{}/model/{}/converse", base_url.trim_end_matches('/'), model_id);
+    let url = format!(
+        "{}/model/{}/converse",
+        base_url.trim_end_matches('/'),
+        model_id
+    );
     let resp = http
         .post(&url)
         .bearer_auth(api_key)

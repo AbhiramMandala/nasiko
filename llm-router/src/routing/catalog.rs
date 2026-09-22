@@ -226,9 +226,7 @@ fn parse_bedrock_foundation_models(body: &serde_json::Value) -> HashSet<String> 
             arr.iter()
                 .filter(|m| {
                     // Only ACTIVE models.
-                    let active = m
-                        .pointer("/modelLifecycle/status")
-                        .and_then(|s| s.as_str())
+                    let active = m.pointer("/modelLifecycle/status").and_then(|s| s.as_str())
                         == Some("ACTIVE");
                     // Only models that support the Converse API.
                     let converse_sync = m

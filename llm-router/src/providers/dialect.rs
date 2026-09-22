@@ -197,7 +197,8 @@ pub fn bedrock_control_plane_url(runtime_base: &str) -> String {
 /// `https://bedrock-runtime.us-west-2.amazonaws.com` → `us-west-2`.
 pub fn bedrock_region(base: &str) -> Option<&str> {
     let host = base.split("//").nth(1)?.split('/').next()?;
-    host.strip_prefix("bedrock-runtime.")?.strip_suffix(".amazonaws.com")
+    host.strip_prefix("bedrock-runtime.")?
+        .strip_suffix(".amazonaws.com")
 }
 
 /// Map an AWS region to the inference-profile prefix. INFERENCE_PROFILE models
@@ -323,18 +324,27 @@ mod tests {
         );
         assert_eq!(azure().kind(), KIND_AZURE_OPENAI);
         assert_eq!(ProviderDialect::OpenAi.kind(), KIND_OPENAI);
-        assert_eq!(ProviderDialect::BedrockConverse.kind(), KIND_BEDROCK_CONVERSE);
+        assert_eq!(
+            ProviderDialect::BedrockConverse.kind(),
+            KIND_BEDROCK_CONVERSE
+        );
     }
 
     #[test]
     fn bedrock_converse_urls_put_model_in_path() {
         let d = ProviderDialect::BedrockConverse;
         assert_eq!(
-            d.chat_url("https://bedrock-runtime.us-west-2.amazonaws.com", "us.openai.gpt-6-astra"),
+            d.chat_url(
+                "https://bedrock-runtime.us-west-2.amazonaws.com",
+                "us.openai.gpt-6-astra"
+            ),
             "https://bedrock-runtime.us-west-2.amazonaws.com/model/us.openai.gpt-6-astra/converse"
         );
         assert_eq!(
-            d.chat_stream_url("https://bedrock-runtime.us-west-2.amazonaws.com", "deepseek.v3.2"),
+            d.chat_stream_url(
+                "https://bedrock-runtime.us-west-2.amazonaws.com",
+                "deepseek.v3.2"
+            ),
             "https://bedrock-runtime.us-west-2.amazonaws.com/model/deepseek.v3.2/converse-stream"
         );
     }

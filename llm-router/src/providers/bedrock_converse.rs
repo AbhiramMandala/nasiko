@@ -769,8 +769,7 @@ fn decode_event_stream_frame(buf: &mut BytesMut) -> Option<(String, String)> {
                 if pos + val_len > headers_bytes.len() {
                     break;
                 }
-                let val =
-                    std::str::from_utf8(&headers_bytes[pos..pos + val_len]).unwrap_or("");
+                let val = std::str::from_utf8(&headers_bytes[pos..pos + val_len]).unwrap_or("");
                 pos += val_len;
                 if name == ":event-type" {
                     event_type = val.to_string();
@@ -854,9 +853,13 @@ mod tests {
         assert_eq!(body["inferenceConfig"]["maxTokens"], 2000);
         assert_eq!(body["inferenceConfig"]["temperature"], 0.7);
         // Tool config.
-        assert_eq!(body["toolConfig"]["tools"][0]["toolSpec"]["name"], "translate");
         assert_eq!(
-            body["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"]["json"]["properties"]["text"]["type"],
+            body["toolConfig"]["tools"][0]["toolSpec"]["name"],
+            "translate"
+        );
+        assert_eq!(
+            body["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"]["json"]["properties"]["text"]
+                ["type"],
             "string"
         );
         assert_eq!(body["toolConfig"]["toolChoice"], json!({ "auto": {} }));
@@ -884,7 +887,10 @@ mod tests {
         // Tool result as user turn with toolResult.
         assert_eq!(msgs[2]["role"], "user");
         assert_eq!(msgs[2]["content"][0]["toolResult"]["toolUseId"], "tc_1");
-        assert_eq!(msgs[2]["content"][0]["toolResult"]["content"][0]["text"], "found it");
+        assert_eq!(
+            msgs[2]["content"][0]["toolResult"]["content"][0]["text"],
+            "found it"
+        );
     }
 
     #[test]
@@ -901,10 +907,7 @@ mod tests {
         });
         let resp = from_converse_response(&converse, "deepseek.v3.2").unwrap();
         assert_eq!(resp.model, "deepseek.v3.2");
-        assert_eq!(
-            resp.choices[0].message.text().as_deref(),
-            Some("Hello!")
-        );
+        assert_eq!(resp.choices[0].message.text().as_deref(), Some("Hello!"));
         assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
         let usage = resp.usage.unwrap();
         assert_eq!(usage.prompt_tokens, Some(8));
@@ -958,10 +961,7 @@ mod tests {
             converse_model_id("us.openai.gpt-6-astra", base),
             "us.openai.gpt-6-astra"
         );
-        assert_eq!(
-            converse_model_id("deepseek.v3.2", base),
-            "deepseek.v3.2"
-        );
+        assert_eq!(converse_model_id("deepseek.v3.2", base), "deepseek.v3.2");
     }
 
     #[test]
