@@ -38,10 +38,6 @@ pub fn router(
         )
         .route("/maf/generate", post(generate_maf))
         .route("/maf/workflow/{id}/run", post(run_workflow))
-        // Promotion is the draft's deferred creation cost: it runs the same
-        // decomposer + per-step routing `from-instruction` does, so it belongs
-        // to the same budget.
-        .route("/maf/workflow/{id}/promote", post(promote_draft))
         .layer(axum::middleware::from_fn_with_state(
             run_limiter,
             crate::rate_limit::limit_by_user,
@@ -60,6 +56,11 @@ pub fn router(
         // it sits in the cheap tier and can be called on every keystroke pause.
         .route("/maf/workflow/draft", post(save_draft))
         .route("/maf/workflow/drafts", get(list_drafts))
+        // Promotion is a single-row status update: the steps and their agents
+        // were resolved once, when `from-instruction` created the draft, and
+        // promotion never re-derives them. That makes it as cheap as any other
+        // CRUD write, so it shares their budget rather than the LLM tier's.
+        .route("/maf/workflow/{id}/promote", post(promote_draft))
         .route(
             "/maf/workflow/{id}",
             get(get_maf).put(update_maf).delete(delete_maf),
@@ -226,54 +227,6 @@ struct ExecResponse {
     step_results: Option<serde_json::Value>,
     error: Option<String>,
     created_at: DateTime<Utc>,
-}
-
-/// `GET /maf/workflow/result/{exec_id}` and `GET /maf/execution/{id}` only — additive on top of
-/// `ExecResponse` (`#[serde(flatten)]` keeps every existing field byte-identical). `hitl` is how
-/// the frontend recovers a paused step's `hitl_requests.id` directly from the execution it's
-/// already polling — see `hitl_rows_for_execution` — so it never has to call
-/// `GET /api/hitl/pending` to correlate a MAF pause. Not added to `ExecResponse` itself: doing so
-/// would also touch `list_executions`/`list_all_executions`, which return many rows at once and
-/// have no comparable "resume this one" use case to justify an extra query per row.
-#[derive(Serialize)]
-struct ExecWithHitlResponse {
-    #[serde(flatten)]
-    exec: ExecResponse,
-    /// Every HITL tied to this execution, pending or already resolved — oldest first, same shape
-    /// `GET /api/hitl/{id}` returns. At most one entry is ever `status: "pending"` at a time
-    /// (MAF steps run strictly sequentially); the rest are historical audit records.
-    hitl: Vec<serde_json::Value>,
-}
-
-/// Shared by `get_result`/`get_execution` — fetches this execution's HITL rows scoped by the
-/// SAME `user_id` the caller already validated against `maf_executions.user_id` (both call sites
-/// check `row.user_id == user_id` before reaching here), so a HITL row can never leak across
-/// owners even if `hitl_requests.owner_user_id` and `maf_executions.user_id` were ever to drift.
-/// A lookup failure surfaces as a real 500 (matching `chat/routes.rs::list_messages`'s own HITL
-/// lookup) rather than silently degrading to an empty array — an execution genuinely
-/// `awaiting_human` must never be misreported as having nothing pending.
-async fn hitl_rows_for_execution(
-    hitl_store: &std::sync::Arc<dyn nasiko_hitl::HitlStore>,
-    execution_id: Uuid,
-    owner_user_id: Uuid,
-) -> Result<Vec<serde_json::Value>, nasiko_hitl::HitlError> {
-    let rows = hitl_store
-        .list_for_maf_execution(execution_id, owner_user_id)
-        .await?;
-    // Each row goes through `resolve_display_row` before `to_response` — a no-op for the
-    // ordinary case, but substitutes the real row's id/kind/question when this row is a
-    // `maf`-origin mirror of a real `mcp_tool` block (a step's underlying agent call mapping an
-    // MCP tool-approval gate onto its own pause, the same dual-origin situation direct-chat's
-    // `chat/routes.rs::list_messages` already accounts for). The real `mcp_tool` row itself is
-    // never returned by `list_for_maf_execution` at all (it has no `maf_execution_id`), so
-    // without this the frontend would only ever see the mirror's own generic placeholder.
-    let mut hitl = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let display =
-            nasiko_hitl::resolve_display_row(hitl_store.as_ref(), row, owner_user_id).await;
-        hitl.push(crate::router::hitl::to_response(&display));
-    }
-    Ok(hitl)
 }
 
 fn maf_row_to_response(row: MafRow) -> MafResponse {
@@ -806,6 +759,9 @@ async fn create_maf(
         None => return unauthorized(),
     };
 
+    // A caller that supplies its own steps has already decided what the
+    // workflow is, so there is nothing left to review — this creates a live
+    // workflow, not a draft.
     create_maf_from_steps(
         &state,
         &claims,
@@ -813,7 +769,7 @@ async fn create_maf(
         req.name,
         req.description,
         req.steps,
-        None,
+        false,
     )
     .await
 }
@@ -824,12 +780,13 @@ async fn create_maf(
 /// persists the resulting `MafDefinition` as a new `mafs` row.
 /// Resolves each step to an agent and persists the workflow.
 ///
-/// `existing` selects the destination row: `None` inserts a new workflow,
-/// `Some(id)` overwrites that row and flips it to `active`. The second form is
-/// how a draft is promoted — the draft keeps its id, so any link or reference
-/// to it stays valid once it becomes a real workflow, and a promotion that is
-/// retried updates the same row instead of leaving duplicates behind.
-#[allow(clippy::too_many_arguments)]
+/// `as_draft` decides the status the new row is born with. `false` inserts a
+/// live workflow, which is what a caller supplying its own steps gets. `true`
+/// inserts a `draft` — the row carries its fully resolved steps and agents from
+/// the moment it exists, and all promotion has left to do is flip the status.
+/// That is the whole point of resolving here: the plan the user reviews on the
+/// draft is the plan that runs, rather than one re-derived later from the same
+/// sentence and free to come out different.
 async fn create_maf_from_steps(
     state: &AppState,
     claims: &Claims,
@@ -837,7 +794,7 @@ async fn create_maf_from_steps(
     name: Option<String>,
     description: Option<String>,
     steps: Vec<CreateStepRequest>,
-    existing: Option<Uuid>,
+    as_draft: bool,
 ) -> axum::response::Response {
     if steps.is_empty() {
         return bad_request("steps must not be empty");
@@ -975,18 +932,14 @@ async fn create_maf_from_steps(
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    // A promotion overwrites the draft row in place; a plain create inserts.
-    // `status` is set explicitly on the update path because the row being
-    // overwritten is a draft and this is the moment it stops being one.
-    let sql = if existing.is_some() {
-        r#"UPDATE mafs
-              SET name = $2, description = $3, maf_json = $4::jsonb,
-                  status = 'active', updated_at = now()
-            WHERE id = $5 AND user_id = $1 AND status = 'draft'
-        RETURNING id, user_id, name, description, maf_json::text AS maf_json,
-                  status, created_at, updated_at,
-                  (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = mafs.id)
-                      AS execution_count"#
+    // Both forms insert; only the status the row starts in differs. `drafted_at`
+    // is set on the draft path because it is what the drafts list selects on,
+    // and it is never cleared — a promoted draft stays visible there.
+    let sql = if as_draft {
+        r#"INSERT INTO mafs (user_id, name, description, maf_json, status, drafted_at)
+           VALUES ($1, $2, $3, $4::jsonb, 'draft', now())
+           RETURNING id, user_id, name, description, maf_json::text AS maf_json,
+                     status, created_at, updated_at, 0::bigint AS execution_count"#
     } else {
         r#"INSERT INTO mafs (user_id, name, description, maf_json)
            VALUES ($1, $2, $3, $4::jsonb)
@@ -994,29 +947,24 @@ async fn create_maf_from_steps(
                      status, created_at, updated_at, 0::bigint AS execution_count"#
     };
 
-    let mut query = sqlx::query_as::<_, MafRow>(sql)
+    let row = sqlx::query_as::<_, MafRow>(sql)
         .bind(user_id)
         .bind(&name)
         .bind(description)
-        .bind(&maf_json_str);
-    if let Some(id) = existing {
-        query = query.bind(id);
-    }
-    let row = query.fetch_optional(&state.db).await;
+        .bind(&maf_json_str)
+        .fetch_one(&state.db)
+        .await;
 
     match row {
-        Ok(Some(r)) => {
-            tracing::info!(maf_id = %r.id, name = %r.name, "maf create: workflow persisted");
-            ok_json(
-                StatusCode::CREATED,
-                maf_row_to_response(r),
-                "Workflow created successfully",
-            )
+        Ok(r) => {
+            tracing::info!(maf_id = %r.id, name = %r.name, status = %r.status, "maf create: workflow persisted");
+            let message = if as_draft {
+                "Draft created successfully"
+            } else {
+                "Workflow created successfully"
+            };
+            ok_json(StatusCode::CREATED, maf_row_to_response(r), message)
         }
-        // Only reachable on the promotion path: the `WHERE` matched nothing, so
-        // the draft was deleted, is owned by someone else, or was already
-        // promoted by a concurrent request. None of those is a server fault.
-        Ok(None) => not_found("draft"),
         Err(e) => internal_err(e),
     }
 }
@@ -1031,9 +979,14 @@ struct FromInstructionRequest {
 // ─── 2b. POST /maf/workflow/from-instruction ───────────────────────────────
 //
 // Splits one compound instruction into atomic sub-queries via the external
-// decomposer service (MODEL_API_URL/MODEL_APIKEY), then creates the workflow
-// exactly like `create_maf` — same routing-engine auto-assign per step, same
-// persisted `mafs.maf_json` shape. No LLM planner involved.
+// decomposer service (MODEL_API_URL/MODEL_APIKEY), then resolves each one to an
+// agent exactly like `create_maf` — same routing-engine auto-assign per step,
+// same persisted `mafs.maf_json` shape. No LLM planner involved.
+//
+// The row it writes is a **draft**: decomposing a sentence is a guess at what
+// the user meant, so the steps land somewhere they can be reviewed before they
+// can run. Everything expensive happens here, once. Promotion is then a status
+// update and nothing more, and what the user approved is what executes.
 
 async fn create_maf_from_instruction(
     State(state): State<AppState>,
@@ -1061,7 +1014,7 @@ async fn create_maf_from_instruction(
         None,
         Some(req.instruction),
         steps,
-        None,
+        true,
     )
     .await
 }
@@ -1069,11 +1022,9 @@ async fn create_maf_from_instruction(
 /// Splits one compound instruction into per-step requests via the decomposer
 /// service, each left unassigned so the routing engine picks its agent.
 ///
-/// Shared by `from-instruction` and draft promotion: both turn exactly one
-/// sentence into exactly one step list, and the error responses they owe the
-/// caller (503 when the service is unconfigured or unreachable) are identical.
 /// The `Err` arm carries the finished response rather than an error type
-/// because every failure here is already a decided HTTP outcome.
+/// because every failure here is already a decided HTTP outcome — a 503 when
+/// the service is unconfigured or unreachable.
 async fn decompose_into_steps(
     state: &AppState,
     instruction: &str,
@@ -1143,18 +1094,29 @@ fn derive_workflow_name(text: &str) -> String {
 
 // ─── Drafts ────────────────────────────────────────────────────────────────
 //
-// A draft is an instruction the user has typed but not yet committed to. It is
-// a `mafs` row with `status = 'draft'` and an empty step list: saving one makes
-// no decomposer call, runs no routing, and bills nothing — it stores the
-// sentence so that closing the tab does not lose it.
+// A draft is a `mafs` row with `status = 'draft'`. The status is a label for
+// where the user is with it, not a restriction on what the row can do: a draft
+// holds the same steps and the same agents a deployed workflow does, and is
+// edited (`update_maf`) and run (`run_workflow`) through exactly the same
+// endpoints. Promotion is the user saying "this one is ready", and flips the
+// status without touching anything else.
 //
-// All the real work is deferred to promotion, which runs the same path
-// `from-instruction` does and overwrites the draft row in place, keeping its
-// id. So an abandoned draft only ever costs a row, and a resumed one picks up
-// from exactly the sentence the user left behind.
+// There are two kinds, differing only in whether their steps exist yet.
 //
-// Drafts are invisible to `list_mafs` (it filters `status = 'active'`), so a
-// half-written idea never appears among real workflows.
+// `from-instruction` writes the useful kind: a decomposed instruction with an
+// agent resolved for every step. It is runnable the moment it is written.
+//
+// `save_draft` below writes the other kind — the sentence a user has typed but
+// not yet decomposed, with an empty step list. It makes no decomposer call,
+// runs no routing and bills nothing, so it can be called on every keystroke
+// pause and an abandoned draft only ever costs a row. It is a text box that
+// survives closing the tab. Running or promoting one is refused for the same
+// reason in both places: with no steps it would report success having done
+// nothing. Sending its instruction to `from-instruction` gives it steps.
+//
+// Drafts of either kind are invisible to `list_mafs` (it filters
+// `status = 'active'`), so a half-written idea never appears among deployed
+// workflows. Both appear in `list_drafts`, which selects on `drafted_at`.
 
 #[derive(Deserialize)]
 struct SaveDraftRequest {
@@ -1267,8 +1229,18 @@ async fn list_drafts(
 
 // ─── 2e. POST /maf/workflow/{id}/promote ───────────────────────────────────
 //
-// Turns a draft into a runnable workflow: decomposes the stored instruction,
-// routes an agent per step, and overwrites the draft row in place.
+// Deploys a draft by flipping its status, and nothing else. It does not make
+// the workflow runnable — a draft with steps already was — it records that the
+// user is done reviewing, which is what moves the row out of the drafts view
+// and into `list_mafs`.
+//
+// The steps and their agents were resolved when `from-instruction` created the
+// draft and are left exactly as they were reviewed: promoting does not
+// decompose the instruction again, does not re-run routing, and cannot hand
+// back a different plan than the one that was approved.
+//
+// The row keeps its id, so any link to the draft stays valid, and a promotion
+// retried after a dropped response is a no-op rather than a duplicate.
 
 async fn promote_draft(
     State(state): State<AppState>,
@@ -1279,6 +1251,9 @@ async fn promote_draft(
         return unauthorized();
     };
 
+    // Read first so each way this can fail gets its own answer. The UPDATE
+    // below folds "gone", "someone else's" and "not a draft" into one empty
+    // result, and a caller that sees only a 404 can't tell which happened.
     let draft = match fetch_maf(&state.db, id).await {
         Ok(Some(r)) if r.user_id == user_id => r,
         Ok(Some(_)) => return forbidden("not owned by caller"),
@@ -1293,28 +1268,50 @@ async fn promote_draft(
         ));
     }
 
-    // The instruction lives in `description`, which is where every creation
-    // path stores the sentence a workflow came from.
-    let instruction = draft.description.unwrap_or_default();
-    if instruction.trim().is_empty() {
-        return bad_request("draft has no instruction to promote");
+    // A draft saved by `POST /maf/workflow/draft` is just the sentence a user
+    // typed — it has no steps, and promotion no longer supplies any. Left
+    // through, it would become an active workflow whose runs iterate over an
+    // empty step list: no error anywhere, just executions that quietly produce
+    // nothing. Refusing here names the call that gives the draft its steps.
+    let has_steps = serde_json::from_str::<MafDefinition>(&draft.maf_json)
+        .map(|def| !def.steps.is_empty())
+        .unwrap_or(false);
+    if !has_steps {
+        return bad_request(
+            "this draft has no steps to run — create it with \
+             POST /api/maf/workflow/from-instruction, which decomposes the \
+             instruction and assigns an agent to each step",
+        );
     }
 
-    let steps = match decompose_into_steps(&state, &instruction).await {
-        Ok(steps) => steps,
-        Err(response) => return response,
-    };
-
-    create_maf_from_steps(
-        &state,
-        &claims,
-        user_id,
-        None,
-        Some(instruction),
-        steps,
-        Some(id),
+    let row = sqlx::query_as::<_, MafRow>(
+        r#"UPDATE mafs
+              SET status = 'active', updated_at = now()
+            WHERE id = $1 AND user_id = $2 AND status = 'draft'
+        RETURNING id, user_id, name, description, maf_json::text AS maf_json,
+                  status, created_at, updated_at,
+                  (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = mafs.id)
+                      AS execution_count"#,
     )
-    .await
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match row {
+        Ok(Some(r)) => {
+            tracing::info!(maf_id = %r.id, "maf promote: draft is now active");
+            ok_json(
+                StatusCode::OK,
+                maf_row_to_response(r),
+                "Draft promoted successfully",
+            )
+        }
+        // The row changed between the read above and this write — a concurrent
+        // promotion or delete. Neither is a server fault.
+        Ok(None) => not_found("draft"),
+        Err(e) => internal_err(e),
+    }
 }
 
 // ─── 3. GET /maf/workflow/{id} ─────────────────────────────────────────────
@@ -1342,6 +1339,12 @@ async fn get_maf(
 }
 
 // ─── 4. PUT /maf/workflow/{id} ─────────────────────────────────────────────
+//
+// Edits a draft as readily as a deployed workflow. A draft is the row a user is
+// still working on, so refusing to edit it would leave the one state that most
+// needs editing as the only one that cannot be — and the way to fix a step the
+// decomposer got wrong would be to deploy the workflow first. Only a deleted
+// row is off limits.
 
 async fn update_maf(
     State(state): State<AppState>,
@@ -1441,7 +1444,7 @@ async fn update_maf(
 
             resolved.push(MafStep {
                 step_id: Uuid::new_v4(),
-                step_index: idx as i32,
+                step_index: step.step_index,
                 agent_id,
                 agent_name: name,
                 agent_endpoint: endpoint,
@@ -1475,7 +1478,7 @@ async fn update_maf(
     let row = sqlx::query_as::<_, MafRow>(
         r#"UPDATE mafs
            SET name = $1, description = $2, maf_json = $3::jsonb, updated_at = now()
-           WHERE id = $4 AND status = 'active'
+           WHERE id = $4 AND status <> 'deleted'
            RETURNING id, user_id, name, description, maf_json::text AS maf_json,
                      status, created_at, updated_at,
                      (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = mafs.id) AS execution_count"#,
@@ -1551,6 +1554,16 @@ struct RunWorkflowRequest {
 }
 
 // ─── 6. POST /maf/workflow/{id}/run ───────────────────────────────────────
+//
+// Status is not a gate here. A draft and a deployed workflow are the same row
+// holding the same steps and the same agents; `status` records which one the
+// user has blessed, not whether it is capable of running. Refusing to run a
+// draft would mean refusing to run a workflow that is ready — and would make
+// trying one out impossible without first committing to it, which is backwards.
+//
+// What a run does require is steps to run. That is checked below, on the
+// definition itself rather than on the status, so it catches every row that
+// cannot produce work regardless of how it got that way.
 
 async fn run_workflow(
     State(state): State<AppState>,
@@ -1581,17 +1594,6 @@ async fn run_workflow(
         Err(e) => return internal_err(e),
     };
 
-    // A draft is a saved instruction with no steps yet. Enqueuing one would
-    // create an execution that can only fail in the worker, several seconds
-    // later and out of sight of this caller — so it is refused here, naming the
-    // call that makes it runnable.
-    if maf.status == "draft" {
-        return bad_request(
-            "this workflow is still a draft — promote it first with \
-             POST /api/maf/workflow/{id}/promote",
-        );
-    }
-
     // Re-check agent access at run time, not just at create/update time.
     //
     // `create_maf`/`update_maf` already gate every step's agent, but those
@@ -1608,6 +1610,20 @@ async fn run_workflow(
     // each check is a DB round trip.
     match serde_json::from_str::<MafDefinition>(&maf.maf_json) {
         Ok(def) => {
+            // Enqueuing a stepless workflow would create an execution that
+            // iterates nothing and reports success several seconds later, out
+            // of sight of this caller. The rows this catches are the ones
+            // `POST /maf/workflow/draft` writes — a typed sentence that has not
+            // been decomposed yet — so the message names what turns one into a
+            // workflow with steps.
+            if def.steps.is_empty() {
+                return bad_request(
+                    "this workflow has no steps to run — send its instruction to \
+                     POST /api/maf/workflow/from-instruction, which decomposes it \
+                     and assigns an agent to each step",
+                );
+            }
+
             let mut checked: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
             for step in &def.steps {
                 if !checked.insert(step.agent_id) {
@@ -1632,19 +1648,15 @@ async fn run_workflow(
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
 
-    // Create execution record. `maf_json` durably captures the exact snapshot this run executes
-    // against — needed so a HITL resume can carry the SAME snapshot forward without re-fetching
-    // the mutable `mafs.maf_json`, which may have changed since. The in-flight Redis message below
-    // carries the identical string for the worker's normal, non-resume path — unchanged.
+    // Create execution record
     let (exec_id, exec_number): (Uuid, i64) = match sqlx::query_as(
-        r#"INSERT INTO maf_executions (maf_id, user_id, status, max_attempts, maf_json)
-           VALUES ($1, $2, 'pending', $3, $4::jsonb)
+        r#"INSERT INTO maf_executions (maf_id, user_id, status, max_attempts)
+           VALUES ($1, $2, 'pending', $3)
            RETURNING id, execution_number"#,
     )
     .bind(id)
     .bind(user_id)
     .bind(max_attempts)
-    .bind(&maf.maf_json)
     .fetch_one(&state.db)
     .await
     {
@@ -1659,7 +1671,7 @@ async fn run_workflow(
     };
 
     let mut xadd = redis::cmd("XADD");
-    xadd.arg(nasiko_orchestrator::maf::STREAM_KEY)
+    xadd.arg("nasiko:maf:execute")
         .arg("*")
         .arg("execution_id")
         .arg(exec_id.to_string())
@@ -1717,17 +1729,11 @@ async fn get_result(
     };
 
     match fetch_exec(&state.db, exec_id).await {
-        Ok(Some(row)) if row.user_id == user_id => {
-            let exec = exec_row_to_response(row);
-            match hitl_rows_for_execution(&state.hitl_store, exec_id, user_id).await {
-                Ok(hitl) => ok_json(
-                    StatusCode::OK,
-                    ExecWithHitlResponse { exec, hitl },
-                    "Execution result retrieved successfully",
-                ),
-                Err(e) => internal_err(e),
-            }
-        }
+        Ok(Some(row)) if row.user_id == user_id => ok_json(
+            StatusCode::OK,
+            exec_row_to_response(row),
+            "Execution result retrieved successfully",
+        ),
         Ok(Some(_)) => forbidden("not owned by caller"),
         Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),
@@ -1848,17 +1854,11 @@ async fn get_execution(
     };
 
     match fetch_exec(&state.db, id).await {
-        Ok(Some(row)) if row.user_id == user_id => {
-            let exec = exec_row_to_response(row);
-            match hitl_rows_for_execution(&state.hitl_store, id, user_id).await {
-                Ok(hitl) => ok_json(
-                    StatusCode::OK,
-                    ExecWithHitlResponse { exec, hitl },
-                    "Execution retrieved successfully",
-                ),
-                Err(e) => internal_err(e),
-            }
-        }
+        Ok(Some(row)) if row.user_id == user_id => ok_json(
+            StatusCode::OK,
+            exec_row_to_response(row),
+            "Execution retrieved successfully",
+        ),
         Ok(Some(_)) => forbidden("not owned by caller"),
         Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),
