@@ -287,6 +287,9 @@ fn external_turn(event: &CodingAgentEventV1, session_id: &str) -> ExternalTurn {
         assistant_usage: Some(MessageUsage {
             input_tokens: Some(input_tokens.min(i32::MAX as u64) as i32),
             output_tokens: Some(output_tokens.min(i32::MAX as u64) as i32),
+            // The coding-agent OTLP feed reports no cache split.
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
             model,
             duration_ms: Some(duration_ms.min(i32::MAX as i64) as i32),
             cost_usd: None,
