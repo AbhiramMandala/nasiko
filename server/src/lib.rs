@@ -27,7 +27,6 @@ pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
 pub mod openapi;
-pub mod orchestrator_policy;
 pub mod pool;
 pub mod prompt_context;
 pub mod rate_limit;

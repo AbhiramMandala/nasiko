@@ -30,11 +30,6 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
-    /// Where both orchestrators read the operator's policy from — the chat-path
-    /// delegation policy and the routing engine's bar and prompt text. OSS wires
-    /// `NoOrchestratorPolicy`, which imposes nothing; the EE composition root
-    /// replaces it, the same way it replaces `routing_engine`.
-    pub orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource>,
     /// Supplemental per-agent prompt context (e.g. admin-authored knowledge) added before an
     /// agent runs. OSS default is a no-op; the EE composition root installs the real
     /// implementation through this cell (`SwappablePromptContext::install`, not a plain
@@ -146,8 +141,6 @@ impl AppState {
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
             nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone()),
         );
-        let orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource> =
-            Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
         let prompt_context = Arc::new(SwappablePromptContext::new(Arc::new(
             crate::prompt_context::NoopPromptContextProvider,
         )));
@@ -250,7 +243,6 @@ impl AppState {
             genai_metrics,
             config: Arc::new(config),
             routing_engine,
-            orchestrator_policy,
             prompt_context,
             agent_deletion_hook,
             observability,
