@@ -12,9 +12,8 @@
  */
 
 import { createApp } from '/common/core/create-app.js';
-import { extensionChain } from '/common/core/extension-chain.js';
+import { resolveOptional } from '/common/core/data-sources.js';
 import { dismissSplash } from '/common/features/app-splash.js';
-import { mountWeaveDock } from '/common/features/weave-dock/weave-dock.js';
 
 // ── Base route table ────────────────────────────────────────────────────
 // Each route maps a clean URL to a lazy-loaded page component.
@@ -52,43 +51,35 @@ const BASE_ROUTES = [
   { path: '/settings',        tag: 'settings-page',            module: '/common/pages/settings-page.js',            title: 'Nasiko — Settings' },
   { path: '/setup-cli',       tag: 'setup-cli-page',           module: '/common/pages/setup-cli-page.js',           title: 'Nasiko — Set up CLI' },
   { path: '/resources',       tag: 'resources-page',           module: '/common/pages/resources-page.js',           title: 'Nasiko — Resources' },
-  { path: '/weave',           tag: 'weave-page',               module: '/common/pages/weave-page.js',               title: 'Nasiko — Weave' },
   { path: '/design-system',   tag: 'design-system-page',       module: '/common/pages/design-system-page.js',       title: 'Nasiko — Design System' },
-  // Weave's conversational output. `/view` is one generated screen (the page
-  // sets its own title from the view); `/custom-views` is the shelf of the ones
-  // the user saved. `/weave` above is untouched — it is the surface-runtime
-  // workbench, not the chat.
+  // Weave. These three are EE features — the surface stream and the saved-view
+  // store are mounted by ee/server only — but they stay in BASE_ROUTES because
+  // gen-dsl-catalog.mjs parses this table into the allowlist of routes a
+  // generated surface may link to, and hashes it into `catalogVersion`. Moving
+  // them to /routes-ext.js drops /view and /custom-views out of that allowlist
+  // and moves the catalog version. Everything else that surfaced Weave on OSS
+  // — the nav item, the page shell, the dock — is gone; see nav-ext.js and
+  // routes-ext.js. Closing this last gap needs the allowlist to learn about
+  // editions, which is its own change.
+  { path: '/weave',           tag: 'weave-page',               module: '/common/pages/weave-page.js',               title: 'Nasiko — Weave' },
   { path: '/view',            tag: 'generated-view-page',      module: '/common/pages/generated-view-page.js',      title: 'Nasiko — View' },
   { path: '/custom-views',    tag: 'custom-views-page',        module: '/common/pages/custom-views-page.js',        title: 'Nasiko — Custom Views' },
 ];
 
-// ── Route extension chain (same pattern as nav-ext.js) ──────────────────
-// One link per overlay, base first, each with a no-op in ui/oss/ so every
-// specifier resolves on every surface. An overlay replaces only the file
-// carrying its own suffix, so a higher overlay can add routes without shadowing
-// a lower one's away — which a shared `routes-ext.js` name did (NAS-637).
-// Registry names are written out here rather than derived from the suffix, so
-// `routeExtensionEe` is greppable from both ends.
-// See common/core/extension-chain.js.
+// ── Route extension seam (same pattern as nav-ext.js) ───────────────────
+// On OSS, /routes-ext.js is a no-op. On EE, the asset overlay serves
+// ee/ui/web/routes-ext.js which registers additional routes (users,
+// departments, teams, access-control, etc.) via the data-sources registry.
 
-const ROUTE_LAYERS = [
-  ['/routes-ext.js',    'routeExtension'],   // base, this tree's own no-op
-  ['/routes-ext-ee.js', 'routeExtensionEe'], // the enterprise overlay
-  ['/routes-ext-mt.js', 'routeExtensionMt'], // the multi-tenant overlay
-];
-
-const routeChain = extensionChain(ROUTE_LAYERS, 'app');
-
-// create-app takes one table, so the layers are concatenated here, base first.
-// Note that `router.#findMatch` returns the FIRST pattern that matches, so on a
-// duplicate path the lower layer wins — the reverse of how the asset overlay
-// resolves a duplicate file. That is pre-existing (the base table is registered
-// before any extension), it is recorded here because it is the one thing about
-// this chain that does not read the way the overlay does: a layer overrides a
-// page by pointing its own route at a different PATH, never by re-declaring one.
+let extPromise;
 async function loadExtensionRoutes() {
-  const layers = await routeChain();
-  return { routes: () => layers.flatMap((ext) => ext.routes?.() ?? []) };
+  extPromise ??= import('/routes-ext.js')
+    .then(() => resolveOptional('routeExtension'))
+    .catch((err) => {
+      console.warn('[app] /routes-ext.js failed to load — using base routes', err);
+      return null;
+    });
+  return extPromise;
 }
 
 // ── Boot ────────────────────────────────────────────────────────────────
@@ -102,11 +93,19 @@ createApp({
   // A full page load: no app-header, and it does OAuth redirects.
   exclude: ['/login'],
   excludePrefix: ['/api/', '/v1/', '/v2/', '/auth/', '/common/', '/mcp/'],
-  onReady() {
-    // Weave's launcher + drawer. Mounted on <body>, outside the outlet, so a
-    // route swap — including the one the drawer itself triggers when it
-    // generates a view — never tears the conversation down.
-    mountWeaveDock();
+  async onReady() {
+    // The route extension gets the same seam for boot work that it has for
+    // routes: anything an edition mounts outside the outlet — a launcher, a
+    // drawer — belongs to whichever edition can actually serve it, not here.
+    // On OSS `/routes-ext.js` is a no-op and nothing mounts.
+    //
+    // `loadExtensionRoutes` is memoised, so this is the module createApp
+    // already resolved, not a second fetch.
+    try {
+      await (await loadExtensionRoutes())?.onReady?.();
+    } catch (err) {
+      console.warn('[app] route extension onReady() failed', err);
+    }
     // Everything is wired — drop the splash screen and reveal the app.
     dismissSplash();
   },

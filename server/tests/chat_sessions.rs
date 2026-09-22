@@ -1014,11 +1014,11 @@ async fn external_turn_rejects_partial_pair_without_repairing_it() {
     server.cleanup().await;
 }
 
-// ─── Weave dock sessions are hidden unless asked for ─────────────────────────
+// ─── An embedded surface's sessions are hidden unless asked for ─────────────
 
 #[tokio::test]
 #[serial]
-async fn list_sessions_excludes_weave_unless_requested() {
+async fn list_sessions_excludes_a_surface_unless_requested() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
@@ -1055,8 +1055,30 @@ async fn list_sessions_excludes_weave_unless_requested() {
     );
     assert_eq!(default_ids.len(), 1, "the plain session is still listed");
 
-    let weave_page = list_sessions(&server, uid, "?weave=true").await;
+    let weave_page = list_sessions(&server, uid, "?surface=weave").await;
     assert_eq!(ids(&weave_page), ["weave_abc123"]);
+
+    // A surface nobody has claimed is a valid request with nothing in it —
+    // not an error, and not a fall-through to the whole list.
+    let empty = list_sessions(&server, uid, "?surface=nosuch").await;
+    assert!(
+        ids(&empty).is_empty(),
+        "unclaimed surface must be empty: {empty}"
+    );
+
+    // The name is a slug or it is rejected, so no caller can reach the LIKE
+    // pattern with a wildcard of their own.
+    let bad = common::as_superuser(
+        server
+            .client
+            .get(server.url("/api/chat/sessions?surface=%25")),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(bad.status(), 400, "a non-slug surface is refused");
 
     server.cleanup().await;
 }

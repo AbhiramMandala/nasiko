@@ -14,15 +14,13 @@
  * that wasn't had silently drifted into a user-visible bug.
  *
  * Now both editions share this file, and edition-specific navigation lives in
- * the `/nav-ext*.js` chain, resolved through the same overlay: this tree holds
- * a documented no-op for every link and the enterprise overlay supplies the EE
- * tree. Nothing 404s, and there is exactly one copy of every data function.
+ * `/nav-ext.js`, resolved through the same overlay: `ui/oss/nav-ext.js` is a
+ * documented no-op, `ee/ui/web/nav-ext.js` supplies the EE tree. Nothing 404s,
+ * and there is exactly one copy of every data function.
  */
 
 import '/common/services/data-functions.js';
-import { call, registerAll } from '/common/core/data-sources.js';
-import { extensionChain } from '/common/core/extension-chain.js';
-import { ensureViews, hasSavedViews } from '/common/state/weave-views.js';
+import { call, registerAll, resolveOptional } from '/common/core/data-sources.js';
 
 // rail: true → shown as a rail module icon; everything else is reachable
 // through the module tree navs and the ⌘F nav search.
@@ -48,7 +46,6 @@ const BASE_ITEMS = () => [
   { title: "MCP gateway", url: "/mcp", icon: "server", rail: true, module: "mcp" },
   { title: "LLM router", url: "/llm-router", icon: "route", rail: true },
   { title: "TokenOps", url: "/tokenops", icon: "banknote", rail: true },
-  { title: "Weave", url: "/weave", icon: "sparkles", rail: true },
   { title: "Your Agents", url: "/your-agents", icon: "user", module: "agents" },
   { title: "Add Agent", url: "/add-agent", icon: "plus", module: "agents" },
   { title: "Set up CLI", url: "/setup-cli", icon: "terminal" },
@@ -60,12 +57,6 @@ const BASE_ITEMS = () => [
   { title: "Secrets", url: "/secrets", icon: "lock", module: "settings" },
   { title: "Settings", url: "/settings", icon: "settings", rail: true, module: "settings" },
 ];
-
-// Rail entry for the views Weave generated and the user chose to keep. Absent
-// until the first save, because a rail icon leading to an empty shelf is a
-// promise the product has not made yet — <app-header> re-reads the nav on
-// `nav-refresh`, which generated-view-page fires the moment one is saved.
-const CUSTOM_VIEWS_ITEM = { title: "Custom Views", url: "/custom-views", icon: "layers", rail: true };
 
 // In-card module tree navs (app-module-nav). Items are either page links
 // ({label, url}) or in-page sections ({label, section} → the page handles
@@ -208,74 +199,54 @@ const sessionItems = async ({
 };
 
 /**
- * The edition extension chain, loaded once.
+ * The edition extension, loaded once.
  *
- * One link per overlay, base first, each with a no-op in ui/oss/ so every
- * specifier resolves on every surface. An overlay replaces only the file
- * carrying its own suffix, so a higher overlay can add nav entries without
- * shadowing a lower one's away — which a shared `nav-ext.js` name did (NAS-637).
- * The hooks are still resolved through data-sources under a per-layer name, so
- * the seam keeps the DI contract and stays reachable from `__dataSources`; the
- * names are literals here rather than derived from the suffix so they can be
- * grepped from both ends. See common/core/extension-chain.js.
+ * The extension is delivered through the asset overlay (ui/oss/nav-ext.js
+ * is a no-op, ee/ui/web/nav-ext.js supplies the EE hooks) and resolved
+ * through the data-sources registry. The dynamic import triggers the extension
+ * module's side-effect registration; the actual contract is DI-based so the
+ * seam is testable and consistent with the rest of the architecture.
  *
- * @type {Array<[string, string]>}
+ * @type {Promise<{ context?: () => Promise<any>, items?: Function, moduleNav?: Function }>}
  */
-const NAV_LAYERS = [
-  ['/nav-ext.js',    'navExtension'],   // base, this tree's own no-op
-  ['/nav-ext-ee.js', 'navExtensionEe'], // the enterprise overlay
-  ['/nav-ext-mt.js', 'navExtensionMt'], // the multi-tenant overlay
-];
-
-const extensions = extensionChain(NAV_LAYERS, 'navigation');
+let extensionPromise;
+const extension = () => {
+  extensionPromise ??= import('/nav-ext.js')
+    .then(() => resolveOptional('navExtension') || {})
+    .catch((err) => {
+      console.warn('[navigation] /nav-ext.js failed to load — using base navigation', err);
+      return {};
+    });
+  return extensionPromise;
+};
 
 /**
- * Per-layer extension context (org role, feature flags), fetched at most once
- * per page per layer. A layer's hooks get its OWN context, never a neighbour's
- * — they are different objects from different endpoints.
+ * Extension context (org role, feature flags), fetched at most once per page.
  *
  * Deliberately lazy: the login page has no session, and eagerly fetching this at
  * module load would 401 on every unauthenticated page load.
- *
- * @type {WeakMap<object, Promise<any>>}
  */
-const contexts = new WeakMap();
-const extensionContext = (ext) => {
-  if (!ext.context) return Promise.resolve(null);
-  if (!contexts.has(ext)) {
-    contexts.set(ext, Promise.resolve().then(() => ext.context()).catch(() => null));
-  }
-  return contexts.get(ext);
+let contextPromise;
+const extensionContext = async () => {
+  const ext = await extension();
+  if (!ext.context) return null;
+  contextPromise ??= Promise.resolve()
+    .then(() => ext.context())
+    .catch(() => null);
+  return contextPromise;
 };
 
 const fetchNavigation = async () => {
   const base = BASE_ITEMS();
-  // The saved list lives on the server, so the rail cannot know whether the
-  // Custom views entry belongs until it has been fetched. `ensureViews` does it
-  // once per load and never rejects; on the OSS build it answers 404, the list
-  // stays empty and the entry simply never appears — which is correct, because
-  // the routes it leads to are not there either.
-  await ensureViews();
-  // Folded, base first: each layer receives what the layers below it produced,
-  // so a hook that returns its own ordered list (the enterprise one does) is
-  // still extensible by the layer above. A layer that throws is skipped and the
-  // chain continues with the last good list rather than collapsing to BASE_ITEMS.
+  const ext = await extension();
   let items = base;
-  for (const ext of await extensions()) {
-    if (!ext.items) continue;
+  if (ext.items) {
     try {
-      items = (await ext.items(items, await extensionContext(ext))) || items;
+      items = (await ext.items(base, await extensionContext())) || base;
     } catch (err) {
-      console.error('[navigation] a nav extension items() failed — keeping the layers below it', err);
+      console.error('[navigation] nav extension items() failed — falling back to base', err);
     }
   }
-  // After the extension, not before it. An extension is free to return its own
-  // ordered list rather than patch `base` — the enterprise nav extension does
-  // exactly that — and anything appended to `base` beforehand is simply dropped
-  // on the floor, which is why this entry never appeared on the EE build. Appending
-  // here is the only placement that holds for every extension, present and
-  // future; nothing else in the list is dynamic enough to care about order.
-  if (hasSavedViews()) items.push(CUSTOM_VIEWS_ITEM);
   return items;
 };
 
@@ -309,20 +280,14 @@ const fetchModuleNav = async (module) => {
       base = { ...base, groups: [...base.groups, { label, items: sessions }] };
     }
   }
-  // Folded like items(): `base` for a layer is the tree the layers below it
-  // returned. Note a hook returns the WHOLE tree (or null for "this module has
-  // none"), so returning `base` unchanged is how a layer says "not mine" — see
-  // the enterprise hook's final `return base`.
-  let tree = base;
-  for (const ext of await extensions()) {
-    if (!ext.moduleNav) continue;
-    try {
-      tree = await ext.moduleNav(module, tree, await extensionContext(ext));
-    } catch (err) {
-      console.error('[navigation] a nav extension moduleNav() failed — keeping the layers below it', err);
-    }
+  const ext = await extension();
+  if (!ext.moduleNav) return base;
+  try {
+    return await ext.moduleNav(module, base, await extensionContext());
+  } catch (err) {
+    console.error('[navigation] nav extension moduleNav() failed — falling back to base', err);
+    return base;
   }
-  return tree;
 };
 
 registerAll({ fetchNavigation, fetchModuleNav }, { replace: true });
