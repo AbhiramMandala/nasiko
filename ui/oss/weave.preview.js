@@ -50,6 +50,27 @@ const byModel = [
   { provider: "openai",    model: "gpt-4o-mini",   request_count: 140,  total_input_tokens: 34000,  total_output_tokens: 15000,  total_tokens: 49000,  total_cost_usd: 1.43, avg_latency_ms: 410 },
 ];
 
+// `q` on GET /api/usage/by-model, exactly as the backend applies it
+// (`model ILIKE '%' || $3 || '%'` in oss/server/src/usage/routes.rs): a
+// case-insensitive substring match on the model name, with an omitted or
+// empty `q` matching everything — the real frontends always send `q=`.
+// A mock that ignored `q` would show a generated search box doing nothing
+// here while the same surface filters in production, which is the confusing
+// direction to be wrong in. `total` is the page length, as the server's
+// `Paginated::new` returns it, not a count of matches.
+//
+// Self-contained on purpose: a preview fixture runs without this module's
+// scope, so it may not reach a shared helper.
+function qparam(req, name) {
+  return new URL(String(req?.url ?? ""), "http://x").searchParams.get(name);
+}
+
+function byModelPage(req) {
+  const q = (qparam(req, "q") || "").toLowerCase();
+  const rows = q ? byModel.filter((r) => r.model.toLowerCase().includes(q)) : byModel;
+  return { data: rows, total: rows.length };
+}
+
 /**
  * The DSL a generation produces, as the model would stream it.
  *
@@ -88,7 +109,7 @@ export default {
     [{ method: "GET", path: /^\/api\/usage\/summary/ }, usageSummary],
     [{ method: "GET", path: /^\/api\/usage\/history/ }, usageHistory],
     [{ method: "GET", path: /^\/api\/usage\/by-agent/ }, { data: byAgent, total: byAgent.length }],
-    [{ method: "GET", path: /^\/api\/usage\/by-model/ }, { data: byModel, total: byModel.length }],
+    [{ method: "GET", path: /^\/api\/usage\/by-model/ }, byModelPage],
   ],
 
   scenarios: {

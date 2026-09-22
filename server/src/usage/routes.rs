@@ -186,7 +186,8 @@ pub(crate) struct PaginatedQuery {
     /// Page offset (default: 0).
     #[serde(default)]
     offset: i64,
-    /// Substring filter on agent name (`by-agent` only; ignored by `by-model`).
+    /// Case-insensitive substring filter: on the agent name for `by-agent`,
+    /// on the model name for `by-model`. Omitted or empty matches everything.
     q: Option<String>,
     /// Look-back window in days (default: 30).
     #[serde(default = "default_days")]
@@ -333,12 +334,14 @@ pub(crate) async fn by_model(
             AVG(latency_ms)::double precision as avg_latency_ms
         FROM token_usage
         WHERE user_id = $1 AND created_at >= $2
+          AND ($3::text IS NULL OR model ILIKE '%' || $3 || '%')
         GROUP BY provider, model
         ORDER BY total_tokens DESC
-        LIMIT $3 OFFSET $4"#,
+        LIMIT $4 OFFSET $5"#,
     )
     .bind(user_id)
     .bind(from)
+    .bind(&q.q)
     .bind(q.limit)
     .bind(q.offset)
     .fetch_all(&state.db)
