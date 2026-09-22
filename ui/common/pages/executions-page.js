@@ -242,7 +242,12 @@ class ExecutionsPage extends HTMLElement {
   #hydrateSteps(rows) {
     for (const exec of rows) {
       const el = this.querySelector(`wf-run-steps[data-exec="${CSS.escape(exec.id)}"]`);
-      if (el) el.steps = exec.step_results || [];
+      if (el) {
+        el.steps = exec.step_results || [];
+        // Lets the timeline account for planning/synthesis, which belong to
+        // the run and appear in no step row.
+        el.totalTokens = exec.tokens_used || 0;
+      }
     }
   }
 

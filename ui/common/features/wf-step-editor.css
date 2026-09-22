@@ -130,6 +130,62 @@
   }
   app-combobox { display: block; }
 
+  /* Connector spine — lines up with the grip's centre (1px card border + 20px
+     card padding + 10px half-grip) and carries enough weight to be read as a
+     link between cards rather than a hairline artefact. Also the "insert step
+     here" hit target: the plus icon stays faintly visible at rest (not opacity
+     0 — a fully-hidden affordance is too easy to never find by accident) and
+     gets full contrast plus a filled circle on hover/focus. */
+  .connector {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 18px;
+    margin-left: 21px;
+    padding: 0;
+    border: none;
+    border-radius: var(--r-40);
+    background: none;
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+  .connector::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    border-radius: var(--r-4);
+    background: var(--bg-surface-active);
+    transform: translateX(-50%);
+    transition: opacity 0.1s ease;
+  }
+  .connector svg {
+    position: relative;
+    opacity: 0.55;
+    transition: opacity 0.1s ease;
+  }
+  .connector:hover,
+  .connector:focus-visible {
+    background: var(--bg-secondary-brand-hover);
+  }
+  .connector:hover::before,
+  .connector:focus-visible::before {
+    opacity: 0;
+  }
+  .connector:hover svg,
+  .connector:focus-visible svg {
+    opacity: 1;
+    color: var(--color-text-main);
+  }
+  .connector:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+  }
+
   /* Add step — a bare "+" centred under the list, the only affordance between
      one card and the next. */
   .add-step {

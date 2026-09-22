@@ -11,7 +11,7 @@
  *       `agentId` empty string means "Auto-select at run time" (the routing
  *       engine assigns the agent when the workflow is saved/run).
  * @prop {Array} agents - [{id, name}] options for the per-step picker.
- * @fires wf-steps-change - Any edit (text, agent, add, remove, reorder).
+ * @fires wf-steps-change - Any edit (text, agent, add, remove, reorder, insert).
  */
 import { icons } from '/common/utils/icons.js';
 import '/common/design-system/app-badge/app-badge.js';
@@ -27,6 +27,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 class WfStepEditor extends HTMLElement {
   #steps = [];
   #agents = [];
+  #pendingFocusIndex = null;
   /** Persistent announcer — see the note in #render(). */
   #live = Object.assign(document.createElement('div'), { className: 'sr-only' });
 
@@ -84,6 +85,9 @@ class WfStepEditor extends HTMLElement {
     const act = btn.dataset.act;
     if (act === 'add') this.#steps.push({ taskDescription: '', agentId: '', agentName: '', suggested: false });
     else if (act === 'remove') this.#steps.splice(i, 1);
+    // data-index is the step this insert point sits after; -1 for the point
+    // above the first card, so the new step lands at index 0.
+    else if (act === 'insert') this.#insertAt(i + 1);
     else return;
     this.#render();
     this.#emit();
@@ -361,6 +365,12 @@ class WfStepEditor extends HTMLElement {
     this.#announce(to);
   };
 
+  /** Splices a blank step in at `index` and moves focus into its textarea. */
+  #insertAt(index) {
+    this.#steps.splice(index, 0, { taskDescription: '', agentId: '', agentName: '', suggested: false });
+    this.#pendingFocusIndex = index;
+  }
+
   #onInput = (e) => {
     const area = e.target.closest('textarea[data-index]');
     if (!area) {
@@ -447,10 +457,23 @@ class WfStepEditor extends HTMLElement {
       </div>`;
   }
 
+  /**
+   * The connector spine doubles as an "insert step here" hit target: a
+   * hairline by default, a plus button on hover/focus. `after` is the index
+   * this point sits below — the new step lands at `after + 1` — or -1 for
+   * the point above the first card, landing the new step at index 0.
+   */
+  #insertPoint(after) {
+    const label = after < 0 ? 'Insert step at the beginning' : `Insert step after step ${after + 1}`;
+    return `
+      <button type="button" class="connector" data-act="insert" data-index="${after}"
+        title="${label}" aria-label="${label}">${icons.plus('', 12)}</button>`;
+  }
+
   #render() {
     this.#endDrag();
     const cards = this.#steps.length
-      ? this.#steps.map((s, i) => this.#stepCard(s, i)).join('')
+      ? this.#steps.map((s, i) => this.#insertPoint(i - 1) + this.#stepCard(s, i)).join('')
       : `<app-empty-state
           heading="No steps yet"
           description="Add the first step, then tell it what to do and which agent should run it."
@@ -459,6 +482,10 @@ class WfStepEditor extends HTMLElement {
       ${cards}
       <app-button variant="ghost" size="sm" icon-only class="add-step" data-act="add"
         title="Add step" aria-label="Add step">${icons.plus()}</app-button>`;
+    if (this.#pendingFocusIndex !== null) {
+      this.querySelector(`textarea[data-index="${this.#pendingFocusIndex}"]`)?.focus();
+      this.#pendingFocusIndex = null;
+    }
     // Re-attached rather than re-rendered: a live region only announces text
     // that lands in a region the screen reader was already watching, and every
     // reorder ends in a #render(). One that ships inside this innerHTML is born

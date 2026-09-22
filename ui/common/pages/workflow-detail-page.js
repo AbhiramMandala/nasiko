@@ -384,6 +384,9 @@ class WorkflowDetailPage extends HTMLElement {
     const stepsEl = this.querySelector('#run-steps');
     stepsEl.labels = this.#stepLabels();
     stepsEl.steps = exec.step_results || [];
+    // Lets the timeline account for planning/synthesis, which belong to the
+    // run and appear in no step row.
+    stepsEl.totalTokens = exec.tokens_used || 0;
 
     const outputSec = this.querySelector('#run-output');
     if (exec.output) {

@@ -14,8 +14,11 @@ pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
+pub mod coding_agent_otlp;
+pub mod coding_agent_telemetry;
 pub mod flows;
 pub mod github;
+pub mod hitl;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
@@ -33,10 +36,10 @@ pub mod seed;
 pub mod settings;
 pub mod state;
 pub mod telemetry;
+pub mod titling;
 pub mod transcribe;
 pub mod usage;
 pub mod users;
-pub mod weave;
 
 use axum::handler::Handler;
 use axum::http::Method;
@@ -165,6 +168,7 @@ where
             // every other inter-agent call already is.
             std::sync::Arc::new(state.flow_guard.clone()),
             llm_config,
+            state.hitl_store.clone(),
         );
     } else {
         tracing::warn!(
@@ -283,15 +287,18 @@ where
         .merge(build_routes)
         .merge(degradable_routes)
         .merge(chat::router())
+        .merge(coding_agent_telemetry::router())
         .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
         .merge(llm_configs::router())
         .merge(settings::router())
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
+        .merge(llm_router::custom_providers::router())
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
+        .merge(router::hitl::router())
         .nest(
             "/observability",
             observability::protected_router(state.clone(), finops_limiter),
@@ -302,7 +309,6 @@ where
         .merge(transcribe::router())
         .merge(mcp::router())
         .merge(mcp_upload_routes)
-        .merge(weave::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
@@ -371,7 +377,7 @@ where
     let llm_cfg = llm_ctx.cfg.clone();
     let llm_routes = nasiko_llm_router::router(llm_ctx);
     // Keep the provider model catalog (tier-routing candidates) fresh from each
-    // provider's GET /models. Runs immediately, then every 10 min; fail-open.
+    // provider's GET /models. Runs immediately, then every 24 h; fail-open.
     if state.config.model_catalog_sync_enabled {
         nasiko_llm_router::routing::catalog::spawn_sync(
             state.db.clone(),
@@ -397,7 +403,22 @@ where
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_page_auth,
-        ));
+        ))
+        // An /api path that reached the UI fallback matched no API route, and
+        // must not be answered with the SPA. Serving index.html here — status
+        // 200, Content-Type text/html — is what made a missing route surface in
+        // the browser as "Server returned a malformed JSON body": a real
+        // failure wearing a label that sends you at your own JSON parsing
+        // instead of at a route that is not there.
+        //
+        // Registered here rather than on the outer router because `nest("/api",
+        // …)` already owns a catch-all at that position and a second wildcard
+        // beside it panics at startup. Nothing else routes inside `ui_pages`,
+        // so there is no conflict. After `.layer()` on purpose: the page-auth
+        // redirect is for document navigations, and bouncing an API call to
+        // login.html would put HTML back in the response we are removing it
+        // from.
+        .route("/api/{*rest}", any(api_not_found));
 
     Router::new()
         .route("/health", get(health))
@@ -428,6 +449,20 @@ where
                 )
             },
         ))
+}
+
+/// The 404 for an unmatched `/api` path, in the envelope every other API error
+/// uses (`{data, status_code, message}`) so the frontend's error handling reads
+/// it the same way as any other failure rather than choking on HTML.
+async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "data": null,
+            "status_code": 404,
+            "message": format!("no API route matches {}", uri.path()),
+        })),
+    )
 }
 
 /// State for [`authenticate_oci_request`] — bundles the two things it needs

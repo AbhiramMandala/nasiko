@@ -349,6 +349,8 @@ fn card_to_summary(a: &AgentCard) -> AgentCardSummary {
             .map(|s| crate::models::SkillSummary {
                 name: s.clone(),
                 description: s.clone(),
+                // This card carries skills as bare strings — no examples to carry.
+                examples: Vec::new(),
             })
             .collect(),
         tags: a.tags.clone(),

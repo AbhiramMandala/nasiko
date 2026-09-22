@@ -28,20 +28,21 @@ pub struct Config {
     /// Empty string → no prefix (Docker local mode).
     /// TODO: this needs to be removed.
     pub agent_image_registry: String,
+    /// Username for authenticating agent-image pulls from a private registry
+    /// (e.g. a private Docker Hub repo). `None` (default) means anonymous
+    /// pulls only — unchanged behavior for public images. Only meaningful
+    /// together with `agent_registry_password`; `DockerRuntime` treats a
+    /// pair where only one is set as "not configured."
+    pub agent_registry_username: Option<String>,
+    /// Password or access token paired with `agent_registry_username`. Never
+    /// logged, never returned in any API response.
+    pub agent_registry_password: Option<String>,
     /// Shared credential the in-cluster BuildKit build Job presents (HTTP
     /// Basic auth, username `"build-service"`) to push freshly-built agent
     /// images into the built-in OCI registry — see
     /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
     /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
     pub build_push_token: String,
-    /// Base URL of the Weave generation service the control plane proxies
-    /// `POST /api/weave/surface` to. The browser never talks to it directly —
-    /// it holds the internal token, and the token must not leave the server.
-    pub weave_base_url: String,
-    /// Shared secret Weave requires on `x-weave-internal-token`, same pattern
-    /// as `build_push_token`. Empty means generation is not configured, and
-    /// the route answers 503 rather than proxying without it.
-    pub weave_internal_token: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -63,6 +64,9 @@ pub struct Config {
     pub otel_sample_ratio: String,
     pub otel_collector_endpoint: String,
     pub otel_capture_content: bool,
+    /// OTLP/HTTP JSON base endpoint used only by the durable coding-agent
+    /// telemetry outbox. Unset leaves receipts pending and disables its worker.
+    pub coding_agent_otlp_endpoint: Option<String>,
     pub tempo_url: String,
     pub loki_url: String,
     /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
@@ -92,6 +96,20 @@ pub struct Config {
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
     pub flow_timeout_secs: i32,
+    /// How long a HITL pause (`hitl_requests`) stays answerable before the dispatcher's poll
+    /// loop expires it. `oss/hitl`'s own store applies this at row-creation time — see
+    /// `PgHitlStore::with_ttl_days`.
+    pub hitl_request_ttl_days: i64,
+    /// `nasiko_hitl::dispatcher::DispatcherConfig`'s five tunables (the `mcp_tool`-origin resume
+    /// dispatcher, `oss/hitl/src/dispatcher.rs`) — every comparable tunable elsewhere in this
+    /// codebase goes through this single `Config` struct, and `hitl_request_ttl_days` right above
+    /// is the same feature's own TTL knob, so these were the odd ones out as compile-time
+    /// constants (found in review).
+    pub hitl_resume_poll_interval_secs: u64,
+    pub hitl_resume_recovery_interval_secs: u64,
+    pub hitl_resume_lease_minutes: i64,
+    pub hitl_resume_max_attempts: u32,
+    pub hitl_resume_retry_delay_secs: u64,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
@@ -295,9 +313,13 @@ impl Config {
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
+            agent_registry_username: std::env::var("AGENT_REGISTRY_USERNAME")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            agent_registry_password: std::env::var("AGENT_REGISTRY_PASSWORD")
+                .ok()
+                .filter(|s| !s.is_empty()),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
-            weave_base_url: env_or("WEAVE_BASE_URL", "http://localhost:8801"),
-            weave_internal_token: env_or("WEAVE_INTERNAL_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -327,6 +349,10 @@ impl Config {
             )
             .map(|v| v == "true")
             .unwrap_or(true),
+            coding_agent_otlp_endpoint: std::env::var("CODING_AGENT_OTLP_ENDPOINT")
+                .ok()
+                .map(|value| value.trim_end_matches('/').to_owned())
+                .filter(|value| !value.is_empty()),
             tempo_url: env_or("TEMPO_URL", ""),
             loki_url: env_or("LOKI_URL", ""),
             // Enabled only when BOTH backends are explicitly configured; a
@@ -341,6 +367,22 @@ impl Config {
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
             flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
+            hitl_request_ttl_days: env_parse("HITL_REQUEST_TTL_DAYS", 7),
+            // Defaults match `nasiko_hitl::dispatcher::DispatcherConfig::default()` exactly, so
+            // an unset env var changes nothing.
+            hitl_resume_poll_interval_secs: env_parse("HITL_RESUME_POLL_INTERVAL_SECS", 5),
+            hitl_resume_recovery_interval_secs: env_parse(
+                "HITL_RESUME_RECOVERY_INTERVAL_SECS",
+                10 * 60,
+            ),
+            // Must outlast one whole delivery, not one request: the MCP resume dispatcher holds
+            // its claim across every in-process retry (3 attempts x the notifier's 300s timeout
+            // + backoff ~= 15 min). At the old default of 2 the recovery sweep quarantined
+            // deliveries that were still in flight. `DispatcherConfig::effective_lease_minutes`
+            // enforces the floor regardless, so this default only keeps the two in agreement.
+            hitl_resume_lease_minutes: env_parse("HITL_RESUME_LEASE_MINUTES", 16),
+            hitl_resume_max_attempts: env_parse("HITL_RESUME_MAX_ATTEMPTS", 3),
+            hitl_resume_retry_delay_secs: env_parse("HITL_RESUME_RETRY_DELAY_SECS", 2),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")

@@ -120,7 +120,13 @@ pub fn router() -> Router<AppState> {
 /// Protected observability router — mounted under /api/observability (auth required).
 ///
 /// Path params with `{agent_ref}` accept either a UUID or agent name.
-pub fn protected_router(state: AppState) -> Router<AppState> {
+pub fn protected_router(
+    state: AppState,
+    finops_limiter: crate::rate_limit::RateLimiter,
+) -> Router<AppState> {
+    // `/finops/*` gets its own tighter per-user rate limit — see the comment
+    // at the `finops_limiter` definition in lib.rs — separate from the rest
+    // of this router's cheap single-lookup endpoints.
     let finops_routes = Router::new()
         .route("/finops/dashboard", get(handler::get_finops_dashboard))
         .route("/finops/insights", post(handler::get_finops_insights))
@@ -140,7 +146,11 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
         .route(
             "/finops/attributions",
             get(handler::get_finops_attributions),
-        );
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            finops_limiter,
+            crate::rate_limit::limit_by_user,
+        ));
 
     Router::new()
         .route("/session/list", get(handler::get_all_sessions))

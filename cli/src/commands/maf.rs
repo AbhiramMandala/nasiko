@@ -836,7 +836,13 @@ fn print_execution(e: &Value) {
 }
 
 /// Polls `GET /maf/workflow/result/{exec_id}` every 2s until the execution reaches a terminal
-/// state (`success` | `failed`), mirroring [`Client::poll_mcp_build_status`]'s plain-polling loop.
+/// state (`success` | `failed`) or pauses (`awaiting_human`), mirroring
+/// [`Client::poll_mcp_build_status`]'s plain-polling loop. `awaiting_human` stops polling
+/// immediately rather than waiting out the rest of the budget: nothing about the execution
+/// changes until a human answers, so continuing to poll only delayed telling the caller what
+/// actually needs to happen — and previously produced the same "may not be running" timeout
+/// message a genuinely stalled execution gets, which is actively misleading for one that's
+/// paused and working exactly as designed.
 /// A stalled execution (e.g. the server has no `OPENAI_API_KEY` configured, so the MAF worker
 /// never started — jobs then sit at `pending` in Redis indefinitely; this is a documented,
 /// supported "degrades gracefully" server configuration, not a transient blip) must not hang
@@ -872,6 +878,31 @@ fn poll_execution(client: &Client, exec_id: &str) -> Result<()> {
             print_execution(&resp);
             if status == "failed" {
                 anyhow::bail!("execution failed");
+            }
+            return Ok(());
+        }
+        if status == nasiko_types::maf::AWAITING_HUMAN {
+            // Not a terminal state (the execution resumes once a human answers), but polling
+            // further is pointless: nothing changes until that happens, so burning the rest of
+            // the ~5-minute budget here just delayed telling the caller what actually needs to
+            // happen. `hitl` — already returned by this same endpoint, see
+            // `ExecWithHitlResponse`'s own doc comment — carries the pending request's id.
+            drop(spin);
+            print_execution(&resp);
+            let pending_id = resp
+                .get("hitl")
+                .and_then(Value::as_array)
+                .and_then(|rows| {
+                    rows.iter()
+                        .find(|r| r.get("status").and_then(Value::as_str) == Some("pending"))
+                })
+                .and_then(|r| r.get("id"))
+                .and_then(Value::as_str);
+            match pending_id {
+                Some(id) => println!(
+                    "  awaiting human input — resolve via POST /api/hitl/{id}/resolve (id: {id})"
+                ),
+                None => println!("  awaiting human input"),
             }
             return Ok(());
         }
