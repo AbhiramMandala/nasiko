@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     # ─── OSS crates ─────────────────────────────────────────────────────────
     "auth",
+    "compress",
     "config",
     "secrets",
     "observability",
@@ -31,6 +32,7 @@ version = "0.1.0"
 [workspace.dependencies]
 # ─── Internal OSS crates ────────────────────────────────────────────────────
 nasiko-auth = { path = "auth" }
+nasiko-compress = { path = "compress" }
 nasiko-config = { path = "config" }
 nasiko-flow = { path = "flow" }
 nasiko-hitl = { path = "hitl" }
