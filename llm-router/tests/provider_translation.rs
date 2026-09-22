@@ -298,7 +298,6 @@ async fn translated_call(
         .map_err(|e| format!("inbound parse ({}): {e}", client.label()))?;
 
     let resolved = ResolvedConfig {
-        compress_enabled: false,
         provider: backend.label().to_string(),
         model: backend_model.to_string(),
         litellm_model: format!("{}/{}", backend.label(), backend_model),
@@ -312,7 +311,7 @@ async fn translated_call(
         tier2_model: None,
         tier3_model: None,
         platform_paid: true,
-        base_url: None,
+        custom_endpoint: None,
         is_coding_agent: false,
     };
 

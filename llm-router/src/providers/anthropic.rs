@@ -547,7 +547,6 @@ mod tests {
 
     fn resolved() -> ResolvedConfig {
         ResolvedConfig {
-            compress_enabled: false,
             provider: "anthropic".into(),
             model: "claude-3-5-sonnet-20241022".into(),
             litellm_model: "anthropic/claude-3-5-sonnet-20241022".into(),
@@ -561,7 +560,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: None,
+            custom_endpoint: None,
             is_coding_agent: false,
         }
     }

@@ -561,7 +561,6 @@ mod tests {
 
     fn resolved() -> ResolvedConfig {
         ResolvedConfig {
-            compress_enabled: false,
             provider: "gemini".into(),
             model: "gemini-1.5-pro".into(),
             litellm_model: "gemini/gemini-1.5-pro".into(),
@@ -575,7 +574,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: None,
+            custom_endpoint: None,
             is_coding_agent: false,
         }
     }

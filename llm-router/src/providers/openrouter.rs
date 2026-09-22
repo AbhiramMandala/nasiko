@@ -211,7 +211,6 @@ mod tests {
 
     fn resolved(model: &str, temperature: Option<f64>) -> ResolvedConfig {
         ResolvedConfig {
-            compress_enabled: false,
             provider: "openrouter".into(),
             model: model.into(),
             litellm_model: format!("openrouter/{model}"),
@@ -225,7 +224,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
-            base_url: None,
+            custom_endpoint: None,
             is_coding_agent: false,
         }
     }
