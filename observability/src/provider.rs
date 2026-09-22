@@ -10,7 +10,7 @@ use crate::pricing::{CostBreakdown, PricingSource, compute_cost, compute_cost_wi
 use crate::tempo::{TempoClient, TraceSearchResult};
 use crate::types::{
     AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, TokenUsage, TraceDetails,
-    TraceSummary, extract_cache_token_attrs, extract_token_attrs, latency_percentiles,
+    TraceSummary, extract_usage_attrs, latency_percentiles,
 };
 
 // ---------------------------------------------------------------------------
@@ -557,9 +557,10 @@ impl TempoLokiProvider {
             if !seen.insert(&span.span_id) {
                 continue;
             }
-            let (input, output, model) = extract_token_attrs(&span.attributes);
-            let (cache_read, cache_creation) = extract_cache_token_attrs(&span.attributes);
-            if input == 0 && output == 0 && cache_read == 0 && cache_creation == 0 {
+            let u = extract_usage_attrs(&span.attributes);
+            let (input, output, model) = (u.input, u.output, u.model.clone());
+            let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
+            if u.is_empty() {
                 continue;
             }
             cost.add_assign(
@@ -586,9 +587,9 @@ impl TempoLokiProvider {
             return (trace.usage_totals().0, self.trace_cost(trace).await);
         }
 
-        let (input_tokens, output_tokens, model) = extract_token_attrs(&span.attributes);
-        let (cache_read_tokens, cache_creation_tokens) =
-            extract_cache_token_attrs(&span.attributes);
+        let u = extract_usage_attrs(&span.attributes);
+        let (input_tokens, output_tokens, model) = (u.input, u.output, u.model.clone());
+        let (cache_read_tokens, cache_creation_tokens) = (u.cache_read, u.cache_creation);
         let usage = TokenUsage {
             input_tokens,
             output_tokens,
@@ -720,11 +721,7 @@ impl TempoLokiProvider {
             let agent_name = trace
                 .spans
                 .iter()
-                .find(|s| {
-                    let (inp, out, _) = extract_token_attrs(&s.attributes);
-                    let (cache_read, cache_creation) = extract_cache_token_attrs(&s.attributes);
-                    inp > 0 || out > 0 || cache_read > 0 || cache_creation > 0
-                })
+                .find(|s| !extract_usage_attrs(&s.attributes).is_empty())
                 .map(|s| s.service_name.clone())
                 .filter(|n| !n.is_empty());
 
@@ -876,9 +873,10 @@ impl ObservabilityProvider for TempoLokiProvider {
                             .and_then(|v| v.as_str())
                             .map(String::from);
                     }
-                    let (inp, out, model) = extract_token_attrs(&span.attributes);
-                    let (cache_read, cache_creation) = extract_cache_token_attrs(&span.attributes);
-                    if inp > 0 || out > 0 || cache_read > 0 || cache_creation > 0 {
+                    let u = extract_usage_attrs(&span.attributes);
+                    let (inp, out, model) = (u.input, u.output, u.model.clone());
+                    let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
+                    if !u.is_empty() {
                         trace_input += inp;
                         trace_output += out;
                         trace_cache_read += cache_read;
@@ -1322,8 +1320,6 @@ impl ObservabilityProvider for TempoLokiProvider {
         &self,
         trace_id: &str,
     ) -> Result<Vec<crate::types::TraceUsageRow>, ObservabilityError> {
-        use crate::types::extract_cache_token_attrs;
-
         let trace = self.tempo.get_trace(trace_id).await?;
 
         // Session ID from span attributes (shared across all agents in the trace).
@@ -1352,8 +1348,9 @@ impl ObservabilityProvider for TempoLokiProvider {
 
         let mut by_agent: HashMap<String, AgentAcc> = HashMap::new();
         for span in &trace.spans {
-            let (inp, out, model) = extract_token_attrs(&span.attributes);
-            let (cr, cc) = extract_cache_token_attrs(&span.attributes);
+            let u = extract_usage_attrs(&span.attributes);
+            let (inp, out, model) = (u.input, u.output, u.model.clone());
+            let (cr, cc) = (u.cache_read, u.cache_creation);
             // gen_ai.operation.name = "call_tool" (GenAI semconv) or
             // openinference.span.kind = "TOOL" (OpenInference convention).
             let is_tool_call = span
@@ -1531,6 +1528,14 @@ mod tests {
         span.attributes.insert(
             "gen_ai.usage.cache_creation_input_tokens".into(),
             serde_json::json!(usage.3),
+        );
+        // These fixtures use the disjoint convention — `input_tokens` excludes the cached
+        // counts. Say so via `total_tokens` rather than leaving it to be inferred: without it
+        // the counts are equally consistent with the inclusive (OpenAI) convention, and
+        // `extract_usage_attrs` would have to guess. Real instrumentation emits this too.
+        span.attributes.insert(
+            "gen_ai.usage.total_tokens".into(),
+            serde_json::json!(usage.0 + usage.1 + usage.2 + usage.3),
         );
         span
     }

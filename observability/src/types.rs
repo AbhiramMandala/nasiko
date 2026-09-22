@@ -179,13 +179,19 @@ pub fn extract_cache_token_attrs(attrs: &HashMap<String, serde_json::Value>) -> 
 
     let cache_read = get_u64(&[
         "gen_ai.usage.cached_input_tokens", // semconv (experimental)
+        // Dotted form, emitted by opentelemetry-instrumentation-openai. Missing it is not
+        // cosmetic: cache reads then read as zero and every cached token is priced at the
+        // full input rate.
+        "gen_ai.usage.cache_read.input_tokens",
         "gen_ai.usage.cache_read_input_tokens",
         "gen_ai.usage.cached_tokens",
         "llm.usage.cache_read_input_tokens",
         "cache_read_input_tokens",
     ]);
     let cache_creation = get_u64(&[
+        "gen_ai.usage.cache_creation.input_tokens",
         "gen_ai.usage.cache_creation_input_tokens",
+        "gen_ai.usage.cache_write.input_tokens",
         "gen_ai.usage.cache_write_input_tokens",
         "llm.usage.cache_creation_input_tokens",
         "cache_creation_input_tokens",
@@ -194,9 +200,110 @@ pub fn extract_cache_token_attrs(attrs: &HashMap<String, serde_json::Value>) -> 
     (cache_read, cache_creation)
 }
 
+/// One span's token usage, with the prompt already split into its billable parts.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SpanUsage {
+    /// Prompt tokens billed at the full input rate — cached tokens are **not** included.
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_creation: u64,
+    pub model: Option<String>,
+}
+
+impl SpanUsage {
+    /// Every prompt token, cached or not. What an OpenAI response calls `prompt_tokens`.
+    pub fn total_prompt(&self) -> u64 {
+        self.input + self.cache_read + self.cache_creation
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.input == 0 && self.output == 0 && self.cache_read == 0 && self.cache_creation == 0
+    }
+}
+
+/// Extract a span's usage with the cached portion separated out.
+///
+/// Prefer this over calling [`extract_token_attrs`] and [`extract_cache_token_attrs`]
+/// separately: costing charges `input` at the full rate and `cache_read` at the cache rate
+/// and sums them, so it needs an `input` that excludes the cached tokens. Instrumentations
+/// disagree about whether it already does — see [`split_prompt_tokens`].
+pub fn extract_usage_attrs(attrs: &HashMap<String, serde_json::Value>) -> SpanUsage {
+    let (raw_input, output, model) = extract_token_attrs(attrs);
+    let (cache_read, cache_creation) = extract_cache_token_attrs(attrs);
+    let total = read_u64(
+        attrs,
+        &["gen_ai.usage.total_tokens", "llm.usage.total_tokens"],
+    );
+
+    SpanUsage {
+        input: split_prompt_tokens(raw_input, output, cache_read, cache_creation, total),
+        output,
+        cache_read,
+        cache_creation,
+        model,
+    }
+}
+
+fn read_u64(attrs: &HashMap<String, serde_json::Value>, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|k| attrs.get(*k)).and_then(|v| {
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    })
+}
+
+/// Return the prompt tokens billed at the **full** input rate, given a span's raw counts.
+///
+/// Instrumentations disagree about whether `gen_ai.usage.input_tokens` already contains the
+/// cached tokens:
+///
+/// * OpenAI, and the GenAI semconv, report the **total** prompt with the cached tokens as a
+///   subset of it (`input_tokens: 4732` of which `cache_read: 3968`).
+/// * Anthropic reports `input_tokens` **excluding** cache reads, as a disjoint count.
+///
+/// Costing computes `input × rate + cache_read × cache_rate` and sums them, so handing it an
+/// inclusive `input` charges every cached token twice. This picks the reading that cannot do
+/// that, and when the evidence is ambiguous it errs toward the inclusive reading — which
+/// under-charges at worst, where guessing the other way double-charges.
+fn split_prompt_tokens(
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_creation: u64,
+    total: Option<u64>,
+) -> u64 {
+    let cached = cache_read.saturating_add(cache_creation);
+    if cached == 0 {
+        return input;
+    }
+
+    // `total_tokens` settles it outright when the span reports one that adds up.
+    if let Some(total) = total {
+        if total == input.saturating_add(output) {
+            return input.saturating_sub(cached); // inclusive
+        }
+        if total == input.saturating_add(cached).saturating_add(output) {
+            return input; // exclusive — already the fresh count
+        }
+    }
+
+    // No usable total. `input` smaller than the cached subset cannot possibly contain it, so
+    // that reading is disjoint; otherwise take the semconv (inclusive) reading.
+    if input >= cached {
+        input - cached
+    } else {
+        input
+    }
+}
+
 impl TraceDetails {
     /// Aggregate token counts across all spans:
     /// `(input_tokens, output_tokens, first_model_seen)`.
+    ///
+    /// `input_tokens` excludes the cached prompt — [`Self::cache_token_totals`] reports that
+    /// separately, and [`Self::usage_totals`] adds the two. Reading the raw span attribute
+    /// here instead would leave the cached tokens inside `input` as well, so every caller
+    /// that sums the classes would count them twice.
     ///
     /// Cost is intentionally not computed here — resolve it through a
     /// [`crate::pricing::PricingSource`] (see [`crate::pricing::compute_cost`]).
@@ -209,14 +316,16 @@ impl TraceDetails {
             if !seen.insert(&span.span_id) {
                 continue;
             }
-            let (inp, out, m) = extract_token_attrs(&span.attributes);
-            if inp == 0 && out == 0 {
+            let u = extract_usage_attrs(&span.attributes);
+            // Skip on the whole usage, not on input/output alone: a turn served entirely
+            // from cache has no fresh input and no output on that span, but it is not empty.
+            if u.is_empty() {
                 continue;
             }
-            input += inp;
-            output += out;
+            input += u.input;
+            output += u.output;
             if model.is_none() {
-                model = m;
+                model = u.model;
             }
         }
         (input, output, model)
@@ -232,9 +341,9 @@ impl TraceDetails {
             if !seen.insert(&span.span_id) {
                 continue;
             }
-            let (r, c) = extract_cache_token_attrs(&span.attributes);
-            read += r;
-            creation += c;
+            let u = extract_usage_attrs(&span.attributes);
+            read += u.cache_read;
+            creation += u.cache_creation;
         }
         (read, creation)
     }
@@ -266,9 +375,10 @@ impl TraceDetails {
             if !seen.insert(&span.span_id) {
                 continue;
             }
-            let (inp, out, model) = extract_token_attrs(&span.attributes);
-            let (cache_read, cache_creation) = extract_cache_token_attrs(&span.attributes);
-            if inp == 0 && out == 0 && cache_read == 0 && cache_creation == 0 {
+            let u = extract_usage_attrs(&span.attributes);
+            let (inp, out, model) = (u.input, u.output, u.model.clone());
+            let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
+            if u.is_empty() {
                 continue;
             }
             match by_model.iter_mut().find(|(m, _, _, _, _)| *m == model) {
