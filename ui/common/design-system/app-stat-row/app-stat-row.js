@@ -12,7 +12,9 @@
  *
  * @element app-stat-row
  * @attr {string} items - JSON array of metric objects:
- *   `{ label, value, sub, pct, format?, subFormat?, currency? }`.
+ *   `{ label, value, sub, pct, hint?, format?, subFormat?, currency? }`.
+ *   `hint` is a plain-text tooltip on the cell — for a value that is a sum, it is
+ *   where the parts go, so the headline stays one number.
  *   `sub` is the caption under the value; `pct` (a number) draws a severity meter
  *   and is omitted for metrics that have no ceiling. There is deliberately no
  *   per-metric colour: a value is a value, and the one that was tinted gold was
@@ -35,25 +37,11 @@
  *   that sit under a page title rather than heading a dashboard. Purely a
  *   layout change: same `items`, same cells, no second markup path. `pct`
  *   meters and `sub` captions are column-shaped and are not drawn in chips.
- *   (The attribute below was added after the catalog first shipped and sits
- *   last on purpose: the DSL passes attributes positionally in @attr order, so
- *   a new one must append — see catalog-compat.mjs.)
- * @attr {string} error - The fetch failed. Present (bare, or with a message
- *   overriding the default copy) replaces the whole strip with one failure
- *   block and one Retry, because one request filled every cell and one is what
- *   failed. Without it a failed strip printed a dash per metric — the same
- *   dash an honest zero prints, so "we could not get this" and "this is
- *   nothing" were indistinguishable. `loading` wins over it.
- * @fires stat-row-retry - Retry pressed on the failure state — bubbles. The
- *   strip is handed its metrics, so the owner refetches.
  */
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./app-stat-row.css', import.meta.url));
 import { escHtml, escAttr } from '/common/utils/escape.js';
 import { applyFormat } from '/common/utils/units.js';
-import { errorStateHtml, bindRetry } from '/common/design-system/app-empty-state/error-state.js';
-import '../app-button/app-button.js';
-import '../app-empty-state/app-empty-state.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -75,14 +63,13 @@ function meterHtml(pct) {
 }
 
 export class AppStatRow extends HTMLElement {
-  static get observedAttributes() { return ['items', 'loading', 'error']; }
+  static get observedAttributes() { return ['items', 'loading']; }
 
   #initialized = false;
 
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
-    bindRetry(this, 'stat-row-retry');
     this.render();
   }
 
@@ -97,8 +84,6 @@ export class AppStatRow extends HTMLElement {
    */
   set items(list) {
     this.removeAttribute('loading');
-    // Metrics arriving is the end of a failure as much as the end of a load.
-    this.removeAttribute('error');
     this.setAttribute('items', JSON.stringify(Array.isArray(list) ? list : []));
   }
 
@@ -130,8 +115,10 @@ export class AppStatRow extends HTMLElement {
       ? '—' : applyFormat(item.value, item.format, opts);
     const sub = item.sub === null || item.sub === undefined || item.sub === ''
       ? '' : applyFormat(item.sub, item.subFormat, opts);
+    const hint = item.hint === null || item.hint === undefined || item.hint === ''
+      ? '' : ` title="${escAttr(String(item.hint))}"`;
     return `
-      <div class="stat">
+      <div class="stat"${hint}>
         <div class="stat-label">${escHtml(String(item.label ?? ''))}</div>
         <div class="stat-value">${escHtml(value)}</div>
         ${sub ? `<div class="stat-sub">${escHtml(sub)}</div>` : ''}
@@ -152,15 +139,6 @@ export class AppStatRow extends HTMLElement {
       return;
     }
     this.removeAttribute('aria-busy');
-    // One request fills the whole strip, so one failure empties the whole
-    // strip: four Retry buttons for one fetch would be four ways to do the
-    // same thing, and a per-cell block would jump the row's height anyway.
-    if (this.hasAttribute('error')) {
-      this.classList.add('is-error');
-      this.innerHTML = errorStateHtml(this.getAttribute('error') || "Couldn't load these metrics");
-      return;
-    }
-    this.classList.remove('is-error');
     this.innerHTML = this.#items().map((i) => this.#cell(i)).join('');
   }
 }

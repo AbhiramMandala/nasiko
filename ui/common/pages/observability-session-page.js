@@ -31,7 +31,6 @@ import { escAttr, escHtml } from '/common/utils/escape.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { call } from '../core/data-sources.js';
 import '/common/features/agent-steps.js';
-import { errorStateHtml } from '/common/design-system/app-empty-state/error-state.js';
 
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -46,16 +45,101 @@ const TURN_LABEL_CHARS = 46;
 
 const fmtInt = (v) => (v == null ? '—' : Number(v).toLocaleString());
 
-/// Cache reads and cache writes as one number, which is how the design shows
-/// them. Null only when neither count was served at all — a served 0 is a real
-/// measurement and renders as "0".
-const cacheTokens = (o) => {
-  if (o?.cache_read_tokens == null && o?.cache_creation_tokens == null) return null;
-  return (o.cache_read_tokens ?? 0) + (o.cache_creation_tokens ?? 0);
-};
+/// The four token pills from one set of raw counts.
+///
+/// `input` is the *fresh* prompt — the provider bills cached prompt tokens at a different
+/// rate, so they are counted apart. The pills add them back: "Input tokens" is the whole
+/// prompt, which is what a reader means by the word. Reporting the fresh count alone made
+/// an unchanged turn look smaller as the cache warmed — the same six prompts replayed two
+/// minutes apart read 2,873 tokens and then 957, for prompts of 5,305 and 5,309.
+///
+/// `Total = Input + Output` holds, and "Cache tokens" is the cached slice *of Input* shown
+/// again for cost context — it is not a fifth class to be added on top.
+///
+/// There is no output-side cache: both cached counts are prompt tokens
+/// (`cache_read_input_tokens`, `cache_creation_input_tokens`), so "Output tokens" is the
+/// generated tokens alone.
+function tokenPills({ input, output, cacheRead, cacheCreation }) {
+  const known = [input, output, cacheRead, cacheCreation].some((v) => v != null);
+  if (!known) return null;
+  const fresh = input ?? 0;
+  const read = cacheRead ?? 0;
+  // `null` means the read/write split was never carried at this level (the turn view sums
+  // them upstream). Say "Cached N" there rather than inventing a "write 0" that is a guess.
+  const splitKnown = cacheCreation != null;
+  const written = cacheCreation ?? 0;
+  const out = output ?? 0;
+  const cached = read + written;
+  const n = (v) => Number(v).toLocaleString();
+  // One part per line: a native `title` renders \n as a line break, and these read as a
+  // breakdown rather than a sentence. Keep the total on its own last line so the sum the
+  // pill shows is visible next to the parts that make it.
+  const lines = (...rows) => rows.filter(Boolean).join('\n');
+  const cacheRows = splitKnown
+    ? [`Cache read     ${n(read)}`, `Cache write    ${n(written)}`]
+    : [`Cached         ${n(cached)}`];
+  return {
+    total: fresh + cached + out,
+    input: fresh + cached,
+    output: out,
+    cache: cached,
+    totalHint: lines(
+      `Input (fresh)  ${n(fresh)}`,
+      ...cacheRows,
+      `Output         ${n(out)}`,
+      `─────`,
+      `Total          ${n(fresh + cached + out)}`,
+    ),
+    inputHint: lines(
+      `Fresh          ${n(fresh)}`,
+      `Cached         ${n(cached)}`,
+      `─────`,
+      `Input          ${n(fresh + cached)}`,
+    ),
+    outputHint: lines(
+      `Generated      ${n(out)}`,
+      `Prompt caching does not apply to output.`,
+    ),
+    cacheHint: lines(
+      ...cacheRows,
+      `─────`,
+      `Cache          ${n(cached)}`,
+      `Already counted inside Input.`,
+    ),
+  };
+}
+
+/// The same four pills as `<dt>/<dd>` rows, for the detail panes.
+const pillRows = (p) => (p == null
+  ? [['Total tokens', '—', ''], ['Input tokens', '—', ''], ['Output tokens', '—', ''], ['Cache tokens', '—', '']]
+  : [
+    ['Total tokens', fmtInt(p.total), p.totalHint],
+    ['Input tokens', fmtInt(p.input), p.inputHint],
+    ['Output tokens', fmtInt(p.output), p.outputHint],
+    ['Cache tokens', fmtInt(p.cache), p.cacheHint],
+  ]);
 /// Sum two counts that may be absent. Null only when neither side was served:
 /// a folded trace with no tokens must not erase the tokens already counted.
 const addCounts = (a, b) => (a == null && b == null ? null : (a ?? 0) + (b ?? 0));
+
+/// Merge a content-less trace's usage into `turn` — a HITL resume or a
+/// proxy-only hop, folded into the turn it's really part of rather than
+/// shown as its own empty entry. Mutates `turn` in place; used both for
+/// folding backward into the previous turn and (see #buildTurns) forward
+/// into the next one when there's no previous turn yet to fold into.
+function foldTraceInto(turn, root, traceId) {
+  turn.traceIds.push(traceId);
+  turn.totalTokens = addCounts(turn.totalTokens, root.cumulative_token_count_total);
+  turn.inputTokens = addCounts(turn.inputTokens, root.input_tokens);
+  turn.outputTokens = addCounts(turn.outputTokens, root.output_tokens);
+  turn.cacheReadTokens = addCounts(turn.cacheReadTokens, root.cache_read_tokens);
+  turn.cacheCreationTokens = addCounts(turn.cacheCreationTokens, root.cache_creation_tokens);
+  turn.cost = addCounts(turn.cost, root.trace?.cost_summary?.total?.cost);
+  // Max, not sum: the folded trace usually overlaps the one it belongs to
+  // (same wall clock, different exporter), so summing double-counts.
+  turn.durationMs = root.latency_ms == null ? turn.durationMs
+    : Math.max(turn.durationMs ?? 0, root.latency_ms);
+}
 
 /// Dollars at 2dp, sub-cent amounts at 4dp. A fixed 2dp renders a $0.0010 turn
 /// as "$0.00", and a fixed 4dp renders a real session total as "$4.8200".
@@ -149,7 +233,6 @@ class ObservabilitySessionPage extends HTMLElement {
     // keeps the page mounted and only fires `route-update` — without this,
     // clicking a row moved the URL and left the old session on screen.
     this.addEventListener('route-update', this.#onRouteUpdate);
-    this.addEventListener('stat-row-retry', this.#onStripRetry);
 
     this.#enter();
   }
@@ -199,21 +282,8 @@ class ObservabilitySessionPage extends HTMLElement {
     this.#load();
   }
 
-  /**
-   * Retry on the KPI strip's failure state. Bound on the host and delegated,
-   * because the strip rewrites its own contents on every render — the button
-   * that fires this does not survive one.
-   */
-  #onStripRetry = () => {
-    const kpis = this.querySelector('#kpi-strip');
-    kpis.removeAttribute('error');
-    kpis.setAttribute('loading', '6');
-    this.#load();
-  };
-
   disconnectedCallback() {
     this.removeEventListener('route-update', this.#onRouteUpdate);
-    this.removeEventListener('stat-row-retry', this.#onStripRetry);
     clearTimeout(this.#pollTimer);
   }
 
@@ -275,14 +345,9 @@ class ObservabilitySessionPage extends HTMLElement {
       this.#renderTracesPlaceholder(
         'Traces unavailable',
         'The trace backend could not be reached for this session.',
+        icons.xCircle(),
       );
       this.#renderKpis();
-      // The turn strip's own skeleton is only ever cleared by `#renderTurn`,
-      // which the success path below reaches and this one does not — so it
-      // kept shimmering forever, leaving ~120px of dead animation between
-      // the failed KPI strip and the Traces panel. There are no turns to
-      // show and nothing still coming.
-      this.querySelector('#turn-strip').innerHTML = '';
       return;
     }
     this.#session = resp?.data?.session ?? null;
@@ -323,17 +388,6 @@ class ObservabilitySessionPage extends HTMLElement {
   #renderKpis() {
     const s = this.#session;
     const strip = this.querySelector('#kpi-strip');
-    // A failed session fetch and a session that simply has no metrics used to
-    // fold the strip away identically. They are different answers: one says
-    // there is nothing to count, the other that we could not count. The strip
-    // fails as one block because one request filled all of it.
-    if (!s && this.#tracesState === 'error') {
-      strip.hidden = false;
-      strip.removeAttribute('loading');
-      strip.setAttribute('error', "Couldn't load these metrics");
-      return;
-    }
-    strip.removeAttribute('error');
     // No session, no metrics. Leaving the skeleton up would claim the numbers
     // are still loading, so fold the whole thing away.
     if (!s) {
@@ -348,11 +402,17 @@ class ObservabilitySessionPage extends HTMLElement {
     // confident number is worse than an em dash — fmtInt/fmtUsd render null
     // as "—" already, so blanking the value is enough.
     const whole = (v) => (s.metrics_complete === false ? null : v);
+    const pills = s.metrics_complete === false ? null : tokenPills({
+      input: cost.prompt?.tokens,
+      output: cost.completion?.tokens,
+      cacheRead: s.cache_read_tokens,
+      cacheCreation: s.cache_creation_tokens,
+    });
     strip.items = [
-      { label: 'Total tokens', value: fmtInt(whole(s.token_usage?.total)) },
-      { label: 'Input tokens', value: fmtInt(whole(cost.prompt?.tokens)) },
-      { label: 'Output tokens', value: fmtInt(whole(cost.completion?.tokens)) },
-      { label: 'Cache tokens', value: fmtInt(whole(cacheTokens(s))) },
+      { label: 'Total tokens', value: fmtInt(pills?.total ?? null), hint: pills?.totalHint },
+      { label: 'Input tokens', value: fmtInt(pills?.input ?? null), hint: pills?.inputHint },
+      { label: 'Output tokens', value: fmtInt(pills?.output ?? null), hint: pills?.outputHint },
+      { label: 'Cache tokens', value: fmtInt(pills?.cache ?? null), hint: pills?.cacheHint },
       { label: 'Total cost', value: fmtUsd(whole(cost.total?.cost)) },
       // P50 here and on the session list, so the same session reads the same
       // number on both screens. `latency_avg` is served alongside it.
@@ -364,7 +424,13 @@ class ObservabilitySessionPage extends HTMLElement {
 
   /**
    * One turn per trace, except traces with no message of their own, which fold
-   * into the turn before them (HITL resumes and proxy-only hops).
+   * into the turn before them (HITL resumes and proxy-only hops) — or, when
+   * there is no previous turn yet (the content-less trace is first, or every
+   * trace so far has been content-less), into the next real turn instead.
+   * Without that second direction, a leading content-less trace had nothing
+   * to fold into and wrongly became its own blank turn — real usage numbers
+   * attached to a card with no question or answer, and the turn count one
+   * higher than the number of actual exchanges.
    * `chat_messages.trace_id` is what ties a turn's text to its spans; the
    * pairing walks the transcript in order so a user row is matched with the
    * assistant row that answered it.
@@ -381,6 +447,9 @@ class ObservabilitySessionPage extends HTMLElement {
     }
 
     this.#turns = [];
+    // Content-less traces seen before any real turn exists yet — held here
+    // and folded forward into the next real turn once one is pushed.
+    let pendingFold = [];
     for (const entry of traces) {
       const root = entry.root_span ?? {};
       const pair = byTrace.get(entry.trace_id);
@@ -389,27 +458,26 @@ class ObservabilitySessionPage extends HTMLElement {
       const question = this.#plainText(pair?.user?.content || root.input?.value);
       const answer = this.#plainText(pair?.assistant?.content || root.output?.value);
       const prev = this.#turns[this.#turns.length - 1];
-      // A trace carrying neither a question nor an answer is not a turn of its
-      // own — it is the rest of the turn before it (a HITL resume, a
-      // proxy-only hop). Fold it into that turn so the reader sees one chat
-      // entry with both traces under its root, not an empty second entry.
-      if (!question && !answer && prev) {
-        prev.traceIds.push(entry.trace_id);
-        prev.totalTokens = addCounts(prev.totalTokens, root.cumulative_token_count_total);
-        prev.inputTokens = addCounts(prev.inputTokens, root.input_tokens);
-        prev.outputTokens = addCounts(prev.outputTokens, root.output_tokens);
-        prev.cacheTokens = addCounts(prev.cacheTokens, cacheTokens(root));
-        prev.cost = addCounts(prev.cost, root.trace?.cost_summary?.total?.cost);
-        // Max, not sum: the folded trace usually overlaps the one it belongs
-        // to (same wall clock, different exporter), so summing double-counts.
-        prev.durationMs = root.latency_ms == null ? prev.durationMs
-          : Math.max(prev.durationMs ?? 0, root.latency_ms);
+      // A trace carrying neither a question nor an answer is not a turn of
+      // its own — it is the rest of some other turn (a HITL resume, a
+      // proxy-only hop). Fold it into the turn before it so the reader sees
+      // one chat entry with both traces under its root, not an empty second
+      // entry — or, with no previous turn yet, hold it for the next one.
+      if (!question && !answer) {
+        if (prev) {
+          foldTraceInto(prev, root, entry.trace_id);
+        } else {
+          pendingFold.push({ traceId: entry.trace_id, root });
+        }
         continue;
       }
-      this.#turns.push({
+      const turn = {
         traceId: entry.trace_id,
-        /// Every trace shown under this turn, primary first.
-        traceIds: [entry.trace_id],
+        // Built below: any content-less traces held from before this turn
+        // come first (they're chronologically earlier), then this trace —
+        // traceIds order must match wall-clock order, since the span-tree
+        // view later zips fetched trace details back to these ids by index.
+        traceIds: [],
         question,
         answer,
         startTime: root.start_time,
@@ -421,10 +489,45 @@ class ObservabilitySessionPage extends HTMLElement {
         // no token attributes.
         inputTokens: root.input_tokens ?? pair?.assistant?.input_tokens ?? null,
         outputTokens: root.output_tokens ?? pair?.assistant?.output_tokens ?? null,
-        cacheTokens: cacheTokens(root),
+        // Same fallback as the two above. Without it a turn whose spans carried no cache
+        // attribute showed real input and output next to an em dash for cache, even though
+        // the chat message row had the number all along (migration 0033).
+        // Prefer the trace's own counts, then the chat message row — the same fallback
+        // input/output already had. `/api/chat/sessions/{id}/messages` carries both halves
+        // (migration 0033), so the turn keeps the real read/write split rather than a sum.
+        cacheReadTokens: root.cache_read_tokens ?? pair?.assistant?.cache_read_tokens ?? null,
+        cacheCreationTokens:
+          root.cache_creation_tokens ?? pair?.assistant?.cache_creation_tokens ?? null,
         cost: root.trace?.cost_summary?.total?.cost ?? null,
         durationMs: root.latency_ms ?? pair?.assistant?.duration_ms ?? null,
-      });
+      };
+      for (const p of pendingFold) foldTraceInto(turn, p.root, p.traceId);
+      pendingFold = [];
+      turn.traceIds.push(entry.trace_id);
+      this.#turns.push(turn);
+    }
+
+    // Every trace in the session was content-less — there is no real turn to
+    // fold into. Surface the accumulated usage as its own turn rather than
+    // silently dropping real data.
+    if (pendingFold.length) {
+      const turn = {
+        traceId: pendingFold[0].traceId,
+        traceIds: [],
+        question: '',
+        answer: '',
+        startTime: null,
+        toolCalls: null,
+        totalTokens: null,
+        inputTokens: null,
+        outputTokens: null,
+        cacheReadTokens: null,
+        cacheCreationTokens: null,
+        cost: null,
+        durationMs: null,
+      };
+      for (const p of pendingFold) foldTraceInto(turn, p.root, p.traceId);
+      this.#turns.push(turn);
     }
 
     // ?trace_id= (from a chat's "Detailed trace") opens on that turn. Only on
@@ -528,11 +631,20 @@ class ObservabilitySessionPage extends HTMLElement {
     // Set after the markup lands: agent-steps takes the calls through a
     // method, not an attribute.
     strip.querySelector('agent-steps')?.loadToolCalls(turn.toolCalls);
+    // Same four pills as the session strip and the detail panes. `Total` comes from the
+    // parts rather than the trace's own `cumulative_token_count_total`, so Total = Input +
+    // Output holds here too and the three surfaces cannot drift apart.
+    const turnPills = tokenPills({
+      input: turn.inputTokens,
+      output: turn.outputTokens,
+      cacheRead: turn.cacheReadTokens,
+      cacheCreation: turn.cacheCreationTokens,
+    });
     this.querySelector('#turn-metrics').items = [
-      { label: 'Total tokens', value: fmtInt(turn.totalTokens) },
-      { label: 'Input tokens', value: fmtInt(turn.inputTokens) },
-      { label: 'Output tokens', value: fmtInt(turn.outputTokens) },
-      { label: 'Cache tokens', value: '—' },
+      { label: 'Total tokens', value: fmtInt(turnPills?.total ?? null), hint: turnPills?.totalHint },
+      { label: 'Input tokens', value: fmtInt(turnPills?.input ?? null), hint: turnPills?.inputHint },
+      { label: 'Output tokens', value: fmtInt(turnPills?.output ?? null), hint: turnPills?.outputHint },
+      { label: 'Cache tokens', value: fmtInt(turnPills?.cache ?? null), hint: turnPills?.cacheHint },
       { label: 'Cost', value: fmtUsd(turn.cost) },
       { label: 'Duration', value: fmtMs(turn.durationMs) },
     ];
@@ -565,6 +677,7 @@ class ObservabilitySessionPage extends HTMLElement {
       this.#renderTracesPlaceholder(
         'Traces unavailable',
         'The trace backend could not be reached for this turn.',
+        icons.xCircle(),
       );
       return;
     }
@@ -618,28 +731,11 @@ class ObservabilitySessionPage extends HTMLElement {
    * without a span to select, so `.traces-empty` folds it away and this one
    * empty state takes both columns.
    */
-  /**
-   * The trace pane's placeholder, for all three of its non-data states.
-   *
-   * Which one it is comes off `#tracesState`, which every caller has already
-   * set on the line above — rather than from an icon each passes in. That is
-   * what keeps the failure states drawing the shared failure look instead of
-   * each picking a glyph: the two that set `error` used to hand over
-   * `icons.xCircle()`, which reads as a plain absence, so "the backend could
-   * not be reached" was dressed the same way as "nothing was recorded here".
-   *
-   * @param {string} heading
-   * @param {string} description
-   * @param {string} [icon] Markup for the glyph, for the non-error states
-   *   only; `variant="error"` brings its own.
-   */
   #renderTracesPlaceholder(heading, description, icon) {
-    const failed = this.#tracesState === 'error';
     this.querySelector('#traces-pane').innerHTML = `
       ${this.#tracesTitle()}
-      <app-empty-state ${failed ? 'variant="error"' : ''}
-        heading="${escHtml(heading)}" description="${escHtml(description)}"
-        ${failed ? '' : `icon='${icon || ''}'`}></app-empty-state>
+      <app-empty-state heading="${escHtml(heading)}" description="${escHtml(description)}"
+        icon='${icon}'></app-empty-state>
     `;
     this.#syncPanes();
   }
@@ -728,11 +824,7 @@ class ObservabilitySessionPage extends HTMLElement {
       resp = await call('fetchSpanDetail', traceId, spanId);
     } catch (e) {
       console.error('Span fetch failed:', e);
-      // Was a bare line where the skeleton had been — true, but nothing
-      // that looked like the rest of the product and no way to try again.
-      pane.innerHTML = errorStateHtml("Couldn't load this span");
-      pane.querySelector('[data-retry]')
-        ?.addEventListener('click', () => this.#selectSpan(traceId, spanId));
+      pane.innerHTML = '<div class="pane-empty">Failed to load span details</div>';
       return;
     }
     this.#span = resp?.data?.span ?? null;
@@ -761,10 +853,14 @@ class ObservabilitySessionPage extends HTMLElement {
         : escHtml('No answer recorded for this turn')}</div></div>
       <div class="detail-section-title">Usage</div>
       <dl class="kv">
-        <dt>Total tokens</dt><dd>${escHtml(fmtInt(turn.totalTokens))}</dd>
-        <dt>Input tokens</dt><dd>${escHtml(fmtInt(turn.inputTokens))}</dd>
-        <dt>Output tokens</dt><dd>${escHtml(fmtInt(turn.outputTokens))}</dd>
-        <dt>Cache tokens</dt><dd>${escHtml(fmtInt(turn.cacheTokens))}</dd>
+        ${pillRows(tokenPills({
+          input: turn.inputTokens,
+          output: turn.outputTokens,
+          cacheRead: turn.cacheReadTokens,
+          cacheCreation: turn.cacheCreationTokens,
+        })).map(([k, v, hint]) => `
+        <dt${hint ? ` title="${escAttr(hint)}"` : ''}>${escHtml(k)}</dt>
+        <dd${hint ? ` title="${escAttr(hint)}"` : ''}>${escHtml(v)}</dd>`).join('')}
         <dt>Cost</dt><dd>${escHtml(fmtUsd(turn.cost))}</dd>
         <dt>Duration</dt><dd>${escHtml(fmtMs(turn.durationMs))}</dd>
       </dl>
@@ -885,17 +981,20 @@ class ObservabilitySessionPage extends HTMLElement {
     const s = this.#span;
     const cost = s.cost_summary ?? {};
     const rows = [
-      ['Total tokens', fmtInt(s.token_count_total)],
-      ['Input tokens', fmtInt(cost.prompt?.tokens)],
-      ['Output tokens', fmtInt(cost.completion?.tokens)],
-      ['Cache tokens', fmtInt(cacheTokens(s))],
-      ['Input cost', fmtUsd(cost.prompt?.cost)],
-      ['Output cost', fmtUsd(cost.completion?.cost)],
-      ['Total cost', fmtUsd(cost.total?.cost)],
-      ['Latency', fmtMs(s.latency_ms)],
+      ...pillRows(tokenPills({
+        input: cost.prompt?.tokens ?? s.input_tokens,
+        output: cost.completion?.tokens ?? s.output_tokens,
+        cacheRead: s.cache_read_tokens,
+        cacheCreation: s.cache_creation_tokens,
+      })),
+      ['Input cost', fmtUsd(cost.prompt?.cost), ''],
+      ['Output cost', fmtUsd(cost.completion?.cost), ''],
+      ['Total cost', fmtUsd(cost.total?.cost), ''],
+      ['Latency', fmtMs(s.latency_ms), ''],
     ];
-    return `<dl class="usage-grid">${rows.map(([k, v]) => `
-      <dt>${escHtml(k)}</dt><dd>${escHtml(v)}</dd>`).join('')}</dl>`;
+    return `<dl class="usage-grid">${rows.map(([k, v, hint]) => `
+      <dt${hint ? ` title="${escAttr(hint)}"` : ''}>${escHtml(k)}</dt>
+      <dd${hint ? ` title="${escAttr(hint)}"` : ''}>${escHtml(v)}</dd>`).join('')}</dl>`;
   }
 
   /**
