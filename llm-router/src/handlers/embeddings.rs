@@ -98,8 +98,6 @@ async fn embeddings_core(
             finish_reason: None,
             flow_id: Some(attribution.flow_id.clone()),
             attribution_source: Some(attribution.source),
-            // Never compressed: this surface does not go through `chat_core`.
-            compress_metadata: None,
             platform_paid: resolved.platform_paid,
         },
     );
@@ -137,7 +135,6 @@ mod tests {
                 config: None,
                 agent_pinned_model: None,
                 is_coding_agent: false,
-                compress_enabled: false,
             }))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {

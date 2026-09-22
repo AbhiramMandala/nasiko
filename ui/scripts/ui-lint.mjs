@@ -786,6 +786,39 @@ const rules = [
   },
 
   {
+    id: 'weave-imports-every-catalog-element',
+    enforce: 'zero',
+    why: 'dsl-catalog.json is what a model is ALLOWED to name; the import list in weave-surface.js is what will ' +
+         'actually be defined when it does. Two lists, one meaning, and nothing kept them equal — fifteen of ' +
+         'forty-one had drifted out, app-tabs and app-segmented-control among them. A generated surface naming a ' +
+         'missing one gets an inert element: right tag, no upgrade, no styling, attributes that go nowhere, and no ' +
+         'diagnostic, because the renderer did exactly what it was asked. It is also order-dependent — the SPA ' +
+         'shares one custom-element registry, so the component is defined if the user happened to visit a page ' +
+         'that imports it and undefined on a fresh load straight to /view, which makes the same DSL render two ' +
+         'different ways. The file already says it should hold every one of them; this makes that true.',
+    check({ rel, source, isJs }) {
+      if (!isJs || !rel.endsWith('common/features/weave-surface/weave-surface.js')) return [];
+      let catalog;
+      try {
+        catalog = JSON.parse(readFileSync(resolve(UI, 'common/surface/dsl-catalog.json'), 'utf8'));
+      } catch {
+        return [{ file: rel, line: 1, message: 'dsl-catalog.json is missing or unreadable' }];
+      }
+      const imported = new Set(
+        [...source.matchAll(/design-system\/([a-z0-9-]+)\/\1\.js/g)].map((m) => m[1]));
+      return Object.keys(catalog.components ?? {})
+        .filter((tag) => !imported.has(tag))
+        .map((tag) => ({
+          file: rel,
+          line: 1,
+          message: `${tag} is in dsl-catalog.json but never imported — a generated surface naming it renders an `
+            + 'inert element. Add: '
+            + `import '/common/design-system/${tag}/${tag}.js';`,
+        }));
+    },
+  },
+
+  {
     id: 'page-document-marks-its-page',
     enforce: 'zero',
     pages: true,

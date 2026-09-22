@@ -116,6 +116,8 @@ class WeaveDock extends HTMLElement {
   /** Diagnostics raised during the turn, so the answer can be qualified. */
   #faults = [];
   #chatSessionId = null;
+  /** The title generated for this conversation's first turn, reused by every later view. */
+  #conversationTitle = null;
   /** Something went wrong while the drawer was shut, so the launcher says so. */
   #unread = false;
   /** Show diagnostics in the runtime's own words. Off for everyone but us. */
@@ -318,6 +320,7 @@ class WeaveDock extends HTMLElement {
     this.#toggleHistory(false);
     this.#turns = [];
     this.#chatSessionId = null;
+    this.#conversationTitle = null;
     this.#disposeSession();
     this.#paintThread();
   }
@@ -332,13 +335,11 @@ class WeaveDock extends HTMLElement {
 
     let sessions = [];
     try {
-      // `surface=weave`: the dock is an embedded surface, so its chats are
-      // namespaced `weave_<contextId>` and hidden from every other session
-      // list (Sessions page, Orchestrator nav, `nasiko sessions`). This is the
-      // only caller that asks for them, and the filter is server-side, on the
-      // session-id prefix. 100 is the server's clamp on `limit`
-      // (`oss/server/src/chat/routes.rs`).
-      const body = await getJson('/chat/sessions?limit=100&surface=weave');
+      // `weave=true`: the dock's chats are hidden from every other session
+      // list (Sessions page, Orchestrator nav, `nasiko sessions`), so this is
+      // the only caller that asks for them — server-side, by session-id prefix.
+      // 100 is the server's clamp on `limit` (`oss/server/src/chat/routes.rs`).
+      const body = await getJson('/chat/sessions?limit=100&weave=true');
       const rows = body?.data ?? body ?? [];
       sessions = Array.isArray(rows) ? rows : [];
     } catch (err) {
@@ -372,6 +373,7 @@ class WeaveDock extends HTMLElement {
   async #openSession(sessionId) {
     this.#turns = [];
     this.#chatSessionId = sessionId;
+    this.#conversationTitle = null;
     this.#disposeSession();
     this.#paintThread();
 
@@ -401,6 +403,7 @@ class WeaveDock extends HTMLElement {
     this.#paintThread();
 
     if (lastView) {
+      this.#conversationTitle = lastView.title || null;
       hydrateView(lastView);
       navigate(`/view?id=${encodeURIComponent(lastView.id)}`);
       if (lastView.dsl) {
@@ -436,14 +439,20 @@ class WeaveDock extends HTMLElement {
     this.#turns.push({ role: 'user', text });
     this.#paintThread();
 
+    const isFirstTurn = !this.#chatSessionId;
     const sessionReady = this.#ensureChatSession(text);
     sessionReady.then((id) => this.#persistMessage(id, 'user', text));
 
     // The view exists before the answer does — the route it opens is what
     // renders the generating state, so navigating first is not a race.
     const view = createView(text);
+    if (isFirstTurn) {
+      this.#retitle(view, text, sessionReady);
+    } else if (this.#conversationTitle && this.#conversationTitle !== view.title) {
+      view.title = this.#conversationTitle;
+      renameView(view.id, this.#conversationTitle).catch(() => {});
+    }
     navigate(`/view?id=${encodeURIComponent(view.id)}`);
-    this.#retitle(view, text, sessionReady);
     this.#respond(view, sessionReady);
   }
 
@@ -476,28 +485,32 @@ class WeaveDock extends HTMLElement {
   /**
    * Replace the view's fallback title with the model's own, in place.
    *
+   * Only called for a conversation's first turn (see `#send`) — the result,
+   * success or fallback, becomes `#conversationTitle`, and every later turn in
+   * this conversation reuses it instead of asking the model again.
+   *
+   * On that first turn the prompt has usually already been titled server-side,
+   * to name the session row. Asking /weave/title for the same string would be
+   * a second identical completion — two LLM calls for one title, on the one
+   * turn where someone is watching a spinner. Both were visible in the log as
+   * a pair of warnings 30ms apart when the provider key went bad, which is how
+   * this was noticed at all. So the session's title is reused when there is
+   * one, and only a follow-up that opened no session pays for a completion.
+   *
    * Fired alongside `#respond`, not awaited by it: the title is either already
    * in hand from the session the turn just opened, or one short completion
-   * (`POST /weave/title`) that resolves well before the generation does. Either
-   * way, by the time an artifact card exists for this view its title has
-   * almost always landed. `#paintThread` covers the rare case where generation
-   * is fast enough that it has not.
+   * that resolves well before the generation does. Either way, by the time an
+   * artifact card exists for this view its title has almost always landed.
+   * `#paintThread` covers the rare case where generation is fast enough that
+   * it has not.
    */
   async #retitle(view, prompt, sessionReady) {
-    // On the first turn of a chat session this prompt has already been titled,
-    // server-side, to name the session row. Asking /weave/title for the same
-    // string is a second identical completion — two LLM calls for one title,
-    // on the one turn where someone is watching a spinner. Both were visible
-    // in the log as a pair of warnings 30ms apart when the provider key went
-    // bad, which is how this was noticed at all.
-    //
-    // Only the first turn. A follow-up reuses the session, and the session's
-    // title belongs to the prompt that opened it rather than to this one.
     await sessionReady;
     const reused = this.#sessionTitle;
     this.#sessionTitle = null;
 
     const title = reused || await generateViewTitle(prompt);
+    this.#conversationTitle = title || view.title;
     if (!title || title === view.title) return;
     view.title = title;
     try { await renameView(view.id, title); } catch { /* the mutation above still shows */ }
