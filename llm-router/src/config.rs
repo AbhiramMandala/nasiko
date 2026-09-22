@@ -94,6 +94,18 @@ pub struct GatewayConfig {
     /// uncertain band in the gate's logs so its size can be measured before `low` is
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
+
+    /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
+    /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
+    /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
+    pub compress_kill_switch: bool,
+    /// Skip payloads below this size — compressing them costs more than it saves.
+    pub compress_min_bytes: usize,
+    /// Which detected content types may be compressed.
+    pub compress_types: nasiko_compress::TypeMask,
+    pub compress_level: nasiko_compress::Level,
+    /// Measure without mutating: stats are recorded, the request is sent untouched.
+    pub compress_dry_run: bool,
 }
 
 impl Default for GatewayConfig {
@@ -125,6 +137,11 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            compress_kill_switch: true,
+            compress_min_bytes: 2048,
+            compress_types: nasiko_compress::TypeMask::DEFAULT,
+            compress_level: nasiko_compress::Level::Conservative,
+            compress_dry_run: false,
         }
     }
 }
@@ -202,6 +219,21 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
+            compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
+            // A bad label must not silently widen or narrow what gets rewritten, so an
+            // unparseable value falls back to the shipped default and says so.
+            compress_types: parse_or_warn(
+                "TOKEN_COMPRESS_TYPES",
+                nasiko_compress::TypeMask::from_labels,
+                nasiko_compress::TypeMask::DEFAULT,
+            ),
+            compress_level: parse_or_warn(
+                "TOKEN_COMPRESS_LEVEL",
+                nasiko_compress::Level::parse,
+                nasiko_compress::Level::Conservative,
+            ),
+            compress_dry_run: env_flag("TOKEN_COMPRESS_DRY_RUN", false),
         }
     }
 
@@ -235,6 +267,51 @@ fn env_parse_first<T: std::str::FromStr>(keys: &[&str], default: T) -> T {
         }
     }
     default
+}
+
+/// `"true"`/`"1"` is on, `"false"`/`"0"` is off, anything else (including unset) is `default`.
+fn env_flag(key: &str, default: bool) -> bool {
+    match std::env::var(key).ok().as_deref() {
+        Some("true" | "1") => true,
+        Some("false" | "0") => false,
+        _ => default,
+    }
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Parse an env var with `f`, warning loudly and falling back on a bad value.
+///
+/// Silently defaulting would be worse than usual here: these values decide how much of a
+/// request gets rewritten, so a typo that quietly widened the set would be invisible until a
+/// model started answering from elided data.
+fn parse_or_warn<T, E: std::fmt::Display>(
+    key: &str,
+    f: impl Fn(&str) -> Result<T, E>,
+    default: T,
+) -> T {
+    let Ok(raw) = std::env::var(key) else {
+        return default;
+    };
+    if raw.trim().is_empty() {
+        return default;
+    }
+    match f(&raw) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::startup",
+                env = key, value = %raw, error = %e,
+                "llm-router: unparseable value; using the built-in default"
+            );
+            default
+        }
+    }
 }
 
 fn env_or(key: &str, default: &str) -> String {

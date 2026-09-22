@@ -38,6 +38,12 @@ pub struct UsageRecord {
     pub attribution_source: Option<AttributionSource>,
     /// Whether the platform's key paid for this call (vs. the owner's own secret).
     pub platform_paid: bool,
+    /// Pre-serialized `metadata.compress` block, or `None` when compression did not run.
+    ///
+    /// A `Value` rather than a typed struct so this module stays a pure DB concern and does not
+    /// depend on the compression module's types. `None` leaves the row's metadata byte-identical
+    /// to what it was before compression existed.
+    pub compress_metadata: Option<serde_json::Value>,
 }
 
 /// Spawn the usage write so it never blocks the response.
@@ -74,10 +80,11 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
         None => (None, None, None, None, None),
     };
 
-    let metadata = serde_json::json!({
-        "key_source": if record.platform_paid { "platform" } else { "user_secret" },
-        "attribution": record.attribution_source.map(|s| s.as_label()),
-    });
+    let metadata = build_metadata(
+        record.platform_paid,
+        record.attribution_source,
+        record.compress_metadata,
+    );
 
     sqlx::query(
         r#"INSERT INTO token_usage
@@ -113,18 +120,63 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
     Ok(())
 }
 
+/// The row's `metadata` JSONB.
+///
+/// Extracted so the shape is assertable without a database — `token_usage.metadata` is read back
+/// by `platform_paid_agent_usage` (`oss/server/src/router/usage_meta.rs`), so a change to
+/// `key_source` here silently breaks flow billing.
+fn build_metadata(
+    platform_paid: bool,
+    attribution_source: Option<AttributionSource>,
+    compress: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut metadata = serde_json::json!({
+        "key_source": if platform_paid { "platform" } else { "user_secret" },
+        "attribution": attribution_source.map(|s| s.as_label()),
+    });
+    if let Some(compress) = compress {
+        metadata["compress"] = compress;
+    }
+    metadata
+}
+
 fn saturating_i32(value: i64) -> i32 {
     value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 #[cfg(test)]
 mod tests {
-    use super::saturating_i32;
+    use super::{build_metadata, saturating_i32};
 
     #[test]
     fn usage_values_saturate_without_wrapping() {
         assert_eq!(saturating_i32(i64::MAX), i32::MAX);
         assert_eq!(saturating_i32(i64::MIN), i32::MIN);
         assert_eq!(saturating_i32(42), 42);
+    }
+
+    /// The zero-behaviour-change guard: with no compression, the row must be exactly what it was
+    /// before `compress_metadata` existed.
+    #[test]
+    fn metadata_without_compression_is_unchanged() {
+        assert_eq!(
+            build_metadata(true, None, None),
+            serde_json::json!({ "key_source": "platform", "attribution": null })
+        );
+        assert_eq!(
+            build_metadata(false, None, None),
+            serde_json::json!({ "key_source": "user_secret", "attribution": null })
+        );
+    }
+
+    #[test]
+    fn compression_stats_are_added_under_their_own_key() {
+        let stats = serde_json::json!({ "applied": true, "bytes_in": 100, "bytes_out": 40 });
+        let metadata = build_metadata(true, None, Some(stats.clone()));
+
+        assert_eq!(metadata["compress"], stats);
+        // The keys flow billing reads must survive alongside it.
+        assert_eq!(metadata["key_source"], "platform");
+        assert!(metadata.get("attribution").is_some());
     }
 }

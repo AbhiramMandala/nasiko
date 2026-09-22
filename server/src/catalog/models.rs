@@ -36,6 +36,10 @@ pub struct Agent {
     /// extracted from its AgentCard `supportedInterfaces` at deploy time.
     /// Clients chat via `{base}/api/agents/{id}{transport_path}`.
     pub transport_path: Option<String>,
+    /// Per-agent opt-in for structural payload compression on this agent's LLM calls
+    /// (`nasiko-compress`, applied in the LLM router). Off unless explicitly enabled.
+    #[serde(default)]
+    pub compress_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -108,6 +112,8 @@ pub struct UpdateAgent {
     pub metadata: Option<serde_json::Value>,
     pub status: Option<String>,
     pub image: Option<String>,
+    /// Toggle payload compression for this agent. Omitted = leave as-is.
+    pub compress_enabled: Option<bool>,
     /// `true` (the default) for a real deploy — the new version becomes
     /// active, archiving whatever was running before. `nasiko push` sets
     /// this `false`: it only makes an image available in the registry
