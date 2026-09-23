@@ -335,13 +335,11 @@ class WeaveDock extends HTMLElement {
 
     let sessions = [];
     try {
-      // `surface=weave`: the dock is an embedded surface, so its chats are
-      // namespaced `weave_<contextId>` and hidden from every other session
-      // list (Sessions page, Orchestrator nav, `nasiko sessions`). This is the
-      // only caller that asks for them, and the filter is server-side, on the
-      // session-id prefix. 100 is the server's clamp on `limit`
-      // (`oss/server/src/chat/routes.rs`).
-      const body = await getJson('/chat/sessions?limit=100&surface=weave');
+      // `weave=true`: the dock's chats are hidden from every other session
+      // list (Sessions page, Orchestrator nav, `nasiko sessions`), so this is
+      // the only caller that asks for them — server-side, by session-id prefix.
+      // 100 is the server's clamp on `limit` (`oss/server/src/chat/routes.rs`).
+      const body = await getJson('/chat/sessions?limit=100&weave=true');
       const rows = body?.data ?? body ?? [];
       sessions = Array.isArray(rows) ? rows : [];
     } catch (err) {
@@ -733,12 +731,23 @@ class WeaveDock extends HTMLElement {
       // was pushed — `#retitle` mutates the view in place, and reading it
       // live here is what makes a rename after the card already rendered
       // actually show up on repaint.
+      //
+      // Counted here rather than stored on the view, because the version a
+      // card shows is "which of this thread's generations am I" — and that is
+      // a property of the thread, not of the view. A revision turn reuses the
+      // same view object (setViewSurface overwrites its `dsl`), so the view
+      // itself has no way to know it is the second one. Printing a literal
+      // "Version 1" on every card meant three revisions read as three
+      // identical artifacts, with nothing saying which was current.
+      const version = this.#turns
+        .filter((t) => t.role === 'artifact' && t.view?.id === turn.view.id)
+        .indexOf(turn) + 1;
       node.innerHTML = `
         <button class="artifact" type="button">
           ${icons.layers('artifact__icon', 16, 1.25)}
           <span class="artifact__text">
             <span class="artifact__title">${escHtml(turn.view.title)}</span>
-            <span class="artifact__sub">Version 1</span>
+            <span class="artifact__sub">Version ${version}</span>
           </span>
         </button>`;
       node.querySelector('.artifact').addEventListener('click',
