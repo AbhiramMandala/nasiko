@@ -239,6 +239,72 @@ async fn test_update_maf_name_via_put() {
     server.cleanup().await;
 }
 
+/// Regression: `update_maf` must persist each
+/// step's array POSITION as `step_index`, never the caller-supplied value verbatim — otherwise a
+/// client that sends reordered/non-sequential `step_index`s desyncs the stored steps from their
+/// `Vec` position, and the MAF executor's HITL resume path (`run_maf_from`) indexes that `Vec` by
+/// `step_index` unchecked, which can panic and take down the whole MAF worker.
+#[tokio::test]
+#[serial]
+async fn test_update_maf_normalizes_step_index_to_array_position() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+    let agent_id = seed_agent(&server, user_id).await;
+
+    let res: Value = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflows"))
+            .json(&create_maf_body("Reindex Test", agent_id)),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let maf_id = res["data"]["id"].as_str().unwrap();
+
+    // Deliberately bogus, non-sequential `step_index` values on the wire — a client sending
+    // reordered or duplicated indices must never be trusted verbatim.
+    let update_res = auth(
+        server
+            .client
+            .put(server.url(&format!("/api/maf/workflow/{maf_id}")))
+            .json(&json!({
+                "steps": [
+                    { "step_index": 7, "agent_id": agent_id, "task_description": "first step" },
+                    { "step_index": 7, "agent_id": agent_id, "task_description": "second step" },
+                    { "step_index": 2, "agent_id": agent_id, "task_description": "third step" },
+                ]
+            })),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(update_res.status(), 200);
+    let updated: Value = update_res.json().await.unwrap();
+
+    let steps = updated["data"]["maf_json"]["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 3);
+    for (i, step) in steps.iter().enumerate() {
+        assert_eq!(
+            step["step_index"].as_i64().unwrap(),
+            i as i64,
+            "stored step_index must be the array position, never the caller-supplied value"
+        );
+    }
+    // Order (and therefore content) must follow submission order, not the bogus indices.
+    assert_eq!(steps[0]["task_description"], "first step");
+    assert_eq!(steps[1]["task_description"], "second step");
+    assert_eq!(steps[2]["task_description"], "third step");
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn test_delete_maf_soft_delete() {
