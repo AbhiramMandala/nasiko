@@ -259,7 +259,6 @@ mod tests {
         dialect: ProviderDialect,
     ) -> ResolvedConfig {
         ResolvedConfig {
-            compress_enabled: false,
             provider: provider.into(),
             model: "m".into(),
             litellm_model: format!("{provider}/m"),

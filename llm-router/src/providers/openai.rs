@@ -245,7 +245,6 @@ mod tests {
 
     fn resolved(model: &str, temperature: Option<f64>) -> ResolvedConfig {
         ResolvedConfig {
-            compress_enabled: false,
             provider: "openai".into(),
             model: model.into(),
             litellm_model: format!("openai/{model}"),

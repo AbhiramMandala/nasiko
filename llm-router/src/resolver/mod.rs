@@ -103,9 +103,6 @@ pub struct ResolvedConfig {
     /// model-routing boundary signals from the transcript instead of the (permanently
     /// unreachable, for these agents) `flows`-table lookup.
     pub is_coding_agent: bool,
-    /// Whether this agent opted into payload compression. Per-agent by design: compression
-    /// changes what the model sees, so its blast radius is one agent. See `crate::compress`.
-    pub compress_enabled: bool,
 }
 
 /// What the incoming request itself asked for, used **only** when the agent has no
@@ -137,8 +134,6 @@ pub struct AgentConfigResult {
     /// `flows` row; the chat handler uses this to derive boundary signals from the
     /// transcript instead ([`crate::routing::BoundarySignals::for_coding_agent`]).
     pub is_coding_agent: bool,
-    /// Per-agent opt-in for payload compression (`agents.compress_enabled`).
-    pub compress_enabled: bool,
 }
 
 /// Where a custom endpoint lives and how it wants to be addressed. Carried on
@@ -286,18 +281,15 @@ impl RegistryStore for PgRegistry {
         // The agent's attached config id, owner, agent-level pin, and server-managed
         // coding-agent identity. Generic agent metadata must never grant this exemption.
         // A missing row → NoRegistryEntry upstream.
-        let agent: Option<(Option<Uuid>, Uuid, Option<String>, bool, bool)> = sqlx::query_as(
+        let agent: Option<(Option<Uuid>, Uuid, Option<String>, bool)> = sqlx::query_as(
             "SELECT llm_config_id, owner_id, pinned_model, \
-                    coding_agent_integration_id IS NOT NULL, \
-                    compress_enabled \
+                    coding_agent_integration_id IS NOT NULL \
              FROM agents WHERE id = $1",
         )
         .bind(agent_id)
         .fetch_optional(&self.db)
         .await?;
-        let Some((config_id, owner_id, agent_pinned_model, is_coding_agent, compress_enabled)) =
-            agent
-        else {
+        let Some((config_id, owner_id, agent_pinned_model, is_coding_agent)) = agent else {
             return Ok(None);
         };
 
@@ -314,7 +306,6 @@ impl RegistryStore for PgRegistry {
             config,
             agent_pinned_model,
             is_coding_agent,
-            compress_enabled,
         }))
     }
 
@@ -409,7 +400,6 @@ pub async fn resolve(
     let llm_config = agent_result.config;
     let agent_pinned_model = agent_result.agent_pinned_model;
     let is_coding_agent = agent_result.is_coding_agent;
-    let compress_enabled = agent_result.compress_enabled;
     let has_llm_config = llm_config.is_some();
     let secret_name = plan_secret_name(&llm_config);
 
@@ -476,7 +466,6 @@ pub async fn resolve(
             dialect: c.dialect.clone(),
         }),
         is_coding_agent,
-        compress_enabled,
     };
     tracing::info!(
         target: "nasiko::llm_router::resolver",
@@ -534,13 +523,11 @@ async fn load_llm_config(
         let agent_pin = agent_row
             .as_ref()
             .and_then(|r| r.agent_pinned_model.clone());
-        let compress_enabled = agent_row.as_ref().is_some_and(|r| r.compress_enabled);
         let is_coding_agent = agent_row.is_some_and(|r| r.is_coding_agent);
         return Ok(AgentConfigResult {
             config: hit,
             agent_pinned_model: agent_pin,
             is_coding_agent,
-            compress_enabled,
         });
     }
     tracing::debug!(
@@ -758,10 +745,9 @@ mod tests {
             Ok(self.config.as_ref().map(|c| AgentConfigResult {
                 config: c.clone(),
                 agent_pinned_model: self.agent_pinned_model.clone(),
-                // Coding-agent detection and compression opt-in are exercised at the
-                // handler level (handlers::chat), where they're actually consumed.
+                // Coding-agent detection is exercised at the handler level
+                // (handlers::chat), where it's actually consumed.
                 is_coding_agent: false,
-                compress_enabled: false,
             }))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
