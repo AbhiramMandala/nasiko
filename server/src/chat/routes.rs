@@ -194,7 +194,10 @@ async fn list_sessions(
     let cursor_anchor = params.cursor.as_deref().and_then(decode_cursor);
 
     let surface = match params.surface.as_deref().map(str::trim) {
-        Some(name) if name.is_empty() => None,
+        // `Some("")`, not a guard: clippy::redundant_guards, and the literal
+        // says the same thing in fewer moving parts. `str::trim` above means an
+        // all-whitespace value arrives here as the empty string too.
+        Some("") => None,
         Some(name) if !valid_surface(name) => {
             return (
                 StatusCode::BAD_REQUEST,

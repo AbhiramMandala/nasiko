@@ -74,6 +74,18 @@ function byModelPage(req) {
 /**
  * The DSL a generation produces, as the model would stream it.
  *
+ * This file stays in the published OSS slice even though `/weave` itself is
+ * an enterprise route, served from a shell the public tree does not carry:
+ * `GENERATED_DSL` is the fixture `ui/tests/surface-fixture.test.mjs` runs
+ * through the real parser and materializer, and that test is published
+ * alongside the surface runtime in `ui/common/surface/`. A published test
+ * cannot import from a private overlay, so the fixture cannot move until it
+ * is decoupled from this preview.
+ *
+ * The enterprise paths are described rather than spelled on purpose: the
+ * standalone-build gate greps the published tree for them, and a docblock
+ * that names one is the leak it is there to catch.
+ *
  * Exported rather than inlined in the scenario so `ui/tests/surface-fixture.test.mjs`
  * can run this exact text through the real parser and materializer. A fixture
  * that has drifted from what the runtime actually does is worse than no
