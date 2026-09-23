@@ -74,13 +74,6 @@ function byModelPage(req) {
 /**
  * The DSL a generation produces, as the model would stream it.
  *
- * This file stays in the published OSS slice even though `/weave` itself is
- * an EE route (its shell is `ui/ee/web/weave.html`): `GENERATED_DSL` is the
- * fixture `ui/tests/surface-fixture.test.mjs` runs through the real parser
- * and materializer, and that test is published alongside the surface runtime
- * in `ui/common/surface/`. A published test cannot import from `ui/ee/`, so
- * the fixture cannot move until it is decoupled from this preview.
- *
  * Exported rather than inlined in the scenario so `ui/tests/surface-fixture.test.mjs`
  * can run this exact text through the real parser and materializer. A fixture
  * that has drifted from what the runtime actually does is worse than no

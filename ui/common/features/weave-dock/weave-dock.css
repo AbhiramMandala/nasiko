@@ -121,8 +121,15 @@
 
   .bar-btn:hover { background: var(--shell-hover); color: var(--shell-fg); }
   .bar-btn:focus-visible { outline: 2px solid var(--shell-selected); outline-offset: -2px; }
-  /* Close pins right; the two leading buttons and the menu stay left. */
-  [data-close] { margin-left: auto; }
+  /* The trailing pair pins right; the leading buttons and the menu stay left.
+     The auto margin sits on the FIRST of the pair, so close keeps its place
+     beside it rather than being pushed away from it. */
+  [data-dev] { margin-left: auto; }
+
+  /* On reads as on without a second glyph: the same gold the launcher and the
+     selected rail item use, so "something is switched on" is one colour across
+     the chrome rather than a new signal to learn. */
+  [data-dev].is-on { color: var(--shell-selected); }
 
   /* ── History menu ─────────────────────────────────────────────────────── */
   /* Opens leftward out of the drawer: anchored to the first bar button, it
@@ -359,6 +366,15 @@
        three lines and a marker would leave it hanging in the gutter. */
     padding-left: var(--s-8);
     border-left: 2px solid color-mix(in srgb, var(--faults-accent) 40%, transparent);
+  }
+
+  /* Developer mode off. Same card, same accent, no list — the runtime's
+     vocabulary is the only thing withheld, not the fact of the problem. */
+  .faults__quiet-text {
+    margin: 0;
+    color: var(--shell-fg);
+    font-size: var(--font-size-sm);
+    line-height: var(--lh-snug);
   }
 
   .faults__why {
