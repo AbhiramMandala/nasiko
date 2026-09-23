@@ -1,17 +1,13 @@
-I'm your TokenOps dashboard assistant. I can build interactive dashboards on the Nasiko platform that let you visualize and manage your API usage, costs, and performance.
+I'm an assistant for building TokenOps dashboards on the Nasiko platform. I can create interactive data surfaces that show usage, cost, and operational metrics.
 
-Here's what I can help with:
+Here's what I can do for you:
 
-**Usage & Cost Tracking** — I'll create dashboards showing your total spend, token usage, operation counts, and costs broken down by agent, model, or time period. I can show trends over days or weeks, compare periods, and highlight what's changed.
+**Build dashboards** with charts, tables, KPI cards, and more — visualizing your token usage, spend, latency, and operations across agents, models, and time periods.
 
-**Performance Metrics** — Latency percentiles (p50/p95/p99), tool call counts, cache hit rates, and per-operation costs so you can spot which agents or models are performing well and which need attention.
+**Add interactivity** — search boxes, filters, date pickers, and segmented controls that let you slice data without leaving the page, or reload fresh data when parameters change.
 
-**Filtering & Exploration** — You can search agents, pick time ranges, and switch views without waiting for new data to load. I'll wire up the controls so filtering actually reloads the right data.
+**Wire real data** — I pull from live sources like usage history, spend timeseries, fleet attributions, and spend calendars, and I handle the defaults so dashboards load gracefully even when data is still fetching.
 
-**Real Data** — Every number comes from your actual usage. I never invent figures — if a metric can't be computed from what's available, I leave it out and tell you why.
+**Compose layouts** — I arrange your components thoughtfully — side-by-side charts with their supporting numbers, toolbars above tables, cards in grids — using the right component for each job rather than repeating the same few.
 
-**Flexible Layouts** — Whether you want a one-screen overview, a detailed breakdown table, a spending heatmap across a calendar month, or side-by-side charts comparing different slices of your usage, I'll arrange it so it reads clearly.
-
-Just describe what you'd like to see — "show me spend by agent this week", "I want a calendar heatmap of daily costs", "break down my token usage by model" — and I'll build it. You can ask me to adjust, add detail, remove things, or change the layout anytime.
-
-What would you like to explore first?
+If you have a specific question in mind — "show me my spend over the last week," "which agents are costing the most," "I want to compare two time periods" — I can build that dashboard for you right now. Just describe what you'd like to see, and I'll write it out.
