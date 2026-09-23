@@ -11,9 +11,14 @@
  * and is answered by the same `<hitl-card>` the orchestrator and agent chat
  * mount — one component for every kind of pause, because
  * `POST /api/hitl/{id}/resolve` depends only on `kind`. Only the plumbing
- * differs: there is no stream to reconnect to, so the pending rows come from
- * `GET /api/maf/execution/{id}` (which carries `hitl` alongside the exec) and
- * resolving just re-polls — the MAF worker resumes the run server-side.
+ * differs: there is no stream to reconnect to, so the rows ride on the list
+ * itself (`GET /api/maf/executions` carries `hitl` per run) and resolving just
+ * re-polls — the MAF worker resumes the run server-side.
+ *
+ * The rows are handed on whatever their status, so a run that has moved on
+ * still shows what the human answered: the answer lives only on the HITL row,
+ * and a finished run that hid it read as the workflow acting on an answer
+ * nobody could see.
  *
  * @element executions-page
  */
@@ -82,9 +87,6 @@ class ExecutionsPage extends HTMLElement {
   #workflow = 'all';
   #time = 'any';
   #expanded = new Set();
-  /** exec id → the `hitl` rows GET /api/maf/execution/{id} last returned.
-   *  Only paused runs are ever fetched, so this stays empty in the normal case. */
-  #hitl = new Map();
   #pollTimer = null;
   #loaded = false;
 
@@ -161,7 +163,6 @@ class ExecutionsPage extends HTMLElement {
   async #load() {
     try {
       this.#executions = await call('fetchAllExecutions');
-      await this.#loadHitl();
       this.#loaded = true;
       this.#renderList();
       this.#pollIfActive();
@@ -187,37 +188,14 @@ class ExecutionsPage extends HTMLElement {
     this.#pollTimer = setTimeout(() => this.#refresh(), POLL_MS);
   }
 
-  /** One poll pass: re-read the list, re-read the paused runs' HITL rows, patch
-   *  what is on screen, and schedule the next one. */
+  /** One poll pass: re-read the list (HITL rows and all), patch what is on
+   *  screen, and schedule the next one. */
   async #refresh() {
     try {
       this.#executions = await call('fetchAllExecutions');
-      await this.#loadHitl();
       this.#refreshActive();
     } catch { /* transient poll failure — keep trying */ }
     this.#pollIfActive();
-  }
-
-  /**
-   * Pending HITL rows for the paused runs.
-   *
-   * The list endpoint carries no `hitl`; the per-execution one does, and only a
-   * run at `awaiting_human` can have any — so this is at most one request per
-   * paused run and none at all in the ordinary case. A failure is left as "no
-   * rows yet": the next poll asks again, and a run that cannot show its card is
-   * better than a list that stops updating.
-   */
-  async #loadHitl() {
-    const paused = this.#executions.filter((e) => e.status === 'awaiting_human');
-    for (const id of [...this.#hitl.keys()]) {
-      if (!paused.some((e) => e.id === id)) this.#hitl.delete(id);
-    }
-    await Promise.all(paused.map(async (exec) => {
-      try {
-        const full = await call('fetchExecution', exec.id);
-        this.#hitl.set(exec.id, (full?.hitl || []).filter((r) => r.status === 'pending'));
-      } catch { /* leave whatever the last pass found */ }
-    }));
   }
 
   /** In-place update of open active cards; full re-render only when the
@@ -330,7 +308,9 @@ class ExecutionsPage extends HTMLElement {
       // Lets the timeline account for planning/synthesis, which belong to
       // the run and appear in no step row.
       el.totalTokens = exec.tokens_used || 0;
-      el.hitl = this.#hitl.get(exec.id) || [];
+      // Pending and decided alike: a decided row is how a finished run shows
+      // what the human answered, which is the only record of their part in it.
+      el.hitl = exec.hitl || [];
     }
   }
 

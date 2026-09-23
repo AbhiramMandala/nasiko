@@ -20,8 +20,9 @@ const pipelineSteps = (states) => [
   ["Publishing Agent", "Queue approved posts"],
 ].map(([agent, task], i) => stepResult(i, agent, task, states[i] || {}));
 
-// GET /api/maf/execution/{id} answers with the exec plus its `hitl` rows —
-// that is the only place a paused run's pending requests come from.
+// Every execution endpoint answers with the exec plus its `hitl` rows — the
+// list included, so a run shows both what it is waiting on and, once it has
+// moved on, what the human answered.
 const hitlRow = (id, kind, question, stepIndex) => ({
   id, kind, status: "pending", resume_status: "not_resumed", question,
   human_response: null,
@@ -32,8 +33,14 @@ const hitlRow = (id, kind, question, stepIndex) => ({
   allowed_actions: [], expires_at: null, created_at: ago(1), resolved_at: null,
 });
 
+const pausedHitl = [hitlRow("h-1", "tool_approval", {
+  message: "Research Agent needs to read a Linear project before it can continue.",
+  tool_name: "get_project", connector_id: "c-linear", connector_name: "Linear",
+}, 1)];
+
 const pausedExecution = {
   id: "ex-165", execution_number: 165, maf_id: "wf-001", status: "awaiting_human",
+  hitl: pausedHitl,
   attempt_count: 1, max_attempts: 3, tokens_used: 365,
   started_at: ago(2), completed_at: null, duration_ms: null, output: null, error: null,
   created_at: ago(2), workflow_name: "Social media content pipeline", workflow_status: "active",
@@ -90,16 +97,8 @@ const executions = [
 export default {
   fetch: [
     [{ method: "GET", path: /^\/api\/maf\/executions/ }, paged(executions)],
-    [{ method: "GET", path: /^\/api\/maf\/execution\/ex-165/ }, {
-      data: {
-        ...pausedExecution,
-        hitl: [hitlRow("h-1", "tool_approval", {
-          message: "Research Agent needs to read a Linear project before it can continue.",
-          tool_name: "get_project", connector_id: "c-linear", connector_name: "Linear",
-        }, 1)],
-      },
-      status_code: 200, message: "ok",
-    }],
+    [{ method: "GET", path: /^\/api\/maf\/execution\/ex-165/ },
+      { data: pausedExecution, status_code: 200, message: "ok" }],
   ],
   scenarios: {
     history: async (page) => {

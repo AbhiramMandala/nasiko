@@ -495,9 +495,9 @@ class WorkflowDetailPage extends HTMLElement {
     // Lets the timeline account for planning/synthesis, which belong to the
     // run and appear in no step row.
     stepsEl.totalTokens = exec.tokens_used || 0;
-    // A paused run is answered here, in the step that paused — `fetchExecution`
-    // returns the pending rows alongside the exec, so this page already had
-    // them and was simply dropping them on the floor.
+    // A paused run is answered here, in the step that paused, and a run that has
+    // moved on still shows what was answered — the exec carries every row,
+    // decided ones included, and the timeline renders those as receipts.
     stepsEl.hitl = exec.hitl || [];
 
     const outputSec = this.querySelector('#run-output');

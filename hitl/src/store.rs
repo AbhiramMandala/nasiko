@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -92,6 +94,28 @@ pub trait HitlStore: Send + Sync {
         maf_execution_id: Uuid,
         owner_user_id: Uuid,
     ) -> Result<Vec<HitlRequest>, HitlError>;
+    /// The same rows as [`HitlStore::list_for_maf_execution`], for a whole page of executions at
+    /// once, keyed by `maf_execution_id` — the discovery path for the two execution *list*
+    /// endpoints, which would otherwise issue one query per row. `owner_user_id` carries the same
+    /// requirement as the single-execution method: it must be the value the caller already
+    /// validated against `maf_executions.user_id`.
+    ///
+    /// The default implementation loops, which is correct but issues one query per id; a real
+    /// store overrides it with a single batched query.
+    async fn list_for_maf_executions(
+        &self,
+        maf_execution_ids: &[Uuid],
+        owner_user_id: Uuid,
+    ) -> Result<HashMap<Uuid, Vec<HitlRequest>>, HitlError> {
+        let mut out: HashMap<Uuid, Vec<HitlRequest>> = HashMap::new();
+        for id in maf_execution_ids {
+            let rows = self.list_for_maf_execution(*id, owner_user_id).await?;
+            if !rows.is_empty() {
+                out.insert(*id, rows);
+            }
+        }
+        Ok(out)
+    }
     /// The exact `UPDATE ... WHERE status = 'pending' RETURNING *` from §5. `status` is the
     /// human's decision (`Resolved` or, for future `tool_approval` rejects, `Rejected`).
     async fn resolve(
@@ -216,7 +240,12 @@ pub async fn resolve_display_row(
         return row.clone();
     };
     match store.get(linked_id).await {
-        Ok(Some(linked)) if is_valid_mcp_mirror_link(&linked, caller_owner_id, row.agent_id) => {
+        Ok(Some(linked))
+            if linked.owner_user_id == caller_owner_id
+                && linked.origin == HitlOrigin::McpTool
+                && linked.status == HitlStatus::Pending
+                && linked.agent_id == row.agent_id =>
+        {
             HitlRequest {
                 id: linked.id,
                 kind: linked.kind,
@@ -226,24 +255,6 @@ pub async fn resolve_display_row(
         }
         _ => row.clone(),
     }
-}
-
-/// Whether `linked` — a row fetched by an agent-controlled `hitl_request_id` pointer embedded in
-/// someone else's `question` — is safe to treat as the real `mcp_tool` pause that pointer claims
-/// to identify. `question`/its `metadata` is an untrusted A2A response echoed straight from the
-/// agent, so an agent can stamp *any* UUID there; without this check, that UUID would resolve
-/// straight to another user's row (the #383 mirror-hijack family). All four conditions are
-/// load-bearing: owner scopes it to the same human, `origin == McpTool` and `status == Pending`
-/// confirm it's genuinely the live MCP-gateway pause (not some other, already-settled, or
-/// wrong-kind row that merely shares an id), and `agent_id` ties it to the same deployment that
-/// raised `row`. Shared by every site that dereferences this pointer — currently
-/// [`resolve_display_row`] (UI display) and `oss/server/src/hitl/mod.rs::deliver`'s continuation-
-/// buffer aliasing — so there is exactly one place this predicate can drift from correct.
-pub fn is_valid_mcp_mirror_link(linked: &HitlRequest, owner_user_id: Uuid, agent_id: Uuid) -> bool {
-    linked.owner_user_id == owner_user_id
-        && linked.origin == HitlOrigin::McpTool
-        && linked.status == HitlStatus::Pending
-        && linked.agent_id == agent_id
 }
 
 /// Mirrors the `hitl_requests` table with plain column types (`String` for the four CHECK-backed
@@ -536,29 +547,9 @@ impl HitlStore for PgHitlStore {
         // generous cap for what is, per row, one human decision in one conversation — the inner
         // query takes the most recent 200 by `created_at`, then the outer re-sorts them oldest
         // first to preserve this method's documented ordering.
-        //
-        // `chat_session_id` (the column) is only ever populated for an `Orchestrator`-origin row
-        // — the stable top-level session a sub-agent dispatch was mirrored under; its `context_id`
-        // is that sub-agent's own unstable per-dispatch context, never a real session, and must
-        // never be treated as one. `AgentProxy`/`DirectChat`-origin rows never set
-        // `chat_session_id` at all; for those, `context_id` already IS the stable, caller-facing
-        // session id (no separate orchestrator-level session to distinguish it from — same
-        // reasoning as `oss/server/src/hitl/mod.rs::stable_session_id`). Matching only the
-        // `chat_session_id` column here meant this query returned empty for *every* direct-chat
-        // session, no matter how many real HITL rows it had (confirmed live: two resolved
-        // `input_required` rows for a real `archive` direct-chat session, zero returned) — fixed
-        // by falling back to `context_id` only when `chat_session_id` is absent, mirroring
-        // `stable_session_id`'s `unwrap_or` precisely: never both, never neither's absence
-        // silently matching the wrong column.
-        // `(chat_session_id = $1 OR (chat_session_id IS NULL AND context_id = $1))`, not
-        // `COALESCE(chat_session_id, context_id) = $1` — equivalent, but sargable: `COALESCE`
-        // over a column defeats any index on either column, forcing `owner_user_id` alone to
-        // carry the whole query.
         let rows: Vec<HitlRequestRow> = sqlx::query_as(
             "SELECT * FROM (
-                 SELECT * FROM hitl_requests
-                  WHERE (chat_session_id = $1 OR (chat_session_id IS NULL AND context_id = $1))
-                    AND owner_user_id = $2
+                 SELECT * FROM hitl_requests WHERE chat_session_id = $1 AND owner_user_id = $2
                   ORDER BY created_at DESC LIMIT 200
              ) recent ORDER BY created_at ASC",
         )
@@ -582,6 +573,36 @@ impl HitlStore for PgHitlStore {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(HitlRequest::try_from).collect()
+    }
+
+    /// One query for the whole page, rather than the trait's default loop. Empty in, empty out —
+    /// `= ANY('{}')` would be a pointless round trip for a page of runs that never paused.
+    async fn list_for_maf_executions(
+        &self,
+        maf_execution_ids: &[Uuid],
+        owner_user_id: Uuid,
+    ) -> Result<HashMap<Uuid, Vec<HitlRequest>>, HitlError> {
+        if maf_execution_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows: Vec<HitlRequestRow> = sqlx::query_as(
+            "SELECT * FROM hitl_requests \
+             WHERE maf_execution_id = ANY($1) AND owner_user_id = $2 ORDER BY created_at",
+        )
+        .bind(maf_execution_ids)
+        .bind(owner_user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out: HashMap<Uuid, Vec<HitlRequest>> = HashMap::new();
+        for row in rows {
+            let row = HitlRequest::try_from(row)?;
+            // `maf_execution_id` is the column just filtered on, so it is never NULL here.
+            if let Some(exec_id) = row.maf_execution_id {
+                out.entry(exec_id).or_default().push(row);
+            }
+        }
+        Ok(out)
     }
 
     async fn resolve(
@@ -1199,68 +1220,5 @@ mod resolve_display_row_tests {
         // sub-agent turn — is untouched.
         assert_eq!(display.task_id, mirror.task_id);
         assert_eq!(display.context_id, mirror.context_id);
-    }
-
-    // ─── is_valid_mcp_mirror_link (the extracted predicate, tested directly) ───────────────
-    //
-    // `resolve_display_row`'s own tests above already exercise this indirectly, but each check
-    // here isolates exactly one of the four conditions failing — the direct way to prove the
-    // predicate rejects an attacker who gets everything right except one field, which is the
-    // realistic shape of the #383 hijack: a real, pending, same-agent `mcp_tool` row that just
-    // doesn't belong to the caller.
-
-    fn mcp_row(owner_user_id: Uuid, agent_id: Uuid) -> HitlRequest {
-        let mut r = row(
-            Uuid::new_v4(),
-            HitlOrigin::McpTool,
-            HitlKind::ToolApproval,
-            json!({ "message": "Approve creating a GitHub issue?" }),
-        );
-        r.owner_user_id = owner_user_id;
-        r.agent_id = agent_id;
-        r
-    }
-
-    #[test]
-    fn matching_row_is_a_valid_link() {
-        let owner = Uuid::new_v4();
-        let agent = Uuid::new_v4();
-        assert!(is_valid_mcp_mirror_link(
-            &mcp_row(owner, agent),
-            owner,
-            agent
-        ));
-    }
-
-    #[test]
-    fn wrong_owner_is_rejected() {
-        let agent = Uuid::new_v4();
-        let linked = mcp_row(Uuid::new_v4(), agent);
-        assert!(!is_valid_mcp_mirror_link(&linked, Uuid::new_v4(), agent));
-    }
-
-    #[test]
-    fn wrong_agent_is_rejected() {
-        let owner = Uuid::new_v4();
-        let linked = mcp_row(owner, Uuid::new_v4());
-        assert!(!is_valid_mcp_mirror_link(&linked, owner, Uuid::new_v4()));
-    }
-
-    #[test]
-    fn wrong_origin_is_rejected() {
-        let owner = Uuid::new_v4();
-        let agent = Uuid::new_v4();
-        let mut linked = mcp_row(owner, agent);
-        linked.origin = HitlOrigin::DirectChat;
-        assert!(!is_valid_mcp_mirror_link(&linked, owner, agent));
-    }
-
-    #[test]
-    fn wrong_status_is_rejected() {
-        let owner = Uuid::new_v4();
-        let agent = Uuid::new_v4();
-        let mut linked = mcp_row(owner, agent);
-        linked.status = HitlStatus::Resolved;
-        assert!(!is_valid_mcp_mirror_link(&linked, owner, agent));
     }
 }

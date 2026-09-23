@@ -229,17 +229,22 @@ struct ExecResponse {
     created_at: DateTime<Utc>,
 }
 
-/// `GET /maf/workflow/result/{exec_id}` and `GET /maf/execution/{id}` only — additive on top of
-/// `ExecResponse` (`#[serde(flatten)]` keeps every existing field byte-identical). `hitl` is how
-/// the frontend recovers a paused step's `hitl_requests.id` directly from the execution it's
-/// already polling — see `hitl_rows_for_execution` — so it never has to call
-/// `GET /api/hitl/pending` to correlate a MAF pause. Not added to `ExecResponse` itself: doing so
-/// would also touch `list_executions`/`list_all_executions`, which return many rows at once and
-/// have no comparable "resume this one" use case to justify an extra query per row.
+/// Additive on top of whichever execution shape the endpoint already returned —
+/// `#[serde(flatten)]` keeps every existing field byte-identical. `hitl` is how the frontend
+/// recovers a paused step's `hitl_requests.id` directly from the execution it's already polling,
+/// so it never has to call `GET /api/hitl/pending` to correlate a MAF pause — and, once the run
+/// has moved on, how it shows what the human actually answered.
+///
+/// Generic over the inner exec because all four execution endpoints carry it: the two
+/// single-execution ones over `ExecResponse`, and the two list ones over `ExecResponse` /
+/// `ExecWithWorkflowResponse`. The lists earn it despite returning many rows at once: a decided
+/// row is the only record of a human's answer, and without it a finished run showed the workflow
+/// acting on an answer nobody could see. They pay one batched query for the whole page
+/// (`HitlStore::list_for_maf_executions`), not one per row.
 #[derive(Serialize)]
-struct ExecWithHitlResponse {
+struct ExecWithHitlResponse<T> {
     #[serde(flatten)]
-    exec: ExecResponse,
+    exec: T,
     /// Every HITL tied to this execution, pending or already resolved — oldest first, same shape
     /// `GET /api/hitl/{id}` returns. At most one entry is ever `status: "pending"` at a time
     /// (MAF steps run strictly sequentially); the rest are historical audit records.
@@ -275,6 +280,39 @@ async fn hitl_rows_for_execution(
         hitl.push(crate::router::hitl::to_response(&display));
     }
     Ok(hitl)
+}
+
+/// The same rows as `hitl_rows_for_execution`, for a whole page of executions — one batched query
+/// instead of one per row, so the two list endpoints can carry a run's HITL history without their
+/// cost growing with the page size.
+///
+/// Returns a map keyed by execution id; an execution that never paused is simply absent, and the
+/// caller renders it as the empty list it already was. Like the single-execution helper, a lookup
+/// failure is a real 500 rather than a silent empty map — a list that quietly forgets every
+/// human answer is worse than one that says it could not be read.
+async fn hitl_rows_for_executions(
+    hitl_store: &std::sync::Arc<dyn nasiko_hitl::HitlStore>,
+    execution_ids: &[Uuid],
+    owner_user_id: Uuid,
+) -> Result<std::collections::HashMap<Uuid, Vec<serde_json::Value>>, nasiko_hitl::HitlError> {
+    let by_exec = hitl_store
+        .list_for_maf_executions(execution_ids, owner_user_id)
+        .await?;
+
+    let mut out = std::collections::HashMap::with_capacity(by_exec.len());
+    for (exec_id, rows) in by_exec {
+        // Same `resolve_display_row` pass the single-execution helper documents — a `maf`-origin
+        // mirror of a real `mcp_tool` block must show the real row's question, not its own
+        // placeholder.
+        let mut hitl = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let display =
+                nasiko_hitl::resolve_display_row(hitl_store.as_ref(), row, owner_user_id).await;
+            hitl.push(crate::router::hitl::to_response(&display));
+        }
+        out.insert(exec_id, hitl);
+    }
+    Ok(out)
 }
 
 fn maf_row_to_response(row: MafRow) -> MafResponse {
@@ -1835,17 +1873,32 @@ async fn list_executions(
     .fetch_all(&state.db)
     .await;
 
-    match rows {
-        Ok(data) => {
-            let items: Vec<ExecResponse> = data.into_iter().map(exec_row_to_response).collect();
-            ok_json(
-                StatusCode::OK,
-                crate::Paginated::new(items),
-                "Executions retrieved successfully",
-            )
-        }
-        Err(e) => internal_err(e),
-    }
+    let data = match rows {
+        Ok(data) => data,
+        Err(e) => return internal_err(e),
+    };
+
+    let exec_ids: Vec<Uuid> = data.iter().map(|r| r.id).collect();
+    let mut by_exec = match hitl_rows_for_executions(&state.hitl_store, &exec_ids, user_id).await {
+        Ok(map) => map,
+        Err(e) => return internal_err(e),
+    };
+
+    let items: Vec<ExecWithHitlResponse<ExecResponse>> = data
+        .into_iter()
+        .map(|row| {
+            let hitl = by_exec.remove(&row.id).unwrap_or_default();
+            ExecWithHitlResponse {
+                exec: exec_row_to_response(row),
+                hitl,
+            }
+        })
+        .collect();
+    ok_json(
+        StatusCode::OK,
+        crate::Paginated::new(items),
+        "Executions retrieved successfully",
+    )
 }
 
 // ─── 8b. GET /maf/executions ──────────────────────────────────────────────
@@ -1883,20 +1936,32 @@ async fn list_all_executions(
     .fetch_all(&state.db)
     .await;
 
-    match rows {
-        Ok(data) => {
-            let items: Vec<ExecWithWorkflowResponse> = data
-                .into_iter()
-                .map(exec_with_workflow_row_to_response)
-                .collect();
-            ok_json(
-                StatusCode::OK,
-                crate::Paginated::new(items),
-                "Executions retrieved successfully",
-            )
-        }
-        Err(e) => internal_err(e),
-    }
+    let data = match rows {
+        Ok(data) => data,
+        Err(e) => return internal_err(e),
+    };
+
+    let exec_ids: Vec<Uuid> = data.iter().map(|r| r.id).collect();
+    let mut by_exec = match hitl_rows_for_executions(&state.hitl_store, &exec_ids, user_id).await {
+        Ok(map) => map,
+        Err(e) => return internal_err(e),
+    };
+
+    let items: Vec<ExecWithHitlResponse<ExecWithWorkflowResponse>> = data
+        .into_iter()
+        .map(|row| {
+            let hitl = by_exec.remove(&row.id).unwrap_or_default();
+            ExecWithHitlResponse {
+                exec: exec_with_workflow_row_to_response(row),
+                hitl,
+            }
+        })
+        .collect();
+    ok_json(
+        StatusCode::OK,
+        crate::Paginated::new(items),
+        "Executions retrieved successfully",
+    )
 }
 
 // ─── 9. GET /maf/execution/{id} ──────────────────────────────────────────
@@ -2372,5 +2437,65 @@ mod tests {
         let legacy = r#"{"steps":[{"step_index":0,"task_description":"do a thing"}]}"#;
         let req: UpdateMafRequest = serde_json::from_str(legacy).expect("legacy step_index");
         assert_eq!(req.steps.expect("steps")[0].task_description, "do a thing");
+    }
+
+    fn exec_with_workflow(id: Uuid) -> ExecWithWorkflowResponse {
+        ExecWithWorkflowResponse {
+            id,
+            execution_number: 7,
+            maf_id: None,
+            user_id: Uuid::nil(),
+            status: "success".to_string(),
+            attempt_count: 1,
+            max_attempts: 3,
+            tokens_used: 365,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+            output: None,
+            step_results: None,
+            error: None,
+            created_at: Utc::now(),
+            workflow_name: None,
+            workflow_status: None,
+        }
+    }
+
+    /// A list row is the exec it always was, plus `hitl`. The flatten is what
+    /// makes it additive, so a client reading `status`/`step_results` off a list
+    /// row keeps working — and the test is here because losing the flatten would
+    /// nest every one of those fields under `exec` without failing to compile.
+    #[test]
+    fn a_list_row_carries_hitl_without_moving_anything_else() {
+        let body = serde_json::to_value(ExecWithHitlResponse {
+            exec: exec_with_workflow(Uuid::nil()),
+            hitl: vec![serde_json::json!({ "id": "h-1", "status": "resolved" })],
+        })
+        .expect("serialize");
+
+        assert_eq!(
+            body["execution_number"], 7,
+            "flattened, not nested under `exec`"
+        );
+        assert_eq!(body["status"], "success");
+        assert_eq!(body["hitl"][0]["status"], "resolved");
+        assert!(
+            body.get("exec").is_none(),
+            "`exec` must not appear as a key"
+        );
+    }
+
+    /// A run that never paused still answers with the field, as an empty list —
+    /// the frontend assigns it straight onto the timeline, and `undefined` there
+    /// would be a different thing from "nothing was asked".
+    #[test]
+    fn a_run_that_never_paused_carries_an_empty_hitl_list() {
+        let body = serde_json::to_value(ExecWithHitlResponse {
+            exec: exec_with_workflow(Uuid::nil()),
+            hitl: vec![],
+        })
+        .expect("serialize");
+
+        assert_eq!(body["hitl"], serde_json::json!([]));
     }
 }
