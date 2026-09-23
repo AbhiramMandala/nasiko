@@ -19,17 +19,6 @@
           "orgUnit": "string, optional — accepted but stubbed, no real filtering yet",
           "myAgent": "optional"
         },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ],
-          "view": [
-            "agent",
-            "workflow"
-          ]
-        },
         "answers": "composite",
         "answersMeans": "summary (a KPI strip, no chart) + breakdown (a bar, donut or ranking) in one response — it has NO series, so that needs its own Query",
         "contains": [
@@ -272,13 +261,6 @@
           "model": "string, optional",
           "provider": "optional"
         },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ]
-        },
         "answers": "series",
         "answersMeans": "a value over TIME, one point per bucket — a line chart",
         "responseShape": {
@@ -356,13 +338,6 @@
           "agentId": "string, optional",
           "model": "string, optional"
         },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ]
-        },
         "answers": "series",
         "answersMeans": "a value over TIME, one point per bucket — a line chart",
         "responseShape": {
@@ -397,29 +372,6 @@
           "sortDir": "\"asc\" | \"desc\", default \"desc\"",
           "limit": "number, optional",
           "offset": "number, optional - no total is returned, so this cannot number the pages"
-        },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ],
-          "view": [
-            "agent",
-            "workflow"
-          ],
-          "sortBy": [
-            "cost",
-            "tokens",
-            "operations",
-            "avg_latency",
-            "container_hours",
-            "name"
-          ],
-          "sortDir": [
-            "asc",
-            "desc"
-          ]
         },
         "answers": "breakdown",
         "answersMeans": "a value per CATEGORY, one row per thing — a bar, donut or ranking",
@@ -468,17 +420,6 @@
           "provider": "string, optional — accepted but stubbed, no real filtering yet",
           "orgUnit": "string, optional — accepted but stubbed, no real filtering yet",
           "myAgent": "optional"
-        },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ],
-          "view": [
-            "agent",
-            "workflow"
-          ]
         },
         "answers": "composite",
         "answersMeans": "summary (a KPI strip, no chart) + breakdown (a bar, donut or ranking) in one response — it has NO series, so that needs its own Query",
@@ -666,13 +607,6 @@
           "model": "string, optional",
           "provider": "optional"
         },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ]
-        },
         "answers": "series",
         "answersMeans": "a value over TIME, one point per bucket — a line chart",
         "responseShape": {
@@ -750,13 +684,6 @@
           "agentId": "string, optional",
           "model": "string, optional"
         },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ]
-        },
         "answers": "series",
         "answersMeans": "a value over TIME, one point per bucket — a line chart",
         "responseShape": {
@@ -791,29 +718,6 @@
           "sortDir": "\"asc\" | \"desc\", default \"desc\"",
           "limit": "number, optional",
           "offset": "number, optional - no total is returned, so this cannot number the pages"
-        },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ],
-          "view": [
-            "agent",
-            "workflow"
-          ],
-          "sortBy": [
-            "cost",
-            "tokens",
-            "operations",
-            "avg_latency",
-            "container_hours",
-            "name"
-          ],
-          "sortDir": [
-            "asc",
-            "desc"
-          ]
         },
         "answers": "breakdown",
         "answersMeans": "a value per CATEGORY, one row per thing — a bar, donut or ranking",
@@ -897,13 +801,6 @@
           "model": "string, optional",
           "provider": "optional"
         },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ]
-        },
         "answers": "series",
         "answersMeans": "a value over TIME, one point per bucket — a line chart",
         "responseShape": {
@@ -935,13 +832,6 @@
           "range": "\"24h\" | \"7d\" | \"30d\", optional - only selects which days come back flagged in highlighted_dates; it does NOT narrow `days`",
           "agentId": "string, optional",
           "model": "string, optional"
-        },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ]
         },
         "answers": "series",
         "answersMeans": "a value over TIME, one point per bucket — a line chart",
@@ -977,29 +867,6 @@
           "sortDir": "\"asc\" | \"desc\", default \"desc\"",
           "limit": "number, optional",
           "offset": "number, optional - no total is returned, so this cannot number the pages"
-        },
-        "argsEnum": {
-          "range": [
-            "24h",
-            "7d",
-            "30d"
-          ],
-          "view": [
-            "agent",
-            "workflow"
-          ],
-          "sortBy": [
-            "cost",
-            "tokens",
-            "operations",
-            "avg_latency",
-            "container_hours",
-            "name"
-          ],
-          "sortDir": [
-            "asc",
-            "desc"
-          ]
         },
         "answers": "breakdown",
         "answersMeans": "a value per CATEGORY, one row per thing — a bar, donut or ranking",

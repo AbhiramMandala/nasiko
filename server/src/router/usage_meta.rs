@@ -32,8 +32,12 @@ impl TurnUsage {
 
 /// The complete per-message summary the `usage_meta` event carries.
 pub struct UsageSummary {
+    /// Fresh prompt tokens — billed at the full input rate, cached tokens excluded.
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Prompt tokens served from the provider's cache, billed at the cache rate.
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
     pub cost_usd: f64,
     pub model: Option<String>,
     pub estimated: bool,
@@ -42,7 +46,12 @@ pub struct UsageSummary {
 
 impl UsageSummary {
     pub fn has_tokens(&self) -> bool {
-        self.input_tokens + self.output_tokens > 0
+        self.total_prompt_tokens() + self.output_tokens > 0
+    }
+
+    /// Every prompt token, cached or not. What the caller actually sent.
+    pub fn total_prompt_tokens(&self) -> u64 {
+        self.input_tokens + self.cache_read_tokens + self.cache_creation_tokens
     }
 
     /// The `usage_meta` data-part payload. Token/cost fields are omitted for
@@ -57,7 +66,11 @@ impl UsageSummary {
         if self.has_tokens() {
             part["input_tokens"] = self.input_tokens.into();
             part["output_tokens"] = self.output_tokens.into();
-            part["total_tokens"] = (self.input_tokens + self.output_tokens).into();
+            part["cache_read_tokens"] = self.cache_read_tokens.into();
+            part["cache_creation_tokens"] = self.cache_creation_tokens.into();
+            // The whole prompt, cached included. Summing only the fresh part would make an
+            // identical turn look smaller purely because the cache served more of it.
+            part["total_tokens"] = (self.total_prompt_tokens() + self.output_tokens).into();
             part["cost_usd"] = self.cost_usd.into();
             part["estimated"] = self.estimated.into();
             if let Some(model) = &self.model {
@@ -78,7 +91,7 @@ pub async fn summarize_flow_usage(
     turns: &TurnUsage,
     duration_ms: i64,
 ) -> UsageSummary {
-    let (agent_in, agent_out, agent_cost) = platform_paid_agent_usage(db, flow_id).await;
+    let agents = platform_paid_agent_usage(db, flow_id).await;
 
     let turn_cost = if turns.input_tokens + turns.output_tokens > 0 {
         observability
@@ -94,9 +107,12 @@ pub async fn summarize_flow_usage(
     };
 
     UsageSummary {
-        input_tokens: turns.input_tokens + agent_in,
-        output_tokens: turns.output_tokens + agent_out,
-        cost_usd: turn_cost + agent_cost,
+        input_tokens: turns.input_tokens + agents.input,
+        output_tokens: turns.output_tokens + agents.output,
+        // Orchestrator turns report no cache split, so these are the agents' alone.
+        cache_read_tokens: agents.cache_read,
+        cache_creation_tokens: agents.cache_creation,
+        cost_usd: turn_cost + agents.cost,
         model: turns.model.clone(),
         estimated: turns.estimated,
         duration_ms,
@@ -106,10 +122,21 @@ pub async fn summarize_flow_usage(
 /// Sum the platform-paid rows the LLM gateway wrote for agents in this flow.
 /// Orchestrator rows are excluded (`operation_type = 'direct_llm'` only) —
 /// the caller already holds those exactly, in [`TurnUsage`].
-async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> (u64, u64, f64) {
-    let sums: Result<(i64, i64, f64), sqlx::Error> = sqlx::query_as(
+#[derive(Default)]
+struct AgentUsage {
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_creation: u64,
+    cost: f64,
+}
+
+async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> AgentUsage {
+    let sums: Result<(i64, i64, i64, i64, f64), sqlx::Error> = sqlx::query_as(
         r#"SELECT COALESCE(SUM(input_tokens), 0)::BIGINT,
                   COALESCE(SUM(output_tokens), 0)::BIGINT,
+                  COALESCE(SUM(cache_read_input_tokens), 0)::BIGINT,
+                  COALESCE(SUM(cache_creation_input_tokens), 0)::BIGINT,
                   COALESCE(SUM(cost_usd), 0)::FLOAT8
            FROM token_usage
            WHERE session_id = $1
@@ -121,10 +148,16 @@ async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> (u64, u64, f64
     .await;
 
     match sums {
-        Ok((input, output, cost)) => (input.max(0) as u64, output.max(0) as u64, cost),
+        Ok((input, output, cache_read, cache_creation, cost)) => AgentUsage {
+            input: input.max(0) as u64,
+            output: output.max(0) as u64,
+            cache_read: cache_read.max(0) as u64,
+            cache_creation: cache_creation.max(0) as u64,
+            cost,
+        },
         Err(e) => {
             tracing::warn!(error = %e, %flow_id, "flow usage aggregation failed; usage_meta omits agent rows");
-            (0, 0, 0.0)
+            AgentUsage::default()
         }
     }
 }
@@ -156,12 +189,20 @@ pub async fn insert_assistant_message(
     } else {
         (None, None, None, None)
     };
+    let (cache_read, cache_creation) = if summary.has_tokens() {
+        (
+            Some(summary.cache_read_tokens as i32),
+            Some(summary.cache_creation_tokens as i32),
+        )
+    } else {
+        (None, None)
+    };
     let result = sqlx::query(
         r#"INSERT INTO chat_messages
                (session_id, role, content, input_tokens, output_tokens, model,
                 duration_ms, cost_usd, usage_estimated, trace_id,
-                metadata)
-           VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
+                cache_read_tokens, cache_creation_tokens)
+           VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
     )
     .bind(session_id)
     .bind(content)
@@ -172,20 +213,79 @@ pub async fn insert_assistant_message(
     .bind(cost)
     .bind(estimated)
     .bind(trace_id)
-    // Built from the reader's own constant rather than spelled again here: the
-    // filter that consumes this tag lives in another crate, and a mismatch
-    // between the two spellings fails silently.
-    .bind(is_refusal.then(|| {
-        let mut m = serde_json::Map::new();
-        m.insert(
-            nasiko_orchestrator::session_history::REFUSAL_METADATA_KEY.to_string(),
-            serde_json::Value::Bool(true),
-        );
-        serde_json::Value::Object(m)
-    }))
+    .bind(cache_read)
+    .bind(cache_creation)
     .execute(db)
     .await;
     if let Err(e) = result {
         tracing::warn!(error = %e, "failed to persist assistant chat message");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(input: u64, cache_read: u64, cache_creation: u64, output: u64) -> UsageSummary {
+        UsageSummary {
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_tokens: cache_read,
+            cache_creation_tokens: cache_creation,
+            cost_usd: 0.001,
+            model: Some("gpt-4o-mini".into()),
+            estimated: false,
+            duration_ms: 1234,
+        }
+    }
+
+    /// The regression: two identical turns must report the same size however much of the
+    /// prompt the cache served. Summing only the fresh part made the second read smaller.
+    #[test]
+    fn an_identical_turn_reports_the_same_size_however_it_was_cached() {
+        let cold = summary(3600, 3328, 0, 322);
+        let warm = summary(762, 6144, 0, 322);
+
+        assert_eq!(cold.total_prompt_tokens(), 6928);
+        assert_eq!(warm.total_prompt_tokens(), 6906);
+
+        let cold_total = cold.to_data_part("t")["total_tokens"].as_u64().unwrap();
+        let warm_total = warm.to_data_part("t")["total_tokens"].as_u64().unwrap();
+        let drift = cold_total.abs_diff(warm_total);
+        assert!(
+            drift < 50,
+            "the same turn reported {cold_total} then {warm_total} — the chip still \
+             collapses as the cache warms"
+        );
+    }
+
+    #[test]
+    fn the_data_part_carries_the_cached_split() {
+        let part = summary(1039, 2816, 0, 1945).to_data_part("trace-1");
+        assert_eq!(part["input_tokens"], 1039);
+        assert_eq!(part["cache_read_tokens"], 2816);
+        assert_eq!(part["output_tokens"], 1945);
+        // 1039 + 2816 + 1945 — the whole prompt plus the reply.
+        assert_eq!(part["total_tokens"], 5800);
+    }
+
+    #[test]
+    fn a_turn_served_entirely_from_cache_still_counts_as_metered() {
+        let s = summary(0, 4096, 0, 12);
+        assert!(
+            s.has_tokens(),
+            "an all-cache turn reported no tokens, so it would render as duration-only"
+        );
+        assert_eq!(s.to_data_part("t")["total_tokens"], 4108);
+    }
+
+    #[test]
+    fn a_duration_only_summary_omits_token_fields() {
+        let s = summary(0, 0, 0, 0);
+        let part = s.to_data_part("t");
+        assert!(!s.has_tokens());
+        assert!(part.get("total_tokens").is_none());
+        assert!(part.get("cache_read_tokens").is_none());
+        assert_eq!(part["duration_ms"], 1234);
     }
 }

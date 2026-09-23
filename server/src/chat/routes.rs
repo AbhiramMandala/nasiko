@@ -164,7 +164,9 @@ const SESSION_LIST_SELECT: &str = r#"
                -- migration 041) and a genuine 0 stays 0. `NULLIF(SUM(...), 0)`
                -- would conflate those two, since SUM over all-NULL columns
                -- coalesces to 0.
-               SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0))
+               SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0)
+                   + COALESCE(m.cache_read_tokens, 0)
+                   + COALESCE(m.cache_creation_tokens, 0))
                    FILTER (
                        WHERE m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL
                    ) AS total_tokens,
@@ -928,8 +930,8 @@ async fn send_message(
         r#"INSERT INTO chat_messages
                (session_id, role, content, file_parts, has_file_parts,
                 input_tokens, output_tokens, model, duration_ms, cost_usd,
-                usage_estimated, trace_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                usage_estimated, trace_id, cache_read_tokens, cache_creation_tokens)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
            RETURNING *"#,
     )
     .bind(&session_id)
@@ -944,6 +946,8 @@ async fn send_message(
     .bind(usage.and_then(|u| u.cost_usd))
     .bind(usage.and_then(|u| u.estimated))
     .bind(usage.and_then(|u| u.trace_id.as_deref()))
+    .bind(usage.and_then(|u| u.cache_read_tokens))
+    .bind(usage.and_then(|u| u.cache_creation_tokens))
     .fetch_one(&mut *tx)
     .await
     {

@@ -522,32 +522,6 @@ const SEARCHY = /\bsearch\b/i;
 // ── emit ────────────────────────────────────────────────────────────────────
 
 /**
- * The closed set an argument accepts, read out of its own hint.
- *
- * `argsShape` is prose — `range` is the literal string `"24h" | "7d" | "30d"`
- * — and until now the only thing that parsed it was `classify_argument()` on
- * the generator side, which turns it into `enum "24h"|"7d"|"30d"` for the
- * prompt. So the model was told the closed set and nothing on this side could
- * check the model against it: a generated control bound `range: "1d"` and the
- * first thing to notice was the backend returning 400.
- *
- * Deriving it here rather than porting the regex to each consumer is the point.
- * Two regexes over the same prose is two things to keep in step, and the one
- * that drifts is the one nobody is looking at. This writes the machine-readable
- * form down once, the same reason `paramOrder` is written into dsl-catalog.json
- * instead of re-derived from attribute order at every reader.
- *
- * Two or more quoted alternatives is a closed set; one quoted value is an
- * example and stays prose. Mirrors `_ENUM` in the generator's dsl_prompt.py.
- */
-const ENUM = /"[^"]+"(?:\s*\|\s*"[^"]+")+/;
-
-function enumValues(hint) {
-  const m = ENUM.exec(String(hint ?? ''));
-  return m ? m[0].split('|').map((v) => v.trim().replace(/^"|"$/g, '')) : null;
-}
-
-/**
  * One manifest entry. Derived fields overwrite anything of the same name in
  * the overrides, so a stale hand-written argsShape cannot win over the source.
  */
@@ -559,20 +533,12 @@ function entry(name) {
   // declared, because no type information exists to derive them from.
   const argsShape = {};
   for (const k of keys) argsShape[k] = argHints[k] ?? 'optional';
-  // Only the arguments that actually carry one, so a source with no closed
-  // set has no empty object to read past.
-  const argsEnum = {};
-  for (const [k, hint] of Object.entries(argsShape)) {
-    const values = enumValues(hint);
-    if (values) argsEnum[k] = values;
-  }
   return {
     name,
     callStyle,
     route,
     description,
     argsShape,
-    ...(Object.keys(argsEnum).length && { argsEnum }),
     ...(answers && {
       answers,
       answersMeans: answers === 'composite' ? compositeMeans(contains ?? []) : ANSWERS[answers],

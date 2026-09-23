@@ -13,8 +13,8 @@ use chrono::{DateTime, Datelike, Duration, SecondsFormat, TimeZone, Utc};
 use futures::stream::{self, StreamExt};
 use nasiko_config::Config;
 use nasiko_observability::{
-    CostBreakdown, ObservabilityError, ObservabilityProvider, TimeBucket,
-    extract_cache_token_attrs, extract_token_attrs,
+    CostBreakdown, ObservabilityError, ObservabilityProvider, TimeBucket, extract_token_attrs,
+    extract_usage_attrs,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -315,8 +315,9 @@ fn build_span_tree(
         if !seen.insert(&span.span_id) {
             continue;
         }
-        let (input, output, model) = extract_token_attrs(&span.attributes);
-        let (cache_read, cache_creation) = extract_cache_token_attrs(&span.attributes);
+        let u = extract_usage_attrs(&span.attributes);
+        let (input, output, model) = (u.input, u.output, u.model.clone());
+        let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
         trace_usage.0 += input;
         trace_usage.1 += output;
         trace_usage.2 += cache_read;
@@ -338,9 +339,8 @@ fn build_span_tree(
                 trace_usage.3,
             )
         } else {
-            let (input, output, model) = extract_token_attrs(&s.attributes);
-            let (cache_read, cache_creation) = extract_cache_token_attrs(&s.attributes);
-            (input, output, model, cache_read, cache_creation)
+            let u = extract_usage_attrs(&s.attributes);
+            (u.input, u.output, u.model, u.cache_read, u.cache_creation)
         };
         SpanNode {
             id: encode_span_id(&s.span_id),
@@ -1722,9 +1722,10 @@ impl ObservabilityService {
             if !seen_spans.insert(&span.span_id) {
                 continue;
             }
-            let (input, output, model) = extract_token_attrs(&span.attributes);
-            let (cache_read, cache_creation) = extract_cache_token_attrs(&span.attributes);
-            if input == 0 && output == 0 && cache_read == 0 && cache_creation == 0 {
+            let u = extract_usage_attrs(&span.attributes);
+            let (input, output, model) = (u.input, u.output, u.model.clone());
+            let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
+            if u.is_empty() {
                 continue;
             }
             cost.add_assign(

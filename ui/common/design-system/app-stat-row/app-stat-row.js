@@ -12,7 +12,9 @@
  *
  * @element app-stat-row
  * @attr {string} items - JSON array of metric objects:
- *   `{ label, value, sub, pct, format?, subFormat?, currency? }`.
+ *   `{ label, value, sub, pct, hint?, format?, subFormat?, currency? }`.
+ *   `hint` is a plain-text tooltip on the cell — for a value that is a sum, it is
+ *   where the parts go, so the headline stays one number.
  *   `sub` is the caption under the value; `pct` (a number) draws a severity meter
  *   and is omitted for metrics that have no ceiling. There is deliberately no
  *   per-metric colour: a value is a value, and the one that was tinted gold was
@@ -130,8 +132,10 @@ export class AppStatRow extends HTMLElement {
       ? '—' : applyFormat(item.value, item.format, opts);
     const sub = item.sub === null || item.sub === undefined || item.sub === ''
       ? '' : applyFormat(item.sub, item.subFormat, opts);
+    const hint = item.hint === null || item.hint === undefined || item.hint === ''
+      ? '' : ` title="${escAttr(String(item.hint))}"`;
     return `
-      <div class="stat">
+      <div class="stat"${hint}>
         <div class="stat-label">${escHtml(String(item.label ?? ''))}</div>
         <div class="stat-value">${escHtml(value)}</div>
         ${sub ? `<div class="stat-sub">${escHtml(sub)}</div>` : ''}

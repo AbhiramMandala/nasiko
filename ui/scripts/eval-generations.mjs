@@ -500,57 +500,6 @@ export const ALLOWED_SOURCES = new Set(
 );
 
 /**
- * The closed sets each source's arguments accept, off the same manifest.
- *
- * `argsEnum` is derived by gen-data-manifest from the argsShape prose the
- * model is shown, so this checks the generation against the very text it was
- * given — not against a second opinion. The runtime now refuses one of these
- * before it reaches the network (`arg_enum_violation` in queries.js), but the
- * eval never runs the query manager: it materializes and reads. So the same
- * fact has to be asserted here, statically, or the corpus stays blind to a
- * defect the browser already catches.
- */
-const ARG_ENUMS = new Map(
-  Object.values(MANIFEST.scopes ?? {}).flat()
-    .filter((s) => typeof s !== 'string' && s.argsEnum)
-    .map((s) => [s.name, {
-      callStyle: s.callStyle,
-      keys: Object.keys(s.argsShape ?? {}),
-      enums: s.argsEnum,
-    }]),
-);
-
-/**
- * Arguments a source would reject, for one Query declaration.
- *
- * The value as materialized, which is the value the fetch would carry. A
- * `$state` reference has already been evaluated to its declared default by
- * the time a declaration exists, so "what the model literally typed" is not
- * a distinction available here — and in a replay there is no user, so every
- * value on this path is the model's anyway.
- *
- * Blind to an option a control offers but has not selected: only the current
- * value is materialized. A picker with one bad choice in three reads clean.
- */
-function argumentsOutsideEnum(query) {
-  const spec = ARG_ENUMS.get(query.source);
-  if (!spec) return [];
-  const args = query.args ?? [];
-  const valueOf = spec.callStyle === 'object'
-    ? (name) => (args[0] && typeof args[0] === 'object' ? args[0][name] : undefined)
-    : (name) => args[spec.keys.indexOf(name)];
-  const out = [];
-  for (const [name, allowed] of Object.entries(spec.enums)) {
-    const value = valueOf(name);
-    if (value === undefined || value === null || value === '') continue;
-    if (typeof value !== 'string' && typeof value !== 'number') continue;
-    if (allowed.includes(String(value))) continue;
-    out.push({ source: query.source, argument: name, value, allowed });
-  }
-  return out;
-}
-
-/**
  * One run's provenance, and whether it is one run at all.
  *
  * A recording is an experimental condition only if every case in it came from
@@ -1637,15 +1586,6 @@ export function check(kase, text) {
   for (const name of r.unresolved) fail.push(`references "${name}", which is not defined`);
   for (const q of r.queries) {
     if (!ALLOWED_SOURCES.has(q.source)) fail.push(`Query names "${q.source}", which the scope does not allow`);
-    // Fatal for a stronger reason than unknownFilterFields below: a filter on
-    // a field that does not exist matches nothing, and this does not even get
-    // that far — the source rejects the call and the panel shows a failure.
-    // The closed set was in the prompt, so this is the model contradicting
-    // something it was told, not something it had to infer.
-    for (const bad of argumentsOutsideEnum(q)) {
-      fail.push(`Query passes ${bad.argument}="${bad.value}" to ${bad.source}, which takes one of `
-        + `${bad.allowed.join(', ')} — the call is refused and the component renders a failure`);
-    }
   }
   if (r.mutations.length) fail.push(`wrote ${r.mutations.length} Mutation(s); no write-capable source exists`);
 

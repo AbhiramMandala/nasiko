@@ -25,6 +25,7 @@ import '/common/design-system/app-table/app-table.js';
 import '/common/design-system/app-tag/app-tag.js';
 import { call } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';
+import { errorStateHtml } from '/common/design-system/app-empty-state/error-state.js';
 
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -58,6 +59,9 @@ class AgentCardPage extends HTMLElement {
   #configureLoaded = false;
   #versionsLoaded = false;
   #versions = [];
+  /** A non-404 failure while loading the Access tab. Distinct from a route
+   *  the edition does not serve, which is a true answer. */
+  #accessFailed = false;
   // Version targeted by the open rollback modal.
   #rollbackTarget = null;
   #logsTail = 100;
@@ -101,6 +105,22 @@ class AgentCardPage extends HTMLElement {
    * the page reads as "several things are loading" rather than "one grey
    * slab is loading" — and the page doesn't jump size once data arrives.
    */
+  /**
+   * The frame the two dead-end states (failed, not-found) render into. They
+   * used to be a bare `<p>` on an otherwise blank page — no way back, and no
+   * sign of which page you were even on.
+   */
+  #deadEndHtml(body) {
+    return `
+      <div class="acp-page">
+        <div class="acp-topbar">
+          <app-button href="/agents" variant="tertiary" size="sm" icon-only data-back
+            aria-label="Back">${icons.x('', 16)}</app-button>
+        </div>
+        ${body}
+      </div>`;
+  }
+
   #loadingShellHtml() {
     const statCell = () => '<div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>';
     const detailCard = () => '<div class="acp-details-card"><app-skeleton lines="4"></app-skeleton></div>';
@@ -134,15 +154,44 @@ class AgentCardPage extends HTMLElement {
   }
 
   async #load() {
+    // "This agent is gone" and "we could not ask about it" both used to land
+    // on one bare red line saying "Agent not found." — so a blocked or
+    // failed request told the user their agent had been deleted. A 404/403
+    // is the server's real answer (deleted, or no longer visible to them);
+    // anything else is us, and only that is worth a Retry.
+    let failed = false;
     try {
       // GET /api/agents/{id} → SingleResponse envelope {data, status_code, message}
       const resp = await fetchApi(`/agents/${this.#agentId}`);
       this.#agent = resp?.data ?? resp;
-    } catch {
+    } catch (e) {
       this.#agent = null;
+      failed = e?.status !== 404 && e?.status !== 403;
+    }
+    if (failed) {
+      this.innerHTML = this.#deadEndHtml(`
+        <app-empty-state variant="error"
+          heading="Couldn't load this agent"
+          description="Something went wrong fetching it. The agent itself may be fine.">
+          <app-button id="acp-retry" variant="tertiary">Retry</app-button>
+        </app-empty-state>`);
+      this.querySelector('#acp-retry')?.addEventListener('click', () => {
+        this.innerHTML = this.#loadingShellHtml();
+        this.#load();
+      });
+      return;
     }
     if (!this.#agent?.name && !this.#agent?.display_name) {
-      this.innerHTML = '<p style="color:var(--color-error);">Agent not found.</p>';
+      // A true answer, so a plain empty state — not the error variant. There
+      // is nothing to retry: the agent is gone or was never visible to this
+      // caller, and the useful action is a way out.
+      this.innerHTML = this.#deadEndHtml(`
+        <app-empty-state
+          heading="Agent not found"
+          description="It may have been deleted, or you no longer have access to it."
+          icon='${icons.faceFrown('', 40)}'>
+          <app-button variant="tertiary" href="/your-agents">Back to your agents</app-button>
+        </app-empty-state>`);
       return;
     }
     this.#canManage = await this.#resolveCanManage(this.#agent);
@@ -456,10 +505,15 @@ class AgentCardPage extends HTMLElement {
       const resp = await fetchApi(`/agents/${this.#agent.id}/versions`);
       this.#versions = (resp?.data ?? resp) || [];
     } catch (e) {
-      el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
+      // Was a plain empty state with a stack-of-layers icon — the same look
+      // this tab uses for "no versions yet". `variant="error"` is what tells
+      // them apart, and Retry is what makes it actionable.
+      el.innerHTML = `<div class="acp-stats-empty"><app-empty-state variant="error"
         heading="Version history unavailable"
-        description="${escAttr(e.message)}"
-        icon="${escAttr(icons.layers('', 32))}"></app-empty-state></div>`;
+        description="${escAttr(e.message)}">
+        <app-button id="acp-versions-retry" variant="tertiary" size="sm">Retry</app-button>
+      </app-empty-state></div>`;
+      el.querySelector('#acp-versions-retry')?.addEventListener('click', () => this.#loadVersions());
       return;
     }
     this.#renderVersions();
@@ -617,6 +671,9 @@ class AgentCardPage extends HTMLElement {
   // falls through to the agent proxy and fails), so those grantee tabs hide.
   async #loadAccess() {
     this.#accessLoaded = true;
+    // Reset before the fan-out: the five calls below set it through
+    // `#fetchArray`, and a retry that succeeds must not stay latched.
+    this.#accessFailed = false;
     const id = this.#agent.id;
     const [visibility, users, agentGrants, teams, departments] = await Promise.all([
       this.#fetchVisibility(id),
@@ -657,7 +714,13 @@ class AgentCardPage extends HTMLElement {
       if (Array.isArray(inner)) return inner;
       const nested = Object.values(inner || {}).find(Array.isArray);
       return nested ?? null;
-    } catch {
+    } catch (e) {
+      // `null` has to keep meaning "this edition does not serve the route" —
+      // the caller decides whether Team/Department exist at all from it. A
+      // 404 is that. Anything else is a failure, and returning null for it
+      // made a broken fetch indistinguishable from a feature this plan does
+      // not have: the tab looked the same either way.
+      if (e?.status !== 404) this.#accessFailed = true;
       return null;
     }
   }
@@ -813,6 +876,12 @@ class AgentCardPage extends HTMLElement {
     const label = this.#granteeTabDefs().find(d => d.key === this.#granteeTab)?.label || 'entries';
     table.setAttribute('empty-message',
       `No ${label.toLowerCase()} have access yet — use Grant access to share this agent.`);
+    // The table is fed from page state, so its own dataFn never sees the
+    // throw — the page has to hand the failure over. Without it a failed
+    // grants fetch read as "nobody has access", which is the opposite of a
+    // safe thing to believe about an access list.
+    table.toggleAttribute('error', this.#accessFailed);
+    if (this.#accessFailed) table.setAttribute('error', "Couldn't load access for this agent");
     table.columns = columns;
     table.dataFn = () => rows;
     table.refresh();
@@ -1261,7 +1330,8 @@ class AgentCardPage extends HTMLElement {
       const resp = await call('fetchAgentMcpConnectors', this.#agent.id);
       this.#connectors = resp?.data?.connectors || [];
     } catch (e) {
-      list.innerHTML = `<p class="acp-section-sub">Failed to load MCP connectors: ${escHtml(e.message)}</p>`;
+      list.innerHTML = errorStateHtml("Couldn't load this agent's MCP connectors");
+      list.querySelector('[data-retry]')?.addEventListener('click', () => this.#loadConfigure());
       return;
     }
     // Fetch every connector's tools up front so each card can show its
