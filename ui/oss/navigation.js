@@ -22,7 +22,6 @@
 import '/common/services/data-functions.js';
 import { call, registerAll } from '/common/core/data-sources.js';
 import { extensionChain } from '/common/core/extension-chain.js';
-import { ensureViews, hasSavedViews } from '/common/state/weave-views.js';
 
 // rail: true → shown as a rail module icon; everything else is reachable
 // through the module tree navs and the ⌘F nav search.
@@ -48,7 +47,6 @@ const BASE_ITEMS = () => [
   { title: "MCP gateway", url: "/mcp", icon: "server", rail: true, module: "mcp" },
   { title: "LLM router", url: "/llm-router", icon: "route", rail: true },
   { title: "TokenOps", url: "/tokenops", icon: "banknote", rail: true },
-  { title: "Weave", url: "/weave", icon: "sparkles", rail: true },
   { title: "Your Agents", url: "/your-agents", icon: "user", module: "agents" },
   { title: "Add Agent", url: "/add-agent", icon: "plus", module: "agents" },
   { title: "Set up CLI", url: "/setup-cli", icon: "terminal" },
@@ -60,12 +58,6 @@ const BASE_ITEMS = () => [
   { title: "Secrets", url: "/secrets", icon: "lock", module: "settings" },
   { title: "Settings", url: "/settings", icon: "settings", rail: true, module: "settings" },
 ];
-
-// Rail entry for the views Weave generated and the user chose to keep. Absent
-// until the first save, because a rail icon leading to an empty shelf is a
-// promise the product has not made yet — <app-header> re-reads the nav on
-// `nav-refresh`, which generated-view-page fires the moment one is saved.
-const CUSTOM_VIEWS_ITEM = { title: "Custom Views", url: "/custom-views", icon: "layers", rail: true };
 
 // In-card module tree navs (app-module-nav). Items are either page links
 // ({label, url}) or in-page sections ({label, section} → the page handles
@@ -250,12 +242,6 @@ const extensionContext = (ext) => {
 
 const fetchNavigation = async () => {
   const base = BASE_ITEMS();
-  // The saved list lives on the server, so the rail cannot know whether the
-  // Custom views entry belongs until it has been fetched. `ensureViews` does it
-  // once per load and never rejects; on the OSS build it answers 404, the list
-  // stays empty and the entry simply never appears — which is correct, because
-  // the routes it leads to are not there either.
-  await ensureViews();
   // Folded, base first: each layer receives what the layers below it produced,
   // so a hook that returns its own ordered list (the enterprise one does) is
   // still extensible by the layer above. A layer that throws is skipped and the
@@ -269,13 +255,6 @@ const fetchNavigation = async () => {
       console.error('[navigation] a nav extension items() failed — keeping the layers below it', err);
     }
   }
-  // After the extension, not before it. An extension is free to return its own
-  // ordered list rather than patch `base` — the enterprise nav extension does
-  // exactly that — and anything appended to `base` beforehand is simply dropped
-  // on the floor, which is why this entry never appeared on the EE build. Appending
-  // here is the only placement that holds for every extension, present and
-  // future; nothing else in the list is dynamic enough to care about order.
-  if (hasSavedViews()) items.push(CUSTOM_VIEWS_ITEM);
   return items;
 };
 

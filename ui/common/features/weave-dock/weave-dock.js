@@ -335,11 +335,13 @@ class WeaveDock extends HTMLElement {
 
     let sessions = [];
     try {
-      // `weave=true`: the dock's chats are hidden from every other session
-      // list (Sessions page, Orchestrator nav, `nasiko sessions`), so this is
-      // the only caller that asks for them — server-side, by session-id prefix.
-      // 100 is the server's clamp on `limit` (`oss/server/src/chat/routes.rs`).
-      const body = await getJson('/chat/sessions?limit=100&weave=true');
+      // `surface=weave`: the dock is an embedded surface, so its chats are
+      // namespaced `weave_<contextId>` and hidden from every other session
+      // list (Sessions page, Orchestrator nav, `nasiko sessions`). This is the
+      // only caller that asks for them, and the filter is server-side, on the
+      // session-id prefix. 100 is the server's clamp on `limit`
+      // (`oss/server/src/chat/routes.rs`).
+      const body = await getJson('/chat/sessions?limit=100&surface=weave');
       const rows = body?.data ?? body ?? [];
       sessions = Array.isArray(rows) ? rows : [];
     } catch (err) {

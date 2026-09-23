@@ -226,27 +226,45 @@ pub async fn seed_agents_if_configured(state: &AppState) {
     }
 }
 
-const DEFAULT_WEAVE_AGENT_NAME: &str = "weave-dashboard-generator";
+/// One internal agent to deploy.
+///
+/// An internal agent is a platform-owned agent excluded from every agent
+/// list, routing candidate and A2A discovery query (`is_internal = true`, see
+/// `migrations/0014_agent_internal_flag.sql`), reachable only through whatever
+/// dedicated route its owner mounts rather than the generic
+/// explicit-`agent_id` A2A dispatch path.
+///
+/// The caller owns the policy — which image, under what name, and what the
+/// container needs in its environment. This module owns the mechanics, which
+/// are the ones `seed_agents_if_configured` already uses for ordinary agents.
+/// The split is deliberate: an edition that ships such an agent describes it
+/// in its own tree, and this one carries no particular agent's vocabulary.
+pub struct InternalAgentSeed {
+    /// Agent row name, and the name the deployment is tracked under.
+    pub name: String,
+    /// Container image reference.
+    pub image: String,
+    /// Redeploy even when the image reference has not changed — for reusing
+    /// one tag across builds instead of bumping it, the single-agent
+    /// equivalent of `SEED_FORCE_PULL`.
+    pub force_pull: bool,
+    /// Container environment, on top of the two this function sets itself:
+    /// `PORT`, and the per-agent MCP gateway credential.
+    pub env: HashMap<String, String>,
+}
 
-/// Deploys the Weave dynamic-UI generation agent the same way
-/// `seed_agents_if_configured` deploys any other agent, except this row has
-/// `is_internal = true` — excluded from every agent list/router/discovery
-/// query, reachable only through the dedicated `ee/server/src/weave_surface.rs`
-/// route, never the generic explicit-`agent_id` A2A dispatch path. Set
-/// `WEAVE_AGENT_IMAGE` to enable; unset skips this entirely, same posture as
-/// `SEED_AGENTS`. `WEAVE_FORCE_PULL` (any value) forces a redeploy even when
-/// `WEAVE_AGENT_IMAGE` is unchanged — for reusing the same tag across builds
-/// instead of bumping it (`SEED_FORCE_PULL`'s equivalent for this agent).
-pub async fn seed_weave_agent_if_configured(state: &AppState) {
-    let image = match std::env::var("WEAVE_AGENT_IMAGE") {
-        Ok(val) if !val.trim().is_empty() => val,
-        _ => {
-            info!("WEAVE_AGENT_IMAGE not set, skipping weave agent seeding");
-            return;
-        }
-    };
-    let agent_name =
-        std::env::var("WEAVE_AGENT_NAME").unwrap_or_else(|_| DEFAULT_WEAVE_AGENT_NAME.to_string());
+/// Deploys one internal agent the same way `seed_agents_if_configured` deploys
+/// any other, except the row carries `is_internal = true`.
+///
+/// Designed to run as a background task — does not block server startup, and
+/// returns quietly when the agent is already running on the same image.
+pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
+    let InternalAgentSeed {
+        name: agent_name,
+        image,
+        force_pull,
+        env: extra_env,
+    } = seed;
 
     let owner_id: Uuid = match sqlx::query_scalar(
         "SELECT id FROM users WHERE is_superuser = true AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
@@ -256,7 +274,7 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
     {
         Ok(Some(id)) => id,
         _ => {
-            warn!("no admin user found, cannot seed weave agent (run bootstrap first)");
+            warn!(agent = %agent_name, "no admin user found, cannot seed internal agent (run bootstrap first)");
             return;
         }
     };
@@ -267,7 +285,6 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
         .await
         .unwrap_or(None);
 
-    let force_pull = std::env::var("WEAVE_FORCE_PULL").is_ok();
     let needs_deploy = match &existing {
         None => true,
         Some(agent) => {
@@ -284,11 +301,11 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
         }
     };
     if !needs_deploy {
-        info!(agent = %agent_name, "weave agent already running, skipping");
+        info!(agent = %agent_name, "internal agent already running, skipping");
         return;
     }
 
-    info!(agent = %agent_name, %image, "seeding weave agent");
+    info!(agent = %agent_name, %image, "seeding internal agent");
 
     let agent = match &existing {
         Some(a) => {
@@ -315,7 +332,7 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
             match inserted {
                 Ok(a) => a,
                 Err(e) => {
-                    warn!(agent = %agent_name, error = %e, "failed to register weave agent");
+                    warn!(agent = %agent_name, error = %e, "failed to register internal agent");
                     return;
                 }
             }
@@ -324,61 +341,7 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
 
     let mut env = HashMap::new();
     env.insert("PORT".into(), AGENT_PORT.to_string());
-    env.insert(
-        "WEAVE_EXTRA_SKILLS".into(),
-        "examples.dynamic_ui.skill:build_skill".into(),
-    );
-    for (key, var) in [
-        ("ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
-        ("ANTHROPIC_BASE_URL", "ANTHROPIC_BASE_URL"),
-        ("AWS_REGION", "AWS_REGION"),
-        ("AWS_BEARER_TOKEN_BEDROCK", "AWS_BEARER_TOKEN_BEDROCK"),
-    ] {
-        if let Ok(val) = std::env::var(var)
-            && !val.is_empty()
-        {
-            env.insert(key.into(), val);
-        }
-    }
-    // Where the agent reaches this control plane from inside its container.
-    //
-    // Two facts make this awkward and neither is optional. `localhost` in
-    // there is the container, so a loopback URL silently resolves to nothing;
-    // and when it resolves to nothing, weave's catalog.py falls back to the
-    // catalog bundled in its image rather than failing — a generation against
-    // a vocabulary nobody chose, which reads as a model ignoring the prompt.
-    //
-    // CP_DOMAIN covers deployment and nothing covered local development,
-    // where CP_DOMAIN is unset by design. WEAVE_CP_URL is that gap: set it to
-    // whatever the container can reach this server at — on Docker Desktop
-    // that is http://host.docker.internal:<CP_BIND port>.
-    let cp_url = std::env::var("WEAVE_CP_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            std::env::var("CP_DOMAIN")
-                .ok()
-                .filter(|d| !d.trim().is_empty())
-                .map(|d| format!("https://{d}"))
-        });
-    match cp_url {
-        Some(url) => {
-            let base = url.trim_end_matches('/');
-            env.insert(
-                "WEAVE_CATALOG_URL".into(),
-                format!("{base}/common/surface/dsl-catalog.json"),
-            );
-            // The same base backs the generated dashboards' own data calls.
-            env.insert("NASIKO_CP_BASE_URL".into(), base.to_string());
-        }
-        None => {
-            warn!(
-                agent = %agent_name,
-                "neither WEAVE_CP_URL nor CP_DOMAIN is set — the weave agent will fall back to \
-                 the catalog bundled in its image, and generate against a stale vocabulary"
-            );
-        }
-    }
+    env.extend(extra_env);
     // Per-agent MCP gateway credential (rotates on every re-seed) — without
     // this, McpInjector still sets MCP_GATEWAY_URL unconditionally but has no
     // MCP_GATEWAY_TOKEN to complete MCP_GATEWAY_CONNECT_URL with, leaving the
@@ -413,7 +376,7 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
 
     match state.runtime.deploy(&spec).await {
         Ok(status) => {
-            info!(agent = %agent_name, ?status, "weave agent deployed");
+            info!(agent = %agent_name, ?status, "internal agent deployed");
             let agent_url =
                 crate::agents::resolve_agent_url(&state.runtime, &status, &spec.container_id).await;
             let _ = sqlx::query(
@@ -432,7 +395,7 @@ pub async fn seed_weave_agent_if_configured(state: &AppState) {
             .await;
         }
         Err(e) => {
-            warn!(agent = %agent_name, error = %e, "failed to deploy weave agent");
+            warn!(agent = %agent_name, error = %e, "failed to deploy internal agent");
             let _ = sqlx::query(
                 "UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1",
             )
