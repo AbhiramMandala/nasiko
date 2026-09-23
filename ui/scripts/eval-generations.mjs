@@ -355,6 +355,47 @@ export const CASES = [
       minQueries: 1, minActions: 1, minStates: 1,
       controlPair: { source: 'fetchSpendTimeseries', argument: 'model', control: 'app-segmented-control' },
     } },
+  // Isolated pair. Same two prompts, byte for byte, against a source
+  // inventory with no free-text parameter in it — `tokenops_isolated` drops
+  // fetchUsageByAgent and fetchUsageByModel, the only two sources carrying a
+  // `query [search]` argument. Run these ONLY under _DASHBOARD_SCOPE=
+  // tokenops_isolated; under the normal scope they are duplicates of the pair
+  // above and measure nothing.
+  { id: 'model-searched-isolated',
+    prompt: 'Spend over the last 7 days for one model. '
+      + 'Use a search box to find the model by name.',
+    expect: {
+      minQueries: 1, minActions: 1, minStates: 1,
+      controlPair: { source: 'fetchSpendTimeseries', argument: 'model', control: 'app-search' },
+    } },
+  { id: 'model-picked-isolated',
+    prompt: 'Spend over the last 7 days for one model. Use a segmented control to choose '
+      + 'between claude-sonnet-4-5, claude-haiku-4-5, and claude-opus-4-1.',
+    expect: {
+      minQueries: 1, minActions: 1, minStates: 1,
+      controlPair: { source: 'fetchSpendTimeseries', argument: 'model', control: 'app-segmented-control' },
+    } },
+  // EXPLORATORY, not a clean test of result shape. The catalog has no second
+  // independent row-shaped source with an exact `model` argument, so this
+  // answers one question only: does the search-vs-picker gap persist when both
+  // controls drive the same breakdown source? Run ONLY under
+  // _DASHBOARD_SCOPE=tokenops_rows, which drops fetchTokenopsDashboard — it
+  // carries the identical rows, so leaving it in makes "which source" moot.
+  { id: 'model-rows-searched',
+    prompt: 'Cost per agent for one model over the last 7 days, as a table. '
+      + 'Use a search box to find the model by name.',
+    expect: {
+      minQueries: 1, minActions: 1, minStates: 1,
+      controlPair: { source: 'fetchFinopsAttributions', argument: 'model', control: 'app-search' },
+    } },
+  { id: 'model-rows-picked',
+    prompt: 'Cost per agent for one model over the last 7 days, as a table. '
+      + 'Use a segmented control to choose between claude-sonnet-4-5, claude-haiku-4-5, '
+      + 'and claude-opus-4-1.',
+    expect: {
+      minQueries: 1, minActions: 1, minStates: 1,
+      controlPair: { source: 'fetchFinopsAttributions', argument: 'model', control: 'app-segmented-control' },
+    } },
   // Not a dashboard request. agent.yaml rule 11 says answer in plain text, so
   // the correct outcome is prose and *no* DSL — a generator that builds a
   // dashboard here is broken in a way no other case would catch.
@@ -1384,6 +1425,74 @@ function controlPairDimensions(lines, spec) {
   return { sourceCorrect, argumentCorrect, controlKindCorrect, workingRefetchCorrect, detail };
 }
 
+/**
+ * INSTRUMENTATION ONLY. Nothing here gates, and nothing here feeds the four
+ * readings above.
+ *
+ * Across 129 recorded AppSearch generations, every one that named its state
+ * after a real argument (`$agentId`, `$query`, `$model`) put that state into
+ * a Query argument; the ones named after the box (`$modelSearch`,
+ * `$agentFilter`) did so 43% of the time. 7/7 against 53/122. That is an
+ * association in observational data, and the likelier reading is that the
+ * name is a READOUT of a decision already taken rather than an input to it —
+ * a generation that has decided to parameterise names the variable after the
+ * argument it is about to fill. Recorded because it is the only such signal
+ * visible at the point the decision is made, and because batch-to-batch
+ * drift in it (one name ran 6% in one batch and 24% across the rest) is
+ * otherwise easy to misread as an intervention effect.
+ *
+ * `...BoundToIntendedQueryArgument` deliberately reuses controlPair's own
+ * answer instead of re-deriving one: a second definition of "bound" is a
+ * second thing to keep in sync, and this one must never be laxer than the
+ * metric it sits beside.
+ */
+export function appSearchNaming(lines, spec, controlPair) {
+  const controls = controlsIn(lines ?? []);
+  const boxes = controls.filter((c) => c.tag === 'app-search');
+  if (!boxes.length) return null;
+
+  const raw = (boxes[0].slot.value ?? '').trim();
+  const state = /^\$[\w$]+$/.test(raw) ? raw : null;
+
+  // Every argument NAME this generation's Query calls put to work: the keys
+  // of an options object, plus the declared names behind a positional call,
+  // which carries no keys of its own.
+  const argNames = new Set();
+  const queries = [];
+  for (const l of lines ?? []) {
+    const m = /^\s*([A-Za-z_$][\w$]*)\s*=\s*Query\s*\(\s*"([^"]+)"/.exec(l);
+    if (!m) continue;
+    const args = (topLevelArgs(l, 'Query')[1] ?? '').trim();
+    queries.push({ name: m[1], source: m[2], args });
+    for (const k of args.matchAll(/([A-Za-z_$][\w$]*)\s*:/g)) argNames.add(k[1]);
+    for (const n of Object.keys(SOURCES_BY_NAME.get(m[2])?.argsShape ?? {})) argNames.add(n);
+  }
+
+  const bare = state ? state.slice(1) : null;
+  const matches = Boolean(bare && argNames.has(bare));
+  const boundToAny = Boolean(state && queries.some(
+    (q) => new RegExp(`\\${state}(?![\\w$])`).test(q.args),
+  ));
+  const boundToIntended = Boolean(
+    state && spec && controlPair?.argumentCorrect
+    && controlPair.detail?.argState === state,
+  );
+
+  let namingClass = 'other';
+  if (matches) namingClass = 'argument_name';
+  else if (bare && /Query$/.test(bare)) namingClass = 'query_suffix';
+  else if (bare && /Search$/.test(bare)) namingClass = 'search_suffix';
+
+  return {
+    appSearchStateName: state,
+    appSearchStateMatchesQueryArgument: matches,
+    appSearchStateBoundToAnyQueryArgument: boundToAny,
+    appSearchStateBoundToIntendedQueryArgument: boundToIntended,
+    appSearchStateNamingClass: namingClass,
+    ...(boxes.length > 1 ? { appSearchCount: boxes.length } : {}),
+  };
+}
+
 export function evaluateGeneration(text) {
   const diagnostics = [];
   const { statements, prose } = parseBuffer(text);
@@ -1450,15 +1559,19 @@ export function check(kase, text) {
   // `dimensions`, and kept in its own field so neither case's numbers can be
   // mistaken for the other's.
   const controlPair = e.controlPair ? controlPairDimensions(r.lines, e.controlPair) : null;
+  // Instrumentation, computed for every case that built an AppSearch —
+  // including the ones with no mechanism expectation, where only the
+  // intended-argument reading is unavailable.
+  const searchNaming = appSearchNaming(r.lines, e.controlPair ?? null, controlPair);
 
   if (e.noSurface) {
     if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 11)');
     if (!r.prose.join('').trim()) fail.push('answered with nothing at all');
-    return { fail, advisory, runtime, dimensions, controlPair, r };
+    return { fail, advisory, runtime, dimensions, controlPair, searchNaming, r };
   }
 
   if (!r.root) {
-    if (e.allowNoSurface) return { fail, advisory, runtime, dimensions, controlPair, r };
+    if (e.allowNoSurface) return { fail, advisory, runtime, dimensions, controlPair, searchNaming, r };
     fail.push('no root — nothing rendered');
   }
 
@@ -1541,7 +1654,7 @@ export function check(kase, text) {
       + `expected at least ${e.minChartKinds} — the same shape repeated answers one question twice`);
   }
 
-  return { fail, advisory, runtime, dimensions, controlPair, r };
+  return { fail, advisory, runtime, dimensions, controlPair, searchNaming, r };
 }
 
 /**
@@ -2038,7 +2151,7 @@ for (const kase of cases) {
     } else skipped.push(kase.id);
   }
 
-  const { fail, advisory, runtime, dimensions, controlPair, r } = check(kase, text);
+  const { fail, advisory, runtime, dimensions, controlPair, searchNaming, r } = check(kase, text);
 
   // Observational only — nothing below reads this to decide pass or fail.
   if (record) {
@@ -2063,6 +2176,9 @@ for (const kase of cases) {
       // failures.
       ...(dimensions ? { dimensions } : {}),
       ...(controlPair ? { controlPair } : {}),
+      // Naming instrumentation. Absent when the generation built no
+      // AppSearch, so a missing key never reads as a false.
+      ...(searchNaming ? { searchNaming } : {}),
       // The structural checks, kept beside them and kept apart from each
       // other: which mechanism was chosen and whether the surface is sound
       // are different questions, and a benchmark that merges them cannot say
@@ -2187,6 +2303,15 @@ for (const kase of cases) {
     ].filter(Boolean);
     console.log(`          ${notes.join('; ')}`);
   }
+  if (searchNaming) {
+    const n = searchNaming;
+    const mark = (ok) => (ok ? '✓' : '✗');
+    console.log(`    search state: ${n.appSearchStateName ?? 'none'}`
+      + `  [${n.appSearchStateNamingClass}]`
+      + `  ${mark(n.appSearchStateMatchesQueryArgument)} name is a query argument`
+      + `  ${mark(n.appSearchStateBoundToAnyQueryArgument)} reaches some argument`
+      + `  ${mark(n.appSearchStateBoundToIntendedQueryArgument)} reaches the intended one`);
+  }
   // Offline, nothing should reach the network or the stream. One of these
   // means the harness, not the generation.
   for (const t of runtime) console.log(`    runtime: ${t}`);
@@ -2233,6 +2358,24 @@ if (record && runDir) {
       fatalDiagnostics: fatal,
       diagnosticCounts: diagnostics,
       skipped, unreachable,
+      // Counts only. No rate, no test, no verdict — the association behind
+      // them is observational and the direction of the arrow is unknown.
+      appSearchNaming: (() => {
+        const n = Object.values(runRows).map((c) => c.searchNaming).filter(Boolean);
+        if (!n.length) return null;
+        const m = n.filter((x) => x.appSearchStateMatchesQueryArgument);
+        const byClass = {};
+        for (const x of n) byClass[x.appSearchStateNamingClass] = (byClass[x.appSearchStateNamingClass] ?? 0) + 1;
+        return {
+          total: n.length,
+          exactNameMatches: m.length,
+          exactNameMatchesBindingAnyArgument: m.filter((x) => x.appSearchStateBoundToAnyQueryArgument).length,
+          exactNameMatchesBindingIntendedArgument: m.filter((x) => x.appSearchStateBoundToIntendedQueryArgument).length,
+          nonMatchesBindingAnyArgument: n.filter(
+            (x) => !x.appSearchStateMatchesQueryArgument && x.appSearchStateBoundToAnyQueryArgument).length,
+          byNamingClass: byClass,
+        };
+      })(),
     },
     cases: runRows,
   };

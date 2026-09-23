@@ -1104,3 +1104,124 @@ test('the exact-match advisory fires on the search arm and reaches none of the f
   // …and does not fire on the picker arm, which is why it must stay advisory.
   assert.equal(check(MODEL_B, PICKED_MODEL).advisory.length, 0);
 });
+
+// ── AppSearch naming instrumentation ────────────────────────────────────────
+//
+// Diagnostics only: these record the relationship between the state variable's
+// NAME and the Query arguments, and nothing about them may reach the four
+// readings. The association behind them (7/7 vs 53/122 over 129 recorded
+// generations) is observational, and the name is more likely a readout of a
+// decision already taken than a cause of it — so the tests below pin the
+// classification and pin the independence, not a verdict.
+
+const naming = (dsl, kase = MODEL_A) => check(kase, dsl).searchNaming;
+
+/** SEARCHED, with the state renamed everywhere it appears. */
+const renamed = (to) => SEARCHED.replaceAll('$model', to);
+
+test('naming: $model matching the `model` argument is argument_name and binds', () => {
+  const n = naming(SEARCHED);
+  assert.equal(n.appSearchStateName, '$model');
+  assert.equal(n.appSearchStateMatchesQueryArgument, true);
+  assert.equal(n.appSearchStateBoundToAnyQueryArgument, true);
+  assert.equal(n.appSearchStateBoundToIntendedQueryArgument, true);
+  assert.equal(n.appSearchStateNamingClass, 'argument_name');
+});
+
+test('naming: $modelSearch over the same `model` argument is search_suffix, not a name match', () => {
+  const n = naming(renamed('$modelSearch'));
+  assert.equal(n.appSearchStateName, '$modelSearch');
+  assert.equal(n.appSearchStateMatchesQueryArgument, false);
+  assert.equal(n.appSearchStateNamingClass, 'search_suffix');
+  // Renaming changes nothing about where the state actually went.
+  assert.equal(n.appSearchStateBoundToAnyQueryArgument, true);
+  assert.equal(n.appSearchStateBoundToIntendedQueryArgument, true);
+});
+
+test('naming: $modelQuery is query_suffix', () => {
+  const n = naming(renamed('$modelQuery'));
+  assert.equal(n.appSearchStateMatchesQueryArgument, false);
+  assert.equal(n.appSearchStateNamingClass, 'query_suffix');
+  assert.equal(n.appSearchStateBoundToAnyQueryArgument, true);
+});
+
+test('naming: a state that reaches no Query argument reads false on both bindings', () => {
+  // Frozen args, and the state only filters what came back.
+  const dsl = renamed('$modelSearch')
+    .replace('[{range: "7d", model: $modelSearch}]', '[{range: "7d"}]')
+    .replace('Action([@Set($modelSearch, $event), @Run(spendQ)])', 'Action([@Set($modelSearch, $event)])');
+  const n = naming(dsl);
+  assert.equal(n.appSearchStateName, '$modelSearch');
+  assert.equal(n.appSearchStateMatchesQueryArgument, false);
+  assert.equal(n.appSearchStateBoundToAnyQueryArgument, false);
+  assert.equal(n.appSearchStateBoundToIntendedQueryArgument, false);
+  assert.equal(n.appSearchStateNamingClass, 'search_suffix');
+});
+
+test('naming: reaching the WRONG query still counts as binding some argument', () => {
+  // The intended query is frozen; the state lands on a second source instead.
+  const dsl = renamed('$modelSearch')
+    .replace('[{range: "7d", model: $modelSearch}]', '[{range: "7d"}]')
+    .replace(
+      'chart = AppChart(',
+      'otherQ = Query("fetchFinopsAttributions", [{range: "7d", model: $modelSearch}], {rows: []}, "data")\nchart = AppChart(',
+    );
+  const n = naming(dsl);
+  assert.equal(n.appSearchStateBoundToAnyQueryArgument, true, 'broader reading: any query counts');
+  assert.equal(n.appSearchStateBoundToIntendedQueryArgument, false, 'narrow reading: intended only');
+  // …and the four readings still say the intended argument was never bound.
+  assert.equal(check(MODEL_A, dsl).controlPair.argumentCorrect, false);
+});
+
+test('naming: the intended reading never disagrees with controlPair.argumentCorrect', () => {
+  for (const dsl of [SEARCHED, renamed('$modelSearch'), renamed('$modelQuery')]) {
+    const { controlPair, searchNaming } = check(MODEL_A, dsl);
+    assert.equal(searchNaming.appSearchStateBoundToIntendedQueryArgument, controlPair.argumentCorrect);
+  }
+});
+
+test('naming: a generation with no AppSearch reports nothing rather than a row of falses', () => {
+  assert.equal(check(MODEL_B, PICKED_MODEL).searchNaming, null);
+  assert.equal(check(kase({ minQueries: 2 }), GOOD).searchNaming, null);
+});
+
+test('naming: an AppSearch whose state slot holds no state does not crash', () => {
+  const dsl = SEARCHED.replace(
+    'AppSearch("md", null, false, false, "Search models...", $model,',
+    'AppSearch("md", null, false, false, "Search models...", "",',
+  );
+  const n = naming(dsl);
+  assert.equal(n.appSearchStateName, null);
+  assert.equal(n.appSearchStateMatchesQueryArgument, false);
+  assert.equal(n.appSearchStateBoundToAnyQueryArgument, false);
+  assert.equal(n.appSearchStateBoundToIntendedQueryArgument, false);
+  assert.equal(n.appSearchStateNamingClass, 'other');
+});
+
+test('naming: malformed and self-repair output does not crash the diagnostic', () => {
+  // Prose between statements, a redefinition, and an unterminated call.
+  const messy = `Sure — building that now.
+$modelSearch = ""
+setModel = Action([@Set($modelSearch, $event)])
+box = AppSearch("md", null, false, false, "Search models...", $modelSearch, null, null, null, null, null, setModel)
+Wait — that source cannot answer this. Let me redo it:
+spendQ = Query("fetchSpendTimeseries", [{range: "7d", model: $modelSearch}
+spendQ = Query("fetchSpendTimeseries", [{range: "7d", model: $modelSearch}], {points: []}, "data")
+root = AppStack([box], "md")
+Done.`;
+  assert.doesNotThrow(() => check(MODEL_A, messy));
+  const n = naming(messy);
+  assert.equal(n.appSearchStateName, '$modelSearch');
+  assert.equal(n.appSearchStateNamingClass, 'search_suffix');
+});
+
+test('naming: the four readings and the fail list are byte-identical with the diagnostic present', () => {
+  // The instrumentation is additive. Same inputs, same verdicts as the
+  // assertions earlier in this file, which were written before it existed.
+  const a = check(MODEL_A, SEARCHED);
+  assert.deepEqual(quad(a.controlPair), [true, true, true, true]);
+  assert.deepEqual(a.fail, []);
+  const b = check(MODEL_B, PICKED_MODEL);
+  assert.deepEqual(quad(b.controlPair), [true, true, true, true]);
+  assert.deepEqual(b.fail, []);
+});
