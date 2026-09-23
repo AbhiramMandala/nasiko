@@ -32,15 +32,21 @@ import '/common/services/usage-service.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /**
- * The data-source scope this page generates against.
+ * The section this page belongs to.
  *
- * Weave's `dashboard_data_sources.json` is the security boundary and it is
- * backend-owned — the manifest names five read-only usage sources under
- * `tokenops`. Importing `usage-service.js` above is what registers those five
- * names in this page's registry; without it every `Query` would resolve to
- * nothing and the surface would render its declared defaults forever.
+ * A section is the name a page gives itself; the control plane maps it to a
+ * data-source scope (`SECTION_SCOPES` in ee/server/src/weave_surface.rs) and
+ * forwards THAT to Weave. The page never names a scope: the scope is the
+ * security boundary of generation, and `weave_surface.rs` does not read a
+ * `scope` key from the body at all, so a page cannot widen what it may
+ * generate against by asking.
+ *
+ * Importing `usage-service.js` above is what registers the tokenops sources
+ * in this page's registry; without it every `Query` would resolve to nothing
+ * and the surface would render its declared defaults forever. When a second
+ * section lands, its page imports its own service the same way.
  */
-const SCOPE = 'tokenops';
+const SECTION = 'tokenops';
 
 class WeavePage extends HTMLElement {
   #initialized = false;
@@ -58,7 +64,7 @@ class WeavePage extends HTMLElement {
         <div>
           <h1 class="title-page">Weave</h1>
           <p class="page-sub">Describe a dashboard. It is generated against the
-            <code>${escHtml(SCOPE)}</code> data sources and rendered live.</p>
+            <code>${escHtml(SECTION)}</code> data sources and rendered live.</p>
         </div>
         <div class="head-actions">
           <app-badge id="status" variant="neutral">idle</app-badge>
@@ -91,7 +97,7 @@ class WeavePage extends HTMLElement {
 
     this.#surface = this.querySelector('#surface');
     this.#log = this.querySelector('#log');
-    this.#surface.context = { scope: SCOPE };
+    this.#surface.context = { section: SECTION };
 
     this.querySelector('#composer').addEventListener('submit', (e) => {
       e.preventDefault();
