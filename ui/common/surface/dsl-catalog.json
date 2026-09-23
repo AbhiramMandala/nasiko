@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "20e5fbd655c6",
+  "catalogVersion": "898e9514b9e6",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 42,
@@ -19,8 +19,7 @@
       "attributes": {
         "label": {
           "type": "string",
-          "required": true,
-          "description": "Header text (required)"
+          "description": "Header text. Required unless the header is slotted."
         },
         "open": {
           "type": "boolean",
@@ -31,10 +30,11 @@
           "type": "enum",
           "values": [
             "card",
-            "flat"
+            "flat",
+            "panel"
           ],
           "default": "card",
-          "description": "`card` (default) draws its own surface | `flat` drops the border and radius, for stacking inside a bordered list or nesting."
+          "description": "`card` (default) draws its own surface | `flat` drops the border and radius, for stacking inside a bordered list or nesting | `panel` is a sand well whose header is the well's own top: card padding, no row tinting, and the chevron trailing the header rather than leading it."
         },
         "disabled": {
           "type": "boolean",
@@ -42,6 +42,10 @@
         }
       },
       "slots": [
+        {
+          "name": "label",
+          "attribute": "data-slot"
+        },
         {
           "name": "meta",
           "attribute": "data-slot"

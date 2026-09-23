@@ -20,6 +20,25 @@
   .rail-col.is-success { color: var(--color-success); }
   .rail-col.is-failed { color: var(--color-error); }
   .rail-col.is-running { color: var(--fg-brand); }
+  .rail-col.is-awaiting { color: var(--color-warning); }
+
+  /* Steps still ahead carry their number rather than a glyph (mockup) — the
+     ring is the same 16px box the icons occupy, so the rail stays aligned. */
+  .step-n {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border: 1px solid currentColor;
+    border-radius: var(--r-40);
+    font-size: 9px;
+    line-height: 1;
+    font-weight: 500;
+  }
+  .rail-col.is-awaiting .step-n {
+    background: var(--color-warning-bg);
+  }
   .rail-line {
     flex: 1;
     width: 1px;
@@ -83,6 +102,20 @@
   .status.is-success { color: var(--color-success); }
   .status.is-failed { color: var(--color-error); }
   .status.is-running { color: var(--fg-brand); }
+  .status.is-awaiting { color: var(--color-warning); }
+
+  /* The prompt a waiting step is about to run — context for the decision
+     underneath it, so it reads as body copy, not as an output pane. */
+  .step-prompt {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    line-height: 18px;
+    color: var(--color-text-muted);
+  }
+  /* Where the page mounts <hitl-card>. Empty until it does, and self-removing
+     from the layout so a step with no card open shows no gap. */
+  .step-hitl { width: 100%; }
+  .step-hitl:empty { display: none; }
 
   /* Output / Prompt pill tabs (mockup: 24px pills, active = white fill) */
   .pane-tabs {
@@ -132,11 +165,15 @@
     font-family: var(--font-display);
     white-space: pre-wrap;
   }
+  /* The one pane that is tinted rather than a neutral well (mockup): a stack
+     trace reads as output otherwise, and this one is the reason the run stopped. */
   .pane--error {
     font-family: var(--font-display);
     white-space: pre-wrap;
     color: var(--color-error);
+    background: var(--color-error-bg);
   }
+  :scope[surface='sand'] .pane--error { background: var(--color-error-bg); }
 }
 
 @keyframes wf-spin {

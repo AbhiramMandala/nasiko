@@ -3,9 +3,11 @@
  * steps (POST /api/maf/generate), edit them, then save.
  *
  * Two saves, two endpoints:
- * - "Save as draft and test" → POST /api/maf/workflow/draft (status 'draft').
- *   Re-saving passes the returned `draft_id` so one row is overwritten rather
- *   than a new draft created per click. A draft is promoted later.
+ * - "Save as draft and test" → POST /api/maf/workflow/draft (status 'draft'),
+ *   then PUT /api/maf/workflow/{id} for the name and the steps, which the draft
+ *   endpoint does not store. Re-saving reuses that id rather than creating a
+ *   new draft per click. A draft holds the same steps a deployed workflow does,
+ *   so it can be run and edited straight away; Deploy is a status flip later.
  * - "Deploy" → POST /api/maf/workflows, which creates it 'active' straight away.
  *
  * The generate call has three designed failure modes: 503 (no OPENAI_API_KEY
@@ -25,8 +27,8 @@ import '/common/features/wf-step-editor.js';
 
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./workflow-new-page.css', import.meta.url));
-import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
+import { generateErrorHtml } from '/common/services/workflows-service.js';
 import { navigate as routerNavigate } from '../core/router.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -39,6 +41,10 @@ class WorkflowNewPage extends HTMLElement {
   #saved = null;
   /** Set by the first draft save, so later ones overwrite that row. */
   #draftId = null;
+  /** The description the steps on screen were generated from, or null if no
+   *  plan has been generated yet. Regenerating the same sentence would return
+   *  the same plan, so the button stays put and goes inert until it changes. */
+  #generatedFrom = null;
   /** Snapshot of the form as last saved (or as first rendered) — see #dirty(). */
   #clean = '';
   /** Where the intercepted click was headed. */
@@ -103,6 +109,9 @@ class WorkflowNewPage extends HTMLElement {
     this.#loadAgents();
 
     this.querySelector('#wf-name').addEventListener('input', () => this.#syncHeader());
+    // The composer's textarea bubbles `input`, which is the only signal that
+    // the description has drifted from the plan on screen.
+    this.querySelector('#wf-desc').addEventListener('input', () => this.#syncGenerate());
     this.querySelector('#wf-desc').addEventListener('chatbox-submit', (e) => this.#draft(e.detail.value));
     this.querySelector('#save-btn').addEventListener('click', () => this.#save({ deploy: false }));
     this.querySelector('#deploy-btn').addEventListener('click', () => this.#save({ deploy: true }));
@@ -171,6 +180,20 @@ class WorkflowNewPage extends HTMLElement {
     this.querySelector('#save-draft-btn').toggleAttribute('disabled', !named);
   }
 
+  /**
+   * The generate button, once a plan exists: it keeps its place and its label
+   * says what it would do now, but it is inert until the description is edited.
+   * Before the first plan there is nothing to compare against, so any non-empty
+   * description can be generated from — which is what the composer already does
+   * on its own.
+   */
+  #syncGenerate() {
+    const box = this.querySelector('#wf-desc');
+    if (!box) return;
+    box.setAttribute('submit-label', this.#generatedFrom === null ? 'Generate plan' : 'Regenerate plan');
+    box.submitDisabled = this.#generatedFrom !== null && box.value.trim() === this.#generatedFrom;
+  }
+
   #notice(html) {
     const el = this.querySelector('#gen-notice');
     el.hidden = !html;
@@ -183,6 +206,9 @@ class WorkflowNewPage extends HTMLElement {
     this.querySelector('#editor').hidden = on;
     this.querySelector('#wf-desc').setLoading(on);
     this.#syncActions();
+    // setLoading(false) re-enables the button from the composer's own rules;
+    // re-apply ours on top of it.
+    if (!on) this.#syncGenerate();
   }
 
   async #draft(description) {
@@ -201,30 +227,15 @@ class WorkflowNewPage extends HTMLElement {
         agentName: s.agent_name,
         suggested: true,
       }));
-      // A plan exists now, so the same button re-runs it rather than making one.
-      this.querySelector('#wf-desc').setAttribute('submit-label', 'Regenerate plan');
+      // A plan exists now, so the same button re-runs it rather than making one
+      // — and only once the sentence it came from has been edited.
+      this.#generatedFrom = desc;
       this.#syncHeader();
     } catch (err) {
-      this.#notice(this.#generateErrorHtml(err));
+      this.#notice(generateErrorHtml(err));
     } finally {
       this.#setDrafting(false);
     }
-  }
-
-  #generateErrorHtml(err) {
-    if (err.status === 503) {
-      return `AI drafting isn't available — this server has no OpenAI API key configured.
-        You can still add steps manually below.`;
-    }
-    if (err.status === 400) {
-      return `You don't have any agents yet, so there's nothing to plan with.
-        <a href="/agents">Deploy an agent</a> first, then draft steps.`;
-    }
-    if (err.status === 422) {
-      return `Nasiko couldn't draft steps from that description — try rephrasing it,
-        or add the steps manually below.`;
-    }
-    return `Drafting failed: ${escHtml(err.message)}`;
   }
 
   /**
@@ -235,7 +246,11 @@ class WorkflowNewPage extends HTMLElement {
   async #save({ deploy, navigate = true }) {
     const btn = this.querySelector(deploy ? '#deploy-btn' : '#save-btn');
     const steps = this.querySelector('#editor').steps
-      .map((s) => ({ task_description: s.taskDescription.trim(), agent_id: s.agentId || undefined }))
+      .map((s, i) => ({
+        step_index: i,
+        task_description: s.taskDescription.trim(),
+        agent_id: s.agentId || undefined,
+      }))
       .filter((s) => s.task_description);
     if (!this.#name) {
       this.#notice('Name this workflow before saving it.');
@@ -269,30 +284,45 @@ class WorkflowNewPage extends HTMLElement {
   }
 
   /**
-   * The draft endpoint requires a non-empty instruction, and the description is
-   * optional on this screen — so a manually authored workflow falls back to its
-   * name, which is the only text guaranteed to be there.
-   *
    * A 404 means the draft was deleted or promoted elsewhere; drop the stale id
    * and save again as a new draft rather than losing what is on screen.
    */
   async #saveDraft(steps) {
-    const body = {
-      instruction: this.querySelector('#wf-desc').value.trim() || this.#name,
-      name: this.#name,
-      steps,
-    };
     try {
-      const saved = await call('saveDraft', this.#draftId ? { ...body, draft_id: this.#draftId } : body);
-      this.#draftId = saved.id;
-      return saved;
+      return await this.#writeDraft(steps);
     } catch (err) {
       if (!this.#draftId || err.status !== 404) throw err;
       this.#draftId = null;
-      const saved = await call('saveDraft', body);
-      this.#draftId = saved.id;
-      return saved;
+      return this.#writeDraft(steps);
     }
+  }
+
+  /**
+   * Two writes, because the draft endpoint stores the sentence and nothing
+   * else: it creates (or refreshes) the row, and the PUT gives it the name and
+   * the steps — which is also what makes a draft runnable, since the server
+   * gates a run on having steps rather than on the status.
+   *
+   * PUT rejects an empty step list, so a draft with nothing in the editor yet
+   * stays the bare sentence the POST saved.
+   *
+   * The instruction must be non-empty and the description box is optional here,
+   * so the name stands in for it — it is the one field this screen requires.
+   */
+  async #writeDraft(steps) {
+    const instruction = this.querySelector('#wf-desc').value.trim() || this.#name;
+    let draft = null;
+    if (!this.#draftId || !steps.length) {
+      draft = await call('saveDraft',
+        this.#draftId ? { instruction, draft_id: this.#draftId } : { instruction });
+      this.#draftId = draft.id;
+    }
+    if (!steps.length) return draft;
+    return call('updateWorkflow', this.#draftId, {
+      name: this.#name,
+      description: instruction,
+      steps,
+    });
   }
 
   /** What's on screen, as a comparable string. Dirty = differs from the last save. */

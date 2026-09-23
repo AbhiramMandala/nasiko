@@ -40,13 +40,15 @@ import '/common/features/app-module-nav.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
-// A draft has never run, so "Run now" would be a control with nothing behind it.
-const MENU_DEPLOYED = JSON.stringify([
+// A draft runs through the same endpoint a deployed workflow does — what the
+// server gates a run on is having steps. So does this menu: the one row that
+// can't run is the bare sentence POST /maf/workflow/draft saves.
+const MENU_RUNNABLE = JSON.stringify([
   { id: 'open', label: 'Open workflow' },
   { id: 'run', label: 'Run now' },
   { id: 'delete', label: 'Delete workflow' },
 ]);
-const MENU_DRAFT = JSON.stringify([
+const MENU_STEPLESS = JSON.stringify([
   { id: 'open', label: 'Open workflow' },
   { id: 'delete', label: 'Delete workflow' },
 ]);
@@ -56,7 +58,6 @@ const MODES = {
   deployed: {
     title: 'Deployed workflows',
     searchLabel: 'Search deployed workflows',
-    menu: MENU_DEPLOYED,
     art: '/common/images/deployed_empty.svg',
     heading: 'Deploy your first workflow',
     description: 'Turn a tested workflow into a reusable pipeline that you can run whenever you need it.',
@@ -65,7 +66,6 @@ const MODES = {
   drafts: {
     title: 'Draft workflows',
     searchLabel: 'Search draft workflows',
-    menu: MENU_DRAFT,
     art: '/common/images/drafts_empty.svg',
     heading: 'No workflows saved yet',
     description: 'Create a multi-agent workflow, test how the steps work together, and refine it before deploying.',
@@ -235,7 +235,8 @@ class WorkflowsPage extends HTMLElement {
         max-visible-tags="3"
         href="/workflow?id=${encodeURIComponent(wf.id)}"
         aria-label="Open ${escAttr(wf.name)}">
-        <app-menu data-slot="actions" align="end" trigger-label="Workflow actions" items='${this.#copy.menu}'>
+        <app-menu data-slot="actions" align="end" trigger-label="Workflow actions"
+          items='${steps.length ? MENU_RUNNABLE : MENU_STEPLESS}'>
           ${icons.moreVertical('', 16)}
         </app-menu>
         ${agents.length ? `<span data-slot="footer" class="wf-agents">${escHtml(agents.join(' · '))}</span>` : ''}

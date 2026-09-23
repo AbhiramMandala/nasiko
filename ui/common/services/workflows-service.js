@@ -11,6 +11,7 @@
 
 import { apiFetch, fetchApi } from '/common/services/api.js';
 import { registerAll } from '/common/core/data-sources.js';
+import { escHtml } from '/common/utils/escape.js';
 
 // `mafs.status` is 'draft' | 'active' | 'deleted'; deleted rows never reach a
 // read path, so anything that isn't a draft is deployed. Rows from older
@@ -107,6 +108,28 @@ const generateWorkflow = async (description) => {
     throw err;
   }
   return body?.data;
+};
+
+/**
+ * What to tell the user when `generateWorkflow` fails. Lives beside the call
+ * because both screens that can draft a plan — create and the detail page's
+ * edit mode — have to say the same thing about the same three status codes.
+ * Returns HTML: the 400 case points at the page that fixes it.
+ */
+export const generateErrorHtml = (err) => {
+  if (err.status === 503) {
+    return `AI drafting isn't available — this server has no OpenAI API key configured.
+      You can still add steps manually below.`;
+  }
+  if (err.status === 400) {
+    return `You don't have any agents yet, so there's nothing to plan with.
+      <a href="/agents">Deploy an agent</a> first, then draft steps.`;
+  }
+  if (err.status === 422) {
+    return `Nasiko couldn't draft steps from that description — try rephrasing it,
+      or add the steps manually below.`;
+  }
+  return `Drafting failed: ${escHtml(err.message)}`;
 };
 
 registerAll({

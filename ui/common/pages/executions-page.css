@@ -5,9 +5,6 @@
 
   .page-title { margin-bottom: var(--s-24); }
 
-  /* Tabs — <app-tabs strip>; the page owns only the spacing below. */
-  .tabs { margin-bottom: var(--s-20); }
-
   /* Search, status and age. All three stay mounted on the empty screen
      (disabled there): they are the section's controls, not the list's. */
   .toolbar {
@@ -25,12 +22,15 @@
   /* Figma export, 286×164 — capped at its natural size, fluid below it. */
   .runs-art { width: 100%; max-width: 286px; height: auto; }
 
-  .list-area {
+  /* Centring is for the empty screen only — it has one small block to place in
+     the page. A populated list is full-bleed, so `:has` scopes the centring to
+     the state that wants it rather than the list fighting it back. */
+  .list-area:has(app-empty-state) {
     display: flex;
     flex-direction: column;
-    align-items: center; 
+    align-items: center;
     justify-content: center;
-    height: 80%;
+    min-height: 60vh;
   }
 
   .run-list {
@@ -39,18 +39,34 @@
     gap: var(--s-16);
   }
 
-  /* ── Run card — sand well (mockup: pad 20, gap 16, r8) ── */
-  .run-card {
+  /* ── Run card ───────────────────────────────────────────────────────────
+     The card is an <app-accordion variant="panel">: its well, its header
+     padding, its chevron, the open/close transition and the keyboard behaviour
+     are all the design system's. Nothing here reaches into it — a page sheet
+     cannot win against a component's own `@scope` anyway (proximity is settled
+     before specificity), so what this page needs from the skin is the variant's
+     job, and what is left here is only the page's own markup. */
+
+  /* A run waiting on this person is ringed — it is the one card on the page
+     that will not move until they do something. A shadow rather than a border:
+     it costs no layout, so the ring does not shift the card as it appears. */
+  .run-card.needs-action {
+    box-shadow: inset 0 0 0 1px var(--color-warning);
+  }
+
+  /* The variant aligns the chevron to the top of the header; this centres it on
+     *this* header's first row, whose height is the action buttons' (sm, 28px)
+     rather than the title's own line. Only the page can know that. */
+  .run-card .chev { margin-block-start: calc((28px - 16px) / 2); }
+
+  /* Two rows, both visible while the section is shut: the title with whatever
+     can be done to the run, then the meta pills. */
+  .run-head {
     display: flex;
     flex-direction: column;
-    gap: var(--s-16);
-    padding: var(--s-20);
-    border-radius: var(--r-8);
-    background: var(--color-bg-base);
+    gap: var(--s-12);
   }
-  .run-card.is-skeleton { min-height: 108px; gap: var(--s-12); }
-
-  .run-card-head {
+  .run-head-top {
     display: flex;
     align-items: center;
     gap: var(--s-12);
@@ -62,16 +78,19 @@
     line-height: 20px;
     color: var(--color-text-main);
   }
-  .head-spacer { flex: 1; }
-  .open-wf {
+  /* Open workflow / Open draft / Rerun (<app-button>) and the trace link. */
+  .run-card-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    flex-shrink: 0;
+    margin-inline-start: auto;
+  }
+  .view-trace {
     font-size: var(--font-size-xs);
     line-height: 16px;
-    flex-shrink: 0;
+    white-space: nowrap;
   }
-  /* The disclosure control is <app-button variant="ghost" size="sm" icon-only> —
-     the square ghost box, its hover fill and its focus ring all come from the
-     component. */
-  .run-card-head app-button { flex-shrink: 0; }
 
   /* Meta pills and the status pill are <app-badge>; the row is just their box. */
   .run-card-meta {
@@ -80,6 +99,15 @@
     align-items: center;
     gap: var(--s-8);
   }
+
+  /* The loading rows are a plain well the same size as a run card — there is
+     nothing to disclose yet, so no accordion. */
+  .run-card-shell {
+    padding: var(--s-20);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+  }
+  .run-card-shell.is-skeleton { min-height: 108px; }
 
   .run-error {
     padding: var(--s-12) var(--s-16);

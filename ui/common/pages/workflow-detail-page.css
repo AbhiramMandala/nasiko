@@ -55,20 +55,32 @@
     white-space: nowrap;
   }
 
-  .desc-input {
-    width: 100%;
-    padding: var(--s-12);
-    border: 1px solid transparent;
+  /* Why the generate call failed, in the words of workflows-service.js. */
+  .gen-notice {
+    padding: var(--s-12) var(--s-16);
     border-radius: var(--r-8);
-    resize: vertical;
-    background: var(--bg-input);
-    font-family: inherit;
+    background: var(--bg-caution-subtle);
     font-size: 13px;
-    line-height: 20px;
+    line-height: 18px;
     color: var(--color-text-main);
+    text-wrap: pretty;
   }
-  .desc-input:focus { outline: none; border-color: var(--color-primary); }
-  .desc-input::placeholder { color: var(--color-text-muted); }
+
+  /* Drafting placeholder — same plate the create screen shows, sized like the
+     step list it stands in for so the save bar doesn't jump. */
+  .generating {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 320px;
+    border-radius: var(--r-8);
+    background:
+      radial-gradient(var(--bg-surface-active) 1px, transparent 1px) 0 0 / 12px 12px,
+      var(--bg-surface);
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-muted);
+  }
 
   /* Meta pills and status pills are <app-badge>; this is just their row. */
   .badges {

@@ -3,9 +3,11 @@
  *
  * Views (single 720px column, mirroring the mockup's review screen):
  * - review: editable name/description/steps (PUT /api/maf/workflow/{id}),
- *   output_generation display, run button, execution history. A draft shows
- *   Deploy (POST /api/maf/workflow/{id}/promote) instead of Run — the server
- *   refuses to run a draft, and promotion is what makes it runnable.
+ *   output_generation display, run button, execution history. A draft holds the
+ *   same steps a deployed workflow does and runs through the same endpoint, so
+ *   it gets Test run as well as Deploy (POST /api/maf/workflow/{id}/promote,
+ *   a status flip). A draft with no steps yet — the bare sentence
+ *   POST /maf/workflow/draft saves — can do neither until Edit gives it one.
  * - run: live per-step timeline for one execution — polls
  *   GET /api/maf/execution/{id} every 1.5s while pending/running (no SSE).
  *
@@ -21,24 +23,28 @@ import { timeAgo } from '/common/utils/date-utils.js';
 import { fmtDuration, fmtTokens } from '/common/utils/units.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import '/common/design-system/app-badge/app-badge.js';
+import '/common/design-system/app-chatbox/app-chatbox.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/utils/back-link.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/features/wf-step-editor.js';
-import '/common/features/wf-run-steps.js';
+import { EXEC_ACTIVE, EXEC_STATUS } from '/common/features/wf-run-steps.js';
 
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./workflow-detail-page.css', import.meta.url));
 import { escHtml } from '/common/utils/escape.js';
 import { call } from '../core/data-sources.js';
-import { isDeployed } from '/common/services/workflows-service.js';
+import { generateErrorHtml, isDeployed } from '/common/services/workflows-service.js';
 import { navigate } from '../core/router.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 const POLL_MS = 1500;
 /** Execution status → <app-badge> variant. */
-const EXEC_VARIANTS = { success: 'success', failed: 'error', running: 'warning', pending: 'neutral' };
+// Status wording and colour are `EXEC_STATUS`, shared with the executions list:
+// this page used to carry its own map, which had no `awaiting_human` in it, so a
+// paused run printed the raw wire value under a heading that said nothing about
+// what to do next.
 
 class WorkflowDetailPage extends HTMLElement {
   #initialized = false;
@@ -51,6 +57,10 @@ class WorkflowDetailPage extends HTMLElement {
   // run → review → Back → run …).
   #runPushed = false;
   #pollTimer = null;
+  /** The description the steps in the editor came from — the saved one on
+   *  entering edit mode, the regenerated one after a redraft. Null while there
+   *  is no plan to compare against. See #syncGenerate(). */
+  #generatedFrom = null;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -166,8 +176,11 @@ class WorkflowDetailPage extends HTMLElement {
         </header>
 
         ${edit ? `
-          <textarea class="desc-input" id="wf-desc" rows="2"
-            placeholder="Describe what this workflow is for">${escHtml(description)}</textarea>`
+          <app-chatbox id="wf-desc" no-attachments submit-label="Regenerate plan"
+            aria-label="Workflow description"
+            placeholder="Describe what this workflow is for"></app-chatbox>
+          <div class="gen-notice" id="gen-notice" hidden></div>
+          <div class="generating" id="generating" hidden>Generating your workflow...</div>`
         : `<p class="desc-text">${escHtml(description)}</p>`}
 
         ${edit
@@ -190,8 +203,10 @@ class WorkflowDetailPage extends HTMLElement {
             <app-button variant="tertiary" size="md" id="edit-btn">${icons.editThin('', 12)} Edit</app-button>
             ${isDeployed(wf) ? `
               <app-button variant="primary" size="md" id="run-btn">${icons.play('', 12)} Run</app-button>`
-            : `
-              <app-button variant="primary" size="md" id="deploy-btn">Deploy</app-button>`}
+            : steps.length ? `
+              <app-button variant="tertiary" size="md" id="run-btn">${icons.play('', 12)} Test run</app-button>
+              <app-button variant="primary" size="md" id="deploy-btn">Deploy</app-button>`
+            : ''}
           </div>
 
           <section class="danger-zone">
@@ -205,12 +220,28 @@ class WorkflowDetailPage extends HTMLElement {
 
     if (edit) {
       const editor = this.querySelector('#editor');
-      editor.steps = steps.map((s) => ({
-        taskDescription: s.task_description,
-        agentId: s.agent_id,
-        agentName: s.agent_name,
-      }));
+      // A draft saved as a bare sentence has no steps yet. Seed the blank one
+      // the create screen starts from, so editing a draft and editing a
+      // deployed workflow are the same screen — otherwise this opened on the
+      // editor's own empty state, whose only affordance is an unlabelled "+".
+      editor.steps = steps.length
+        ? steps.map((s) => ({
+          taskDescription: s.task_description,
+          agentId: s.agent_id,
+          agentName: s.agent_name,
+        }))
+        : [{ taskDescription: '', agentId: '', agentName: '' }];
       this.#loadAgents();
+      // The composer is the same one the create screen drafts from, so a
+      // description can be rewritten and re-planned wherever it is editable —
+      // on a draft or on a deployed workflow. The steps on screen came from the
+      // saved description, so the button starts inert.
+      const box = this.querySelector('#wf-desc');
+      box.value = description;
+      this.#generatedFrom = steps.length ? description : null;
+      box.addEventListener('input', () => this.#syncGenerate());
+      box.addEventListener('chatbox-submit', (e) => this.#regenerate(e.detail.value));
+      this.#syncGenerate();
       this.querySelector('#save-btn').addEventListener('click', () => this.#saveEdits());
       this.querySelector('#discard-btn').addEventListener('click', () => this.#showReview());
       return;
@@ -219,6 +250,54 @@ class WorkflowDetailPage extends HTMLElement {
     this.querySelector('#run-btn')?.addEventListener('click', () => this.#run());
     this.querySelector('#deploy-btn')?.addEventListener('click', () => this.#deploy());
     this.querySelector('#delete-btn').addEventListener('click', () => this.#delete());
+  }
+
+  /**
+   * The generate button keeps its place and its label says what it would do;
+   * it goes inert while the description still matches the plan on screen,
+   * because regenerating it would only return the same plan.
+   */
+  #syncGenerate() {
+    const box = this.querySelector('#wf-desc');
+    if (!box) return;
+    box.setAttribute('submit-label', this.#generatedFrom === null ? 'Generate plan' : 'Regenerate plan');
+    box.submitDisabled = this.#generatedFrom !== null && box.value.trim() === this.#generatedFrom;
+  }
+
+  /**
+   * Redraft the steps from the description as it now reads. Replaces what is in
+   * the editor — nothing is written until Save changes, so a regenerate that
+   * turns out worse is undone by Cancel.
+   */
+  async #regenerate(description) {
+    const desc = (description || '').trim();
+    if (!desc) return;
+    const box = this.querySelector('#wf-desc');
+    const notice = this.querySelector('#gen-notice');
+    notice.hidden = true;
+    this.querySelector('#generating').hidden = false;
+    this.querySelector('#editor').hidden = true;
+    box.setLoading(true);
+    try {
+      const plan = await call('generateWorkflow', desc);
+      this.querySelector('#editor').steps = (plan.steps || []).map((s) => ({
+        taskDescription: s.task_description,
+        agentId: s.agent_id,
+        agentName: s.agent_name,
+        suggested: true,
+      }));
+      this.#generatedFrom = desc;
+    } catch (err) {
+      notice.hidden = false;
+      notice.innerHTML = generateErrorHtml(err);
+    } finally {
+      this.querySelector('#generating').hidden = true;
+      this.querySelector('#editor').hidden = false;
+      box.setLoading(false);
+      // setLoading(false) re-enables the button from the composer's own rules;
+      // re-apply ours on top of it.
+      this.#syncGenerate();
+    }
   }
 
   async #delete() {
@@ -295,9 +374,9 @@ class WorkflowDetailPage extends HTMLElement {
   }
 
   /**
-   * Draft → deployed. Promotion decomposes the stored instruction and routes an
-   * agent per step, so it takes ~10s and returns the same id with real steps —
-   * the page re-renders from that response rather than re-fetching.
+   * Draft → deployed. Promotion flips the status and touches nothing else: the
+   * steps and their agents were resolved when the draft was created, so what
+   * was reviewed here is exactly what runs. Same id, so the URL stays valid.
    */
   async #deploy() {
     const btn = this.querySelector('#deploy-btn');
@@ -367,6 +446,16 @@ class WorkflowDetailPage extends HTMLElement {
           <div class="run-error" id="run-error" hidden></div>
         </div>
       </div>`;
+    // A decision does not deliver itself: the MAF worker picks the resolved row
+    // up and carries the run on server-side, so the only thing left to do here
+    // is look again straight away rather than waiting out the poll interval.
+    for (const type of ['hitl-resolved', 'hitl-canceled']) {
+      this.querySelector('#run-body').addEventListener(type, () => {
+        this.#stopPolling();
+        this.#pollNow();
+      });
+    }
+
     this.querySelector('#run-back').addEventListener('click', async () => {
       // This page pushed the run view, so leaving it is a step back and the
       // popstate handler renders the review. Otherwise the run view IS the
@@ -385,10 +474,10 @@ class WorkflowDetailPage extends HTMLElement {
 
   #updateRunView() {
     const exec = this.#execution;
-    const variant = EXEC_VARIANTS[exec.status] || 'neutral';
+    const { label, variant } = EXEC_STATUS[exec.status] || { label: exec.status, variant: 'neutral' };
     this.querySelector('#run-num').textContent = `Execution #${exec.execution_number}`;
     this.querySelector('#run-status').innerHTML =
-      `<app-badge variant="${variant}" dot>${escHtml(exec.status)}</app-badge>`;
+      `<app-badge variant="${variant}" dot>${escHtml(label)}</app-badge>`;
 
     const stepCount = exec.step_results?.length || 0;
     const attempts = exec.attempt_count > 1 ? `attempt ${exec.attempt_count}/${exec.max_attempts}` : '';
@@ -406,6 +495,10 @@ class WorkflowDetailPage extends HTMLElement {
     // Lets the timeline account for planning/synthesis, which belong to the
     // run and appear in no step row.
     stepsEl.totalTokens = exec.tokens_used || 0;
+    // A paused run is answered here, in the step that paused — `fetchExecution`
+    // returns the pending rows alongside the exec, so this page already had
+    // them and was simply dropping them on the floor.
+    stepsEl.hitl = exec.hitl || [];
 
     const outputSec = this.querySelector('#run-output');
     if (exec.output) {
@@ -424,16 +517,21 @@ class WorkflowDetailPage extends HTMLElement {
     }
   }
 
+  /** Re-read the run and repaint, then fall back into the ordinary cadence. */
+  async #pollNow() {
+    try {
+      this.#execution = await call('fetchExecution', this.#execution.id);
+      if (this.querySelector('#run-body')) this.#updateRunView();
+    } catch { /* transient failure — the poll below tries again */ }
+    this.#pollIfActive();
+  }
+
   #pollIfActive() {
-    const status = this.#execution?.status;
-    if (status !== 'pending' && status !== 'running') return;
-    this.#pollTimer = setTimeout(async () => {
-      try {
-        this.#execution = await call('fetchExecution', this.#execution.id);
-        if (this.querySelector('#run-body')) this.#updateRunView();
-      } catch { /* transient poll failure — keep trying */ }
-      this.#pollIfActive();
-    }, POLL_MS);
+    // `awaiting_human` counts: the answer is delivered to the MAF worker
+    // server-side, so a run that pauses here would otherwise sit frozen with a
+    // resolved card and never show that it had carried on.
+    if (!EXEC_ACTIVE.has(this.#execution?.status)) return;
+    this.#pollTimer = setTimeout(() => this.#pollNow(), POLL_MS);
   }
 
   #stopPolling() {

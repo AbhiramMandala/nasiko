@@ -379,9 +379,12 @@ struct CreateMafRequest {
     steps: Vec<CreateStepRequest>,
 }
 
+// No `step_index`: the order of the array is the order of the steps, and
+// `update_maf` renumbers from it. It used to be a required field that was then
+// thrown away, so a client sending a well-formed list without it got a 422
+// naming a field that changes nothing. Serde ignores it if it is still sent.
 #[derive(Deserialize)]
 struct UpdateStepRequest {
-    step_index: i32,
     #[serde(default)]
     agent_id: Option<Uuid>,
     task_description: String,
@@ -1421,10 +1424,7 @@ async fn update_maf(
         let mut resolved: Vec<MafStep> = Vec::with_capacity(steps.len());
         for (idx, step) in steps.iter().enumerate() {
             if step.task_description.trim().is_empty() {
-                return bad_request(&format!(
-                    "step {}: task_description is required",
-                    step.step_index
-                ));
+                return bad_request(&format!("step {idx}: task_description is required"));
             }
 
             let (agent_id, name, endpoint) = if let Some(aid) = step.agent_id {
@@ -2353,4 +2353,24 @@ async fn fetch_user_agents(
     .bind(user_id)
     .fetch_all(db)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The create screen sends the same step shape to both saves. `step_index`
+    /// was required here and ignored, so "Save as draft and test" — which is a
+    /// POST /draft followed by this PUT — 422'd on every draft that had steps.
+    #[test]
+    fn update_request_accepts_steps_without_a_step_index() {
+        let body = r#"{"name":"W","steps":[{"task_description":"do a thing"}]}"#;
+        let req: UpdateMafRequest = serde_json::from_str(body).expect("steps without step_index");
+        assert_eq!(req.steps.expect("steps").len(), 1);
+
+        // A client that still sends the old shape is not broken by dropping it.
+        let legacy = r#"{"steps":[{"step_index":0,"task_description":"do a thing"}]}"#;
+        let req: UpdateMafRequest = serde_json::from_str(legacy).expect("legacy step_index");
+        assert_eq!(req.steps.expect("steps")[0].task_description, "do a thing");
+    }
 }

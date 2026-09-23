@@ -15,6 +15,11 @@
  *   the moment someone starts typing. Every button in here was labelled and the
  *   textarea itself was not.
  * @prop {string} value - Get/set the textarea value
+ * @prop {boolean} submitDisabled - Extra gate on the submit button, on top of
+ *   "the box has something in it". The create/edit-workflow composers use it to
+ *   keep the named button where it is but inert until the description differs
+ *   from the one the plan on screen was generated from — a regenerate that
+ *   would return the same plan is the button doing nothing, loudly.
  * @method focus - Put the caret in the composer. Pages that prefill the box
  *   (a suggested-prompt chip, a retry) set `value` then call this — before it
  *   existed, chat-page reached in for the private `#textarea` to focus it.
@@ -37,6 +42,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 export class AppChatbox extends HTMLElement {
   #loading = false;
   #initialized = false;
+  #submitBlocked = false;
   constructor() {
     super();
     this.voiceRecorder = new VoiceRecorder();
@@ -170,7 +176,14 @@ export class AppChatbox extends HTMLElement {
   /** Submit already no-ops on an empty box — say so in the button instead of on click. */
   #syncSubmit() {
     if (this.#loading) return;
-    this.submitBtn.disabled = !this.textarea.value.trim() && this.attachedFiles.length === 0;
+    this.submitBtn.disabled = this.#submitBlocked
+      || (!this.textarea.value.trim() && this.attachedFiles.length === 0);
+  }
+
+  get submitDisabled() { return this.#submitBlocked; }
+  set submitDisabled(value) {
+    this.#submitBlocked = !!value;
+    if (this.submitBtn) this.#syncSubmit();
   }
 
   cacheElements() {
@@ -281,7 +294,8 @@ export class AppChatbox extends HTMLElement {
   }
 
   handleSubmit() {
-    if (this.#loading) return;
+    // Also the Enter path, which never touches the button.
+    if (this.#loading || this.#submitBlocked) return;
     const query = this.textarea.value.trim();
     if (!query && this.attachedFiles.length === 0) return;
     const files = [...this.attachedFiles];
