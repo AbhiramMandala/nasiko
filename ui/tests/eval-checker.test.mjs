@@ -493,14 +493,44 @@ Done.`;
  * moved. Every fault below is a real one that was recorded, not an invented
  * shape.
  */
-const CONTROL = `Sure — building that now.
+/**
+ * AppInput's positional slots, by name.
+ *
+ * Written as a builder rather than as literal calls, which is what these were
+ * until the signature went from twenty-four slots to eleven (NAS-758) and
+ * every fixture below silently became a call with fourteen arguments past the
+ * end — testing the wrong fault, or none. A positional test that hard-codes a
+ * position has to be rewritten every time the vocabulary moves, and the one
+ * time it is not rewritten it keeps passing while measuring nothing.
+ *
+ * So the slot list is stated once and each case says which slot it is moving.
+ * `extra` exists for the one fault that is only expressible past the end.
+ */
+const APP_INPUT_SLOTS = [
+  'size', 'state', 'label', 'hint', 'required',
+  'disabled', 'type', 'placeholder', 'value', 'aria-label', 'action',
+];
+
+const appInput = (over = {}, extra = []) => {
+  const slots = {
+    size: '"md"', state: 'null', label: '"Agent ID"', hint: 'null', required: 'false',
+    disabled: 'false', type: '"text"', placeholder: 'null', value: '$agentId',
+    'aria-label': 'null', action: 'setId', ...over,
+  };
+  return `AppInput(${[...APP_INPUT_SLOTS.map((k) => slots[k]), ...extra].join(', ')})`;
+};
+
+/** The same surface every time, with one control argument moved. */
+const control = (call) => `Sure — building that now.
 $agentId = ""
 setId = Action([@Set($agentId, $event), @Run(rowsQ)])
-idInput = AppInput("md", null, "Agent ID", null, null, false, false, false, false, "text", null, null, $agentId, null, null, null, null, null, null, null, null, null, null, setId)
+idInput = ${call}
 rowsQ = Query("fetchUsageByAgent", [$agentId, 1, 20], {data: [], total: 0})
 table = AppTable(rowsQ.data, 20, "pages", false, null, null, "No agents")
 root = AppStack([idInput, table], "md")
 Done.`;
+
+const CONTROL = control(appInput());
 
 /** The codes the positional contract reported, in order. */
 const codesFor = (dsl) => evaluateGeneration(dsl).positionalContract.map((p) => p.code);
@@ -512,51 +542,50 @@ test('a correctly bound control reports nothing', () => {
 });
 
 test('an Action in the wrong slot is caught', () => {
-  // `setId` into `pattern` (slot 20) — recorded twice, and silent both times.
-  const dsl = CONTROL.replace(
-    '$agentId, null, null, null, null, null, null, null, null, null, null, setId)',
-    '$agentId, null, null, null, null, null, null, setId, null, null, null, null)',
-  );
+  // Recorded twice against the old signature, silent both times. The slot it
+  // lands in differs now; that it lands in one that cannot hold an Action
+  // does not.
+  const dsl = control(appInput({ placeholder: 'setId', action: 'null' }));
   assert.ok(codesFor(dsl).includes('action_in_wrong_slot'), codesFor(dsl).join(','));
-  assert.match(check(kase({}), dsl).fail.join(' '), /takes its Action last, but setId is at "pattern"/);
+  assert.match(check(kase({}), dsl).fail.join(' '),
+    /takes its Action last, but setId is at "placeholder"/);
 });
 
 test('an Action past the end of the parameter list is caught', () => {
-  const dsl = CONTROL.replace('null, null, setId)', 'null, null, null, setId)');
+  const dsl = control(appInput({ action: 'null' }, ['setId']));
   assert.ok(codesFor(dsl).includes('action_dropped'), codesFor(dsl).join(','));
   assert.match(check(kase({}), dsl).fail.join(' '), /past the end of its parameter list/);
 });
 
 test('a $state in a slot that binds nothing is caught', () => {
-  // The state slides from `value` (13) to `list` (21); `value` goes null.
-  const dsl = CONTROL.replace(
-    'null, null, $agentId, null, null, null, null, null, null, null, null, null, null, setId)',
-    'null, null, null, null, null, null, null, null, null, null, $agentId, null, null, setId)',
-  );
+  // The state slides off `value` into a slot that displays text and binds
+  // nothing, and `value` goes null — so the box shows the id as its hint and
+  // keeps nothing the user types.
+  const dsl = control(appInput({ hint: '$agentId', value: 'null' }));
   const codes = codesFor(dsl);
   assert.ok(codes.includes('state_in_non_binding_slot'), codes.join(','));
-  assert.match(check(kase({}), dsl).fail.join(' '), /\$agentId at "list" \(slot 21\)/);
+  assert.match(check(kase({}), dsl).fail.join(' '), /\$agentId at "hint" \(slot 4\)/);
 });
 
 test('a control with wiring but nothing bound to value is caught', () => {
   // The Action is in the right slot and the value is simply never bound —
   // the case materialize.js's `uncontrolled_input` covers only when the
   // action slot happens to be the one that was filled.
-  const dsl = CONTROL.replace('null, null, $agentId, null,', 'null, null, null, null,');
+  const dsl = control(appInput({ value: 'null' }));
   const codes = codesFor(dsl);
   assert.ok(codes.includes('control_never_bound'), codes.join(','));
   assert.match(check(kase({}), dsl).fail.join(' '), /not read back from a \$state/);
 });
 
 test("a state's name in quotes is not the state", () => {
-  const dsl = CONTROL.replace('null, null, $agentId, null,', 'null, null, "$agentId", null,');
+  const dsl = control(appInput({ value: '"$agentId"' }));
   const codes = codesFor(dsl);
   assert.ok(codes.includes('state_as_literal'), codes.join(','));
   assert.match(check(kase({}), dsl).fail.join(' '), /is the state's NAME in quotes/);
 
   // A string that merely looks like one is left alone — the name has to be a
   // state this surface actually declares.
-  const unrelated = CONTROL.replace('"Agent ID"', '"$notAState"');
+  const unrelated = control(appInput({ label: '"$notAState"' }));
   assert.ok(!codesFor(unrelated).includes('state_as_literal'), codesFor(unrelated).join(','));
 });
 
