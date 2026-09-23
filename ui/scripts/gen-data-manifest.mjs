@@ -32,22 +32,90 @@
  * manifest states which convention each function uses, and the generator side
  * renders the call form from it rather than assuming.
  *
- * Usage: node ui/scripts/gen-data-manifest.mjs [--check]
+ * ## The backend's own word: the OpenAPI snapshot
+ *
+ * "--check cannot verify a shape" stopped being true when the control plane
+ * started publishing a utoipa spec. `ui/contracts/openapi.snapshot.json`
+ * (kept current by `openapi-snapshot.mjs`) is read here, and for every
+ * declared source whose route the spec covers, three more things are checked
+ * (`openapi-shapes.mjs` does the reading and comparing):
+ *
+ *   - the declared responseShape against the spec's 200 response, field by
+ *     field — a declared field the backend does not return, a backend field
+ *     the shape hides, or a type of the wrong kind, each fails;
+ *   - every query-string key the function sends against the parameters the
+ *     operation accepts — a key the backend ignores is a dead argument the
+ *     model will wire a control into and get unfiltered data back from;
+ *   - that the function is a passthrough (`return fetchApi(...)`), or else
+ *     declares `$returns`, the wrapper it builds around the wire response,
+ *     so the check can see through it.
+ *
+ * A shape may leave backend fields out, but only through `$omit: {path:
+ * reason}` — protocol plumbing and blobs a dashboard has no use for, named
+ * and justified, so that "not declared" always means "decided against" and
+ * never "nobody looked".
+ *
+ * A source whose route is NOT in the spec (utoipa is an opt-in rollout; the
+ * finops spend-* routes are not annotated yet) is still accepted, but only
+ * with a `$shapeSource` saying where its shape was read from. The count of
+ * unverifiable sources is printed on every run so it is a number someone
+ * can watch go down.
+ *
+ * ## More than one service
+ *
+ * `overrides.services` lists the service modules whose registered functions
+ * are in play — `["usage-service.js"]` when absent, which is where every
+ * scope lives today. Adding a section means adding its service here AND
+ * accounting for every function it registers (scope or withheld), because
+ * the "every registered function must be accounted for" rule applies per
+ * listed service, on purpose: the day agents-service.js is listed, its three
+ * functions become decisions someone has to write down.
+ *
+ * ## The search-argument ledger
+ *
+ * Weave renders any argument whose hint says "search" as `text [search]`
+ * (examples/dynamic_ui/dashboard/dsl_prompt.py), and every such argument in
+ * a scope is one more candidate for a search box to be wired into. While
+ * the source-capture failure is under investigation that count must not
+ * move without someone noticing, so `ui/contracts/search-budget.json` holds
+ * the expected count per scope and --check fails on any difference — up or
+ * down. Changing it is a one-line, reviewable edit, which is the point.
+ *
+ * ## Drafting a section while another is frozen
+ *
+ * `--with FRAGMENT.json` layers a second overrides file over the real one
+ * for this run only: its `services`, `scopes`, `sources`, `withheld` and
+ * `searchBudget` are added on top. Every check runs against the merged
+ * result, and the manifest is written only to `--out PATH`, never to the
+ * real file — so a new section can be drafted, checked and reviewed in
+ * `ui/contracts/drafts/` without touching data-sources-overrides.json until
+ * it is ready to move in. Landing a draft is moving its contents into the
+ * real overrides and its budget line into search-budget.json; the fragment
+ * then goes away.
+ *
+ * Usage: node ui/scripts/gen-data-manifest.mjs [--check] [--with FRAGMENT.json --out PATH]
  *   --check  exit 1 if data-manifest.json is out of date, if an allowlisted
  *            function is not registered, if a declared source is not
- *            allowlisted, or if a shape is declared for a function that no
- *            longer exists (for CI)
+ *            allowlisted, if a shape is declared for a function that no
+ *            longer exists, if a declared shape or a sent argument disagrees
+ *            with the OpenAPI snapshot, or if a scope's search-argument count
+ *            differs from the ledger (for CI)
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  findOperation, responseShape, queryParams, normalizeDeclared, compareShapes, applyReturns, omitPath,
+} from './openapi-shapes.mjs';
 
 const SCRIPTS = dirname(fileURLToPath(import.meta.url));
 const UI = resolve(SCRIPTS, '..');
-const SERVICE = resolve(UI, 'common/services/usage-service.js');
+const SERVICES_DIR = resolve(UI, 'common/services');
 const OVERRIDES = resolve(UI, 'common/surface/data-sources-overrides.json');
 const OUT = resolve(UI, 'common/surface/data-manifest.json');
+const SPEC = resolve(UI, 'contracts/openapi.snapshot.json');
+const SEARCH_BUDGET = resolve(UI, 'contracts/search-budget.json');
 
 const fail = (msg, hint) => {
   console.error(`gen-data-manifest: ${msg}`);
@@ -55,7 +123,37 @@ const fail = (msg, hint) => {
   process.exit(1);
 };
 
-const src = readFileSync(SERVICE, 'utf8');
+const argOpt = (name) => { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : undefined; };
+const WITH = argOpt('--with');
+const OUT_OVERRIDE = argOpt('--out');
+if (WITH && !OUT_OVERRIDE && !process.argv.includes('--check')) {
+  fail('--with needs --out: a manifest built from a draft fragment is never written over the real one.');
+}
+
+const overrides = JSON.parse(readFileSync(OVERRIDES, 'utf8'));
+let fragmentBudget = {};
+if (WITH) {
+  const frag = JSON.parse(readFileSync(resolve(WITH), 'utf8'));
+  overrides.services = [...new Set([...(overrides.services ?? ['usage-service.js']), ...(frag.services ?? [])])];
+  for (const key of ['scopes', 'sources', 'withheld']) {
+    for (const [k, v] of Object.entries(frag[key] ?? {})) {
+      if (overrides[key]?.[k] !== undefined) fail(`--with fragment redefines ${key}.${k}, which the real overrides already have.`);
+      overrides[key] = { ...(overrides[key] ?? {}), [k]: v };
+    }
+  }
+  fragmentBudget = frag.searchBudget ?? {};
+}
+
+/**
+ * The service modules in play. Absent means the one module every scope has
+ * lived in so far; the manifest's `_generated` line names whatever is here.
+ */
+const SERVICES = overrides.services ?? ['usage-service.js'];
+for (const f of SERVICES) {
+  if (!/^[a-z-]+-service\.js$/.test(f) || !existsSync(resolve(SERVICES_DIR, f))) {
+    fail(`overrides.services names "${f}", which is not a module under common/services/.`);
+  }
+}
 
 /**
  * The names the service actually hands to the registry.
@@ -65,14 +163,14 @@ const src = readFileSync(SERVICE, 'utf8');
  * registered — and only a registered name is callable by `call()`, which is
  * what a `Query` ultimately reaches.
  */
-function registeredNames() {
+function registeredNames(src) {
   const m = src.match(/registerAll\(\{([\s\S]*?)\}\s*,/);
   if (!m) fail('could not find the registerAll({...}) call in usage-service.js');
   return m[1].split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
 }
 
 /** Constants used inside route templates, so `${FINOPS_BASE}` resolves. */
-function routeConstants() {
+function routeConstants(src) {
   const consts = {};
   for (const m of src.matchAll(/^const ([A-Z_]+)\s*=\s*'([^']*)'/gm)) consts[m[1]] = m[2];
   return consts;
@@ -87,8 +185,8 @@ function routeConstants() {
  * keeps declared order either way, because for a positional function that
  * order IS the contract.
  */
-function parseSources() {
-  const consts = routeConstants();
+function parseSources(src) {
+  const consts = routeConstants(src);
   const out = new Map();
   const re = /const ((?:fetch|list)[A-Za-z]+)\s*=\s*async\s*\(([\s\S]*?)\)\s*=>\s*\{?([\s\S]*?)\n\};/g;
   for (const m of src.matchAll(re)) {
@@ -108,16 +206,23 @@ function parseSources() {
     }
 
     const route = body.match(/fetchApi\(\s*`([^`]+)`/)?.[1] ?? body.match(/fetchApi\(\s*'([^']+)'/)?.[1] ?? null;
+    // Does the function hand back what it fetched, untouched? Exactly one
+    // `return`, and it is the fetch. Anything else reshapes the response and
+    // has to declare `$returns` for the spec check to see through it.
+    const returns = [...body.matchAll(/\breturn\b\s*([^;]*)/g)].map((r) => r[1].trim());
+    const passthrough = returns.length === 1 && /^fetchApi\(/.test(returns[0]);
     out.set(name, {
       callStyle,
       keys,
+      wireKeys: wireKeys(body),
+      passthrough,
       // `${params}` is the built query string, not a path segment — drop it so
       // the route reads as the endpoint a human would recognise.
       // The query string is built at call time; only the path identifies the
       // endpoint, so everything from the first `?` goes.
       route: route
         ? route.replace(/\$\{([A-Z_]+)\}/g, (_, k) => consts[k] ?? `\${${k}}`)
-                .replace(/\$\{params\}/g, '')
+                .replace(/\$\{(?:params|qs\([^`]*?\))\}/g, '')
                 .split('?')[0]
         : null,
     });
@@ -125,9 +230,35 @@ function parseSources() {
   return out;
 }
 
-const overrides = JSON.parse(readFileSync(OVERRIDES, 'utf8'));
-const registered = new Set(registeredNames());
-const parsed = parseSources();
+/**
+ * The query-string keys a function actually puts on the wire, read from how
+ * it builds them: the object literal handed to `qs({...})` or
+ * `new URLSearchParams({...})`, any `.set('key', …)`, and `?key=${…}` in a
+ * template. Best effort and shallow on purpose — it only has to catch the
+ * failure it was written for, a function sending `page` to a backend that
+ * pages by `offset` and silently returning page one forever.
+ */
+function wireKeys(body) {
+  const keys = new Set();
+  for (const m of body.matchAll(/(?:\bqs|URLSearchParams)\(\s*\{([\s\S]*?)\}\s*\)/g)) {
+    for (const part of m[1].split(',')) {
+      const k = part.trim().split(':')[0].trim();
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) keys.add(k);
+    }
+  }
+  for (const m of body.matchAll(/\.set\(\s*'([^']+)'/g)) keys.add(m[1]);
+  for (const m of body.matchAll(/[?&]([A-Za-z_][A-Za-z0-9_]*)=\$\{/g)) keys.add(m[1]);
+  return [...keys];
+}
+
+const registered = new Set();
+const parsed = new Map();
+const serviceOf = new Map();
+for (const f of SERVICES) {
+  const src = readFileSync(resolve(SERVICES_DIR, f), 'utf8');
+  for (const n of registeredNames(src)) { registered.add(n); serviceOf.set(n, f); }
+  for (const [n, v] of parseSources(src)) parsed.set(n, v);
+}
 const declared = overrides.sources ?? {};
 const withheld = overrides.withheld ?? {};
 
@@ -309,6 +440,85 @@ for (const name of registered) {
   }
 }
 
+// ── the backend's word ──────────────────────────────────────────────────────
+
+if (!existsSync(SPEC)) {
+  fail('ui/contracts/openapi.snapshot.json is missing.',
+    'Run: node ui/scripts/openapi-snapshot.mjs --write (against a running control plane).');
+}
+const spec = JSON.parse(readFileSync(SPEC, 'utf8'));
+/** The control plane's standard envelope. Not data; never surfaced to the model. */
+const ENVELOPE_KEYS = ['message', 'status_code'];
+const verified = [];
+const unverifiable = [];
+
+for (const [name, decl] of Object.entries(declared)) {
+  const p = parsed.get(name);
+  if (!p) continue; // already failed above
+  const found = findOperation(spec, p.route);
+  if (!found) {
+    // utoipa is opt-in; a route it does not cover can still be exposed, but
+    // the shape has to say where it came from, because nothing here can.
+    if (!decl.$shapeSource) {
+      fail(`"${name}" (${p.route}) is not in the OpenAPI snapshot and declares no $shapeSource.`,
+        'Either annotate the route with #[utoipa::path] and re-snapshot, or say which Rust struct '
+        + 'the shape was read from — a shape nobody can check needs a provenance someone can.');
+    }
+    unverifiable.push(name);
+    continue;
+  }
+
+  // Arguments: everything the function sends must be something the backend
+  // reads. The failure this catches is silent on both sides — the backend
+  // ignores an unknown key, the function gets a plausible response.
+  const accepted = queryParams(found.operation);
+  for (const k of p.wireKeys) {
+    if (!accepted.has(k)) {
+      fail(`"${name}" sends "${k}" to GET ${found.path}, which does not accept it `
+        + `(accepted: ${[...accepted.keys()].join(', ') || 'none'}).`,
+        'A dead argument in the manifest is a control the model will wire up and a filter that '
+        + 'never happens. Drop it from the function, or fix the backend.');
+    }
+  }
+
+  // Shape: what a Query yields, compared with what the wire carries.
+  if (!p.passthrough && decl.$returns === undefined) {
+    fail(`"${name}" reshapes the response before returning it, but declares no $returns.`,
+      'Declare the wrapper, e.g. { "data": "$response", "total": "number" }, so the payload inside it '
+      + 'can still be checked against the spec.');
+  }
+  const wire = responseShape(spec, found.operation);
+  if (!wire) { unverifiable.push(name); continue; }
+  let expected;
+  try {
+    expected = applyReturns(decl.$returns ?? '$response', wire);
+    // `$omit` is {path: reason}. A field left out WITH a reason is a decision;
+    // a field left out without one is the drift this check exists to catch.
+    for (const [path, reason] of Object.entries(decl.$omit ?? {})) {
+      if (typeof reason !== 'string' || !reason.trim()) fail(`"${name}" omits "${path}" without saying why.`);
+      expected = omitPath(expected, path);
+    }
+  } catch (e) {
+    fail(`"${name}": ${e.message}`);
+  }
+  const findings = compareShapes(normalizeDeclared(decl.responseShape), expected, '', [], {
+    ignoreRootKeys: decl.$returns === undefined ? ENVELOPE_KEYS : [],
+  });
+  if (findings.length) {
+    console.error(`gen-data-manifest: "${name}"'s responseShape disagrees with GET ${found.path} in the OpenAPI snapshot:`);
+    for (const f of findings) console.error(`  ${f.code.padEnd(16)} ${f.path}: ${f.detail}`);
+    fail(`${findings.length} disagreement(s) between the declared shape and the backend.`,
+      'The spec is the backend describing itself; the shape is a claim about it. When they differ '
+      + 'the shape is what changes — unless the spec is stale, in which case re-snapshot first.');
+  }
+  verified.push(name);
+}
+
+// ── the search-argument ledger ─────────────────────────────────────────────
+
+/** Mirrors dsl_prompt.py: a hint with the word "search" in it renders as `text [search]`. */
+const SEARCHY = /\bsearch\b/i;
+
 // ── emit ────────────────────────────────────────────────────────────────────
 
 /**
@@ -343,11 +553,35 @@ for (const [scope, names] of Object.entries(overrides.scopes ?? {})) {
   scopes[scope] = names.map(entry);
 }
 
+const searchCounts = {};
+for (const [scope, entries] of Object.entries(scopes)) {
+  searchCounts[scope] = entries.reduce(
+    (n, e) => n + Object.values(e.argsShape).filter((hint) => SEARCHY.test(hint)).length, 0);
+}
+if (!existsSync(SEARCH_BUDGET)) {
+  fail('ui/contracts/search-budget.json is missing.',
+    `Create it with the current counts: ${JSON.stringify(searchCounts)}`);
+}
+const budget = { ...JSON.parse(readFileSync(SEARCH_BUDGET, 'utf8')), ...fragmentBudget };
+for (const [scope, count] of Object.entries(searchCounts)) {
+  if (typeof budget[scope] !== 'number') {
+    fail(`scope "${scope}" has no entry in search-budget.json (it currently carries ${count} [search] argument(s)).`,
+      'Add it. Every scope\'s search-argument count is a number someone has agreed to.');
+  }
+  if (budget[scope] !== count) {
+    fail(`scope "${scope}" carries ${count} [search] argument(s); search-budget.json says ${budget[scope]}.`,
+      count > budget[scope]
+        ? 'A new search-capable argument is one more candidate for the source-capture failure under '
+          + 'investigation. If it is intended, raise the ledger in the same change and say why.'
+        : 'Fewer than the ledger says — lower it so the ledger stays exact.');
+  }
+}
+
 const payload = {
   _generated: [
     'Generated by ui/scripts/gen-data-manifest.mjs — do not edit.',
     'Exposure and response shapes come from common/surface/data-sources-overrides.json;',
-    'name, callStyle, route and argsShape are read from common/services/usage-service.js.',
+    `name, callStyle, route and argsShape are read from ${SERVICES.map((f) => `common/services/${f}`).join(', ')}.`,
     'callStyle says how Query must pass arguments: "object" takes ONE options object,',
     '"positional" takes them in the order listed, "none" takes none. Getting this wrong',
     'does not error — it silently fetches unfiltered data.',
@@ -358,16 +592,27 @@ const payload = {
 };
 
 const next = `${JSON.stringify(payload, null, 2)}\n`;
-const current = existsSync(OUT) ? readFileSync(OUT, 'utf8') : '';
+const target = OUT_OVERRIDE ? resolve(OUT_OVERRIDE) : OUT;
+const current = existsSync(target) ? readFileSync(target, 'utf8') : '';
 const counts = Object.entries(scopes).map(([s, v]) => `${s}: ${v.length}`).join(', ');
+const searchLine = Object.entries(searchCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
+console.log(`gen-data-manifest: spec-verified ${verified.length} source(s)`
+  + (unverifiable.length ? `, ${unverifiable.length} not in the OpenAPI snapshot (${unverifiable.join(', ')})` : '')
+  + `; [search] arguments per scope — ${searchLine}`);
 
 if (process.argv.includes('--check')) {
+  if (WITH && !OUT_OVERRIDE) {
+    // A draft has nothing committed to be out of date against; the checks
+    // above are the whole point of running it.
+    console.log(`gen-data-manifest: draft ${WITH} passes every check (${counts}, ${Object.keys(withheld).length} withheld)`);
+    process.exit(0);
+  }
   if (current !== next) {
     fail('common/surface/data-manifest.json is out of date.',
       'A data function or an override changed. Run: node ui/scripts/gen-data-manifest.mjs');
   }
   console.log(`gen-data-manifest: data-manifest.json up to date (${counts}, ${Object.keys(withheld).length} withheld)`);
 } else {
-  writeFileSync(OUT, next);
-  console.log(`gen-data-manifest: wrote data-manifest.json — ${counts}, ${Object.keys(withheld).length} withheld`);
+  writeFileSync(target, next);
+  console.log(`gen-data-manifest: wrote ${OUT_OVERRIDE ? target : 'data-manifest.json'} — ${counts}, ${Object.keys(withheld).length} withheld`);
 }

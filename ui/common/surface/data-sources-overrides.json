@@ -12,6 +12,22 @@
       "fetchSpendCalendarDay",
       "fetchSpendCalendar",
       "fetchFinopsAttributions"
+    ],
+    "tokenops_isolated": [
+      "fetchTokenopsDashboard",
+      "fetchUsageSummary",
+      "fetchUsageHistory",
+      "fetchSpendTimeseries",
+      "fetchSpendCalendarDay",
+      "fetchSpendCalendar",
+      "fetchFinopsAttributions"
+    ],
+    "tokenops_rows": [
+      "fetchUsageSummary",
+      "fetchUsageHistory",
+      "fetchSpendTimeseries",
+      "fetchSpendCalendar",
+      "fetchFinopsAttributions"
     ]
   },
   "withheld": {},
@@ -95,7 +111,8 @@
             "average_cost": "number",
             "active_agents": "number",
             "total_agents": "number",
-            "total_container_hours": "number"
+            "total_container_hours": "number",
+            "unpriced_calls": "number"
           },
           "spend_by_agent": {
             "slices": [
