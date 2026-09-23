@@ -114,12 +114,14 @@ impl ProviderClient for BedrockConverseProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            // Retry with the region prefix — the model may be INFERENCE_PROFILE.
             if should_retry_with_prefix(status.as_u16(), &text, &model_id) {
                 let prefixed = prefixed_model_id(&cfg.model, &self.base);
                 if prefixed != model_id {
                     return self.chat_with_model(req, cfg, &prefixed).await;
                 }
+            }
+            if is_temperature_unsupported(status.as_u16(), &text) {
+                return self.chat_no_temperature(req, cfg, &model_id).await;
             }
             return Err(Self::status_error(status, text));
         }
@@ -158,6 +160,9 @@ impl ProviderClient for BedrockConverseProvider {
                     return self.stream_with_model(req, cfg, &prefixed).await;
                 }
             }
+            if is_temperature_unsupported(status.as_u16(), &text) {
+                return self.stream_no_temperature(req, cfg, &model_id).await;
+            }
             return Err(Self::status_error(status, text));
         }
 
@@ -183,9 +188,23 @@ impl ProviderClient for BedrockConverseProvider {
                 buf.extend_from_slice(&chunk);
 
                 while let Some((event_type, payload)) = decode_event_stream_frame(&mut buf) {
+                    tracing::trace!(
+                        target: "nasiko::llm_router::bedrock",
+                        %event_type,
+                        payload_len = payload.len(),
+                        payload_preview = &payload[..payload.len().min(200)],
+                        "bedrock event-stream frame decoded"
+                    );
                     let event: Value = match serde_json::from_str(&payload) {
                         Ok(v) => v,
-                        Err(_) => continue, // skip unparseable frames
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "nasiko::llm_router::bedrock",
+                                %event_type, error = %e,
+                                "bedrock frame JSON parse failed"
+                            );
+                            continue;
+                        }
                     };
 
                     match event_type.as_str() {
@@ -282,12 +301,26 @@ impl ProviderClient for BedrockConverseProvider {
                                 output_tokens = u.get("outputTokens").and_then(|v| v.as_i64());
                             }
                         }
-                        _ => {}
+                        other => {
+                            tracing::debug!(
+                                target: "nasiko::llm_router::bedrock",
+                                event_type = other,
+                                "bedrock: unrecognized event type — skipped"
+                            );
+                        }
                     }
                 }
             }
 
             // Emit finish + usage chunks.
+            tracing::info!(
+                target: "nasiko::llm_router::bedrock",
+                has_finish = finish.is_some(),
+                got_metadata,
+                ?input_tokens,
+                ?output_tokens,
+                "bedrock converse stream ended — emitting terminal chunks"
+            );
             if let Some(finish) = finish {
                 yield Ok(finish_chunk(&id, &model, finish));
             }
@@ -344,6 +377,9 @@ impl BedrockConverseProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
+            if is_temperature_unsupported(status.as_u16(), &text) {
+                return self.chat_no_temperature(req, cfg, model_id).await;
+            }
             return Err(Self::status_error(status, text));
         }
 
@@ -352,6 +388,130 @@ impl BedrockConverseProvider {
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
         from_converse_response(&value, &cfg.model)
+    }
+
+    /// Retry chat without the temperature field (some models reject it).
+    async fn chat_no_temperature(
+        &self,
+        req: &ChatRequest,
+        cfg: &ResolvedConfig,
+        model_id: &str,
+    ) -> Result<ChatResponse, ProviderError> {
+        let body = to_converse_request_no_temperature(req, cfg);
+        let url = format!("{}/model/{}/converse", self.base, model_id);
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&cfg.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Transport(e.to_string()))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Self::status_error(status, text));
+        }
+
+        let value: Value = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Parse(e.to_string()))?;
+        from_converse_response(&value, &cfg.model)
+    }
+
+    /// Retry streaming without the temperature field (some models reject it).
+    async fn stream_no_temperature(
+        &self,
+        req: &ChatRequest,
+        cfg: &ResolvedConfig,
+        model_id: &str,
+    ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
+        let body = to_converse_request_no_temperature(req, cfg);
+        let url = format!("{}/model/{}/converse-stream", self.base, model_id);
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&cfg.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Transport(e.to_string()))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Self::status_error(status, text));
+        }
+
+        let model = cfg.model.clone();
+        let bytes_stream = resp.bytes_stream();
+        let stream = async_stream::stream! {
+            futures::pin_mut!(bytes_stream);
+            let mut buf = BytesMut::new();
+            let id = uuid::Uuid::new_v4().to_string();
+            let mut input_tokens: Option<i64> = None;
+            let mut output_tokens: Option<i64> = None;
+            let mut finish: Option<String> = None;
+
+            yield Ok(delta_chunk(&id, &model, Delta {
+                role: Some("assistant".to_string()),
+                ..Delta::default()
+            }));
+
+            while let Some(chunk) = bytes_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => { yield Err(ProviderError::Transport(e.to_string())); return; }
+                };
+                buf.extend_from_slice(&chunk);
+
+                while let Some((event_type, payload)) = decode_event_stream_frame(&mut buf) {
+                    let event: Value = match serde_json::from_str(&payload) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    match event_type.as_str() {
+                        "contentBlockDelta" => {
+                            if let Some(text) = event.pointer("/delta/text").and_then(|t| t.as_str()) {
+                                yield Ok(delta_chunk(&id, &model, Delta {
+                                    content: Some(text.to_string()),
+                                    ..Delta::default()
+                                }));
+                            }
+                        }
+                        "messageStop" => {
+                            if let Some(sr) = event.get("stopReason").and_then(|s| s.as_str()) {
+                                finish = Some(map_stop_reason(sr).to_string());
+                            }
+                        }
+                        "metadata" => {
+                            if let Some(u) = event.get("usage") {
+                                input_tokens = u.get("inputTokens").and_then(|v| v.as_i64());
+                                output_tokens = u.get("outputTokens").and_then(|v| v.as_i64());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(f) = finish { yield Ok(finish_chunk(&id, &model, f)); }
+            yield Ok(usage_chunk(&id, &model, Usage {
+                prompt_tokens: input_tokens,
+                completion_tokens: output_tokens,
+                total_tokens: match (input_tokens, output_tokens) {
+                    (Some(i), Some(o)) => Some(i + o),
+                    _ => None,
+                },
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                prompt_tokens_details: None,
+            }));
+        };
+        Ok(Box::pin(stream))
     }
 
     /// Stream with an explicit model ID (used for prefix retry).
@@ -376,6 +536,9 @@ impl BedrockConverseProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
+            if is_temperature_unsupported(status.as_u16(), &text) {
+                return self.stream_no_temperature(req, cfg, model_id).await;
+            }
             return Err(Self::status_error(status, text));
         }
 
@@ -450,6 +613,11 @@ impl BedrockConverseProvider {
     }
 }
 
+/// Whether Bedrock rejected the request because the model doesn't support temperature.
+fn is_temperature_unsupported(status: u16, body: &str) -> bool {
+    status == 400 && body.contains("doesn't support the temperature field")
+}
+
 /// Whether a failed Bedrock call should be retried with a region-prefixed model ID.
 fn should_retry_with_prefix(status: u16, body: &str, model_id: &str) -> bool {
     if status != 400 && status != 404 {
@@ -474,6 +642,14 @@ fn should_retry_with_prefix(status: u16, body: &str, model_id: &str) -> bool {
 // ── OpenAI → Bedrock Converse (request) ─────────────────────────────────────
 
 fn to_converse_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
+    to_converse_request_inner(req, cfg, true)
+}
+
+fn to_converse_request_no_temperature(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
+    to_converse_request_inner(req, cfg, false)
+}
+
+fn to_converse_request_inner(req: &ChatRequest, cfg: &ResolvedConfig, allow_temperature: bool) -> Value {
     let mut system_parts: Vec<Value> = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
@@ -521,7 +697,9 @@ fn to_converse_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
         },
     });
 
-    if let Some(t) = cfg.temperature.or(req.temperature) {
+    if allow_temperature
+        && let Some(t) = cfg.temperature.or(req.temperature)
+    {
         body["inferenceConfig"]["temperature"] = json!(t);
     }
     if !system_parts.is_empty() {
