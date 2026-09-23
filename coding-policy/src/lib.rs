@@ -1,27 +1,25 @@
-//! Shared "minimal-code" decision-ladder policy for coding-style example agents
-//! (docs/CODING_AGENT_MINIMALISM.md). Extracted out of `oss/agents/coding` so a
-//! second coding agent can adopt the same toggle-driven behavior — the prompt
-//! text and self-review trigger, not the ReAct loop itself, which stays
-//! agent-specific (each agent has its own tools, model client, and message
-//! shape).
+//! Shared "minimal-code" decision-ladder policy for coding-style agents
+//! (docs/CODING_AGENT_MINIMALISM.md).
+//!
+//! The ladder text ([`minimal_code_addendum`]) is injected by the control
+//! plane directly into the outgoing task message at A2A dispatch time
+//! (`oss/server/src/router/a2a_dispatch.rs`), not built into any agent's own
+//! system prompt — that's what lets it apply to any coding-type agent
+//! (skills containing "code"), including a third party's, without that agent
+//! needing to know this crate exists. A dependent agent only needs the two
+//! functions below: read [`minimal_code_enabled`]/[`self_review_enabled`]
+//! once at boot, and before returning a final answer, check
+//! [`wants_self_review`] — if true, push [`SELF_REVIEW_PROMPT`] as one more
+//! turn and use that response instead. Self-review stays agent-side (unlike
+//! the ladder) because it needs the agent's own visibility into whether it
+//! actually wrote or edited a file, which the control plane can't see from
+//! the outside.
 //!
 //! This is the canonical source. A dependent agent keeps its own committed
 //! copy under `vendor/coding-policy/` (`docker build` only ever sees that
 //! agent's own directory, so a `../` path dependency can't resolve inside the
 //! container) — re-run `sync-vendor.sh <agent-dir>` after editing this file to
 //! update every vendored copy.
-//!
-//! A dependent agent is expected to:
-//! 1. Read [`minimal_code_enabled`] once at startup and store it.
-//! 2. Build its system prompt with [`build_system_prompt`] instead of using its
-//!    base prompt string directly.
-//! 3. Advertise `code-edit`/`code-test`/`code-refactor` skills in its
-//!    `AgentCard.json` — that's what the platform UI's Settings-tab toggle
-//!    actually keys off (see `ui/common/pages/agent-card-page.js`'s
-//!    `#isCodingAgentExample`), independent of this crate.
-//! 4. Track whether the session wrote/edited a file, and before returning a
-//!    final answer, check [`wants_self_review`] — if true, push
-//!    [`SELF_REVIEW_PROMPT`] as one more turn and use that response instead.
 
 /// Read `CODING_AGENT_MINIMAL_CODE` from the environment. Off by default so the
 /// ladder's effect can be A/B'd per deployment rather than assumed.
@@ -43,30 +41,53 @@ pub fn self_review_enabled() -> bool {
         .unwrap_or(true)
 }
 
-/// Appended to a coding agent's base prompt unconditionally — independent of
-/// [`minimal_code_enabled`], both toggle states need it equally. The person on
-/// the other end of the chat can't see into the agent's sandbox on their own;
-/// without this, a "summary only" answer leaves them nothing to read or copy.
-pub const SHOW_CODE_INSTRUCTION: &str = "\n\
-When you create or change a file, include its actual current content (in a code block) in your \
-response, not just a description of the change — read it back and show it. For a large file, the \
-relevant changed section is enough; you don't need to repaste an unchanged file in full.";
-
-/// Appended to a coding agent's base system prompt when minimal-code mode is on.
-pub const MINIMAL_CODE_ADDENDUM: &str = "\n\
-- Before writing new code, check in order: does this need to exist at all? is it already \
-in this codebase (search_code first)? is it in the language's standard library? is it a \
-feature of an already-installed dependency? Only write new code once those are ruled out.
+/// Full ladder: this session already has prior turns, so there's a real
+/// workspace to check before writing more into it.
+const MINIMAL_CODE_ADDENDUM_CONTINUING: &str = "\n\
+- Before writing new code, check first whether something equivalent already exists in this \
+workspace (search_code / list_directory / read_file), in the language's standard library, or as \
+a feature of an already-installed dependency. Only write new code once those are ruled out.
 - If the request is for example or reference code (\"give me code for X\", \"write a function \
 that does Y\") rather than an explicit ask to add or change something in this workspace, just \
 write the code directly in your response. Do not create a file, set up a Cargo project, or run \
 tests for a standalone example — the person asking has no access to your sandbox and wants \
 something to read or copy, not a file left behind where they can't reach it.
-- When a request DOES call for creating or changing a file, check first whether one relevant to \
-it already exists (search_code / list_directory / read_file) and edit that instead of creating a \
-new one from scratch.
 - This does not apply to trust-boundary checks, error handling for real failure modes, \
 security, or data-loss prevention — those are never skipped for brevity.";
+
+/// Fresh-start ladder: this is the first message in the session, so there is
+/// nothing in the workspace yet to search for — skips the search-first step
+/// entirely, since on a genuinely empty workspace it only spends tokens
+/// finding nothing, with zero payoff. Confirmed empirically (chat 2026-09-22):
+/// on a from-scratch task, minimal-code mode cost noticeably more tokens per
+/// turn than not having it on at all, driven by exactly this kind of
+/// search-with-nothing-to-find overhead. Still keeps the stdlib/dependency
+/// nudge, since that costs nothing extra — it doesn't require searching
+/// anything, just recalling what's already installed.
+const MINIMAL_CODE_ADDENDUM_FRESH_START: &str = "\n\
+- This is the first request in this session — there is nothing in the workspace yet to search \
+for or reuse, so don't spend a turn searching an empty workspace before writing. Do still prefer \
+the language's standard library or an already-installed dependency over writing something from \
+scratch when one obviously already covers the need.
+- If the request is for example or reference code (\"give me code for X\", \"write a function \
+that does Y\") rather than an explicit ask to add or change something in this workspace, just \
+write the code directly in your response. Do not create a file, set up a Cargo project, or run \
+tests for a standalone example — the person asking has no access to your sandbox and wants \
+something to read or copy, not a file left behind where they can't reach it.
+- This does not apply to trust-boundary checks, error handling for real failure modes, \
+security, or data-loss prevention — those are never skipped for brevity.";
+
+/// Which ladder text to inject, given whether this session already has prior
+/// turns. Callers pass `!history.is_empty()` — the control plane already has
+/// this for free (`SessionHistory`, fetched once per dispatch for the
+/// conversation-context merge), no extra query needed.
+pub fn minimal_code_addendum(has_prior_context: bool) -> &'static str {
+    if has_prior_context {
+        MINIMAL_CODE_ADDENDUM_CONTINUING
+    } else {
+        MINIMAL_CODE_ADDENDUM_FRESH_START
+    }
+}
 
 /// One forced self-review turn before the final answer, only when the ladder is
 /// on and the session actually wrote or edited a file — see [`wants_self_review`].
@@ -75,16 +96,6 @@ Before finishing: look back at the edits you made. Is there anything you wrote t
 existing code, reimplements a stdlib/dependency feature, or wasn't needed to satisfy the original \
 request? If so, say what you'd remove and why, then stop — do not make further edits unless asked. \
 Otherwise, confirm your changes are minimal and give your summary.";
-
-/// `base` (the agent's own system prompt), plus [`SHOW_CODE_INSTRUCTION`]
-/// (always) and [`MINIMAL_CODE_ADDENDUM`] (only when `minimal_code` is set).
-pub fn build_system_prompt(base: &str, minimal_code: bool) -> String {
-    let mut prompt = format!("{base}{SHOW_CODE_INSTRUCTION}");
-    if minimal_code {
-        prompt.push_str(MINIMAL_CODE_ADDENDUM);
-    }
-    prompt
-}
 
 /// Whether the self-review turn ([`SELF_REVIEW_PROMPT`]) should run: only when
 /// the ladder is on, the session wrote/edited a file, and there's a real answer
@@ -99,20 +110,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn minimal_code_off_still_includes_show_code_instruction() {
-        let prompt = build_system_prompt("base", false);
-        assert!(prompt.starts_with("base"));
-        assert!(prompt.contains("include its actual current content"));
-        assert!(!prompt.contains("does this need to exist at all"));
+    fn fresh_start_skips_search_first_but_keeps_stdlib_nudge() {
+        let addendum = minimal_code_addendum(false);
+        assert!(addendum.contains("nothing in the workspace yet to search for"));
+        assert!(addendum.contains("standard library"));
+        assert!(!addendum.contains("search_code"));
     }
 
     #[test]
-    fn minimal_code_on_appends_ladder_after_show_code_instruction() {
-        let prompt = build_system_prompt("base", true);
-        assert!(prompt.starts_with("base"));
-        assert!(prompt.contains("include its actual current content"));
-        assert!(prompt.contains("does this need to exist at all"));
-        assert!(prompt.contains("never skipped for brevity"));
+    fn continuing_session_keeps_search_first() {
+        let addendum = minimal_code_addendum(true);
+        assert!(addendum.contains("search_code"));
+        assert!(!addendum.contains("nothing in the workspace yet"));
+    }
+
+    #[test]
+    fn both_variants_keep_the_safety_exemption_and_example_carve_out() {
+        for addendum in [minimal_code_addendum(false), minimal_code_addendum(true)] {
+            assert!(addendum.contains("never skipped for brevity"));
+            assert!(addendum.contains("give me code for X"));
+        }
     }
 
     #[test]

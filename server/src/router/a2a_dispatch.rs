@@ -27,7 +27,6 @@ use nasiko_flow::FlowContext;
 
 use crate::acl::CpCallGuard;
 use crate::auth::Claims;
-use crate::orchestrator_policy::TurnKind;
 use crate::state::AppState;
 use crate::usage::TokenUsageBuilder;
 
@@ -226,7 +225,6 @@ pub async fn a2a_dispatch_handler(
                 client_owns_transcript: session_id.is_some(),
                 transcript_role: "user",
                 file_parts: vec![],
-                kind: TurnKind::User,
             },
         )
         .await
@@ -246,32 +244,16 @@ pub async fn a2a_dispatch_handler(
         if !crate::acl::can_access_agent(&state, &claims, agent.id).await {
             return Err(A2aDispatchError::AgentNotFound(target.to_string()));
         }
-        // Supplemental context for this one, already-chosen agent, ranked against the real
-        // query text (in addition to any pinned content) — a no-op on OSS. Kept in a separate
-        // `outbound_query` local, distinct from `query`: `agent_stream` persists/traces `query`
-        // verbatim (`flows.title`, `gen_ai.input.messages`) and must never record injected
-        // context as if the user had typed it — see `crate::prompt_context` module docs.
-        // Same "## Known facts" framing the routed path uses (below) so the agent can tell
-        // injected admin knowledge apart from the user's own message by structure, not just by
-        // reading closely — consistent provenance cues on both injection paths.
-        let outbound_query = match state
-            .prompt_context
-            .context_for_agent(agent.id, &query)
-            .await
-        {
-            Some(context) => format!("## Known facts about this agent\n{context}\n\n{query}"),
-            None => query.clone(),
-        };
         agent_stream(
             &state,
             agent,
             &query,
-            &outbound_query,
             &task_id,
             &context_id,
             user_id,
             &[],
             session_id,
+            !history.is_empty(),
         )
         .await
     }
@@ -396,10 +378,6 @@ pub(crate) struct OrchestratorTurn<'a> {
     pub(crate) transcript_role: &'a str,
     /// File parts uploaded with the request (multipart upload path).
     pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
-    /// Whether this turn was started by the user or reports on work an earlier
-    /// turn already did. The operator's policy may treat the two differently —
-    /// see [`TurnKind`].
-    pub(crate) kind: TurnKind,
 }
 
 pub(crate) async fn orchestrator_stream(
@@ -416,7 +394,6 @@ pub(crate) async fn orchestrator_stream(
         client_owns_transcript,
         transcript_role,
         file_parts,
-        kind,
     } = turn;
     // Orchestrator-routed chats never had a `chat_sessions` row, unlike
     // `agent_proxy.rs`'s `ensure_chat_session` for direct agent chat — so
@@ -500,51 +477,6 @@ pub(crate) async fn orchestrator_stream(
         return Err(A2aDispatchError::NoAgents);
     }
 
-    // The operator's policy, resolved fresh per turn so a settings change takes
-    // effect without a restart. `None` on a deployment with no policy to apply,
-    // which is what the open-source source always returns.
-    let policy = state.orchestrator_policy.chat_policy(&state.db, kind).await;
-    // Supplemental per-agent context (e.g. admin-authored knowledge), gathered before the LLM
-    // has chosen anything — ranked against `query` (the same text about to reach the LLM) in
-    // addition to any pinned content, folded into the preamble next to each candidate's own
-    // listing so the planner can answer a zero-leg question ("how many leave days do I get")
-    // directly, or route with that context already in hand. A no-op on OSS
-    // (`NoopPromptContextProvider`); see `crate::prompt_context`.
-    //
-    // Known scope limit (v1, deliberate): this only reaches the *planner's own* preamble — a
-    // minted sub-leg's actual outbound request to the chosen agent (built in
-    // `nasiko-react-agent`'s `AgentTool::call()`, a lower-level OSS crate with no path to this
-    // EE-installed context) does NOT itself carry the target agent's L1A. The planner may relay
-    // some of what it saw into the sub-task text it writes, but that's LLM-mediated, not
-    // guaranteed. Closing this needs either threading the injection seam down into
-    // `nasiko-react-agent`, or a proxy that injects on the minted sub-leg directly — real,
-    // separate scope, not something this call site can add on its own.
-    // From `agents` (the post-endpoint-resolution roster actually rendered below), not
-    // `agent_summaries` — looking up context for a candidate that gets dropped for having no
-    // endpoint would waste a domain lookup (and possibly an embedding call) on an id the
-    // preamble loop below can never reach anyway.
-    let agent_ids: Vec<Uuid> = agents
-        .iter()
-        .filter_map(|a| Uuid::parse_str(&a.id).ok())
-        .collect();
-    let supplemental_context = state
-        .prompt_context
-        .context_for_agents(&agent_ids, query)
-        .await;
-    let preamble = if supplemental_context.is_empty() {
-        None
-    } else {
-        let mut text = String::from("## Known facts about specific agents\n");
-        for info in &agents {
-            if let Ok(id) = Uuid::parse_str(&info.id)
-                && let Some(facts) = supplemental_context.get(&id)
-            {
-                text.push_str(&format!("\n{}:\n{facts}\n", info.name));
-            }
-        }
-        Some(text)
-    };
-
     let config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
@@ -557,8 +489,6 @@ pub(crate) async fn orchestrator_stream(
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         max_turns: 10,
         temperature: Some(0.2),
-        policy: policy.clone(),
-        preamble,
         ..Default::default()
     };
 
@@ -675,9 +605,6 @@ pub(crate) async fn orchestrator_stream(
     let orchestrator_start = Instant::now();
     let mut full_reply = String::new();
     let observability = state.observability.clone();
-    // The same policy the loop ran under, kept for the persist step below: only
-    // the policy that produced a refusal can reliably recognise one.
-    let policy_for_persist = policy.clone();
     // Accumulated orchestrator-turn usage for the terminal `usage_meta` event.
     let mut turn_usage = super::usage_meta::TurnUsage::default();
 
@@ -712,7 +639,7 @@ pub(crate) async fn orchestrator_stream(
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({"type": "thinking", "content": content})));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
-                        OrchestratorEvent::ToolCall { agent, message, turn, policy_score } => {
+                        OrchestratorEvent::ToolCall { agent, message, turn } => {
                             // This ToolCall is the direct result of the reasoning
                             // turn `pending_usage` was reported for — attach the
                             // agent it resolved to before inserting.
@@ -765,22 +692,12 @@ pub(crate) async fn orchestrator_stream(
                             // Record agent invocation in OTel
                             genai_metrics.record_invocation(&agent, "");
 
-                            let mut payload = json!({
+                            let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
                                 "type": "tool_call",
                                 "agent": agent,
                                 "message": message,
                                 "turn": turn,
-                            });
-                            // Whatever score the operator's policy attached to this
-                            // delegation — on the wire so it is visible in the UI's step
-                            // row, not only in server logs. Added only when there is one,
-                            // rather than sent as an explicit null, so an unconfigured
-                            // deployment emits exactly the event it emitted before this
-                            // seam existed.
-                            if let Some(score) = policy_score {
-                                payload["policy_score"] = json!(score);
-                            }
-                            let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(payload));
+                            })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
                         OrchestratorEvent::ToolResult { agent, result, success, turn, duration_ms } => {
@@ -842,13 +759,12 @@ pub(crate) async fn orchestrator_stream(
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(payload));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
-                        OrchestratorEvent::PolicyRejected { agent, reason, turn, kind } => {
+                        OrchestratorEvent::PolicyRejected { agent, reason, turn } => {
                             let msg = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
                                 "type": "policy_rejected",
                                 "agent": agent,
                                 "reason": reason,
                                 "turn": turn,
-                                "kind": kind,
                             })));
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
@@ -1049,22 +965,8 @@ pub(crate) async fn orchestrator_stream(
                             // no recorded history to actually resume, even though the
                             // session row and user message (above) now exist.
                             if !full_reply.is_empty() {
-                                // A refusal is persisted so the human still sees it, but
-                                // tagged so it never re-enters the next turn's reasoning —
-                                // otherwise the model reads its own refusal back as this
-                                // conversation's established behaviour and keeps refusing.
-                                // The policy that produced the text is the one asked to
-                                // recognise it, so this cannot drift from what was emitted.
-                                let is_refusal = policy_for_persist
-                                    .as_ref()
-                                    .is_some_and(|p| p.is_refusal(&full_reply));
                                 super::usage_meta::insert_assistant_message(
-                                    &db,
-                                    &context_id,
-                                    &full_reply,
-                                    &summary,
-                                    &flow_id_cleanup,
-                                    is_refusal,
+                                    &db, &context_id, &full_reply, &summary, &flow_id_cleanup,
                                 )
                                 .await;
                             }
@@ -1163,7 +1065,17 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
     // never here, or the superuser-ACL-bypass would leak it into ordinary chat
     // history/usage tracking.
     sqlx::query_as::<_, AgentRow>(
-        "SELECT id, name, status FROM agents \
+        "SELECT id, name, status, minimal_code_enabled, \
+                EXISTS ( \
+                  SELECT 1 FROM jsonb_array_elements(skills) s \
+                  WHERE s->>'id' ILIKE '%code%' \
+                     OR s->>'name' ILIKE '%code%' \
+                     OR EXISTS ( \
+                          SELECT 1 FROM jsonb_array_elements_text(COALESCE(s->'tags', '[]'::jsonb)) t \
+                          WHERE t ILIKE '%code%' \
+                        ) \
+                ) AS is_coding_agent_example \
+         FROM agents \
          WHERE (id::text = $1 OR name = $1) AND status = 'running' AND NOT is_internal",
     )
     .bind(target)
@@ -1177,15 +1089,7 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
 async fn agent_stream(
     state: &AppState,
     agent: AgentRow,
-    // The user's actual message — persisted (`flows.title`) and traced (`gen_ai.input.messages`)
-    // verbatim. Deliberately separate from `outbound_query`: anything server-injected (e.g.
-    // enterprise-only supplemental context, see `prompt_context` module docs) must reach the
-    // agent without also being recorded as "what the user said" in the flow UI or an
-    // observability/audit trail.
     query: &str,
-    // What's actually sent to the agent in the A2A request body — `query`, or `query` with
-    // injected context prepended. Never read for persistence/tracing.
-    outbound_query: &str,
     task_id: &str,
     context_id: &str,
     user_id: Uuid,
@@ -1200,6 +1104,11 @@ async fn agent_stream(
     // `Sse::new(...).into_response()` requires to be `'static` — a caller-borrowed `&str`
     // cannot satisfy that, only a value this function owns and moves into the generator can.
     session_id: Option<String>,
+    // Whether this session already had turns before this one (`!history.is_empty()`
+    // at the call site) — picks which minimal-code ladder variant to inject below.
+    // A fresh session has nothing in its workspace yet to search for; forcing the
+    // full search-first ladder there only spends tokens finding nothing.
+    has_prior_context: bool,
 ) -> Result<Response, A2aDispatchError> {
     let endpoint = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
         .await
@@ -1274,6 +1183,29 @@ async fn agent_stream(
     .execute(&state.db)
     .await;
 
+    // Minimal-code ladder injection: only what's actually FORWARDED to the
+    // agent gets the addendum appended — `query` itself stays untouched, so
+    // everything above that already used it (the flow title, the span's
+    // captured input, session_traces) keeps showing the real conversation,
+    // not an implementation detail. The agent needs zero code of its own to
+    // support this: it just sees a longer task description, exactly as it
+    // would if a human had pasted the same extra paragraph in by hand.
+    //
+    // `has_prior_context` picks the ladder variant: a session's first turn
+    // has an empty workspace, so the full "search the codebase first" ladder
+    // just spends tokens finding nothing there — confirmed empirically (chat
+    // 2026-09-22) to cost more per turn than not having the ladder on at all,
+    // on exactly this kind of from-scratch task. See nasiko-coding-policy's
+    // minimal_code_addendum() doc comment.
+    let effective_query = if agent.is_coding_agent_example && agent.minimal_code_enabled {
+        format!(
+            "{query}\n{}",
+            nasiko_coding_policy::minimal_code_addendum(has_prior_context)
+        )
+    } else {
+        query.to_string()
+    };
+
     // Streaming first (`message/stream`): agents that stream (all the Rust
     // seed agents, and python a2a-sdk servers) deliver live tokens and tool
     // activity. The SSE loop below terminates itself on the first terminal
@@ -1282,10 +1214,10 @@ async fn agent_stream(
     // (or reject `message/stream`) fall through to the non-streaming branch,
     // which retries with `message/send`.
     let req_body = if file_parts.is_empty() {
-        nasiko_types::a2a::build_stream_request(outbound_query, Some(context_id))
+        nasiko_types::a2a::build_stream_request(&effective_query, Some(context_id))
     } else {
         nasiko_types::a2a::build_stream_request_with_parts(
-            outbound_query,
+            &effective_query,
             Some(context_id),
             file_parts,
         )
@@ -1503,7 +1435,7 @@ async fn agent_stream(
         // retry once with plain `message/send`.
         if resp_body.get("error").is_some() {
             let retry_body =
-                nasiko_types::a2a::build_send_request(outbound_query, Some(&context_id));
+                nasiko_types::a2a::build_send_request(&effective_query, Some(&context_id));
             let retry = build_agent_req()
                 .json(&retry_body)
                 .send()
@@ -1822,7 +1754,6 @@ pub async fn a2a_upload_handler(
             client_owns_transcript: false,
             transcript_role: "user",
             file_parts: collected_files,
-            kind: TurnKind::User,
         },
     )
     .await
@@ -2301,6 +2232,16 @@ struct AgentRow {
     id: Uuid,
     name: String,
     status: String,
+    /// Plain column (migration 0032), not a secret — read fresh on every
+    /// dispatch so the minimal-code ladder injection below applies
+    /// immediately when toggled, with no agent restart needed.
+    minimal_code_enabled: bool,
+    /// Broad "does this look like a coding agent" signal (skill id/name/tags
+    /// containing "code") — matches the UI's own toggle-visibility check
+    /// (`#isCodingAgentExample`, ui/common/pages/agent-card-page.js), kept
+    /// permissive on purpose: this has to work for third-party agents we've
+    /// never seen, not just our own two examples' exact skill ids.
+    is_coding_agent_example: bool,
 }
 
 #[derive(Debug)]

@@ -36,6 +36,12 @@ pub struct Agent {
     /// extracted from its AgentCard `supportedInterfaces` at deploy time.
     /// Clients chat via `{base}/api/agents/{id}{transport_path}`.
     pub transport_path: Option<String>,
+    /// Drives the control plane's own minimal-code ladder injection at A2A
+    /// dispatch time (a2a_dispatch.rs), not a secret — unlike the old
+    /// CODING_AGENT_MINIMAL_CODE env var this replaces, this column has a
+    /// real read-back route, which is what lets the Settings-tab switch show
+    /// its actual current state instead of a per-browser guess.
+    pub minimal_code_enabled: bool,
     /// Per-agent opt-in for structural payload compression on this agent's LLM calls
     /// (`nasiko-compress`, applied in the LLM router). Off unless explicitly enabled.
     #[serde(default)]
@@ -121,6 +127,7 @@ pub struct UpdateAgent {
     /// active or archive the version that's genuinely still running.
     #[serde(default = "default_activate_version")]
     pub activate_version: bool,
+    pub minimal_code_enabled: Option<bool>,
 }
 
 fn default_activate_version() -> bool {

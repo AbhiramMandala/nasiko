@@ -158,13 +158,19 @@ them its actual contents right in the conversation.
 - Be economical with tool calls — don't re-read a file you already have, and don't repeat an \
 identical command.
 - When done, respond with a concise summary of what you changed and the test/verification result \
-(no tool call).";
-// SHOW_CODE_INSTRUCTION (nasiko-coding-policy) covers showing the actual code —
-// appended by build_system_prompt below, not hardcoded here.
+(no tool call).
+- When you create or change a file, include its actual current content (in a code block) in your \
+response, not just a description of the change — read it back and show it. For a large file, the \
+relevant changed section is enough; you don't need to repaste an unchanged file in full.";
 
-// Decision-ladder addendum, self-review prompt, and build_system_prompt now
-// live in the shared `nasiko-coding-policy` crate (vendor/coding-policy) —
-// see docs/CODING_AGENT_MINIMALISM.md.
+// The minimal-code decision-ladder addendum is no longer built into this system
+// prompt — the control plane injects it directly into the incoming task text
+// at A2A dispatch time when minimal_code_enabled is set (oss/server/src/
+// router/a2a_dispatch.rs), reading nasiko-coding-policy's own
+// MINIMAL_CODE_ADDENDUM constant so there's still exactly one copy of that
+// text. This agent still reads minimal_code_enabled() itself (below) — not to
+// build a prompt with it, only because wants_self_review() requires it as one
+// of its three conditions. See docs/CODING_AGENT_MINIMALISM.md.
 
 impl AgentExecutor for CodingAgent {
     fn execute(
@@ -221,9 +227,8 @@ impl AgentExecutor for CodingAgent {
             let agent = CodingAgent { model, api_key, base_url, http, minimal_code, self_review_enabled };
             let tool_defs = tools::definitions();
 
-            let system_prompt = nasiko_coding_policy::build_system_prompt(SYSTEM_PROMPT, minimal_code);
             let mut messages = vec![
-                serde_json::json!({"role": "system", "content": system_prompt}),
+                serde_json::json!({"role": "system", "content": SYSTEM_PROMPT}),
                 serde_json::json!({"role": "user", "content": user_text}),
             ];
 
@@ -351,9 +356,17 @@ async fn main() {
     let agent = CodingAgent::new();
     // The only way to confirm which mode a running container is actually in: the
     // toggle (docs/CODING_AGENT_MINIMALISM.md) writes a secret, not a live value,
-    // and takes effect only on the next restart — so state it plainly here, once,
-    // at the moment that restart happens. Visible in the agent's Logs tab.
-    tracing::info!(minimal_code = agent.minimal_code, "coding agent starting");
+    // and takes effect only on the next restart — so state both flags plainly
+    // here, once, at the moment that restart happens. Visible in the agent's
+    // Logs tab immediately, without needing to send it a chat first — the
+    // Settings-tab switches themselves can't be trusted for this: they have no
+    // read-back route (secrets are write-only) and default to a guess whenever
+    // a value was set another way (CLI deploy, a different browser, ...).
+    tracing::info!(
+        minimal_code = agent.minimal_code,
+        self_review_enabled = agent.self_review_enabled,
+        "coding agent starting"
+    );
 
     let handler = Arc::new(DefaultRequestHandler::new(agent, InMemoryTaskStore::new()));
 
@@ -530,21 +543,26 @@ fn strip_tool_markup(content: &str) -> String {
 mod tests {
     use super::*;
 
-    // Ladder-content assertions live in nasiko-coding-policy's own tests; these
-    // two just confirm this agent wires SYSTEM_PROMPT through it correctly.
+    // The ladder itself is injected by the control plane now (a2a_dispatch.rs),
+    // not built into this agent's own system prompt — see the comment above
+    // SYSTEM_PROMPT. This just confirms the show-code instruction (still
+    // hardcoded here, since it's unconditional) actually made it in.
     #[test]
-    fn minimal_code_off_still_includes_show_code_instruction() {
-        let prompt = nasiko_coding_policy::build_system_prompt(SYSTEM_PROMPT, false);
-        assert!(prompt.starts_with(SYSTEM_PROMPT));
-        assert!(prompt.contains("include its actual current content"));
-        assert!(!prompt.contains("does this need to exist at all"));
+    fn system_prompt_includes_show_code_instruction() {
+        assert!(SYSTEM_PROMPT.contains("include its actual current content"));
     }
 
+    // wants_self_review still needs minimal_code as an input even though this
+    // agent no longer builds a prompt with it — confirms the crate call
+    // compiles and behaves as expected with a value sourced from this agent's
+    // own env read, not a hardcoded literal.
     #[test]
-    fn minimal_code_on_appends_ladder() {
-        let prompt = nasiko_coding_policy::build_system_prompt(SYSTEM_PROMPT, true);
-        assert!(prompt.starts_with(SYSTEM_PROMPT));
-        assert!(prompt.contains("does this need to exist at all"));
-        assert!(prompt.contains("never skipped for brevity"));
+    fn self_review_still_gated_on_minimal_code_flag() {
+        assert!(!nasiko_coding_policy::wants_self_review(
+            false, true, "did something"
+        ));
+        assert!(nasiko_coding_policy::wants_self_review(
+            true, true, "did something"
+        ));
     }
 }

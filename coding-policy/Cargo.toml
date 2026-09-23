@@ -3,11 +3,10 @@ name = "nasiko-coding-policy"
 version = "0.1.0"
 edition = "2024"
 
-# Standalone crate, own [workspace] — same reasoning as every example agent under
-# oss/agents/ (see oss/agents/coding/Cargo.toml's comment), even though this
-# crate itself lives one level up: keeps this buildable in isolation and out of
-# the root workspace, and lets any coding-style agent depend on it by path
-# without pulling it into their own workspace membership.
-[workspace]
+# A real root-workspace member — oss/server depends on it directly to inject
+# the minimal-code ladder at A2A dispatch time. Vendored agents (vendor/
+# coding-policy/) are unaffected: sync-vendor.sh already strips any
+# `[workspace]` line before copying, since a vendored copy is nested inside
+# its own dependent agent's own workspace root instead.
 
 [dependencies]

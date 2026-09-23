@@ -825,5 +825,25 @@ async fn resolve_full_env(
     env.entry("OPENAI_MODEL".into())
         .or_insert_with(|| state.config.openai_model.clone());
 
+    // 4. Same reasoning as the platform-LLM-config gap above, same fix shape —
+    // this is a plain `agents` column (migration 0032), not a secret, so it's
+    // not in `agent_secrets` at all. Unconditional insert, not `.or_insert`:
+    // guards against a stale CODING_AGENT_MINIMAL_CODE secret a pre-migration
+    // agent might still carry in `secrets_env` (see the matching comment in
+    // `AppState::agent_env`, state.rs). The outer `deploy()` caller's own
+    // `entry().or_insert()` merge still lets an explicit `-e
+    // CODING_AGENT_MINIMAL_CODE=...` on this specific request win over it.
+    let minimal_code_enabled: Option<bool> =
+        sqlx::query_scalar("SELECT minimal_code_enabled FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    env.insert(
+        "CODING_AGENT_MINIMAL_CODE".into(),
+        minimal_code_enabled.unwrap_or(false).to_string(),
+    );
+
     env
 }
