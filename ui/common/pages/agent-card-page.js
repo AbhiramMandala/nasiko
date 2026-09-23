@@ -25,7 +25,6 @@ import '/common/design-system/app-table/app-table.js';
 import '/common/design-system/app-tag/app-tag.js';
 import { call } from '../core/data-sources.js';
 import { navigate as routerNavigate } from '../core/router.js';
-import { errorStateHtml } from '/common/design-system/app-empty-state/error-state.js';
 
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -59,9 +58,6 @@ class AgentCardPage extends HTMLElement {
   #configureLoaded = false;
   #versionsLoaded = false;
   #versions = [];
-  /** A non-404 failure while loading the Access tab. Distinct from a route
-   *  the edition does not serve, which is a true answer. */
-  #accessFailed = false;
   // Version targeted by the open rollback modal.
   #rollbackTarget = null;
   #logsTail = 100;
@@ -105,22 +101,6 @@ class AgentCardPage extends HTMLElement {
    * the page reads as "several things are loading" rather than "one grey
    * slab is loading" — and the page doesn't jump size once data arrives.
    */
-  /**
-   * The frame the two dead-end states (failed, not-found) render into. They
-   * used to be a bare `<p>` on an otherwise blank page — no way back, and no
-   * sign of which page you were even on.
-   */
-  #deadEndHtml(body) {
-    return `
-      <div class="acp-page">
-        <div class="acp-topbar">
-          <app-button href="/agents" variant="tertiary" size="sm" icon-only data-back
-            aria-label="Back">${icons.x('', 16)}</app-button>
-        </div>
-        ${body}
-      </div>`;
-  }
-
   #loadingShellHtml() {
     const statCell = () => '<div class="acp-stat"><app-skeleton height="48px"></app-skeleton></div>';
     const detailCard = () => '<div class="acp-details-card"><app-skeleton lines="4"></app-skeleton></div>';
@@ -154,44 +134,15 @@ class AgentCardPage extends HTMLElement {
   }
 
   async #load() {
-    // "This agent is gone" and "we could not ask about it" both used to land
-    // on one bare red line saying "Agent not found." — so a blocked or
-    // failed request told the user their agent had been deleted. A 404/403
-    // is the server's real answer (deleted, or no longer visible to them);
-    // anything else is us, and only that is worth a Retry.
-    let failed = false;
     try {
       // GET /api/agents/{id} → SingleResponse envelope {data, status_code, message}
       const resp = await fetchApi(`/agents/${this.#agentId}`);
       this.#agent = resp?.data ?? resp;
-    } catch (e) {
+    } catch {
       this.#agent = null;
-      failed = e?.status !== 404 && e?.status !== 403;
-    }
-    if (failed) {
-      this.innerHTML = this.#deadEndHtml(`
-        <app-empty-state variant="error"
-          heading="Couldn't load this agent"
-          description="Something went wrong fetching it. The agent itself may be fine.">
-          <app-button id="acp-retry" variant="tertiary">Retry</app-button>
-        </app-empty-state>`);
-      this.querySelector('#acp-retry')?.addEventListener('click', () => {
-        this.innerHTML = this.#loadingShellHtml();
-        this.#load();
-      });
-      return;
     }
     if (!this.#agent?.name && !this.#agent?.display_name) {
-      // A true answer, so a plain empty state — not the error variant. There
-      // is nothing to retry: the agent is gone or was never visible to this
-      // caller, and the useful action is a way out.
-      this.innerHTML = this.#deadEndHtml(`
-        <app-empty-state
-          heading="Agent not found"
-          description="It may have been deleted, or you no longer have access to it."
-          icon='${icons.faceFrown('', 40)}'>
-          <app-button variant="tertiary" href="/your-agents">Back to your agents</app-button>
-        </app-empty-state>`);
+      this.innerHTML = '<p style="color:var(--color-error);">Agent not found.</p>';
       return;
     }
     this.#canManage = await this.#resolveCanManage(this.#agent);
@@ -505,15 +456,10 @@ class AgentCardPage extends HTMLElement {
       const resp = await fetchApi(`/agents/${this.#agent.id}/versions`);
       this.#versions = (resp?.data ?? resp) || [];
     } catch (e) {
-      // Was a plain empty state with a stack-of-layers icon — the same look
-      // this tab uses for "no versions yet". `variant="error"` is what tells
-      // them apart, and Retry is what makes it actionable.
-      el.innerHTML = `<div class="acp-stats-empty"><app-empty-state variant="error"
+      el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
         heading="Version history unavailable"
-        description="${escAttr(e.message)}">
-        <app-button id="acp-versions-retry" variant="tertiary" size="sm">Retry</app-button>
-      </app-empty-state></div>`;
-      el.querySelector('#acp-versions-retry')?.addEventListener('click', () => this.#loadVersions());
+        description="${escAttr(e.message)}"
+        icon="${escAttr(icons.layers('', 32))}"></app-empty-state></div>`;
       return;
     }
     this.#renderVersions();
@@ -671,9 +617,6 @@ class AgentCardPage extends HTMLElement {
   // falls through to the agent proxy and fails), so those grantee tabs hide.
   async #loadAccess() {
     this.#accessLoaded = true;
-    // Reset before the fan-out: the five calls below set it through
-    // `#fetchArray`, and a retry that succeeds must not stay latched.
-    this.#accessFailed = false;
     const id = this.#agent.id;
     const [visibility, users, agentGrants, teams, departments] = await Promise.all([
       this.#fetchVisibility(id),
@@ -714,13 +657,7 @@ class AgentCardPage extends HTMLElement {
       if (Array.isArray(inner)) return inner;
       const nested = Object.values(inner || {}).find(Array.isArray);
       return nested ?? null;
-    } catch (e) {
-      // `null` has to keep meaning "this edition does not serve the route" —
-      // the caller decides whether Team/Department exist at all from it. A
-      // 404 is that. Anything else is a failure, and returning null for it
-      // made a broken fetch indistinguishable from a feature this plan does
-      // not have: the tab looked the same either way.
-      if (e?.status !== 404) this.#accessFailed = true;
+    } catch {
       return null;
     }
   }
@@ -876,12 +813,6 @@ class AgentCardPage extends HTMLElement {
     const label = this.#granteeTabDefs().find(d => d.key === this.#granteeTab)?.label || 'entries';
     table.setAttribute('empty-message',
       `No ${label.toLowerCase()} have access yet — use Grant access to share this agent.`);
-    // The table is fed from page state, so its own dataFn never sees the
-    // throw — the page has to hand the failure over. Without it a failed
-    // grants fetch read as "nobody has access", which is the opposite of a
-    // safe thing to believe about an access list.
-    table.toggleAttribute('error', this.#accessFailed);
-    if (this.#accessFailed) table.setAttribute('error', "Couldn't load access for this agent");
     table.columns = columns;
     table.dataFn = () => rows;
     table.refresh();
@@ -1330,8 +1261,7 @@ class AgentCardPage extends HTMLElement {
       const resp = await call('fetchAgentMcpConnectors', this.#agent.id);
       this.#connectors = resp?.data?.connectors || [];
     } catch (e) {
-      list.innerHTML = errorStateHtml("Couldn't load this agent's MCP connectors");
-      list.querySelector('[data-retry]')?.addEventListener('click', () => this.#loadConfigure());
+      list.innerHTML = `<p class="acp-section-sub">Failed to load MCP connectors: ${escHtml(e.message)}</p>`;
       return;
     }
     // Fetch every connector's tools up front so each card can show its
@@ -1481,6 +1411,37 @@ class AgentCardPage extends HTMLElement {
 
   /* ── Settings tab ──────────────────────────────────────────────────────── */
 
+  // Broad "does this look like a coding agent" signal — skill id/name/tags
+  // containing "code" — not `is_coding_agent` (that flag means something
+  // unrelated: an external CLI tool — Claude Code, Codex, Cursor — linked
+  // for LLM-router billing, never this container). Matches the server's own
+  // check at A2A dispatch time (oss/server/src/router/a2a_dispatch.rs,
+  // resolve_agent's is_coding_agent_example) — kept in sync deliberately:
+  // this only controls whether the toggle *shows up*, but it should show up
+  // for exactly the agents the server would actually apply it to. Broad on
+  // purpose — has to work for a third-party agent we've never seen, not
+  // just our own two examples' exact skill ids.
+  #isCodingAgentExample(a) {
+    const looksLikeCode = (s) =>
+      /code/i.test(s.id || '') || /code/i.test(s.name || '') || (s.tags || []).some((t) => /code/i.test(t));
+    return (a.skills || []).some(looksLikeCode);
+  }
+
+  // Self-review is still a write-only secret (unlike minimal-code, it stays
+  // agent-side — see the dispatch-time injection note on the switch below),
+  // so it still has no read-back route; this remembers what was last set
+  // FROM THIS BROWSER instead. Its own default is ON
+  // (nasiko_coding_policy::self_review_enabled()), so "nothing set yet in
+  // this browser" must default to checked, not unchecked, to match.
+  #lastSetSelfReview(agentId) {
+    try {
+      const v = localStorage.getItem(`nasiko:self-review:${agentId}`);
+      return v === null ? true : v === '1';
+    } catch {
+      return true;
+    }
+  }
+
   #settingsPanelHtml(a) {
     return `
         <div class="acp-panel" data-tab="settings" data-label="Settings">
@@ -1512,6 +1473,29 @@ class AgentCardPage extends HTMLElement {
             </dl>
           </section>
           <section class="acp-section">
+            <h2 class="acp-section-title">Token optimization</h2>
+            <p class="acp-section-sub">Shrinks large tool results — JSON, logs and diffs — before
+              they reach the model, keeping errors and structure and leaving a counted note
+              wherever something was removed. Applies to this agent only. Other agents are
+              unaffected.</p>
+            <app-switch id="acp-compress" layout="settings"
+              ${a.compress_enabled ? 'checked' : ''}
+              label="Compress large tool results"
+              hint="Off by default. Prompts and your own messages are never changed."></app-switch>
+          </section>
+          ${this.#isCodingAgentExample(a) ? `
+          <section class="acp-section">
+            <h2 class="acp-section-title">Coding agent behavior</h2>
+            <app-switch id="acp-minimal-code" layout="settings"
+              label="Minimal-code mode"
+              hint="Checks for existing code, stdlib, or an installed dependency before writing new code. Applies immediately — no restart needed."
+              aria-label="Minimal-code mode"${a.minimal_code_enabled ? ' checked' : ''}></app-switch>
+            <app-switch id="acp-self-review" layout="settings"
+              label="Self-review"
+              hint="Adds a review turn that catches duplicated or unnecessary code (requires Minimal-code mode). Write-only — restart the agent to apply."
+              aria-label="Self-review"${this.#lastSetSelfReview(a.id) ? ' checked' : ''}${a.minimal_code_enabled ? '' : ' disabled'}></app-switch>
+          </section>` : ''}
+          <section class="acp-section">
             <secrets-manager id="acp-secrets" scope="agent" defer
               agent-id="${escAttr(a.id)}"
               heading="Secrets"
@@ -1528,6 +1512,129 @@ class AgentCardPage extends HTMLElement {
   #wireSettings() {
     const identityForm = this.querySelector('#acp-identity-form');
     identityForm?.addEventListener('submit', (e) => this.#saveIdentity(e));
+
+    // Token optimization — STASHED
+    const compress = this.querySelector('#acp-compress');
+    compress?.addEventListener('change', () => this.#saveCompress(compress));
+
+    // Coding agent optimization — INCOMING
+    this.querySelector('#acp-minimal-code')?.addEventListener('change', (e) => {
+      this.#toggleMinimalCode(e);
+      // Self-review is a no-op without minimal-code on (nasiko-coding-policy's
+      // wants_self_review requires both) — grey it out rather than let the two
+      // switches show a combination that looks real but does nothing.
+      this.querySelector('#acp-self-review')?.toggleAttribute('disabled', !e.target.checked);
+    });
+
+    this.querySelector('#acp-self-review')?.addEventListener('change', (e) =>
+      this.#toggleAgentFlag(e, 'CODING_AGENT_SELF_REVIEW', 'self-review', 'Self-review'));
+  }
+
+  /** Minimal-code is a plain `agents.minimal_code_enabled` column (migration
+   *  0032), not a secret — unlike self-review, which stays a deploy-time env
+   *  var. A real column means a real read-back, so unlike #toggleAgentFlag
+   *  below there's no localStorage guess involved, and no restart needed:
+   *  the control plane reads this fresh on every chat message and injects
+   *  the ladder instructions into the outgoing request itself
+   *  (a2a_dispatch.rs) — the agent's own container never has to know this
+   *  setting changed. */
+  async #toggleMinimalCode(e) {
+    const toggle = e.target;
+    const checked = toggle.checked;
+    toggle.disabled = true;
+    try {
+      await fetchApi(`/agents/${encodeURIComponent(this.#agent.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ minimal_code_enabled: checked }),
+      });
+      this.#agent.minimal_code_enabled = checked;
+      showToast(`Minimal-code mode ${checked ? 'enabled' : 'disabled'}.`);
+    } catch (err) {
+      toggle.checked = !checked;
+      showToast(`Could not update minimal-code mode: ${err.message}`);
+    } finally {
+      toggle.disabled = false;
+    }
+  }
+
+  // Saves on toggle rather than behind the identity form's Save button: this is one boolean,
+  // and burying it in a form that also holds name and description would make it unclear which
+  // button commits it.
+  async #saveCompress(control) {
+    const enabled = control.checked;
+    control.setAttribute('disabled', '');
+    try {
+      await fetchApi(`/agents/${encodeURIComponent(this.#agent.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          compress_enabled: enabled,
+          activate_version: false,
+        }),
+      });
+    } catch (err) {
+      // Put the switch back where it was — leaving it showing a state the server rejected is
+      // worse than the failure itself.
+      control.checked = !enabled;
+      showToast(`Failed to save: ${err.message}`);
+      return;
+    } finally {
+      control.removeAttribute('disabled');
+    }
+
+    this.#agent.compress_enabled = enabled;
+    showToast(
+      enabled
+        ? 'Token optimization enabled'
+        : 'Token optimization disabled'
+    );
+  }
+
+  /** Flips a boolean env-var secret (`secretName`) via the same write-only
+   *  agent-secrets API the Secrets panel uses — no new backend route. There's
+   *  no read-value route for agent-scoped secrets (by design, see
+   *  secrets-manager.js), so the switch can't be initialized from a stored
+   *  value; `nasiko:{storageKey}:{agentId}` in localStorage remembers it
+   *  instead, so a Restart's full-page reload doesn't make the switch lie
+   *  about what was just set. Still used for self-review only now — see
+   *  #toggleMinimalCode above for why minimal-code moved off this path. */
+  async #toggleAgentFlag(e, secretName, storageKey, label) {
+    const toggle = e.target;
+    const checked = toggle.checked;
+    toggle.disabled = true;
+
+    try {
+      await apiFetch(`/agents/${this.#agent.id}/secrets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: secretName,
+          value: checked ? 'true' : 'false',
+        }),
+      }).then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      });
+
+      try {
+        localStorage.setItem(
+          `nasiko:${storageKey}:${this.#agent.id}`,
+          checked ? '1' : '0'
+        );
+      } catch {
+        /* localStorage unavailable (private mode, quota) — the write above still
+         * succeeded; only the reload-survives-visually nicety is lost. */
+      }
+
+      showToast(
+        `${label} ${checked ? 'enabled' : 'disabled'} — restart the agent to apply.`
+      );
+    } catch (err) {
+      toggle.checked = !checked;
+      showToast(`Could not update ${label.toLowerCase()}: ${err.message}`);
+    } finally {
+      toggle.disabled = false;
+    }
   }
 
   async #saveIdentity(e) {
