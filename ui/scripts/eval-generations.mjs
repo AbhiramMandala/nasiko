@@ -189,6 +189,13 @@ export const CASES = [
   { id: 'grouped-filters',
     prompt: 'Show TokenOps usage in a table, filterable by agent and by date range. '
       + 'Group the filters above the table.',
+    // 10 of 24 at b663b6eaa08a. The recurring failure is the generator losing
+    // track of its own statement names across a long surface — the latest run
+    // referenced `rowsQ`, which it never defined, and so declared no queries
+    // at all. That is a different and harder problem than any wiring rule,
+    // and it is not one a CI gate can usefully hold the build hostage to.
+    knownFailure: 'fails ~42% of runs (10/24 at b663b6eaa08a) — the generator loses track of '
+      + 'its own statement names on a long surface. See NAS-755.',
     expect: { minQueries: 1, minActions: 2, minStates: 2, tags: ['app-table'] } },
   // The other half of rule 20, and the half `grouped-filters` cannot reach.
   // Every state in that case turned out to be a real argument of
@@ -264,6 +271,13 @@ export const CASES = [
   { id: 'paged-agent-usage',
     prompt: 'My own usage broken down by agent, 20 rows at a time with next and previous '
       + 'buttons, and a box to search agents by name. Show how many there are in total.',
+    // 15 of 24 recorded runs at b663b6eaa08a, and the failures are not one
+    // thing: a state set and never @Run, a source chosen that cannot answer
+    // the request, a @Filter on a field the source does not return. The
+    // prompt asks for four mechanisms at once — paging, a total, a search and
+    // a breakdown — and the generator gets three of them on a good day.
+    knownFailure: 'fails ~62% of runs (15/24 at b663b6eaa08a) — four mechanisms in one prompt, '
+      + 'see NAS-755. Not a gate until the rate comes down.',
     expect: {
       minQueries: 1, minStates: 2, tags: ['app-table'],
       mechanism: { source: 'fetchUsageByAgent' },
@@ -344,6 +358,14 @@ export const CASES = [
   { id: 'model-searched',
     prompt: 'Spend over the last 7 days for one model. '
       + 'Use a search box to find the model by name.',
+    // 15 of 27 at b663b6eaa08a, and this one is the measurement, not a
+    // defect in the harness: it is the app-search arm of the control pair,
+    // and the whole reason the pair exists is that app-search carries `@Run`
+    // far less often than any other control kind. Gating on it would fail the
+    // build for the effect the experiment was built to observe. Its partner
+    // `model-picked` stays a gate, which is what makes the contrast readable.
+    knownFailure: 'fails ~56% of runs (15/27 at b663b6eaa08a) — the app-search arm of the '
+      + 'control pair, where low @Run production IS the finding. See NAS-755.',
     expect: {
       minQueries: 1, minActions: 1, minStates: 1,
       controlPair: { source: 'fetchSpendTimeseries', argument: 'model', control: 'app-search' },
