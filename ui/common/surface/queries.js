@@ -55,9 +55,10 @@ export function selectPath(value, path) {
  *   call: (name: string, ...args: unknown[]) => unknown,
  *   onChange?: () => void,
  *   onDiagnostic?: (d: object) => void,
+ *   argEnums?: () => (object|null),
  * }} deps
  */
-export function createQueryManager({ call, onChange, onDiagnostic }) {
+export function createQueryManager({ call, onChange, onDiagnostic, argEnums }) {
   /** key → {status, value, error, promise, generation} */
   const cache = new Map();
   /** statementId → the query declaration from the last materialization */
@@ -112,10 +113,84 @@ export function createQueryManager({ call, onChange, onDiagnostic }) {
     }
   }
 
+  /**
+   * A literal argument outside the closed set its own source declares.
+   *
+   * The mirror of the component-side check in render.js: the catalog says
+   * `variant` is one of three, and a fourth falls back and reports. The data
+   * manifest says `range` is one of three with exactly as much confidence, and
+   * until this existed a fourth went out on the wire and came back 400 — a
+   * generated control that looks right, renders, and returns nothing.
+   *
+   * The value about to be sent, whatever produced it. An earlier draft tried
+   * to check model-written literals only and spare anything from `$state`, on
+   * the grounds that a user's choice is not the generator's mistake — but by
+   * the time a Query declaration reaches here the materializer has already
+   * evaluated `$state` to a plain value, and the two are indistinguishable. A
+   * distinction the layer cannot draw is worse stated than dropped, so this
+   * checks what is going out. It is also the more useful reading: an invalid
+   * value is a failed panel no matter who chose it.
+   *
+   * `undefined`, `null` and `''` are an argument left out, which every one of
+   * these is allowed to be.
+   *
+   * What this cannot see: an option a control offers but nobody has selected.
+   * Only the current value exists at this point, so a picker with one bad
+   * choice among three reads clean until someone clicks it.
+   *
+   * No fallback, unlike the component case. A layout attribute has a sane
+   * default and a half-styled component still reads; there is no safe value to
+   * substitute for "which time window", and inventing one would answer a
+   * question nobody asked.
+   *
+   * @returns {string|null} the message, or null when there is nothing wrong
+   */
+  function enumViolation(source, args) {
+    const spec = argEnums?.()?.[source];
+    if (!spec) return null;
+    // Two call shapes, and reading the wrong one would check nothing while
+    // looking like it checked: an options-object source takes ONE argument
+    // holding every name, a positional source spreads them in `keys` order.
+    const valueOf = spec.callStyle === 'object'
+      ? (name) => (args?.[0] && typeof args[0] === 'object' ? args[0][name] : undefined)
+      : (name) => args?.[spec.keys.indexOf(name)];
+    for (const [name, allowed] of Object.entries(spec.enums)) {
+      const value = valueOf(name);
+      if (value === undefined || value === null || value === '') continue;
+      if (typeof value !== 'string' && typeof value !== 'number') continue;
+      if (allowed.includes(String(value))) continue;
+      return `"${source}" takes ${name} as one of ${allowed.join(', ')} — `
+        + `"${value}" is not one of them, so this fetch would fail upstream`;
+    }
+    return null;
+  }
+
   function fetchKey(key, source, args, { force = false } = {}) {
     const existing = cache.get(key);
     if (existing && !force && (existing.status === 'loading' || existing.status === 'ok')) {
       return existing.promise ?? Promise.resolve(existing);
+    }
+
+    // Before the fetch, not after it: the whole value of catching this locally
+    // is that the diagnostic is repairable, so the generator gets a chance to
+    // fix its own argument before anyone sees a failed panel.
+    const violation = enumViolation(source, args);
+    if (violation) {
+      // Cached as an error so `sync` does not re-report it on every streamed
+      // chunk, and so `@Run` — which forces — is still able to retry once the
+      // generator has rewritten the argument.
+      const bad = {
+        status: 'error',
+        value: existing?.value,
+        error: new Error(violation),
+        generation: ++generation,
+        promise: null,
+      };
+      cache.set(key, bad);
+      diag('arg_enum_violation', violation, source);
+      publishKey(key);
+      onChange?.();
+      return Promise.resolve(bad);
     }
 
     const gen = ++generation;

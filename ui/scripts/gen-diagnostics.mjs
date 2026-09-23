@@ -95,6 +95,7 @@ const SEVERITY = {
   repair_no_better: ['runtime', 'the repair did not reduce the fault count, so the pre-repair surface was restored'],
 
   // ── queries.js ────────────────────────────────────────────────────────────
+  arg_enum_violation: ['fatal', 'the argument is not a value that source accepts, so the data never arrives'],
   query_failed: ['runtime', 'the data source failed; the DSL naming it is fine'],
   mutation_failed: ['runtime', 'the upstream call failed'],
   mutation_in_flight: ['runtime', 'a repeat while one is running — someone clicked twice'],

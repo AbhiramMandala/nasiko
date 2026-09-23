@@ -29,6 +29,55 @@ export function loadCatalog() {
 }
 
 /**
+ * The data vocabulary, and the closed sets inside it.
+ *
+ * `dsl-catalog.json` says what a surface may draw; `data-manifest.json` says
+ * what it may ask for. The runtime has always loaded the first and never the
+ * second, which is why an argument outside its own enum could only be caught
+ * by the backend answering 400 — the browser had the DSL and no idea what the
+ * DSL was allowed to say.
+ *
+ * Shaped into `{source: {callStyle, keys, enums}}` here rather than handed on
+ * whole, because the caller needs to resolve a positional index or an options
+ * key to an argument name, and nothing else in the manifest concerns it.
+ * `keys` is `argsShape`'s own key order, which for a positional source IS the
+ * call signature — the same order `Query`'s argument array is written in.
+ *
+ * A failure resolves to null and the guard that reads it simply does not run.
+ * A check that cannot load is not a reason to stop a dashboard rendering.
+ */
+let manifestPromise = null;
+let argEnumMap = null;
+
+export function loadArgEnums() {
+  manifestPromise ??= (async () => {
+    try {
+      const res = await fetch(new URL('/common/surface/data-manifest.json', globalThis.document?.baseURI));
+      if (!res.ok) return;
+      const manifest = await res.json();
+      const map = {};
+      // Scopes overlap — a source can appear in several. They are the same
+      // generated entry each time, so last write wins and says the same thing.
+      for (const sources of Object.values(manifest?.scopes ?? {})) {
+        for (const src of sources) {
+          if (!src?.argsEnum) continue;
+          map[src.name] = {
+            callStyle: src.callStyle,
+            keys: Object.keys(src.argsShape ?? {}),
+            enums: src.argsEnum,
+          };
+        }
+      }
+      argEnumMap = map;
+    } catch { argEnumMap = null; }
+  })();
+  return manifestPromise;
+}
+
+/** The loaded table, or null before {@link loadArgEnums} resolves. */
+export function argEnums() { return argEnumMap; }
+
+/**
  * How seriously to take each diagnostic code, from the generated manifest.
  *
  * The runtime deliberately does not carry this: a module that reports a problem

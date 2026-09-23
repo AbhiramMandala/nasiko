@@ -42,7 +42,7 @@ import { createQueryManager } from './queries.js';
 import { createActionRunner } from './actions.js';
 import { createSurfaceTelemetry } from './telemetry.js';
 import { repairableDiagnostics, buildRepairPrompt } from './repair.js';
-import { severities, loadSeverities } from './catalog-load.js';
+import { severities, loadSeverities, argEnums, loadArgEnums } from './catalog-load.js';
 
 /**
  * A catalog version this client can actually compare against.
@@ -192,7 +192,17 @@ export function createSurfaceSession(options) {
     call,
     onChange: () => paint(),
     onDiagnostic: (d) => { liveDiagnostics.push(d); emitDiagnostics([d]); },
+    // Read through a function, not passed by value: the table arrives over the
+    // network, and reading it per fetch means a fetch that beats it is simply
+    // unchecked rather than the whole session being unchecked because the
+    // module loaded first.
+    argEnums,
   });
+  // Primed here, for the reason spelled out at the `loadSeverities()` call
+  // below: a check that only works when the host remembers to prime it is a
+  // check that silently does not run in the dock, which is where most turns
+  // happen. Not awaited — a dashboard must not wait on its own validation.
+  loadArgEnums();
   /** The evaluator belonging to the most recent pass. Actions read through it. */
   let lastOut = null;
 

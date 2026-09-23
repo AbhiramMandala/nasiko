@@ -190,3 +190,110 @@ test('a deleted statement stops reading, and the cache keeps the value for an un
   assert.equal(calls.length, 1, 'flipping a chart off and back on must not cost a round trip');
   assert.deepEqual(m.results.get('agentsQ'), ['a']);
 });
+
+// ── argument enums ──────────────────────────────────────────────────────────
+//
+// The counterpart to the component-side enum check in render.js. A generation
+// bound `range: "1d"` to two sources whose closed set is 24h/7d/30d; both
+// panels rendered a failure and the only thing that had noticed was the
+// backend. These cover the guard that stops it leaving the browser.
+
+/** The shape catalog-load.js derives from data-manifest.json's argsEnum. */
+const enums = () => ({
+  fetchSpendTimeseries: {
+    callStyle: 'object',
+    keys: ['range', 'startTime', 'agentId'],
+    enums: { range: ['24h', '7d', '30d'] },
+  },
+  fetchUsageHistory: {
+    callStyle: 'positional',
+    keys: ['days', 'bucket'],
+    enums: { bucket: ['hour', 'day'] },
+  },
+});
+
+test('an options-object argument outside its enum never reaches the network', async () => {
+  const { call, calls } = stub({ fetchSpendTimeseries: { data: { points: [] } } });
+  const diagnostics = [];
+  const m = createQueryManager({ call, argEnums: enums, onDiagnostic: (d) => diagnostics.push(d) });
+  m.sync([q('spendQ', 'fetchSpendTimeseries', [{ range: '1d' }], 'data.points')]);
+  await m.settled();
+  assert.deepEqual(calls, [], 'the fetch must not happen');
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].code, 'arg_enum_violation');
+  assert.match(diagnostics[0].message, /24h, 7d, 30d/);
+  assert.match(diagnostics[0].message, /"1d"/);
+  assert.ok(m.failed.has('spendQ'), 'the statement reads as failing, so no component claims empty');
+});
+
+test('a positional argument outside its enum is caught in its own slot', async () => {
+  const { call, calls } = stub({ fetchUsageHistory: [] });
+  const diagnostics = [];
+  const m = createQueryManager({ call, argEnums: enums, onDiagnostic: (d) => diagnostics.push(d) });
+  m.sync([q('histQ', 'fetchUsageHistory', [7, 'week'])]);
+  await m.settled();
+  assert.deepEqual(calls, []);
+  assert.equal(diagnostics[0].code, 'arg_enum_violation');
+  assert.match(diagnostics[0].message, /bucket/);
+});
+
+test('a valid value is not flagged, and neither is an omitted one', async () => {
+  const { call, calls } = stub({ fetchSpendTimeseries: { data: { points: [1] } }, fetchUsageHistory: [] });
+  const diagnostics = [];
+  const m = createQueryManager({ call, argEnums: enums, onDiagnostic: (d) => diagnostics.push(d) });
+  m.sync([
+    q('okQ', 'fetchSpendTimeseries', [{ range: '7d' }], 'data.points'),
+    q('bareQ', 'fetchSpendTimeseries', [{}], 'data.points'),
+    q('shortQ', 'fetchUsageHistory', [7]),
+  ]);
+  await m.settled();
+  assert.deepEqual(diagnostics, []);
+  assert.equal(calls.length, 3);
+});
+
+test('a source with no declared enum is left alone', async () => {
+  const { call, calls } = stub({ fetchUsageSummary: { total_cost_usd: 1 } });
+  const diagnostics = [];
+  const m = createQueryManager({ call, argEnums: enums, onDiagnostic: (d) => diagnostics.push(d) });
+  m.sync([q('sumQ', 'fetchUsageSummary', ['anything'])]);
+  await m.settled();
+  assert.deepEqual(diagnostics, []);
+  assert.equal(calls.length, 1);
+});
+
+test('with no table loaded the guard does not run — a dashboard is not blocked on its own validation', async () => {
+  const { call, calls } = stub({ fetchSpendTimeseries: { data: { points: [] } } });
+  const diagnostics = [];
+  const m = createQueryManager({ call, argEnums: () => null, onDiagnostic: (d) => diagnostics.push(d) });
+  m.sync([q('spendQ', 'fetchSpendTimeseries', [{ range: '1d' }], 'data.points')]);
+  await m.settled();
+  assert.equal(calls.length, 1, 'unchecked, not refused');
+  assert.deepEqual(diagnostics, []);
+});
+
+test('the violation is reported once however many chunks re-sync it', async () => {
+  const { call } = stub({ fetchSpendTimeseries: { data: { points: [] } } });
+  const diagnostics = [];
+  const m = createQueryManager({ call, argEnums: enums, onDiagnostic: (d) => diagnostics.push(d) });
+  const decl = q('spendQ', 'fetchSpendTimeseries', [{ range: '1d' }], 'data.points');
+  m.sync([decl]);
+  m.sync([decl]);
+  m.sync([decl]);
+  await m.settled();
+  assert.equal(diagnostics.length, 1, 'streaming must not multiply it');
+});
+
+test('@Run retries, so a repaired argument fetches without a reload', async () => {
+  const { call, calls } = stub({ fetchSpendTimeseries: { data: { points: [2] } } });
+  const diagnostics = [];
+  const m = createQueryManager({ call, argEnums: enums, onDiagnostic: (d) => diagnostics.push(d) });
+  m.sync([q('spendQ', 'fetchSpendTimeseries', [{ range: '1d' }], 'data.points')]);
+  await m.settled();
+  assert.deepEqual(calls, []);
+  // The generator rewrites the argument on the repair turn.
+  m.sync([q('spendQ', 'fetchSpendTimeseries', [{ range: '24h' }], 'data.points')]);
+  await m.settled();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(m.results.get('spendQ'), [2]);
+  assert.ok(!m.failed.has('spendQ'));
+});

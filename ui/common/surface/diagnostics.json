@@ -2,10 +2,10 @@
   "_generated": "by ui/scripts/gen-diagnostics.mjs from ui/common/surface/*.js — do not hand-edit",
   "contract": "Every diagnostic the surface runtime can emit. `fatal` means the generation is wrong and an eval case carrying one fails; `advisory` means the runtime corrected a real mistake and the surface is still right; `runtime` means the event says nothing about the DSL at all. A new code with no entry in this script's SEVERITY map fails generation rather than defaulting to anything. `repairable` means the runtime can hand this one back to the generator as a repair turn — see common/surface/repair.js.",
   "counts": {
-    "fatal": 31,
+    "fatal": 32,
     "advisory": 4,
     "runtime": 21,
-    "repairable": 33
+    "repairable": 34
   },
   "diagnostics": {
     "action_halted": {
@@ -25,6 +25,17 @@
         {
           "module": "common/surface/actions.js",
           "source": "actions"
+        }
+      ]
+    },
+    "arg_enum_violation": {
+      "severity": "fatal",
+      "why": "the argument is not a value that source accepts, so the data never arrives",
+      "repairable": true,
+      "emitters": [
+        {
+          "module": "common/surface/queries.js",
+          "source": "queries"
         }
       ]
     },
