@@ -131,35 +131,58 @@ struct AgentUsage {
     cost: f64,
 }
 
-async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> AgentUsage {
-    let sums: Result<(i64, i64, i64, i64, f64), sqlx::Error> = sqlx::query_as(
-        r#"SELECT COALESCE(SUM(input_tokens), 0)::BIGINT,
-                  COALESCE(SUM(output_tokens), 0)::BIGINT,
-                  COALESCE(SUM(cache_read_input_tokens), 0)::BIGINT,
-                  COALESCE(SUM(cache_creation_input_tokens), 0)::BIGINT,
-                  COALESCE(SUM(cost_usd), 0)::FLOAT8
-           FROM token_usage
-           WHERE session_id = $1
-             AND operation_type = 'direct_llm'
-             AND metadata->>'key_source' = 'platform'"#,
-    )
-    .bind(flow_id)
-    .fetch_one(db)
-    .await;
+/// `token_usage` rows are written by a fire-and-forget spawned task
+/// (`nasiko_llm_router::usage::spawn_log`), deliberately so the LLM response
+/// back to the agent is never delayed by the DB write. For an agent whose
+/// whole turn is one direct LLM call with no further work (e.g. a minimal
+/// third-party-style agent with no tool loop or self-review), that insert
+/// can still be in flight when this query runs right after the turn
+/// completes — a genuinely platform-paid turn then reads back as zero and
+/// the client renders a duration-only summary. A short bounded retry costs
+/// nothing for the common case: an agent with any tool loop or extra work
+/// naturally gives the write enough time to land before its turn ends, so
+/// the first attempt already finds the row and every retry here is skipped.
+const ZERO_USAGE_RETRY_DELAYS_MS: [u64; 2] = [40, 100];
 
-    match sums {
-        Ok((input, output, cache_read, cache_creation, cost)) => AgentUsage {
-            input: input.max(0) as u64,
-            output: output.max(0) as u64,
-            cache_read: cache_read.max(0) as u64,
-            cache_creation: cache_creation.max(0) as u64,
-            cost,
-        },
-        Err(e) => {
-            tracing::warn!(error = %e, %flow_id, "flow usage aggregation failed; usage_meta omits agent rows");
-            AgentUsage::default()
+async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> AgentUsage {
+    for (attempt, delay_ms) in std::iter::once(0).chain(ZERO_USAGE_RETRY_DELAYS_MS).enumerate() {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+
+        let sums: Result<(i64, i64, i64, i64, f64), sqlx::Error> = sqlx::query_as(
+            r#"SELECT COALESCE(SUM(input_tokens), 0)::BIGINT,
+                      COALESCE(SUM(output_tokens), 0)::BIGINT,
+                      COALESCE(SUM(cache_read_input_tokens), 0)::BIGINT,
+                      COALESCE(SUM(cache_creation_input_tokens), 0)::BIGINT,
+                      COALESCE(SUM(cost_usd), 0)::FLOAT8
+               FROM token_usage
+               WHERE session_id = $1
+                 AND operation_type = 'direct_llm'
+                 AND metadata->>'key_source' = 'platform'"#,
+        )
+        .bind(flow_id)
+        .fetch_one(db)
+        .await;
+
+        match sums {
+            Ok((input, output, cache_read, cache_creation, cost)) if input > 0 || output > 0 => {
+                return AgentUsage {
+                    input: input.max(0) as u64,
+                    output: output.max(0) as u64,
+                    cache_read: cache_read.max(0) as u64,
+                    cache_creation: cache_creation.max(0) as u64,
+                    cost,
+                };
+            }
+            Ok(_) => continue,
+            Err(e) => {
+                tracing::warn!(error = %e, %flow_id, "flow usage aggregation failed; usage_meta omits agent rows");
+                return AgentUsage::default();
+            }
         }
     }
+    AgentUsage::default()
 }
 
 /// Persist the assistant reply with its usage columns so chips and the trace
