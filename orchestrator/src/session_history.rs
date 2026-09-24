@@ -65,6 +65,13 @@ impl SessionHistory {
         self.messages.is_empty()
     }
 
+    /// Prior user turns in the fetched window — a coarse, capped count (see
+    /// `fetch`'s `limit`), used as a session-shape signal for the
+    /// minimal-code ladder rather than an exact lifetime turn count.
+    pub fn user_turn_count(&self) -> usize {
+        self.messages.iter().filter(|m| m.role == "user").count()
+    }
+
     /// Map to LLM-format messages (role + content pairs).
     pub fn to_llm_messages(&self) -> Vec<LlmMessage> {
         self.messages

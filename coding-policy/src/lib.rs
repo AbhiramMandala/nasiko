@@ -15,6 +15,16 @@
 //! actually wrote or edited a file, which the control plane can't see from
 //! the outside.
 //!
+//! [`minimal_code_addendum`] picks between three fixed texts by prior turn
+//! count alone (a session-shape fact the control plane already has for
+//! free) — it does not try to classify what a request is asking for from
+//! its wording. That classification is left to the model itself: the ladder
+//! text states the actual criterion ("search only when something equivalent
+//! plausibly already exists") and trusts the model's own reading of the
+//! request to apply it, since a CP-side heuristic trying to pattern-match
+//! every phrasing of "this needs a search" would be strictly worse at
+//! exactly the thing the model is already good at.
+//!
 //! This is the canonical source. A dependent agent keeps its own committed
 //! copy under `vendor/coding-policy/` (`docker build` only ever sees that
 //! agent's own directory, so a `../` path dependency can't resolve inside the
@@ -41,12 +51,26 @@ pub fn self_review_enabled() -> bool {
         .unwrap_or(true)
 }
 
-/// Full ladder: this session already has prior turns, so there's a real
-/// workspace to check before writing more into it.
+/// Continuing, early: this session has a few prior turns. Framed as a
+/// judgment call, not a mandatory first step — a CP-side heuristic trying to
+/// pre-classify every possible phrasing of "this needs a search" vs. "this
+/// doesn't" would be exactly the kind of brittle keyword-matching that breaks
+/// on the first request phrased differently than whatever it was tuned
+/// against. The model reading the actual request already does that
+/// classification correctly, for any phrasing, as part of understanding the
+/// request at all — so state the criterion and let it apply that judgment,
+/// instead of a second, cruder classifier trying to out-guess it from
+/// outside. A rename, a removal, or a fix to something the request already
+/// names doesn't need a search; a request that plausibly overlaps with
+/// existing functionality does.
 const MINIMAL_CODE_ADDENDUM_CONTINUING: &str = "\n\
-- Before writing new code, check first whether something equivalent already exists in this \
-workspace (search_code / list_directory / read_file), in the language's standard library, or as \
-a feature of an already-installed dependency. Only write new code once those are ruled out.
+- Only search this workspace first (search_code / list_directory / read_file) when it's \
+plausible something equivalent already exists that you haven't already seen this session. A \
+rename, a removal, or a fix to something the request already names — or something you've \
+already located earlier in this session — doesn't need a fresh search; use your judgment on \
+which this is, rather than treating search as a mandatory first step for every request.
+- Once you know there's nothing to reuse, prefer the language's standard library or an \
+already-installed dependency over writing something from scratch.
 - If the request is for example or reference code (\"give me code for X\", \"write a function \
 that does Y\") rather than an explicit ask to add or change something in this workspace, just \
 write the code directly in your response. Do not create a file, set up a Cargo project, or run \
@@ -54,6 +78,34 @@ tests for a standalone example — the person asking has no access to your sandb
 something to read or copy, not a file left behind where they can't reach it.
 - This does not apply to trust-boundary checks, error handling for real failure modes, \
 security, or data-loss prevention — those are never skipped for brevity.";
+
+/// Continuing, established: several turns in, the model has already built up
+/// real context of this workspace from its own earlier tool calls this
+/// session. Same judgment-call framing as the early-continuing variant, but
+/// stated more assertively toward *not* re-searching, since by this point in
+/// a session redundant search is the more likely failure mode than missing
+/// something genuinely new.
+const MINIMAL_CODE_ADDENDUM_ESTABLISHED: &str = "\n\
+- You've already explored this workspace across earlier turns in this session — don't re-search \
+out of habit. Only search again (search_code / list_directory / read_file) if this specific \
+request plausibly touches code you haven't already seen; a rename, a removal, or a fix to \
+something already named or already located needs no search at all.
+- Prefer the language's standard library or an already-installed dependency over writing \
+something from scratch when one obviously already covers the need.
+- If the request is for example or reference code (\"give me code for X\", \"write a function \
+that does Y\") rather than an explicit ask to add or change something in this workspace, just \
+write the code directly in your response. Do not create a file, set up a Cargo project, or run \
+tests for a standalone example — the person asking has no access to your sandbox and wants \
+something to read or copy, not a file left behind where they can't reach it.
+- This does not apply to trust-boundary checks, error handling for real failure modes, \
+security, or data-loss prevention — those are never skipped for brevity.";
+
+/// Below this many prior turns, "continuing" stays in the early-session
+/// wording; at or above it, the established wording takes over. Picked as a
+/// coarse midpoint for an 18-turn benchmark session, not a tuned constant —
+/// the two variants differ only in emphasis, so this threshold being off by
+/// a turn or two either way costs nothing.
+const ESTABLISHED_SESSION_THRESHOLD: usize = 4;
 
 /// Fresh-start ladder: this is the first message in the session, so there is
 /// nothing in the workspace yet to search for — skips the search-first step
@@ -77,15 +129,21 @@ something to read or copy, not a file left behind where they can't reach it.
 - This does not apply to trust-boundary checks, error handling for real failure modes, \
 security, or data-loss prevention — those are never skipped for brevity.";
 
-/// Which ladder text to inject, given whether this session already has prior
-/// turns. Callers pass `!history.is_empty()` — the control plane already has
-/// this for free (`SessionHistory`, fetched once per dispatch for the
-/// conversation-context merge), no extra query needed.
-pub fn minimal_code_addendum(has_prior_context: bool) -> &'static str {
-    if has_prior_context {
+/// Which ladder text to inject, given how many turns this session already
+/// had before this one. Callers pass `history.messages.iter().filter(|m|
+/// m.role == "user").count()` — the control plane already has this for free
+/// (`SessionHistory`, fetched once per dispatch for the conversation-context
+/// merge), no extra query or LLM call needed. Three tiers, not a classifier:
+/// this is a session-shape signal (a count CP already has), not an attempt to
+/// guess per-request intent from its wording — see the doc comment on
+/// [`MINIMAL_CODE_ADDENDUM_CONTINUING`] for why that distinction matters.
+pub fn minimal_code_addendum(prior_turn_count: usize) -> &'static str {
+    if prior_turn_count == 0 {
+        MINIMAL_CODE_ADDENDUM_FRESH_START
+    } else if prior_turn_count < ESTABLISHED_SESSION_THRESHOLD {
         MINIMAL_CODE_ADDENDUM_CONTINUING
     } else {
-        MINIMAL_CODE_ADDENDUM_FRESH_START
+        MINIMAL_CODE_ADDENDUM_ESTABLISHED
     }
 }
 
@@ -111,22 +169,46 @@ mod tests {
 
     #[test]
     fn fresh_start_skips_search_first_but_keeps_stdlib_nudge() {
-        let addendum = minimal_code_addendum(false);
+        let addendum = minimal_code_addendum(0);
         assert!(addendum.contains("nothing in the workspace yet to search for"));
         assert!(addendum.contains("standard library"));
         assert!(!addendum.contains("search_code"));
     }
 
     #[test]
-    fn continuing_session_keeps_search_first() {
-        let addendum = minimal_code_addendum(true);
+    fn early_continuing_frames_search_as_a_judgment_call() {
+        let addendum = minimal_code_addendum(1);
         assert!(addendum.contains("search_code"));
+        assert!(addendum.contains("use your judgment"));
         assert!(!addendum.contains("nothing in the workspace yet"));
     }
 
     #[test]
-    fn both_variants_keep_the_safety_exemption_and_example_carve_out() {
-        for addendum in [minimal_code_addendum(false), minimal_code_addendum(true)] {
+    fn established_session_leans_against_resurching() {
+        let addendum = minimal_code_addendum(ESTABLISHED_SESSION_THRESHOLD);
+        assert!(addendum.contains("already explored this workspace"));
+        assert!(addendum.contains("don't re-search out of habit"));
+    }
+
+    #[test]
+    fn threshold_is_the_exact_boundary() {
+        assert_eq!(
+            minimal_code_addendum(ESTABLISHED_SESSION_THRESHOLD - 1),
+            MINIMAL_CODE_ADDENDUM_CONTINUING
+        );
+        assert_eq!(
+            minimal_code_addendum(ESTABLISHED_SESSION_THRESHOLD),
+            MINIMAL_CODE_ADDENDUM_ESTABLISHED
+        );
+    }
+
+    #[test]
+    fn all_three_variants_keep_the_safety_exemption_and_example_carve_out() {
+        for addendum in [
+            minimal_code_addendum(0),
+            minimal_code_addendum(1),
+            minimal_code_addendum(ESTABLISHED_SESSION_THRESHOLD),
+        ] {
             assert!(addendum.contains("never skipped for brevity"));
             assert!(addendum.contains("give me code for X"));
         }

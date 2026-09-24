@@ -272,7 +272,7 @@ pub async fn a2a_dispatch_handler(
             user_id,
             &[],
             session_id,
-            !history.is_empty(),
+            history.user_turn_count(),
         )
         .await
     }
@@ -1211,11 +1211,13 @@ async fn agent_stream(
     // `Sse::new(...).into_response()` requires to be `'static` — a caller-borrowed `&str`
     // cannot satisfy that, only a value this function owns and moves into the generator can.
     session_id: Option<String>,
-    // Whether this session already had turns before this one (`!history.is_empty()`
-    // at the call site) — picks which minimal-code ladder variant to inject below.
-    // A fresh session has nothing in its workspace yet to search for; forcing the
-    // full search-first ladder there only spends tokens finding nothing.
-    has_prior_context: bool,
+    // Prior user turns in this session (`history.user_turn_count()` at the call
+    // site) — picks which minimal-code ladder variant to inject below. A fresh
+    // session has nothing in its workspace yet to search for; forcing the full
+    // search-first ladder there only spends tokens finding nothing. An
+    // established session (several turns in) leans the other way — see
+    // nasiko-coding-policy's minimal_code_addendum() doc comment.
+    prior_turn_count: usize,
 ) -> Result<Response, A2aDispatchError> {
     let endpoint = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
         .await
@@ -1298,17 +1300,21 @@ async fn agent_stream(
     // support this: it just sees a longer task description, exactly as it
     // would if a human had pasted the same extra paragraph in by hand.
     //
-    // `has_prior_context` picks the ladder variant: a session's first turn
-    // has an empty workspace, so the full "search the codebase first" ladder
-    // just spends tokens finding nothing there — confirmed empirically (chat
+    // `prior_turn_count` picks the ladder variant: a session's first turn has
+    // an empty workspace, so the full "search the codebase first" ladder just
+    // spends tokens finding nothing there — confirmed empirically (chat
     // 2026-09-22) to cost more per turn than not having the ladder on at all,
     // on exactly this kind of from-scratch task. See nasiko-coding-policy's
-    // minimal_code_addendum() doc comment.
+    // minimal_code_addendum() doc comment for the three-tier reasoning.
     let effective_query = if agent.is_coding_agent_example && agent.minimal_code_enabled {
-        format!(
-            "{query}\n{}",
-            nasiko_coding_policy::minimal_code_addendum(has_prior_context)
-        )
+        let addendum = nasiko_coding_policy::minimal_code_addendum(prior_turn_count);
+        tracing::info!(
+            agent_id = %agent.id,
+            %context_id,
+            prior_turn_count,
+            "a2a_dispatch: injecting minimal-code ladder"
+        );
+        format!("{query}\n{addendum}")
     } else {
         query.to_string()
     };
