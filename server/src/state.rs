@@ -470,9 +470,15 @@ impl AppState {
         // may still carry a stale CODING_AGENT_MINIMAL_CODE secret from
         // before this column existed, and that must not leak through once
         // the column says otherwise.
+        let minimal_code_enabled = minimal_code_enabled.unwrap_or(false);
+        tracing::info!(
+            %agent_id,
+            minimal_code_enabled,
+            "agent_env: injecting CODING_AGENT_MINIMAL_CODE"
+        );
         env.insert(
             "CODING_AGENT_MINIMAL_CODE".into(),
-            minimal_code_enabled.unwrap_or(false).to_string(),
+            minimal_code_enabled.to_string(),
         );
         env
     }
