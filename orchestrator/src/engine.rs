@@ -7,6 +7,7 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use crate::agent_registry;
+use crate::context_selection::{self, ContextTiers};
 use crate::error::RouterError;
 use crate::models::AgentCardSummary;
 use crate::policy::RoutingPolicy;
@@ -14,9 +15,8 @@ use crate::providers::LLMProvider;
 use crate::reranker::Reranker;
 use crate::selector::AgentSelector;
 use crate::selector::ConversationMessage;
-use crate::session_history::SessionHistory;
 use crate::types::{AgentCard, RouteRequest, RouteResult, RouterLogEntry};
-use crate::vector_store::{EmbeddingCache, VectorStore};
+use crate::vector_store::{EmbeddingCache, TextEmbeddingCache, VectorStore};
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -42,8 +42,9 @@ pub struct RouterConfig {
     pub shortlist_threshold: usize,
     /// Max candidates passed into Stage 3 (LLM selector).
     pub shortlist_size: usize,
-    /// How many chat messages to include as conversation context.
-    pub max_history_messages: usize,
+    /// What each stored `PacmsBudgetLevel` tier means in this deployment —
+    /// the token/item counts the user's chosen tier resolves against.
+    pub context_tiers: ContextTiers,
 }
 
 impl Default for RouterConfig {
@@ -51,7 +52,7 @@ impl Default for RouterConfig {
         Self {
             shortlist_threshold: 15,
             shortlist_size: 10,
-            max_history_messages: 20,
+            context_tiers: ContextTiers::default(),
         }
     }
 }
@@ -69,6 +70,11 @@ pub struct OssRoutingEngine {
     /// every incoming request. See `EmbeddingCache` docs for the invalidation
     /// strategy (TTL + content-hash).
     embedding_cache: EmbeddingCache,
+    /// Cache of PACMS candidate/query embeddings shared across `route()` calls.
+    /// PACMS's history pool overlaps heavily turn-to-turn within a session, so
+    /// without this `SessionHistory::fetch_pacms` would re-embed the same
+    /// messages on every call. See `TextEmbeddingCache` docs.
+    history_embedding_cache: TextEmbeddingCache,
 }
 
 impl OssRoutingEngine {
@@ -89,6 +95,7 @@ impl OssRoutingEngine {
             base_url,
             embedding_model,
             embedding_cache: Arc::new(DashMap::new()),
+            history_embedding_cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -96,7 +103,7 @@ impl OssRoutingEngine {
         let router_config = RouterConfig {
             shortlist_threshold: config.router_shortlist_threshold,
             shortlist_size: config.router_shortlist_size,
-            max_history_messages: config.max_router_history_messages,
+            context_tiers: ContextTiers::from_config(config),
         };
         Self::new(
             router_config,
@@ -122,10 +129,25 @@ impl RoutingEngine for OssRoutingEngine {
     ) -> Result<RouteResult, RouterError> {
         let t0 = Instant::now();
 
-        // Fetch available agents + conversation history in parallel
+        // Fetch available agents + conversation history in parallel. History
+        // is selected per the caller's own stored strategy and budget tier —
+        // see `context_selection::fetch_for_user`.
+        let history_store = VectorStore::for_embedding(
+            self.api_key.clone(),
+            self.base_url.clone(),
+            self.embedding_model.clone(),
+            Arc::clone(&self.history_embedding_cache),
+        );
         let (agents, history) = tokio::join!(
             agent_registry::get_agents_for_user(req.user_id, pool),
-            SessionHistory::fetch(&req.session_id, pool, self.config.max_history_messages),
+            context_selection::fetch_for_user(
+                pool,
+                req.user_id,
+                &req.session_id,
+                &history_store,
+                &req.query,
+                &self.config.context_tiers,
+            ),
         );
         let agents = agents?;
 

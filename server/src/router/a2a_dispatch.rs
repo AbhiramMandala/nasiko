@@ -21,7 +21,7 @@ use nasiko_react_agent::{
 };
 use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse};
 
-use nasiko_orchestrator::{AgentSelector, SessionHistory};
+use nasiko_orchestrator::{AgentSelector, ContextTiers, context_selection};
 
 use nasiko_flow::FlowContext;
 
@@ -209,7 +209,16 @@ pub async fn a2a_dispatch_handler(
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
-    let history = SessionHistory::fetch(history_sid, &state.db, 20).await;
+    let history_store = state.history_vector_store();
+    let history = context_selection::fetch_for_user(
+        &state.db,
+        user_id,
+        history_sid,
+        &history_store,
+        &text,
+        &ContextTiers::from_config(&state.config),
+    )
+    .await;
 
     let query = history.with_current_query(&text);
 
@@ -272,7 +281,7 @@ pub async fn a2a_dispatch_handler(
             user_id,
             &[],
             session_id,
-            history.user_turn_count(),
+            !history.is_empty(),
         )
         .await
     }
@@ -1211,13 +1220,11 @@ async fn agent_stream(
     // `Sse::new(...).into_response()` requires to be `'static` — a caller-borrowed `&str`
     // cannot satisfy that, only a value this function owns and moves into the generator can.
     session_id: Option<String>,
-    // Prior user turns in this session (`history.user_turn_count()` at the call
-    // site) — picks which minimal-code ladder variant to inject below. A fresh
-    // session has nothing in its workspace yet to search for; forcing the full
-    // search-first ladder there only spends tokens finding nothing. An
-    // established session (several turns in) leans the other way — see
-    // nasiko-coding-policy's minimal_code_addendum() doc comment.
-    prior_turn_count: usize,
+    // Whether this session already had turns before this one (`!history.is_empty()`
+    // at the call site) — picks which minimal-code ladder variant to inject below.
+    // A fresh session has nothing in its workspace yet to search for; forcing the
+    // full search-first ladder there only spends tokens finding nothing.
+    has_prior_context: bool,
 ) -> Result<Response, A2aDispatchError> {
     let endpoint = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
         .await
@@ -1300,21 +1307,17 @@ async fn agent_stream(
     // support this: it just sees a longer task description, exactly as it
     // would if a human had pasted the same extra paragraph in by hand.
     //
-    // `prior_turn_count` picks the ladder variant: a session's first turn has
-    // an empty workspace, so the full "search the codebase first" ladder just
-    // spends tokens finding nothing there — confirmed empirically (chat
+    // `has_prior_context` picks the ladder variant: a session's first turn
+    // has an empty workspace, so the full "search the codebase first" ladder
+    // just spends tokens finding nothing there — confirmed empirically (chat
     // 2026-09-22) to cost more per turn than not having the ladder on at all,
     // on exactly this kind of from-scratch task. See nasiko-coding-policy's
-    // minimal_code_addendum() doc comment for the three-tier reasoning.
+    // minimal_code_addendum() doc comment.
     let effective_query = if agent.is_coding_agent_example && agent.minimal_code_enabled {
-        let addendum = nasiko_coding_policy::minimal_code_addendum(prior_turn_count);
-        tracing::info!(
-            agent_id = %agent.id,
-            %context_id,
-            prior_turn_count,
-            "a2a_dispatch: injecting minimal-code ladder"
-        );
-        format!("{query}\n{addendum}")
+        format!(
+            "{query}\n{}",
+            nasiko_coding_policy::minimal_code_addendum(has_prior_context)
+        )
     } else {
         query.to_string()
     };
@@ -1931,13 +1934,21 @@ async fn ensure_orchestrator_chat_session(
         return;
     }
 
-    let _ =
-        sqlx::query("INSERT INTO chat_messages (session_id, role, content) VALUES ($1, $2, $3)")
-            .bind(context_id)
-            .bind(role)
-            .bind(query)
-            .execute(&state.db)
-            .await;
+    // 10s dedup guard: mirrors the one in agent_proxy.rs — the CLI's A2A
+    // method negotiation can hit this path twice for the same logical
+    // message when it retries under a different JSON-RPC method name.
+    let _ = sqlx::query(
+        "INSERT INTO chat_messages (session_id, role, content) \
+         SELECT $1, $2, $3 WHERE NOT EXISTS ( \
+             SELECT 1 FROM chat_messages \
+             WHERE session_id = $1 AND role = $2 AND content = $3 \
+               AND timestamp > now() - INTERVAL '10 seconds')",
+    )
+    .bind(context_id)
+    .bind(role)
+    .bind(query)
+    .execute(&state.db)
+    .await;
 }
 
 pub(crate) async fn resolve_endpoint(

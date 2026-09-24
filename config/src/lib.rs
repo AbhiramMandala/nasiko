@@ -126,7 +126,32 @@ pub struct Config {
     pub nasiko_bff_url: Option<String>,
     pub router_shortlist_threshold: usize,
     pub router_shortlist_size: usize,
-    pub max_router_history_messages: usize,
+    /// How many of the most recent chat messages the PACMS context selector
+    /// draws candidates from (a wide pool for the selector to choose a
+    /// budget-fitting subset from). See `SessionHistory::fetch_pacms`.
+    pub pacms_history_pool_size: usize,
+    /// Token budget for a user on the PACMS "low" tier (`users.pacms_budget_level`).
+    pub pacms_budget_low: usize,
+    /// Token budget for a user on the PACMS "medium" tier — the default tier
+    /// for a user who hasn't picked one.
+    pub pacms_budget_medium: usize,
+    /// Token budget for a user on the PACMS "high" tier.
+    pub pacms_budget_high: usize,
+    /// How many of the most-recent messages in the pool are force-included
+    /// (PACMS `mandatory` set) regardless of relevance/coverage score, so the
+    /// immediate conversational thread is never dropped.
+    pub pacms_history_mandatory_recent: usize,
+    /// Item count for a user on the "low" tier (`users.pacms_budget_level`),
+    /// shared by the `topk` strategy's query/answer-pair count
+    /// (`SessionHistory::fetch_topk`) and the `lastk` strategy's recency
+    /// window (`SessionHistory::fetch`) — same tier the PACMS token budget
+    /// above reads, resolved via `PacmsBudgetLevel::k`.
+    pub context_k_low: usize,
+    /// Item count for a user on the "medium" tier — the default tier for a
+    /// user who hasn't picked one.
+    pub context_k_medium: usize,
+    /// Item count for a user on the "high" tier.
+    pub context_k_high: usize,
     /// OpenAI-compatible model used for Stage 1 vector embeddings.
     /// Default: `text-embedding-3-small`. Stage 1 is skipped if `openai_api_key` is unset.
     pub embedding_model: String,
@@ -397,7 +422,14 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
-            max_router_history_messages: env_parse("MAX_ROUTER_HISTORY_MESSAGES", 20),
+            pacms_history_pool_size: env_parse("PACMS_HISTORY_POOL_SIZE", 150),
+            pacms_budget_low: env_parse("PACMS_BUDGET_LOW", 500),
+            pacms_budget_medium: env_parse("PACMS_BUDGET_MEDIUM", 1000),
+            pacms_budget_high: env_parse("PACMS_BUDGET_HIGH", 5000),
+            pacms_history_mandatory_recent: env_parse("PACMS_HISTORY_MANDATORY_RECENT", 3),
+            context_k_low: env_parse("CONTEXT_K_LOW", 1),
+            context_k_medium: env_parse("CONTEXT_K_MEDIUM", 5),
+            context_k_high: env_parse("CONTEXT_K_HIGH", 20),
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
             router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),

@@ -1123,11 +1123,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 // so `nasiko chat <agent-name>` sent the literal name as
                 // the HTTP endpoint instead of resolving it first.
                 (Some(u), _) => commands::agents::resolve_chat_target(&u)?,
-                (None, Some(a)) => {
-                    let base = config::active_url()?;
-                    let id = commands::agents::resolve_agent_id(&a)?;
-                    format!("{}/api/agents/{}", base.trim_end_matches('/'), id)
-                }
+                (None, Some(a)) => commands::agents::resolve_chat_target(&a)?,
                 (None, None) => {
                     let base = config::active_url()?;
                     format!("{}/api/orchestrator/a2a", base.trim_end_matches('/'))

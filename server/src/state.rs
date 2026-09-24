@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_observability::ObservabilityProvider;
-use nasiko_orchestrator::RoutingEngine;
+use nasiko_orchestrator::{RoutingEngine, TextEmbeddingCache, VectorStore};
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
@@ -48,6 +49,11 @@ pub struct AppState {
     /// cell (`SwappableAgentDeletionHook::install`, not a plain reassignment) for the same reason
     /// `prompt_context` does — see that field's doc comment and `agent_lifecycle` module docs.
     pub agent_deletion_hook: Arc<SwappableAgentDeletionHook>,
+    /// PACMS candidate/query embedding cache for the history enrichment done
+    /// directly in `a2a_dispatch.rs` (shared across requests, like the one
+    /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
+    /// see `TextEmbeddingCache` docs).
+    pub history_embedding_cache: TextEmbeddingCache,
     /// Tempo+Loki observability provider with DB-backed model pricing.
     /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
     /// addresses; queries fail soft when the stack is absent.
@@ -80,6 +86,22 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The embedding client the chat handlers hand to
+    /// `context_selection::fetch_for_user`. Built per call (it is a thin
+    /// handle over the shared `history_embedding_cache`, not a connection),
+    /// so the two call sites don't each re-derive the provider settings.
+    pub fn history_vector_store(&self) -> VectorStore {
+        VectorStore::for_embedding(
+            self.config.openai_api_key.clone().unwrap_or_default(),
+            self.config
+                .openai_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com".into()),
+            self.config.embedding_model.clone(),
+            self.history_embedding_cache.clone(),
+        )
+    }
+
     pub async fn from_config(
         config: Config,
         auth: Arc<dyn AuthService>,
@@ -155,6 +177,7 @@ impl AppState {
             Arc::new(crate::agent_lifecycle::SwappableAgentDeletionHook::new(
                 Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook),
             ));
+        let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
             max_depth: config.flow_max_depth as u32,
@@ -253,6 +276,7 @@ impl AppState {
             orchestrator_policy,
             prompt_context,
             agent_deletion_hook,
+            history_embedding_cache,
             observability,
             github_svc,
             build_tx,
@@ -446,15 +470,9 @@ impl AppState {
         // may still carry a stale CODING_AGENT_MINIMAL_CODE secret from
         // before this column existed, and that must not leak through once
         // the column says otherwise.
-        let minimal_code_enabled = minimal_code_enabled.unwrap_or(false);
-        tracing::info!(
-            %agent_id,
-            minimal_code_enabled,
-            "agent_env: injecting CODING_AGENT_MINIMAL_CODE"
-        );
         env.insert(
             "CODING_AGENT_MINIMAL_CODE".into(),
-            minimal_code_enabled.to_string(),
+            minimal_code_enabled.unwrap_or(false).to_string(),
         );
         env
     }

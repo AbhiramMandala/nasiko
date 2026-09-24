@@ -1,4 +1,4 @@
-use nasiko_orchestrator::{OssRoutingEngine, RouterConfig};
+use nasiko_orchestrator::{ContextTiers, OssRoutingEngine, RouterConfig};
 use reqwest::Client;
 
 // ── RouterConfig defaults ─────────────────────────────────────────────────────
@@ -8,7 +8,14 @@ fn router_config_defaults_are_sensible() {
     let cfg = RouterConfig::default();
     assert_eq!(cfg.shortlist_threshold, 15);
     assert_eq!(cfg.shortlist_size, 10);
-    assert_eq!(cfg.max_history_messages, 20);
+    assert_eq!(cfg.context_tiers.pool_size, 150);
+    assert_eq!(cfg.context_tiers.budget_low, 500);
+    assert_eq!(cfg.context_tiers.budget_medium, 1000);
+    assert_eq!(cfg.context_tiers.budget_high, 5000);
+    assert_eq!(cfg.context_tiers.mandatory_recent, 3);
+    assert_eq!(cfg.context_tiers.k_low, 1);
+    assert_eq!(cfg.context_tiers.k_medium, 5);
+    assert_eq!(cfg.context_tiers.k_high, 20);
 }
 
 #[test]
@@ -16,11 +23,25 @@ fn router_config_custom_values() {
     let cfg = RouterConfig {
         shortlist_threshold: 5,
         shortlist_size: 3,
-        max_history_messages: 10,
+        context_tiers: ContextTiers {
+            pool_size: 80,
+            mandatory_recent: 2,
+            budget_low: 400,
+            budget_medium: 1000,
+            budget_high: 4000,
+            k_low: 2,
+            k_medium: 10,
+            k_high: 15,
+        },
     };
     assert_eq!(cfg.shortlist_threshold, 5);
     assert_eq!(cfg.shortlist_size, 3);
-    assert_eq!(cfg.max_history_messages, 10);
+    assert_eq!(cfg.context_tiers.pool_size, 80);
+    assert_eq!(cfg.context_tiers.budget_medium, 1000);
+    assert_eq!(cfg.context_tiers.mandatory_recent, 2);
+    assert_eq!(cfg.context_tiers.k_low, 2);
+    assert_eq!(cfg.context_tiers.k_medium, 10);
+    assert_eq!(cfg.context_tiers.k_high, 15);
 }
 
 // ── OssRoutingEngine construction ─────────────────────────────────────────────
@@ -55,7 +76,11 @@ fn oss_routing_engine_new_with_custom_config() {
     let config = RouterConfig {
         shortlist_threshold: 20,
         shortlist_size: 5,
-        max_history_messages: 15,
+        context_tiers: ContextTiers {
+            pool_size: 100,
+            budget_medium: 1500,
+            ..ContextTiers::default()
+        },
     };
     let _ = OssRoutingEngine::new(
         config,

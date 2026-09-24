@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use nasiko_flow::{FlowContext, TRACEPARENT_HEADER};
-use nasiko_orchestrator::SessionHistory;
+use nasiko_orchestrator::{ContextTiers, context_selection};
 use uuid::Uuid;
 
 use crate::auth::Claims;
@@ -181,15 +181,13 @@ pub async fn agent_proxy(
     // behaviour). No trace_id column: session_traces (below) is the
     // authoritative session↔trace mapping now.
     //
-    // Guarded by a short dedup window rather than a plain unconditional insert: per the
-    // `flows` re-open comment a few lines down, one logical turn can legitimately reach this
-    // handler more than once under the *same* traceparent — `nasiko chat`'s protocol-negotiation
-    // retry (method/role mismatches some agent SDKs reject) resends the identical message
-    // milliseconds later on a fresh HTTP request, which this middleware has no way to tell apart
-    // from a second, genuinely new send of the same text. Without this, that retry showed up as
-    // the same user bubble twice in both the CLI and the web UI's `chat_messages` history.
-    // Two seconds comfortably covers a retry (observed live at 15-40ms) while never matching a
-    // human re-sending the exact same text minutes apart.
+    // The 10s dedup guard exists because the CLI's A2A method negotiation
+    // (`send_message` in oss/cli/src/commands/chat.rs) retries the same
+    // logical message under a different JSON-RPC method name (message/stream
+    // -> SendStreamingMessage -> SendMessage -> message/send) when an agent
+    // rejects one with "method not found" — each retry is a fresh proxied
+    // request and would otherwise persist an identical duplicate row before
+    // the agent has even accepted the call.
     if let Some(ref info) = persist_info
         && !info.user_text.is_empty()
     {
@@ -200,11 +198,23 @@ pub async fn agent_proxy(
                 crate::telemetry::genai_text_message("user", &info.user_text).as_str(),
             );
         }
-        crate::chat::spawn_dedup_user_message_insert(
-            state.db.clone(),
-            info.session_id.clone(),
-            info.user_text.clone(),
-        );
+        let db = state.db.clone();
+        let session_id = info.session_id.clone();
+        let user_text = info.user_text.clone();
+        tokio::spawn(async move {
+            let _ = sqlx::query(
+                "INSERT INTO chat_messages (session_id, role, content) \
+                 SELECT $1, $2, $3 WHERE NOT EXISTS ( \
+                     SELECT 1 FROM chat_messages \
+                     WHERE session_id = $1 AND role = $2 AND content = $3 \
+                       AND timestamp > now() - INTERVAL '10 seconds')",
+            )
+            .bind(&session_id)
+            .bind("user")
+            .bind(&user_text)
+            .execute(&db)
+            .await;
+        });
     }
 
     // Register the flow so the model router can classify this request. A direct
@@ -718,7 +728,16 @@ async fn ensure_chat_session(
     // continuity its own "resume with --session-id" hint implies.
     let mut rewrite_needed = injected;
     if !user_text.is_empty() && same_agent_session {
-        let history = SessionHistory::fetch(&session_id, &state.db, 20).await;
+        let history_store = state.history_vector_store();
+        let history = context_selection::fetch_for_user(
+            &state.db,
+            user_id,
+            &session_id,
+            &history_store,
+            &user_text,
+            &ContextTiers::from_config(&state.config),
+        )
+        .await;
         if !history.is_empty()
             && let Some(part) = message
                 .get_mut("parts")

@@ -17,6 +17,7 @@ pub mod catalog;
 pub mod chat;
 pub mod coding_agent_otlp;
 pub mod coding_agent_telemetry;
+pub mod context_selection;
 pub mod flows;
 pub mod github;
 pub mod hitl;
@@ -270,6 +271,7 @@ where
         .merge(build_routes)
         .merge(degradable_routes)
         .merge(chat::router())
+        .merge(context_selection::router())
         .merge(coding_agent_telemetry::router())
         .merge(maf::router())
         .merge(secrets::router())
