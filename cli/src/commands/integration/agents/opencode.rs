@@ -144,6 +144,7 @@ pub fn snapshot(raw: &str) -> Result<SessionSnapshot> {
     })?;
     Ok(SessionSnapshot {
         session_id: payload.session_id,
+        title: None,
         turns: turns_from_messages(&payload.messages),
     })
 }

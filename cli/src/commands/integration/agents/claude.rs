@@ -185,13 +185,20 @@ pub fn snapshot(raw: &str, report_deadline: Instant) -> Result<SessionSnapshot> 
     })?;
     let wait_deadline = (Instant::now() + Duration::from_secs(3)).min(report_deadline);
     loop {
-        let turns = parse_turns(&payload.transcript_path)?;
+        let content = std::fs::read_to_string(&payload.transcript_path).with_context(|| {
+            format!(
+                "failed to read transcript {}",
+                payload.transcript_path.display()
+            )
+        })?;
+        let turns = turns_from_lines(&content);
         if turns
             .last()
             .is_some_and(|turn| !turn.is_empty() && turn.response.is_some())
             || Instant::now() >= wait_deadline
         {
             return Ok(SessionSnapshot {
+                title: session_title(&content, &payload.session_id),
                 session_id: payload.session_id,
                 turns,
             });
@@ -204,10 +211,26 @@ fn preview(raw: &str) -> String {
     raw.chars().take(200).collect()
 }
 
-pub fn parse_turns(path: &Path) -> Result<Vec<Turn>> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read transcript {}", path.display()))?;
-    Ok(turns_from_lines(&content))
+fn session_title(content: &str, session_id: &str) -> Option<String> {
+    let mut custom = None;
+    let mut generated = None;
+    for line in content.lines() {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if record["sessionId"].as_str() != Some(session_id) {
+            continue;
+        }
+        let (target, field) = match record["type"].as_str() {
+            Some("custom-title") => (&mut custom, "customTitle"),
+            Some("ai-title") => (&mut generated, "aiTitle"),
+            _ => continue,
+        };
+        if let Some(title) = record[field].as_str() {
+            *target = nonempty(title);
+        }
+    }
+    custom.or(generated)
 }
 
 fn turns_from_lines(content: &str) -> Vec<Turn> {
@@ -226,6 +249,9 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
         let Some(entry) = parse_entry(line) else {
             continue;
         };
+        if matches!(entry.kind.as_str(), "ai-title" | "custom-title") {
+            continue;
+        }
         if let (Some(uuid), Some(parent)) = (&entry.uuid, &entry.parent_uuid) {
             parents.insert(uuid.clone(), parent.clone());
         }
@@ -743,6 +769,72 @@ mod tests {
     use super::*;
 
     const USAGE: &str = r#""usage":{"input_tokens":1,"output_tokens":2}"#;
+
+    #[test]
+    fn title_uses_latest_generated_record_for_matching_session() {
+        let records = concat!(
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Old\",\"sessionId\":\"s\"}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Debug integration\",\"sessionId\":\"s\"}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Other\",\"sessionId\":\"other\"}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":false,\"sessionId\":\"s\"}\n",
+            "{incomplete",
+        );
+        assert_eq!(
+            session_title(records, "s").as_deref(),
+            Some("Debug integration")
+        );
+        assert!(session_title(records, "missing").is_none());
+        assert!(session_title("", "s").is_none());
+    }
+
+    #[test]
+    fn custom_title_wins_until_cleared_without_reviving_old_titles() {
+        let records = concat!(
+            "{\"type\":\"custom-title\",\"customTitle\":\"  Custom name  \",\"sessionId\":\"s\"}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Generated\",\"sessionId\":\"s\"}\n",
+        );
+        assert_eq!(session_title(records, "s").as_deref(), Some("Custom name"));
+        let cleared = format!(
+            "{records}{}\n",
+            r#"{"type":"custom-title","customTitle":"  ","sessionId":"s"}"#
+        );
+        assert_eq!(session_title(&cleared, "s").as_deref(), Some("Generated"));
+        let all_cleared = format!(
+            "{cleared}{}\n",
+            r#"{"type":"ai-title","aiTitle":"","sessionId":"s"}"#
+        );
+        assert!(session_title(&all_cleared, "s").is_none());
+    }
+
+    #[test]
+    fn title_records_do_not_break_last_prompt_adjacency() {
+        let records = concat!(
+            "{\"type\":\"user\",\"uuid\":\"u\",\"message\":{\"content\":\"hello\"}}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Generated\",\"sessionId\":\"s\"}\n",
+            "{\"type\":\"last-prompt\",\"lastPrompt\":\"hello\",\"sessionId\":\"s\"}\n",
+        );
+        let turns = turns_from_lines(records);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].uuid, "u");
+    }
+
+    #[test]
+    fn snapshot_reads_title_and_turns_from_same_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let records = concat!(
+            "{\"type\":\"user\",\"uuid\":\"u\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"message\":{\"content\":\"hello\"}}\n",
+            "{\"type\":\"assistant\",\"uuid\":\"a\",\"parentUuid\":\"u\",\"timestamp\":\"2026-01-01T00:00:01Z\",\"message\":{\"model\":\"test\",\"content\":\"done\",\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Debug integration\",\"sessionId\":\"s\"}\n",
+        );
+        std::fs::write(&path, records).unwrap();
+        let payload = json!({"session_id": "s", "transcript_path": path}).to_string();
+        let snapshot = snapshot(&payload, Instant::now()).unwrap();
+        assert_eq!(snapshot.title.as_deref(), Some("Debug integration"));
+        assert_eq!(snapshot.turns.len(), 1);
+        assert_eq!(snapshot.turns[0].uuid, "u");
+        assert_eq!(snapshot.turns[0].response.as_deref(), Some("done"));
+    }
 
     #[test]
     fn v3_hook_registration_is_idempotent_and_preserves_foreign_hooks() {

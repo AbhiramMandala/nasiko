@@ -157,7 +157,11 @@ pub fn snapshot(raw: &str) -> Result<SessionSnapshot> {
     })?;
     let session_id = payload.conversation_id.clone();
     let turns = assemble_spooled(payload)?;
-    Ok(SessionSnapshot { session_id, turns })
+    Ok(SessionSnapshot {
+        session_id,
+        title: None,
+        turns,
+    })
 }
 
 fn hooks_path(config: &Path) -> PathBuf {

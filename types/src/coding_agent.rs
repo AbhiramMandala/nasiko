@@ -8,6 +8,8 @@ pub const CODING_AGENT_EVENT_VERSION: u32 = 1;
 pub const CODING_AGENT_BATCH_MAX_EVENTS: usize = 100;
 pub const CODING_AGENT_ID_MAX_BYTES: usize = 512;
 pub const CODING_AGENT_NAME_MAX_BYTES: usize = 256;
+/// Maximum UTF-8 byte length of a content-captured external session title.
+pub const CODING_AGENT_SESSION_TITLE_MAX_BYTES: usize = 512;
 pub const CODING_AGENT_CONTENT_MAX_BYTES: usize = 1_048_576;
 pub const CODING_AGENT_LLM_CALLS_MAX: usize = 1_000;
 pub const CODING_AGENT_TOOL_CALLS_MAX: usize = 2_000;
@@ -72,6 +74,9 @@ pub struct CodingAgentSession {
     pub id: String,
     /// Session identity supplied by the coding agent.
     pub source_id: String,
+    /// External session title; only allowed with content capture and preserved verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +202,19 @@ impl CodingAgentEventV1 {
             return Err(format!(
                 "source.agent_name must be at most {CODING_AGENT_NAME_MAX_BYTES} bytes"
             ));
+        }
+        if let Some(title) = &self.session.title {
+            if title.trim().is_empty() {
+                return Err("session.title must not be empty".into());
+            }
+            if title.len() > CODING_AGENT_SESSION_TITLE_MAX_BYTES {
+                return Err(format!(
+                    "session.title must be at most {CODING_AGENT_SESSION_TITLE_MAX_BYTES} bytes"
+                ));
+            }
+            if self.capture_policy == CapturePolicy::MetadataOnly {
+                return Err("metadata-only events must not contain session.title".into());
+            }
         }
         for (name, content) in [
             ("turn.prompt", self.turn.prompt.as_deref()),
@@ -417,6 +435,7 @@ mod tests {
             session: CodingAgentSession {
                 id: coding_agent_session_id("claude", "session"),
                 source_id: "session".into(),
+                title: None,
             },
             turn: CodingAgentTurn {
                 id: "turn".into(),
@@ -530,6 +549,99 @@ mod tests {
         let decoded: CodingAgentEventV1 = serde_json::from_value(value).unwrap();
         assert!(decoded.turn.tool_calls.is_empty());
         assert!(decoded.validate().is_ok());
+    }
+
+    fn content_event() -> CodingAgentEventV1 {
+        let mut event = event();
+        event.capture_policy = CapturePolicy::Content;
+        event.turn.prompt = Some("question".into());
+        event.turn.response = Some("answer".into());
+        event
+    }
+
+    #[test]
+    fn old_v1_sessions_without_titles_round_trip_unchanged() {
+        let original = serde_json::to_value(event()).expect("event serializes");
+        assert!(original["session"].get("title").is_none());
+        let decoded: CodingAgentEventV1 =
+            serde_json::from_value(original.clone()).expect("legacy event deserializes");
+        assert_eq!(decoded.session.title, None);
+        assert!(decoded.validate().is_ok());
+        assert_eq!(
+            serde_json::to_value(decoded).expect("event serializes"),
+            original
+        );
+
+        let mut explicit_null = original.clone();
+        explicit_null["session"]["title"] = serde_json::Value::Null;
+        let decoded: CodingAgentEventV1 =
+            serde_json::from_value(explicit_null).expect("null title deserializes");
+        assert_eq!(
+            serde_json::to_value(decoded).expect("event serializes"),
+            original
+        );
+    }
+
+    #[test]
+    fn session_titles_round_trip_verbatim_without_changing_v1_identity() {
+        let mut event = content_event();
+        let event_id = event.event_id.clone();
+        event.session.title = Some("  External session title  ".into());
+        assert!(event.validate().is_ok());
+        let encoded = serde_json::to_value(&event).expect("event serializes");
+        assert_eq!(encoded["session"]["title"], "  External session title  ");
+        let decoded: CodingAgentEventV1 =
+            serde_json::from_value(encoded).expect("titled event deserializes");
+        assert_eq!(decoded, event);
+        assert_eq!(decoded.version, 1);
+        assert_eq!(decoded.event_id, event_id);
+        assert_eq!(
+            decoded.session.id,
+            coding_agent_session_id("claude", "session")
+        );
+    }
+
+    #[test]
+    fn metadata_only_events_reject_session_titles() {
+        let mut event = event();
+        event.session.title = Some("private session content".into());
+        assert_eq!(
+            event.validate().expect_err("title is content"),
+            "metadata-only events must not contain session.title"
+        );
+    }
+
+    #[test]
+    fn session_titles_reject_blank_and_nul_content() {
+        let mut event = content_event();
+        for title in ["", " \t\n", "\u{2003}"] {
+            event.session.title = Some(title.into());
+            assert_eq!(
+                event.validate().expect_err("blank title"),
+                "session.title must not be empty"
+            );
+        }
+        event.session.title = Some("title\0with nul".into());
+        assert!(event.validate().expect_err("NUL title").contains("NUL"));
+    }
+
+    #[test]
+    fn session_titles_are_bounded_by_utf8_bytes() {
+        let mut event = content_event();
+        for title in [
+            "x".repeat(CODING_AGENT_SESSION_TITLE_MAX_BYTES),
+            "é".repeat(CODING_AGENT_SESSION_TITLE_MAX_BYTES / 2),
+        ] {
+            event.session.title = Some(title.clone());
+            assert!(event.validate().is_ok(), "exact byte limit is allowed");
+            event.session.title = Some(title + "x");
+            assert_eq!(
+                event.validate().expect_err("oversized title"),
+                format!(
+                    "session.title must be at most {CODING_AGENT_SESSION_TITLE_MAX_BYTES} bytes"
+                )
+            );
+        }
     }
 
     #[test]

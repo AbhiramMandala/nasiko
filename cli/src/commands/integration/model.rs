@@ -57,5 +57,6 @@ impl Turn {
 #[derive(Debug)]
 pub struct SessionSnapshot {
     pub session_id: String,
+    pub title: Option<String>,
     pub turns: Vec<Turn>,
 }

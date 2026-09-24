@@ -610,6 +610,7 @@ mod tests {
             session: CodingAgentSession {
                 id: coding_agent_session_id("claude", "session"),
                 source_id: "session".into(),
+                title: None,
             },
             turn: CodingAgentTurn {
                 id: "turn".into(),
@@ -699,6 +700,16 @@ mod tests {
         let encoded = serde_json::to_string(&log).unwrap();
         assert!(!encoded.contains("prompt"));
         assert!(!encoded.contains("response"));
+    }
+
+    #[test]
+    fn session_titles_do_not_change_otlp_payloads_or_trace_identity() {
+        let mut event = event(CapturePolicy::Content);
+        let trace = trace_payload(&event);
+        let logs = log_payload(&event);
+        event.session.title = Some("Private external session title".into());
+        assert_eq!(trace_payload(&event), trace);
+        assert_eq!(log_payload(&event), logs);
     }
 
     #[test]
