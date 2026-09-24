@@ -24,6 +24,9 @@ import '/common/design-system/app-chatbox/app-chatbox.js';
 import '/common/design-system/app-input/app-input.js';
 import '/common/design-system/app-modal/app-modal.js';
 import '/common/features/wf-step-editor.js';
+// The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
+// gutter it pins into.
+import '/common/features/app-module-nav.js';
 
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./workflow-new-page.css', import.meta.url));
@@ -55,6 +58,10 @@ class WorkflowNewPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <!-- What this screen produces is a draft (Save as draft, and Deploy saves
+           one first), so Drafts is the row it belongs under — /workflow-new
+           names none of its own. -->
+      <app-module-nav module="orchestrator" active-url="/workflow-drafts"></app-module-nav>
       <div class="col">
         <header class="page-head">
           <app-button variant="tertiary" size="sm" icon-only href="/workflows"

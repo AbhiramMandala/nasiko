@@ -33,21 +33,12 @@ const MAX_RESUME_ATTEMPTS: i32 = 5;
 const RETRYABLE: FailureKind = FailureKind::Retryable {
     max_attempts: MAX_RESUME_ATTEMPTS,
 };
-/// `deliver()`'s own agent request timeout — see `build_req`'s doc comment below. The claim
-/// lease (`lease_secs`) must always exceed this by a safety margin, or a slow-but-healthy agent
-/// turn lets a second replica steal the lease mid-delivery and re-send the human's answer a
-/// second time, double-executing whatever the agent does with it.
-const AGENT_RESUME_REQUEST_TIMEOUT_SECS: i64 = 300;
 /// How long a claim is honored before another dispatcher process may steal it (§3.2's exact
-/// claim query, implemented in `HitlStore::claim_for_resume`). Sourced from the same
-/// `HITL_RESUME_LEASE_MINUTES` knob the sibling `mcp_tool` dispatcher uses
-/// (`nasiko_hitl::dispatcher::DispatcherConfig::effective_lease_minutes`) — this dispatcher
-/// claims exactly once per delivery attempt (unlike that one, which holds a single claim across
-/// its own in-process retry loop), so the floor here only needs to clear one request's timeout
-/// plus margin, not the sum of every retry.
-fn lease_secs(config: &nasiko_config::Config) -> i64 {
-    (config.hitl_resume_lease_minutes * 60).max(AGENT_RESUME_REQUEST_TIMEOUT_SECS + 60)
-}
+/// claim query, implemented in `HitlStore::claim_for_resume`). Must exceed the longest delivery
+/// can legitimately take — `deliver()`'s own agent request timeout is 300s — or a slow-but-healthy
+/// agent turn lets a second replica steal the lease mid-delivery and re-send the human's answer
+/// a second time, double-executing whatever the agent does with it.
+const LEASE_SECS: i64 = 360;
 /// Concurrent in-flight deliveries, mirroring `build_worker::run`'s own `tasks` cap on the same
 /// claim/spawn shape. `deliver()` can drive an entire ReAct turn for an `orchestrator`-origin row
 /// (tens of seconds), so awaiting each claimed row before claiming the next — as the drain loop
@@ -94,7 +85,6 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
     // Tracks in-flight `deliver()` calls across poll cycles so a slow delivery never blocks
     // claiming (or delivering) everything else — see `MAX_CONCURRENT_DELIVERIES`'s doc comment.
     let mut deliveries: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
-    let lease_secs = lease_secs(&state.config);
     loop {
         tokio::select! {
             msg = notify.recv() => {
@@ -119,7 +109,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
         // every other in-flight one, so a panicking or merely slow delivery can't take the
         // dispatcher down or stall the rest of the queue.
         while deliveries.len() < MAX_CONCURRENT_DELIVERIES {
-            let claimed = match state.hitl_store.claim_for_resume(lease_secs).await {
+            let claimed = match state.hitl_store.claim_for_resume(LEASE_SECS).await {
                 Ok(Some(row)) => row,
                 Ok(None) => break,
                 Err(e) => {
@@ -155,39 +145,6 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // the buffer's own existence — `reconnect_stream` rejects a still-`pending` row before ever
     // calling `watch()`, so that ambiguity never actually reaches a client.
     let continuation = ContinuationGuard::new(state.continuation_events.clone(), row.id);
-
-    // If this row mirrors a real `mcp_tool` pause (`question.metadata.hitl_request_id` — set
-    // when an agent maps an MCP-gateway-detected auth_required/tool_approval onto its own A2A
-    // pause, e.g. a `create_issue_via_connector`-style escalation), alias that id onto this
-    // row's own buffer too. A reconnecting client uses whichever id `resolve_display_row`
-    // showed it — the *real* mcp_tool row's id — but `deliver()` only ever runs on *this* row;
-    // without this, that reconnect finds no buffer at all. Doing it here, unconditionally,
-    // covers both ways the mcp_tool row can get resolved: the manual `/resolve` endpoint
-    // (`router/hitl.rs::auto_resolve_linked_direct_chat_row` already aliases there too — a
-    // harmless redundant alias in that case, just earlier) and Nasiko's own OAuth-callback
-    // auto-resolve (`oss/hitl/src/repo.rs::resolve_linked_direct_chat_mirror`), which runs
-    // inside `nasiko-mcp-gateway` with no access to `continuation_events` at all and could
-    // never alias anything itself — that path previously left this row correctly resolved
-    // (the agent really does resume) but permanently unreconnectable.
-    if let Some(mcp_row_id) = row
-        .question
-        .pointer("/metadata/hitl_request_id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| Uuid::parse_str(s).ok())
-    {
-        // Same guard `resolve_display_row` (`oss/hitl/src/store.rs`) applies before trusting this
-        // same agent-controlled pointer — `row.question` is an untrusted A2A response echoed
-        // straight from the agent, so without this an agent can stamp any UUID here and alias
-        // another user's `hitl_requests.id` onto this row's buffer, letting that user's own
-        // reconnect read this agent's output (the #383 mirror-hijack family).
-        let linked = state.hitl_store.get(mcp_row_id).await;
-        if matches!(
-            linked,
-            Ok(Some(ref mirror)) if nasiko_hitl::is_valid_mcp_mirror_link(mirror, row.owner_user_id, row.agent_id)
-        ) {
-            state.continuation_events.alias(mcp_row_id, row.id);
-        }
-    }
 
     // `claim_for_resume` has no attempts cap of its own — a row only reaches this many attempts
     // by surviving past every prior attempt's own cap check without a clean completed/failed
@@ -349,35 +306,24 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // `agent_proxy.rs`'s convention of stamping the sticky key onto `flows.metadata`. It is NOT
     // what makes retry-matching work — that's `session_traces` below, and `session_traces.session_id`
     // has a hard FK to `chat_sessions(session_id)` (`0004_observability.sql`), which `context_id`
-    // can never satisfy for an `Orchestrator`-origin row: there, `context_id` is the sub-agent's
-    // own per-dispatch A2A context, minted fresh by `trigger_new_orchestrator_turn` on every
-    // resume — never a real chat session. `nasiko_mcp_gateway::session::resolve_context_id`
-    // resolves a tools/call's session by looking up `session_traces` for the CALLING trace_id,
-    // falling back to the trace_id itself only when no row exists. Every resume mints a brand-new
-    // `flow_ctx.flow_id`, so without a session_traces row mapping it to something STABLE,
-    // `resolve_tool_approval_retry`'s once/session-scope grant lookup keys on a trace_id that's
-    // different on every single resume, never matching the original ask's own resolved context —
-    // every resumed retry of a tool the human just approved gets asked again, forever (confirmed
-    // live: approving the same tool_approval repeatedly, every retry still comes back
-    // `ask_required`, and the earlier `session_id = context_id` version of this INSERT was
-    // silently failing its FK check on every single orchestrator resume).
-    //
-    // `row.chat_session_id` is the real, existing `chat_sessions` row every `Orchestrator`-origin
-    // mirror in this chain carries forward (`NewHitlRequest::orchestrator`/
-    // `persist_direct_chat_pause`) — mapping that resume's fresh flow_id to THAT is what lets
-    // retries resolve to the SAME session the original ask did. `AgentProxy`/`DirectChat` rows
-    // carry no separate `chat_session_id` at all: for those there's no distinct
-    // orchestrator-level session, so `context_id` already IS the stable id — confirmed live the
-    // hard way: an earlier version of this fix *skipped* the insert below whenever
-    // `chat_session_id` was absent (reasoning "no stable id to map to" for those origins), and a
-    // multi-round `agent_proxy` approval immediately showed why that's wrong: round 1's
-    // `context_id` was a real `ses_...` `chat_sessions` row, but with no session_traces row
-    // written for it, round 2's `resolve_context_id` couldn't find round 1's trace and fell back
-    // to a raw, unstable trace id instead — which is what round 2's own `context_id` then carried
-    // forward, drifting further from the real session on every subsequent round. Falling back to
-    // `context_id` here (rather than skipping the insert) is what keeps `AgentProxy`/`DirectChat`
-    // pinned to the same real session on every resume, exactly as it did before this fix existed.
-    let stable_session_id = stable_session_id(&row).unwrap_or(&context_id);
+    // can never satisfy. `nasiko_mcp_gateway::session::resolve_context_id` resolves a tools/call's
+    // session by looking up `session_traces` for the CALLING trace_id, falling back to the trace_id
+    // itself only when no row exists. Every resume mints a brand-new `flow_ctx.flow_id`, so without
+    // a session_traces row mapping it to something STABLE, `resolve_tool_approval_retry`'s
+    // once/session-scope grant lookup keys on a trace_id that's different on every single resume,
+    // never matching the original ask's own resolved context — every resumed retry of a tool the
+    // human just approved gets asked again, forever (confirmed live: approving the same
+    // tool_approval repeatedly, every retry still comes back `ask_required`, and the earlier
+    // `session_id = context_id` version of this INSERT was silently failing its FK check on every
+    // single call — `context_id` is never a real chat session, so it never once succeeded).
+    // `row.chat_session_id` is the real, existing `chat_sessions` row every mirror in this chain
+    // carries forward (`NewHitlRequest::orchestrator`/`persist_direct_chat_pause`) — mapping every
+    // resume's fresh flow_id to THAT is what actually lets retries resolve to the SAME session the
+    // original ask did. Skipped when absent (direct_chat/agent_proxy rows aren't guaranteed one):
+    // no stable id to map to, so falling back to today's re-ask behavior is the only honest option.
+    // Not genuinely optional: this is what authorizes the resumed agent's own downstream `/api/mcp`
+    // calls for the life of this resume (`ResumeFlowCloser`'s own doc comment) — a failure here
+    // means every one of those calls 403s with "traceparent does not resolve to a live flow".
     if let Err(e) = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
            VALUES ($1, $2, $3, $4, $5, 'running', $6)
@@ -406,20 +352,21 @@ async fn deliver(state: AppState, row: HitlRequest) {
         flow_id: flow_ctx.flow_id.clone(),
     };
     crate::flows::record_participant(&state.db, &flow_ctx.flow_id, row.agent_id).await;
-    if let Err(e) = sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (session_id, trace_id) DO NOTHING",
-    )
-    .bind(stable_session_id)
-    .bind(&flow_ctx.flow_id)
-    .bind(row.agent_id)
-    .bind(&agent_name)
-    .execute(&state.db)
-    .await
+    if let Some(chat_session_id) = row.chat_session_id.as_deref()
+        && let Err(e) = sqlx::query(
+            "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (session_id, trace_id) DO NOTHING",
+        )
+        .bind(chat_session_id)
+        .bind(&flow_ctx.flow_id)
+        .bind(row.agent_id)
+        .bind(&agent_name)
+        .execute(&state.db)
+        .await
     {
         tracing::warn!(
-            error = %e, %stable_session_id, flow_id = %flow_ctx.flow_id,
+            error = %e, %chat_session_id, flow_id = %flow_ctx.flow_id,
             "hitl resume: session_traces record failed — tool-approval retry matching for this resume may re-ask"
         );
     }
@@ -428,7 +375,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
     let req_body = nasiko_types::a2a::build_stream_request_for_task(&answer, &context_id, &task_id);
 
     // Reused for the initial send and (non-streaming path only) the one-shot `message/send`
-    // retry — `AGENT_RESUME_REQUEST_TIMEOUT_SECS`, not the shared client's 60s default: agent
+    // retry — same headers, different body. 300s, not the shared client's 60s default: agent
     // turns can be slow (mirrors `maf/executor.rs::post_a2a_request`, the other call site that
     // talks to an agent on a human's behalf).
     //
@@ -447,9 +394,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
         state
             .http_client
             .post(&endpoint)
-            .timeout(Duration::from_secs(
-                AGENT_RESUME_REQUEST_TIMEOUT_SECS as u64,
-            ))
+            .timeout(Duration::from_secs(300))
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
             .json(body)
@@ -658,19 +603,12 @@ async fn deliver(state: AppState, row: HitlRequest) {
                 // call) — same values either way, the row was built from them.
                 let created_task_id = created.task_id.clone().unwrap_or_default();
                 let created_context_id = created.context_id.clone().unwrap_or_default();
-                // Matches `a2a_dispatch.rs`'s original-pause convention: only the orchestrator
-                // origin names the agent (it can delegate to several; direct_chat/agent_proxy are
-                // always a conversation with the one agent already on screen, so naming it again
-                // would be redundant there, not wrong — but consistency with the first pause in
-                // the chain is what this is restoring).
-                let agent_for_frame =
-                    (row.origin == HitlOrigin::Orchestrator).then_some(agent_name.as_str());
                 let data = build_hitl_stream_data(
                     &state.hitl_store,
                     &created_task_id,
                     &created_context_id,
                     &created,
-                    agent_for_frame,
+                    None,
                 )
                 .await;
                 continuation.push(data);
@@ -858,18 +796,7 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 /// present, so a custom-only answer (zero predefined selections) degrades to a single-line
 /// message — indistinguishable from a plain single-select or free-text answer to the agent, which
 /// is a deliberate, not incidental, property: no agent has to special-case "was this multi-select."
-/// The stable, `chat_sessions`-registered session identity for `row`, regardless of origin:
-/// `chat_session_id` for an `Orchestrator`-origin row (the top-level session — `context_id`
-/// there is the sub-agent's own unstable per-dispatch context, minted fresh on every resume, see
-/// `deliver()`'s own `stable_session_id` comment above), or `context_id` itself for
-/// `AgentProxy`/`DirectChat`, which have no separate orchestrator-level session and use it as
-/// the stable id directly. `None` only for an origin with neither set (defensive — not expected
-/// in practice for any row this is called on).
-pub(crate) fn stable_session_id(row: &HitlRequest) -> Option<&str> {
-    row.chat_session_id.as_deref().or(row.context_id.as_deref())
-}
-
-pub(crate) fn answer_text(row: &HitlRequest) -> String {
+fn answer_text(row: &HitlRequest) -> String {
     let response = row.human_response.as_ref();
     if let Some(items) = response
         .and_then(|r| r.get("answer"))
@@ -1162,25 +1089,11 @@ async fn trigger_new_orchestrator_turn(
         return;
     };
 
-    // Framed as an already-done status report, not a fresh ask — and deliberately sent with NO
-    // prior history glued in front of it (contrast every other `orchestrator_stream` caller, which
-    // does via `SessionHistory::with_current_query`): reframing this text alone wasn't enough,
-    // because gluing the full transcript back in put the original, still-verbatim "please do X"
-    // request right back in front of the orchestrating LLM, which then re-read it as outstanding
-    // and re-invoked the same tool — pausing for approval again, forever
-    // (docs/HITL_ORCHESTRATOR_BRANCH_STATUS.md:225-233, :288-293). This continuation message is
-    // self-contained (it names the agent and repeats what it did), so the orchestrating LLM needs
-    // nothing else to relay it — and history is not lost, only skipped for *this* synthesis call:
-    // it's still persisted as `raw_text` below, so the next real user turn sees it normally.
     let continuation = match reply_text.filter(|t| !t.is_empty()) {
-        Some(text) => format!(
-            "The {agent_name} agent already completed the previously requested action and replied: {text}\n\nRelay this result to the user. The action has already been performed — do not call the same tool or repeat the action again."
-        ),
+        Some(text) => format!("The {agent_name} agent replied: {text}"),
         // auth_required has no free-text reply — same "intent, not success" framing `answer_text`
         // above already uses for the agent-facing side of this same resume.
-        None => format!(
-            "The {agent_name} agent has already completed the previously requested step. Tell the user it's done — do not repeat the action."
-        ),
+        None => format!("The {agent_name} agent has completed the requested step."),
     };
 
     // The orchestrator's own system prompt (`react_loop.rs`) reads every turn as "analyze the
@@ -1237,12 +1150,6 @@ async fn trigger_new_orchestrator_turn(
             // under a role the transcript does not render.
             transcript_role: crate::router::a2a_dispatch::INTERNAL_TRANSCRIPT_ROLE,
             file_parts: Vec::new(),
-            // `reasoning_query` above explicitly instructs the model NOT to call any
-            // agent again, because the call this turn reports on already succeeded in
-            // an earlier turn. A policy that demands an agent call per turn would see
-            // a turn with no call and replace the agent's own result with a refusal —
-            // breaking every HITL resume — so it is told what kind of turn this is.
-            kind: crate::orchestrator_policy::TurnKind::Continuation,
         },
     )
     .await;
@@ -1321,8 +1228,8 @@ async fn persist_resume_reply(
     let session_id = row.chat_session_id.as_deref().unwrap_or(context_id);
 
     if let Err(e) = sqlx::query(
-        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
-         VALUES ($1, $2, $3, '/api/orchestrator/a2a', 'New chat') \
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title, session_type) \
+         VALUES ($1, $2, $3, '/api/orchestrator/a2a', 'New chat', 'orchestrator') \
          ON CONFLICT (session_id) DO NOTHING",
     )
     .bind(session_id)

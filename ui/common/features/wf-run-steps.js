@@ -42,7 +42,10 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 export const EXEC_STATUS = {
   success:        { label: 'Complete',        variant: 'success' },
   failed:         { label: 'Failed',          variant: 'error' },
-  running:        { label: 'Running…',        variant: 'success' },
+  // `info` (blue), not `success`: green is the colour this product reserves for
+  // a run that finished well, and a list where the in-flight runs and the
+  // completed ones are the same green reads as all-clear at a glance.
+  running:        { label: 'Running…',        variant: 'info' },
   awaiting_human: { label: 'Awaiting action', variant: 'warning' },
   stopped:        { label: 'Stopped',         variant: 'neutral' },
   pending:        { label: 'Queued',          variant: 'neutral' },
@@ -292,7 +295,9 @@ class WfRunSteps extends HTMLElement {
     } else if (output) {
       pane = `<div class="pane md-body">${renderMarkdown(output)}</div>`;
     }
-    return `<div class="step-detail">${pillRow}${pane}${well}</div>`;
+    // The well first: the Q&A is what led to the output, so the step reads
+    // question → answer → what the step produced.
+    return `<div class="step-detail">${well}${pillRow}${pane}</div>`;
   }
 
   /**

@@ -2,12 +2,16 @@
  * Workflow detail — review/edit one MAF workflow, run it, and watch runs.
  *
  * Views (single 720px column, mirroring the mockup's review screen):
- * - review: editable name/description/steps (PUT /api/maf/workflow/{id}),
- *   output_generation display, run button, execution history. A draft holds the
- *   same steps a deployed workflow does and runs through the same endpoint, so
- *   it gets Test run as well as Deploy (POST /api/maf/workflow/{id}/promote,
- *   a status flip). A draft with no steps yet — the bare sentence
- *   POST /maf/workflow/draft saves — can do neither until Edit gives it one.
+ * - review: name/description/steps (PUT /api/maf/workflow/{id}),
+ *   output_generation display, execution history. Which face it opens on is
+ *   the workflow's status: a draft is a thing still being written, so it opens
+ *   editable and never leaves edit mode; a deployed workflow opens read-only
+ *   behind Edit, because its definition is live.
+ *   Both run through the same endpoint, and that endpoint runs the *stored*
+ *   row — so a test run saves first, which is why one button does both. A
+ *   draft additionally gets Deploy (POST /api/maf/workflow/{id}/promote, a
+ *   status flip), and a draft with no steps yet — the bare sentence
+ *   POST /maf/workflow/draft saves — starts on the editor's empty step.
  * - run: live per-step timeline for one execution — polls
  *   GET /api/maf/execution/{id} every 1.5s while pending/running (no SSE).
  *
@@ -29,6 +33,9 @@ import '/common/utils/back-link.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/features/wf-step-editor.js';
 import { EXEC_ACTIVE, EXEC_STATUS } from '/common/features/wf-run-steps.js';
+// The page mounts an <app-module-nav>, and page-layout.css reserves the desktop
+// gutter it pins into.
+import '/common/features/app-module-nav.js';
 
 import { loadCss } from '/common/utils/css.js';
 const styles = await loadCss(new URL('./workflow-detail-page.css', import.meta.url));
@@ -51,16 +58,29 @@ class WorkflowDetailPage extends HTMLElement {
   #workflowId = null;
   #workflow = null;
   #execution = null;
-  // Whether the run view on screen was pushed onto history by this page. If it
-  // was, leaving it is a step back — pushing a review entry there instead made
-  // Back bounce into the run view forever (executions → run → review → Back →
-  // run → review → Back → run …).
-  #runPushed = false;
   #pollTimer = null;
   /** The description the steps in the editor came from — the saved one on
    *  entering edit mode, the regenerated one after a redraft. Null while there
    *  is no plan to compare against. See #syncGenerate(). */
   #generatedFrom = null;
+
+  /**
+   * Replace the page body, keeping the module nav.
+   *
+   * `/workflow` names no row in the tree, so the path match every other row
+   * lives by finds nothing and the whole module goes unlit. The row a workflow
+   * belongs under is its status — a draft is under Drafts, a live one under
+   * Deployed — which only this page has fetched, so it tells the nav. Before
+   * the fetch lands (the skeleton) there is nothing to claim yet, and the nav
+   * simply lights nothing rather than guessing and then moving.
+   */
+  #paint(html) {
+    const row = this.#workflow
+      ? (isDeployed(this.#workflow) ? '/workflows' : '/workflow-drafts')
+      : '';
+    const nav = `<app-module-nav module="orchestrator"${row ? ` active-url="${row}"` : ''}></app-module-nav>`;
+    this.innerHTML = nav + html;
+  }
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -70,7 +90,7 @@ class WorkflowDetailPage extends HTMLElement {
     window.addEventListener('popstate', this.#onPopState);
 
     if (!this.#workflowId) {
-      this.innerHTML = `
+      this.#paint(`
         <div class="col">
           <app-empty-state
             heading="No workflow selected"
@@ -78,7 +98,7 @@ class WorkflowDetailPage extends HTMLElement {
             icon='${icons.workflow('', 40)}'>
             <app-button variant="tertiary" href="/workflows">Browse workflows</app-button>
           </app-empty-state>
-        </div>`;
+        </div>`);
       return;
     }
     // Set by the create screen's "Save & run" when the save succeeded but the
@@ -97,7 +117,7 @@ class WorkflowDetailPage extends HTMLElement {
 
   /** Same shape as workflow.html's pre-upgrade markup, so both paint alike. */
   #renderSkeleton() {
-    this.innerHTML = `
+    this.#paint(`
       <div class="col">
         <div class="skel-head">
           <div class="skel-card__avatar"></div>
@@ -115,7 +135,7 @@ class WorkflowDetailPage extends HTMLElement {
           <div class="skel-card__line skel-card__line--w40"></div>
           <div class="skel-card__line skel-card__line--w80"></div>
         </div>
-      </div>`;
+      </div>`);
   }
 
   disconnectedCallback() {
@@ -123,8 +143,22 @@ class WorkflowDetailPage extends HTMLElement {
     window.removeEventListener('popstate', this.#onPopState);
   }
 
+  /**
+   * Back/forward *within* this page — review ⇄ run, which the page moves
+   * between with its own history entries rather than a route change.
+   *
+   * The guard is the point: this listener is on `window`, so it also fired when
+   * the user left the page altogether (Back out to /workflows). The router's
+   * own popstate handler is async — it awaits the next page's module — so this
+   * one ran first and repainted the whole workflow view from scratch, which is
+   * the flicker Back showed before the list faded in. A pop that lands on any
+   * other path, or on another workflow, belongs to the router.
+   */
   #onPopState = () => {
-    const exec = new URLSearchParams(location.search).get('exec');
+    const params = new URLSearchParams(location.search);
+    if (location.pathname.replace(/\.html$/, '') !== '/workflow') return;
+    if (params.get('id') !== this.#workflowId) return;
+    const exec = params.get('exec');
     if (exec) this.#openRun(exec, { push: false });
     else this.#showReview();
   };
@@ -135,7 +169,7 @@ class WorkflowDetailPage extends HTMLElement {
       this.#workflow = workflow;
       document.title = `Nasiko — ${workflow.name}`;
     } catch {
-      this.innerHTML = `
+      this.#paint(`
         <div class="col">
           <app-empty-state
             heading="Workflow not found"
@@ -143,7 +177,7 @@ class WorkflowDetailPage extends HTMLElement {
             icon='${icons.faceFrown('', 40)}'>
             <app-button variant="tertiary" size="sm" href="/workflows">Back to workflows</app-button>
           </app-empty-state>
-        </div>`;
+        </div>`);
       return;
     }
     if (execId) this.#openRun(execId, { push: false });
@@ -158,15 +192,20 @@ class WorkflowDetailPage extends HTMLElement {
     return labels;
   }
 
-  /** @param {{edit?: boolean}} [opts] Start in edit mode (the Edit button). */
-  #showReview({ edit = false } = {}) {
+  /**
+   * @param {{edit?: boolean}} [opts] Which face to render. Defaulted from the
+   * workflow's status rather than passed by each caller, so every entry point
+   * — first load, Back out of a run, discard — agrees on what a draft looks
+   * like without having to remember to ask.
+   */
+  #showReview({ edit = !isDeployed(this.#workflow) } = {}) {
     this.#stopPolling();
     this.#execution = null;
     const wf = this.#workflow;
     const steps = wf.maf_json?.steps || [];
     const description = wf.description || wf.maf_json?.description || '';
 
-    this.innerHTML = `
+    this.#paint(`
       <div class="col">
         <header class="page-head">
           <app-button variant="tertiary" size="sm" icon-only href="/workflows" data-back
@@ -195,28 +234,31 @@ class WorkflowDetailPage extends HTMLElement {
 
         ${edit ? `
           <div class="save-bar">
-            <app-button variant="tertiary" size="sm" id="discard-btn">Cancel</app-button>
-            <app-button variant="primary" size="sm" id="save-btn">Save changes</app-button>
+            ${isDeployed(wf) ? `
+              <app-button variant="tertiary" size="sm" id="discard-btn">Cancel</app-button>` : ''}
+            <app-button variant="${isDeployed(wf) ? 'primary' : 'tertiary'}" size="sm"
+              id="test-run-btn">${icons.play('', 12)} Save & run</app-button>
+            ${isDeployed(wf) ? '' : `
+              <app-button variant="primary" size="sm" id="deploy-btn">Deploy</app-button>`}
           </div>`
         : `
           <div class="page-actions">
             <app-button variant="tertiary" size="md" id="edit-btn">${icons.editThin('', 12)} Edit</app-button>
-            ${isDeployed(wf) ? `
-              <app-button variant="primary" size="md" id="run-btn">${icons.play('', 12)} Run</app-button>`
-            : steps.length ? `
-              <app-button variant="tertiary" size="md" id="run-btn">${icons.play('', 12)} Test run</app-button>
-              <app-button variant="primary" size="md" id="deploy-btn">Deploy</app-button>`
-            : ''}
-          </div>
+            <app-button variant="primary" size="md" id="run-btn">${icons.play('', 12)} Run</app-button>
+          </div>`}
 
-          <section class="danger-zone">
-            <h3 class="danger-title">Danger zone</h3>
-            <p class="danger-note">Remove this workflow from your deployed workflows.
-              Existing workflow runs will not be affected.</p>
-            <app-button variant="danger-secondary" size="md" id="delete-btn">Delete workflow</app-button>
-          </section>`}
+        <section class="danger-zone">
+          <h3 class="danger-title">Danger zone</h3>
+          <p class="danger-note">Remove this workflow from your deployed workflows.
+            Existing workflow runs will not be affected.</p>
+          <app-button variant="danger-secondary" size="md" id="delete-btn">Delete workflow</app-button>
+        </section>
       </div>
-    `;
+    `);
+
+    // The danger zone renders on both faces, so its listener is bound before
+    // the edit branch returns.
+    this.querySelector('#delete-btn').addEventListener('click', () => this.#delete());
 
     if (edit) {
       const editor = this.querySelector('#editor');
@@ -242,14 +284,13 @@ class WorkflowDetailPage extends HTMLElement {
       box.addEventListener('input', () => this.#syncGenerate());
       box.addEventListener('chatbox-submit', (e) => this.#regenerate(e.detail.value));
       this.#syncGenerate();
-      this.querySelector('#save-btn').addEventListener('click', () => this.#saveEdits());
-      this.querySelector('#discard-btn').addEventListener('click', () => this.#showReview());
+      this.querySelector('#test-run-btn').addEventListener('click', () => this.#saveAndRun());
+      this.querySelector('#deploy-btn')?.addEventListener('click', () => this.#deploy());
+      this.querySelector('#discard-btn')?.addEventListener('click', () => this.#showReview({ edit: false }));
       return;
     }
     this.querySelector('#edit-btn').addEventListener('click', () => this.#showReview({ edit: true }));
-    this.querySelector('#run-btn')?.addEventListener('click', () => this.#run());
-    this.querySelector('#deploy-btn')?.addEventListener('click', () => this.#deploy());
-    this.querySelector('#delete-btn').addEventListener('click', () => this.#delete());
+    this.querySelector('#run-btn').addEventListener('click', () => this.#run());
   }
 
   /**
@@ -343,8 +384,14 @@ class WorkflowDetailPage extends HTMLElement {
     } catch { /* picker falls back to the persisted agent names */ }
   }
 
-  async #saveEdits() {
-    const btn = this.querySelector('#save-btn');
+  /**
+   * Persist what is in the editor. Returns whether it saved, so the callers
+   * that go on to act on the stored row — test run, deploy — can stop when it
+   * didn't. It leaves the view alone: each caller replaces it differently.
+   *
+   * @param {Element} [btn] Button to show progress on.
+   */
+  async #saveEdits(btn) {
     const steps = this.querySelector('#editor').steps
       .map((s, i) => ({
         step_index: i,
@@ -356,21 +403,30 @@ class WorkflowDetailPage extends HTMLElement {
       showToast('A workflow needs at least one step with instructions.');
       return false;
     }
-    btn.setAttribute('loading', '');
+    btn?.setAttribute('loading', '');
     try {
       this.#workflow = await call('updateWorkflow', this.#workflowId, {
         name: this.querySelector('#wf-name').value.trim() || undefined,
         description: this.querySelector('#wf-desc').value.trim() || undefined,
         steps,
       });
-      showToast('Workflow updated');
-      this.#showReview();
       return true;
     } catch (err) {
-      btn.removeAttribute('loading');
+      btn?.removeAttribute('loading');
       showToast(`Save failed: ${err.message}`);
       return false;
     }
+  }
+
+  /**
+   * Test run saves first, and has to: the run endpoint executes the stored
+   * row, never what is in the editor. On a deployed workflow that means the
+   * live definition is updated before the run and Cancel cannot take it back —
+   * the note beside the button is the only warning the user gets, so it stays.
+   */
+  async #saveAndRun() {
+    const btn = this.querySelector('#test-run-btn');
+    if (await this.#saveEdits(btn)) this.#run(btn);
   }
 
   /**
@@ -380,7 +436,10 @@ class WorkflowDetailPage extends HTMLElement {
    */
   async #deploy() {
     const btn = this.querySelector('#deploy-btn');
-    btn?.setAttribute('loading', '');
+    // A draft is always on the editable face, so what is on screen can be
+    // newer than the row promote would flip. Promotion copies no steps of its
+    // own, so an unsaved edit would simply be lost at the moment it went live.
+    if (!await this.#saveEdits(btn)) return;
     try {
       this.#workflow = await call('promoteWorkflow', this.#workflowId);
       showToast('Workflow deployed');
@@ -391,8 +450,8 @@ class WorkflowDetailPage extends HTMLElement {
     }
   }
 
-  async #run() {
-    const btn = this.querySelector('#run-btn');
+  /** @param {Element} [btn] Button to show progress on. */
+  async #run(btn = this.querySelector('#run-btn')) {
     btn?.setAttribute('loading', '');
     try {
       const started = await call('runWorkflow', this.#workflowId);
@@ -409,8 +468,15 @@ class WorkflowDetailPage extends HTMLElement {
     this.#stopPolling();
     if (push) {
       const url = `/workflow?id=${encodeURIComponent(this.#workflowId)}&exec=${encodeURIComponent(execId)}`;
-      history.pushState({}, '', url);
-      this.#runPushed = true;
+      // `wfRunPushed` marks THIS history entry as one this page pushed on top of
+      // a review entry, so Back out of it is a real step back. It lives in the
+      // entry's state rather than on the instance because an instance flag goes
+      // stale the moment the user uses the browser's own Back/Forward: leaving
+      // the run and then coming forward into it again left the flag false, and
+      // the back button then replaced the entry instead of popping it — so the
+      // next Back landed on a review that was already on screen and looked like
+      // it had done nothing.
+      history.pushState({ wfRunPushed: true }, '', url);
     }
     this.#renderRunShell();
     try {
@@ -425,7 +491,7 @@ class WorkflowDetailPage extends HTMLElement {
   }
 
   #renderRunShell() {
-    this.innerHTML = `
+    this.#paint(`
       <div class="col">
         <header class="page-head">
           <app-button variant="tertiary" size="sm" icon-only id="run-back"
@@ -445,7 +511,7 @@ class WorkflowDetailPage extends HTMLElement {
           </section>
           <div class="run-error" id="run-error" hidden></div>
         </div>
-      </div>`;
+      </div>`);
     // A decision does not deliver itself: the MAF worker picks the resolved row
     // up and carries the run on server-side, so the only thing left to do here
     // is look again straight away rather than waiting out the poll interval.
@@ -462,8 +528,7 @@ class WorkflowDetailPage extends HTMLElement {
       // entry (opened from /executions or a deep link) and there is no review
       // entry to return to — replace it, never push, or Back lands right back
       // on the run view.
-      if (this.#runPushed) {
-        this.#runPushed = false;
+      if (history.state?.wfRunPushed) {
         history.back();
         return;
       }

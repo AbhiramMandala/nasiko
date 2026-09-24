@@ -54,6 +54,19 @@
     box-shadow: inset 0 0 0 1px var(--color-warning);
   }
 
+  /* An open card is the one the user is reading — the brand ring says which of
+     a long list that is. Last, so it wins over the needs-action ring on a card
+     that is both: once the timeline is open, "you are here" is the more useful
+     of the two, and the badge still says the run is waiting.
+
+     An inset shadow rather than a border for the same reason as above, plus one
+     the `panel` variant forces: that variant sets `border: none`, and scoping
+     proximity settles before specificity, so a border declared from this page
+     sheet would lose to app-accordion's own. */
+  .run-card[open] {
+    box-shadow: inset 0 0 0 1px var(--color-primary);
+  }
+
   /* The variant aligns the chevron to the top of the header; this centres it on
      *this* header's first row, whose height is the action buttons' (sm, 28px)
      rather than the title's own line. Only the page can know that. */

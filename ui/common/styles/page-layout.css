@@ -249,7 +249,9 @@ login-page {
   secrets-page,
   sessions-page,
   settings-page,
+  workflow-detail-page,
   workflow-drafts-page,
+  workflow-new-page,
   workflows-page,
   your-agents-page {
     padding-left: calc(224px + var(--s-64));

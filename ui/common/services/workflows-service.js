@@ -21,8 +21,12 @@ export const isDeployed = (wf) => (wf.status ?? 'active') !== 'draft';
 const mafRows = (body) =>
   (Array.isArray(body?.data) ? body.data : body?.data?.data) || [];
 
-const fetchWorkflows = async (limit = 100, offset = 0) => {
-  return mafRows(await fetchApi(`/maf/workflows?limit=${limit}&offset=${offset}`));
+// `sort` is one of the server's WorkflowSort variants (recent | success_rate |
+// token_usage | execution_count | health) — the list's ordering is the server's
+// job because the aggregates it ranks on are computed in that query.
+const fetchWorkflows = async (limit = 100, offset = 0, sort = 'recent') => {
+  return mafRows(await fetchApi(
+    `/maf/workflows?limit=${limit}&offset=${offset}&sort=${encodeURIComponent(sort)}`));
 };
 
 const fetchWorkflow = async (id) => {
@@ -31,8 +35,10 @@ const fetchWorkflow = async (id) => {
 
 // Everything that BEGAN as a draft, promoted ones included — the Drafts tab
 // filters those back out with `isDeployed`.
-const fetchDrafts = async (limit = 100, offset = 0) => {
-  return mafRows(await fetchApi(`/maf/workflow/drafts?limit=${limit}&offset=${offset}`));
+// `sort`: the server's DraftSort variants — all | last_updated | token_usage.
+const fetchDrafts = async (limit = 100, offset = 0, sort = 'all') => {
+  return mafRows(await fetchApi(
+    `/maf/workflow/drafts?limit=${limit}&offset=${offset}&sort=${encodeURIComponent(sort)}`));
 };
 
 // Pass `draft_id` to overwrite the row a previous save returned instead of

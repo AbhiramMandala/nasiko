@@ -510,6 +510,10 @@
           "attribute": "data-slot"
         },
         {
+          "name": "meta",
+          "attribute": "data-slot"
+        },
+        {
           "name": "body",
           "attribute": "data-slot"
         },

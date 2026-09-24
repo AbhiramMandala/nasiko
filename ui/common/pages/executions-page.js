@@ -4,8 +4,8 @@
  * One list, newest first: in-flight runs open on their live step timeline, and
  * finished ones sit collapsed under it. The list rows carry snapshotted
  * step_results and the page re-polls every 1.5s while anything is unfinished —
- * there is no run SSE. Search, status, workflow and age filter client-side; the
- * list endpoint takes no query parameters.
+ * there is no run SSE. Search, status and age filter client-side; the list
+ * endpoint takes no query parameters.
  *
  * **HITL.** A run pauses at `awaiting_human` exactly the way a chat turn does,
  * and is answered by the same `<hitl-card>` the orchestrator and agent chat
@@ -50,31 +50,34 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 const POLL_MS = 1500;
 /** Empty-screen illustration (Figma export, ui/common/images). */
 const RUNS_ART = '/common/images/executions_empty.svg';
-/** A run still going somewhere — it opens expanded and keeps the poll alive.
- *  `awaiting_human` is unfinished too: it is waiting on the person reading this
- *  page, which is the most active a run can be. */
+/** A run still going somewhere — it keeps the poll alive. `awaiting_human` is
+ *  unfinished too: it is waiting on the person reading this page. */
 const ACTIVE = EXEC_ACTIVE;
+/** …but only a run that is actually moving opens expanded. A paused one is
+ *  already ringed and badged, and a page of runs all waiting on a decision
+ *  opened as a page of full timelines with no way to see the list. */
+const OPENS_EXPANDED = new Set([...EXEC_ACTIVE].filter((s) => s !== 'awaiting_human'));
 /** Toolbar status → the run statuses it admits. 'running' covers pending too:
  *  a queued run is one the user is waiting on, not a third thing to filter by. */
 const STATUS_FILTERS = {
   attention: new Set(['awaiting_human']),
   running: new Set(['pending', 'running']),
   success: new Set(['success']),
-  failed: new Set(['failed']),
-  stopped: new Set(['stopped']),
+  // A stopped run is one that did not finish its work, which is what someone
+  // filtering for failures is looking for — there is no separate Stopped option.
+  failed: new Set(['failed', 'stopped']),
 };
 const STATUS_OPTIONS = JSON.stringify([
-  { value: 'all', label: 'All statuses' },
+  { value: 'all', label: 'All' },
   { value: 'attention', label: 'Needs attention' },
   { value: 'running', label: 'Running' },
   { value: 'success', label: 'Completed' },
   { value: 'failed', label: 'Failed' },
-  { value: 'stopped', label: 'Stopped' },
 ]);
 /** Toolbar age → the window in days it admits. */
 const TIME_WINDOWS = { '1d': 1, '7d': 7, '30d': 30 };
 const TIME_OPTIONS = JSON.stringify([
-  { value: 'any', label: 'Any time' },
+  { value: 'any', label: 'All time' },
   { value: '1d', label: 'Last 24 hours' },
   { value: '7d', label: 'Last 7 days' },
   { value: '30d', label: 'Last 30 days' },
@@ -84,7 +87,6 @@ class ExecutionsPage extends HTMLElement {
   #executions = [];
   #query = '';
   #status = 'all';
-  #workflow = 'all';
   #time = 'any';
   #expanded = new Set();
   #pollTimer = null;
@@ -102,8 +104,6 @@ class ExecutionsPage extends HTMLElement {
           placeholder="Search" aria-label="Search workflow runs"></app-search>
         <app-select id="ex-status" size="sm" fit-content aria-label="Filter by status"
           options='${STATUS_OPTIONS}' value="all"></app-select>
-        <app-select id="ex-workflow" size="sm" fit-content aria-label="Filter by workflow"
-          options='[{"value":"all","label":"All workflows"}]' value="all"></app-select>
         <app-select id="ex-time" size="sm" fit-content aria-label="Filter by age"
           options='${TIME_OPTIONS}' value="any"></app-select>
       </div>
@@ -115,12 +115,17 @@ class ExecutionsPage extends HTMLElement {
       this.#query = e.target.value.trim().toLowerCase();
       this.#renderList();
     });
-    this.querySelector('.toolbar').addEventListener('change', (e) => {
-      if (e.target.id === 'ex-status') this.#status = e.target.value;
-      if (e.target.id === 'ex-workflow') this.#workflow = e.target.value;
-      if (e.target.id === 'ex-time') this.#time = e.target.value;
-      this.#renderList();
-    });
+    // Bound to each <app-select>, not to the toolbar. <app-select> is light
+    // DOM, so its `change` bubbles up from the inner <select> — a delegated
+    // handler reads that element as `e.target` and matched neither id, which is
+    // why the status and age filters did nothing.
+    for (const id of ['ex-status', 'ex-time']) {
+      this.querySelector(`#${id}`).addEventListener('change', (e) => {
+        if (id === 'ex-status') this.#status = e.target.value;
+        else this.#time = e.target.value;
+        this.#renderList();
+      });
+    }
 
     const area = this.querySelector('#list-area');
     area.addEventListener('click', (e) => {
@@ -240,7 +245,6 @@ class ExecutionsPage extends HTMLElement {
         </app-empty-state>`;
       return;
     }
-    this.#syncWorkflowOptions();
 
     const shown = this.#executions.filter((e) => this.#matches(e));
     if (!shown.length) {
@@ -253,25 +257,9 @@ class ExecutionsPage extends HTMLElement {
   }
 
   /** A run still going opens on its timeline — that is the reason to be on this
-   *  page at all; a finished one opens on request. */
+   *  page at all; a finished or paused one opens on request. */
   #isOpen(exec) {
-    return ACTIVE.has(exec.status) || this.#expanded.has(exec.id);
-  }
-
-  /** The workflow filter's options are whatever has actually run — there is no
-   *  point offering a workflow with no runs on a page that only lists runs. */
-  #syncWorkflowOptions() {
-    const names = [...new Set(this.#executions.map((e) => e.workflow_name).filter(Boolean))].sort();
-    const options = JSON.stringify([
-      { value: 'all', label: 'All workflows' },
-      ...names.map((n) => ({ value: n, label: n })),
-    ]);
-    const select = this.querySelector('#ex-workflow');
-    if (!select || select.getAttribute('options') === options) return;
-    select.setAttribute('options', options);
-    // The workflow this was filtered to may have dropped out of the list.
-    if (!names.includes(this.#workflow)) this.#workflow = 'all';
-    select.value = this.#workflow;
+    return OPENS_EXPANDED.has(exec.status) || this.#expanded.has(exec.id);
   }
 
   /** Start the same workflow again. The run lands at the top of the list on the
@@ -288,11 +276,10 @@ class ExecutionsPage extends HTMLElement {
     }
   }
 
-  /** Search over the workflow name and the run number, plus the three selects. */
+  /** Search over the workflow name and the run number, plus the two selects. */
   #matches(exec) {
     const admitted = STATUS_FILTERS[this.#status];
     if (admitted && !admitted.has(exec.status)) return false;
-    if (this.#workflow !== 'all' && exec.workflow_name !== this.#workflow) return false;
     const days = TIME_WINDOWS[this.#time];
     if (days && Date.now() - new Date(exec.created_at).getTime() > days * 86_400_000) return false;
     if (!this.#query) return true;

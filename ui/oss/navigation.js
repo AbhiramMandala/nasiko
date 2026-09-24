@@ -21,6 +21,7 @@
 
 import '/common/services/data-functions.js';
 import { call, registerAll } from '/common/core/data-sources.js';
+import { isChatSession } from '/common/services/sessions-service.js';
 import { extensionChain } from '/common/core/extension-chain.js';
 import { ensureViews, hasSavedViews } from '/common/state/weave-views.js';
 
@@ -176,10 +177,17 @@ const sessionItems = async ({
   // Chat rows delete the session; an observability row is a read-only jump and
   // must not put a destructive control in a nav list.
   deletable = true,
+  // MAF runs are sessions with no agent_name, so in a chat tree they read as
+  // orchestrator chats and belong on the Executions page instead. Observability
+  // is the exception: a run's spend and traces are exactly what that module is
+  // for, and its rows are how you step between sessions on
+  // /observability-session — so it keeps them.
+  includeMaf = false,
 } = {}) => {
   try {
     const res = await call('fetchSessions', '', 50);
     return (res?.data || [])
+      .filter((s) => includeMaf || isChatSession(s))
       .filter((s) => !orchestratorOnly || !s.agent_name)
       .slice(0, SESSION_ROWS)
       .map((s) => {
@@ -304,6 +312,7 @@ const fetchModuleNav = async (module) => {
       path: observability ? '/observability-session' : orchestratorOnly ? '/chat' : '/chats',
       sessionIdOnly: observability,
       deletable: !observability,
+      includeMaf: observability,
     });
     // Last, below the static groups; omitted entirely when empty, since a group
     // with no items and no url renders as a stray heading.

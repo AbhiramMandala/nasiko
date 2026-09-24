@@ -18,12 +18,14 @@ import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { confirmDialog } from '/common/design-system/app-modal/app-modal.js';
 import { timeAgo, formatDisplay } from '/common/utils/date-utils.js';
+import { fmtCompact, fmtPercent } from '/common/utils/units.js';
 import '/common/design-system/app-menu/app-menu.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-card/app-card.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
 import '/common/design-system/app-search/app-search.js';
 import '/common/design-system/app-select/app-select.js';
+import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-tag/app-tag.js';
 
 import { loadCss } from '/common/utils/css.js';
@@ -73,12 +75,43 @@ const MODES = {
   },
 };
 
-const FILTERS = JSON.stringify([
-  { value: 'all', label: 'All' },
-  { value: 'success', label: 'Last run succeeded' },
-  { value: 'failed', label: 'Last run failed' },
-  { value: 'idle', label: 'Never run' },
-]);
+// The sort menus are the server's (WorkflowSort / DraftSort in oss/server/src/maf.rs)
+// — the ordering is done there because the figures it ranks on (success rate,
+// total tokens, run count) are aggregates of that one list query. "All" is each
+// enum's default variant, i.e. newest first.
+const SORTS = {
+  deployed: {
+    default: 'recent',
+    options: JSON.stringify([
+      { value: 'recent', label: 'All' },
+      { value: 'success_rate', label: 'Success rate' },
+      { value: 'token_usage', label: 'Token usage' },
+      { value: 'execution_count', label: 'Execution count' },
+      { value: 'health', label: 'Health' },
+    ]),
+  },
+  drafts: {
+    default: 'all',
+    options: JSON.stringify([
+      { value: 'all', label: 'All' },
+      { value: 'last_updated', label: 'Last updated' },
+      { value: 'token_usage', label: 'Token usage' },
+    ]),
+  },
+};
+
+// `unknown` (never run) has no badge: there is no health to report, and the
+// card's footer already says "Not run yet". Health is the one figure with a
+// colour — it is the one that asks for action.
+const HEALTH = {
+  healthy: ['Healthy', 'success'],
+  degraded: ['Degraded', 'warning'],
+  unhealthy: ['Unhealthy', 'error'],
+};
+
+const tag = (label) => `<app-tag data-slot="meta" size="sm">${escHtml(label)}</app-tag>`;
+const badge = (label, variant) =>
+  `<app-badge data-slot="meta" variant="${variant}">${escHtml(label)}</app-badge>`;
 
 class WorkflowsPage extends HTMLElement {
   /** Overridden by the drafts element below; `deployed` for /workflows. */
@@ -87,14 +120,17 @@ class WorkflowsPage extends HTMLElement {
   #workflows = [];
   #lastRun = new Map(); // maf_id → latest execution row
   #query = '';
-  #filter = 'all';
+  #sort = null;
 
   get #copy() { return MODES[this.mode]; }
+  get #sorts() { return SORTS[this.mode]; }
 
   connectedCallback() {
     if (this.#initialized) return;
     this.#initialized = true;
     const copy = this.#copy;
+    const sorts = this.#sorts;
+    this.#sort = sorts.default;
 
     this.innerHTML = `
       <app-module-nav module="orchestrator"></app-module-nav>
@@ -102,8 +138,8 @@ class WorkflowsPage extends HTMLElement {
       <div class="toolbar">
         <app-search id="wf-search" size="sm" class="wf-search"
           placeholder="Search" aria-label="${escAttr(copy.searchLabel)}"></app-search>
-        <app-select id="wf-filter" size="sm" fit-content aria-label="Filter workflows"
-          options='${FILTERS}' value="all"></app-select>
+        <app-select id="wf-filter" size="sm" fit-content aria-label="Sort workflows"
+          options='${sorts.options}' value="${sorts.default}"></app-select>
         <app-button class="toolbar-cta" variant="primary" size="md" href="/workflow-new">${icons.plus()} Create workflow</app-button>
       </div>
       <div class="grid" id="wf-grid">${this.#skeletonCards()}</div>
@@ -120,9 +156,12 @@ class WorkflowsPage extends HTMLElement {
       this.#query = e.target.value.trim().toLowerCase();
       this.#renderGrid();
     });
+    // Bound to the <app-select>, not the toolbar: the `change` bubbles up from
+    // the inner light-DOM <select>, so a delegated handler sees that element as
+    // the target and never matches on the host's id.
     this.querySelector('#wf-filter').addEventListener('change', (e) => {
-      this.#filter = e.target.value;
-      this.#renderGrid();
+      this.#sort = e.target.value;
+      this.#load();
     });
 
     this.#load();
@@ -131,7 +170,7 @@ class WorkflowsPage extends HTMLElement {
   async #load() {
     try {
       const [workflows, executions] = await Promise.all([
-        call(this.mode === 'drafts' ? 'fetchDrafts' : 'fetchWorkflows'),
+        call(this.mode === 'drafts' ? 'fetchDrafts' : 'fetchWorkflows', 100, 0, this.#sort),
         call('fetchAllExecutions').catch(() => []),
       ]);
       // Executions come newest-first; keep the first row seen per workflow.
@@ -160,11 +199,10 @@ class WorkflowsPage extends HTMLElement {
     }
   }
 
-  /** Name/description search plus the last-run filter, both client-side —
-   *  the list endpoint has no query parameters for either. */
+  /** Name/description search, client-side — instant, and the sort the server
+   *  applied survives it. */
   #visible() {
     return this.#workflows.filter((wf) => {
-      if (this.#filter !== 'all' && this.#statusLine(wf).key !== this.#filter) return false;
       if (!this.#query) return true;
       const haystack = `${wf.name} ${wf.description || wf.maf_json?.description || ''}`.toLowerCase();
       return haystack.includes(this.#query);
@@ -212,29 +250,43 @@ class WorkflowsPage extends HTMLElement {
     return { key: 'running', cls: 'is-running', text: 'Running now' };
   }
 
-  /** A workflow is an entity, so it gets the one card component. The meta pills
-   *  are the card's `tags` (<app-tag> chips), the description its two-line clamp;
-   *  the footer keeps what the card has no notion of — which agents the sequence
+  /** A workflow is an entity, so it gets the one card component. The meta row
+   *  is slotted chips — <app-tag>s, plus an <app-badge> for health — and the
+   *  description is the card's two-line clamp; the
+   *  footer keeps what the card has no notion of — which agents the sequence
    *  runs and how the last run went. */
   #card(wf) {
     const steps = wf.maf_json?.steps || [];
     const agents = [...new Set(steps.map((s) => s.agent_name).filter(Boolean))];
     const description = wf.description || wf.maf_json?.description || '';
     const status = this.#statusLine(wf);
-    const tags = [
-      steps.length === 1 ? '1 step' : `${steps.length} steps`,
-      wf.execution_count === 1 ? '1 run' : `${wf.execution_count} runs`,
-    ];
-    if (wf.created_at) tags.push(`Created ${formatDisplay(new Date(wf.created_at))}`);
+    // Every figure the sort menu ranks on, shown unconditionally rather than
+    // only under the matching sort: a list reordered by a number the card never
+    // shows is a list that looks unchanged. The row goes through the card's
+    // `meta` slot rather than its `tags` attribute so health can be an
+    // <app-badge> — the attribute carries only strings, and health is the one
+    // figure worth a colour. The rest stay the card's ordinary <app-tag> chips.
+    const meta = [
+      tag(steps.length === 1 ? '1 step' : `${steps.length} steps`),
+      tag(wf.execution_count === 1 ? '1 run' : `${wf.execution_count} runs`),
+      wf.success_rate != null ? tag(`${fmtPercent(wf.success_rate)} success`) : '',
+      wf.total_tokens > 0 ? tag(`${fmtCompact(wf.total_tokens)} tokens`) : '',
+      // Drafts are judged by when they were last touched, deployed ones by age.
+      this.mode === 'drafts' && wf.updated_at
+        ? tag(`Updated ${timeAgo(wf.updated_at)}`)
+        : wf.created_at ? tag(`Created ${formatDisplay(new Date(wf.created_at))}`) : '',
+      // Last, so the one coloured chip closes the row instead of splitting it.
+      HEALTH[wf.health] ? badge(...HEALTH[wf.health]) : '',
+    ].join('');
+
     return `
       <app-card
         data-id="${escAttr(wf.id)}"
         name="${escAttr(wf.name)}"
         ${description ? `description="${escAttr(description)}"` : ''}
-        tags="${escAttr(JSON.stringify(tags))}"
-        max-visible-tags="3"
         href="/workflow?id=${encodeURIComponent(wf.id)}"
         aria-label="Open ${escAttr(wf.name)}">
+        ${meta}
         <app-menu data-slot="actions" align="end" trigger-label="Workflow actions"
           items='${steps.length ? MENU_RUNNABLE : MENU_STEPLESS}'>
           ${icons.moreVertical('', 16)}
@@ -280,7 +332,7 @@ class WorkflowsPage extends HTMLElement {
   #noMatchHtml() {
     return `
       <app-empty-state heading="No workflows match"
-        description="Try a different search term or clear the filter."
+        description="Try a different search term."
         icon='${icons.search('', 40)}'></app-empty-state>`;
   }
 

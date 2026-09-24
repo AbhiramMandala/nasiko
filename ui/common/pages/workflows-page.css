@@ -36,6 +36,13 @@
      left here is the two things the card has no notion of, both slotted into
      its footer — which agents the sequence runs, and how the last run went. */
 
+  /* The meta row is built here and slotted into the card's `meta` slot rather
+     than passed as `tags`: it is the card's ordinary <app-tag> chips plus one
+     <app-badge> for health, and the `tags` attribute carries only strings. The
+     card's one-line cap has to go with it — this card shows every figure its
+     sort menu ranks on, and the cap silently clipped the last of them. */
+  app-card .card-tags { max-height: none; }
+
   .wf-agents {
     /* Pushes the status line to the footer's trailing edge; .card-foot is a
        flex row that otherwise packs both against it. The agent list is the one

@@ -322,8 +322,8 @@ async fn run_maf_inner(
         .filter(|d| !d.trim().is_empty())
         .unwrap_or_else(|| format!("MAF execution {execution_id}"));
     if let Err(e) = sqlx::query(
-        "INSERT INTO chat_sessions (session_id, user_id, title)
-         VALUES ($1, $2, $3)
+        "INSERT INTO chat_sessions (session_id, user_id, title, session_type)
+         VALUES ($1, $2, $3, 'maf_execution')
          ON CONFLICT (session_id) DO NOTHING",
     )
     .bind(execution_id.to_string())
