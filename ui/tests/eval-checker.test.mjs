@@ -71,7 +71,7 @@ test('a dashboard with no data at all is caught', () => {
 costCard = AppStatCard("Total cost", "0")
 root = AppStack([costCard], "md")
 Done.`;
-  const { fail } = check(kase({ minQueries: 1 }), dsl);
+  const { quality: fail } = check(kase({ minQueries: 1 }), dsl);
   assert.ok(fail.some((f) => /no real data/.test(f)), fail.join(' | '));
 });
 
@@ -84,27 +84,27 @@ doIt = Action([@Run(del)])
 btn = AppButton("Delete", "danger", "md", false, null, false, false, "button", null, null, null, doIt)
 root = AppStack([btn], "md")
 Done.`;
-  const { fail } = check(kase({}), dsl);
+  const { quality: fail } = check(kase({}), dsl);
   assert.ok(fail.some((f) => /Mutation/.test(f)), fail.join(' | '));
 });
 
 test('a required component that never appears is caught', () => {
-  const { fail } = check(kase({ tags: ['app-table'] }), GOOD);
+  const { quality: fail } = check(kase({ tags: ['app-table'] }), GOOD);
   assert.ok(fail.some((f) => /no <app-table>/.test(f)));
 });
 
 test('a greeting case fails if it builds a dashboard anyway', () => {
-  const { fail } = check(kase({ noSurface: true }), GOOD);
+  const { quality: fail } = check(kase({ noSurface: true }), GOOD);
   assert.ok(fail.some((f) => /rule 11/.test(f)));
 });
 
 test('a greeting case passes on prose alone', () => {
-  const { fail } = check(kase({ noSurface: true }), 'I can build dashboards from your usage data.\n');
+  const { quality: fail } = check(kase({ noSurface: true }), 'I can build dashboards from your usage data.\n');
   assert.deepEqual(fail, []);
 });
 
 test('a greeting that answers with nothing is caught', () => {
-  const { fail } = check(kase({ noSurface: true }), '   \n');
+  const { quality: fail } = check(kase({ noSurface: true }), '   \n');
   assert.ok(fail.some((f) => /nothing at all/.test(f)));
 });
 
@@ -124,7 +124,7 @@ btn = AppButton("Ops", "primary", "md", false, null, false, false, "button", nul
 card = AppStatCard("Cost", costQ)
 root = AppStack([btn, card], "md")
 Done.`;
-  const { fail } = check(kase({ minQueries: 1, minActions: 1, minStates: 1 }), dsl);
+  const { quality: fail } = check(kase({ minQueries: 1, minActions: 1, minStates: 1 }), dsl);
   assert.deepEqual(fail, []);
 });
 
@@ -229,12 +229,12 @@ table = AppTable(rows, 25, "pages", false)
 root = AppStack([box, table], "md")
 Done.`;
   const caught = check(kase({}), refetchesNothing);
-  assert.match(caught.fail.join(' '), /setQ re-runs rowsQ/);
+  assert.match(caught.quality.join(' '), /setQ re-runs rowsQ/);
 
   // The same surface with the @Run dropped is correct and must stay silent —
   // writing $q alone already repaints, and @Filter re-evaluates against it.
   const correct = refetchesNothing.replace(', @Run(rowsQ)', '');
-  assert.deepEqual(check(kase({}), correct).fail, []);
+  assert.deepEqual(check(kase({}), correct).quality, []);
 
   // A state that IS an argument earns its @Run.
   const serverSide = `Here.
@@ -245,7 +245,7 @@ rowsQ = Query("fetchTokenopsDashboard", [{range: $range}], {attributions: {rows:
 table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
 root = AppStack([picker, table], "md")
 Done.`;
-  assert.deepEqual(check(kase({}), serverSide).fail, []);
+  assert.deepEqual(check(kase({}), serverSide).quality, []);
 
   // A Refresh button is a bare @Run with no @Set at all, and is exactly right.
   const refresh = `Here.
@@ -255,7 +255,7 @@ rowsQ = Query("fetchTokenopsDashboard", [{}], {attributions: {rows: []}}, "data"
 table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
 root = AppStack([btn, table], "md")
 Done.`;
-  assert.deepEqual(check(kase({}), refresh).fail, []);
+  assert.deepEqual(check(kase({}), refresh).quality, []);
 
   // One state in the arguments justifies the @Run for every other set in the
   // same Action — flagging that would be a taste assertion, not a defect.
@@ -268,7 +268,7 @@ rowsQ = Query("fetchTokenopsDashboard", [{range: $range}], {attributions: {rows:
 table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
 root = AppStack([picker, table], "md")
 Done.`;
-  assert.deepEqual(check(kase({}), mixed).fail, []);
+  assert.deepEqual(check(kase({}), mixed).quality, []);
 });
 
 test('a free-text control wired to an exactly-matched argument is caught', () => {
@@ -362,16 +362,16 @@ table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
 root = AppStack([box, picker, table], "md")
 Done.`;
   const caught = check(kase({}), inertFilter);
-  assert.match(caught.fail.join(' '), /setAgent sets \$agent, which rowsQ reads as an argument/);
+  assert.match(caught.quality.join(' '), /setAgent sets \$agent, which rowsQ reads as an argument/);
   // The range control is wired correctly and must not be named.
-  assert.doesNotMatch(caught.fail.join(' '), /setRange/);
+  assert.doesNotMatch(caught.quality.join(' '), /setRange/);
 
   // Adding the @Run is the fix, and silences it.
   const fixed = inertFilter.replace(
     'setAgent = Action([@Set($agent, $event)])',
     'setAgent = Action([@Set($agent, $event), @Run(rowsQ)])',
   );
-  assert.deepEqual(check(kase({}), fixed).fail, []);
+  assert.deepEqual(check(kase({}), fixed).quality, []);
 
   // Taking the state out of the arguments and filtering what is already
   // fetched is the other fix, and must not trip the redundant-@Run half.
@@ -387,7 +387,7 @@ rows = @Filter(rowsQ.attributions.rows, "agent_name", "contains", $agent)
 table = AppTable(rows, 25, "pages", false)
 root = AppStack([box, picker, table], "md")
 Done.`;
-  assert.deepEqual(check(kase({}), clientSide).fail, []);
+  assert.deepEqual(check(kase({}), clientSide).quality, []);
 });
 
 test('the missing-@Run check does not invent defects', () => {
@@ -399,7 +399,7 @@ rowsQ = Query("fetchTokenopsDashboard", [{range: $range}], {attributions: {rows:
 table = AppTable(rowsQ.attributions.rows, 25, "pages", false)
 root = AppStack([table], "md")
 Done.`;
-  assert.deepEqual(check(kase({}), constantArg).fail, []);
+  assert.deepEqual(check(kase({}), constantArg).quality, []);
 
   // Type, then submit: the input sets the state and a Search button carries
   // the @Run. That button sets none of the Query's state arguments, which is
@@ -414,7 +414,7 @@ rowsQ = Query("fetchUsageByAgent", [$q, 1, 20], [], "data")
 table = AppTable(rowsQ, 20, "pages", true)
 root = AppStack([box, btn, table], "md")
 Done.`;
-  assert.deepEqual(check(kase({}), typeThenSubmit).fail, []);
+  assert.deepEqual(check(kase({}), typeThenSubmit).quality, []);
 });
 
 test('an @Filter on a field the source does not return is caught', () => {
@@ -431,11 +431,11 @@ rows = @Filter(rowsQ.attributions.rows, "model", "contains", $model)
 table = AppTable(rows, 25, "pages", false)
 root = AppStack([box, table], "md")
 Done.`;
-  assert.match(check(kase({}), invented).fail.join(' '),
+  assert.match(check(kase({}), invented).quality.join(' '),
     /filters on "model", which fetchTokenopsDashboard does not return/);
 
   // agent_name is real on the same source, so the same shape passes.
-  assert.deepEqual(check(kase({}), invented.replace(/"model", "contains"/, '"agent_name", "contains"')).fail, []);
+  assert.deepEqual(check(kase({}), invented.replace(/"model", "contains"/, '"agent_name", "contains"')).quality, []);
 
   // The same field IS real on the by-model source, so this must stay silent.
   const byModel = `Here.
@@ -447,7 +447,7 @@ rows = @Filter(rowsQ, "model", "contains", $model)
 table = AppTable(rows, 20, "pages", true)
 root = AppStack([box, table], "md")
 Done.`;
-  assert.deepEqual(check(kase({}), byModel).fail, []);
+  assert.deepEqual(check(kase({}), byModel).quality, []);
 });
 
 test('the filter-field check follows chains and guesses at nothing', () => {
@@ -467,8 +467,8 @@ table = AppTable(second, 25, "pages", false)
 root = AppStack([a, b, table], "md")
 Done.`;
   const caught = check(kase({}), chained);
-  assert.match(caught.fail.join(' '), /second filters on "provider"/);
-  assert.doesNotMatch(caught.fail.join(' '), /"agent_name"/);
+  assert.match(caught.quality.join(' '), /second filters on "provider"/);
+  assert.doesNotMatch(caught.quality.join(' '), /"agent_name"/);
 
   // A @Filter whose first argument is not a Query cannot be resolved to a
   // source, and an unresolvable reference is left alone rather than guessed.
@@ -477,7 +477,7 @@ rows = @Filter([{name: "a"}, {name: "b"}], "name", "contains", "a")
 table = AppTable(rows, 25, "pages", false)
 root = AppStack([table], "md")
 Done.`;
-  assert.doesNotMatch(check(kase({}), literal).fail.join(' '), /does not return/);
+  assert.doesNotMatch(check(kase({}), literal).quality.join(' '), /does not return/);
 });
 
 /*
@@ -493,14 +493,44 @@ Done.`;
  * moved. Every fault below is a real one that was recorded, not an invented
  * shape.
  */
-const CONTROL = `Sure — building that now.
+/**
+ * AppInput's positional slots, by name.
+ *
+ * Written as a builder rather than as literal calls, which is what these were
+ * until the signature went from twenty-four slots to eleven (NAS-758) and
+ * every fixture below silently became a call with fourteen arguments past the
+ * end — testing the wrong fault, or none. A positional test that hard-codes a
+ * position has to be rewritten every time the vocabulary moves, and the one
+ * time it is not rewritten it keeps passing while measuring nothing.
+ *
+ * So the slot list is stated once and each case says which slot it is moving.
+ * `extra` exists for the one fault that is only expressible past the end.
+ */
+const APP_INPUT_SLOTS = [
+  'size', 'state', 'label', 'hint', 'required',
+  'disabled', 'type', 'placeholder', 'value', 'aria-label', 'action',
+];
+
+const appInput = (over = {}, extra = []) => {
+  const slots = {
+    size: '"md"', state: 'null', label: '"Agent ID"', hint: 'null', required: 'false',
+    disabled: 'false', type: '"text"', placeholder: 'null', value: '$agentId',
+    'aria-label': 'null', action: 'setId', ...over,
+  };
+  return `AppInput(${[...APP_INPUT_SLOTS.map((k) => slots[k]), ...extra].join(', ')})`;
+};
+
+/** The same surface every time, with one control argument moved. */
+const control = (call) => `Sure — building that now.
 $agentId = ""
 setId = Action([@Set($agentId, $event), @Run(rowsQ)])
-idInput = AppInput("md", null, "Agent ID", null, null, false, false, false, false, "text", null, null, $agentId, null, null, null, null, null, null, null, null, null, null, setId)
+idInput = ${call}
 rowsQ = Query("fetchUsageByAgent", [$agentId, 1, 20], {data: [], total: 0})
 table = AppTable(rowsQ.data, 20, "pages", false, null, null, "No agents")
 root = AppStack([idInput, table], "md")
 Done.`;
+
+const CONTROL = control(appInput());
 
 /** The codes the positional contract reported, in order. */
 const codesFor = (dsl) => evaluateGeneration(dsl).positionalContract.map((p) => p.code);
@@ -508,55 +538,54 @@ const codesFor = (dsl) => evaluateGeneration(dsl).positionalContract.map((p) => 
 test('a correctly bound control reports nothing', () => {
   const r = evaluateGeneration(CONTROL);
   assert.deepEqual(r.positionalContract, []);
-  assert.deepEqual(check(kase({ minQueries: 1 }), CONTROL).fail, []);
+  assert.deepEqual(check(kase({ minQueries: 1 }), CONTROL).quality, []);
 });
 
 test('an Action in the wrong slot is caught', () => {
-  // `setId` into `pattern` (slot 20) — recorded twice, and silent both times.
-  const dsl = CONTROL.replace(
-    '$agentId, null, null, null, null, null, null, null, null, null, null, setId)',
-    '$agentId, null, null, null, null, null, null, setId, null, null, null, null)',
-  );
+  // Recorded twice against the old signature, silent both times. The slot it
+  // lands in differs now; that it lands in one that cannot hold an Action
+  // does not.
+  const dsl = control(appInput({ placeholder: 'setId', action: 'null' }));
   assert.ok(codesFor(dsl).includes('action_in_wrong_slot'), codesFor(dsl).join(','));
-  assert.match(check(kase({}), dsl).fail.join(' '), /takes its Action last, but setId is at "pattern"/);
+  assert.match(check(kase({}), dsl).quality.join(' '),
+    /takes its Action last, but setId is at "placeholder"/);
 });
 
 test('an Action past the end of the parameter list is caught', () => {
-  const dsl = CONTROL.replace('null, null, setId)', 'null, null, null, setId)');
+  const dsl = control(appInput({ action: 'null' }, ['setId']));
   assert.ok(codesFor(dsl).includes('action_dropped'), codesFor(dsl).join(','));
-  assert.match(check(kase({}), dsl).fail.join(' '), /past the end of its parameter list/);
+  assert.match(check(kase({}), dsl).quality.join(' '), /past the end of its parameter list/);
 });
 
 test('a $state in a slot that binds nothing is caught', () => {
-  // The state slides from `value` (13) to `list` (21); `value` goes null.
-  const dsl = CONTROL.replace(
-    'null, null, $agentId, null, null, null, null, null, null, null, null, null, null, setId)',
-    'null, null, null, null, null, null, null, null, null, null, $agentId, null, null, setId)',
-  );
+  // The state slides off `value` into a slot that displays text and binds
+  // nothing, and `value` goes null — so the box shows the id as its hint and
+  // keeps nothing the user types.
+  const dsl = control(appInput({ hint: '$agentId', value: 'null' }));
   const codes = codesFor(dsl);
   assert.ok(codes.includes('state_in_non_binding_slot'), codes.join(','));
-  assert.match(check(kase({}), dsl).fail.join(' '), /\$agentId at "list" \(slot 21\)/);
+  assert.match(check(kase({}), dsl).quality.join(' '), /\$agentId at "hint" \(slot 4\)/);
 });
 
 test('a control with wiring but nothing bound to value is caught', () => {
   // The Action is in the right slot and the value is simply never bound —
   // the case materialize.js's `uncontrolled_input` covers only when the
   // action slot happens to be the one that was filled.
-  const dsl = CONTROL.replace('null, null, $agentId, null,', 'null, null, null, null,');
+  const dsl = control(appInput({ value: 'null' }));
   const codes = codesFor(dsl);
   assert.ok(codes.includes('control_never_bound'), codes.join(','));
-  assert.match(check(kase({}), dsl).fail.join(' '), /not read back from a \$state/);
+  assert.match(check(kase({}), dsl).quality.join(' '), /not read back from a \$state/);
 });
 
 test("a state's name in quotes is not the state", () => {
-  const dsl = CONTROL.replace('null, null, $agentId, null,', 'null, null, "$agentId", null,');
+  const dsl = control(appInput({ value: '"$agentId"' }));
   const codes = codesFor(dsl);
   assert.ok(codes.includes('state_as_literal'), codes.join(','));
-  assert.match(check(kase({}), dsl).fail.join(' '), /is the state's NAME in quotes/);
+  assert.match(check(kase({}), dsl).quality.join(' '), /is the state's NAME in quotes/);
 
   // A string that merely looks like one is left alone — the name has to be a
   // state this surface actually declares.
-  const unrelated = CONTROL.replace('"Agent ID"', '"$notAState"');
+  const unrelated = control(appInput({ label: '"$notAState"' }));
   assert.ok(!codesFor(unrelated).includes('state_as_literal'), codesFor(unrelated).join(','));
 });
 
@@ -1224,4 +1253,143 @@ test('naming: the four readings and the fail list are byte-identical with the di
   const b = check(MODEL_B, PICKED_MODEL);
   assert.deepEqual(quad(b.controlPair), [true, true, true, true]);
   assert.deepEqual(b.fail, []);
+});
+
+// ── contract vs quality ─────────────────────────────────────────────────────
+//
+// The split the offline gate depends on. `fail` is "this DSL no longer becomes
+// a working surface under today's code", which is the only thing a replay can
+// newly discover and therefore the only thing that should stop a build.
+// `quality` is what the recording says about the generator — true, worth
+// printing, and frozen with the fixture, so gating on it preserves whichever
+// draw happened to be committed.
+
+test('a broken surface is contract; a weak one is quality', () => {
+  // Contract: the root names something that was never defined, so there is
+  // nothing to render whatever the runtime does.
+  const unresolved = `Here.
+root = AppStack([ghost], "md")
+Done.`;
+  assert.match(check(kase({}), unresolved).fail.join(' '), /references "ghost"/);
+
+  // Quality: this renders perfectly. It is just not what the case asked for.
+  const thin = `Here.
+card = AppStatCard("Total", "0")
+root = AppStack([card], "md")
+Done.`;
+  const r = check(kase({ minQueries: 2, tags: ['app-table'] }), thin);
+  assert.deepEqual(r.fail, [], 'a renderable surface must not gate');
+  assert.match(r.quality.join(' '), /0 queries, expected at least 2/);
+  assert.match(r.quality.join(' '), /no <app-table>/);
+});
+
+test('a source the scope has withdrawn is contract, because the manifest can move under a fixture', () => {
+  // The one quality-looking check that belongs in `fail`: it reads the
+  // manifest, so a recording that was legal when taken can become illegal
+  // without a byte of it changing. That is exactly what a replay is for.
+  const gone = `Here.
+q = Query("fetchSomethingRetired", [], [])
+table = AppTable(q, 25, "pages", false)
+root = AppStack([table], "md")
+Done.`;
+  assert.match(check(kase({}), gone).fail.join(' '), /which the scope does not allow/);
+});
+
+test('wiring findings are quality, so a frozen bad draw cannot fail a build forever', () => {
+  // The defect that put three cases behind knownFailure annotations. It is
+  // real, it is reported, and it does not gate a replay — because the only
+  // thing a replay could prove by failing here is that this recording was
+  // already weak when it was taken, which was known at record time.
+  const inert = `Here.
+$q = ""
+setQ = Action([@Set($q, $event)])
+box = AppSearch("md", null, false, false, "Search agents...", $q, null, null, null, null, null, setQ)
+rowsQ = Query("fetchUsageByAgent", [$q, 1, 20], {data: [], total: 0}, "data")
+table = AppTable(rowsQ, 25, "pages", false)
+root = AppStack([box, table], "md")
+Done.`;
+  const r = check(kase({}), inert);
+  assert.deepEqual(r.fail, [], r.fail.join(' / '));
+  assert.match(r.quality.join(' '), /does not @Run it/);
+});
+
+test('the contract list is closed — a new check cannot join it by accident', () => {
+  // The split only holds while `fail` stays the four checks that mean OUR side
+  // moved. Nothing stops a later edit from reaching for `fail.push` because it
+  // is the list that was there first, and nothing would report it: the check
+  // would simply start gating replays, which is the behaviour the split exists
+  // to remove.
+  //
+  // This is not hypothetical. NAS-756 adds an argument-enum check on its own
+  // branch, written before the split existed, and it pushes to `fail`. Git
+  // merges the two files with ZERO textual conflict — so no one is asked to
+  // resolve anything, and a quality check silently becomes a build gate. A
+  // clean merge that changes behaviour is worse than a dirty one; this makes
+  // it dirty.
+  //
+  // Counted rather than named, for the same reason gen-diagnostics requires an
+  // entry per code rather than defaulting: the point is that adding one forces
+  // a decision, not that this particular list of four is sacred. If a fifth
+  // contract check is genuinely right, change the number and say why in the
+  // commit.
+  const src = readFileSync(new URL('../scripts/eval-generations.mjs', import.meta.url), 'utf8');
+  const contract = [...src.matchAll(/\bfail\.push\(/g)].length;
+  assert.equal(contract, 4,
+    `check() has ${contract} contract checks, expected 4.\n`
+    + '    A check belongs in `fail` only if it can newly break with the fixture untouched — '
+    + 'no root, a fatal render/materialize diagnostic, an unresolved reference, a withdrawn '
+    + 'source. Everything the checker says about how GOOD a generation is belongs in `quality`, '
+    + 'which is reported on every replay and gates a live run.\n'
+    + '    If you got here from a merge: move the new `fail.push` to `quality.push`.');
+});
+
+test('an argument outside the closed set its own source declares is caught', () => {
+  // The live failure this came from: asked for a control labelled
+  // [1d|7d|30d], the model used the LABEL as the argument value. The enum is
+  // 24h|7d|30d, so the first option 400s while the other two work — a control
+  // that behaves for two clicks in three and reads as flaky data.
+  //
+  // No control in the fixture on purpose: this is a claim about the Query,
+  // and a control would drag its own accessible-name and @Run readings in.
+  const mislabelled = `Here.
+spendQ = Query("fetchSpendTimeseries", [{range: "1d"}], [], "data.points")
+table = AppTable(spendQ, 25, "pages", false)
+root = AppStack([table], "md")
+Done.`;
+  assert.match(check(kase({}), mislabelled).quality.join(' '),
+    /range="1d" to fetchSpendTimeseries, which takes one of 24h, 7d, 30d/);
+
+  // The same DSL with a value the source accepts says nothing at all.
+  assert.deepEqual(check(kase({}), mislabelled.replace('"1d"', '"24h"')).quality, []);
+});
+
+test('a $state default is checked too — it is what the first fetch sends', () => {
+  // The value reaches the argument through `$state`, which is correct wiring,
+  // and the check still fires. That is deliberate: by materialize time the
+  // state has been evaluated, so there is no way to tell a model-written
+  // literal from a model-written default — and it should fire anyway, because
+  // "1d" here is exactly the first request the dashboard makes on load. This
+  // is the live failure, written the way the generation actually wrote it.
+  const wired = `Here.
+$range = "1d"
+spendQ = Query("fetchSpendTimeseries", [{range: $range}], [], "data.points")
+table = AppTable(spendQ, 25, "pages", false)
+root = AppStack([table], "md")
+Done.`;
+  assert.match(check(kase({}), wired).quality.join(' '), /range="1d" to fetchSpendTimeseries/);
+
+  // A default the source accepts is silent, so wiring state in is not itself
+  // what gets flagged.
+  assert.deepEqual(check(kase({}), wired.replace('$range = "1d"', '$range = "7d"')).quality, []);
+});
+
+test('an argument the manifest declares no closed set for is left alone', () => {
+  // `agentId` is free text on the same source. A checker that guessed a set
+  // here would be inventing a contract the model was never shown.
+  const free = `Here.
+spendQ = Query("fetchSpendTimeseries", [{agentId: "anything-at-all"}], [], "data.points")
+table = AppTable(spendQ, 25, "pages", false)
+root = AppStack([table], "md")
+Done.`;
+  assert.deepEqual(check(kase({}), free).quality, []);
 });
