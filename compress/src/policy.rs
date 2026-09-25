@@ -78,7 +78,9 @@ impl Level {
 /// What the caller wants compressed, and how hard.
 ///
 /// Constructed by the caller — this crate never reads the environment.
-#[derive(Debug, Clone)]
+/// `Copy` because it is plain configuration — every field is a scalar or a shared reference.
+/// Callers embed it in their own config structs, several of which are themselves `Copy`.
+#[derive(Debug, Clone, Copy)]
 pub struct Policy<'r> {
     pub enabled: bool,
 
