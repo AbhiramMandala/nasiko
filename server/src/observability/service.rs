@@ -3410,10 +3410,15 @@ mod tests {
         };
 
         let (roots, _) = build_span_tree(&[root, child]);
-        assert_eq!(roots[0].token_count_total, 20);
+        // `input_tokens: 10` is the whole prompt, of which 5 were cached (2 read + 3
+        // written) — the semconv reading, which `extract_usage_attrs` normalizes to a
+        // fresh count of 5. The total is therefore 5 fresh + 5 cached + 5 output = 15,
+        // not 20: summing the raw attribute alongside the cache classes would charge
+        // every cached token twice.
+        assert_eq!(roots[0].token_count_total, 15);
         assert_eq!(roots[0].cache_read_tokens, 2);
         assert_eq!(roots[0].cache_creation_tokens, 3);
-        assert_eq!(roots[0].children[0].token_count_total, 20);
+        assert_eq!(roots[0].children[0].token_count_total, 15);
     }
 
     #[test]

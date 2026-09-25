@@ -23,7 +23,7 @@ export function usageFromMessage(m) {
   if (!hasTokens && m.duration_ms == null) return null;
   const input = m.input_tokens ?? 0;
   const output = m.output_tokens ?? 0;
-  // Null on a bring-your-own-key reply, and on rows written before migration 0033.
+  // Null on a bring-your-own-key reply, and on rows written before migration 0037.
   const cacheRead = m.cache_read_tokens ?? 0;
   const cacheCreation = m.cache_creation_tokens ?? 0;
   return {

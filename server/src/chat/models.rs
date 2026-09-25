@@ -62,7 +62,7 @@ pub struct ChatMessage {
     pub output_tokens: Option<i32>,
     /// Prompt tokens served from the provider cache. Separate from `input_tokens`, which
     /// carries only the fresh portion — a chip that sums input+output alone under-reports
-    /// the prompt by whatever the cache served (migration 0033).
+    /// the prompt by whatever the cache served (migration 0037).
     pub cache_read_tokens: Option<i32>,
     pub cache_creation_tokens: Option<i32>,
     pub model: Option<String>,
