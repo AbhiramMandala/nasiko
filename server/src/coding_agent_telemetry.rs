@@ -18,8 +18,6 @@ use crate::chat::models::{ExternalTurn, MessageUsage};
 use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
-const CODING_SESSION_PLACEHOLDER: &str = "Coding session";
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/telemetry/coding-agent/events/batch", post(ingest_batch))
@@ -126,19 +124,12 @@ async fn process_event(
     sqlx::query(
         r#"INSERT INTO chat_sessions
               (session_id, user_id, agent_id, title, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6)
+           VALUES ($1, $2, $3, 'Coding session', $4, $5)
            ON CONFLICT (session_id) DO NOTHING"#,
     )
     .bind(&server_session_id)
     .bind(user_id)
     .bind(agent_id)
-    .bind(
-        event
-            .session
-            .title
-            .as_deref()
-            .unwrap_or(CODING_SESSION_PLACEHOLDER),
-    )
     .bind(event.turn.started_at)
     .bind(event.turn.ended_at)
     .execute(&mut *tx)
@@ -198,22 +189,6 @@ async fn process_event(
         }
         tx.commit().await?;
         return Ok(CodingAgentEventStatus::Duplicate);
-    }
-
-    // Replays must never rename a session; only newly accepted receipts can upgrade it.
-    if let Some(title) = &event.session.title {
-        sqlx::query(
-            r#"UPDATE chat_sessions SET title = $4
-               WHERE session_id = $1 AND user_id = $2 AND agent_id = $3
-                 AND deleted_at IS NULL AND title = $5"#,
-        )
-        .bind(&server_session_id)
-        .bind(user_id)
-        .bind(agent_id)
-        .bind(title)
-        .bind(CODING_SESSION_PLACEHOLDER)
-        .execute(&mut *tx)
-        .await?;
     }
 
     if event.capture_policy == CapturePolicy::Content {

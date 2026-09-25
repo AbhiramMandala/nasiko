@@ -1543,6 +1543,14 @@ class AgentCardPage extends HTMLElement {
             </dl>
           </section>
           <section class="acp-section">
+            <h2 class="acp-section-title">Features</h2>
+            <p class="acp-section-sub">Agent-level feature flags. Changes take effect on next restart.</p>
+            <app-switch id="acp-feature-prompt-comments" layout="settings"
+              ${(a.metadata?.features?.prompt_comments === 'enabled') ? 'checked' : ''}
+              label="Prompt comments"
+              hint="Lets the agent record, prune, and maintain workspace instructions with rationale annotations. Workspaces can opt out with &lt;!-- @prompt-comments disabled --&gt;."></app-switch>
+          </section>
+          <section class="acp-section">
             <h2 class="acp-section-title">Token optimization</h2>
             <p class="acp-section-sub">One switch over the whole stack: shrinks large tool
               results — JSON, logs and diffs — before they reach the model, trims the reply
@@ -1584,6 +1592,9 @@ class AgentCardPage extends HTMLElement {
     const identityForm = this.querySelector('#acp-identity-form');
     identityForm?.addEventListener('submit', (e) => this.#saveIdentity(e));
 
+    const promptCommentsToggle = this.querySelector('#acp-feature-prompt-comments');
+    promptCommentsToggle?.addEventListener('change', (e) => this.#toggleFeature('prompt_comments', e.target));
+    
     // Token optimization — STASHED
     const compress = this.querySelector('#acp-compress');
     compress?.addEventListener('change', () => this.#saveCompress(compress));
@@ -1601,6 +1612,33 @@ class AgentCardPage extends HTMLElement {
       this.#toggleAgentFlag(e, 'CODING_AGENT_SELF_REVIEW', 'self-review', 'Self-review'));
   }
 
+  async #toggleFeature(key, input) {
+    const enabled = input.checked;
+    const metadata = {
+      ...(this.#agent.metadata || {}),
+      features: {
+        ...(this.#agent.metadata?.features || {}),
+        [key]: enabled ? 'enabled' : 'disabled',
+      },
+    };
+    input.disabled = true;
+    try {
+      await fetchApi(`/agents/${encodeURIComponent(this.#agent.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metadata }),
+      });
+    } catch (err) {
+      input.checked = !enabled;
+      showToast(`Failed to update feature: ${err.message}`);
+      return;
+    } finally {
+      input.disabled = false;
+    }
+    this.#agent.metadata = metadata;
+    showToast(`${key.replace(/_/g, ' ')} ${enabled ? 'enabled' : 'disabled'}. Restart the agent to apply.`);
+  }
+  
   /** Minimal-code is a plain `agents.minimal_code_enabled` column (migration
    *  0032), not a secret — unlike self-review, which stays a deploy-time env
    *  var. A real column means a real read-back, so unlike #toggleAgentFlag

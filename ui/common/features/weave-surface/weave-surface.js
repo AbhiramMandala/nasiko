@@ -108,7 +108,6 @@ import '/common/design-system/app-switch/app-switch.js';
 import '/common/design-system/app-table/app-table.js';
 import '/common/design-system/app-tag/app-tag.js';
 import '/common/design-system/app-text/app-text.js';
-import '/common/design-system/app-trace-tree/app-trace-tree.js';
 import '/common/design-system/app-toolbar/app-toolbar.js';
 
 import { loadCatalog, loadSeverities, withSeverity } from '/common/surface/catalog-load.js';

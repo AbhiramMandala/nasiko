@@ -1,14 +1,12 @@
 Sure — building that now.
-root = AppStack([heading, viewPicker, kpis, spendChart], "md")
-heading = AppText("TokenOps dashboard", "title")
+
+root = AppStack([heading, viewPicker, kpiRow, breakdown], "md")
+heading = AppText("TokenOps overview", "title")
 $view = "cost"
 viewPicker = AppSegmentedControl([{value: "cost", label: "Cost"}, {value: "ops", label: "Operations"}], $view, "md", false, null, "View", null, switchView)
 switchView = Action([@Set($view, $event)])
-summaryQ = Query("fetchUsageSummary", [], {total_cost_usd: 0, request_count: 0}, null)
-historyQ = Query("fetchUsageHistory", [7], [], null)
-costKpi = AppStatCard("Total spend", summaryQ.total_cost_usd, null, "neutral", false, "currency", "USD")
-opsKpi = AppStatCard("Total operations", summaryQ.request_count, null, "neutral", false, "compact")
-kpis = $view == "cost" ? costKpi : opsKpi
-spendChart = $view == "cost" ? AppChart({labels: historyQ.date, datasets: [{label: "Spend (USD)", data: historyQ.total_cost_usd}]}, "line", false, "currency", "USD", null, null, "auto", "No spend data available") : AppChart({labels: historyQ.date, datasets: [{label: "Operations", data: historyQ.request_count}]}, "line", false, "compact", null, null, null, "auto", "No operations data available")
+dashboardQ = Query("fetchTokenopsDashboard", [{}], {kpis: {total_spend: {current: 0, previous: 0}, total_operations: {current: 0, previous: 0}}, attributions: {rows: []}}, "data")
+kpiRow = $view == "cost" ? AppStatCard("Total spend", dashboardQ.kpis.total_spend.current, dashboardQ.kpis.total_spend.current - dashboardQ.kpis.total_spend.previous, dashboardQ.kpis.total_spend.current > dashboardQ.kpis.total_spend.previous ? "up" : dashboardQ.kpis.total_spend.current < dashboardQ.kpis.total_spend.previous ? "down" : "neutral", false, "currency", "USD") : AppStatCard("Total operations", dashboardQ.kpis.total_operations.current, dashboardQ.kpis.total_operations.current - dashboardQ.kpis.total_operations.previous, dashboardQ.kpis.total_operations.current > dashboardQ.kpis.total_operations.previous ? "up" : dashboardQ.kpis.total_operations.current < dashboardQ.kpis.total_operations.previous ? "down" : "neutral")
+breakdown = $view == "cost" ? AppChart({labels: dashboardQ.attributions.rows.agent_name, datasets: [{label: "Cost (USD)", data: dashboardQ.attributions.rows.total_cost}]}, "bar", false, "currency", "USD", null, null, "auto", "No spend in this period") : AppChart({labels: dashboardQ.attributions.rows.agent_name, datasets: [{label: "Operations", data: dashboardQ.attributions.rows.operations}]}, "bar", false, "number", null, null, null, "auto", "No operations in this period")
 
-Here's your cost dashboard with a view toggle between spend and operations — each showing its own KPI and trend chart. Let me know if you'd like to adjust the time range, add more detail, or change the layout!
+Here's your cost dashboard with a view toggle — switch between total spend and operations, each with their own KPI and breakdown chart. Let me know if you'd like to add filters, adjust the time range, or change the layout!

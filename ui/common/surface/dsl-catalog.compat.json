@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "0c62c33fc71b",
+  "catalogVersion": "50890cfc89ea",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 42,
@@ -1082,18 +1082,31 @@
     },
     "app-input": {
       "element": "app-input",
-      "summary": "Free text the reader types or pastes — an agent id, a month as YYYY-MM, a name to look up. Its value has to be read back from the $state its own Action sets, or what is typed is discarded on the next repaint. Reach for AppSearch when the point is finding something in a list as you type, and AppSegmentedControl or AppSelect when the answer is one of a known few: a typed value the source matches exactly returns nothing for every near miss, with no error to say so.",
+      "summary": "Text input with label, hint, character count and leading/trailing icon slots.",
       "actionParam": true,
       "paramOrder": [
         "size",
         "state",
         "label",
         "hint",
+        "count",
         "required",
+        "reveal",
         "disabled",
+        "readonly",
         "type",
+        "name",
         "placeholder",
         "value",
+        "autocomplete",
+        "maxlength",
+        "inputmode",
+        "min",
+        "max",
+        "step",
+        "pattern",
+        "list",
+        "spellcheck",
         "aria-label",
         "action"
       ],
@@ -1131,13 +1144,25 @@
           "type": "string",
           "description": "Helper line below the box. Turns red in `state=\"error\"`."
         },
+        "count": {
+          "type": "string",
+          "description": "Right-aligned counter in the hint row, e.g. `12/100`."
+        },
         "required": {
           "type": "boolean",
           "description": "Renders the red `*` before the label."
         },
+        "reveal": {
+          "type": "boolean",
+          "description": "On `type=\"password\"`, adds a trailing show/hide button that flips the inner input between `password` and `text`. Opt-in rather than automatic: a field holding a *stored* secret (an API key already on the server) is not always one the viewer should be able to unmask, so the call site decides. Ignored on every other type."
+        },
         "disabled": {
           "type": "boolean",
           "description": ""
+        },
+        "readonly": {
+          "type": "boolean",
+          "description": "Same paint as `state=\"read-only\"`."
         },
         "type": {
           "type": "enum",
@@ -1154,11 +1179,51 @@
           "default": "text",
           "description": "`text` (default) | `password` | `email` | `number` | `search` | `url` | `tel` | `date`. Forwarded verbatim to the inner `<input>`."
         },
+        "name": {
+          "type": "string",
+          "description": ""
+        },
         "placeholder": {
           "type": "string",
           "description": ""
         },
         "value": {
+          "type": "string",
+          "description": ""
+        },
+        "autocomplete": {
+          "type": "string",
+          "description": ""
+        },
+        "maxlength": {
+          "type": "string",
+          "description": ""
+        },
+        "inputmode": {
+          "type": "string",
+          "description": ""
+        },
+        "min": {
+          "type": "string",
+          "description": ""
+        },
+        "max": {
+          "type": "string",
+          "description": ""
+        },
+        "step": {
+          "type": "string",
+          "description": ""
+        },
+        "pattern": {
+          "type": "string",
+          "description": ""
+        },
+        "list": {
+          "type": "string",
+          "description": ""
+        },
+        "spellcheck": {
           "type": "string",
           "description": ""
         },

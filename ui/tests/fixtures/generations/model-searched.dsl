@@ -1,15 +1,13 @@
-Got it — building a spend dashboard for a single model with a search to find it.
+Got it — building a spend dashboard for a specific model with search.
 
-root = AppStack([heading, controls, spendSection], "md")
+root = AppStack([heading, controls, chart, table], "md")
 heading = AppText("Model spend", "title")
-$modelSearch = ""
-setModel = Action([@Set($modelSearch, $event)])
-searchBox = AppSearch("md", null, false, false, "Search models...", $modelSearch, null, null, null, null, null, setModel)
-controls = AppRow([searchBox], "md")
-timeseriesQ = Query("fetchSpendTimeseries", [{range: "7d", model: $modelSearch}], {data: {points: []}}, "data")
-spendChart = AppChart({labels: timeseriesQ.points.bucket_start, datasets: [{label: "Spend (USD)", data: timeseriesQ.points.spend_usd}]}, "line", false, "currency", "USD", null, null, "auto", "No spend data for this model in the last 7 days")
-totalSpend = @Sum(timeseriesQ.points.spend_usd)
-spendCard = AppStatCard("Total spend", totalSpend, null, "neutral", false, "currency", "USD")
-spendSection = AppStack([spendCard, spendChart], "md")
+$modelQuery = ""
+searchBox = AppSearch("md", null, false, false, "Search models...", $modelQuery, null, null, null, null, null, runSearch)
+runSearch = Action([@Set($modelQuery, $event), @Run(spendQ)])
+spendQ = Query("fetchSpendTimeseries", [{range: "7d", model: $modelQuery}], {points: []})
+chart = AppChart({labels: spendQ.points.bucket_start, datasets: [{label: "Spend (USD)", data: spendQ.points.spend_usd}]}, "line", false, "currency", "USD", null, null, "auto", "No spend data for this model in the last 7 days")
+modelRows = Query("fetchUsageByModel", [$modelQuery, 1, 50], [], "data")
+table = AppTable(modelRows, 50, "pages", false, null, null, "No usage found for this model")
 
-Here's a model spend dashboard with a 7-day trend line, total cost card, and a search box to find the model by name — let me know if you'd like to adjust the layout or add more metrics!
+Here's your model spend dashboard with a 7-day trend line and usage table — search for the model name to update both charts. Let me know if you'd like to adjust the layout or add more metrics!

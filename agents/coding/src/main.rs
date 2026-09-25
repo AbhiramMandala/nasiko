@@ -4,7 +4,9 @@ use a2a::*;
 use a2a_server::*;
 use futures::stream::BoxStream;
 
+mod instructions;
 mod project;
+mod prompt_comments;
 mod sandbox;
 mod telemetry;
 mod tools;
@@ -172,6 +174,16 @@ relevant changed section is enough; you don't need to repaste an unchanged file 
 // build a prompt with it, only because wants_self_review() requires it as one
 // of its three conditions. See docs/CODING_AGENT_MINIMALISM.md.
 
+/// Appended to the system prompt only when the prompt-comments feature is opted in.
+/// Kept separate so a default (opted-out) session never sees instructions referring to
+/// tools that were not registered.
+const INSTRUCTION_MAINTENANCE_PROMPT: &str = "\
+Instruction maintenance:
+- If you discover a recurring pattern, convention, or corrective rule that should persist across \
+future sessions, use update_instructions to record it with its rationale.
+- Only add instructions when there is a clear trigger (a failure you fixed, a convention you \
+discovered, or an explicit user request to remember something). Do not speculatively add instructions.";
+
 impl AgentExecutor for CodingAgent {
     fn execute(
         &self,
@@ -224,11 +236,55 @@ impl AgentExecutor for CodingAgent {
                 }
             };
 
+            // Discover workspace instructions and check if prompt-comments feature is opted in.
+            let mut workspace_instructions = instructions::discover(sandbox.as_ref()).await;
+            let feature_enabled = instructions::feature_state(workspace_instructions.as_ref())
+                == instructions::FeatureState::Enabled;
+
             let agent = CodingAgent { model, api_key, base_url, http, minimal_code, self_review_enabled };
-            let tool_defs = tools::definitions();
+
+            // Prune stale instructions if opted in and the list has grown past threshold.
+            if feature_enabled
+                && let Some(ref wi) = workspace_instructions
+                && instructions::needs_pruning(wi)
+            {
+                yield Ok(status_working(&task_id, &context_id, Some("pruning stale instructions")));
+                let (prune_prompt, annotated) = instructions::build_prune_prompt(wi);
+                let prune_messages = vec![
+                    serde_json::json!({"role": "system", "content": "You review instruction files for staleness. Respond with only a JSON array."}),
+                    serde_json::json!({"role": "user", "content": prune_prompt}),
+                ];
+                if let Ok(resp) = agent.chat(&prune_messages, &[]).await {
+                    let answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
+                    let indices = instructions::parse_prune_response(answer);
+                    if !indices.is_empty() {
+                        let _ = instructions::apply_pruning(
+                            sandbox.as_ref(), wi, &indices, &annotated,
+                        ).await;
+                        workspace_instructions = instructions::discover(sandbox.as_ref()).await;
+                    }
+                }
+            }
+
+            let base_prompt = if feature_enabled {
+                format!("{SYSTEM_PROMPT}\n\n{INSTRUCTION_MAINTENANCE_PROMPT}")
+            } else {
+                SYSTEM_PROMPT.to_string()
+            };
+            let system_prompt = instructions::build_system_prompt(
+                &base_prompt,
+                workspace_instructions.as_ref(),
+                feature_enabled,
+            );
+            let mut tool_defs = tools::definitions();
+            // Only expose instruction management tools when the feature is opted in.
+            if feature_enabled {
+                tool_defs.push(tools::update_instructions_definition());
+                tool_defs.push(tools::prune_instructions_definition());
+            }
 
             let mut messages = vec![
-                serde_json::json!({"role": "system", "content": SYSTEM_PROMPT}),
+                serde_json::json!({"role": "system", "content": system_prompt}),
                 serde_json::json!({"role": "user", "content": user_text}),
             ];
 
@@ -259,7 +315,42 @@ impl AgentExecutor for CodingAgent {
                         let preview = extract_preview(name, args);
                         yield Ok(status_working(&task_id, &context_id, Some(&preview)));
 
-                        let result = tools::execute(sandbox.as_ref(), name, args).await;
+                        let result = if name == "update_instructions" {
+                            tools::execute_update_instructions(
+                                sandbox.as_ref(),
+                                args,
+                                workspace_instructions.as_ref(),
+                            ).await
+                        } else if name == "prune_instructions" {
+                            // Manual prune: build prompt, call LLM, apply.
+                            match workspace_instructions.as_ref() {
+                                Some(wi) => {
+                                    let (prune_prompt, annotated) = instructions::build_prune_prompt(wi);
+                                    let prune_messages = vec![
+                                        serde_json::json!({"role": "system", "content": "You review instruction files for staleness. Respond with only a JSON array."}),
+                                        serde_json::json!({"role": "user", "content": prune_prompt}),
+                                    ];
+                                    match agent.chat(&prune_messages, &[]).await {
+                                        Ok(resp) => {
+                                            let answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
+                                            let indices = instructions::parse_prune_response(answer);
+                                            if indices.is_empty() {
+                                                "No instructions were identified as stale. All current instructions remain active.".to_string()
+                                            } else {
+                                                match instructions::apply_pruning(sandbox.as_ref(), wi, &indices, &annotated).await {
+                                                    Ok(count) => format!("Pruned {count} stale instruction(s). They are now marked as revoked and will be excluded from future sessions."),
+                                                    Err(e) => format!("Error applying pruning: {e}"),
+                                                }
+                                            }
+                                        }
+                                        Err(e) => format!("Error during pruning review: {e}"),
+                                    }
+                                }
+                                None => "No instruction file found in workspace. Nothing to prune.".to_string(),
+                            }
+                        } else {
+                            tools::execute(sandbox.as_ref(), name, args).await
+                        };
 
                         messages.push(serde_json::json!({
                             "role": "tool",

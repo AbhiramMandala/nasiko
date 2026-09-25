@@ -189,19 +189,6 @@ export const CASES = [
   { id: 'grouped-filters',
     prompt: 'Show TokenOps usage in a table, filterable by agent and by date range. '
       + 'Group the filters above the table.',
-    // The one annotation that survived the contract/quality split, and it is
-    // the one that should: this recording references `rowsQ`, a statement it
-    // never defines, so the surface does not resolve. That is a CONTRACT
-    // failure — the fixture is not a working surface, which makes it useless
-    // as a regression fixture, whatever it says about the generator.
-    //
-    // So this is not "the rate is high, look away". It is "this particular
-    // draw is not fit to be the sample", and the fix is a re-draw, not an
-    // annotation. It stays only until one is taken. The underlying defect —
-    // the generator losing track of its own statement names on a long
-    // surface, ~42% (10/24 at b663b6eaa08a) — is separate and open.
-    knownFailure: 'the recorded surface references "rowsQ", which it never defines, so it does '
-      + 'not resolve. Re-draw it; this annotation is a placeholder, not a verdict. See NAS-755.',
     expect: { minQueries: 1, minActions: 2, minStates: 2, tags: ['app-table'] } },
   // The other half of rule 20, and the half `grouped-filters` cannot reach.
   // Every state in that case turned out to be a real argument of
@@ -277,14 +264,6 @@ export const CASES = [
   { id: 'paged-agent-usage',
     prompt: 'My own usage broken down by agent, 20 rows at a time with next and previous '
       + 'buttons, and a box to search agents by name. Show how many there are in total.',
-    // Fails ~62% of live runs (15/24 at b663b6eaa08a) — a state set and never
-    // @Run, a source that cannot answer the request, a @Filter on a field the
-    // source does not return. Four mechanisms in one prompt and the generator
-    // gets three on a good day. It carried a knownFailure for one afternoon;
-    // once contract and quality were counted apart the recording turned out
-    // to RENDER fine, so the annotation was stale and the harness said so.
-    // The rate is still real and still reported — as quality, where a number
-    // that varies belongs.
     expect: {
       minQueries: 1, minStates: 2, tags: ['app-table'],
       mechanism: { source: 'fetchUsageByAgent' },
@@ -365,12 +344,6 @@ export const CASES = [
   { id: 'model-searched',
     prompt: 'Spend over the last 7 days for one model. '
       + 'Use a search box to find the model by name.',
-    // The app-search arm of the control pair, ~56% (15/27 at b663b6eaa08a).
-    // Low @Run production on app-search is the FINDING this pair exists to
-    // observe, so it was never a thing to gate on — and now it is not one:
-    // the missing @Run is a quality reading, printed every replay, counted on
-    // every live run, and it stops no build. `model-picked` is the same
-    // measurement with the other affordance, and the contrast is the result.
     expect: {
       minQueries: 1, minActions: 1, minStates: 1,
       controlPair: { source: 'fetchSpendTimeseries', argument: 'model', control: 'app-search' },
@@ -525,57 +498,6 @@ const MANIFEST = JSON.parse(
 export const ALLOWED_SOURCES = new Set(
   Object.values(MANIFEST.scopes ?? {}).flat().map((s) => (typeof s === 'string' ? s : s.name)),
 );
-
-/**
- * The closed sets each source's arguments accept, off the same manifest.
- *
- * `argsEnum` is derived by gen-data-manifest from the argsShape prose the
- * model is shown, so this checks the generation against the very text it was
- * given — not against a second opinion. The runtime now refuses one of these
- * before it reaches the network (`arg_enum_violation` in queries.js), but the
- * eval never runs the query manager: it materializes and reads. So the same
- * fact has to be asserted here, statically, or the corpus stays blind to a
- * defect the browser already catches.
- */
-const ARG_ENUMS = new Map(
-  Object.values(MANIFEST.scopes ?? {}).flat()
-    .filter((s) => typeof s !== 'string' && s.argsEnum)
-    .map((s) => [s.name, {
-      callStyle: s.callStyle,
-      keys: Object.keys(s.argsShape ?? {}),
-      enums: s.argsEnum,
-    }]),
-);
-
-/**
- * Arguments a source would reject, for one Query declaration.
- *
- * The value as materialized, which is the value the fetch would carry. A
- * `$state` reference has already been evaluated to its declared default by
- * the time a declaration exists, so "what the model literally typed" is not
- * a distinction available here — and in a replay there is no user, so every
- * value on this path is the model's anyway.
- *
- * Blind to an option a control offers but has not selected: only the current
- * value is materialized. A picker with one bad choice in three reads clean.
- */
-function argumentsOutsideEnum(query) {
-  const spec = ARG_ENUMS.get(query.source);
-  if (!spec) return [];
-  const args = query.args ?? [];
-  const valueOf = spec.callStyle === 'object'
-    ? (name) => (args[0] && typeof args[0] === 'object' ? args[0][name] : undefined)
-    : (name) => args[spec.keys.indexOf(name)];
-  const out = [];
-  for (const [name, allowed] of Object.entries(spec.enums)) {
-    const value = valueOf(name);
-    if (value === undefined || value === null || value === '') continue;
-    if (typeof value !== 'string' && typeof value !== 'number') continue;
-    if (allowed.includes(String(value))) continue;
-    out.push({ source: query.source, argument: name, value, allowed });
-  }
-  return out;
-}
 
 /**
  * One run's provenance, and whether it is one run at all.
@@ -1621,43 +1543,10 @@ export function evaluateGeneration(text) {
   };
 }
 
-/**
- * Two verdicts, deliberately, because the offline gate and a live run ask
- * different questions of the same text.
- *
- * `--offline` replays a RECORDING. Its job, in this file's own words at the
- * top, is that "a change to the runtime or the catalog is checked against real
- * model output on every commit" — a regression test over a frozen sample. But
- * the checker it runs also asserts whether the generation was any GOOD, and
- * those two went into one list. So a weak draw failed CI forever: not because
- * anything regressed, but because that recording was poor, and the only ways
- * out were to re-record until the sample flattered us, or to annotate the case
- * as a known failure. Both hide the thing the gate exists to see.
- *
- * `fail` is the contract: this DSL no longer becomes a working surface under
- * today's code. A root that does not resolve, a fatal render or materialize
- * diagnostic, a reference to a statement that is not there, a source the scope
- * has withdrawn. Each of those can newly break with the fixture untouched, and
- * each means OUR side moved. That is what should stop a build.
- *
- * `quality` is what the recording says about the generator: the case's own
- * minimums, the wiring readings, the positional contract, the filter fields.
- * Real findings, printed and counted — but frozen with the fixture. They
- * cannot newly fail, so gating on them preserves whichever draw happened to
- * be committed, which is a verdict about history rather than about this
- * commit.
- *
- * A live or `--record` run counts both, because there quality IS the
- * measurement and a fresh draw can genuinely be worse than the last.
- *
- * @returns {{fail: string[], quality: string[], advisory: string[], runtime: string[]}}
- */
+/** @returns {string[]} the reasons this generation is not acceptable */
 export function check(kase, text) {
   const r = evaluateGeneration(text);
-  /** Contract — this DSL is broken under today's runtime and catalog. */
   const fail = [];
-  /** Generation quality — always reported, gates only a live run. */
-  const quality = [];
   /** Corrected, not broken — shown, never fatal. */
   const advisory = [];
   const runtime = [];
@@ -1676,13 +1565,13 @@ export function check(kase, text) {
   const searchNaming = appSearchNaming(r.lines, e.controlPair ?? null, controlPair);
 
   if (e.noSurface) {
-    if (r.root) quality.push('built a dashboard for a question that should have been answered in prose (rule 11)');
-    if (!r.prose.join('').trim()) quality.push('answered with nothing at all');
-    return { fail, quality, advisory, runtime, dimensions, controlPair, searchNaming, r };
+    if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 11)');
+    if (!r.prose.join('').trim()) fail.push('answered with nothing at all');
+    return { fail, advisory, runtime, dimensions, controlPair, searchNaming, r };
   }
 
   if (!r.root) {
-    if (e.allowNoSurface) return { fail, quality, advisory, runtime, dimensions, controlPair, searchNaming, r };
+    if (e.allowNoSurface) return { fail, advisory, runtime, dimensions, controlPair, searchNaming, r };
     fail.push('no root — nothing rendered');
   }
 
@@ -1697,33 +1586,23 @@ export function check(kase, text) {
   for (const name of r.unresolved) fail.push(`references "${name}", which is not defined`);
   for (const q of r.queries) {
     if (!ALLOWED_SOURCES.has(q.source)) fail.push(`Query names "${q.source}", which the scope does not allow`);
-    // Quality, not contract, and the guard below is what said so: this was
-    // written against `fail` before the two lists existed, the merge that
-    // brought them together had no textual conflict, and the contract count
-    // failed at five. The reading is severe — the source rejects the call and
-    // the panel shows a failure — but it is severe about THIS generation, and
-    // a replay cannot newly discover it. A live run still gates on it.
-    for (const bad of argumentsOutsideEnum(q)) {
-      quality.push(`Query passes ${bad.argument}="${bad.value}" to ${bad.source}, which takes one of `
-        + `${bad.allowed.join(', ')} — the call is refused and the component renders a failure`);
-    }
   }
-  if (r.mutations.length) quality.push(`wrote ${r.mutations.length} Mutation(s); no write-capable source exists`);
+  if (r.mutations.length) fail.push(`wrote ${r.mutations.length} Mutation(s); no write-capable source exists`);
 
   if (e.minQueries && r.queries.length < e.minQueries) {
-    quality.push(`${r.queries.length} queries, expected at least ${e.minQueries} — a dashboard with no real data`);
+    fail.push(`${r.queries.length} queries, expected at least ${e.minQueries} — a dashboard with no real data`);
   }
   if (e.minComponents && r.tags.length < e.minComponents) {
-    quality.push(`${r.tags.length} components, expected at least ${e.minComponents}`);
+    fail.push(`${r.tags.length} components, expected at least ${e.minComponents}`);
   }
   if (e.minActions && r.actions < e.minActions) {
-    quality.push(`${r.actions} Actions, expected at least ${e.minActions}`);
+    fail.push(`${r.actions} Actions, expected at least ${e.minActions}`);
   }
   if (e.minStates && r.states.length < e.minStates) {
-    quality.push(`${r.states.length} $state variables, expected at least ${e.minStates}`);
+    fail.push(`${r.states.length} $state variables, expected at least ${e.minStates}`);
   }
   for (const tag of e.tags ?? []) {
-    if (!r.tags.includes(tag)) quality.push(`no <${tag}> anywhere in the tree`);
+    if (!r.tags.includes(tag)) fail.push(`no <${tag}> anywhere in the tree`);
   }
   // Advisory, not a failure. The defect is real and the detection is narrow,
   // but it is a claim about what the DATA will do rather than about what
@@ -1733,51 +1612,49 @@ export function check(kase, text) {
       + `${sm.state}, passed to ${sm.source}'s "${sm.argument}" (${sm.query}). ${sm.reason}`);
   }
   for (const uf of r.unknownFilterFields) {
-    quality.push(`${uf.statement ?? '@Filter'} filters on "${uf.field}", which ${uf.source} does not `
+    fail.push(`${uf.statement ?? '@Filter'} filters on "${uf.field}", which ${uf.source} does not `
       + 'return — it matches nothing, every time, and the surface renders as if there were no data');
   }
-  // Quality, not contract. The surface renders; the control in it cannot do
-  // the one thing it is there for — a statement about this generation, not
-  // about whether today's runtime still handles this DSL. See check()'s
-  // docblock for why the two are counted apart.
+  // Structural, and fatal for the same reason `unresolved` is: the surface
+  // renders, and the control in it cannot do the one thing it is there for.
   for (const pc of r.positionalContract) {
     const where = pc.statement ? `${pc.statement}: ` : '';
     const at = pc.param ? `"${pc.param}" (slot ${pc.index + 1})` : `slot ${pc.index + 1}`;
     if (pc.code === 'action_in_wrong_slot') {
-      quality.push(`${where}${pc.component} takes its Action last, but ${pc.detail} is at ${at} — `
+      fail.push(`${where}${pc.component} takes its Action last, but ${pc.detail} is at ${at} — `
         + 'the control has no action and that slot holds something it cannot use');
     } else if (pc.code === 'action_dropped') {
-      quality.push(`${where}${pc.component} has ${pc.detail} at ${at}, past the end of its parameter `
+      fail.push(`${where}${pc.component} has ${pc.detail} at ${at}, past the end of its parameter `
         + 'list, so the Action is dropped and the control does nothing');
     } else if (pc.code === 'state_in_non_binding_slot') {
-      quality.push(`${where}${pc.component} has ${pc.detail} at ${at}, which is not where a value is `
+      fail.push(`${where}${pc.component} has ${pc.detail} at ${at}, which is not where a value is `
         + 'bound — the arguments are off by a slot and what the user types goes nowhere');
     } else if (pc.code === 'control_never_bound') {
-      quality.push(`${where}${pc.component} is wired to a state or an Action but its ${at} is not `
+      fail.push(`${where}${pc.component} is wired to a state or an Action but its ${at} is not `
         + 'read back from a $state, so what the user types is discarded on the next repaint');
     } else if (pc.code === 'state_as_literal') {
-      quality.push(`${where}"${pc.detail}" is the state's NAME in quotes, not the state — every read `
+      fail.push(`${where}"${pc.detail}" is the state's NAME in quotes, not the state — every read `
         + `of it gets those characters, and ${pc.detail} itself is never read`);
     }
   }
   for (const mr of r.missingQueryRuns) {
-    quality.push(`${mr.action} sets ${mr.state}, which ${mr.query} reads as an argument, but does `
+    fail.push(`${mr.action} sets ${mr.state}, which ${mr.query} reads as an argument, but does `
       + 'not @Run it — a $state changing never re-fetches on its own, so the control moves and '
       + 'the data does not. Either @Run it, or take the state out of the arguments and filter '
       + 'what is already fetched');
   }
   for (const rr of r.redundantRuns) {
-    quality.push(`${rr.action} re-runs ${rr.query}, but ${rr.states.join('/')} is not one of its `
+    fail.push(`${rr.action} re-runs ${rr.query}, but ${rr.states.join('/')} is not one of its `
       + 'arguments — the fetch returns identical data and nothing on screen changes. '
       + 'Either put the state in the Query\'s arguments or drop the @Run and filter what is '
       + 'already fetched');
   }
   if (e.minChartKinds && r.chartKinds.length < e.minChartKinds) {
-    quality.push(`${r.chartKinds.length} kind(s) of chart (${r.chartKinds.join(', ') || 'none'}), `
+    fail.push(`${r.chartKinds.length} kind(s) of chart (${r.chartKinds.join(', ') || 'none'}), `
       + `expected at least ${e.minChartKinds} — the same shape repeated answers one question twice`);
   }
 
-  return { fail, quality, advisory, runtime, dimensions, controlPair, searchNaming, r };
+  return { fail, advisory, runtime, dimensions, controlPair, searchNaming, r };
 }
 
 /**
@@ -2274,20 +2151,14 @@ for (const kase of cases) {
     } else skipped.push(kase.id);
   }
 
-  const { fail, quality, advisory, runtime, dimensions, controlPair, searchNaming, r } = check(kase, text);
-  // A live run is sampling the generator, so a weak draw is the result and
-  // counts. A replay is asking whether today's code still handles a draw that
-  // was already judged when it was recorded, so only the contract counts —
-  // see check()'s docblock.
-  const gating = offline ? fail : [...fail, ...quality];
+  const { fail, advisory, runtime, dimensions, controlPair, searchNaming, r } = check(kase, text);
 
   // Observational only — nothing below reads this to decide pass or fail.
   if (record) {
     const { counts, fatal } = diagnosticTally(r);
     runRows[kase.id] = {
-      status: gating.length ? 'failed' : (text.trim() ? 'ok' : 'skipped'),
+      status: fail.length ? 'failed' : (text.trim() ? 'ok' : 'skipped'),
       failReasons: fail,
-      qualityFindings: quality,
       sha256: sha256(text),
       statements: r.statements,
       componentInstances: (r.tags ?? []).length,
@@ -2359,9 +2230,9 @@ for (const kase of cases) {
   }
 
   if (kase.knownFailure) {
-    if (gating.length) {
+    if (fail.length) {
       console.log(`~ ${kase.id} — known failure: ${kase.knownFailure}`);
-      for (const f of gating) console.log(`    ${f}`);
+      for (const f of fail) console.log(`    ${f}`);
       // Printed here as well as below, because `continue` skips the tail. A
       // known-failing case was the one place an advisory was collected and
       // then thrown away — and it is the case most likely to be carrying a
@@ -2379,21 +2250,16 @@ for (const kase of cases) {
     continue;
   }
 
-  if (gating.length) {
+  if (fail.length) {
     failed++;
     console.error(`✗ ${kase.id} — "${kase.prompt}"`);
-    for (const f of gating) console.error(`    ${f}`);
+    for (const f of fail) console.error(`    ${f}`);
   } else {
     const shape = r.root
       ? `${r.statements} statements, ${r.queries.length} queries, ${r.tags.length} components`
       : 'prose only';
     console.log(`✓ ${kase.id} — ${shape}`);
   }
-  // On a replay these are not in `gating`, so they would otherwise vanish —
-  // and a finding nobody prints is a finding nobody fixes. Marked `quality:`
-  // so the line says which verdict it belongs to without anyone having to
-  // remember which mode they ran in.
-  if (offline) for (const q of quality) console.log(`    quality: ${q}`);
   for (const a of advisory) console.log(`    ${a.includes('eval/') ? 'noted' : 'corrected'}: ${a}`);
   // Four independent readings, printed as four. A ✓ above means the surface
   // is sound; these say which mechanism it chose, and the two can and do
