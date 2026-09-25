@@ -113,8 +113,23 @@ pub struct GatewayConfig {
     /// `compress_enabled` switch is set, so the fleet default is a kill switch, never the thing
     /// that turns a layer on. An operator sets this to `false` to stop IP-2 everywhere at once.
     pub brevity_enabled: bool,
-    /// Skip the directive below this transcript size. It costs ~60-120 tokens on every turn, so
-    /// on short turns it is net-negative (§3.3 item 1). 8 KiB keeps that overhead under ~5%.
+    /// Skip the directive below this transcript size. **Defaults to 0 — every turn gets it.**
+    ///
+    /// The directive is ~114 tokens of input. Output bills at 4x input on the default model, so
+    /// it repays itself by saving just ~29 output tokens; at the ~9% output reduction measured
+    /// on real traffic that is a turn producing ~300 output tokens or more.
+    ///
+    /// A floor here gates on *input* size, which is the wrong dimension: the payoff scales with
+    /// how much the model is about to **write**, and the two do not correlate. "Summarise the
+    /// timeline" is a small input with a large output — the turn brevity helps most, and exactly
+    /// the one an input floor would skip.
+    ///
+    /// There is no prefix-cache cost to weigh against it either: the directive is appended as a
+    /// *trailing* system message, so the cached prefix is untouched. That is what separates this
+    /// from the compression layers, where §14 R2 governs.
+    ///
+    /// Raise it only if real traffic turns out to be dominated by very short replies (under
+    /// ~250 output tokens), where the fixed cost stops being repaid.
     pub brevity_min_bytes: usize,
 
     /// Persist pre-compression originals so an agent can recover what was elided (IP-5).
@@ -163,7 +178,7 @@ impl Default for GatewayConfig {
             compress_level: nasiko_compress::Level::Conservative,
             compress_dry_run: false,
             brevity_enabled: true,
-            brevity_min_bytes: 8192,
+            brevity_min_bytes: 0,
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
