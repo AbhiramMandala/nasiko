@@ -21,6 +21,9 @@ reqwest = { workspace = true }
 # A2A wire-shape helpers (SSE event classification, text extraction)
 nasiko-types = { workspace = true }
 
+# Structural compression of stored tool results (IP-3)
+nasiko-compress = { workspace = true }
+
 # Error handling
 thiserror = { workspace = true }
 
