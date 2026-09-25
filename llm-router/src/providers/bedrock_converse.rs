@@ -718,15 +718,25 @@ fn should_retry_with_prefix(status: u16, body: &str, model_id: &str) -> bool {
 
 /// Returns `(body, tool_name_map)` where `tool_name_map` maps sanitized names
 /// back to the originals (only entries that changed).
-fn to_converse_request(req: &ChatRequest, cfg: &ResolvedConfig) -> (Value, HashMap<String, String>) {
+fn to_converse_request(
+    req: &ChatRequest,
+    cfg: &ResolvedConfig,
+) -> (Value, HashMap<String, String>) {
     to_converse_request_inner(req, cfg, true)
 }
 
-fn to_converse_request_no_temperature(req: &ChatRequest, cfg: &ResolvedConfig) -> (Value, HashMap<String, String>) {
+fn to_converse_request_no_temperature(
+    req: &ChatRequest,
+    cfg: &ResolvedConfig,
+) -> (Value, HashMap<String, String>) {
     to_converse_request_inner(req, cfg, false)
 }
 
-fn to_converse_request_inner(req: &ChatRequest, cfg: &ResolvedConfig, allow_temperature: bool) -> (Value, HashMap<String, String>) {
+fn to_converse_request_inner(
+    req: &ChatRequest,
+    cfg: &ResolvedConfig,
+    allow_temperature: bool,
+) -> (Value, HashMap<String, String>) {
     let mut system_parts: Vec<Value> = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
@@ -774,9 +784,7 @@ fn to_converse_request_inner(req: &ChatRequest, cfg: &ResolvedConfig, allow_temp
         },
     });
 
-    if allow_temperature
-        && let Some(t) = cfg.temperature.or(req.temperature)
-    {
+    if allow_temperature && let Some(t) = cfg.temperature.or(req.temperature) {
         body["inferenceConfig"]["temperature"] = json!(t);
     }
     if !system_parts.is_empty() {
@@ -921,10 +929,7 @@ fn from_converse_response(
                 text.push_str(t);
             }
             if let Some(tu) = block.get("toolUse") {
-                let raw_name = tu
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
+                let raw_name = tu.get("name").and_then(|v| v.as_str()).unwrap_or_default();
                 tool_calls.push(ToolCall {
                     id: tu
                         .get("toolUseId")
@@ -1074,9 +1079,7 @@ fn decode_event_stream_frame(buf: &mut BytesMut) -> Option<EventStreamFrame> {
             event_type: String::new(),
             exception_type: "InvalidEventStream".to_string(),
             message_type: "exception".to_string(),
-            payload: format!(
-                "Response is not valid event-stream binary (first bytes: {preview})"
-            ),
+            payload: format!("Response is not valid event-stream binary (first bytes: {preview})"),
         });
     }
 
@@ -1399,7 +1402,10 @@ mod tests {
     #[test]
     fn sanitize_tool_name_replaces_hyphens_and_dots() {
         assert_eq!(sanitize_tool_name("query-docs"), "query_docs");
-        assert_eq!(sanitize_tool_name("resolve-library-id"), "resolve_library_id");
+        assert_eq!(
+            sanitize_tool_name("resolve-library-id"),
+            "resolve_library_id"
+        );
         assert_eq!(
             sanitize_tool_name("mcp__plugin_context7_context7__query-docs"),
             "mcp__plugin_context7_context7__query_docs"
