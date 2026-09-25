@@ -1312,3 +1312,33 @@ Done.`;
   assert.deepEqual(r.fail, [], r.fail.join(' / '));
   assert.match(r.quality.join(' '), /does not @Run it/);
 });
+
+test('the contract list is closed — a new check cannot join it by accident', () => {
+  // The split only holds while `fail` stays the four checks that mean OUR side
+  // moved. Nothing stops a later edit from reaching for `fail.push` because it
+  // is the list that was there first, and nothing would report it: the check
+  // would simply start gating replays, which is the behaviour the split exists
+  // to remove.
+  //
+  // This is not hypothetical. NAS-756 adds an argument-enum check on its own
+  // branch, written before the split existed, and it pushes to `fail`. Git
+  // merges the two files with ZERO textual conflict — so no one is asked to
+  // resolve anything, and a quality check silently becomes a build gate. A
+  // clean merge that changes behaviour is worse than a dirty one; this makes
+  // it dirty.
+  //
+  // Counted rather than named, for the same reason gen-diagnostics requires an
+  // entry per code rather than defaulting: the point is that adding one forces
+  // a decision, not that this particular list of four is sacred. If a fifth
+  // contract check is genuinely right, change the number and say why in the
+  // commit.
+  const src = readFileSync(new URL('../scripts/eval-generations.mjs', import.meta.url), 'utf8');
+  const contract = [...src.matchAll(/\bfail\.push\(/g)].length;
+  assert.equal(contract, 4,
+    `check() has ${contract} contract checks, expected 4.\n`
+    + '    A check belongs in `fail` only if it can newly break with the fixture untouched — '
+    + 'no root, a fatal render/materialize diagnostic, an unresolved reference, a withdrawn '
+    + 'source. Everything the checker says about how GOOD a generation is belongs in `quality`, '
+    + 'which is reported on every replay and gates a live run.\n'
+    + '    If you got here from a merge: move the new `fail.push` to `quality.push`.');
+});
