@@ -12,9 +12,17 @@ model really produces — without spending a token or needing a model to be up.
 ## Re-recording
 
 ```
-set -a && source .env && set +a     # WEAVE_INTERNAL_TOKEN
+export NASIKO_ADMIN_USERNAME=... NASIKO_ADMIN_PASSWORD=...
+just run                  # the control plane must be up
 just eval-ui-record
 ```
+
+Generation goes through the CONTROL PLANE, not straight at the generator —
+`${NASIKO_CP_BASE_URL:-http://localhost:8082}/api/weave/surface` — so it needs a
+control-plane login rather than an agent token. The generator is a deployed agent
+the control plane seeds from its configured image; there is nothing to start by
+hand. `eval-generations.mjs` checks both credentials before spending a single model
+call, and prints what is missing.
 
 Do it deliberately, and read the diff. It is the review artifact: it shows
 exactly what the model started writing differently after a prompt or catalog
