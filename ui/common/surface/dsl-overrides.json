@@ -135,6 +135,23 @@
     "app-input": {
       "status": "ready",
       "actionParam": true,
+      "reason": "Twenty-four positional slots is more than the generator can place. Every eval case that reached for app-input mis-slotted: $agentId written into \"list\" (slot 21), an Action at slot 27 past the end of the signature, another at \"spellcheck\" (slot 22), and 27 arguments passed for 24. Every control with twelve slots or fewer — app-search, app-segmented-control — reads four-for-four in the same corpus. The nine native input attributes below sit between `value` and `action`, and a generated dashboard has no use for any of them: `list` in particular names a <datalist> id a surface can never have produced. The other four sit in FRONT of `value`, which is the half that matters — withholding only the nine moves `action` to 15 and leaves `value` at 13, and \"value is not read back from a $state\" is one of the observed failures. So both groups go, and the signature lands at eleven: size, state, label, hint, required, disabled, type, placeholder, value, aria-label, action.",
+      "dslExcludeAttributes": [
+        "autocomplete",
+        "maxlength",
+        "inputmode",
+        "min",
+        "max",
+        "step",
+        "pattern",
+        "list",
+        "spellcheck",
+        "count",
+        "reveal",
+        "readonly",
+        "name"
+      ],
+      "dslSummary": "Free text the reader types or pastes — an agent id, a month as YYYY-MM, a name to look up. Its value has to be read back from the $state its own Action sets, or what is typed is discarded on the next repaint. Reach for AppSearch when the point is finding something in a list as you type, and AppSegmentedControl or AppSelect when the answer is one of a known few: a typed value the source matches exactly returns nothing for every near miss, with no error to say so.",
       "note": "A form control: its value plumbing is Action([@Set($var, …)]) on the trailing action slot, not an attribute."
     },
     "app-select": {
