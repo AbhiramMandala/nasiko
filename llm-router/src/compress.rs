@@ -42,6 +42,22 @@ pub(crate) fn policy_for(cfg: &GatewayConfig, resolved: &ResolvedConfig) -> Poli
     }
 }
 
+/// An original held back for recovery (IP-5). Minted before compression so the handle can be
+/// interpolated into the elision marker; persisted by the caller, because this module is sync
+/// and the store is not.
+#[derive(Debug, Clone)]
+pub(crate) struct Original {
+    pub handle: uuid::Uuid,
+    pub content: String,
+    pub content_type: &'static str,
+}
+
+/// Mint a recovery handle for any payload at least this large.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Recovery {
+    pub min_bytes: usize,
+}
+
 /// What ran, for `token_usage.metadata` and the span.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct CompressionStats {
@@ -53,6 +69,8 @@ pub(crate) struct CompressionStats {
     pub messages_touched: usize,
     pub by_type: [u16; ContentType::COUNT],
     pub elapsed_us: u64,
+    /// Non-empty only when recovery is on and a handle was actually used.
+    pub originals: Vec<Original>,
 }
 
 impl CompressionStats {
@@ -83,7 +101,14 @@ impl CompressionStats {
 }
 
 /// Compress the request in place. Leaves it untouched when the policy is off or nothing shrank.
-pub(crate) fn apply(req: &mut ChatRequest, policy: &Policy<'_>) -> CompressionStats {
+///
+/// `recovery` mints a handle per compressed message and returns the original in
+/// [`CompressionStats::originals`] for the caller to persist (IP-5).
+pub(crate) fn apply(
+    req: &mut ChatRequest,
+    policy: &Policy<'_>,
+    recovery: Option<Recovery>,
+) -> CompressionStats {
     let mut stats = CompressionStats {
         level: policy.level.as_label(),
         dry_run: policy.dry_run,
@@ -100,7 +125,7 @@ pub(crate) fn apply(req: &mut ChatRequest, policy: &Policy<'_>) -> CompressionSt
             continue;
         }
         if let Some(content) = msg.content.as_mut() {
-            compress_content(content, policy, &mut stats);
+            compress_content(content, policy, recovery, &mut stats);
         }
     }
     stats.applied = !policy.dry_run && stats.bytes_out < stats.bytes_in;
@@ -108,10 +133,15 @@ pub(crate) fn apply(req: &mut ChatRequest, policy: &Policy<'_>) -> CompressionSt
     stats
 }
 
-fn compress_content(content: &mut Value, policy: &Policy<'_>, stats: &mut CompressionStats) {
+fn compress_content(
+    content: &mut Value,
+    policy: &Policy<'_>,
+    recovery: Option<Recovery>,
+    stats: &mut CompressionStats,
+) {
     match content {
         // Anthropic and Gemini inbound always flatten to this shape.
-        Value::String(s) => compress_str(s, policy, stats),
+        Value::String(s) => compress_str(s, policy, recovery, stats),
 
         // OpenAI inbound preserves whatever the caller sent, including multimodal part arrays.
         // Each text part is compressed independently — compressing `Message::text()` and writing
@@ -125,7 +155,7 @@ fn compress_content(content: &mut Value, policy: &Policy<'_>, stats: &mut Compre
                     continue;
                 }
                 if let Some(Value::String(text)) = part.get_mut("text") {
-                    compress_str(text, policy, stats);
+                    compress_str(text, policy, recovery, stats);
                 }
             }
         }
@@ -135,8 +165,29 @@ fn compress_content(content: &mut Value, policy: &Policy<'_>, stats: &mut Compre
     }
 }
 
-fn compress_str(text: &mut String, policy: &Policy<'_>, stats: &mut CompressionStats) {
-    let out: Compressed<'_> = compress(text, policy);
+fn compress_str(
+    text: &mut String,
+    policy: &Policy<'_>,
+    recovery: Option<Recovery>,
+    stats: &mut CompressionStats,
+) {
+    // The handle has to exist *before* compression, because the marker builder interpolates it
+    // while eliding. It is discarded below if nothing was actually elided, so an unused handle
+    // never reaches the store.
+    let minted = recovery
+        .filter(|r| text.len() >= r.min_bytes)
+        .map(|_| uuid::Uuid::new_v4());
+    let handle_ref = minted.map(|h| h.to_string());
+
+    let policy = match handle_ref.as_deref() {
+        Some(handle) => Policy {
+            recovery_ref: Some(handle),
+            ..*policy
+        },
+        None => *policy,
+    };
+
+    let out: Compressed<'_> = compress(text, &policy);
     if out.saved_bytes() == 0 {
         return;
     }
@@ -147,6 +198,14 @@ fn compress_str(text: &mut String, policy: &Policy<'_>, stats: &mut CompressionS
     stats.by_type[out.content_type().index()] += 1;
 
     if out.is_changed() {
+        // Only now is the original unrecoverable from the wire, so only now is it worth storing.
+        if let Some(handle) = minted {
+            stats.originals.push(Original {
+                handle,
+                content: text.clone(),
+                content_type: out.content_type().as_label(),
+            });
+        }
         *text = out.into_text();
     }
 }
@@ -197,12 +256,101 @@ mod tests {
         }
     }
 
+    // ── IP-5: recovery handles ──────────────────────────────────────────────
+
+    fn recovery() -> Option<Recovery> {
+        Some(Recovery { min_bytes: 0 })
+    }
+
+    #[test]
+    fn no_recovery_policy_mints_no_handles() {
+        let mut r = req(vec![msg("tool", json!(noisy_log()))]);
+
+        let stats = apply(&mut r, &on(), None);
+
+        assert!(stats.originals.is_empty());
+        let sent = r.messages[0].content.as_ref().unwrap().as_str().unwrap();
+        assert!(
+            !sent.contains("nasiko://c/"),
+            "marker names a handle nobody stored"
+        );
+    }
+
+    #[test]
+    fn a_compressed_message_yields_its_original_and_a_marker_naming_the_handle() {
+        let original = noisy_log();
+        let mut r = req(vec![msg("tool", json!(original.clone()))]);
+
+        let stats = apply(&mut r, &on(), recovery());
+
+        assert_eq!(stats.originals.len(), 1);
+        assert_eq!(
+            stats.originals[0].content, original,
+            "must store the pre-compression text"
+        );
+
+        let sent = r.messages[0].content.as_ref().unwrap().as_str().unwrap();
+        assert!(
+            sent.contains(&stats.originals[0].handle.to_string()),
+            "the marker must name the handle the caller is about to persist: {sent}"
+        );
+    }
+
+    #[test]
+    fn payloads_below_the_floor_mint_nothing() {
+        // A small elision is cheaper to re-send than to recover, and every handle is a row.
+        let mut r = req(vec![msg("tool", json!(noisy_log()))]);
+
+        let stats = apply(
+            &mut r,
+            &on(),
+            Some(Recovery {
+                min_bytes: usize::MAX,
+            }),
+        );
+
+        assert!(stats.originals.is_empty());
+        assert_eq!(stats.messages_touched, 1, "compression itself still ran");
+    }
+
+    #[test]
+    fn dry_run_mints_nothing_because_nothing_was_elided() {
+        // The request goes out whole, so there is nothing to recover — storing a copy would be
+        // pure cost.
+        let mut r = req(vec![msg("tool", json!(noisy_log()))]);
+        let policy = Policy {
+            dry_run: true,
+            ..on()
+        };
+
+        let stats = apply(&mut r, &policy, recovery());
+
+        assert!(stats.originals.is_empty());
+        assert!(stats.bytes_out < stats.bytes_in, "but it still measured");
+    }
+
+    #[test]
+    fn each_compressed_message_gets_its_own_handle() {
+        let mut r = req(vec![
+            msg("tool", json!(noisy_log())),
+            msg("tool", json!(noisy_log())),
+        ]);
+
+        let stats = apply(&mut r, &on(), recovery());
+
+        assert_eq!(stats.originals.len(), 2);
+        assert_ne!(
+            stats.originals[0].handle, stats.originals[1].handle,
+            "one handle for two payloads would make recovery ambiguous"
+        );
+    }
+
     #[test]
     fn disabled_policy_leaves_the_request_byte_identical() {
         let mut r = req(vec![msg("tool", json!(noisy_log()))]);
         let before = serde_json::to_string(&r).unwrap();
 
-        let stats = apply(&mut r, &Policy::default());
+        let stats = apply(&mut r, &Policy::default(), None);
 
         assert_eq!(serde_json::to_string(&r).unwrap(), before);
         assert_eq!(stats.messages_touched, 0);
@@ -219,7 +367,7 @@ mod tests {
             msg("tool", json!(log.clone())),
         ]);
 
-        let stats = apply(&mut r, &on());
+        let stats = apply(&mut r, &on(), None);
 
         assert_eq!(stats.messages_touched, 1);
         for i in 0..3 {
@@ -241,7 +389,7 @@ mod tests {
         let query = format!("{}\n\nCurrent message: what failed?", noisy_log());
         let mut r = req(vec![msg("user", json!(query.clone()))]);
 
-        apply(&mut r, &on());
+        apply(&mut r, &on(), None);
 
         assert_eq!(
             crate::routing::latest_user_query(&r.messages).as_deref(),
@@ -260,7 +408,7 @@ mod tests {
             ]),
         )]);
 
-        apply(&mut r, &on());
+        apply(&mut r, &on(), None);
 
         let parts = r.messages[0].content.as_ref().unwrap().as_array().unwrap();
         assert_eq!(parts.len(), 3, "array length changed");
@@ -283,7 +431,7 @@ mod tests {
         }]);
         let mut r = req(vec![m]);
 
-        let stats = apply(&mut r, &on());
+        let stats = apply(&mut r, &on(), None);
 
         assert_eq!(stats.messages_touched, 0);
     }
@@ -294,7 +442,7 @@ mod tests {
         m.tool_call_id = Some("call_42".into());
         let mut r = req(vec![m]);
 
-        apply(&mut r, &on());
+        apply(&mut r, &on(), None);
 
         assert_eq!(r.messages[0].tool_call_id.as_deref(), Some("call_42"));
     }
@@ -308,7 +456,7 @@ mod tests {
             ..on()
         };
 
-        let stats = apply(&mut r, &policy);
+        let stats = apply(&mut r, &policy, None);
 
         assert_eq!(serde_json::to_string(&r).unwrap(), before);
         assert!(!stats.applied);
@@ -330,7 +478,7 @@ mod tests {
             ),
         ]);
 
-        let stats = apply(&mut r, &on());
+        let stats = apply(&mut r, &on(), None);
         let meta = stats.to_metadata().unwrap();
 
         assert_eq!(meta["messages_touched"], 2);
@@ -342,10 +490,10 @@ mod tests {
     #[test]
     fn a_second_pass_changes_nothing() {
         let mut r = req(vec![msg("tool", json!(noisy_log()))]);
-        apply(&mut r, &on());
+        apply(&mut r, &on(), None);
         let once = serde_json::to_string(&r).unwrap();
 
-        apply(&mut r, &on());
+        apply(&mut r, &on(), None);
 
         assert_eq!(serde_json::to_string(&r).unwrap(), once);
     }

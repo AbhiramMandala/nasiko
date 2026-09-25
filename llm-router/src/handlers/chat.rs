@@ -188,7 +188,15 @@ async fn chat_core(
         policy_enabled = compress_policy.enabled,
         "compress: policy for this request"
     );
-    let compression = crate::compress::apply(&mut req, &compress_policy);
+
+    let recovery = ctx
+        .cfg
+        .compress_recovery_enabled
+        .then_some(crate::compress::Recovery {
+            min_bytes: ctx.cfg.compress_recovery_min_bytes,
+        });
+
+    let compression = crate::compress::apply(&mut req, &compress_policy, recovery);
     if compression.messages_touched > 0 {
         tracing::debug!(
             target: "nasiko::llm_router::compress",
@@ -203,6 +211,42 @@ async fn chat_core(
             "compress: tool results reduced"
         );
     }
+
+    // The markers naming these handles are already in `req`; the row has to exist before the
+    // request carrying them goes out (see `recovery`'s module docs). Only a flow-scoped request
+    // can be recovered, so one without a flow id stores nothing.
+    if !compression.originals.is_empty() {
+        match (flow_id.as_deref(), owner_id.parse::<uuid::Uuid>()) {
+            (Some(flow), Ok(owner)) => {
+                crate::recovery::persist(
+                    &ctx.db,
+                    &compression.originals,
+                    flow,
+                    owner,
+                    agent_id.parse().ok(),
+                )
+                .await
+            }
+            _ => tracing::debug!(
+                target: "nasiko::llm_router::recovery",
+                %agent_id,
+                count = compression.originals.len(),
+                "recovery: request is not flow-scoped; originals not stored"
+            ),
+        }
+    }
+
+    // ── brevity seam (IP-2) ───────────────────────────────────────────────────────────────
+    // After compression, so the size floor is judged on the bytes actually being sent, and so a
+    // compressed tool result cannot push a turn over the floor it would otherwise miss.
+    let brevity = crate::brevity::apply(&mut req, &ctx.cfg, &resolved);
+    tracing::debug!(
+        target: "nasiko::llm_router::brevity",
+        %agent_id,
+        applied = brevity.is_ok(),
+        skipped = ?brevity.err(),
+        "brevity: directive decision"
+    );
 
     tracing::info!(
         target: "nasiko::llm_router::chat",
@@ -230,6 +274,7 @@ async fn chat_core(
         nasiko.compress.bytes_in = tracing::field::Empty,
         nasiko.compress.bytes_out = tracing::field::Empty,
         nasiko.compress.elapsed_us = tracing::field::Empty,
+        nasiko.brevity.applied = brevity.is_ok(),
     );
     if compression.messages_touched > 0 {
         llm_span.record("nasiko.compress.bytes_in", compression.bytes_in);
