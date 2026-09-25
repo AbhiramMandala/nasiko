@@ -99,7 +99,7 @@ impl ProviderClient for BedrockConverseProvider {
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
         let model_id = converse_model_id(&cfg.model, &self.base);
-        let (body, name_map) = to_converse_request(req, cfg);
+        let body = to_converse_request(req, cfg);
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -114,14 +114,12 @@ impl ProviderClient for BedrockConverseProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
+            // Retry with the region prefix — the model may be INFERENCE_PROFILE.
             if should_retry_with_prefix(status.as_u16(), &text, &model_id) {
                 let prefixed = prefixed_model_id(&cfg.model, &self.base);
                 if prefixed != model_id {
                     return self.chat_with_model(req, cfg, &prefixed).await;
                 }
-            }
-            if is_temperature_unsupported(status.as_u16(), &text) {
-                return self.chat_no_temperature(req, cfg, &model_id).await;
             }
             return Err(Self::status_error(status, text));
         }
@@ -130,7 +128,7 @@ impl ProviderClient for BedrockConverseProvider {
             .json()
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
-        from_converse_response(&value, &cfg.model, &name_map)
+        from_converse_response(&value, &cfg.model)
     }
 
     async fn chat_stream(
@@ -139,30 +137,8 @@ impl ProviderClient for BedrockConverseProvider {
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
         let model_id = converse_model_id(&cfg.model, &self.base);
-        let (body, name_map) = to_converse_request(req, cfg);
+        let body = to_converse_request(req, cfg);
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
-
-        let body_str = serde_json::to_string(&body).unwrap_or_default();
-        let tool_count = body
-            .pointer("/toolConfig/tools")
-            .and_then(|t| t.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        let msg_count = body
-            .get("messages")
-            .and_then(|m| m.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        tracing::info!(
-            target: "nasiko::llm_router::bedrock",
-            model = %model_id,
-            body_bytes = body_str.len(),
-            tool_count,
-            msg_count,
-            has_system = body.get("system").is_some(),
-            has_tool_config = body.get("toolConfig").is_some(),
-            "bedrock converse-stream: outgoing request stats"
-        );
 
         let resp = self
             .http
@@ -174,58 +150,162 @@ impl ProviderClient for BedrockConverseProvider {
             .map_err(|e| ProviderError::Transport(e.to_string()))?;
 
         let status = resp.status();
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("(none)")
-            .to_string();
-        let amzn_error = resp
-            .headers()
-            .get("x-amzn-errortype")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        tracing::info!(
-            target: "nasiko::llm_router::bedrock",
-            %status,
-            content_type = %content_type,
-            amzn_error = %amzn_error,
-            "bedrock converse-stream: response status and headers"
-        );
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            tracing::warn!(
-                target: "nasiko::llm_router::bedrock",
-                %status,
-                model = %model_id,
-                body_preview = &text[..text.len().min(500)],
-                "bedrock converse-stream: non-success response body"
-            );
             if should_retry_with_prefix(status.as_u16(), &text, &model_id) {
                 let prefixed = prefixed_model_id(&cfg.model, &self.base);
                 if prefixed != model_id {
-                    tracing::info!(
-                        target: "nasiko::llm_router::bedrock",
-                        original = %model_id,
-                        prefixed = %prefixed,
-                        "bedrock: retrying with region-prefixed model ID"
-                    );
                     return self.stream_with_model(req, cfg, &prefixed).await;
                 }
-            }
-            if is_temperature_unsupported(status.as_u16(), &text) {
-                return self.stream_no_temperature(req, cfg, &model_id).await;
             }
             return Err(Self::status_error(status, text));
         }
 
-        Ok(Box::pin(converse_event_stream(
-            resp.bytes_stream(),
-            cfg.model.clone(),
-            name_map,
-            "primary",
-        )))
+        let model = cfg.model.clone();
+        let bytes_stream = resp.bytes_stream();
+        let stream = async_stream::stream! {
+            futures::pin_mut!(bytes_stream);
+            let mut buf = BytesMut::new();
+            let mut id = String::new();
+            let mut block_to_tool: HashMap<i64, i64> = HashMap::new();
+            let mut tool_blocks_with_arguments: HashSet<i64> = HashSet::new();
+            let mut next_tool_index: i64 = 0;
+            let mut input_tokens: Option<i64> = None;
+            let mut output_tokens: Option<i64> = None;
+            let mut finish: Option<String> = None;
+            let mut got_metadata = false;
+
+            while let Some(chunk) = bytes_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => { yield Err(ProviderError::Transport(e.to_string())); return; }
+                };
+                buf.extend_from_slice(&chunk);
+
+                while let Some((event_type, payload)) = decode_event_stream_frame(&mut buf) {
+                    let event: Value = match serde_json::from_str(&payload) {
+                        Ok(v) => v,
+                        Err(_) => continue, // skip unparseable frames
+                    };
+
+                    match event_type.as_str() {
+                        "messageStart" => {
+                            id = uuid::Uuid::new_v4().to_string();
+                            yield Ok(delta_chunk(&id, &model, Delta {
+                                role: Some("assistant".to_string()),
+                                ..Delta::default()
+                            }));
+                        }
+                        "contentBlockStart" => {
+                            if let Some(start) = event.get("start").and_then(|s| s.get("toolUse")) {
+                                let oa_index = next_tool_index;
+                                next_tool_index += 1;
+                                let block_idx = event.get("contentBlockIndex")
+                                    .and_then(|i| i.as_i64())
+                                    .unwrap_or(0);
+                                block_to_tool.insert(block_idx, oa_index);
+                                yield Ok(delta_chunk(&id, &model, Delta {
+                                    tool_calls: Some(vec![ToolCallDelta {
+                                        index: oa_index,
+                                        id: start.get("toolUseId").and_then(|v| v.as_str()).map(str::to_string),
+                                        kind: Some("function".to_string()),
+                                        function: Some(FunctionCallDelta {
+                                            name: start.get("name").and_then(|v| v.as_str()).map(str::to_string),
+                                            arguments: Some(String::new()),
+                                        }),
+                                    }]),
+                                    ..Delta::default()
+                                }));
+                            }
+                        }
+                        "contentBlockDelta" => {
+                            let block_idx = event.get("contentBlockIndex")
+                                .and_then(|i| i.as_i64())
+                                .unwrap_or(0);
+                            if let Some(delta) = event.get("delta") {
+                                if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                                    yield Ok(delta_chunk(&id, &model, Delta {
+                                        content: Some(text.to_string()),
+                                        ..Delta::default()
+                                    }));
+                                } else if let Some(input) = delta.get("toolUse")
+                                    .and_then(|tu| tu.get("input"))
+                                    .and_then(|i| i.as_str())
+                                    && let Some(&oa_index) = block_to_tool.get(&block_idx)
+                                {
+                                    tool_blocks_with_arguments.insert(block_idx);
+                                    yield Ok(delta_chunk(&id, &model, Delta {
+                                        tool_calls: Some(vec![ToolCallDelta {
+                                            index: oa_index,
+                                            id: None,
+                                            kind: None,
+                                            function: Some(FunctionCallDelta {
+                                                name: None,
+                                                arguments: Some(input.to_string()),
+                                            }),
+                                        }]),
+                                        ..Delta::default()
+                                    }));
+                                }
+                            }
+                        }
+                        "contentBlockStop" => {
+                            let block_idx = event.get("contentBlockIndex")
+                                .and_then(|i| i.as_i64())
+                                .unwrap_or(0);
+                            if !tool_blocks_with_arguments.contains(&block_idx)
+                                && let Some(&oa_index) = block_to_tool.get(&block_idx)
+                            {
+                                yield Ok(delta_chunk(&id, &model, Delta {
+                                    tool_calls: Some(vec![ToolCallDelta {
+                                        index: oa_index,
+                                        id: None,
+                                        kind: None,
+                                        function: Some(FunctionCallDelta {
+                                            name: None,
+                                            arguments: Some("{}".into()),
+                                        }),
+                                    }]),
+                                    ..Delta::default()
+                                }));
+                            }
+                        }
+                        "messageStop" => {
+                            if let Some(sr) = event.get("stopReason").and_then(|s| s.as_str()) {
+                                finish = Some(map_stop_reason(sr).to_string());
+                            }
+                        }
+                        "metadata" => {
+                            got_metadata = true;
+                            if let Some(u) = event.get("usage") {
+                                input_tokens = u.get("inputTokens").and_then(|v| v.as_i64());
+                                output_tokens = u.get("outputTokens").and_then(|v| v.as_i64());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Emit finish + usage chunks.
+            if let Some(finish) = finish {
+                yield Ok(finish_chunk(&id, &model, finish));
+            }
+            if got_metadata {
+                yield Ok(usage_chunk(&id, &model, Usage {
+                    prompt_tokens: input_tokens,
+                    completion_tokens: output_tokens,
+                    total_tokens: match (input_tokens, output_tokens) {
+                        (Some(i), Some(o)) => Some(i + o),
+                        _ => None,
+                    },
+                    cache_read_input_tokens: None,
+                    cache_creation_input_tokens: None,
+                    prompt_tokens_details: None,
+                }));
+            }
+        };
+        Ok(Box::pin(stream))
     }
 
     async fn embeddings(
@@ -249,42 +329,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<ChatResponse, ProviderError> {
-        let (body, name_map) = to_converse_request(req, cfg);
-        let url = format!("{}/model/{}/converse", self.base, model_id);
-
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&cfg.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            if is_temperature_unsupported(status.as_u16(), &text) {
-                return self.chat_no_temperature(req, cfg, model_id).await;
-            }
-            return Err(Self::status_error(status, text));
-        }
-
-        let value: Value = resp
-            .json()
-            .await
-            .map_err(|e| ProviderError::Parse(e.to_string()))?;
-        from_converse_response(&value, &cfg.model, &name_map)
-    }
-
-    /// Retry chat without the temperature field (some models reject it).
-    async fn chat_no_temperature(
-        &self,
-        req: &ChatRequest,
-        cfg: &ResolvedConfig,
-        model_id: &str,
-    ) -> Result<ChatResponse, ProviderError> {
-        let (body, name_map) = to_converse_request_no_temperature(req, cfg);
+        let body = to_converse_request(req, cfg);
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -306,89 +351,7 @@ impl BedrockConverseProvider {
             .json()
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
-        from_converse_response(&value, &cfg.model, &name_map)
-    }
-
-    /// Retry streaming without the temperature field (some models reject it).
-    async fn stream_no_temperature(
-        &self,
-        req: &ChatRequest,
-        cfg: &ResolvedConfig,
-        model_id: &str,
-    ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let (body, _name_map) = to_converse_request_no_temperature(req, cfg);
-        let url = format!("{}/model/{}/converse-stream", self.base, model_id);
-
-        let body_str = serde_json::to_string(&body).unwrap_or_default();
-        let tool_count = body
-            .pointer("/toolConfig/tools")
-            .and_then(|t| t.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        tracing::info!(
-            target: "nasiko::llm_router::bedrock",
-            model = %model_id,
-            body_bytes = body_str.len(),
-            tool_count,
-            "bedrock converse-stream (no-temp retry): outgoing request stats"
-        );
-
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&cfg.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("(none)")
-            .to_string();
-        let amzn_error = resp
-            .headers()
-            .get("x-amzn-errortype")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        tracing::info!(
-            target: "nasiko::llm_router::bedrock",
-            %status,
-            content_type = %content_type,
-            amzn_error = %amzn_error,
-            model = %model_id,
-            tool_count,
-            "bedrock converse-stream (no-temp retry): response status"
-        );
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            tracing::error!(
-                target: "nasiko::llm_router::bedrock",
-                %status,
-                model = %model_id,
-                body_preview = &text[..text.len().min(500)],
-                "bedrock converse-stream (no-temp retry): error — this is the FINAL retry"
-            );
-            return Err(Self::status_error(status, text));
-        }
-
-        // `_name_map` is empty here because `to_converse_request_no_temperature`
-        // discards it. Rebuild so tool names are properly unsanitized in the response.
-        let name_map = req
-            .tools
-            .as_ref()
-            .map(|t| build_tool_name_map(t))
-            .unwrap_or_default();
-        Ok(Box::pin(converse_event_stream(
-            resp.bytes_stream(),
-            cfg.model.clone(),
-            name_map,
-            "no-temp-retry",
-        )))
+        from_converse_response(&value, &cfg.model)
     }
 
     /// Stream with an explicit model ID (used for prefix retry).
@@ -398,22 +361,8 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let (body, name_map) = to_converse_request(req, cfg);
+        let body = to_converse_request(req, cfg);
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
-
-        let body_str = serde_json::to_string(&body).unwrap_or_default();
-        let tool_count = body
-            .pointer("/toolConfig/tools")
-            .and_then(|t| t.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        tracing::info!(
-            target: "nasiko::llm_router::bedrock",
-            model = %model_id,
-            body_bytes = body_str.len(),
-            tool_count,
-            "bedrock converse-stream (prefix retry): outgoing request stats"
-        );
 
         let resp = self
             .http
@@ -425,254 +374,66 @@ impl BedrockConverseProvider {
             .map_err(|e| ProviderError::Transport(e.to_string()))?;
 
         let status = resp.status();
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("(none)")
-            .to_string();
-        let amzn_error = resp
-            .headers()
-            .get("x-amzn-errortype")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        tracing::info!(
-            target: "nasiko::llm_router::bedrock",
-            %status,
-            content_type = %content_type,
-            amzn_error = %amzn_error,
-            model = %model_id,
-            "bedrock converse-stream (prefix retry): response status"
-        );
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            tracing::warn!(
-                target: "nasiko::llm_router::bedrock",
-                %status,
-                model = %model_id,
-                body_preview = &text[..text.len().min(500)],
-                "bedrock converse-stream (prefix retry): error body"
-            );
-            if is_temperature_unsupported(status.as_u16(), &text) {
-                return self.stream_no_temperature(req, cfg, model_id).await;
-            }
             return Err(Self::status_error(status, text));
         }
 
-        Ok(Box::pin(converse_event_stream(
-            resp.bytes_stream(),
-            cfg.model.clone(),
-            name_map,
-            "prefix-retry",
-        )))
-    }
-}
+        // Re-use the same streaming logic from `chat_stream` — the only difference
+        // is the URL was already resolved to the prefixed model. To avoid duplication,
+        // we build the stream inline with the same event-stream decoder.
+        let model = cfg.model.clone();
+        let bytes_stream = resp.bytes_stream();
+        let stream = async_stream::stream! {
+            futures::pin_mut!(bytes_stream);
+            let mut buf = BytesMut::new();
+            let id = uuid::Uuid::new_v4().to_string();
+            let mut input_tokens: Option<i64> = None;
+            let mut output_tokens: Option<i64> = None;
+            let mut finish: Option<String> = None;
 
-/// Whether Bedrock rejected the request because the model doesn't support temperature.
-/// Shared event-stream decoder for all Bedrock Converse streaming paths (primary,
-/// prefix-retry, no-temperature-retry). Handles text content, tool-use blocks,
-/// exception frames, and terminal usage/finish events.
-fn converse_event_stream(
-    bytes_stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
-    model: String,
-    name_map: HashMap<String, String>,
-    label: &'static str,
-) -> BoxStream<'static, Result<ChatChunk, ProviderError>> {
-    let stream = async_stream::stream! {
-        futures::pin_mut!(bytes_stream);
-        let mut buf = BytesMut::new();
-        let mut id = String::new();
-        let mut block_to_tool: HashMap<i64, i64> = HashMap::new();
-        let mut tool_blocks_with_arguments: HashSet<i64> = HashSet::new();
-        let mut next_tool_index: i64 = 0;
-        let mut input_tokens: Option<i64> = None;
-        let mut output_tokens: Option<i64> = None;
-        let mut finish: Option<String> = None;
-        let mut got_metadata = false;
-        let mut first_chunk = true;
+            yield Ok(delta_chunk(&id, &model, Delta {
+                role: Some("assistant".to_string()),
+                ..Delta::default()
+            }));
 
-        while let Some(chunk) = bytes_stream.next().await {
-            let chunk = match chunk {
-                Ok(c) => c,
-                Err(e) => { yield Err(ProviderError::Transport(e.to_string())); return; }
-            };
-            if first_chunk {
-                first_chunk = false;
-                let preview = String::from_utf8_lossy(&chunk[..chunk.len().min(256)]);
-                tracing::info!(
-                    target: "nasiko::llm_router::bedrock",
-                    chunk_len = chunk.len(),
-                    label,
-                    preview = %preview,
-                    "bedrock converse stream: first chunk received"
-                );
-            }
-            buf.extend_from_slice(&chunk);
-
-            while let Some(frame) = decode_event_stream_frame(&mut buf) {
-                tracing::trace!(
-                    target: "nasiko::llm_router::bedrock",
-                    event_type = %frame.event_type,
-                    exception_type = %frame.exception_type,
-                    message_type = %frame.message_type,
-                    payload_len = frame.payload.len(),
-                    payload_preview = &frame.payload[..frame.payload.len().min(200)],
-                    "bedrock event-stream frame decoded"
-                );
-
-                if frame.is_exception() {
-                    let msg = format!(
-                        "Bedrock stream exception ({}): {}",
-                        frame.exception_type, frame.payload
-                    );
-                    tracing::error!(
-                        target: "nasiko::llm_router::bedrock",
-                        exception_type = %frame.exception_type,
-                        payload = %frame.payload,
-                        label,
-                        "bedrock: received exception frame in event stream"
-                    );
-                    yield Err(ProviderError::Status {
-                        status: 400,
-                        message: msg,
-                        retryable: false,
-                    });
-                    return;
-                }
-
-                let event: Value = match serde_json::from_str(&frame.payload) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(
-                            target: "nasiko::llm_router::bedrock",
-                            event_type = %frame.event_type, error = %e,
-                            "bedrock frame JSON parse failed"
-                        );
-                        continue;
-                    }
+            while let Some(chunk) = bytes_stream.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => { yield Err(ProviderError::Transport(e.to_string())); return; }
                 };
+                buf.extend_from_slice(&chunk);
 
-                match frame.event_type.as_str() {
-                    "messageStart" => {
-                        id = uuid::Uuid::new_v4().to_string();
-                        yield Ok(delta_chunk(&id, &model, Delta {
-                            role: Some("assistant".to_string()),
-                            ..Delta::default()
-                        }));
-                    }
-                    "contentBlockStart" => {
-                        if let Some(start) = event.get("start").and_then(|s| s.get("toolUse")) {
-                            let oa_index = next_tool_index;
-                            next_tool_index += 1;
-                            let block_idx = event.get("contentBlockIndex")
-                                .and_then(|i| i.as_i64())
-                                .unwrap_or(0);
-                            block_to_tool.insert(block_idx, oa_index);
-                            yield Ok(delta_chunk(&id, &model, Delta {
-                                tool_calls: Some(vec![ToolCallDelta {
-                                    index: oa_index,
-                                    id: start.get("toolUseId").and_then(|v| v.as_str()).map(str::to_string),
-                                    kind: Some("function".to_string()),
-                                    function: Some(FunctionCallDelta {
-                                        name: start.get("name")
-                                            .and_then(|v| v.as_str())
-                                            .map(|n| unsanitize_tool_name(n, &name_map)),
-                                        arguments: Some(String::new()),
-                                    }),
-                                }]),
-                                ..Delta::default()
-                            }));
-                        }
-                    }
-                    "contentBlockDelta" => {
-                        let block_idx = event.get("contentBlockIndex")
-                            .and_then(|i| i.as_i64())
-                            .unwrap_or(0);
-                        if let Some(delta) = event.get("delta") {
-                            if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                while let Some((event_type, payload)) = decode_event_stream_frame(&mut buf) {
+                    let event: Value = match serde_json::from_str(&payload) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    match event_type.as_str() {
+                        "contentBlockDelta" => {
+                            if let Some(text) = event.pointer("/delta/text").and_then(|t| t.as_str()) {
                                 yield Ok(delta_chunk(&id, &model, Delta {
                                     content: Some(text.to_string()),
                                     ..Delta::default()
                                 }));
-                            } else if let Some(input) = delta.get("toolUse")
-                                .and_then(|tu| tu.get("input"))
-                                .and_then(|i| i.as_str())
-                                && let Some(&oa_index) = block_to_tool.get(&block_idx)
-                            {
-                                tool_blocks_with_arguments.insert(block_idx);
-                                yield Ok(delta_chunk(&id, &model, Delta {
-                                    tool_calls: Some(vec![ToolCallDelta {
-                                        index: oa_index,
-                                        id: None,
-                                        kind: None,
-                                        function: Some(FunctionCallDelta {
-                                            name: None,
-                                            arguments: Some(input.to_string()),
-                                        }),
-                                    }]),
-                                    ..Delta::default()
-                                }));
                             }
                         }
-                    }
-                    "contentBlockStop" => {
-                        let block_idx = event.get("contentBlockIndex")
-                            .and_then(|i| i.as_i64())
-                            .unwrap_or(0);
-                        if !tool_blocks_with_arguments.contains(&block_idx)
-                            && let Some(&oa_index) = block_to_tool.get(&block_idx)
-                        {
-                            yield Ok(delta_chunk(&id, &model, Delta {
-                                tool_calls: Some(vec![ToolCallDelta {
-                                    index: oa_index,
-                                    id: None,
-                                    kind: None,
-                                    function: Some(FunctionCallDelta {
-                                        name: None,
-                                        arguments: Some("{}".into()),
-                                    }),
-                                }]),
-                                ..Delta::default()
-                            }));
+                        "messageStop" => {
+                            if let Some(sr) = event.get("stopReason").and_then(|s| s.as_str()) {
+                                finish = Some(map_stop_reason(sr).to_string());
+                            }
                         }
-                    }
-                    "messageStop" => {
-                        if let Some(sr) = event.get("stopReason").and_then(|s| s.as_str()) {
-                            finish = Some(map_stop_reason(sr).to_string());
+                        "metadata" => {
+                            if let Some(u) = event.get("usage") {
+                                input_tokens = u.get("inputTokens").and_then(|v| v.as_i64());
+                                output_tokens = u.get("outputTokens").and_then(|v| v.as_i64());
+                            }
                         }
-                    }
-                    "metadata" => {
-                        got_metadata = true;
-                        if let Some(u) = event.get("usage") {
-                            input_tokens = u.get("inputTokens").and_then(|v| v.as_i64());
-                            output_tokens = u.get("outputTokens").and_then(|v| v.as_i64());
-                        }
-                    }
-                    other => {
-                        tracing::debug!(
-                            target: "nasiko::llm_router::bedrock",
-                            event_type = other,
-                            "bedrock: unrecognized event type — skipped"
-                        );
+                        _ => {}
                     }
                 }
             }
-        }
-
-        tracing::info!(
-            target: "nasiko::llm_router::bedrock",
-            has_finish = finish.is_some(),
-            got_metadata,
-            ?input_tokens,
-            ?output_tokens,
-            label,
-            "bedrock converse stream ended — emitting terminal chunks"
-        );
-        if let Some(finish) = finish {
-            yield Ok(finish_chunk(&id, &model, finish));
-        }
-        if got_metadata {
+            if let Some(f) = finish { yield Ok(finish_chunk(&id, &model, f)); }
             yield Ok(usage_chunk(&id, &model, Usage {
                 prompt_tokens: input_tokens,
                 completion_tokens: output_tokens,
@@ -684,13 +445,9 @@ fn converse_event_stream(
                 cache_creation_input_tokens: None,
                 prompt_tokens_details: None,
             }));
-        }
-    };
-    Box::pin(stream)
-}
-
-fn is_temperature_unsupported(status: u16, body: &str) -> bool {
-    status == 400 && body.contains("doesn't support the temperature field")
+        };
+        Ok(Box::pin(stream))
+    }
 }
 
 /// Whether a failed Bedrock call should be retried with a region-prefixed model ID.
@@ -716,27 +473,7 @@ fn should_retry_with_prefix(status: u16, body: &str, model_id: &str) -> bool {
 
 // ── OpenAI → Bedrock Converse (request) ─────────────────────────────────────
 
-/// Returns `(body, tool_name_map)` where `tool_name_map` maps sanitized names
-/// back to the originals (only entries that changed).
-fn to_converse_request(
-    req: &ChatRequest,
-    cfg: &ResolvedConfig,
-) -> (Value, HashMap<String, String>) {
-    to_converse_request_inner(req, cfg, true)
-}
-
-fn to_converse_request_no_temperature(
-    req: &ChatRequest,
-    cfg: &ResolvedConfig,
-) -> (Value, HashMap<String, String>) {
-    to_converse_request_inner(req, cfg, false)
-}
-
-fn to_converse_request_inner(
-    req: &ChatRequest,
-    cfg: &ResolvedConfig,
-    allow_temperature: bool,
-) -> (Value, HashMap<String, String>) {
+fn to_converse_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     let mut system_parts: Vec<Value> = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
@@ -784,15 +521,13 @@ fn to_converse_request_inner(
         },
     });
 
-    if allow_temperature && let Some(t) = cfg.temperature.or(req.temperature) {
+    if let Some(t) = cfg.temperature.or(req.temperature) {
         body["inferenceConfig"]["temperature"] = json!(t);
     }
     if !system_parts.is_empty() {
         body["system"] = json!(system_parts);
     }
-    let mut name_map = HashMap::new();
     if let Some(tools) = &req.tools {
-        name_map = build_tool_name_map(tools);
         let translated: Vec<Value> = tools.iter().map(tool_to_converse).collect();
         if !translated.is_empty() {
             body["toolConfig"] = json!({ "tools": translated });
@@ -801,7 +536,7 @@ fn to_converse_request_inner(
             }
         }
     }
-    (body, name_map)
+    body
 }
 
 fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
@@ -824,7 +559,7 @@ fn assistant_to_converse(m: &Message) -> Value {
             blocks.push(json!({
                 "toolUse": {
                     "toolUseId": tc.id,
-                    "name": sanitize_tool_name(&tc.function.name),
+                    "name": tc.function.name,
                     "input": input,
                 }
             }));
@@ -836,46 +571,7 @@ fn assistant_to_converse(m: &Message) -> Value {
     json!({ "role": "assistant", "content": blocks })
 }
 
-/// Sanitize a tool name for Bedrock Converse, which requires `^[a-zA-Z][a-zA-Z0-9_]*$`.
-/// Replaces hyphens and other invalid characters with underscores, and ensures the
-/// name starts with a letter.
-fn sanitize_tool_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    // Ensure starts with a letter.
-    if out.is_empty() || !out.as_bytes()[0].is_ascii_alphabetic() {
-        out.insert(0, 't');
-    }
-    out
-}
-
-/// Build a mapping of sanitized → original tool names. Only includes entries
-/// where the name actually changed.
-fn build_tool_name_map(tools: &[ToolDef]) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for t in tools {
-        let sanitized = sanitize_tool_name(&t.function.name);
-        if sanitized != t.function.name {
-            map.insert(sanitized, t.function.name.clone());
-        }
-    }
-    map
-}
-
-/// Restore the original tool name from the sanitized→original map, falling back
-/// to the (possibly sanitized) name if no mapping exists.
-fn unsanitize_tool_name(name: &str, map: &HashMap<String, String>) -> String {
-    map.get(name).cloned().unwrap_or_else(|| name.to_string())
-}
-
 fn tool_to_converse(t: &ToolDef) -> Value {
-    let sanitized_name = sanitize_tool_name(&t.function.name);
     let schema = t
         .function
         .parameters
@@ -883,7 +579,7 @@ fn tool_to_converse(t: &ToolDef) -> Value {
         .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
     let mut spec = json!({
         "toolSpec": {
-            "name": sanitized_name,
+            "name": t.function.name,
             "inputSchema": { "json": schema },
         }
     });
@@ -904,18 +600,14 @@ fn tool_choice_to_converse(choice: &Value) -> Option<Value> {
             .get("function")
             .and_then(|f| f.get("name"))
             .and_then(Value::as_str)
-            .map(|name| json!({ "tool": { "name": sanitize_tool_name(name) } })),
+            .map(|name| json!({ "tool": { "name": name } })),
         _ => None,
     }
 }
 
 // ── Bedrock Converse → OpenAI (response) ────────────────────────────────────
 
-fn from_converse_response(
-    body: &Value,
-    model: &str,
-    name_map: &HashMap<String, String>,
-) -> Result<ChatResponse, ProviderError> {
+fn from_converse_response(body: &Value, model: &str) -> Result<ChatResponse, ProviderError> {
     let message = body
         .pointer("/output/message")
         .ok_or_else(|| ProviderError::Parse("Converse response has no output.message".into()))?;
@@ -929,7 +621,6 @@ fn from_converse_response(
                 text.push_str(t);
             }
             if let Some(tu) = block.get("toolUse") {
-                let raw_name = tu.get("name").and_then(|v| v.as_str()).unwrap_or_default();
                 tool_calls.push(ToolCall {
                     id: tu
                         .get("toolUseId")
@@ -938,7 +629,11 @@ fn from_converse_response(
                         .to_string(),
                     kind: "function".to_string(),
                     function: FunctionCall {
-                        name: unsanitize_tool_name(raw_name, name_map),
+                        name: tu
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
                         arguments: tu
                             .get("input")
                             .map(|v| v.to_string())
@@ -1023,66 +718,15 @@ fn map_stop_reason(reason: &str) -> &'static str {
 // the JSON payload. The CRC checks are skipped (the HTTP transport is already
 // integrity-checked).
 
-/// Decoded AWS event-stream frame.
-struct EventStreamFrame {
-    /// `:event-type` header value (e.g. "messageStart", "contentBlockDelta").
-    /// Empty for exception frames.
-    event_type: String,
-    /// `:exception-type` header value (e.g. "ValidationException").
-    /// Empty for normal event frames.
-    exception_type: String,
-    /// `:message-type` header value ("event" or "exception").
-    message_type: String,
-    /// JSON payload.
-    payload: String,
-}
-
-impl EventStreamFrame {
-    fn is_exception(&self) -> bool {
-        self.message_type == "exception" || !self.exception_type.is_empty()
-    }
-}
-
-/// Maximum reasonable event-stream frame size (16 MiB). Real Bedrock frames are
-/// a few KB; a `total_length` larger than this means the bytes are not valid
-/// event-stream data (e.g. a JSON or XML error body was returned instead).
-const MAX_EVENT_STREAM_FRAME: usize = 16 * 1024 * 1024;
-
-/// Try to decode one complete event-stream frame from `buf`. Returns the
-/// decoded frame and advances `buf` past it. Returns `None` if the buffer
-/// doesn't contain a complete frame yet. Returns an error-sentinel frame if
-/// the prelude indicates the data is not valid event-stream binary.
-fn decode_event_stream_frame(buf: &mut BytesMut) -> Option<EventStreamFrame> {
+/// Try to decode one complete event-stream frame from `buf`. Returns
+/// `(event_type, json_payload)` and advances `buf` past the frame. Returns
+/// `None` if the buffer doesn't contain a complete frame yet.
+fn decode_event_stream_frame(buf: &mut BytesMut) -> Option<(String, String)> {
     if buf.len() < 12 {
         return None; // need at least the prelude
     }
 
     let total_length = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-
-    // Sanity check: a frame larger than MAX_EVENT_STREAM_FRAME almost certainly
-    // means the response is not event-stream binary (e.g. a JSON/XML error page
-    // whose first 4 bytes decoded to a huge u32). Surface it as a synthetic
-    // exception so the stream fails fast instead of waiting forever.
-    if !(16..=MAX_EVENT_STREAM_FRAME).contains(&total_length) {
-        let preview = String::from_utf8_lossy(&buf[..buf.len().min(512)]).to_string();
-        tracing::error!(
-            target: "nasiko::llm_router::bedrock",
-            total_length,
-            buf_len = buf.len(),
-            preview = %preview,
-            "bedrock: event-stream frame has implausible length — response is likely \
-             not event-stream binary (JSON/XML error?)"
-        );
-        // Drain the buffer so the caller stops looping.
-        buf.clear();
-        return Some(EventStreamFrame {
-            event_type: String::new(),
-            exception_type: "InvalidEventStream".to_string(),
-            message_type: "exception".to_string(),
-            payload: format!("Response is not valid event-stream binary (first bytes: {preview})"),
-        });
-    }
-
     if buf.len() < total_length {
         return None; // incomplete frame
     }
@@ -1093,13 +737,14 @@ fn decode_event_stream_frame(buf: &mut BytesMut) -> Option<EventStreamFrame> {
     let headers_end = headers_start + headers_length;
     let payload_end = total_length - 4; // last 4 bytes are message CRC
 
-    // Parse headers to find :event-type, :exception-type, :message-type.
+    // Parse headers to find :event-type.
     let mut event_type = String::new();
-    let mut exception_type = String::new();
-    let mut message_type = String::new();
     let headers_bytes = &buf[headers_start..headers_end];
     let mut pos = 0;
     while pos < headers_bytes.len() {
+        if pos >= headers_bytes.len() {
+            break;
+        }
         let name_len = headers_bytes[pos] as usize;
         pos += 1;
         if pos + name_len > headers_bytes.len() {
@@ -1126,11 +771,8 @@ fn decode_event_stream_frame(buf: &mut BytesMut) -> Option<EventStreamFrame> {
                 }
                 let val = std::str::from_utf8(&headers_bytes[pos..pos + val_len]).unwrap_or("");
                 pos += val_len;
-                match name {
-                    ":event-type" => event_type = val.to_string(),
-                    ":exception-type" => exception_type = val.to_string(),
-                    ":message-type" => message_type = val.to_string(),
-                    _ => {}
+                if name == ":event-type" {
+                    event_type = val.to_string();
                 }
             }
             _ => {
@@ -1152,12 +794,7 @@ fn decode_event_stream_frame(buf: &mut BytesMut) -> Option<EventStreamFrame> {
     // Advance buffer past this frame.
     buf.advance(total_length);
 
-    Some(EventStreamFrame {
-        event_type,
-        exception_type,
-        message_type,
-        payload,
-    })
+    Some((event_type, payload))
 }
 
 #[cfg(test)]
@@ -1181,6 +818,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            compress_enabled: false,
         }
     }
 
@@ -1205,7 +843,7 @@ mod tests {
             "tool_choice": "auto"
         }))
         .unwrap();
-        let (body, _map) = to_converse_request(&req, &resolved("deepseek.v3.2"));
+        let body = to_converse_request(&req, &resolved("deepseek.v3.2"));
 
         // System extracted to top level.
         assert_eq!(body["system"][0]["text"], "You are helpful.");
@@ -1241,7 +879,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let (body, _map) = to_converse_request(&req, &resolved("deepseek.v3.2"));
+        let body = to_converse_request(&req, &resolved("deepseek.v3.2"));
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);
         // Assistant turn with toolUse.
@@ -1268,7 +906,7 @@ mod tests {
             "stopReason": "end_turn",
             "usage": { "inputTokens": 8, "outputTokens": 6, "totalTokens": 14 }
         });
-        let resp = from_converse_response(&converse, "deepseek.v3.2", &HashMap::new()).unwrap();
+        let resp = from_converse_response(&converse, "deepseek.v3.2").unwrap();
         assert_eq!(resp.model, "deepseek.v3.2");
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("Hello!"));
         assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
@@ -1296,7 +934,7 @@ mod tests {
             "stopReason": "tool_use",
             "usage": { "inputTokens": 10, "outputTokens": 5, "totalTokens": 15 }
         });
-        let resp = from_converse_response(&converse, "deepseek.v3.2", &HashMap::new()).unwrap();
+        let resp = from_converse_response(&converse, "deepseek.v3.2").unwrap();
         assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("tool_calls"));
         let msg = &resp.choices[0].message;
         assert_eq!(msg.content, Some(Value::Null));
@@ -1353,10 +991,9 @@ mod tests {
         let frame = build_test_frame("contentBlockDelta", payload.as_bytes());
 
         let mut buf = BytesMut::from(&frame[..]);
-        let frame = decode_event_stream_frame(&mut buf).unwrap();
-        assert_eq!(frame.event_type, "contentBlockDelta");
-        assert_eq!(frame.payload, payload);
-        assert!(!frame.is_exception());
+        let (event_type, decoded) = decode_event_stream_frame(&mut buf).unwrap();
+        assert_eq!(event_type, "contentBlockDelta");
+        assert_eq!(decoded, payload);
         assert!(buf.is_empty()); // fully consumed
     }
 
@@ -1397,41 +1034,5 @@ mod tests {
 
         assert_eq!(frame.len(), total_len);
         frame
-    }
-
-    #[test]
-    fn sanitize_tool_name_replaces_hyphens_and_dots() {
-        assert_eq!(sanitize_tool_name("query-docs"), "query_docs");
-        assert_eq!(
-            sanitize_tool_name("resolve-library-id"),
-            "resolve_library_id"
-        );
-        assert_eq!(
-            sanitize_tool_name("mcp__plugin_context7_context7__query-docs"),
-            "mcp__plugin_context7_context7__query_docs"
-        );
-        // Already valid names pass through unchanged.
-        assert_eq!(sanitize_tool_name("search"), "search");
-        assert_eq!(sanitize_tool_name("my_tool_2"), "my_tool_2");
-        // Starts with digit → prepend 't'.
-        assert_eq!(sanitize_tool_name("123tool"), "t123tool");
-    }
-
-    #[test]
-    fn tool_name_round_trips_through_sanitize_and_unsanitize() {
-        let tools = vec![ToolDef {
-            kind: "function".to_string(),
-            function: crate::ir::FunctionDef {
-                name: "query-docs".to_string(),
-                description: None,
-                parameters: None,
-            },
-            extra: Map::new(),
-        }];
-        let map = build_tool_name_map(&tools);
-        assert_eq!(map.get("query_docs").unwrap(), "query-docs");
-        assert_eq!(unsanitize_tool_name("query_docs", &map), "query-docs");
-        // Names that don't need sanitizing have no map entry.
-        assert_eq!(unsanitize_tool_name("search", &map), "search");
     }
 }
