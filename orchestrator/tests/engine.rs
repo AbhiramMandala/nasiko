@@ -32,6 +32,7 @@ fn router_config_custom_values() {
             k_low: 2,
             k_medium: 10,
             k_high: 15,
+            compress: Default::default(),
         },
     };
     assert_eq!(cfg.shortlist_threshold, 5);

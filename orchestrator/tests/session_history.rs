@@ -152,7 +152,15 @@ async fn fetch_topk_returns_empty_for_unknown_session() {
         .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/nasiko".to_string());
     let pool = sqlx::PgPool::connect(&db_url).await.unwrap();
     let vs = nasiko_orchestrator::VectorStore::disabled();
-    let h = SessionHistory::fetch_topk("nonexistent-session-id-xyz", &pool, "query", &vs, 20, 150)
-        .await;
+    let h = SessionHistory::fetch_topk(
+        "nonexistent-session-id-xyz",
+        &pool,
+        "query",
+        &vs,
+        20,
+        150,
+        &Default::default(),
+    )
+    .await;
     assert!(h.is_empty());
 }

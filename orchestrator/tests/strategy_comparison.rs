@@ -227,7 +227,13 @@ async fn topk_is_bounded_by_pool_size() {
     // returned all 96 seeded messages.
     const POOL: usize = 10;
     let history = nasiko_orchestrator::SessionHistory::fetch_topk(
-        session_id, &pool, QUERY, &store, 999, POOL,
+        session_id,
+        &pool,
+        QUERY,
+        &store,
+        999,
+        POOL,
+        &Default::default(),
     )
     .await;
 

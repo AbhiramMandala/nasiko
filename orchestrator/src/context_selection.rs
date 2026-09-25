@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::session_history::{ContextFetchConfig, SessionHistory};
 use crate::vector_store::VectorStore;
+use nasiko_compress::Policy;
 
 // ── Stored preferences ────────────────────────────────────────────────────────
 
@@ -141,6 +142,11 @@ pub struct ContextTiers {
     pub k_low: usize,
     pub k_medium: usize,
     pub k_high: usize,
+    /// History compression (IP-4), applied at the read so every strategy
+    /// budgets and embeds the text that will actually be sent. Deployment-wide,
+    /// not per tier: the tier chooses how much context a user gets, and
+    /// compression changes how much fits — the two are independent knobs.
+    pub compress: Policy<'static>,
 }
 
 impl Default for ContextTiers {
@@ -155,6 +161,7 @@ impl Default for ContextTiers {
             k_low: 1,
             k_medium: 5,
             k_high: 20,
+            compress: Policy::default(),
         }
     }
 }
@@ -173,6 +180,11 @@ impl ContextTiers {
             k_low: config.context_k_low,
             k_medium: config.context_k_medium,
             k_high: config.context_k_high,
+            compress: Policy {
+                enabled: config.history_compress_enabled,
+                min_bytes: config.history_compress_min_bytes,
+                ..Policy::default()
+            },
         }
     }
 
@@ -185,6 +197,7 @@ impl ContextTiers {
             mandatory_recent: self.mandatory_recent,
             topk_count: k,
             lastk_limit: k,
+            compress: self.compress,
         }
     }
 }
@@ -199,6 +212,32 @@ impl ContextTiers {
 /// The two preference lookups are two cheap indexed row reads, issued
 /// concurrently. Neither can fail the request — both fall back to their
 /// column default (see `for_user` on each).
+/// Whether the orchestrator-scoped compression layers (IP-3 tool results, IP-4 session history)
+/// are opted into for `user_id`.
+///
+/// # Why this is aggregated rather than read off one agent
+///
+/// `agents.compress_enabled` is a per-agent switch, and the per-request layers (IP-1, IP-2, IP-5)
+/// read it off the agent actually being called. These two layers have no such agent: the ReAct
+/// loop stores results from whichever agents it routes to, and history is fetched *before* any
+/// routing happens. An orchestrator-routed `chat_sessions` row carries `agent_id = NULL` for
+/// exactly that reason (`a2a_dispatch.rs`), so there is nothing single to read.
+///
+/// So the rule is unanimity: on only when the caller owns at least one live agent and **every**
+/// one of them has opted in. That keeps the switch behaving as one layer — flip it and the whole
+/// stack moves — while degrading safely: adding an agent that has not opted in turns the shared
+/// context back to verbatim rather than quietly compressing text destined for it.
+pub async fn compression_opt_in(pool: &PgPool, user_id: Uuid) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT count(*) > 0 AND bool_and(compress_enabled) \
+         FROM agents WHERE owner_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false)
+}
+
 pub async fn fetch_for_user(
     pool: &PgPool,
     user_id: Uuid,
@@ -207,19 +246,17 @@ pub async fn fetch_for_user(
     query: &str,
     tiers: &ContextTiers,
 ) -> SessionHistory {
-    let (level, strategy) = tokio::join!(
+    let (level, strategy, opted_in) = tokio::join!(
         PacmsBudgetLevel::for_user(pool, user_id),
         ContextSelectionStrategy::for_user(pool, user_id),
+        compression_opt_in(pool, user_id),
     );
-    SessionHistory::fetch_context(
-        strategy,
-        session_id,
-        pool,
-        vector_store,
-        query,
-        &tiers.resolve(level),
-    )
-    .await
+    // IP-4 is gated by the deployment flag AND the per-agent switch, so the UI toggle stops it
+    // as part of one layer rather than leaving history compressed after the rest is off.
+    let mut cfg = tiers.resolve(level);
+    cfg.compress.enabled = cfg.compress.enabled && opted_in;
+
+    SessionHistory::fetch_context(strategy, session_id, pool, vector_store, query, &cfg).await
 }
 
 #[cfg(test)]
@@ -236,6 +273,7 @@ mod tests {
             k_low: 1,
             k_medium: 5,
             k_high: 20,
+            compress: Default::default(),
         }
     }
 

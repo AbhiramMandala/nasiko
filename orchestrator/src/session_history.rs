@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use nasiko_compress::Policy;
+
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -70,13 +72,29 @@ pub(crate) struct ContextFetchConfig {
     /// fallback when embeddings are unavailable or the session has no
     /// pairs — same tier-derived value as `topk_count` (ignored by `Pacms`).
     pub lastk_limit: usize,
+    /// Structural compression applied to each message as it is read, before
+    /// any strategy scores, embeds or truncates it (IP-4). Disabled by
+    /// default, so an unconfigured deployment selects over exactly the text it
+    /// selected over before.
+    pub compress: Policy<'static>,
 }
 
 impl SessionHistory {
     /// Take the LATEST `limit` messages, then restore chronological order —
     /// `ORDER BY timestamp ASC LIMIT n` would pin the window to the oldest
     /// messages and never advance in long sessions.
-    async fn fetch_raw(session_id: &str, pool: &PgPool, limit: usize) -> Vec<ChatMessage> {
+    /// `compress` runs here, at the read, and nowhere later. That ordering is the whole of
+    /// IP-4's correctness: every strategy downstream — PACMS's token budget, TopK's embeddings,
+    /// LastK's window — measures the text it is handed. Compress after selection and the
+    /// selector fills a tier's budget with full-size text that then halves, so a user silently
+    /// receives half the context tier they chose. Compress before it, and the same budget holds
+    /// more turns, which is the saving.
+    async fn fetch_raw(
+        session_id: &str,
+        pool: &PgPool,
+        limit: usize,
+        compress: &Policy<'_>,
+    ) -> Vec<ChatMessage> {
         // Rows tagged `orchestrator_refusal` are excluded from reasoning context
         // on purpose. A refusal is persisted so the human still sees it in the
         // transcript, but feeding it back as prior assistant output teaches the
@@ -94,15 +112,25 @@ impl SessionHistory {
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(role, content)| ChatMessage { role, content })
+                .map(|(role, content)| ChatMessage {
+                    role,
+                    content: nasiko_compress::compress(&content, compress).into_text(),
+                })
                 .collect();
         messages.reverse();
         messages
     }
 
+    /// Plain recency read, uncompressed.
+    ///
+    /// This is the fixed-window path (HITL resume, and anything else reading history directly
+    /// rather than through a resolved tier), not a budgeted selection. It is deliberately left
+    /// verbatim: the resume prompt is the one turn where the model is told *not* to call anyone
+    /// again, so eliding the history it is reasoning over has no second chance to recover.
+    /// Compression reaches history through [`Self::fetch_context`], which carries a policy.
     pub async fn fetch(session_id: &str, pool: &PgPool, limit: usize) -> Self {
         Self {
-            messages: Self::fetch_raw(session_id, pool, limit).await,
+            messages: Self::fetch_raw(session_id, pool, limit, &Policy::default()).await,
         }
     }
 
@@ -115,6 +143,9 @@ impl SessionHistory {
     /// Falls back to `select_lastk` (no embeddings) if selection fails (e.g.
     /// the embeddings API is down) so a transient failure degrades to the
     /// old recency behavior instead of breaking the request.
+    // Eight, because the knobs are passed individually: `ContextFetchConfig` bundles exactly
+    // these for the dispatcher, but it is `pub(crate)` and this entry point is public.
+    #[allow(clippy::too_many_arguments)]
     pub async fn fetch_pacms(
         session_id: &str,
         pool: &PgPool,
@@ -123,8 +154,9 @@ impl SessionHistory {
         pool_size: usize,
         token_budget: usize,
         mandatory_recent: usize,
+        compress: &Policy<'_>,
     ) -> Self {
-        let messages = Self::fetch_raw(session_id, pool, pool_size).await;
+        let messages = Self::fetch_raw(session_id, pool, pool_size, compress).await;
         if messages.is_empty() {
             return Self { messages };
         }
@@ -212,6 +244,7 @@ impl SessionHistory {
                     cfg.pool_size,
                     cfg.token_budget,
                     cfg.mandatory_recent,
+                    &cfg.compress,
                 )
                 .await
             }
@@ -223,6 +256,7 @@ impl SessionHistory {
                     vector_store,
                     cfg.topk_count,
                     cfg.pool_size,
+                    &cfg.compress,
                 )
                 .await;
                 if history.is_empty() {
@@ -253,8 +287,9 @@ impl SessionHistory {
         vector_store: &VectorStore,
         top_k: usize,
         pool_size: usize,
+        compress: &Policy<'_>,
     ) -> Self {
-        let pairs = Self::fetch_pairs(session_id, pool, pool_size).await;
+        let pairs = Self::fetch_pairs(session_id, pool, pool_size, compress).await;
         if pairs.is_empty() {
             return Self::default();
         }
@@ -292,7 +327,14 @@ impl SessionHistory {
     /// used to select the session's entire history with no `LIMIT` and embed
     /// every pair of it, so a long-running session grew both the query and
     /// the per-request embedding cost without limit.
-    async fn fetch_pairs(session_id: &str, pool: &PgPool, pool_size: usize) -> Vec<MessagePair> {
+    /// Compresses at the read for the same reason `fetch_raw` does: the pair text below is what
+    /// gets embedded and ranked, so it has to be the text that will actually be sent.
+    async fn fetch_pairs(
+        session_id: &str,
+        pool: &PgPool,
+        pool_size: usize,
+        compress: &Policy<'_>,
+    ) -> Vec<MessagePair> {
         // Latest `pool_size` (DESC + LIMIT), then reversed back into
         // chronological order so the pairing below sees user→assistant
         // adjacency — `ORDER BY timestamp ASC LIMIT n` would pin the window to
@@ -316,8 +358,8 @@ impl SessionHistory {
             let (role_b, content_b) = &messages[i + 1];
             if role_a == "user" && role_b == "assistant" {
                 pairs.push(MessagePair {
-                    query: content_a.clone(),
-                    answer: content_b.clone(),
+                    query: nasiko_compress::compress(content_a, compress).into_text(),
+                    answer: nasiko_compress::compress(content_b, compress).into_text(),
                 });
                 i += 2; // consume both messages of the pair
             } else {
@@ -360,10 +402,32 @@ impl SessionHistory {
 
     /// Build the full query string: history context + current message.
     pub fn with_current_query(&self, query: &str) -> String {
-        if self.is_empty() {
+        // Drop a trailing user turn that *is* `query`. `agent_proxy` persists the incoming
+        // message from a `tokio::spawn`, so whether it has landed by the time history is read is
+        // a race: when the insert wins, the message comes back as history and is then appended
+        // again here, sending the whole payload twice. On an 80 KB log that doubled the turn's
+        // input tokens. Deduplicating on content makes the result identical either way, rather
+        // than depending on which task won.
+        let deduped: Vec<&ChatMessage> = {
+            let mut msgs: Vec<&ChatMessage> = self.messages.iter().collect();
+            if msgs
+                .last()
+                .is_some_and(|m| m.role == "user" && m.content == query)
+            {
+                msgs.pop();
+            }
+            msgs
+        };
+
+        if deduped.is_empty() {
             query.to_string()
         } else {
-            format!("{}\n\nCurrent message: {}", self.summary_text(), query)
+            let history = deduped
+                .iter()
+                .map(|m| format!("{}: {}", m.role, m.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{history}\n\nCurrent message: {query}")
         }
     }
 }
@@ -476,5 +540,169 @@ mod rank_pairs_tests {
     fn empty_pool_returns_empty() {
         let messages = rank_pairs(&[], &[], &[1.0, 0.0], 5);
         assert!(messages.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ip4_tests {
+    use super::*;
+    use crate::pacms_selector::PacmsSelector;
+    use crate::vector_store::VectorStore;
+
+    /// 300 lines of timestamped log, the shape a pasted terminal dump takes in a chat turn.
+    fn noisy_turn() -> String {
+        (0..300)
+            .map(|i| format!("2026-01-01T00:00:00Z INFO handled request {i}\n"))
+            .collect()
+    }
+
+    fn on() -> Policy<'static> {
+        Policy {
+            enabled: true,
+            min_bytes: 0,
+            ..Policy::default()
+        }
+    }
+
+    #[test]
+    fn disabled_by_default_so_selection_sees_exactly_what_it_saw_before() {
+        let turn = noisy_turn();
+        let out = nasiko_compress::compress(&turn, &Policy::default()).into_text();
+        assert_eq!(out, turn);
+    }
+
+    /// The reason IP-4 compresses at the read rather than after selection (PRD §9).
+    ///
+    /// Compressing first means the tier's budget is spent on compressed turns, so *more* of them
+    /// fit. Compressing afterwards would fill the budget with full-size text and then halve it,
+    /// silently giving the user less context than the tier they chose.
+    #[test]
+    fn compressing_before_selection_fits_more_turns_in_the_same_budget() {
+        let vs = VectorStore::disabled();
+        let selector = PacmsSelector::new(&vs);
+        const BUDGET: usize = 2_000;
+
+        let raw: Vec<String> = (0..8).map(|_| noisy_turn()).collect();
+        let compressed: Vec<String> = raw
+            .iter()
+            .map(|t| nasiko_compress::compress(t, &on()).into_text())
+            .collect();
+
+        let kept_raw = selector.select_lastk(&raw, BUDGET, None).len();
+        let kept_compressed = selector.select_lastk(&compressed, BUDGET, None).len();
+
+        assert!(
+            kept_compressed > kept_raw,
+            "same {BUDGET}-token budget kept {kept_compressed} compressed vs {kept_raw} raw turns"
+        );
+    }
+
+    /// History flows on into the router seam, which compresses again. Without idempotence the
+    /// second pass would elide an already-elided transcript.
+    #[test]
+    fn history_survives_a_second_pass_at_the_router_seam() {
+        let once = nasiko_compress::compress(&noisy_turn(), &on()).into_text();
+        let twice = nasiko_compress::compress(&once, &on()).into_text();
+        assert_eq!(once, twice);
+    }
+
+    /// `fetch` is the HITL resume read. Its prompt tells the model not to delegate again, so an
+    /// elision there has no second chance to be recovered — it stays verbatim by construction.
+    #[test]
+    fn the_fixed_window_read_carries_no_policy() {
+        let src = include_str!("session_history.rs");
+        let marker = "messages: Self::fetch_raw(session_id, pool, limit, &Policy::default()).await";
+        assert!(
+            src.contains(marker),
+            "`fetch` must keep reading history uncompressed"
+        );
+    }
+}
+
+#[cfg(test)]
+mod current_query_dedupe_tests {
+    use super::*;
+
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.into(),
+            content: content.into(),
+        }
+    }
+
+    fn history(messages: Vec<ChatMessage>) -> SessionHistory {
+        SessionHistory { messages }
+    }
+
+    #[test]
+    fn a_trailing_copy_of_the_current_query_is_not_sent_twice() {
+        // The race `agent_proxy`'s spawned insert creates: the incoming message has already
+        // landed in `chat_messages` by the time history is read.
+        let h = history(vec![
+            msg("user", "first question"),
+            msg("assistant", "first answer"),
+            msg("user", "ANALYSE THIS HUGE LOG"),
+        ]);
+
+        let out = h.with_current_query("ANALYSE THIS HUGE LOG");
+
+        assert_eq!(
+            out.matches("ANALYSE THIS HUGE LOG").count(),
+            1,
+            "sent twice: {out}"
+        );
+        assert!(out.contains("first question"), "real history must survive");
+        assert!(out.ends_with("Current message: ANALYSE THIS HUGE LOG"));
+    }
+
+    #[test]
+    fn the_same_turn_costs_the_same_whether_or_not_the_insert_landed() {
+        // The point of the fix: the outgoing text must not depend on who won the race.
+        let base = vec![msg("user", "q1"), msg("assistant", "a1")];
+        let mut raced = base.clone();
+        raced.push(msg("user", "current"));
+
+        assert_eq!(
+            history(base).with_current_query("current"),
+            history(raced).with_current_query("current")
+        );
+    }
+
+    #[test]
+    fn an_earlier_identical_question_is_still_kept() {
+        // Only the *trailing* copy is the race artifact. A genuine repeat earlier in the
+        // conversation is real history and must not be silently dropped.
+        let h = history(vec![msg("user", "same"), msg("assistant", "answer")]);
+
+        let out = h.with_current_query("same");
+
+        assert_eq!(
+            out.matches("same").count(),
+            2,
+            "earlier turn was eaten: {out}"
+        );
+    }
+
+    #[test]
+    fn a_trailing_assistant_message_is_never_dropped() {
+        let h = history(vec![msg("user", "q"), msg("assistant", "echo")]);
+
+        let out = h.with_current_query("echo");
+
+        assert!(
+            out.contains("assistant: echo"),
+            "assistant turn dropped: {out}"
+        );
+    }
+
+    #[test]
+    fn empty_history_still_returns_the_bare_query() {
+        assert_eq!(history(vec![]).with_current_query("hello"), "hello");
+    }
+
+    #[test]
+    fn history_of_only_the_duplicate_returns_the_bare_query() {
+        let h = history(vec![msg("user", "hello")]);
+        assert_eq!(h.with_current_query("hello"), "hello");
     }
 }
