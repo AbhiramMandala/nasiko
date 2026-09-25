@@ -189,13 +189,19 @@ export const CASES = [
   { id: 'grouped-filters',
     prompt: 'Show TokenOps usage in a table, filterable by agent and by date range. '
       + 'Group the filters above the table.',
-    // 10 of 24 at b663b6eaa08a. The recurring failure is the generator losing
-    // track of its own statement names across a long surface — the latest run
-    // referenced `rowsQ`, which it never defined, and so declared no queries
-    // at all. That is a different and harder problem than any wiring rule,
-    // and it is not one a CI gate can usefully hold the build hostage to.
-    knownFailure: 'fails ~42% of runs (10/24 at b663b6eaa08a) — the generator loses track of '
-      + 'its own statement names on a long surface. See NAS-755.',
+    // The one annotation that survived the contract/quality split, and it is
+    // the one that should: this recording references `rowsQ`, a statement it
+    // never defines, so the surface does not resolve. That is a CONTRACT
+    // failure — the fixture is not a working surface, which makes it useless
+    // as a regression fixture, whatever it says about the generator.
+    //
+    // So this is not "the rate is high, look away". It is "this particular
+    // draw is not fit to be the sample", and the fix is a re-draw, not an
+    // annotation. It stays only until one is taken. The underlying defect —
+    // the generator losing track of its own statement names on a long
+    // surface, ~42% (10/24 at b663b6eaa08a) — is separate and open.
+    knownFailure: 'the recorded surface references "rowsQ", which it never defines, so it does '
+      + 'not resolve. Re-draw it; this annotation is a placeholder, not a verdict. See NAS-755.',
     expect: { minQueries: 1, minActions: 2, minStates: 2, tags: ['app-table'] } },
   // The other half of rule 20, and the half `grouped-filters` cannot reach.
   // Every state in that case turned out to be a real argument of
@@ -271,13 +277,14 @@ export const CASES = [
   { id: 'paged-agent-usage',
     prompt: 'My own usage broken down by agent, 20 rows at a time with next and previous '
       + 'buttons, and a box to search agents by name. Show how many there are in total.',
-    // 15 of 24 recorded runs at b663b6eaa08a, and the failures are not one
-    // thing: a state set and never @Run, a source chosen that cannot answer
-    // the request, a @Filter on a field the source does not return. The
-    // prompt asks for four mechanisms at once — paging, a total, a search and
-    // a breakdown — and the generator gets three of them on a good day.
-    knownFailure: 'fails ~62% of runs (15/24 at b663b6eaa08a) — four mechanisms in one prompt, '
-      + 'see NAS-755. Not a gate until the rate comes down.',
+    // Fails ~62% of live runs (15/24 at b663b6eaa08a) — a state set and never
+    // @Run, a source that cannot answer the request, a @Filter on a field the
+    // source does not return. Four mechanisms in one prompt and the generator
+    // gets three on a good day. It carried a knownFailure for one afternoon;
+    // once contract and quality were counted apart the recording turned out
+    // to RENDER fine, so the annotation was stale and the harness said so.
+    // The rate is still real and still reported — as quality, where a number
+    // that varies belongs.
     expect: {
       minQueries: 1, minStates: 2, tags: ['app-table'],
       mechanism: { source: 'fetchUsageByAgent' },
@@ -358,14 +365,12 @@ export const CASES = [
   { id: 'model-searched',
     prompt: 'Spend over the last 7 days for one model. '
       + 'Use a search box to find the model by name.',
-    // 15 of 27 at b663b6eaa08a, and this one is the measurement, not a
-    // defect in the harness: it is the app-search arm of the control pair,
-    // and the whole reason the pair exists is that app-search carries `@Run`
-    // far less often than any other control kind. Gating on it would fail the
-    // build for the effect the experiment was built to observe. Its partner
-    // `model-picked` stays a gate, which is what makes the contrast readable.
-    knownFailure: 'fails ~56% of runs (15/27 at b663b6eaa08a) — the app-search arm of the '
-      + 'control pair, where low @Run production IS the finding. See NAS-755.',
+    // The app-search arm of the control pair, ~56% (15/27 at b663b6eaa08a).
+    // Low @Run production on app-search is the FINDING this pair exists to
+    // observe, so it was never a thing to gate on — and now it is not one:
+    // the missing @Run is a quality reading, printed every replay, counted on
+    // every live run, and it stops no build. `model-picked` is the same
+    // measurement with the other affordance, and the contrast is the result.
     expect: {
       minQueries: 1, minActions: 1, minStates: 1,
       controlPair: { source: 'fetchSpendTimeseries', argument: 'model', control: 'app-search' },
@@ -1565,10 +1570,43 @@ export function evaluateGeneration(text) {
   };
 }
 
-/** @returns {string[]} the reasons this generation is not acceptable */
+/**
+ * Two verdicts, deliberately, because the offline gate and a live run ask
+ * different questions of the same text.
+ *
+ * `--offline` replays a RECORDING. Its job, in this file's own words at the
+ * top, is that "a change to the runtime or the catalog is checked against real
+ * model output on every commit" — a regression test over a frozen sample. But
+ * the checker it runs also asserts whether the generation was any GOOD, and
+ * those two went into one list. So a weak draw failed CI forever: not because
+ * anything regressed, but because that recording was poor, and the only ways
+ * out were to re-record until the sample flattered us, or to annotate the case
+ * as a known failure. Both hide the thing the gate exists to see.
+ *
+ * `fail` is the contract: this DSL no longer becomes a working surface under
+ * today's code. A root that does not resolve, a fatal render or materialize
+ * diagnostic, a reference to a statement that is not there, a source the scope
+ * has withdrawn. Each of those can newly break with the fixture untouched, and
+ * each means OUR side moved. That is what should stop a build.
+ *
+ * `quality` is what the recording says about the generator: the case's own
+ * minimums, the wiring readings, the positional contract, the filter fields.
+ * Real findings, printed and counted — but frozen with the fixture. They
+ * cannot newly fail, so gating on them preserves whichever draw happened to
+ * be committed, which is a verdict about history rather than about this
+ * commit.
+ *
+ * A live or `--record` run counts both, because there quality IS the
+ * measurement and a fresh draw can genuinely be worse than the last.
+ *
+ * @returns {{fail: string[], quality: string[], advisory: string[], runtime: string[]}}
+ */
 export function check(kase, text) {
   const r = evaluateGeneration(text);
+  /** Contract — this DSL is broken under today's runtime and catalog. */
   const fail = [];
+  /** Generation quality — always reported, gates only a live run. */
+  const quality = [];
   /** Corrected, not broken — shown, never fatal. */
   const advisory = [];
   const runtime = [];
@@ -1587,13 +1625,13 @@ export function check(kase, text) {
   const searchNaming = appSearchNaming(r.lines, e.controlPair ?? null, controlPair);
 
   if (e.noSurface) {
-    if (r.root) fail.push('built a dashboard for a question that should have been answered in prose (rule 11)');
-    if (!r.prose.join('').trim()) fail.push('answered with nothing at all');
-    return { fail, advisory, runtime, dimensions, controlPair, searchNaming, r };
+    if (r.root) quality.push('built a dashboard for a question that should have been answered in prose (rule 11)');
+    if (!r.prose.join('').trim()) quality.push('answered with nothing at all');
+    return { fail, quality, advisory, runtime, dimensions, controlPair, searchNaming, r };
   }
 
   if (!r.root) {
-    if (e.allowNoSurface) return { fail, advisory, runtime, dimensions, controlPair, searchNaming, r };
+    if (e.allowNoSurface) return { fail, quality, advisory, runtime, dimensions, controlPair, searchNaming, r };
     fail.push('no root — nothing rendered');
   }
 
@@ -1609,22 +1647,22 @@ export function check(kase, text) {
   for (const q of r.queries) {
     if (!ALLOWED_SOURCES.has(q.source)) fail.push(`Query names "${q.source}", which the scope does not allow`);
   }
-  if (r.mutations.length) fail.push(`wrote ${r.mutations.length} Mutation(s); no write-capable source exists`);
+  if (r.mutations.length) quality.push(`wrote ${r.mutations.length} Mutation(s); no write-capable source exists`);
 
   if (e.minQueries && r.queries.length < e.minQueries) {
-    fail.push(`${r.queries.length} queries, expected at least ${e.minQueries} — a dashboard with no real data`);
+    quality.push(`${r.queries.length} queries, expected at least ${e.minQueries} — a dashboard with no real data`);
   }
   if (e.minComponents && r.tags.length < e.minComponents) {
-    fail.push(`${r.tags.length} components, expected at least ${e.minComponents}`);
+    quality.push(`${r.tags.length} components, expected at least ${e.minComponents}`);
   }
   if (e.minActions && r.actions < e.minActions) {
-    fail.push(`${r.actions} Actions, expected at least ${e.minActions}`);
+    quality.push(`${r.actions} Actions, expected at least ${e.minActions}`);
   }
   if (e.minStates && r.states.length < e.minStates) {
-    fail.push(`${r.states.length} $state variables, expected at least ${e.minStates}`);
+    quality.push(`${r.states.length} $state variables, expected at least ${e.minStates}`);
   }
   for (const tag of e.tags ?? []) {
-    if (!r.tags.includes(tag)) fail.push(`no <${tag}> anywhere in the tree`);
+    if (!r.tags.includes(tag)) quality.push(`no <${tag}> anywhere in the tree`);
   }
   // Advisory, not a failure. The defect is real and the detection is narrow,
   // but it is a claim about what the DATA will do rather than about what
@@ -1634,49 +1672,51 @@ export function check(kase, text) {
       + `${sm.state}, passed to ${sm.source}'s "${sm.argument}" (${sm.query}). ${sm.reason}`);
   }
   for (const uf of r.unknownFilterFields) {
-    fail.push(`${uf.statement ?? '@Filter'} filters on "${uf.field}", which ${uf.source} does not `
+    quality.push(`${uf.statement ?? '@Filter'} filters on "${uf.field}", which ${uf.source} does not `
       + 'return — it matches nothing, every time, and the surface renders as if there were no data');
   }
-  // Structural, and fatal for the same reason `unresolved` is: the surface
-  // renders, and the control in it cannot do the one thing it is there for.
+  // Quality, not contract. The surface renders; the control in it cannot do
+  // the one thing it is there for — a statement about this generation, not
+  // about whether today's runtime still handles this DSL. See check()'s
+  // docblock for why the two are counted apart.
   for (const pc of r.positionalContract) {
     const where = pc.statement ? `${pc.statement}: ` : '';
     const at = pc.param ? `"${pc.param}" (slot ${pc.index + 1})` : `slot ${pc.index + 1}`;
     if (pc.code === 'action_in_wrong_slot') {
-      fail.push(`${where}${pc.component} takes its Action last, but ${pc.detail} is at ${at} — `
+      quality.push(`${where}${pc.component} takes its Action last, but ${pc.detail} is at ${at} — `
         + 'the control has no action and that slot holds something it cannot use');
     } else if (pc.code === 'action_dropped') {
-      fail.push(`${where}${pc.component} has ${pc.detail} at ${at}, past the end of its parameter `
+      quality.push(`${where}${pc.component} has ${pc.detail} at ${at}, past the end of its parameter `
         + 'list, so the Action is dropped and the control does nothing');
     } else if (pc.code === 'state_in_non_binding_slot') {
-      fail.push(`${where}${pc.component} has ${pc.detail} at ${at}, which is not where a value is `
+      quality.push(`${where}${pc.component} has ${pc.detail} at ${at}, which is not where a value is `
         + 'bound — the arguments are off by a slot and what the user types goes nowhere');
     } else if (pc.code === 'control_never_bound') {
-      fail.push(`${where}${pc.component} is wired to a state or an Action but its ${at} is not `
+      quality.push(`${where}${pc.component} is wired to a state or an Action but its ${at} is not `
         + 'read back from a $state, so what the user types is discarded on the next repaint');
     } else if (pc.code === 'state_as_literal') {
-      fail.push(`${where}"${pc.detail}" is the state's NAME in quotes, not the state — every read `
+      quality.push(`${where}"${pc.detail}" is the state's NAME in quotes, not the state — every read `
         + `of it gets those characters, and ${pc.detail} itself is never read`);
     }
   }
   for (const mr of r.missingQueryRuns) {
-    fail.push(`${mr.action} sets ${mr.state}, which ${mr.query} reads as an argument, but does `
+    quality.push(`${mr.action} sets ${mr.state}, which ${mr.query} reads as an argument, but does `
       + 'not @Run it — a $state changing never re-fetches on its own, so the control moves and '
       + 'the data does not. Either @Run it, or take the state out of the arguments and filter '
       + 'what is already fetched');
   }
   for (const rr of r.redundantRuns) {
-    fail.push(`${rr.action} re-runs ${rr.query}, but ${rr.states.join('/')} is not one of its `
+    quality.push(`${rr.action} re-runs ${rr.query}, but ${rr.states.join('/')} is not one of its `
       + 'arguments — the fetch returns identical data and nothing on screen changes. '
       + 'Either put the state in the Query\'s arguments or drop the @Run and filter what is '
       + 'already fetched');
   }
   if (e.minChartKinds && r.chartKinds.length < e.minChartKinds) {
-    fail.push(`${r.chartKinds.length} kind(s) of chart (${r.chartKinds.join(', ') || 'none'}), `
+    quality.push(`${r.chartKinds.length} kind(s) of chart (${r.chartKinds.join(', ') || 'none'}), `
       + `expected at least ${e.minChartKinds} — the same shape repeated answers one question twice`);
   }
 
-  return { fail, advisory, runtime, dimensions, controlPair, searchNaming, r };
+  return { fail, quality, advisory, runtime, dimensions, controlPair, searchNaming, r };
 }
 
 /**
@@ -2173,14 +2213,20 @@ for (const kase of cases) {
     } else skipped.push(kase.id);
   }
 
-  const { fail, advisory, runtime, dimensions, controlPair, searchNaming, r } = check(kase, text);
+  const { fail, quality, advisory, runtime, dimensions, controlPair, searchNaming, r } = check(kase, text);
+  // A live run is sampling the generator, so a weak draw is the result and
+  // counts. A replay is asking whether today's code still handles a draw that
+  // was already judged when it was recorded, so only the contract counts —
+  // see check()'s docblock.
+  const gating = offline ? fail : [...fail, ...quality];
 
   // Observational only — nothing below reads this to decide pass or fail.
   if (record) {
     const { counts, fatal } = diagnosticTally(r);
     runRows[kase.id] = {
-      status: fail.length ? 'failed' : (text.trim() ? 'ok' : 'skipped'),
+      status: gating.length ? 'failed' : (text.trim() ? 'ok' : 'skipped'),
       failReasons: fail,
+      qualityFindings: quality,
       sha256: sha256(text),
       statements: r.statements,
       componentInstances: (r.tags ?? []).length,
@@ -2252,9 +2298,9 @@ for (const kase of cases) {
   }
 
   if (kase.knownFailure) {
-    if (fail.length) {
+    if (gating.length) {
       console.log(`~ ${kase.id} — known failure: ${kase.knownFailure}`);
-      for (const f of fail) console.log(`    ${f}`);
+      for (const f of gating) console.log(`    ${f}`);
       // Printed here as well as below, because `continue` skips the tail. A
       // known-failing case was the one place an advisory was collected and
       // then thrown away — and it is the case most likely to be carrying a
@@ -2272,16 +2318,21 @@ for (const kase of cases) {
     continue;
   }
 
-  if (fail.length) {
+  if (gating.length) {
     failed++;
     console.error(`✗ ${kase.id} — "${kase.prompt}"`);
-    for (const f of fail) console.error(`    ${f}`);
+    for (const f of gating) console.error(`    ${f}`);
   } else {
     const shape = r.root
       ? `${r.statements} statements, ${r.queries.length} queries, ${r.tags.length} components`
       : 'prose only';
     console.log(`✓ ${kase.id} — ${shape}`);
   }
+  // On a replay these are not in `gating`, so they would otherwise vanish —
+  // and a finding nobody prints is a finding nobody fixes. Marked `quality:`
+  // so the line says which verdict it belongs to without anyone having to
+  // remember which mode they ran in.
+  if (offline) for (const q of quality) console.log(`    quality: ${q}`);
   for (const a of advisory) console.log(`    ${a.includes('eval/') ? 'noted' : 'corrected'}: ${a}`);
   // Four independent readings, printed as four. A ✓ above means the surface
   // is sound; these say which mechanism it chose, and the two can and do
