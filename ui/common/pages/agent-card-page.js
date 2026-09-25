@@ -1544,14 +1544,15 @@ class AgentCardPage extends HTMLElement {
           </section>
           <section class="acp-section">
             <h2 class="acp-section-title">Token optimization</h2>
-            <p class="acp-section-sub">Shrinks large tool results — JSON, logs and diffs — before
-              they reach the model, keeping errors and structure and leaving a counted note
-              wherever something was removed. Applies to this agent only. Other agents are
-              unaffected.</p>
+            <p class="acp-section-sub">One switch over the whole stack: shrinks large tool
+              results — JSON, logs and diffs — before they reach the model, trims the reply
+              instruction, and compresses what the orchestrator keeps between turns. Errors and
+              structure are kept, and a counted note is left wherever something was removed.
+              Turning it off stops every part of it.</p>
             <app-switch id="acp-compress" layout="settings"
               ${a.compress_enabled ? 'checked' : ''}
-              label="Compress large tool results"
-              hint="Off by default. Prompts and your own messages are never changed."></app-switch>
+              label="Token optimization"
+              hint="Off by default. Your own messages are never changed."></app-switch>
           </section>
           ${this.#isCodingAgentExample(a) ? `
           <section class="acp-section">
