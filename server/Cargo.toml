@@ -23,6 +23,7 @@ nasiko-github = { workspace = true }
 nasiko-oci.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker", "simulated"] }
 nasiko-react-agent.workspace = true
+nasiko-compress.workspace = true
 nasiko-orchestrator.workspace = true
 nasiko-types.workspace = true
 nasiko-utils.workspace = true

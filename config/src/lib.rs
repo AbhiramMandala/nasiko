@@ -130,6 +130,20 @@ pub struct Config {
     /// draws candidates from (a wide pool for the selector to choose a
     /// budget-fitting subset from). See `SessionHistory::fetch_pacms`.
     pub pacms_history_pool_size: usize,
+    /// Structurally compress tool results as the ReAct loop stores them
+    /// (PRD §9 IP-3). Shrinks what the loop carries, which also defers the
+    /// context-compaction cliff. On by default — gated by the agent's own
+    /// switch, so this is a fleet kill switch rather than an enabler.
+    pub react_compress_enabled: bool,
+    /// Skip tool results below this size.
+    pub react_compress_min_bytes: usize,
+    /// Structurally compress each history message before context selection
+    /// (PRD §9 IP-4). On by default — gated by the agent's own switch, so this
+    /// is a fleet kill switch rather than an enabler.
+    pub history_compress_enabled: bool,
+    /// Skip history messages below this size. A short turn is mostly prose,
+    /// which does not compress, so the attempt is pure cost.
+    pub history_compress_min_bytes: usize,
     /// Token budget for a user on the PACMS "low" tier (`users.pacms_budget_level`).
     pub pacms_budget_low: usize,
     /// Token budget for a user on the PACMS "medium" tier — the default tier
@@ -423,6 +437,10 @@ impl Config {
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
             pacms_history_pool_size: env_parse("PACMS_HISTORY_POOL_SIZE", 150),
+            react_compress_enabled: env_parse("TOKEN_COMPRESS_TOOL_RESULTS", true),
+            react_compress_min_bytes: env_parse("TOKEN_COMPRESS_TOOL_RESULTS_MIN_BYTES", 2048),
+            history_compress_enabled: env_parse("TOKEN_COMPRESS_HISTORY", true),
+            history_compress_min_bytes: env_parse("TOKEN_COMPRESS_HISTORY_MIN_BYTES", 2048),
             pacms_budget_low: env_parse("PACMS_BUDGET_LOW", 500),
             pacms_budget_medium: env_parse("PACMS_BUDGET_MEDIUM", 1000),
             pacms_budget_high: env_parse("PACMS_BUDGET_HIGH", 5000),

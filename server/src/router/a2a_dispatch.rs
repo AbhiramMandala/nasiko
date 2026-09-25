@@ -555,6 +555,10 @@ pub(crate) async fn orchestrator_stream(
         Some(text)
     };
 
+    // One read per turn, shared by IP-3 below. See `compression_opt_in` for why this is
+    // aggregated over the caller's agents rather than read off a single one.
+    let compression_opted_in = nasiko_orchestrator::compression_opt_in(&state.db, user_id).await;
+
     let config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
@@ -569,7 +573,18 @@ pub(crate) async fn orchestrator_stream(
         temperature: Some(0.2),
         policy: policy.clone(),
         preamble,
-        ..Default::default()
+        // IP-3. Read here rather than defaulted, because `ContextConfig::default()` is
+        // deliberately inert — without this the compressor is compiled in but unreachable.
+        // Gated by the deployment flag AND the per-agent opt-in, so the UI switch starts and
+        // stops this with the rest of the stack instead of leaving one layer running.
+        context: nasiko_react_agent::ContextConfig {
+            compress: nasiko_compress::Policy {
+                enabled: state.config.react_compress_enabled && compression_opted_in,
+                min_bytes: state.config.react_compress_min_bytes,
+                ..Default::default()
+            },
+            ..nasiko_react_agent::ContextConfig::default()
+        },
     };
 
     // Real root span for this exchange. Its ids seed the FlowContext, so the
