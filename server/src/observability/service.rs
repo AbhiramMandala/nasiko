@@ -3410,10 +3410,65 @@ mod tests {
         };
 
         let (roots, _) = build_span_tree(&[root, child]);
-        assert_eq!(roots[0].token_count_total, 20);
+
+        // The span reports `input_tokens: 10` with no `total_tokens` to disambiguate, so
+        // `split_prompt_tokens` takes the semconv (inclusive) reading: the 5 cached tokens are
+        // a *subset* of that 10, leaving 5 billed at the full input rate. The turn is therefore
+        // 5 fresh + 5 output + 2 cache-read + 3 cache-creation = 15 distinct tokens.
+        //
+        // This asserted 20 until `split_prompt_tokens` landed, which is the same 5 cached
+        // tokens counted twice — the double-charge that fix exists to prevent. The name still
+        // holds: 15 is input+output *plus* both cache classes, not input+output alone (10).
+        assert_eq!(roots[0].token_count_total, 15);
+        assert_eq!(
+            roots[0].input_tokens, 5,
+            "cached tokens must not remain inside `input`"
+        );
         assert_eq!(roots[0].cache_read_tokens, 2);
         assert_eq!(roots[0].cache_creation_tokens, 3);
-        assert_eq!(roots[0].children[0].token_count_total, 20);
+        assert_eq!(roots[0].children[0].token_count_total, 15);
+    }
+
+    /// The other reading of the same attributes, pinned so the two cannot drift: when the span
+    /// reports a `total_tokens` that only adds up if `input_tokens` *excludes* the cached
+    /// subset (Anthropic's shape), `input` is already the fresh count and nothing is subtracted.
+    #[test]
+    fn span_tree_keeps_input_whole_when_total_says_cache_is_disjoint() {
+        let mut attributes = HashMap::new();
+        attributes.insert("gen_ai.usage.input_tokens".into(), serde_json::json!(10));
+        attributes.insert("gen_ai.usage.output_tokens".into(), serde_json::json!(5));
+        attributes.insert(
+            "gen_ai.usage.cache_read_input_tokens".into(),
+            serde_json::json!(2),
+        );
+        attributes.insert(
+            "gen_ai.usage.cache_creation_input_tokens".into(),
+            serde_json::json!(3),
+        );
+        // 10 fresh + 5 cached + 5 output — only consistent with the disjoint reading.
+        attributes.insert("gen_ai.usage.total_tokens".into(), serde_json::json!(20));
+        let span = Span {
+            span_id: "model".into(),
+            parent_span_id: None,
+            name: "chat model".into(),
+            started_at: Utc.with_ymd_and_hms(2026, 8, 27, 12, 0, 0).unwrap(),
+            ended_at: None,
+            duration_ms: None,
+            service_name: "agent".into(),
+            kind: 3,
+            status_code: 0,
+            status_message: String::new(),
+            attributes,
+            events: vec![],
+        };
+
+        let (roots, _) = build_span_tree(&[span]);
+
+        assert_eq!(
+            roots[0].input_tokens, 10,
+            "nothing to subtract in this reading"
+        );
+        assert_eq!(roots[0].token_count_total, 20);
     }
 
     #[test]
