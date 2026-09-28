@@ -165,3 +165,81 @@ async fn the_toggle_is_scoped_to_one_agent() {
         "enabling compression on one agent leaked to another"
     );
 }
+
+// ─── metadata / feature flags ───────────────────────────────────────────────
+//
+// Same projection trap as the compress toggle above, third occurrence. The Settings
+// "Features" switches (prompt comments, and anything added beside it) render from
+// `metadata.features`, and the UI builds its PUT body by spreading the value it read back.
+// Omit `metadata` from `AgentDetailResponse` and both halves break at once: the switch shows
+// off whatever the column says, and each save replaces the whole column with the single
+// feature being toggled.
+
+#[tokio::test]
+#[serial]
+async fn get_agent_reports_metadata_back() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent = create_agent(&server, uid, "metadata-roundtrip").await;
+    let id = agent["id"].as_str().unwrap();
+
+    put_agent(
+        &server,
+        uid,
+        id,
+        json!({"metadata": {"features": {"prompt_comments": "enabled"}}}),
+    )
+    .await;
+
+    let fetched = get_agent(&server, uid, id).await;
+    assert!(
+        fetched.get("metadata").is_some(),
+        "GET omits metadata; every Features switch renders off however the column reads: {fetched}"
+    );
+    assert_eq!(
+        fetched["metadata"]["features"]["prompt_comments"],
+        json!("enabled")
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_feature_toggle_does_not_wipe_the_rest_of_metadata() {
+    // The UI spreads what GET returned, so a projection that drops metadata silently turns
+    // every toggle into "replace the column". Pin the round trip that makes spreading safe.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent = create_agent(&server, uid, "metadata-preserve").await;
+    let id = agent["id"].as_str().unwrap();
+
+    put_agent(
+        &server,
+        uid,
+        id,
+        json!({"metadata": {"keep_me": "yes", "features": {"prompt_comments": "disabled"}}}),
+    )
+    .await;
+
+    // What the UI does: read, spread, flip one feature, write back.
+    let before = get_agent(&server, uid, id).await;
+    let mut metadata = before["metadata"].clone();
+    metadata["features"]["prompt_comments"] = json!("enabled");
+    put_agent(&server, uid, id, json!({ "metadata": metadata })).await;
+
+    let after = get_agent(&server, uid, id).await;
+    assert_eq!(
+        after["metadata"]["features"]["prompt_comments"],
+        json!("enabled")
+    );
+    assert_eq!(
+        after["metadata"]["keep_me"],
+        json!("yes"),
+        "toggling one feature dropped the rest of metadata: {after}"
+    );
+
+    server.cleanup().await;
+}

@@ -641,6 +641,15 @@ pub(crate) struct AgentDetailResponse {
     /// it here and the Settings toggle shows off regardless of the real value.
     #[serde(rename = "minimal_code_enabled")]
     minimal_code_enabled: bool,
+    /// Owner-writable bag, and the home of `features.*` — the flags
+    /// `AppState::agent_env` turns into `NASIKO_<KEY>` on the container.
+    ///
+    /// Third occurrence of the same trap the two fields above warn about, and the worst of
+    /// them: the Settings feature switches render from `metadata.features`, and the UI builds
+    /// its `PUT` body by spreading the value it read back. Omitted here it was always
+    /// `undefined`, so every switch showed off however the column read *and* each save
+    /// replaced the whole column with just the one feature it was toggling.
+    metadata: serde_json::Value,
     status: String,
     version: String,
     description: String,
@@ -765,6 +774,7 @@ pub(crate) async fn get_one(
         coding_agent_integration_id,
         compress_enabled: agent.compress_enabled,
         minimal_code_enabled: agent.minimal_code_enabled,
+        metadata: agent.metadata.0.clone(),
         status: agent.status.clone(),
         version: agent.version.clone(),
         description: agent.description.unwrap_or_default(),
