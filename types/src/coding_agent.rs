@@ -88,32 +88,8 @@ pub struct CodingAgentLlmCall {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accounting: Option<CodingAgentCallAccounting>,
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
-}
-
-/// Evidence retained from the provider response, independent of transcript record IDs.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CodingAgentCallAccounting {
-    pub version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_creation_5m_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_creation_1h_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub speed: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inference_geo: Option<String>,
-    #[serde(default)]
-    pub conflicting_observations: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,33 +288,6 @@ impl CodingAgentEventV1 {
                 };
                 if value.len() > max {
                     return Err(format!("{name} must be at most {max} bytes"));
-                }
-            }
-            if let Some(accounting) = &call.accounting {
-                if accounting.version != 2 {
-                    return Err("unsupported call accounting version".into());
-                }
-                let ttl_total = accounting
-                    .cache_creation_5m_tokens
-                    .unwrap_or(0)
-                    .checked_add(accounting.cache_creation_1h_tokens.unwrap_or(0))
-                    .ok_or("cache creation TTL counts overflow")?;
-                if ttl_total > call.cache_creation_tokens {
-                    return Err("cache creation TTL counts exceed aggregate creation".into());
-                }
-                for value in [
-                    &accounting.request_id,
-                    &accounting.message_id,
-                    &accounting.speed,
-                    &accounting.service_tier,
-                    &accounting.inference_geo,
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    if value.len() > CODING_AGENT_ID_MAX_BYTES {
-                        return Err("call accounting field exceeds maximum size".into());
-                    }
                 }
             }
             if call.ended_at < call.started_at {
@@ -558,7 +507,6 @@ mod tests {
                 output_tokens: 0,
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
-                accounting: None,
                 started_at: at,
                 ended_at: at,
             })
@@ -708,7 +656,6 @@ mod tests {
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
-            accounting: None,
             started_at: at,
             ended_at: at,
         });

@@ -15,91 +15,18 @@ use sqlx::PgPool;
 pub struct TurnUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
-    pub cost_usd: f64,
     pub model: Option<String>,
-    /// True when usage or any contributing price was estimated.
+    /// True when any contributing turn reported a character-estimate
+    /// rather than exact provider counts (streamed turns under rig 0.11).
     pub estimated: bool,
 }
 
 impl TurnUsage {
-    pub fn add(&mut self, call: &PricedTurn) {
-        self.input_tokens = self.input_tokens.saturating_add(call.usage.input_tokens);
-        self.output_tokens = self.output_tokens.saturating_add(call.usage.output_tokens);
-        self.cache_read_tokens = self
-            .cache_read_tokens
-            .saturating_add(call.usage.cache_read_tokens);
-        self.cache_creation_tokens = self
-            .cache_creation_tokens
-            .saturating_add(call.usage.cache_creation_tokens);
-        self.cost_usd += call.cost_usd;
-        self.model.get_or_insert_with(|| call.usage.model.clone());
-        self.estimated |= call.estimated;
-    }
-}
-
-/// A single priced call, shared by the live summary and delayed agent attribution.
-pub struct PricedTurn {
-    pub usage: nasiko_react_agent::CallUsage,
-    pub cost_usd: f64,
-    pub estimated: bool,
-    provenance: serde_json::Value,
-}
-
-impl PricedTurn {
-    pub async fn price(
-        engine: &nasiko_pricing::PricingEngine,
-        usage: nasiko_react_agent::CallUsage,
-    ) -> Self {
-        let priced = engine
-            .price(
-                usage.provider.as_deref(),
-                &usage.model,
-                nasiko_pricing::RawUsage {
-                    input: usage.input_tokens,
-                    output: usage.output_tokens,
-                    cache_read: usage.cache_read_tokens,
-                    cache_creation: usage.cache_creation_tokens,
-                    total: Some(usage.total_tokens),
-                },
-                nasiko_pricing::PromptConvention::Exclusive,
-                usage.started_at,
-            )
-            .await;
-        Self {
-            cost_usd: priced.cost.total_usd,
-            estimated: usage.estimated || priced.cost.estimated,
-            provenance: priced.provenance(),
-            usage,
-        }
-    }
-
-    pub async fn persist(
-        self,
-        tracker: &crate::usage::UsageTracker,
-        user_id: uuid::Uuid,
-        flow_id: &str,
-        agent_id: Option<uuid::Uuid>,
-    ) -> Result<uuid::Uuid, sqlx::Error> {
-        let count = |value: u64| value.min(i32::MAX as u64) as i32;
-        // Set the full total directly: the general-purpose builder also serves
-        // older callers whose input still includes cache and must not change here.
-        let mut row = crate::usage::TokenUsageBuilder::new(user_id, "orchestrator", self.usage.provider.as_deref().unwrap_or("unknown"), &self.usage.model)
-            .tokens(0, 0)
-            .cache_read_tokens(count(self.usage.cache_read_tokens))
-            .cache_creation_tokens(count(self.usage.cache_creation_tokens))
-            .cached_tokens(count(self.usage.cache_read_tokens))
-            .session_id(flow_id)
-            .streaming(self.usage.streaming)
-            .metadata(serde_json::json!({"key_source": "platform", "estimated": self.estimated,
-                "usage_estimated": self.usage.estimated, "started_at": self.usage.started_at, "pricing": self.provenance}))
-            .build();
-        row.input_tokens = count(self.usage.input_tokens);
-        row.output_tokens = count(self.usage.output_tokens);
-        row.total_tokens = count(self.usage.total_tokens);
-        row.agent_id = agent_id;
-        tracker.track_priced_tokens(row, self.cost_usd).await
+    pub fn add(&mut self, input_tokens: u64, output_tokens: u64, model: &str, estimated: bool) {
+        self.input_tokens += input_tokens;
+        self.output_tokens += output_tokens;
+        self.model.get_or_insert_with(|| model.to_string());
+        self.estimated |= estimated;
     }
 }
 
@@ -159,19 +86,33 @@ impl UsageSummary {
 /// platform-paid `token_usage` rows agents wrote inside this flow.
 pub async fn summarize_flow_usage(
     db: &PgPool,
-    _observability: &dyn ObservabilityProvider,
+    observability: &dyn ObservabilityProvider,
     flow_id: &str,
     turns: &TurnUsage,
     duration_ms: i64,
 ) -> UsageSummary {
     let agents = platform_paid_agent_usage(db, flow_id).await;
 
+    let turn_cost = if turns.input_tokens + turns.output_tokens > 0 {
+        observability
+            .cost(
+                turns.model.as_deref(),
+                turns.input_tokens,
+                turns.output_tokens,
+            )
+            .await
+            .total_usd
+    } else {
+        0.0
+    };
+
     UsageSummary {
         input_tokens: turns.input_tokens + agents.input,
         output_tokens: turns.output_tokens + agents.output,
-        cache_read_tokens: turns.cache_read_tokens + agents.cache_read,
-        cache_creation_tokens: turns.cache_creation_tokens + agents.cache_creation,
-        cost_usd: turns.cost_usd + agents.cost,
+        // Orchestrator turns report no cache split, so these are the agents' alone.
+        cache_read_tokens: agents.cache_read,
+        cache_creation_tokens: agents.cache_creation,
+        cost_usd: turn_cost + agents.cost,
         model: turns.model.clone(),
         estimated: turns.estimated,
         duration_ms,
@@ -272,6 +213,8 @@ pub async fn insert_assistant_message(
     .bind(cost)
     .bind(estimated)
     .bind(trace_id)
+    .bind(cache_read)
+    .bind(cache_creation)
     // Built from the reader's own constant rather than spelled again here: the
     // filter that consumes this tag lives in another crate, and a mismatch
     // between the two spellings fails silently.
@@ -283,8 +226,6 @@ pub async fn insert_assistant_message(
         );
         serde_json::Value::Object(m)
     }))
-    .bind(cache_read)
-    .bind(cache_creation)
     .execute(db)
     .await;
     if let Err(e) = result {

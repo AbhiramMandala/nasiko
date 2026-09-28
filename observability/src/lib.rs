@@ -1,3 +1,4 @@
+pub mod db_pricing;
 pub mod error;
 pub mod injector;
 pub mod loki;
@@ -7,13 +8,16 @@ pub mod runtime_ext;
 pub mod tempo;
 pub mod types;
 
+pub use db_pricing::DbPricing;
 pub use error::ObservabilityError;
 pub use injector::{AgentContext, InstrumentationInjector, OtelInjector};
 pub use loki::{LokiClient, SpanContent, parse_trace_logs};
-pub use pricing::{CostBreakdown, CostRequest, compute_cost};
+pub use pricing::{
+    CostBreakdown, PricingSource, StaticPricing, compute_cost, compute_cost_with_cache,
+};
 pub use provider::{
     NoSessionIdResolver, ObservabilityProvider, SessionIdResolver, SpendBucket, TempoLokiProvider,
-    TimeBucket, chunk_tempo_range, clamp_tempo_range, find_root_span, span_provider,
+    TimeBucket, chunk_tempo_range, clamp_tempo_range, find_root_span,
 };
 pub use runtime_ext::InstrumentedRuntime;
 pub use tempo::TempoClient;

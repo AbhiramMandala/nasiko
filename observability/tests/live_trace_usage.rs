@@ -9,8 +9,7 @@
 //!   TEMPO_URL=http://localhost:3200 TRACE_IDS=abc,def \
 //!     cargo test -p nasiko-observability --test live_trace_usage -- --ignored --nocapture
 
-use nasiko_observability::{ObservabilityProvider, TempoLokiProvider};
-use nasiko_pricing::PricingEngine;
+use nasiko_observability::{DbPricing, ObservabilityProvider, StaticPricing, TempoLokiProvider};
 use std::sync::Arc;
 
 /// Uses the real `model_pricing` table when `DATABASE_URL` is set. That matters: with the
@@ -19,16 +18,17 @@ use std::sync::Arc;
 async fn provider() -> TempoLokiProvider {
     let tempo = std::env::var("TEMPO_URL").unwrap_or_else(|_| "http://localhost:3200".into());
     let loki = std::env::var("LOKI_URL").unwrap_or_else(|_| "http://localhost:3100".into());
-    // The engine needs a pool for the synced price book; without one it still
-    // resolves through the offline table, which is enough for the shape checks
-    // here (the rate assertions live in nasiko-pricing's own live tests).
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://invalid:invalid@127.0.0.1:1/none".into());
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
-        .connect_lazy(&url)
-        .expect("build a lazy pool");
-    TempoLokiProvider::new(tempo, loki, Arc::new(PricingEngine::new(pool)))
+    match std::env::var("DATABASE_URL") {
+        Ok(url) => {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect DATABASE_URL");
+            TempoLokiProvider::new(tempo, loki, Arc::new(DbPricing::new(pool)))
+        }
+        Err(_) => TempoLokiProvider::new(tempo, loki, Arc::new(StaticPricing)),
+    }
 }
 
 #[tokio::test]

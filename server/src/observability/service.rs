@@ -812,10 +812,6 @@ pub struct FinopsSummary {
     /// silently skips these, so `total_cost` under-reports; this surfaces the gap
     /// as a known number rather than a smaller one.
     pub unpriced_calls: usize,
-    /// Sum of rows explicitly priced using inferred rates or usage evidence.
-    pub estimated_cost: f64,
-    /// Older materializations without recorded pricing confidence.
-    pub unknown_confidence_calls: usize,
 }
 
 #[derive(Serialize, Clone, ToSchema)]
@@ -1727,17 +1723,14 @@ impl ObservabilityService {
                 continue;
             }
             let u = extract_usage_attrs(&span.attributes);
+            let (input, output, model) = (u.input, u.output, u.model.clone());
+            let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
             if u.is_empty() {
                 continue;
             }
             cost.add_assign(
                 self.provider
-                    .cost(nasiko_observability::CostRequest::from_usage(
-                        nasiko_observability::span_provider(span),
-                        u.model.as_deref(),
-                        span.started_at,
-                        &u,
-                    ))
+                    .cost_with_cache(model.as_deref(), input, output, cache_read, cache_creation)
                     .await,
             );
         }
@@ -2173,8 +2166,6 @@ impl ObservabilityService {
             cache_read_tokens: i64,
             cache_creation_tokens: i64,
             total_cost: f64,
-            estimated_cost: f64,
-            unknown_confidence_calls: i64,
             tool_call_count: i64,
             p50_latency: Option<f64>,
             p95_latency: Option<f64>,
@@ -2202,8 +2193,6 @@ impl ObservabilityService {
                       COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
                       COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
                       COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
-                      COALESCE(SUM(cost_usd) FILTER (WHERE cost_estimated), 0)::FLOAT8 AS estimated_cost,
-                      COUNT(*) FILTER (WHERE cost_estimated IS NULL)::BIGINT AS unknown_confidence_calls,
                       COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count,
                       percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50_latency,
                       percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p95_latency,
@@ -2526,11 +2515,6 @@ impl ObservabilityService {
                     total_agents,
                     total_container_hours,
                     unpriced_calls: unpriced_calls.max(0) as usize,
-                    estimated_cost: current_rows.iter().map(|row| row.estimated_cost).sum(),
-                    unknown_confidence_calls: current_rows
-                        .iter()
-                        .map(|row| row.unknown_confidence_calls.max(0) as usize)
-                        .sum(),
                 },
                 agents: agent_rows,
                 token_usage: FinopsTokenUsage {
@@ -3330,8 +3314,6 @@ fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse 
                 total_agents: 0,
                 total_container_hours,
                 unpriced_calls: 0,
-                estimated_cost: 0.0,
-                unknown_confidence_calls: 0,
             },
             agents: vec![],
             token_usage: FinopsTokenUsage {
@@ -3492,7 +3474,6 @@ mod tests {
                 cache_read_usd: 0.25,
                 cache_creation_usd: 0.75,
                 total_usd: 4.0,
-                estimated: false,
             },
         };
 

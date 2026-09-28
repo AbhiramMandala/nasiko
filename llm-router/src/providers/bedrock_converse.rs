@@ -486,7 +486,8 @@ fn converse_event_stream(
         let mut block_to_tool: HashMap<i64, i64> = HashMap::new();
         let mut tool_blocks_with_arguments: HashSet<i64> = HashSet::new();
         let mut next_tool_index: i64 = 0;
-        let mut usage = None;
+        let mut input_tokens: Option<i64> = None;
+        let mut output_tokens: Option<i64> = None;
         let mut finish: Option<String> = None;
         let mut got_metadata = false;
         let mut first_chunk = true;
@@ -644,7 +645,8 @@ fn converse_event_stream(
                     "metadata" => {
                         got_metadata = true;
                         if let Some(u) = event.get("usage") {
-                            usage = Some(converse_usage(u));
+                            input_tokens = u.get("inputTokens").and_then(|v| v.as_i64());
+                            output_tokens = u.get("outputTokens").and_then(|v| v.as_i64());
                         }
                     }
                     other => {
@@ -662,53 +664,29 @@ fn converse_event_stream(
             target: "nasiko::llm_router::bedrock",
             has_finish = finish.is_some(),
             got_metadata,
-            ?usage,
+            ?input_tokens,
+            ?output_tokens,
             label,
             "bedrock converse stream ended — emitting terminal chunks"
         );
         if let Some(finish) = finish {
             yield Ok(finish_chunk(&id, &model, finish));
         }
-        if let Some(usage) = usage {
-            yield Ok(usage_chunk(&id, &model, usage));
+        if got_metadata {
+            yield Ok(usage_chunk(&id, &model, Usage {
+                prompt_tokens: input_tokens,
+                completion_tokens: output_tokens,
+                total_tokens: match (input_tokens, output_tokens) {
+                    (Some(i), Some(o)) => Some(i + o),
+                    _ => None,
+                },
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                prompt_tokens_details: None,
+            }));
         }
     };
     Box::pin(stream)
-}
-
-/// Converse reports fresh input separately from cache reads/writes.
-fn converse_usage(value: &Value) -> Usage {
-    let count = |key: &str| value.get(key).and_then(Value::as_i64).filter(|n| *n >= 0);
-    let cache_creation = value
-        .get("cacheDetails")
-        .and_then(Value::as_array)
-        .map(|details| {
-            let tokens = |ttl: &str| {
-                let counts: Vec<i64> = details
-                    .iter()
-                    .filter(|d| d["ttl"] == ttl)
-                    .filter_map(|d| d["inputTokens"].as_i64().filter(|n| *n >= 0))
-                    .collect();
-                if counts.is_empty() {
-                    None
-                } else {
-                    counts.into_iter().try_fold(0_i64, i64::checked_add)
-                }
-            };
-            crate::ir::CacheCreationUsage {
-                ephemeral_5m_input_tokens: tokens("5m"),
-                ephemeral_1h_input_tokens: tokens("1h"),
-            }
-        });
-    Usage {
-        prompt_tokens: count("inputTokens"),
-        completion_tokens: count("outputTokens"),
-        total_tokens: count("totalTokens"),
-        cache_read_input_tokens: count("cacheReadInputTokens"),
-        cache_creation_input_tokens: count("cacheWriteInputTokens"),
-        cache_creation,
-        prompt_tokens_details: None,
-    }
 }
 
 fn is_temperature_unsupported(status: u16, body: &str) -> bool {
@@ -986,7 +964,21 @@ fn from_converse_response(
         .unwrap_or("end_turn");
     let finish_reason = map_stop_reason(stop_reason);
 
-    let usage = body.get("usage").map(converse_usage);
+    let usage = body.get("usage").map(|u| {
+        let input = u.get("inputTokens").and_then(|v| v.as_i64());
+        let output = u.get("outputTokens").and_then(|v| v.as_i64());
+        Usage {
+            prompt_tokens: input,
+            completion_tokens: output,
+            total_tokens: match (input, output) {
+                (Some(i), Some(o)) => Some(i + o),
+                _ => None,
+            },
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            prompt_tokens_details: None,
+        }
+    });
 
     let id = uuid::Uuid::new_v4().to_string();
     Ok(ChatResponse {
@@ -1192,105 +1184,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    #[ignore = "two paid Bedrock requests; requires explicit live verification authorization"]
-    async fn live_usage_survives_converse_and_anthropic_adapters() {
-        use crate::inbound::{InboundParser, anthropic::AnthropicInbound};
-        let db_url = std::env::var("DATABASE_URL").unwrap();
-        let parsed = reqwest::Url::parse(&db_url).unwrap();
-        assert!(matches!(parsed.host_str(), Some("localhost" | "127.0.0.1")));
-        let db = sqlx::PgPool::connect(&db_url).await.unwrap();
-        let (base, encrypted): (String, String) = sqlx::query_as("SELECT base_url,encrypted_api_key FROM custom_providers WHERE label='aws-bedrock' AND deleted_at IS NULL")
-            .fetch_one(&db).await.unwrap();
-        let key = nasiko_secrets::SecretsCrypto::for_platform_settings()
-            .decrypt(&encrypted)
-            .unwrap();
-        db.close().await;
-        let mut config = resolved("us.openai.gpt-6-astra");
-        config.max_tokens = Some(16);
-        let request: ChatRequest = serde_json::from_value(
-            json!({"messages":[{"role":"user","content":"Reply with just OK."}]}),
-        )
-        .unwrap();
-        let (body, names) = to_converse_request(&request, &config);
-        let http = reqwest::Client::new();
-        for surface in ["converse", "converse-stream"] {
-            let response = http
-                .post(format!("{base}/model/{}/{surface}", config.model))
-                .bearer_auth(&key)
-                .json(&body)
-                .send()
-                .await
-                .unwrap();
-            let status = response.status();
-            if !status.is_success() {
-                let body = response.text().await.unwrap();
-                panic!("Bedrock status {status}: {body}");
-            }
-            if surface == "converse" {
-                let raw: Value = response.json().await.unwrap();
-                let mapped = from_converse_response(&raw, &config.model, &names).unwrap();
-                let wire = AnthropicInbound.render_chat_response(mapped);
-                println!(
-                    "buffered raw usage={} rendered usage={}",
-                    raw["usage"], wire["usage"]
-                );
-                assert_eq!(raw["usage"]["inputTokens"], wire["usage"]["input_tokens"]);
-                assert_eq!(raw["usage"]["outputTokens"], wire["usage"]["output_tokens"]);
-                assert_eq!(
-                    raw["usage"]["cacheReadInputTokens"],
-                    wire["usage"]["cache_read_input_tokens"]
-                );
-                assert_eq!(
-                    raw["usage"]["cacheWriteInputTokens"],
-                    wire["usage"]["cache_creation_input_tokens"]
-                );
-            } else {
-                let bytes = response.bytes().await.unwrap();
-                let mut buffer = BytesMut::from(bytes.as_ref());
-                let mut raw = Value::Null;
-                while let Some(frame) = decode_event_stream_frame(&mut buffer) {
-                    assert!(!frame.is_exception(), "upstream exception");
-                    if frame.event_type == "metadata" {
-                        raw =
-                            serde_json::from_str::<Value>(&frame.payload).unwrap()["usage"].clone();
-                    }
-                }
-                let input = futures::stream::iter(vec![Ok::<_, reqwest::Error>(bytes)]);
-                let mut chunks = converse_event_stream(
-                    Box::pin(input),
-                    config.model.clone(),
-                    names.clone(),
-                    "usage-verification",
-                );
-                let mut renderer = AnthropicInbound.chat_stream_renderer();
-                while let Some(chunk) = chunks.next().await {
-                    renderer.render(chunk.unwrap());
-                }
-                let frames = renderer.finish();
-                let final_event: Value = serde_json::from_str(
-                    frames
-                        .iter()
-                        .find(|f| f.contains("event: message_delta"))
-                        .unwrap()
-                        .lines()
-                        .find_map(|l| l.strip_prefix("data: "))
-                        .unwrap(),
-                )
-                .unwrap();
-                let wire = &final_event["usage"];
-                println!("stream raw usage={raw} rendered usage={wire}");
-                assert_eq!(raw["inputTokens"], wire["input_tokens"]);
-                assert_eq!(raw["outputTokens"], wire["output_tokens"]);
-                assert_eq!(raw["cacheReadInputTokens"], wire["cache_read_input_tokens"]);
-                assert_eq!(
-                    raw["cacheWriteInputTokens"],
-                    wire["cache_creation_input_tokens"]
-                );
-            }
-        }
-    }
-
     #[test]
     fn request_extracts_system_and_translates_tools() {
         let req: ChatRequest = serde_json::from_value(json!({
@@ -1450,26 +1343,6 @@ mod tests {
             prefixed_model_id("openai.gpt-6-astra", eu_base),
             "eu.openai.gpt-6-astra"
         );
-    }
-
-    #[test]
-    fn converse_usage_retains_cache_subdivisions_and_provider_total() {
-        let usage = converse_usage(&json!({
-            "inputTokens":2,"outputTokens":5,"totalTokens":7,
-            "cacheReadInputTokens":1000,"cacheWriteInputTokens":300,
-            "cacheDetails":[{"ttl":"5m","inputTokens":100},{"ttl":"1h","inputTokens":200}]
-        }));
-        assert_eq!(usage.prompt_tokens, Some(2));
-        assert_eq!(usage.total_tokens, Some(7));
-        assert_eq!(usage.cache_read_input_tokens, Some(1000));
-        assert_eq!(usage.cache_creation_input_tokens, Some(300));
-        let ttl = usage.cache_creation.unwrap();
-        assert_eq!(ttl.ephemeral_5m_input_tokens, Some(100));
-        assert_eq!(ttl.ephemeral_1h_input_tokens, Some(200));
-        let missing = converse_usage(&json!({"inputTokens":0}));
-        assert_eq!(missing.prompt_tokens, Some(0));
-        assert!(missing.cache_read_input_tokens.is_none());
-        assert!(missing.total_tokens.is_none());
     }
 
     #[test]
