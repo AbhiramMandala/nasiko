@@ -417,7 +417,19 @@ function buildNode(node, catalog, deps = {}) {
             + 'render its empty state while the fetch is in flight.'
           : `${node.tag} needs an array of rows`);
       }
-      el[prop] = async () => ({ data: rows, total: rows.length });
+      // A Query already fetched these rows. Honour the table's local search
+      // and 1-based paging contract instead of repeating all rows on every
+      // page. With pagination disabled the component expects the whole set.
+      el[prop] = async (query = '', page = 1, limit = 10) => {
+        const term = String(query).trim().toLocaleLowerCase();
+        const filtered = term ? rows.filter(row => Object.values(row ?? {})
+          .some(value => String(value ?? '').toLocaleLowerCase().includes(term))) : rows;
+        const start = (Math.max(1, page) - 1) * Math.max(1, limit);
+        return {
+          data: node.props?.pagination === 'none' ? filtered : filtered.slice(start, start + Math.max(1, limit)),
+          total: filtered.length,
+        };
+      };
     } else if (node.data === null) {
       report('data_not_rows', `${node.tag} was given nothing to show — its data argument is null.`);
     } else {
@@ -430,6 +442,12 @@ function buildNode(node, catalog, deps = {}) {
   // handler and no on* attribute is ever written.
   if (node.action && node.action.type === 'action' && def.actionParam) {
     el.addEventListener(triggerEvent(def), (ev) => deps.onAction?.(node.action, el, ev));
+  }
+
+  // These are catalogued component events, never DSL event-handler strings.
+  // An owner-fed chart/table cannot refetch a Query by itself.
+  for (const event of def.events ?? []) {
+    if (event.name.endsWith('-retry')) el.addEventListener(event.name, () => deps.onRetry?.());
   }
 
   // ── The accessibility floor ───────────────────────────────────────────

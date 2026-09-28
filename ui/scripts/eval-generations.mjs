@@ -592,7 +592,9 @@ export function runProvenance(byCase) {
   const seen = Object.values(byCase).filter(Boolean);
   if (!seen.length) return { generator: null, generatorConsistent: true, generatorSpread: null };
   const digests = [...new Set(seen.map((g) => g.promptDigest ?? 'unreported'))];
-  const consistent = digests.length === 1;
+  // Prompt identity alone misses boundary, inventory and model changes.
+  const conditions = new Set(seen.map(g => JSON.stringify(provenanceFrom(g))));
+  const consistent = conditions.size === 1;
   const spread = consistent ? null : Object.fromEntries(
     digests.map((d) => [d, Object.keys(byCase).filter((id) => (byCase[id]?.promptDigest ?? 'unreported') === d)]),
   );
@@ -619,7 +621,8 @@ export function runProvenance(byCase) {
  * assembles the prompt and filters the output, and `model` changes what comes
  * back without moving any of the three.
  */
-const PROVENANCE_KEYS = ['promptDigest', 'specDigest', 'generatorDigest', 'model', 'catalogVersion'];
+const PROVENANCE_KEYS = ['promptDigest', 'specDigest', 'generatorDigest', 'model', 'catalogVersion',
+  'scope', 'sourceInventoryDigest', 'sourceNames', 'generationSettings'];
 
 /**
  * The provenance out of one `surface` event's payload.

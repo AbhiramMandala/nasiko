@@ -19,5 +19,12 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 export class AppRow extends BaseLayout {
   static get observedAttributes() { return ['gap', 'align', 'justify', 'padding', 'wrap']; }
   constructor() { super('row'); }
+
+  updateProperty(name, value) {
+    // Boolean attributes arrive as an empty string. Mirroring that into a CSS
+    // variable produced invalid flex-wrap and silently kept the row nowrap.
+    if (name === 'wrap') this.style.setProperty('--row-wrap', 'wrap');
+    else super.updateProperty(name, value);
+  }
 }
 customElements.define('app-row', AppRow);

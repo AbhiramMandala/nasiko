@@ -58,7 +58,7 @@ export function selectPath(value, path) {
  *   argEnums?: () => (object|null),
  * }} deps
  */
-export function createQueryManager({ call, onChange, onDiagnostic, argEnums }) {
+export function createQueryManager({ call, onChange, onDiagnostic, argEnums, allowMutations = true }) {
   /** key → {status, value, error, promise, generation} */
   const cache = new Map();
   /** statementId → the query declaration from the last materialization */
@@ -73,6 +73,8 @@ export function createQueryManager({ call, onChange, onDiagnostic, argEnums }) {
   const results = new Map();
   /** Statement ids whose current key is in error — see `publish`. */
   const failed = new Set();
+  /** Initial requests have no data yet; refetches retain the last good data. */
+  const loading = new Set();
   /**
    * statementId → the cache key whose value that statement is currently
    * showing. Usually the key its declaration hashes to — but not while a
@@ -91,6 +93,8 @@ export function createQueryManager({ call, onChange, onDiagnostic, argEnums }) {
     const decl = declared.get(statementId);
     const entry = cache.get(activeKeys.get(statementId));
     if (!decl || !entry) return;
+    if (entry.status === 'loading' && entry.value === undefined) loading.add(statementId);
+    else loading.delete(statementId);
     // Whether this statement's data is currently a failure, tracked apart from
     // the value because the two answers differ: a failed refetch keeps the last
     // good value on screen (below), so `results` alone cannot tell a component
@@ -203,6 +207,8 @@ export function createQueryManager({ call, onChange, onDiagnostic, argEnums }) {
       promise: null,
     };
     cache.set(key, entry);
+    publishKey(key);
+    queueMicrotask(() => { if (!disposed) onChange?.(); });
 
     entry.promise = Promise.resolve()
       .then(() => call(source, ...args))
@@ -242,6 +248,7 @@ export function createQueryManager({ call, onChange, onDiagnostic, argEnums }) {
      * be failing. Only this says so.
      */
     failed,
+    loading,
     mutationResults,
 
     /**
@@ -294,7 +301,7 @@ export function createQueryManager({ call, onChange, onDiagnostic, argEnums }) {
       // stays: revisions flip a chart back and forth and re-fetching each time
       // would make an undo cost a round trip.
       for (const id of [...declared.keys()]) {
-        if (!seen.has(id)) { declared.delete(id); results.delete(id); activeKeys.delete(id); failed.delete(id); }
+        if (!seen.has(id)) { declared.delete(id); results.delete(id); activeKeys.delete(id); failed.delete(id); loading.delete(id); }
       }
 
       declaredMutations.clear();
@@ -335,6 +342,10 @@ export function createQueryManager({ call, onChange, onDiagnostic, argEnums }) {
      * @param {unknown[]} args already-evaluated positional arguments
      */
     async fireMutation(statementId, args) {
+      if (!allowMutations) {
+        diag('mutation_not_allowed', 'Generated surfaces have no approved mutation sources', statementId);
+        return { ok: false, reason: 'not_allowed' };
+      }
       const m = declaredMutations.get(statementId);
       if (!m) {
         diag('run_unknown', `@Run(${statementId}) names nothing that is a Query or Mutation`, statementId);
@@ -378,6 +389,8 @@ export function createQueryManager({ call, onChange, onDiagnostic, argEnums }) {
       results.clear();
       activeKeys.clear();
       firing.clear();
+      failed.clear();
+      loading.clear();
     },
 
     dispose() { disposed = true; },

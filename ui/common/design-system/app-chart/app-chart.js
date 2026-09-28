@@ -547,8 +547,10 @@ export class AppChart extends HTMLElement {
       // Delegated and bound once, before the first render: the button lives
       // inside markup render() replaces wholesale.
       bindRetry(this, 'chart-retry');
-      this.render();
     }
+    // Cards relocate their slot nodes. Disconnect destroys the canvas chart,
+    // so reconnect must recreate it even when listeners were already bound.
+    this.render();
     // Subscribed here rather than in the one-time block: teardown runs on every
     // disconnect, so an element that is moved must re-subscribe or it silently
     // stops following the theme.
@@ -974,7 +976,15 @@ export class AppChart extends HTMLElement {
         // Segmented plots carry a dense categorical axis (24 hours): thin the
         // ticks rather than rotate them — slanted labels read slower than a
         // sparser run of upright ones.
-        ticks: { color: pal.tick, ...(segmented ? { maxRotation: 0, autoSkip: true, autoSkipPadding: 12 } : {}) },
+        ticks: {
+          color: pal.tick, maxRotation: 0, autoSkip: true, autoSkipPadding: 12,
+          // Full category names stay in the tooltip and accessible table.
+          // Long agent names must not consume most of a narrow plot's height.
+          callback: function (value) {
+            const label = String(this.getLabelForValue(value));
+            return label.length > 18 ? `${label.slice(0, 17)}…` : label;
+          },
+        },
       },
       y: {
         stacked,

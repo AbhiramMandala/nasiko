@@ -591,3 +591,40 @@ test('a read off a non-Query statement is left alone', () => {
     'shape = {present: 1}',
   ].join('\n')), []);
 });
+
+test('missing statements are repairable after completion, including dormant branches and Run targets', () => {
+  const dsl = [
+    'root = AppStack([false ? missingPanel : label, @Each([], "item", AppText(item.name + absent)), button])',
+    'label = AppText("Ready")',
+    'button = AppButton("Refresh", "primary", null, null, null, null, null, null, null, null, null, act)',
+    'act = Action([@Run(missingQuery), @Set($implicit, $event)])',
+  ].join('\n');
+  assert.equal(run(dsl).diagnostics.filter(d => d.code === 'missing_statement').length, 0);
+  const done = run(dsl, {complete: true});
+  assert.deepEqual(done.diagnostics.filter(d => d.code === 'missing_statement').map(d => d.pointer).sort(),
+    ['absent', 'missingPanel', 'missingQuery']);
+  assert.deepEqual(done.unresolved, [], 'historical evaluated-reference metric is unchanged');
+});
+
+test('Each locals are lexical and cannot hide references outside the template', () => {
+  const out = run('root = AppStack([@Each([], item, AppText(item)), AppText(item)])', {complete: true});
+  assert.deepEqual(out.diagnostics.filter(d => d.code === 'missing_statement').map(d => d.pointer), ['item']);
+});
+
+test('pending and failed data affect displays, not the filters that refetch them', () => {
+  const dsl = [
+    'root = AppStack([field, table])',
+    '$model = ""',
+    'act = Action([@Set($model, $event), @Run(q)])',
+    'box = AppSearch("md", null, false, false, "Model", $model, null, null, null, null, null, act)',
+    'field = AppField([box], "Model")',
+    'q = Query("fetchFinopsAttributions", [{model:$model}], [], "data.rows")',
+    'table = AppTable(q)',
+  ].join('\n');
+  const pending = run(dsl, {loadingQueries:new Set(['q'])});
+  assert.equal(pending.root.children[1].props.loading, true);
+  assert.equal(pending.root.children[0].props.loading, undefined);
+  const failed = run(dsl, {failedQueries:new Set(['q'])});
+  assert.equal(failed.root.children[0].props.error, undefined);
+  assert.match(failed.root.children[1].props.error, /Couldn't load/);
+});

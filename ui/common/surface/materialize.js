@@ -75,26 +75,30 @@ function lookupScope(scope, name) {
  * @param {object|null} node
  * @param {(kind: 'ref'|'state', name: string) => void} visit
  */
-export function walkAstRefs(node, visit) {
+export function walkAstRefs(node, visit, bound = new Set(), includeActions = true) {
   if (!node || typeof node !== 'object') return;
+  if (!includeActions && node.k === 'Comp' && node.name === 'Action') return;
+  const walk = child => walkAstRefs(child, visit, bound, includeActions);
   switch (node.k) {
-    case 'Ref': visit('ref', node.n); return;
+    case 'Ref': if (!bound.has(node.n)) visit('ref', node.n); return;
     case 'StateRef': visit('state', node.n); return;
-    case 'BinOp': walkAstRefs(node.left, visit); walkAstRefs(node.right, visit); return;
-    case 'UnaryOp': walkAstRefs(node.operand, visit); return;
-    case 'Ternary':
-      walkAstRefs(node.cond, visit);
-      walkAstRefs(node.then, visit);
-      walkAstRefs(node.else, visit);
-      return;
-    case 'Member': walkAstRefs(node.obj, visit); return;
-    case 'Index': walkAstRefs(node.obj, visit); walkAstRefs(node.index, visit); return;
-    case 'Arr': for (const e of node.els) walkAstRefs(e, visit); return;
-    case 'Obj': for (const [, v] of node.entries) walkAstRefs(v, visit); return;
-    case 'Comp':
+    case 'BinOp': walk(node.left); walk(node.right); return;
+    case 'UnaryOp': walk(node.operand); return;
+    case 'Ternary': walk(node.cond); walk(node.then); walk(node.else); return;
+    case 'Member': walk(node.obj); return;
+    case 'Index': walk(node.obj); walk(node.index); return;
+    case 'Arr': for (const e of node.els) walk(e); return;
+    case 'Obj': for (const [, v] of node.entries) walk(v); return;
     case 'BuiltinCall':
-      for (const a of node.args) walkAstRefs(a, visit);
-      return;
+      if (node.name === EACH) {
+        walk(node.args[0]);
+        const variable = node.args[1];
+        const name = variable?.k === 'Str' ? variable.v : variable?.n;
+        walkAstRefs(node.args[2], visit, new Set([...bound, name]), includeActions);
+        return;
+      }
+      // falls through
+    case 'Comp': for (const a of node.args) walk(a); return;
     default: return;
   }
 }
@@ -203,9 +207,8 @@ export function materialize(statements, componentIndex, ctx = {}) {
    * renders its empty state — telling the user nothing exists when the truth is
    * that it could not be loaded.
    */
-  function degradedStatements() {
-    const failedQueries = ctx.failedQueries;
-    if (!failedQueries?.size) return new Set();
+  function dependentStatements(queryIds) {
+    if (!queryIds?.size) return new Set();
 
     const out = new Set();
     for (const name of symbols.keys()) {
@@ -215,15 +218,16 @@ export function materialize(statements, componentIndex, ctx = {}) {
       const queue = [name];
       while (queue.length) {
         const at = queue.pop();
-        if (failedQueries.has(at)) { out.add(name); break; }
+        if (queryIds.has(at)) { out.add(name); break; }
         walkAstRefs(symbols.get(at), (_kind, ref) => {
           if (!seen.has(ref) && symbols.has(ref)) { seen.add(ref); queue.push(ref); }
-        });
+        }, new Set(), false);
       }
     }
     return out;
   }
-  const degraded = degradedStatements();
+  const degraded = dependentStatements(ctx.failedQueries);
+  const loading = dependentStatements(ctx.loadingQueries);
 
   const unresolved = [];
   const diagnostics = [];
@@ -544,6 +548,11 @@ export function materialize(statements, componentIndex, ctx = {}) {
     // Only when the generator has not written one itself — an author who chose
     // the wording keeps it, and overriding a deliberate string would be worse
     // than the default it replaced.
+    // Only data-bearing components: hiding a parent card could also hide the
+    // focused filters it contains. A refetch with cached data stays visible.
+    if (loading.has(statementId) && entry.def.dataParam && 'loading' in (entry.def.attributes ?? {})) {
+      props.loading = true;
+    }
     if (degraded.has(statementId)) {
       const attrs = entry.def.attributes ?? {};
       // A component that has a real failure state gets told the truth: the
@@ -774,7 +783,15 @@ export function materialize(statements, componentIndex, ctx = {}) {
       // things that ever name it are a `$view == "cost"` comparison or an
       // `@Set($view, ...)` inside an Action — StateRef nodes both. Following
       // 'ref' alone called every state variable dead.
-      walkAstRefs(symbols.get(id), (_kind, name) => queue.push(name));
+      walkAstRefs(symbols.get(id), (kind, name) => {
+        queue.push(name);
+        // Static and complete-only: includes inactive branches, empty @Each
+        // templates and @Run targets, without treating loop locals or implicit
+        // null state as missing statements. Keep historical `unresolved` intact.
+        if (ctx.complete && kind === 'ref' && !symbols.has(name)) {
+          note('missing_statement', `"${name}" is referenced by "${id}" but never defined; emit "${name}"`, name);
+        }
+      });
     }
   }
   const orphans = [...symbols.keys()].filter((n) => !reachable.has(n));

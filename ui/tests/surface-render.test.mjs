@@ -534,3 +534,17 @@ test('a value from a sibling component is not reported as a miscount', () => {
   assert.doesNotMatch(msg, /fits/, 'no string attribute should be offered as a candidate');
   assert.match(msg, /out of step/, 'the honest answer is "you may be counting wrong"');
 });
+
+test('generated table fetchers page and search the loaded rows without losing totals', async () => {
+  const rows = Array.from({length: 24}, (_, i) => ({name: `Agent ${i + 1}`}));
+  const {el} = draw(`root = AppTable(${JSON.stringify(rows)}, 10, "pages", true)`);
+  const first = await el.dataFn('', 1, 10);
+  const next = await el.dataFn('', 2, 10);
+  assert.equal(first.total, 24);
+  assert.equal(first.data.length, 10);
+  assert.equal(next.data[0].name, 'Agent 11');
+  assert.equal((await el.dataFn('', 3, 10)).data.length, 4);
+  assert.deepEqual(await el.dataFn('agent 24', 1, 10), {data: [rows[23]], total: 1});
+  const unpaged = draw(`root = AppTable(${JSON.stringify(rows)}, 10, "none")`);
+  assert.equal((await unpaged.el.dataFn('', 1, 10)).data.length, 24);
+});

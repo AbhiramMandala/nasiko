@@ -1393,3 +1393,22 @@ root = AppStack([table], "md")
 Done.`;
   assert.deepEqual(check(kase({}), free).quality, []);
 });
+
+test('matching prompt text does not hide changed boundary, model, inventory or settings', () => {
+  const base = {promptDigest: 'same', generatorDigest: 'g', model: 'm', scope: 'tokenops_rows',
+    sourceInventoryDigest: 'sources', generationSettings: {maxTokens: 8000}};
+  for (const change of [{generatorDigest: 'new'}, {model: 'other'}, {scope: 'tokenops'},
+    {sourceInventoryDigest: 'new'}, {generationSettings: {maxTokens: 4000}}]) {
+    assert.equal(runProvenance({a: base, b: {...base, ...change}}).generatorConsistent, false);
+  }
+});
+
+test('a separate clean grouped-filter fixture preserves the original defect evidence', () => {
+  const kase = CASES.find(c => c.id === 'grouped-filters');
+  const clean = readFileSync(new URL('./fixtures/surface/grouped-filters-clean.dsl', import.meta.url), 'utf8');
+  const broken = readFileSync(new URL('./fixtures/generations/grouped-filters.dsl', import.meta.url), 'utf8');
+  assert.deepEqual(check(kase, clean).fail, []);
+  assert.deepEqual(check(kase, clean).quality, []);
+  assert.ok(check(kase, broken).r.diagnostics.some(d => d.code === 'missing_statement'));
+  assert.ok(kase.knownFailure);
+});

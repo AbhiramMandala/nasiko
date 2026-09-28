@@ -1114,3 +1114,18 @@ test('a diagnostic that arrives after the stream is counted before the repair, n
   assert.ok(loop.indexOf('const after =') > barriers[1].index,
     'the second comes before the `after` count');
 });
+
+test('a missing reachable statement reaches repair and the named patch fills it', async () => {
+  const turn = text => [frame('surface', {catalogVersion:catalog.catalogVersion}, 1),
+    frame('dsl-chunk', {text}, 2), frame('end', {status:'ok'}, 3)];
+  const {s, prompts, diagnostics} = repairSession([
+    turn('root = AppStack([missingPanel])\n'),
+    turn('missingPanel = AppText("Recovered")\n'),
+  ]);
+  const result = await s.send('show a panel');
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /`missingPanel`/);
+  assert.ok(diagnostics.some(d=>d.code==='missing_statement'));
+  assert.ok(diagnostics.some(d=>d.code==='repair_applied'));
+  assert.match(result.surface, /missingPanel = AppText/);
+});

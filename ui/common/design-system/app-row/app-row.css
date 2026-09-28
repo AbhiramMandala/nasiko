@@ -8,5 +8,6 @@
     padding: var(--row-padding, 0);
     flex-wrap: var(--row-wrap, nowrap);
     width: 100%;
+    min-width: 0;
   }
 }
