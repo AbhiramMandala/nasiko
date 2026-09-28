@@ -1330,6 +1330,10 @@ async fn agent_stream(
     // 2026-09-22) to cost more per turn than not having the ladder on at all,
     // on exactly this kind of from-scratch task. See nasiko-coding-policy's
     // minimal_code_addendum() doc comment for the three-tier reasoning.
+    // Built from `outbound_query`, never from `query`: `outbound_query` is `query` plus any
+    // server-injected context (enterprise supplemental knowledge), and it is what the agent is
+    // meant to receive. Building from `query` here silently dropped that injection — the
+    // context was resolved on every dispatch and then thrown away.
     let effective_query = if agent.is_coding_agent_example && agent.minimal_code_enabled {
         let addendum = nasiko_coding_policy::minimal_code_addendum(prior_turn_count);
         tracing::info!(
@@ -1338,9 +1342,9 @@ async fn agent_stream(
             prior_turn_count,
             "a2a_dispatch: injecting minimal-code ladder"
         );
-        format!("{query}\n{addendum}")
+        format!("{outbound_query}\n{addendum}")
     } else {
-        query.to_string()
+        outbound_query.to_string()
     };
 
     // Streaming first (`message/stream`): agents that stream (all the Rust
