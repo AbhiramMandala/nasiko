@@ -452,6 +452,7 @@ fn apply_event(
                 output_tokens: usage.output,
                 cache_read_tokens: usage.cache_read,
                 cache_creation_tokens: 0,
+                accounting: None,
                 started_at,
                 ended_at,
             }],
