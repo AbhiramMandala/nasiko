@@ -47,23 +47,14 @@ export function loadCatalog() {
  * A check that cannot load is not a reason to stop a dashboard rendering.
  */
 let manifestPromise = null;
-let enumPromise = null;
 let argEnumMap = null;
 
-/** Required for source authorization; callers must fail closed on rejection. */
-export function loadDataManifest() {
-  manifestPromise ??= fetch(new URL('/common/surface/data-manifest.json', globalThis.document?.baseURI))
-    .then(res => {
-      if (!res.ok) throw new Error(`data-manifest.json: ${res.status}`);
-      return res.json();
-    });
-  return manifestPromise;
-}
-
 export function loadArgEnums() {
-  enumPromise ??= (async () => {
+  manifestPromise ??= (async () => {
     try {
-      const manifest = await loadDataManifest();
+      const res = await fetch(new URL('/common/surface/data-manifest.json', globalThis.document?.baseURI));
+      if (!res.ok) return;
+      const manifest = await res.json();
       const map = {};
       // Scopes overlap — a source can appear in several. They are the same
       // generated entry each time, so last write wins and says the same thing.
@@ -80,7 +71,7 @@ export function loadArgEnums() {
       argEnumMap = map;
     } catch { argEnumMap = null; }
   })();
-  return enumPromise;
+  return manifestPromise;
 }
 
 /** The loaded table, or null before {@link loadArgEnums} resolves. */

@@ -41,10 +41,6 @@ import { loadCatalog, withSeverity } from '/common/surface/catalog-load.js';
 import { WEAVE_STARTERS } from '/common/surface/starters.js';
 import { getJson, postJson } from '/common/services/api.js';
 import '/common/design-system/app-chatbox/app-chatbox.js';
-import '/common/design-system/app-select/app-select.js';
-import {
-  loadGenerationModels, chosenModel, rememberModel, modelLabel, modelOptions,
-} from '/common/surface/generation-models.js';
 
 const newSessionId = () => `weave_${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36)}`;
 
@@ -126,14 +122,6 @@ class WeaveDock extends HTMLElement {
   #unread = false;
   /** Show diagnostics in the runtime's own words. Off for everyone but us. */
   #dev = false;
-  /** The offered models, or null until loaded (or if they cannot be). */
-  #models = null;
-  /**
-   * The key the next turn is sent with. Read when a turn STARTS, so changing
-   * the picker while one is in flight affects the next turn and not the one
-   * already running — and the card it produces says which model built it.
-   */
-  #model = null;
   /**
    * The title the server derived when it created this chat session, held for
    * the one turn that can use it. Null on every turn after the first.
@@ -248,12 +236,6 @@ class WeaveDock extends HTMLElement {
 
         <div class="composer">
           <app-chatbox no-attachments placeholder="Ask weave anything..." aria-label="Ask Weave"></app-chatbox>
-          <!-- Hidden until the list loads, and stays hidden if it cannot: a
-               turn with no model key is generated with the route's default,
-               so a missing list costs the choice, never the answer. -->
-          <div class="composer__meta">
-            <app-select class="model-picker" size="sm" fit-content aria-label="Model" hidden></app-select>
-          </div>
         </div>
       </aside>`;
 
@@ -268,30 +250,6 @@ class WeaveDock extends HTMLElement {
     this.#paintLauncher();
     this.#paintDev();
     this.#paintThread();
-    this.#initModels();
-  }
-
-  /**
-   * Offer the generation models, preselecting the last one chosen.
-   *
-   * The picker is the only place a person says which model to use, so it is
-   * shown only once there is a real list behind it — a select with no options,
-   * or with options the route would refuse, is worse than no select.
-   */
-  async #initModels() {
-    const list = await loadGenerationModels();
-    const picker = this.querySelector('.model-picker');
-    if (!list || !picker) return;
-    this.#models = list;
-    this.#model = chosenModel(list);
-    picker.setAttribute('options', modelOptions(list));
-    picker.value = this.#model;
-    picker.hidden = false;
-    picker.addEventListener('change', () => {
-      if (!list.models.some((m) => m.key === picker.value)) return;
-      this.#model = picker.value;
-      rememberModel(this.#model);
-    });
   }
 
   #paintLauncher() {
@@ -615,14 +573,11 @@ class WeaveDock extends HTMLElement {
     this.#said.length = 0;
     this.#faults.length = 0;
     const startedAt = Date.now();
-    // Captured before anything is awaited: the model this turn asks for, even
-    // if the picker changes while it runs.
-    const model = this.#model;
     const sessionId = await sessionReady;
 
     let out = null;
     try {
-      out = await (await this.#session()).send(view.prompt, model ? { context: { model } } : {});
+      out = await (await this.#session()).send(view.prompt);
     } catch (err) {
       out = { status: 'failed', surface: '', catalogVersion: null, error: err };
     }
@@ -652,7 +607,7 @@ class WeaveDock extends HTMLElement {
         // much work the answer represents, and it is the handle into the trace.
         { role: 'elapsed', text: elapsedLabel(Date.now() - startedAt) },
         { role: 'assistant', text: assistantText },
-        { role: 'artifact', text: view.title, view, model: modelLabel(this.#models, model) },
+        { role: 'artifact', text: view.title, view },
       );
       this.#persistMessage(sessionId, 'assistant', assistantText, {
         file_parts: {
@@ -660,9 +615,6 @@ class WeaveDock extends HTMLElement {
           weave_title: view.title,
           dsl: out.surface,
           catalog_version: out.catalogVersion,
-          // Which model built it — a key, recorded so a reopened thread can
-          // still say so. Absent on turns sent before a model could be chosen.
-          ...(model && { weave_model: model }),
         },
       });
       // Diagnostics raised while the DSL was being parsed and materialized.
@@ -797,7 +749,7 @@ class WeaveDock extends HTMLElement {
           ${icons.layers('artifact__icon', 16, 1.25)}
           <span class="artifact__text">
             <span class="artifact__title">${escHtml(turn.view.title)}</span>
-            <span class="artifact__sub">Version ${version}${turn.model ? ` · ${escHtml(turn.model)}` : ''}</span>
+            <span class="artifact__sub">Version ${version}</span>
           </span>
         </button>`;
       node.querySelector('.artifact').addEventListener('click',

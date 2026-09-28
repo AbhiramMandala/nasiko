@@ -87,29 +87,19 @@ struct ListSessionsParams {
     /// Orchestrator nav tree or `nasiko sessions`, so the general list leaves
     /// them out and a surface asks for its own by name (`?surface=<name>`).
     ///
-    /// Which surfaces exist is the edition's business, not this module's, so
-    /// "namespaced" has to be decidable here without knowing any surface's
-    /// name. An underscore alone does not decide it: a session the platform
-    /// mints carries the reserved [`PLATFORM_SESSION_PREFIX`], which is
-    /// therefore excluded from the namespace test rather than read as a
-    /// surface called "ses".
+    /// Which surfaces exist is the edition's business, not this module's: an
+    /// ordinary `session_id` is the A2A contextId, a UUID, and carries no
+    /// underscore, so "namespaced" is decidable here without knowing any
+    /// surface's name.
     surface: Option<String>,
 }
-
-/// Prefix on every session id the platform mints itself — here in
-/// `create_session` and in `agent_proxy` for a message that arrives with no
-/// contextId. It is not a surface: these are the ordinary sessions the general
-/// list exists to show.
-const PLATFORM_SESSION_PREFIX: &str = "ses";
 
 /// A surface name is a path-safe slug and nothing else. Validating rather
 /// than escaping keeps the `LIKE` pattern below free of anything a caller
 /// could turn into a wildcard, and the name is bound as a parameter besides.
-/// The platform's own prefix is refused so no surface can claim it.
 fn valid_surface(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 32
-        && name != PLATFORM_SESSION_PREFIX
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
@@ -124,18 +114,14 @@ fn default_session_limit() -> i64 {
 ///
 /// Asking for a surface matches its prefix, which arrives as `$1`; asking for
 /// nothing returns the general list, which is every session no surface has
-/// claimed — including the platform's own `ses_*` ids, which are not a
-/// namespace. No caller input is interpolated either way; the only value in
-/// the text is this module's own constant.
+/// claimed. No name is interpolated either way.
 fn surface_predicate(surface: Option<&str>, bind: usize) -> String {
     match surface {
         // Appended after each variant's own binds, so the four keyset
         // numberings below are untouched. Placeholder order in the text does
         // not have to match their order in the statement.
         Some(_) => format!(r"AND cs.session_id LIKE ${bind} || '\_%'"),
-        None => format!(
-            r"AND (cs.session_id NOT LIKE '%\_%' OR cs.session_id LIKE '{PLATFORM_SESSION_PREFIX}\_%')"
-        ),
+        None => r"AND cs.session_id NOT LIKE '%\_%'".to_string(),
     }
 }
 
@@ -422,7 +408,7 @@ async fn create_session(
                 }
             }
         }
-        _ => format!("{PLATFORM_SESSION_PREFIX}_{}", Uuid::new_v4().simple()),
+        _ => format!("ses_{}", Uuid::new_v4().simple()),
     };
 
     // tracing::info!(body = ?body, "Received create session request");

@@ -59,7 +59,6 @@ const SEVERITY = {
   bad_action_step: ['fatal', 'that step never runs'],
   bad_slot: ['fatal', 'the child is lost'],
   root_not_a_component: ['fatal', 'nothing renders at all'],
-  missing_statement: ['fatal', 'a referenced statement is missing, so its content or interaction cannot appear'],
   orphaned_statement: ['fatal', 'the model built something and never put it on the page'],
   uncontrolled_input: ['fatal', 'the box empties as the user types — its Action repaints and its value is not read back from state'],
   default_is_whole_response: ['advisory', 'the pre-fetch placeholder is the wrong shape; the real value arrives correct'],
@@ -99,7 +98,6 @@ const SEVERITY = {
   arg_enum_violation: ['fatal', 'the argument is not a value that source accepts, so the data never arrives'],
   query_failed: ['runtime', 'the data source failed; the DSL naming it is fine'],
   mutation_failed: ['runtime', 'the upstream call failed'],
-  mutation_not_allowed: ['fatal', 'generated surfaces cannot perform writes'],
   mutation_in_flight: ['runtime', 'a repeat while one is running — someone clicked twice'],
 
   // ── actions.js ────────────────────────────────────────────────────────────

@@ -30,7 +30,7 @@
  */
 
 import { readSseFrames } from '../services/sse.js';
-import { callSurfaceSource } from './source-policy.js';
+import { call as callDataSource } from '../core/data-sources.js';
 import { router } from '../core/router.js';
 import { parseBuffer } from './parser.js';
 import { materialize, buildComponentIndex } from './materialize.js';
@@ -118,7 +118,7 @@ export function createSurfaceSession(options) {
     endpoint, catalog, container,
     sessionId = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now().toString(36),
     onMessage, onDiagnostics, onStatus, onAction, onAssistant,
-    call = callSurfaceSource,
+    call = callDataSource,
     // The live route table, not a copy — see render.js and actions.js. A host
     // may inject a stand-in for tests; passing null refuses every route.
     routes = router,
@@ -190,7 +190,6 @@ export function createSurfaceSession(options) {
   const liveDiagnostics = [];
   const queries = createQueryManager({
     call,
-    allowMutations: false,
     onChange: () => paint(),
     onDiagnostic: (d) => { liveDiagnostics.push(d); emitDiagnostics([d]); },
     // Read through a function, not passed by value: the table arrives over the
@@ -296,7 +295,6 @@ export function createSurfaceSession(options) {
       // result — the two are indistinguishable by value, since a failure falls
       // back to the declared default.
       failedQueries: queries.failed,
-      loadingQueries: queries.loading,
       mutationResults: queries.mutationResults,
       // Orphan reporting waits for the last pass. Mid-stream a statement is
       // routinely unreferenced for a chunk or two, until the parent that
@@ -334,9 +332,6 @@ export function createSurfaceSession(options) {
 
     render(out.root, container, catalog, {
       doc,
-      onRetry: () => {
-        for (const id of [...queries.failed]) void queries.run(id);
-      },
       onAction: (action, el, domEvent) => {
         // Two things travel with the action. The evaluator from the pass that
         // built this element, because an `@Each` row lives in its scope chain

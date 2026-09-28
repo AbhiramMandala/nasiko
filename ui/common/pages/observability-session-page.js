@@ -526,10 +526,10 @@ class ObservabilitySessionPage extends HTMLElement {
         outputTokens: root.output_tokens ?? pair?.assistant?.output_tokens ?? null,
         // Same fallback as the two above. Without it a turn whose spans carried no cache
         // attribute showed real input and output next to an em dash for cache, even though
-        // the chat message row had the number all along (migration 0033).
+        // the chat message row had the number all along (migration 0037).
         // Prefer the trace's own counts, then the chat message row — the same fallback
         // input/output already had. `/api/chat/sessions/{id}/messages` carries both halves
-        // (migration 0033), so the turn keeps the real read/write split rather than a sum.
+        // (migration 0037), so the turn keeps the real read/write split rather than a sum.
         cacheReadTokens: root.cache_read_tokens ?? pair?.assistant?.cache_read_tokens ?? null,
         cacheCreationTokens:
           root.cache_creation_tokens ?? pair?.assistant?.cache_creation_tokens ?? null,

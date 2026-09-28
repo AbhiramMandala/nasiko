@@ -1144,7 +1144,7 @@
       "attributes": {
         "columns": {
           "type": "number",
-          "description": "Column count or grid template. Fractional tracks shrink without overflowing and collapse below 600px of available width."
+          "description": "Column count (integer) or CSS grid-template value (e.g. `auto-fit`)"
         },
         "gap": {
           "type": "enum",

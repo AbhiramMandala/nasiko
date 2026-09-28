@@ -407,32 +407,6 @@
     --color-border: var(--shell-border-subtle);
   }
 
-  /* The model picker sits under the message box, left-aligned and sized to its
-     label, so it reads as a setting of the next message rather than a second
-     input. `fit-content` on the element keeps it from stretching. */
-  .composer__meta {
-    display: flex;
-    justify-content: flex-start;
-    margin-top: var(--s-8);
-    /* The drawer is a dark shell surface. The composer above re-points the
-       chatbox's colour variables at shell tokens; app-select reads a
-       different set, and left alone it drew the light theme's near-black
-       text on the dark control — 1.23:1, measured by axe. Same fix, the
-       variables app-select actually reads. */
-    --fg-primary: var(--shell-fg);
-    --fg-secondary: var(--shell-fg-muted);
-    --fg-icon-secondary: var(--shell-fg-muted);
-    --border-primary: var(--shell-border-subtle);
-    --border-secondary: var(--shell-border-subtle);
-  }
-  /* Chrome on Windows and Linux paints the open list from the options' own
-     colours; without these the light text above would sit on a white list. */
-  .composer__meta option {
-    color: var(--shell-fg);
-    background: var(--shell-control);
-  }
-  .composer__meta:has(> [hidden]:only-child) { display: none; }
-
   /* ── Narrow: the drawer takes the screen ──────────────────────────────── */
   @media (max-width: 1023.98px) {
     .drawer {
