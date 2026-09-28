@@ -85,10 +85,9 @@ export class AppTraceTree extends HTMLElement {
         ${rows.map(({ node, depth, kids, folded }, i) => `
         <div class="line" role="none" style="--depth:${depth}">
           ${kids
-            ? `<button type="button" class="fold" tabindex="-1" data-fold="${escAttr(node.id)}"
-                 aria-expanded="${!folded}"
-                 aria-label="${folded ? 'Expand' : 'Collapse'} ${escAttr(node.label ?? '')}"
-               >${folded ? icons.chevronRight('', 14) : icons.chevronDown('', 14)}</button>`
+            ? `<span class="fold" aria-hidden="true" data-fold="${escAttr(node.id)}"
+                 data-expanded="${!folded}"
+               >${folded ? icons.chevronRight('', 14) : icons.chevronDown('', 14)}</span>`
             : '<span class="fold is-leaf" aria-hidden="true"></span>'}
           <button type="button" class="row${node.id === value ? ' is-selected' : ''}"
             role="treeitem" aria-level="${depth + 1}" aria-selected="${node.id === value}"
@@ -115,12 +114,29 @@ export class AppTraceTree extends HTMLElement {
   }
 
   #wire(rows) {
+    // The chevron is a mouse affordance and nothing else. It was a
+    // `<button tabindex="-1" aria-expanded aria-label>`, which put a second
+    // exposed element inside `role="tree"` — and a tree may own only
+    // `treeitem` and `group`, so axe's aria-required-children failed on every
+    // page that renders one.
+    //
+    // Hiding it costs assistive tech nothing, because it never carried
+    // anything unique: the row below already IS the treeitem, already carries
+    // `aria-expanded`, and already folds on ArrowRight/ArrowLeft through the
+    // same `trace-tree-toggle` event this click emits (see the keydown handler
+    // below). It was never in the tab order either — `tabindex="-1"` from the
+    // day it was written. So a keyboard or screen-reader user loses no
+    // capability here; a pointer user keeps the click target.
+    //
+    // `data-expanded` rather than `aria-expanded` for the same reason: state
+    // an aria-hidden element carries is state nothing can read, so keeping it
+    // in ARIA would be decoration that looks like semantics.
     for (const fold of this.querySelectorAll('.fold[data-fold]')) {
       fold.addEventListener('click', (e) => {
         e.stopPropagation();
         this.#emit('trace-tree-toggle', {
           id: fold.dataset.fold,
-          expanded: fold.getAttribute('aria-expanded') === 'false',
+          expanded: fold.dataset.expanded === 'false',
         });
       });
     }
