@@ -223,12 +223,21 @@ pub async fn insert_assistant_message(
     } else {
         (None, None)
     };
+    // The tag `SessionHistory::fetch` filters on. Writing it is the whole point of taking
+    // `is_refusal`: without it the filter matches nothing, a refusal re-enters the next turn's
+    // context as prior assistant output, and the session teaches itself to keep refusing —
+    // the live failure that filter exists to prevent. NULL when not a refusal, so a normal
+    // row's metadata stays exactly what it was.
+    let metadata = is_refusal.then(
+        || serde_json::json!({ nasiko_orchestrator::session_history::REFUSAL_METADATA_KEY: true }),
+    );
+
     let result = sqlx::query(
         r#"INSERT INTO chat_messages
                (session_id, role, content, input_tokens, output_tokens, model,
                 duration_ms, cost_usd, usage_estimated, trace_id,
-                cache_read_tokens, cache_creation_tokens)
-           VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+                cache_read_tokens, cache_creation_tokens, metadata)
+           VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
     )
     .bind(session_id)
     .bind(content)
@@ -241,6 +250,7 @@ pub async fn insert_assistant_message(
     .bind(trace_id)
     .bind(cache_read)
     .bind(cache_creation)
+    .bind(metadata)
     .execute(db)
     .await;
     if let Err(e) = result {
@@ -251,6 +261,34 @@ pub async fn insert_assistant_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The writer and the reader have to agree on one key across a crate boundary: this module
+    /// writes the tag, `SessionHistory`'s SQL filters on it. They were silently disconnected —
+    /// `is_refusal` was accepted and dropped, so nothing was ever tagged and the filter matched
+    /// nothing. Pin the contract from this side; `the_filter_reads_the_key_the_writer_writes`
+    /// pins it from the other.
+    #[test]
+    fn the_refusal_tag_this_module_writes_is_the_key_the_history_filter_reads() {
+        let tagged = serde_json::json!({
+            nasiko_orchestrator::session_history::REFUSAL_METADATA_KEY: true
+        });
+
+        assert_eq!(
+            tagged
+                .get("orchestrator_refusal")
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "the metadata this module writes must be readable by `metadata->>'orchestrator_refusal'`"
+        );
+    }
+
+    /// A normal turn must not gain a metadata object it never had, or every non-refusal row's
+    /// shape changes for no reason.
+    #[test]
+    fn a_non_refusal_writes_no_metadata_at_all() {
+        let metadata: Option<serde_json::Value> = false.then(|| serde_json::json!({}));
+        assert!(metadata.is_none());
+    }
 
     fn summary(input: u64, cache_read: u64, cache_creation: u64, output: u64) -> UsageSummary {
         UsageSummary {
