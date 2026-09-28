@@ -25,6 +25,10 @@ import { escHtml } from '/common/utils/escape.js';
 import '/common/design-system/app-button/app-button.js';
 import '/common/design-system/app-badge/app-badge.js';
 import '/common/design-system/app-empty-state/app-empty-state.js';
+import '/common/design-system/app-select/app-select.js';
+import {
+  loadGenerationModels, chosenModel, rememberModel, modelOptions,
+} from '/common/surface/generation-models.js';
 import { WEAVE_STARTERS } from '/common/surface/starters.js';
 import '/common/features/weave-surface/weave-surface.js';
 import '/common/services/usage-service.js';
@@ -75,7 +79,10 @@ class WeavePage extends HTMLElement {
       <form class="composer" id="composer">
         <input class="composer__input" id="prompt" type="text" autocomplete="off"
                placeholder="What should this dashboard show?" aria-label="Prompt" />
-        <app-button id="send" variant="primary"size="md" type="submit">Build</app-button>
+        <!-- Same list and the same remembered choice as the dock. Hidden until
+             it loads; a turn with no key is built with the route's default. -->
+        <app-select id="model" size="md" fit-content aria-label="Model" hidden></app-select>
+        <app-button id="send" variant="primary" size="md" type="submit">Build</app-button>
       </form>
 
       <div class="starters" id="starters"></div>
@@ -98,6 +105,7 @@ class WeavePage extends HTMLElement {
     this.#surface = this.querySelector('#surface');
     this.#log = this.querySelector('#log');
     this.#surface.context = { section: SECTION };
+    this.#initModels();
 
     this.querySelector('#composer').addEventListener('submit', (e) => {
       e.preventDefault();
@@ -136,6 +144,28 @@ class WeavePage extends HTMLElement {
     this.#surface?.stop();
   }
 
+
+  /**
+   * Offer the generation models. `context` is what weave-surface sends with
+   * every turn, so the choice is written into it rather than read at send
+   * time — the element never has to know a picker exists.
+   */
+  async #initModels() {
+    const list = await loadGenerationModels();
+    const picker = this.querySelector('#model');
+    if (!list || !picker) return;
+    const apply = (key) => { this.#surface.context = { section: SECTION, model: key }; };
+    const key = chosenModel(list);
+    picker.setAttribute('options', modelOptions(list));
+    picker.value = key;
+    picker.hidden = false;
+    apply(key);
+    picker.addEventListener('change', () => {
+      if (!list.models.some((m) => m.key === picker.value)) return;
+      rememberModel(picker.value);
+      apply(picker.value);
+    });
+  }
   async #send(prompt) {
     if (!prompt || this.#busy) return;
     this.#busy = true;

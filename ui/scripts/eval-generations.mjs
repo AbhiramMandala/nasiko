@@ -1841,7 +1841,7 @@ const RUN = Date.now().toString(36);
 const sessionFor = (id) => `eval-${id}-${RUN}`;
 
 /** Read one generation off the control plane, concatenating its dsl-chunks. */
-async function generate(prompt, { currentSurface, sessionId } = {}) {
+async function generate(prompt, { currentSurface, sessionId, model } = {}) {
   const base = CP_BASE;
   const token = await login();
   const res = await fetch(`${base}/api/weave/surface`, {
@@ -1867,6 +1867,10 @@ async function generate(prompt, { currentSurface, sessionId } = {}) {
         // every turn (surface-stream.js); without it here the model would
         // have to reproduce the whole dashboard to change one line.
         ...(currentSurface && { currentSurface }),
+        // A key from generation-models.json, checked by the route. Absent
+        // means the route's default — which is what every run before
+        // --model existed recorded, so the gate's fixtures stay comparable.
+        ...(model && { model }),
       },
     }),
   });
@@ -1990,6 +1994,32 @@ const only = args[args.indexOf('--case') + 1];
 const cases = only && args.includes('--case') ? CASES.filter((c) => c.id === only) : CASES;
 /** Diff the current fixtures against a saved run. Analysis, never a gate. */
 const compareTo = args.includes('--compare') ? args[args.indexOf('--compare') + 1] : null;
+/**
+ * `--model <key>` — record under one of the models in generation-models.json.
+ *
+ * The fixtures under tests/fixtures/generations/ are what the offline gate
+ * judges on every push, and they are the production model's output. A run
+ * under any OTHER model therefore writes its run directory only and never
+ * overwrites a fixture: otherwise one comparison run would silently change
+ * which model CI is judging, and the next replay would report the switch as a
+ * regression or an improvement that no code change caused.
+ *
+ * Validated here against the same file the route is held to, so a typo is a
+ * usage error before a single model call rather than a 400 per case.
+ */
+const MODELS = JSON.parse(readFileSync(resolve(UI, 'common/surface/generation-models.json'), 'utf8'));
+const modelKey = args.includes('--model') ? args[args.indexOf('--model') + 1] : null;
+if (modelKey != null && !MODELS.models.some((m) => m.key === modelKey)) {
+  console.error(`eval: --model "${modelKey}" is not in generation-models.json `
+    + `(known: ${MODELS.models.map((m) => m.key).join(', ')})`);
+  process.exit(2);
+}
+if (modelKey && offline) {
+  console.error('eval: --model only applies to --record; --offline replays the recorded fixtures as they are.');
+  process.exit(2);
+}
+/** True when this run must not touch the gate's fixtures. */
+const comparisonOnly = Boolean(modelKey && modelKey !== MODELS.default);
 
 if (!existsSync(FIXTURES)) mkdirSync(FIXTURES, { recursive: true });
 
@@ -2205,8 +2235,13 @@ async function withAgentReady(attempt) {
  * sha256 of the exact text that was evaluated.
  */
 const runDir = record
-  ? resolve(RUNS, `${new Date().toISOString().replace(/[:.]/g, '-').replace(/-\d+Z$/, 'Z')}-${catalog.catalogVersion}`)
+  ? resolve(RUNS, `${new Date().toISOString().replace(/[:.]/g, '-').replace(/-\d+Z$/, 'Z')}-${catalog.catalogVersion}`
+    + (comparisonOnly ? `-${modelKey}` : ''))
   : null;
+if (comparisonOnly) {
+  console.log(`eval: recording under --model ${modelKey} — a comparison run. It is saved to its own run `
+    + `directory and the gate's fixtures are left as they are.`);
+}
 if (runDir) mkdirSync(runDir, { recursive: true });
 /** One row per case, in case order. */
 const runRows = {};
@@ -2227,7 +2262,7 @@ for (const kase of cases) {
     if (offline) {
       text = readFileSync(path, 'utf8');
     } else {
-      const got = await withAgentReady(() => generate(kase.prompt, { sessionId: sessionFor(kase.id) }));
+      const got = await withAgentReady(() => generate(kase.prompt, { sessionId: sessionFor(kase.id), model: modelKey }));
       text = got.text;
       caseProvenance[kase.id] = got.generator;
       // The generator says which catalog it built against. Judging its output
@@ -2268,7 +2303,7 @@ for (const kase of cases) {
   // touch neither the catalog nor the DSL.
   if (record) {
     if (text.trim()) {
-      writeFileSync(path, text);
+      if (!comparisonOnly) writeFileSync(path, text);
       // The same bytes into the run directory. Written here rather than by
       // copying the fixtures afterwards, so a case that is skipped below
       // (empty answer, fixture left alone) is absent from the snapshot too
@@ -2343,7 +2378,7 @@ for (const kase of cases) {
       repairs.before += before.length;
       try {
         const patch = await generate(buildRepairPrompt(before),
-          { currentSurface: text, sessionId: sessionFor(kase.id) });
+          { currentSurface: text, sessionId: sessionFor(kase.id), model: modelKey });
         // The same seeding the runtime does: the delta overwrites by name, so
         // the prior surface has to be underneath it or `root` goes missing.
         const merged = `${text}\n${patch.text}`;

@@ -1129,3 +1129,35 @@ test('a missing reachable statement reaches repair and the named patch fills it'
   assert.ok(diagnostics.some(d=>d.code==='repair_applied'));
   assert.match(result.surface, /missingPanel = AppText/);
 });
+
+// ── The generation model ────────────────────────────────────────────────────
+
+test('the chosen model travels on the request, and on the repair turn it triggers', async () => {
+  // The subtle half. A repair is a second request made without the host
+  // asking; if it dropped the key, a Sonnet surface would be patched by the
+  // default model and the result read as Sonnet's work.
+  const bodies = [];
+  const { doc, container } = recorder();
+  const s = createSurfaceSession({
+    endpoint: '/weave/surface',
+    catalog,
+    container,
+    doc,
+    schedule: (fn) => fn(),
+    severityTable,
+    call: async () => [],
+    fetchImpl: async (url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return sse(bodies.length === 1 ? BROKEN : FIXED);
+    },
+  });
+  await s.send('build me tabs', { context: { model: 'sonnet' } });
+  assert.equal(bodies.length, 2, 'one generation, one repair');
+  assert.deepEqual(bodies.map((b) => b.context.model), ['sonnet', 'sonnet']);
+});
+
+test('no model chosen sends no key, so the route applies its own default', async () => {
+  const { s, requests } = session(TURN);
+  await s.send('go');
+  assert.equal('model' in requests[0].body.context, false);
+});
