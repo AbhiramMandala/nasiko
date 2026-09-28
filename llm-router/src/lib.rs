@@ -21,13 +21,12 @@ use axum::{
     Json, Router,
     routing::{get, post},
 };
+use nasiko_pricing::PricingEngine;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower_http::decompression::RequestDecompressionLayer;
 
 pub mod auth;
-mod brevity;
-mod compress;
 pub mod config;
 pub mod error;
 pub mod handlers;
@@ -35,7 +34,6 @@ pub mod inbound;
 pub mod inject;
 pub mod ir;
 pub mod providers;
-pub mod recovery;
 pub mod resolver;
 pub mod routing;
 pub mod usage;
@@ -80,6 +78,10 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// The platform's single cost engine. Every `token_usage` row is priced
+    /// through this — the DB trigger that used to do it returned NULL for any
+    /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
+    pub pricing: Arc<PricingEngine>,
 }
 
 impl LlmRouterCtx {
@@ -121,6 +123,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
             http,
@@ -130,6 +133,7 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            pricing,
         }
     }
 }

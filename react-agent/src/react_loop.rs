@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
+use crate::completion::{CompletionEvent, UsageModel};
 use futures::StreamExt;
-use rig::completion::message::{ToolCall, ToolFunction};
+use rig::completion::message::ToolCall;
 use rig::completion::{AssistantContent, CompletionModel as _, Message, ToolDefinition};
-use rig::providers::openai;
-use rig::streaming::StreamingChoice;
 use rig::tool::{ToolDyn, ToolError, ToolSet, ToolSetError};
 use tokio::sync::mpsc;
 
@@ -345,6 +344,7 @@ pub struct Orchestrator {
     a2a_client: Arc<A2aClient>,
     context: ContextManager,
     guard: Option<Arc<dyn CallGuard>>,
+    model: Result<UsageModel, String>,
 }
 
 impl Orchestrator {
@@ -352,7 +352,9 @@ impl Orchestrator {
         let a2a_client = Arc::new(A2aClient::new());
         let registry = AgentRegistry::new(registry_source);
         let context = ContextManager::new(config.context.clone());
+        let model = UsageModel::from_config(&config);
         Self {
+            model,
             config,
             registry,
             a2a_client,
@@ -465,11 +467,7 @@ impl Orchestrator {
             // call). Without this, `after_call` always received a literal 0
             // and `FlowGuard::record_tokens`/`TokenBudgetExhausted` could
             // never fire.
-            let completion_tokens = response
-                .raw_response
-                .usage
-                .as_ref()
-                .map(|u| u.total_tokens as u64);
+            let completion_tokens = response.raw_response.usage.as_ref().map(|u| u.total_tokens);
 
             // Partition the response into text and tool calls
             let mut text_parts = Vec::new();
@@ -693,23 +691,28 @@ impl Orchestrator {
         let registry = self.registry.clone();
         let agents_ctx = AgentCallContext {
             a2a_client: self.a2a_client.clone(),
+            model: self.model.clone(),
         };
         let mut context = self.context.clone();
         let guard = self.guard.clone();
 
-        tokio::spawn(async move {
-            let _ = run_stream_inner(
-                &config,
-                &registry,
-                &agents_ctx,
-                &mut context,
-                &query,
-                &tx,
-                guard.as_deref(),
-                &file_parts_json,
-            )
-            .await;
-        });
+        use tracing::Instrument;
+        tokio::spawn(
+            async move {
+                let _ = run_stream_inner(
+                    &config,
+                    &registry,
+                    &agents_ctx,
+                    &mut context,
+                    &query,
+                    &tx,
+                    guard.as_deref(),
+                    &file_parts_json,
+                )
+                .await;
+            }
+            .in_current_span(),
+        );
 
         rx
     }
@@ -719,27 +722,8 @@ impl Orchestrator {
         self.context = ContextManager::new(self.config.context.clone());
     }
 
-    fn build_model(&self) -> Result<openai::CompletionModel, OrchestratorError> {
-        let api_key = self
-            .config
-            .api_key
-            .clone()
-            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-            .ok_or_else(|| OrchestratorError::LlmConfig("OPENAI_API_KEY not set".into()))?;
-
-        let base_url = self
-            .config
-            .base_url
-            .clone()
-            .or_else(|| std::env::var("OPENAI_BASE_URL").ok());
-
-        let client = if let Some(url) = base_url {
-            openai::Client::from_url(&api_key, &url)
-        } else {
-            openai::Client::new(&api_key)
-        };
-
-        Ok(client.completion_model(&self.config.model))
+    fn build_model(&self) -> Result<UsageModel, OrchestratorError> {
+        self.model.clone().map_err(OrchestratorError::LlmConfig)
     }
 
     async fn build_tools(&self, agents: &[AgentInfo]) -> (ToolSet, Vec<ToolDefinition>) {
@@ -761,6 +745,7 @@ impl Orchestrator {
 /// carry their own MCP gateway credential; no per-call user token exists.)
 struct AgentCallContext {
     a2a_client: Arc<A2aClient>,
+    model: Result<UsageModel, String>,
 }
 
 /// Inner streaming implementation. Sends events to the channel as orchestration progresses.
@@ -791,14 +776,9 @@ async fn run_stream_inner(
         return Err(OrchestratorError::NoAgents);
     }
 
-    let api_key = match config
-        .api_key
-        .clone()
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-    {
-        Some(k) => k,
-        None => {
-            let message = "OPENAI_API_KEY not set".to_string();
+    let model = match agents_ctx.model.clone() {
+        Ok(model) => model,
+        Err(message) => {
             let _ = tx
                 .send(OrchestratorEvent::Error {
                     message: message.clone(),
@@ -807,18 +787,6 @@ async fn run_stream_inner(
             return Err(OrchestratorError::LlmConfig(message));
         }
     };
-
-    let base_url = config
-        .base_url
-        .clone()
-        .or_else(|| std::env::var("OPENAI_BASE_URL").ok());
-
-    let client = if let Some(url) = base_url {
-        openai::Client::from_url(&api_key, &url)
-    } else {
-        openai::Client::new(&api_key)
-    };
-    let model = client.completion_model(&config.model);
 
     // Build tools from agents. This is the streaming loop, so each agent call
     // relays the sub-agent's live progress into the event stream.
@@ -876,19 +844,9 @@ async fn run_stream_inner(
             )
         };
 
-        // Decide whether to stream or not:
-        // - First turn after tool results (turn_idx > 0): use non-streaming to capture usage
-        // - Final answer (no tools): we stream for real-time output
-        // Strategy: always try non-streaming first for tool-planning turns;
-        // if the response has no tool calls (final answer), re-issue as streaming.
-        // Optimization: on turn 0, stream directly since we don't know yet.
-        // Turn 0 normally streams for responsiveness, but streamed text reaches the
-        // client as it is generated — there is no point after the fact at which a
-        // direct answer can be withheld. A policy that can replace a final answer
-        // therefore asks for every turn to be buffered, so `finalize_answer` runs
-        // before anything is sent. Nothing is lost in practice: a legitimate answer
-        // arrives at turn 1+, which was already non-streaming, and these turns
-        // report the provider's real token usage instead of the chars/4 estimate.
+        // Keep turn 0 responsive unless policy can replace its final answer.
+        // Later turns remain buffered so final-answer review precedes delivery.
+        // Both paths capture provider usage; neither reissues a completed call.
         let use_non_streaming = turn_idx > 0
             || config
                 .policy
@@ -918,6 +876,7 @@ async fn run_stream_inner(
                 req = req.temperature(temp);
             }
 
+            let call_identity = model.call_identity(false);
             let response = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
@@ -930,21 +889,31 @@ async fn run_stream_inner(
                 }
             };
 
-            // Extract usage from raw response
-            let mut completion_tokens = None;
-            if let Some(ref usage) = response.raw_response.usage {
-                let input = usage.prompt_tokens as u64;
-                let total = usage.total_tokens as u64;
-                let output = total.saturating_sub(input);
-                completion_tokens = Some(total);
-                let _ = tx
-                    .send(OrchestratorEvent::Usage {
-                        input_tokens: input,
-                        output_tokens: output,
-                        model: config.model.clone(),
-                        estimated: false,
+            let completion_tokens = response
+                .raw_response
+                .usage
+                .as_ref()
+                .map(|usage| usage.total_tokens);
+            if let Some(usage) = response.raw_response.usage {
+                let _ = tx.send(OrchestratorEvent::Usage { usage }).await;
+            }
+
+            if completion_tokens.is_none() {
+                let output_chars = response
+                    .choice
+                    .iter()
+                    .map(|content| match content {
+                        AssistantContent::Text(text) => text.text.len(),
+                        AssistantContent::ToolCall(tool) => {
+                            tool.function.arguments.to_string().len()
+                        }
                     })
-                    .await;
+                    .sum();
+                let usage = call_identity.estimated(
+                    estimate_tokens_from_chars(preamble.len() + user_prompt.len()),
+                    estimate_tokens_from_chars(output_chars),
+                );
+                let _ = tx.send(OrchestratorEvent::Usage { usage }).await;
             }
 
             // Partition the response
@@ -1154,7 +1123,8 @@ async fn run_stream_inner(
                 req = req.temperature(temp);
             }
 
-            let mut stream = match req.stream().await {
+            let call_identity = model.call_identity(true);
+            let mut stream = match model.stream_request(req.build()).await {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = tx
@@ -1169,21 +1139,18 @@ async fn run_stream_inner(
             let mut text_parts = Vec::new();
             let mut tool_calls = Vec::new();
 
+            let mut completion_tokens = None;
             while let Some(chunk) = stream.next().await {
                 match chunk {
-                    Ok(StreamingChoice::Message(text)) => {
+                    Ok(CompletionEvent::Usage(usage)) => {
+                        completion_tokens = Some(usage.total_tokens);
+                        let _ = tx.send(OrchestratorEvent::Usage { usage }).await;
+                    }
+                    Ok(CompletionEvent::Text(text)) => {
                         text_parts.push(text.clone());
                         let _ = tx.send(OrchestratorEvent::Content { content: text }).await;
                     }
-                    Ok(StreamingChoice::ToolCall(name, id, params)) => {
-                        tool_calls.push(ToolCall {
-                            id,
-                            function: ToolFunction {
-                                name,
-                                arguments: params,
-                            },
-                        });
-                    }
+                    Ok(CompletionEvent::Tool(tool)) => tool_calls.push(tool),
                     Err(e) => {
                         let _ = tx
                             .send(OrchestratorEvent::Error {
@@ -1195,10 +1162,8 @@ async fn run_stream_inner(
                 }
             }
 
-            // rig 0.11's stream surfaces no usage chunk, so streamed turns would
-            // otherwise report nothing at all. Emit a character-based estimate,
-            // flagged so consumers label it approximate rather than exact.
-            {
+            // Missing provider usage is not evidence of zero usage or cache misses.
+            if completion_tokens.is_none() {
                 let output_chars: usize = text_parts.iter().map(|t| t.len()).sum::<usize>()
                     + tool_calls
                         .iter()
@@ -1207,10 +1172,10 @@ async fn run_stream_inner(
                 let input_chars = preamble.len() + user_prompt.len();
                 let _ = tx
                     .send(OrchestratorEvent::Usage {
-                        input_tokens: estimate_tokens_from_chars(input_chars),
-                        output_tokens: estimate_tokens_from_chars(output_chars),
-                        model: config.model.clone(),
-                        estimated: true,
+                        usage: call_identity.estimated(
+                            estimate_tokens_from_chars(input_chars),
+                            estimate_tokens_from_chars(output_chars),
+                        ),
                     })
                     .await;
             }
@@ -1221,11 +1186,7 @@ async fn run_stream_inner(
                 // delivered live via `Content` as it streamed above, so
                 // re-sending it as `Thinking` would just print it twice.
 
-                // The estimated Usage above is for display/attribution only; no
-                // exact figure exists to feed `after_call`, so token-budget
-                // accounting stays 0 for streamed turns only. Budget enforcement
-                // is still real for every turn after the first (turn_idx > 0
-                // always takes the non-streaming path).
+                let tokens_per_call = tokens_per_tool_call(completion_tokens, tool_calls.len());
                 let mut results_for_context = Vec::new();
 
                 for tc in &tool_calls {
@@ -1293,7 +1254,7 @@ async fn run_stream_inner(
                     // sending it again here would deliver it twice to a2a_dispatch.rs.
                     if let ToolOutcome::AwaitingHuman { .. } = classify_tool_result(&result) {
                         if let Some(g) = guard {
-                            g.after_call(&agent_display, 0).await;
+                            g.after_call(&agent_display, tokens_per_call).await;
                         }
                         // Preserve any earlier calls in this same batch that already completed
                         // before this one paused — without this, they're silently discarded here,
@@ -1319,7 +1280,7 @@ async fn run_stream_inner(
                     match &result {
                         Ok(output) => {
                             if let Some(g) = guard {
-                                g.after_call(&agent_display, 0).await;
+                                g.after_call(&agent_display, tokens_per_call).await;
                             }
                             let _ = tx
                                 .send(OrchestratorEvent::ToolResult {
@@ -1339,7 +1300,7 @@ async fn run_stream_inner(
                             // leaks flow-depth and later legitimate calls in the
                             // same flow get falsely rejected with MaxDepthExceeded.
                             if let Some(g) = guard {
-                                g.after_call(&agent_display, 0).await;
+                                g.after_call(&agent_display, tokens_per_call).await;
                             }
                             let err_str = e.to_string();
                             let _ = tx

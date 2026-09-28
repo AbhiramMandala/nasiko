@@ -178,48 +178,6 @@ async fn list_sessions_cursor_round_trip() {
 
 #[tokio::test]
 #[serial]
-async fn list_sessions_includes_the_platforms_own_ses_prefixed_ids() {
-    // Every session the platform mints is `ses_<hex>` — the id carries an
-    // underscore, so a namespace test that keys on "has an underscore" hid the
-    // entire Sessions list. The prefix is reserved, not a surface.
-    let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
-    let uid = admin["user_id"].as_str().unwrap();
-
-    let session = create_session(&server, uid, "plain chat").await;
-    let session_id = session["session_id"].as_str().unwrap().to_string();
-    assert!(
-        session_id.starts_with("ses_"),
-        "the platform still mints this prefix: {session_id}"
-    );
-
-    let page = list_sessions(&server, uid, "").await;
-    let listed: Vec<&str> = page["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s["session_id"].as_str().unwrap())
-        .collect();
-    assert_eq!(listed, [session_id.as_str()]);
-
-    // ...and no surface may claim the prefix out from under it.
-    let refused = common::as_superuser(
-        server
-            .client
-            .get(server.url("/api/chat/sessions?surface=ses")),
-        uid,
-        "admin",
-    )
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(refused.status(), 400, "`ses` is reserved, not a surface");
-
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
 async fn list_sessions_scoped_to_owner() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
@@ -630,6 +588,8 @@ fn external_turn_body(turn_id: &str) -> Value {
         "assistant_usage": {
             "input_tokens": 120,
             "output_tokens": 45,
+            "cache_read_tokens": 80,
+            "cache_creation_tokens": 20,
             "model": "claude-test",
             "duration_ms": 900,
             "cost_usd": "0.00125000",
@@ -671,6 +631,52 @@ async fn post_external_turn_body(
 
 #[tokio::test]
 #[serial]
+async fn assistant_usage_persistence_keeps_metadata_and_cache_columns_separate() {
+    use nasiko_server::router::usage_meta::{UsageSummary, insert_assistant_message};
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, "usage-bind-order").await;
+    let sid = session["session_id"].as_str().unwrap();
+    let summary = UsageSummary {
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_read_tokens: 80,
+        cache_creation_tokens: 30,
+        cost_usd: 0.001,
+        model: Some("test-model".into()),
+        estimated: true,
+        duration_ms: 100,
+    };
+    for is_refusal in [false, true] {
+        let content = format!("refusal={is_refusal}");
+        insert_assistant_message(
+            &server.db,
+            sid,
+            &content,
+            &summary,
+            "test-trace",
+            is_refusal,
+        )
+        .await;
+        let row: (i32, i32, Option<Value>) = sqlx::query_as(
+            "SELECT cache_read_tokens, cache_creation_tokens, metadata FROM chat_messages WHERE session_id = $1 AND content = $2",
+        ).bind(sid).bind(&content).fetch_one(&server.db).await.unwrap();
+        assert_eq!((row.0, row.1), (80, 30));
+        if is_refusal {
+            assert_eq!(
+                row.2.unwrap()[nasiko_orchestrator::session_history::REFUSAL_METADATA_KEY],
+                true
+            );
+        } else {
+            assert_eq!(row.2, None);
+        }
+    }
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn external_turn_first_insert_and_repeat_are_idempotent() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
@@ -685,6 +691,8 @@ async fn external_turn_first_insert_and_repeat_are_idempotent() {
     assert_eq!(first["user_message"]["role"], "user");
     assert_eq!(first["assistant_message"]["role"], "assistant");
     assert_eq!(first["assistant_message"]["input_tokens"], 120);
+    assert_eq!(first["assistant_message"]["cache_read_tokens"], 80);
+    assert_eq!(first["assistant_message"]["cache_creation_tokens"], 20);
     assert_eq!(first["assistant_message"]["cost_usd"], "0.00125000");
 
     let repeat = post_external_turn(&server, uid, "admin", sid, "stable-turn-1").await;
@@ -827,6 +835,17 @@ async fn external_turn_rejects_changed_usage_or_trace_replay() {
             .status(),
         409
     );
+
+    for field in ["cache_read_tokens", "cache_creation_tokens"] {
+        let mut changed_cache = external_turn_body(turn_id);
+        changed_cache["assistant_usage"][field] = json!(999);
+        assert_eq!(
+            post_external_turn_body(&server, uid, "admin", sid, &changed_cache)
+                .await
+                .status(),
+            409
+        );
+    }
 
     let mut changed_trace = external_turn_body(turn_id);
     changed_trace["assistant_usage"]["trace_id"] = json!("different-trace");
@@ -1056,11 +1075,11 @@ async fn external_turn_rejects_partial_pair_without_repairing_it() {
     server.cleanup().await;
 }
 
-// ─── An embedded surface's sessions are hidden unless asked for ─────────────
+// ─── Weave dock sessions are hidden unless asked for ─────────────────────────
 
 #[tokio::test]
 #[serial]
-async fn list_sessions_excludes_a_surface_unless_requested() {
+async fn list_sessions_excludes_weave_unless_requested() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
@@ -1097,30 +1116,8 @@ async fn list_sessions_excludes_a_surface_unless_requested() {
     );
     assert_eq!(default_ids.len(), 1, "the plain session is still listed");
 
-    let weave_page = list_sessions(&server, uid, "?surface=weave").await;
+    let weave_page = list_sessions(&server, uid, "?weave=true").await;
     assert_eq!(ids(&weave_page), ["weave_abc123"]);
-
-    // A surface nobody has claimed is a valid request with nothing in it —
-    // not an error, and not a fall-through to the whole list.
-    let empty = list_sessions(&server, uid, "?surface=nosuch").await;
-    assert!(
-        ids(&empty).is_empty(),
-        "unclaimed surface must be empty: {empty}"
-    );
-
-    // The name is a slug or it is rejected, so no caller can reach the LIKE
-    // pattern with a wildcard of their own.
-    let bad = common::as_superuser(
-        server
-            .client
-            .get(server.url("/api/chat/sessions?surface=%25")),
-        uid,
-        "admin",
-    )
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(bad.status(), 400, "a non-slug surface is refused");
 
     server.cleanup().await;
 }

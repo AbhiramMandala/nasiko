@@ -237,7 +237,7 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
     let mut owners: HashMap<String, usize> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let mut calls: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut calls: HashMap<String, (usize, usize, bool, DateTime<Utc>)> = HashMap::new();
     let mut tools: HashMap<String, (usize, usize)> = HashMap::new();
     let mut fallback_turns: HashSet<usize> = HashSet::new();
     let mut previous_at: Option<DateTime<Utc>> = None;
@@ -435,7 +435,7 @@ struct PendingAssistant {
 
 struct AssistantIndexes<'a> {
     owners: &'a mut HashMap<String, usize>,
-    calls: &'a mut HashMap<String, (usize, usize)>,
+    calls: &'a mut HashMap<String, (usize, usize, bool, DateTime<Utc>)>,
     tools: &'a mut HashMap<String, (usize, usize)>,
     fallback_turns: &'a mut HashSet<usize>,
 }
@@ -477,26 +477,56 @@ fn attach_assistant(
     }
     if let Some(call) = entry.llm_call(started_at, ended_at) {
         let call_id = call.uuid.clone();
-        let call_owner = if let Some(&(old_owner, call_index)) = calls.get(&call_id) {
-            turns[old_owner].calls[call_index] = call;
-            turns[old_owner].ended_at = turns[old_owner].ended_at.max(ended_at);
-            if entry.is_completed_response() {
-                turns[old_owner].response = entry.assistant_text();
-            }
-            old_owner
-        } else {
-            let turn = &mut turns[owner];
-            if turn.started_at == DateTime::<Utc>::UNIX_EPOCH {
-                turn.started_at = started_at;
-            }
-            turn.ended_at = turn.ended_at.max(ended_at);
-            if entry.is_completed_response() {
-                turn.response = entry.assistant_text();
-            }
-            calls.insert(call_id.clone(), (owner, turn.calls.len()));
-            turn.calls.push(call);
-            owner
-        };
+        let final_observation = entry
+            .message
+            .as_ref()
+            .and_then(|m| m.stop_reason.as_ref())
+            .is_some();
+        let call_owner =
+            if let Some(&(old_owner, call_index, old_final, observed_at)) = calls.get(&call_id) {
+                let existing = &mut turns[old_owner].calls[call_index];
+                let first_at = existing.started_at.min(call.started_at);
+                let last_at = existing.ended_at.max(call.ended_at);
+                let conflicting = existing
+                    .accounting
+                    .as_ref()
+                    .is_some_and(|a| a.conflicting_observations)
+                    || (old_final
+                        && final_observation
+                        && usage_signature(existing) != usage_signature(&call));
+                if (final_observation, ended_at) >= (old_final, observed_at) {
+                    *existing = call;
+                    calls.insert(
+                        call_id.clone(),
+                        (old_owner, call_index, final_observation, ended_at),
+                    );
+                }
+                if let Some(accounting) = &mut existing.accounting {
+                    accounting.conflicting_observations = conflicting;
+                }
+                existing.started_at = first_at;
+                existing.ended_at = last_at;
+                turns[old_owner].ended_at = turns[old_owner].ended_at.max(ended_at);
+                if entry.is_completed_response() {
+                    turns[old_owner].response = entry.assistant_text();
+                }
+                old_owner
+            } else {
+                let turn = &mut turns[owner];
+                if turn.started_at == DateTime::<Utc>::UNIX_EPOCH {
+                    turn.started_at = started_at;
+                }
+                turn.ended_at = turn.ended_at.max(ended_at);
+                if entry.is_completed_response() {
+                    turn.response = entry.assistant_text();
+                }
+                calls.insert(
+                    call_id.clone(),
+                    (owner, turn.calls.len(), final_observation, ended_at),
+                );
+                turn.calls.push(call);
+                owner
+            };
         if entry.is_completed_response() && fallback_turns.remove(&call_owner) {
             let identity = format!("assistant:{call_id}");
             turns[call_owner].uuid = identity.clone();
@@ -506,6 +536,15 @@ fn attach_assistant(
     if let Some(uuid) = &entry.uuid {
         owners.insert(uuid.clone(), owner);
     }
+}
+
+fn usage_signature(call: &LlmCall) -> (u64, u64, u64, u64) {
+    (
+        call.input_tokens,
+        call.output_tokens,
+        call.cache_read_tokens,
+        call.cache_creation_tokens,
+    )
 }
 
 fn ancestry_related(assistant: &Entry, leaf_uuid: &str, parents: &HashMap<String, String>) -> bool {
@@ -557,12 +596,16 @@ struct Entry {
     is_sidechain: bool,
     timestamp: Option<DateTime<Utc>>,
     message: Option<Message>,
+    #[serde(rename = "requestId")]
+    request_id: Option<String>,
     #[serde(rename = "lastPrompt")]
     last_prompt: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Message {
+    id: Option<String>,
+    provider: Option<String>,
     model: Option<String>,
     content: Option<serde_json::Value>,
     usage: Option<Usage>,
@@ -579,9 +622,34 @@ struct Usage {
     cache_read_input_tokens: u64,
     #[serde(default)]
     cache_creation_input_tokens: u64,
+    cache_creation: Option<CacheCreation>,
+    speed: Option<String>,
+    service_tier: Option<String>,
+    inference_geo: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CacheCreation {
+    ephemeral_5m_input_tokens: Option<u64>,
+    ephemeral_1h_input_tokens: Option<u64>,
 }
 
 impl Entry {
+    fn call_identity(&self) -> Option<String> {
+        let message = self.message.as_ref()?;
+        match (self.request_id.as_deref(), message.id.as_deref()) {
+            (Some(request), Some(message)) => Some(format!(
+                "provider:{}",
+                uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_OID,
+                    format!("{request}\0{message}").as_bytes()
+                )
+            )),
+            (_, Some(message)) => Some(format!("message:{message}")),
+            _ => self.uuid.clone(),
+        }
+    }
+
     fn stable_identity(&self, line_index: usize) -> String {
         self.uuid
             .as_ref()
@@ -630,14 +698,42 @@ impl Entry {
     fn llm_call(&self, started_at: DateTime<Utc>, ended_at: DateTime<Utc>) -> Option<LlmCall> {
         let message = self.message.as_ref()?;
         let usage = message.usage.as_ref()?;
+        if message
+            .model
+            .as_deref()
+            .is_some_and(|model| model.starts_with('<'))
+        {
+            return None;
+        }
         Some(LlmCall {
-            uuid: self.uuid.clone()?,
-            provider: "anthropic".to_string(),
+            uuid: self.call_identity()?,
+            provider: message
+                .provider
+                .clone()
+                .filter(|p| !p.trim().is_empty())
+                .unwrap_or_else(|| "unknown".into()),
             model: message.model.clone().unwrap_or_else(|| "unknown".into()),
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             cache_read_tokens: usage.cache_read_input_tokens,
             cache_creation_tokens: usage.cache_creation_input_tokens,
+            accounting: Some(nasiko_types::CodingAgentCallAccounting {
+                version: 2,
+                request_id: self.request_id.clone(),
+                message_id: message.id.clone(),
+                cache_creation_5m_tokens: usage
+                    .cache_creation
+                    .as_ref()
+                    .and_then(|c| c.ephemeral_5m_input_tokens),
+                cache_creation_1h_tokens: usage
+                    .cache_creation
+                    .as_ref()
+                    .and_then(|c| c.ephemeral_1h_input_tokens),
+                speed: usage.speed.clone(),
+                service_tier: usage.service_tier.clone(),
+                inference_geo: usage.inference_geo.clone(),
+                conflicting_observations: false,
+            }),
             started_at,
             ended_at,
         })
@@ -683,7 +779,7 @@ impl Entry {
         if self.kind != "assistant" {
             return Vec::new();
         }
-        let model_call_id = self.uuid.clone();
+        let model_call_id = self.call_identity();
         self.message
             .as_ref()
             .and_then(|message| message.content.as_ref())
@@ -769,6 +865,36 @@ mod tests {
     use super::*;
 
     const USAGE: &str = r#""usage":{"input_tokens":1,"output_tokens":2}"#;
+
+    #[test]
+    fn capture_uses_one_final_observation_not_independent_maxima() {
+        let user = json!({"type":"user","uuid":"user","timestamp":"2026-01-01T00:00:00Z","message":{"content":"hello"}});
+        let partial = json!({"type":"assistant","uuid":"partial","parentUuid":"user","requestId":"request", "timestamp":"2026-01-01T00:00:03Z", "message":{"id":"message","model":"claude-test","usage":{"input_tokens":90,"output_tokens":1}}});
+        let final_record = json!({"type":"assistant","uuid":"final","parentUuid":"user","requestId":"request", "timestamp":"2026-01-01T00:00:02Z", "message":{"id":"message","model":"claude-test","content":"done","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":7,"cache_creation":{"ephemeral_5m_input_tokens":2,"ephemeral_1h_input_tokens":5}}}});
+        for content in [
+            format!("{user}\n{partial}\n{final_record}"),
+            format!("{user}\n{final_record}\n{partial}"),
+        ] {
+            let turns = turns_from_lines(&content);
+            let calls: Vec<_> = turns.iter().flat_map(|t| &t.calls).collect();
+            assert_eq!(calls.len(), 1);
+            assert_eq!((calls[0].input_tokens, calls[0].output_tokens), (10, 5));
+            assert_eq!(calls[0].provider, "unknown");
+            assert_eq!(
+                calls[0]
+                    .accounting
+                    .as_ref()
+                    .unwrap()
+                    .cache_creation_1h_tokens,
+                Some(5)
+            );
+        }
+        let mut retry = final_record.clone();
+        retry["uuid"] = "retry".into();
+        retry["requestId"] = "different-request".into();
+        let turns = turns_from_lines(&format!("{user}\n{final_record}\n{retry}"));
+        assert_eq!(turns.iter().map(|t| t.calls.len()).sum::<usize>(), 2);
+    }
 
     #[test]
     fn title_uses_latest_generated_record_for_matching_session() {

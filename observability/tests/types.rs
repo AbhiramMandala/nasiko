@@ -381,6 +381,26 @@ fn ambiguous_counts_err_toward_not_double_charging() {
 }
 
 #[test]
+fn declared_prompt_convention_overrides_ambiguous_or_inconsistent_totals() {
+    for total in [None, Some(1050), Some(1850), Some(1)] {
+        let mut attributes = attrs(&[
+            ("gen_ai.usage.input_tokens", 1000),
+            ("gen_ai.usage.output_tokens", 50),
+            ("gen_ai.usage.cache_read_input_tokens", 800),
+        ]);
+        if let Some(total) = total {
+            attributes.insert("gen_ai.usage.total_tokens".into(), total.into());
+        }
+        attributes.insert("nasiko.usage.prompt_convention".into(), "exclusive".into());
+        let usage = extract_usage_attrs(&attributes);
+        assert_eq!(usage.input, 1000);
+        assert_eq!(usage.total_prompt(), 1800);
+        attributes.insert("nasiko.usage.prompt_convention".into(), "inclusive".into());
+        assert_eq!(extract_usage_attrs(&attributes).input, 200);
+    }
+}
+
+#[test]
 fn a_span_with_no_cache_is_untouched() {
     let u = extract_usage_attrs(&attrs(&[
         ("gen_ai.usage.input_tokens", 1000),

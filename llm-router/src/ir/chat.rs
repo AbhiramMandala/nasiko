@@ -164,10 +164,21 @@ pub struct Usage {
     /// `cache_creation_input_tokens`; OpenAI doesn't expose a write count).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<i64>,
+    /// Cache writes subdivided by reported TTL; never additional prompt tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<CacheCreationUsage>,
     /// OpenAI nests cache counts under `usage.prompt_tokens_details`; kept so the
     /// flat `cache_read_input_tokens` can be filled from it after deserialization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct CacheCreationUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_5m_input_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_1h_input_tokens: Option<i64>,
 }
 
 /// OpenAI's `usage.prompt_tokens_details` — the only place OpenAI reports cache reads.

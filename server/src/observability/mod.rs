@@ -1,5 +1,6 @@
 pub mod handler;
 pub mod logs;
+pub mod receipt_materializer;
 pub mod resources;
 pub(crate) mod routes;
 pub mod service;

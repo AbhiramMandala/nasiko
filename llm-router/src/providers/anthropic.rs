@@ -119,6 +119,7 @@ impl ProviderClient for AnthropicProvider {
             let mut output_tokens: Option<i64> = None;
             let mut cache_read: Option<i64> = None;
             let mut cache_creation: Option<i64> = None;
+            let mut cache_details = None;
             let mut finish: Option<String> = None;
             let mut stopped = false;
 
@@ -152,6 +153,7 @@ impl ProviderClient for AnthropicProvider {
                         input_tokens = u["input_tokens"].as_i64();
                         cache_read = u["cache_read_input_tokens"].as_i64();
                         cache_creation = u["cache_creation_input_tokens"].as_i64();
+                        cache_details = serde_json::from_value(u["cache_creation"].clone()).ok();
                         yield Ok(delta_chunk(&id, &model, Delta {
                             role: Some("assistant".to_string()),
                             ..Delta::default()
@@ -234,6 +236,11 @@ impl ProviderClient for AnthropicProvider {
                         if let Some(sr) = event["delta"]["stop_reason"].as_str() {
                             finish = Some(map_stop_reason(sr).to_string());
                         }
+                        let u = &event["usage"];
+                        input_tokens = u["input_tokens"].as_i64().or(input_tokens);
+                        cache_read = u["cache_read_input_tokens"].as_i64().or(cache_read);
+                        cache_creation = u["cache_creation_input_tokens"].as_i64().or(cache_creation);
+                        cache_details = serde_json::from_value(u["cache_creation"].clone()).ok().or(cache_details);
                         if let Some(ot) = event["usage"]["output_tokens"].as_i64() {
                             output_tokens = Some(ot);
                         }
@@ -265,6 +272,7 @@ impl ProviderClient for AnthropicProvider {
                 },
                 cache_read_input_tokens: cache_read,
                 cache_creation_input_tokens: cache_creation,
+                cache_creation: cache_details,
                 prompt_tokens_details: None,
             }));
         };
@@ -505,6 +513,7 @@ fn from_anthropic_response(body: &Value, model: &str) -> Result<ChatResponse, Pr
             },
             cache_read_input_tokens: u["cache_read_input_tokens"].as_i64(),
             cache_creation_input_tokens: u["cache_creation_input_tokens"].as_i64(),
+            cache_creation: serde_json::from_value(u["cache_creation"].clone()).ok(),
             prompt_tokens_details: None,
         }
     });
@@ -547,7 +556,6 @@ mod tests {
 
     fn resolved() -> ResolvedConfig {
         ResolvedConfig {
-            compress_enabled: false,
             provider: "anthropic".into(),
             model: "claude-3-5-sonnet-20241022".into(),
             litellm_model: "anthropic/claude-3-5-sonnet-20241022".into(),

@@ -707,6 +707,7 @@ fn response_usage(value: Option<&Value>) -> Option<ResponseUsage> {
             prompt_tokens_details: None,
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
+            cache_creation: None,
         },
         cached_tokens: value
             .get("input_tokens_details")
@@ -780,8 +781,6 @@ impl AttemptGuard {
                 flow_id: routed.flow_id.clone(),
                 attribution_source: routed.attribution_source,
                 platform_paid: attempt.platform_paid,
-                // Never compressed: this surface does not go through `chat_core`.
-                compress_metadata: None,
             }),
         }
     }
@@ -813,7 +812,7 @@ impl Drop for AttemptGuard {
             record.latency_ms = record
                 .latency_ms
                 .max(self.started.elapsed().as_millis() as i64);
-            usage::spawn_log(self.ctx.db.clone(), record);
+            usage::spawn_log(self.ctx.db.clone(), self.ctx.pricing.clone(), record);
         }
     }
 }
@@ -833,6 +832,7 @@ fn log_response_usage(
         .and_then(|details| details.reasoning_tokens);
     usage::spawn_log(
         ctx.db.clone(),
+        ctx.pricing.clone(),
         UsageRecord {
             owner_id: routed.owner_id,
             agent_id: routed.agent_id,
@@ -848,8 +848,6 @@ fn log_response_usage(
             flow_id: routed.flow_id,
             attribution_source: routed.attribution_source,
             platform_paid: attempt.platform_paid,
-            // Never compressed: this surface does not go through `chat_core`.
-            compress_metadata: None,
         },
     );
 }
@@ -988,7 +986,6 @@ mod tests {
             _: Uuid,
         ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
             Ok(Some(AgentConfigResult {
-                compress_enabled: false,
                 config: Some(LLMConfig {
                     provider: self.provider.into(),
                     model: Some("resolved-model".into()),
@@ -1048,6 +1045,9 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::salience::AllowAllGate),
+            pricing: Arc::new(nasiko_pricing::PricingEngine::new(
+                PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
+            )),
         }
     }
 
@@ -1476,7 +1476,6 @@ mod tests {
             platform_paid: false,
             custom_endpoint: None,
             is_coding_agent: false,
-            compress_enabled: false,
         };
         let routed = RoutedRequest {
             agent_id: AGENT.into(),
@@ -1864,7 +1863,6 @@ mod tests {
                 platform_paid: true,
                 custom_endpoint: None,
                 is_coding_agent: false,
-                compress_enabled: false,
             },
             flow_id: None,
             attribution_source: None,

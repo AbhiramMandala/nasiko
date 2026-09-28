@@ -40,6 +40,15 @@ pub async fn run(
 
     loop {
         tick.tick().await;
+        if let Err(error) = super::receipt_materializer::materialize_once(
+            &db,
+            provider.as_ref(),
+            session_resolver.as_ref(),
+        )
+        .await
+        {
+            tracing::warn!(%error, "receipt materialization failed");
+        }
         if let Err(e) = materialize_once(
             &db,
             provider.as_ref(),
@@ -132,55 +141,70 @@ async fn materialize_once(
         return Ok(());
     }
 
-    // 5. Enrich each row: resolve agent_id, user_id, provider, backfill session_id.
     let mut upserted = 0usize;
     for row in &rows {
-        // Resolve agent_id from agent_name.
-        let agent_id: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL LIMIT 1",
-        )
-        .bind(&row.agent_name)
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten();
+        upsert_row(db, session_resolver, row).await?;
+        upserted += 1;
+    }
 
-        // Backfill session_id from the DB index if the span didn't carry it.
-        let session_id = match &row.session_id {
-            Some(s) => Some(s.clone()),
-            None => session_resolver.session_for_trace(&row.trace_id).await,
-        };
+    // Advance only when every fetch and write succeeded.
+    if errors == 0
+        && let Some(max_ts) = rows.iter().map(|r| r.started_at).max()
+    {
+        sqlx::query("UPDATE trace_usage_cursor SET high_water = GREATEST(high_water, $1), updated_at = now() WHERE id = 1")
+            .bind(max_ts).execute(db).await.map_err(|e| e.to_string())?;
+    }
+    tracing::info!(
+        traces_found = trace_ids.len(),
+        agent_rows = rows.len(),
+        upserted,
+        errors,
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        "trace_materializer: pass complete"
+    );
+    Ok(())
+}
 
-        // Resolve user_id from the chat_session that owns this session_id.
-        let user_id: Option<uuid::Uuid> = match &session_id {
-            Some(sid) => sqlx::query_scalar(
-                "SELECT user_id FROM chat_sessions WHERE session_id = $1 LIMIT 1",
-            )
-            .bind(sid)
+/// Shared idempotent write path for window scans and receipt-driven recovery.
+pub(crate) async fn upsert_row(
+    db: &PgPool,
+    session_resolver: &dyn SessionIdResolver,
+    row: &TraceUsageRow,
+) -> Result<(), String> {
+    // Resolve agent_id from agent_name.
+    let agent_id: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL LIMIT 1")
+            .bind(&row.agent_name)
             .fetch_optional(db)
             .await
             .ok()
-            .flatten(),
-            None => None,
-        };
+            .flatten();
 
-        // Derive provider from model_pricing (first active row for this model).
-        let provider: Option<String> = match &row.model {
-            Some(m) => sqlx::query_scalar(
-                "SELECT provider FROM model_pricing \
-                 WHERE model = $1 AND (effective_until IS NULL OR effective_until > now()) \
-                 ORDER BY effective_from DESC LIMIT 1",
-            )
-            .bind(m)
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten(),
-            None => None,
-        };
+    // Backfill session_id from the DB index if the span didn't carry it.
+    let session_id = match &row.session_id {
+        Some(s) => Some(s.clone()),
+        None => session_resolver.session_for_trace(&row.trace_id).await,
+    };
 
-        // 6. Upsert into trace_usage (composite PK: trace_id, agent_name).
-        let result = sqlx::query(
+    // Resolve user_id from the chat_session that owns this session_id.
+    let user_id: Option<uuid::Uuid> = match &session_id {
+        Some(sid) => {
+            sqlx::query_scalar("SELECT user_id FROM chat_sessions WHERE session_id = $1 LIMIT 1")
+                .bind(sid)
+                .fetch_optional(db)
+                .await
+                .ok()
+                .flatten()
+        }
+        None => None,
+    };
+
+    // A price-book match is not evidence of who served this request.
+    let provider = &row.provider;
+
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    // Upsert into trace_usage (composite PK: trace_id, agent_name).
+    let result = sqlx::query(
             r#"INSERT INTO trace_usage (
                    trace_id, agent_name, session_id, agent_id, user_id,
                    model, provider,
@@ -194,7 +218,7 @@ async fn materialize_once(
                    agent_id = COALESCE(EXCLUDED.agent_id, trace_usage.agent_id),
                    user_id = COALESCE(EXCLUDED.user_id, trace_usage.user_id),
                    model = EXCLUDED.model,
-                   provider = COALESCE(EXCLUDED.provider, trace_usage.provider),
+                   provider = EXCLUDED.provider,
                    input_tokens = EXCLUDED.input_tokens,
                    output_tokens = EXCLUDED.output_tokens,
                    cache_read_tokens = EXCLUDED.cache_read_tokens,
@@ -213,7 +237,7 @@ async fn materialize_once(
         .bind(agent_id)
         .bind(user_id)
         .bind(&row.model)
-        .bind(&provider)
+        .bind(provider)
         .bind(row.input_tokens as i64)
         .bind(row.output_tokens as i64)
         .bind(row.cache_read_tokens as i64)
@@ -224,43 +248,17 @@ async fn materialize_once(
         .bind(row.completion_cost_usd)
         .bind(row.latency_ms)
         .bind(row.started_at)
-        .execute(db)
+        .execute(&mut *tx)
         .await;
 
-        match result {
-            Ok(_) => upserted += 1,
-            Err(e) => {
-                tracing::warn!(
-                    trace_id = %row.trace_id,
-                    agent_name = %row.agent_name,
-                    error = %e,
-                    "trace_materializer: upsert failed"
-                );
-            }
-        }
-    }
-
-    // 7. Advance the high-water mark to the latest started_at we materialized.
-    if let Some(max_ts) = rows.iter().map(|r| r.started_at).max() {
-        let _ = sqlx::query(
-            "UPDATE trace_usage_cursor \
-             SET high_water = GREATEST(high_water, $1), updated_at = now() \
-             WHERE id = 1",
-        )
-        .bind(max_ts)
-        .execute(db)
-        .await;
-    }
-
-    let elapsed = start.elapsed();
-    tracing::info!(
-        traces_found = trace_ids.len(),
-        agent_rows = rows.len(),
-        upserted,
-        errors,
-        elapsed_ms = elapsed.as_millis() as u64,
-        "trace_materializer: pass complete"
-    );
-
+    result.map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE trace_usage SET cost_estimated=$3 WHERE trace_id=$1 AND agent_name=$2")
+        .bind(&row.trace_id)
+        .bind(&row.agent_name)
+        .bind(row.cost_estimated)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
 }

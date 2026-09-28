@@ -53,6 +53,7 @@ pub struct ModelPrices {
     pub input_per_1m: f64,
     pub output_per_1m: f64,
     pub cache_creation_per_1m: Option<f64>,
+    pub cache_creation_1h_per_1m: Option<f64>,
     pub cache_read_per_1m: Option<f64>,
 }
 
@@ -64,12 +65,17 @@ impl ModelPrices {
             v.get("price")
                 .and_then(|p| p.as_f64())
                 .map(|c| c * 10_000.0)
+                .filter(|rate| rate.is_finite() && *rate >= 0.0 && *rate < 1_000_000.0)
         };
         let input = cents_to_usd_per_1m(payg.get("request_token")?)?;
         let output = cents_to_usd_per_1m(payg.get("response_token")?)?;
         Some(Self {
             input_per_1m: round4(input),
             output_per_1m: round4(output),
+            cache_creation_1h_per_1m: cents_to_usd_per_1m(
+                &payg["additional_units"]["cache_write_1h"],
+            )
+            .map(round4),
             ..Self::cache(
                 cents_to_usd_per_1m(&payg["cache_write_input_token"]),
                 cents_to_usd_per_1m(&payg["cache_read_input_token"]),
@@ -77,23 +83,15 @@ impl ModelPrices {
         })
     }
 
-    /// Cache prices are stored both-or-neither: the cost trigger dereferences
-    /// `cache_read_price` whenever `cache_creation_price IS NOT NULL`, so a lone
-    /// cache column would NULL-poison the whole cost. When only one side is priced,
-    /// the other is set to 0 (the provider listed a cache price schedule; the missing
-    /// side is free).
+    /// Absence means unknown, not free. Each cache class resolves independently.
     fn cache(write: Option<f64>, read: Option<f64>) -> Self {
-        let (creation, read) = match (write, read) {
-            (None, None) => (None, None),
-            (w, r) => (
-                Some(round4(w.unwrap_or(0.0))),
-                Some(round4(r.unwrap_or(0.0))),
-            ),
-        };
+        let creation = write.map(round4);
+        let read = read.map(round4);
         Self {
             input_per_1m: 0.0,
             output_per_1m: 0.0,
             cache_creation_per_1m: creation,
+            cache_creation_1h_per_1m: None,
             cache_read_per_1m: read,
         }
     }
@@ -108,21 +106,29 @@ fn round4(v: f64) -> f64 {
 /// Resolve the Portkey pricing slug for one of our provider labels: explicit env
 /// override (`PORTKEY_PROVIDER_OPENAI=deepseek`), then a host mapping of the
 /// configured base URL, then the label itself (correct for canonical endpoints).
+///
+/// The host mapping is what lets a DB-registered provider price itself with no
+/// operator configuration, which is the common case: a label is chosen for the
+/// UI, not to match an upstream price book, so falling through to it usually
+/// misses. A Bedrock provider labelled `aws-bedrock` asked Portkey for
+/// `aws-bedrock.json` and got a 403 — the book is served as `bedrock.json` — so
+/// every Bedrock model went unpriced, and its traffic was costed against
+/// whichever other book happened to carry the same model name.
 fn portkey_slug(label: &str, api_base: &str) -> String {
-    let env_key = format!("PORTKEY_PROVIDER_{}", label.to_ascii_uppercase());
-    if let Ok(slug) = std::env::var(&env_key)
-        && !slug.is_empty()
-    {
+    if let Some(slug) = slug_from_env(label) {
         return slug;
     }
     let host = reqwest::Url::parse(api_base)
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))
         .unwrap_or_default();
-    // Azure resources live on a per-customer host, so they match by suffix rather
-    // than by an exact host.
+    // Matched by suffix rather than exact host: both live on hostnames that vary
+    // per customer (Azure) or per region (Bedrock).
     if host.ends_with(".openai.azure.com") {
         return "azure-openai".to_string();
+    }
+    if host.ends_with(".amazonaws.com") {
+        return "bedrock".to_string();
     }
     match host.as_str() {
         "api.openai.com" => "openai",
@@ -137,6 +143,21 @@ fn portkey_slug(label: &str, api_base: &str) -> String {
         _ => label,
     }
     .to_string()
+}
+
+/// `PORTKEY_PROVIDER_<LABEL>`, with hyphens folded to underscores.
+///
+/// Labels routinely contain hyphens (`aws-bedrock`, `nebius-token-factory`), and
+/// `PORTKEY_PROVIDER_AWS-BEDROCK` is not a name a shell can export — so the
+/// override was unusable for exactly the providers most likely to need it. The
+/// hyphenated spelling is still accepted: a container runtime can set it, and an
+/// operator may already have.
+fn slug_from_env(label: &str) -> Option<String> {
+    let upper = label.to_ascii_uppercase();
+    [upper.replace('-', "_"), upper]
+        .iter()
+        .filter_map(|name| std::env::var(format!("PORTKEY_PROVIDER_{name}")).ok())
+        .find(|slug| !slug.is_empty())
 }
 
 /// Fetch and convert one provider's price book. `None` on any failure (fail open —
@@ -208,6 +229,7 @@ fn openrouter_prices_from_pricing(pricing: &serde_json::Value) -> Option<ModelPr
         input_per_1m: round4(input),
         output_per_1m: round4(output),
         cache_creation_per_1m: None,
+        cache_creation_1h_per_1m: None,
         cache_read_per_1m: None,
     })
 }
@@ -264,7 +286,8 @@ async fn fetch_openrouter_catalog(
 /// Current active prices per model (latest effective row, any provider label — a
 /// model whose seed row already matches needs no new row).
 async fn current_prices(
-    db: &PgPool,
+    db: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    label: &str,
     models: &[&str],
 ) -> Result<HashMap<String, ModelPrices>, sqlx::Error> {
     #[derive(sqlx::FromRow)]
@@ -273,6 +296,7 @@ async fn current_prices(
         input: f64,
         output: f64,
         cache_creation: Option<f64>,
+        cache_creation_1h: Option<f64>,
         cache_read: Option<f64>,
     }
     let rows: Vec<Row> = sqlx::query_as(
@@ -281,13 +305,15 @@ async fn current_prices(
                   input_price_per_1m::float8 AS input,
                   output_price_per_1m::float8 AS output,
                   cache_creation_price_per_1m::float8 AS cache_creation,
+                  cache_creation_1h_price_per_1m::float8 AS cache_creation_1h,
                   cache_read_price_per_1m::float8 AS cache_read
            FROM model_pricing
-           WHERE model = ANY($1::text[]) AND effective_until IS NULL
+           WHERE model = ANY($1::text[]) AND provider = $2 AND effective_until IS NULL
            ORDER BY model, effective_from DESC"#,
     )
     .bind(models)
-    .fetch_all(db)
+    .bind(label)
+    .fetch_all(&mut **db)
     .await?;
     Ok(rows
         .into_iter()
@@ -298,11 +324,25 @@ async fn current_prices(
                     input_per_1m: r.input,
                     output_per_1m: r.output,
                     cache_creation_per_1m: r.cache_creation,
+                    cache_creation_1h_per_1m: r.cache_creation_1h,
                     cache_read_per_1m: r.cache_read,
                 },
             )
         })
         .collect())
+}
+
+fn sync_managed_note(note: Option<&str>) -> bool {
+    note.is_some_and(|note| {
+        note.starts_with("portkey pricing sync")
+            || note.starts_with("openrouter pricing sync")
+            || note == "boot seed (static list)"
+            || matches!(
+                note,
+                "Claude Opus 5 - rate carried forward from Opus 4, verify"
+                    | "Claude Sonnet 5 - rate carried forward from Sonnet 4, verify"
+            )
+    })
 }
 
 /// Sync one provider label's price book into `model_pricing`, returning the number of
@@ -313,11 +353,25 @@ async fn sync_label(
     book: &HashMap<String, ModelPrices>,
     source: &str,
 ) -> Result<usize, sqlx::Error> {
-    let models: Vec<&str> = book.keys().map(String::as_str).collect();
-    let current = current_prices(db, &models).await?;
     let mut inserted = 0;
     for (model, new) in book {
+        let mut tx = db.begin().await?;
+        // Serialize overlapping boot/on-register passes before reading current prices.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("pricing-sync:{label}:{model}"))
+            .execute(&mut *tx)
+            .await?;
+        let current = current_prices(&mut tx, label, &[model.as_str()]).await?;
+        let notes: Vec<Option<String>> = sqlx::query_scalar(
+            "SELECT notes FROM model_pricing WHERE provider=$1 AND model=$2 AND effective_until IS NULL",
+        ).bind(label).bind(model).fetch_all(&mut *tx).await?;
+        if notes.iter().any(|note| !sync_managed_note(note.as_deref())) {
+            tracing::debug!(label, model, "pricing sync: preserving operator price row");
+            tx.commit().await?;
+            continue;
+        }
         if current.get(model) == Some(new) {
+            tx.commit().await?;
             continue;
         }
         // Close this label's active row for the model (history), then open the new
@@ -331,7 +385,6 @@ async fn sync_label(
         // fall into. Per model rather than per label: a failure part-way through a
         // price book keeps the changes already applied instead of discarding them,
         // and no single transaction holds locks across ~2000 models.
-        let mut tx = db.begin().await?;
         sqlx::query(
             "UPDATE model_pricing SET effective_until = now() \
              WHERE provider = $1 AND model = $2 AND effective_until IS NULL",
@@ -343,8 +396,8 @@ async fn sync_label(
         sqlx::query(
             "INSERT INTO model_pricing \
              (provider, model, input_price_per_1m, output_price_per_1m, \
-              cache_creation_price_per_1m, cache_read_price_per_1m, notes) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+              cache_creation_price_per_1m, cache_read_price_per_1m, notes, cache_creation_1h_price_per_1m) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(label)
         .bind(model)
@@ -353,6 +406,7 @@ async fn sync_label(
         .bind(new.cache_creation_per_1m)
         .bind(new.cache_read_per_1m)
         .bind(source)
+        .bind(new.cache_creation_1h_per_1m)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -376,10 +430,7 @@ pub async fn sync_one_provider(
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_PRICING_BASE.to_string());
     let slug = portkey_slug(label, api_base);
-    let Some(book) = fetch_price_book(http, &pricing_base, &slug).await else {
-        return 0;
-    };
-    match sync_label(db, label, &book, "portkey pricing sync (on-register)").await {
+    match sync_provider_prices(db, http, label, api_base, &pricing_base).await {
         Ok(n) => {
             tracing::info!(
                 target: "nasiko::llm_router::pricing_sync",
@@ -399,6 +450,31 @@ pub async fn sync_one_provider(
     }
 }
 
+/// Sync a provider using an explicitly supplied public price-book endpoint.
+/// Returns an error on fetch failure so verification cannot mistake failure for a no-op.
+pub async fn sync_provider_prices(
+    db: &PgPool,
+    http: &reqwest::Client,
+    label: &str,
+    api_base: &str,
+    pricing_base: &str,
+) -> Result<usize, String> {
+    let slug = portkey_slug(label, api_base);
+    let book = fetch_price_book(http, pricing_base, &slug)
+        .await
+        .ok_or("price book fetch failed")?;
+    if book.is_empty() {
+        return Err("price book contains no valid models".into());
+    }
+    let source = format!(
+        "portkey pricing sync: {pricing_base}/pricing/{slug}.json; fetched_at={}",
+        chrono::Utc::now().to_rfc3339()
+    );
+    sync_label(db, label, &book, &source)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// One pricing-sync pass over every configured provider. Returns rows inserted.
 pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig) -> usize {
     let pricing_base = std::env::var("PORTKEY_PRICING_BASE_URL")
@@ -409,12 +485,25 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
     // Include DB-registered custom providers so a private gateway with a Portkey
     // price book gets real prices; most have none, which is expected and harmless.
     let custom = super::catalog::load_custom_providers(db).await;
-    for (label, api_base) in super::catalog::priceable_providers(cfg, &custom) {
+    let mut providers = super::catalog::priceable_providers(cfg, &custom);
+    // Public price books need no inference key. Claude integrations need the
+    // Anthropic reference book even when actual hosting is unknown per call.
+    let has_claude: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE coding_agent_integration_id = 'claude' AND deleted_at IS NULL)",
+    ).fetch_one(db).await.unwrap_or(false);
+    if has_claude && !providers.iter().any(|(label, _)| label == "anthropic") {
+        providers.push(("anthropic".into(), "https://api.anthropic.com".into()));
+    }
+    for (label, api_base) in providers {
         let slug = portkey_slug(&label, &api_base);
         let Some(book) = fetch_price_book(http, &pricing_base, &slug).await else {
             continue;
         };
-        match sync_label(db, &label, &book, "portkey pricing sync").await {
+        let source = format!(
+            "portkey pricing sync: {pricing_base}/pricing/{slug}.json; fetched_at={}",
+            chrono::Utc::now().to_rfc3339()
+        );
+        match sync_label(db, &label, &book, &source).await {
             Ok(n) => {
                 inserted += n;
                 tracing::info!(
@@ -509,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_cache_prices_stay_null_unless_one_side_present() {
+    fn missing_cache_prices_remain_unknown_independently() {
         let payg = json!({
             "request_token": {"price": 0.00025},
             "response_token": {"price": 0.001}
@@ -518,16 +607,41 @@ mod tests {
         assert_eq!(p.cache_creation_per_1m, None);
         assert_eq!(p.cache_read_per_1m, None);
 
-        // One-sided cache price: the other side becomes 0, never NULL (the cost
-        // trigger dereferences read whenever creation IS NOT NULL).
+        // A listed read price does not establish that writes are free.
         let payg = json!({
             "request_token": {"price": 0.00025},
             "response_token": {"price": 0.001},
             "cache_read_input_token": {"price": 0.000025}
         });
         let p = ModelPrices::from_pay_as_you_go(&payg).unwrap();
-        assert_eq!(p.cache_creation_per_1m, Some(0.0));
+        assert_eq!(p.cache_creation_per_1m, None);
         assert_eq!(p.cache_read_per_1m, Some(0.25));
+    }
+
+    #[test]
+    fn one_hour_write_rate_is_preserved_from_the_upstream_book() {
+        let prices = ModelPrices::from_pay_as_you_go(&json!({
+            "request_token": {"price": 0.0005}, "response_token": {"price": 0.0025},
+            "cache_write_input_token": {"price": 0.000625},
+            "cache_read_input_token": {"price": 0.00005},
+            "additional_units": {"cache_write_1h": {"price": 0.001}}
+        }))
+        .unwrap();
+        assert_eq!(prices.cache_creation_per_1m, Some(6.25));
+        assert_eq!(prices.cache_creation_1h_per_1m, Some(10.0));
+        assert_eq!(prices.cache_read_per_1m, Some(0.5));
+    }
+
+    #[test]
+    fn invalid_prices_are_not_imported_as_rates() {
+        for value in [-1.0, 1e100] {
+            assert!(
+                ModelPrices::from_pay_as_you_go(&json!({
+                    "request_token": {"price": value}, "response_token": {"price": 0.001}
+                }))
+                .is_none()
+            );
+        }
     }
 
     #[test]
@@ -558,6 +672,63 @@ mod tests {
             "azure-openai"
         );
         unsafe { std::env::remove_var("PORTKEY_PROVIDER_OPENAI") };
+    }
+
+    #[test]
+    fn bedrock_resolves_by_host_whatever_the_provider_is_labelled() {
+        // The label is chosen for the UI, so the fallback is wrong here: Portkey
+        // serves the book as `bedrock.json` and 403s on anything else, which left
+        // every Bedrock model unpriced.
+        for label in ["aws-bedrock", "amazon-bedrock", "my-bedrock-gateway"] {
+            assert_eq!(
+                portkey_slug(label, "https://bedrock-runtime.us-east-1.amazonaws.com"),
+                "bedrock",
+                "label {label} did not resolve by host"
+            );
+        }
+        // Region is part of the host, and one book covers them all.
+        assert_eq!(
+            portkey_slug(
+                "aws-bedrock",
+                "https://bedrock-runtime.eu-west-1.amazonaws.com/v1"
+            ),
+            "bedrock"
+        );
+    }
+
+    #[test]
+    fn a_hyphenated_label_can_be_overridden_from_the_environment() {
+        // `PORTKEY_PROVIDER_AWS-BEDROCK` is not exportable from a shell, so the
+        // underscored spelling is what an operator can actually set.
+        unsafe { std::env::set_var("PORTKEY_PROVIDER_AWS_BEDROCK", "bedrock") };
+        assert_eq!(
+            portkey_slug("aws-bedrock", "https://example.invalid/v1"),
+            "bedrock"
+        );
+        unsafe { std::env::remove_var("PORTKEY_PROVIDER_AWS_BEDROCK") };
+
+        // The hyphenated name still works where a runtime can set it.
+        unsafe { std::env::set_var("PORTKEY_PROVIDER_AWS-BEDROCK", "bedrock") };
+        assert_eq!(
+            portkey_slug("aws-bedrock", "https://example.invalid/v1"),
+            "bedrock"
+        );
+        unsafe { std::env::remove_var("PORTKEY_PROVIDER_AWS-BEDROCK") };
+    }
+
+    #[test]
+    fn an_empty_override_does_not_shadow_the_host_mapping() {
+        // A label of its own: env vars are process-global, so two tests sharing
+        // one race when the suite runs in parallel.
+        unsafe { std::env::set_var("PORTKEY_PROVIDER_SPARE_BEDROCK", "") };
+        assert_eq!(
+            portkey_slug(
+                "spare-bedrock",
+                "https://bedrock-runtime.us-east-1.amazonaws.com"
+            ),
+            "bedrock"
+        );
+        unsafe { std::env::remove_var("PORTKEY_PROVIDER_SPARE_BEDROCK") };
     }
 
     #[test]

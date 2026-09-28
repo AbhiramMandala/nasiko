@@ -167,15 +167,15 @@ impl TempoClient {
             .await
             .map_err(|e| ObservabilityError::Deserialization(e.to_string()))?;
 
-        let results = search_resp
-            .traces
-            .unwrap_or_default()
-            .into_iter()
-            .map(|t| {
+        let mut results = Vec::new();
+        let mut seen = HashSet::new();
+        for t in search_resp.traces.unwrap_or_default() {
+            let id = normalize_trace_id(&t.trace_id);
+            if seen.insert(id.clone()) {
                 let started_at = t.start_time_unix_nano.as_deref().and_then(parse_nanos_str);
-                (zero_pad_trace_id(&t.trace_id), started_at, t.duration_ms)
-            })
-            .collect();
+                results.push((id, started_at, t.duration_ms));
+            }
+        }
 
         Ok(results)
     }
@@ -185,6 +185,8 @@ impl TempoClient {
     /// Retries up to 2 times on HTTP 429 (Tempo job queue full) with
     /// exponential backoff (200ms, 600ms) to avoid cascading failures.
     pub async fn get_trace(&self, trace_id: &str) -> Result<TraceDetails, ObservabilityError> {
+        let normalized = normalize_trace_id(trace_id);
+        let trace_id = normalized.as_str();
         let url = format!("{}/api/traces/{}", self.base_url, trace_id);
 
         let mut backoff = std::time::Duration::from_millis(200);
@@ -231,39 +233,26 @@ impl TempoClient {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Canonical spelling for trace IDs from Tempo and the session index.
+pub(crate) fn normalize_trace_id(id: &str) -> String {
+    if !id.is_empty() && id.len() <= 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        format!("{id:0>32}").to_ascii_lowercase()
+    } else {
+        id.to_owned()
+    }
+}
+
 /// OTLP protobuf JSON encodes spanId/parentSpanId as base64.
 /// Convert to lowercase hex so it matches the format Loki uses.
 /// If decoding fails (e.g. already hex), return the input unchanged.
 fn otlp_id_to_hex(id: &str) -> String {
+    if id.len() == 16 && id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return id.to_ascii_lowercase();
+    }
     base64::engine::general_purpose::STANDARD
         .decode(id)
         .map(hex::encode)
         .unwrap_or_else(|_| id.to_string())
-}
-
-/// Tempo's `/api/search` endpoint returns `traceID` as a plain hex string
-/// with leading zero *nibbles* stripped (a real, observed Tempo behavior —
-/// unlike `/api/traces/{id}`'s OTLP JSON, which encodes IDs as base64 bytes
-/// that `otlp_id_to_hex` re-derives correctly via `hex::encode`, always
-/// exactly 32 chars for a 128-bit trace ID). Without this, a trace whose ID
-/// happens to start with `0` comes back as 31 (or fewer) hex chars — a
-/// different string than the same trace's ID everywhere else it's used
-/// (traceparent headers, `get_trace` calls), so it silently becomes a
-/// second, duplicate row wherever trace ID is used as a dedup/primary key
-/// (confirmed: this caused doubled rows, and inflated totals, in
-/// `trace_usage`). Left-pad back to the correct 32 hex chars before this ID
-/// is used as a key anywhere downstream.
-///
-/// Only touches strings that are actually shorter hex — never a real trace
-/// ID's shape (e.g. a test fixture, or some future non-hex ID Tempo returns)
-/// is left alone rather than corrupted into a 32-char string that matches
-/// nothing.
-fn zero_pad_trace_id(id: &str) -> String {
-    if id.len() < 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
-        format!("{id:0>32}")
-    } else {
-        id.to_string()
-    }
 }
 
 fn parse_nanos_str(s: &str) -> Option<DateTime<Utc>> {
@@ -433,27 +422,15 @@ fn parse_otlp_trace(
 mod tests {
     use serde_json::json;
 
-    use super::{OtlpTraceResponse, parse_otlp_trace, zero_pad_trace_id};
+    use super::{OtlpTraceResponse, parse_otlp_trace};
 
     #[test]
-    fn zero_pad_trace_id_restores_a_stripped_leading_zero() {
+    fn hex_span_ids_are_not_misdecoded_as_base64() {
         assert_eq!(
-            zero_pad_trace_id("81423c37451c04a19701dbf92626ee4"),
-            "081423c37451c04a19701dbf92626ee4"
+            super::otlp_id_to_hex("abcdef0123456789"),
+            "abcdef0123456789"
         );
-    }
-
-    #[test]
-    fn zero_pad_trace_id_leaves_a_full_length_id_unchanged() {
-        let full = "d505d94088a7d0fdc5c7a32bb790ee26";
-        assert_eq!(zero_pad_trace_id(full), full);
-    }
-
-    #[test]
-    fn zero_pad_trace_id_leaves_non_hex_ids_unchanged() {
-        // Not a real trace ID's shape (e.g. a test fixture) — must not be
-        // corrupted into a 32-char string that matches nothing real.
-        assert_eq!(zero_pad_trace_id("t-cheap"), "t-cheap");
+        assert_eq!(super::otlp_id_to_hex("q83vASNFZ4k="), "abcdef0123456789");
     }
 
     #[test]

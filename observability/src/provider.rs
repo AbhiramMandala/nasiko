@@ -6,7 +6,9 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::error::ObservabilityError;
 use crate::loki::{LokiClient, parse_trace_logs};
-use crate::pricing::{CostBreakdown, PricingSource, compute_cost, compute_cost_with_cache};
+use nasiko_pricing::PricingEngine;
+
+use crate::pricing::{CostBreakdown, CostRequest, compute_cost};
 use crate::tempo::{TempoClient, TraceSearchResult};
 use crate::types::{
     AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, TokenUsage, TraceDetails,
@@ -90,31 +92,13 @@ pub trait ObservabilityProvider: Send + Sync {
         limit: usize,
     ) -> Result<Vec<(DateTime<Utc>, String)>, ObservabilityError>;
 
-    /// Resolve a USD cost breakdown through the provider's pricing source.
-    async fn cost(
-        &self,
-        model: Option<&str>,
-        input_tokens: u64,
-        output_tokens: u64,
-    ) -> CostBreakdown;
-
-    /// Resolve all four token classes. The default keeps third-party provider
-    /// implementations source-compatible and prices cache tokens as input.
-    async fn cost_with_cache(
-        &self,
-        model: Option<&str>,
-        input_tokens: u64,
-        output_tokens: u64,
-        cache_read_tokens: u64,
-        cache_creation_tokens: u64,
-    ) -> CostBreakdown {
-        self.cost(
-            model,
-            input_tokens + cache_read_tokens + cache_creation_tokens,
-            output_tokens,
-        )
-        .await
-    }
+    /// Resolve a USD cost breakdown for one call.
+    ///
+    /// One method rather than a `cost`/`cost_with_cache` pair: the pair's
+    /// default implementation folded the cache classes into `input_tokens` and
+    /// so charged every cached token at the full input rate, which is the error
+    /// this whole seam exists to remove.
+    async fn cost(&self, request: CostRequest<'_>) -> CostBreakdown;
 
     /// Like [`Self::agent_finops`], additionally restricted to spans whose
     /// model attribute matches `model`. Additive trait method (default
@@ -346,7 +330,7 @@ impl SessionIdResolver for NoSessionIdResolver {
 pub struct TempoLokiProvider {
     tempo: TempoClient,
     loki: LokiClient,
-    pricing: Arc<dyn PricingSource>,
+    pricing: Arc<PricingEngine>,
     session_resolver: Arc<dyn SessionIdResolver>,
 }
 
@@ -356,7 +340,7 @@ const SESSION_TRACE_PAGE_SIZE: usize = 100;
 const SESSION_TRACE_SAFETY_CAP: usize = 2_000;
 
 impl TempoLokiProvider {
-    pub fn new(tempo_url: String, loki_url: String, pricing: Arc<dyn PricingSource>) -> Self {
+    pub fn new(tempo_url: String, loki_url: String, pricing: Arc<PricingEngine>) -> Self {
         Self {
             tempo: TempoClient::new(tempo_url),
             loki: LokiClient::new(loki_url),
@@ -496,7 +480,9 @@ impl TempoLokiProvider {
                 results.truncate(limit);
             }
         }
-        Ok(results)
+        let mut unique = Vec::new();
+        append_unique_traces(&mut unique, &mut HashSet::new(), results);
+        Ok(unique)
     }
 
     /// Fetch tokens/model/latency-p50 over up to
@@ -550,7 +536,12 @@ impl TempoLokiProvider {
         agg
     }
 
-    async fn trace_cost(&self, trace: &TraceDetails) -> CostBreakdown {
+    /// Cost of a whole trace, as the session and trace views report it.
+    ///
+    /// Public so the differential test can hold it against
+    /// [`ObservabilityProvider::extract_trace_usage`], which is what FinOps
+    /// aggregates — the two must agree, and nothing but a test enforces that.
+    pub async fn trace_cost(&self, trace: &TraceDetails) -> CostBreakdown {
         let mut cost = CostBreakdown::default();
         let mut seen = HashSet::new();
         for span in &trace.spans {
@@ -558,19 +549,18 @@ impl TempoLokiProvider {
                 continue;
             }
             let u = extract_usage_attrs(&span.attributes);
-            let (input, output, model) = (u.input, u.output, u.model.clone());
-            let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
             if u.is_empty() {
                 continue;
             }
             cost.add_assign(
-                compute_cost_with_cache(
+                compute_cost(
                     self.pricing.as_ref(),
-                    model.as_deref(),
-                    input,
-                    output,
-                    cache_read,
-                    cache_creation,
+                    CostRequest::from_usage(
+                        span_provider(span),
+                        u.model.as_deref(),
+                        span.started_at,
+                        &u,
+                    ),
                 )
                 .await,
             );
@@ -588,23 +578,20 @@ impl TempoLokiProvider {
         }
 
         let u = extract_usage_attrs(&span.attributes);
-        let (input_tokens, output_tokens, model) = (u.input, u.output, u.model.clone());
-        let (cache_read_tokens, cache_creation_tokens) = (u.cache_read, u.cache_creation);
         let usage = TokenUsage {
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_creation_tokens,
-            total_tokens: input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens,
+            input_tokens: u.input,
+            output_tokens: u.output,
+            cache_read_tokens: u.cache_read,
+            cache_creation_tokens: u.cache_creation,
+            total_tokens: u.total_prompt() + u.output,
         };
         let cost = self
-            .cost_with_cache(
-                model.as_deref(),
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-            )
+            .cost(CostRequest::from_usage(
+                span_provider(span),
+                u.model.as_deref(),
+                span.started_at,
+                &u,
+            ))
             .await;
         (usage, cost)
     }
@@ -784,7 +771,8 @@ fn append_unique_traces(
     seen: &mut HashSet<String>,
     page: Vec<TraceSearchResult>,
 ) {
-    for trace in page {
+    for mut trace in page {
+        trace.0 = crate::tempo::normalize_trace_id(&trace.0);
         if seen.insert(trace.0.clone()) {
             traces.push(trace);
         }
@@ -874,24 +862,23 @@ impl ObservabilityProvider for TempoLokiProvider {
                             .map(String::from);
                     }
                     let u = extract_usage_attrs(&span.attributes);
-                    let (inp, out, model) = (u.input, u.output, u.model.clone());
-                    let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
                     if !u.is_empty() {
-                        trace_input += inp;
-                        trace_output += out;
-                        trace_cache_read += cache_read;
-                        trace_cache_creation += cache_creation;
+                        trace_input += u.input;
+                        trace_output += u.output;
+                        trace_cache_read += u.cache_read;
+                        trace_cache_creation += u.cache_creation;
                         if trace_model.is_none() {
-                            trace_model = model.clone();
+                            trace_model = u.model.clone();
                         }
                         trace_cost.add_assign(
-                            compute_cost_with_cache(
+                            compute_cost(
                                 self.pricing.as_ref(),
-                                model.as_deref(),
-                                inp,
-                                out,
-                                cache_read,
-                                cache_creation,
+                                CostRequest::from_usage(
+                                    span_provider(span),
+                                    u.model.as_deref(),
+                                    span.started_at,
+                                    &u,
+                                ),
                             )
                             .await,
                         );
@@ -997,6 +984,9 @@ impl ObservabilityProvider for TempoLokiProvider {
                 .collect();
         }
 
+        let mut unique = Vec::new();
+        append_unique_traces(&mut unique, &mut HashSet::new(), trace_results);
+        let mut trace_results = unique;
         if trace_results.len() > SESSION_TRACE_SAFETY_CAP {
             trace_results.truncate(SESSION_TRACE_SAFETY_CAP);
             has_more_traces = true;
@@ -1288,32 +1278,8 @@ impl ObservabilityProvider for TempoLokiProvider {
         self.loki.query_range(&query, start, end, limit).await
     }
 
-    async fn cost(
-        &self,
-        model: Option<&str>,
-        input_tokens: u64,
-        output_tokens: u64,
-    ) -> CostBreakdown {
-        compute_cost(self.pricing.as_ref(), model, input_tokens, output_tokens).await
-    }
-
-    async fn cost_with_cache(
-        &self,
-        model: Option<&str>,
-        input_tokens: u64,
-        output_tokens: u64,
-        cache_read_tokens: u64,
-        cache_creation_tokens: u64,
-    ) -> CostBreakdown {
-        compute_cost_with_cache(
-            self.pricing.as_ref(),
-            model,
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_creation_tokens,
-        )
-        .await
+    async fn cost(&self, request: CostRequest<'_>) -> CostBreakdown {
+        compute_cost(self.pricing.as_ref(), request).await
     }
 
     async fn extract_trace_usage(
@@ -1321,6 +1287,7 @@ impl ObservabilityProvider for TempoLokiProvider {
         trace_id: &str,
     ) -> Result<Vec<crate::types::TraceUsageRow>, ObservabilityError> {
         let trace = self.tempo.get_trace(trace_id).await?;
+        let trace_id = trace.trace_id.as_str();
 
         // Session ID from span attributes (shared across all agents in the trace).
         let session_id = trace.spans.iter().find_map(|s| {
@@ -1343,11 +1310,26 @@ impl ObservabilityProvider for TempoLokiProvider {
             cache_read: u64,
             cache_creation: u64,
             model: Option<String>,
+            /// Provider label off the span, so an agent's spend is costed
+            /// against the book of whoever actually served the call.
+            provider: Option<String>,
+            mixed_model: bool,
+            mixed_provider: bool,
+            cost: CostBreakdown,
             tool_calls: u32,
         }
 
         let mut by_agent: HashMap<String, AgentAcc> = HashMap::new();
+        // Deduplicated like every other aggregator here: Tempo can return a
+        // span more than once (a re-export, or a batch replayed), and this is
+        // the function that materializes `trace_usage`, so a duplicate would
+        // double-count tokens and cost on every FinOps figure while the
+        // session view — which does dedup — stayed right.
+        let mut seen: HashSet<&String> = HashSet::new();
         for span in &trace.spans {
+            if !seen.insert(&span.span_id) {
+                continue;
+            }
             let u = extract_usage_attrs(&span.attributes);
             let (inp, out, model) = (u.input, u.output, u.model.clone());
             let (cr, cc) = (u.cache_read, u.cache_creation);
@@ -1376,15 +1358,36 @@ impl ObservabilityProvider for TempoLokiProvider {
                 cache_read: 0,
                 cache_creation: 0,
                 model: None,
+                provider: span_provider(span).map(str::to_owned),
+                mixed_model: false,
+                mixed_provider: false,
+                cost: CostBreakdown::default(),
                 tool_calls: 0,
             });
             acc.input += inp;
             acc.output += out;
             acc.cache_read += cr;
             acc.cache_creation += cc;
-            if acc.model.is_none() {
-                acc.model = model;
+            if acc.model.is_none() && !acc.mixed_model {
+                acc.model = model.clone();
+            } else if acc.model != model {
+                acc.model = None;
+                acc.mixed_model = true;
             }
+            let provider = span_provider(span).map(str::to_owned);
+            if acc.provider != provider {
+                acc.provider = None;
+                acc.mixed_provider = true;
+            }
+            acc.cost.add_assign(
+                self.cost(CostRequest::from_usage(
+                    span_provider(span),
+                    u.model.as_deref(),
+                    span.started_at,
+                    &u,
+                ))
+                .await,
+            );
             if is_tool_call {
                 acc.tool_calls += 1;
             }
@@ -1392,26 +1395,23 @@ impl ObservabilityProvider for TempoLokiProvider {
 
         let mut rows = Vec::with_capacity(by_agent.len());
         for (agent_name, acc) in by_agent {
-            let cost = self
-                .cost_with_cache(
-                    acc.model.as_deref(),
-                    acc.input,
-                    acc.output,
-                    acc.cache_read,
-                    acc.cache_creation,
-                )
-                .await;
+            let cost = acc.cost;
             rows.push(crate::types::TraceUsageRow {
                 trace_id: trace_id.to_string(),
                 agent_name,
                 session_id: session_id.clone(),
                 model: acc.model,
-                provider: None, // populated by the materializer from model_pricing
+                provider: if acc.mixed_provider {
+                    None
+                } else {
+                    acc.provider
+                },
                 input_tokens: acc.input,
                 output_tokens: acc.output,
                 cache_read_tokens: acc.cache_read,
                 cache_creation_tokens: acc.cache_creation,
                 tool_call_count: acc.tool_calls,
+                cost_estimated: cost.estimated,
                 cost_usd: cost.total_usd,
                 prompt_cost_usd: cost.prompt_usd,
                 completion_cost_usd: cost.completion_usd,
@@ -1447,6 +1447,21 @@ impl ObservabilityProvider for TempoLokiProvider {
     }
 }
 
+/// The provider that served a span, as the GenAI semconv reports it.
+///
+/// `gen_ai.provider.name` is the current attribute; `gen_ai.system` is the older
+/// spelling that instrumentation in the wild still emits. Resolving it matters
+/// because providers resell the same model at their own rates — Bedrock charges
+/// $5/$25 for a Claude that costs $15/$75 direct — so pricing without it silently
+/// costs a call against whichever book happens to carry the model's name.
+pub fn span_provider(span: &Span) -> Option<&str> {
+    ["gen_ai.provider.name", "gen_ai.system"]
+        .iter()
+        .find_map(|key| span.attributes.get(*key))
+        .and_then(|v| v.as_str())
+        .filter(|label| !label.is_empty())
+}
+
 /// Root span: one whose parent is absent from the trace.
 pub fn find_root_span(spans: &[Span]) -> Option<&Span> {
     let ids: std::collections::HashSet<&str> = spans.iter().map(|s| s.span_id.as_str()).collect();
@@ -1460,12 +1475,15 @@ pub fn find_root_span(spans: &[Span]) -> Option<&Span> {
 
 #[cfg(test)]
 mod tests {
+    /// List prices only — hermetic, per the repo's unit-test rule.
+    fn test_engine() -> nasiko_pricing::PricingEngine {
+        nasiko_pricing::PricingEngine::offline()
+    }
+
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     use chrono::{Duration, TimeZone, Utc};
-
-    use crate::pricing::StaticPricing;
 
     use super::*;
 
@@ -1545,7 +1563,7 @@ mod tests {
         let provider = TempoLokiProvider::new(
             "http://tempo.invalid".into(),
             "http://loki.invalid".into(),
-            std::sync::Arc::new(StaticPricing),
+            std::sync::Arc::new(test_engine()),
         );
         let trace = TraceDetails {
             trace_id: "mixed".into(),
@@ -1576,7 +1594,7 @@ mod tests {
         let provider = TempoLokiProvider::new(
             "http://tempo.invalid".into(),
             "http://loki.invalid".into(),
-            std::sync::Arc::new(StaticPricing),
+            std::sync::Arc::new(test_engine()),
         );
         let mut root = trace_with_sessions(&[("root", None)]).spans.remove(0);
         root.name = "coding_agent.turn".into();
@@ -1777,7 +1795,7 @@ mod tests {
         TempoLokiProvider::new(
             base_url.to_string(),
             "http://127.0.0.1:1".to_string(), // unused by the paths under test
-            Arc::new(StaticPricing),
+            Arc::new(test_engine()),
         )
     }
 

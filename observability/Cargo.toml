@@ -24,6 +24,7 @@ sqlx = { workspace = true }
 rust_decimal = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 nasiko-runtime = { workspace = true }
+nasiko-pricing = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]

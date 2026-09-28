@@ -381,6 +381,7 @@ fn complete_turn(pending: &mut PendingTurn, payload: &HookPayload) -> Option<Tur
             output_tokens: pending.output_tokens.unwrap_or(0),
             cache_read_tokens: pending.cache_read_tokens.unwrap_or(0),
             cache_creation_tokens: pending.cache_write_tokens.unwrap_or(0),
+            accounting: None,
             started_at,
             ended_at,
         }],

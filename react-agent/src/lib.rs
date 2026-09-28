@@ -1,7 +1,9 @@
 // TODO: Extract an Orchestrator trait so OSS and cloud can have different implementations.
 // Cloud version can add: cost limits, team-scoped routing, fallback chains, advanced observability.
 mod a2a;
+mod completion;
 mod context;
+pub use completion::CallUsage;
 mod error;
 mod events;
 mod guard;

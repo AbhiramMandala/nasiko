@@ -148,6 +148,7 @@ fn canonical_event(
                     output_tokens: call.output_tokens,
                     cache_read_tokens: call.cache_read_tokens,
                     cache_creation_tokens: call.cache_creation_tokens,
+                    accounting: call.accounting.clone(),
                     started_at: call.started_at,
                     ended_at: call.ended_at,
                 })
@@ -291,6 +292,7 @@ mod tests {
                     output_tokens: 1,
                     cache_read_tokens: 0,
                     cache_creation_tokens: 0,
+                    accounting: None,
                     started_at: at,
                     ended_at: at,
                 })

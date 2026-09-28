@@ -504,11 +504,18 @@ async fn finish_step(
     // Agent-view and Workflow-view FinOps rows apples-to-apples, since agent-view cost is also
     // agent-spend-only.
     let step_cost = observability
-        .cost(
-            agent_usage.model.as_deref(),
-            agent_usage.input,
-            agent_usage.output,
-        )
+        .cost(nasiko_observability::CostRequest {
+            // The agent's own spans carry the provider; this aggregate does not,
+            // so the model name alone resolves the rate here.
+            provider: None,
+            model: agent_usage.model.as_deref(),
+            at: chrono::Utc::now(),
+            input_tokens: agent_usage.input,
+            output_tokens: agent_usage.output,
+            cache_read_tokens: agent_usage.cache_read,
+            cache_creation_tokens: agent_usage.cache_creation,
+            context: Default::default(),
+        })
         .await
         .total_usd;
     *total_cost += step_cost;
@@ -1519,7 +1526,7 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn cost(&self, _: Option<&str>, _: u64, _: u64) -> CostBreakdown {
+        async fn cost(&self, _: nasiko_observability::CostRequest<'_>) -> CostBreakdown {
             CostBreakdown::default()
         }
     }

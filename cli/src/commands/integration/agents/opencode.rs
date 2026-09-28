@@ -254,6 +254,7 @@ fn turns_from_messages(messages: &[Message]) -> Vec<Turn> {
                         .saturating_add(token(info.tokens.reasoning)),
                     cache_read_tokens: token(info.tokens.cache.read),
                     cache_creation_tokens: token(info.tokens.cache.write),
+                    accounting: None,
                     started_at,
                     ended_at,
                 });

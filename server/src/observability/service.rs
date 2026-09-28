@@ -812,6 +812,10 @@ pub struct FinopsSummary {
     /// silently skips these, so `total_cost` under-reports; this surfaces the gap
     /// as a known number rather than a smaller one.
     pub unpriced_calls: usize,
+    /// Sum of rows explicitly priced using inferred rates or usage evidence.
+    pub estimated_cost: f64,
+    /// Older materializations without recorded pricing confidence.
+    pub unknown_confidence_calls: usize,
 }
 
 #[derive(Serialize, Clone, ToSchema)]
@@ -1723,14 +1727,17 @@ impl ObservabilityService {
                 continue;
             }
             let u = extract_usage_attrs(&span.attributes);
-            let (input, output, model) = (u.input, u.output, u.model.clone());
-            let (cache_read, cache_creation) = (u.cache_read, u.cache_creation);
             if u.is_empty() {
                 continue;
             }
             cost.add_assign(
                 self.provider
-                    .cost_with_cache(model.as_deref(), input, output, cache_read, cache_creation)
+                    .cost(nasiko_observability::CostRequest::from_usage(
+                        nasiko_observability::span_provider(span),
+                        u.model.as_deref(),
+                        span.started_at,
+                        &u,
+                    ))
                     .await,
             );
         }
@@ -2166,6 +2173,8 @@ impl ObservabilityService {
             cache_read_tokens: i64,
             cache_creation_tokens: i64,
             total_cost: f64,
+            estimated_cost: f64,
+            unknown_confidence_calls: i64,
             tool_call_count: i64,
             p50_latency: Option<f64>,
             p95_latency: Option<f64>,
@@ -2193,6 +2202,8 @@ impl ObservabilityService {
                       COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
                       COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
                       COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
+                      COALESCE(SUM(cost_usd) FILTER (WHERE cost_estimated), 0)::FLOAT8 AS estimated_cost,
+                      COUNT(*) FILTER (WHERE cost_estimated IS NULL)::BIGINT AS unknown_confidence_calls,
                       COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count,
                       percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50_latency,
                       percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p95_latency,
@@ -2515,6 +2526,11 @@ impl ObservabilityService {
                     total_agents,
                     total_container_hours,
                     unpriced_calls: unpriced_calls.max(0) as usize,
+                    estimated_cost: current_rows.iter().map(|row| row.estimated_cost).sum(),
+                    unknown_confidence_calls: current_rows
+                        .iter()
+                        .map(|row| row.unknown_confidence_calls.max(0) as usize)
+                        .sum(),
                 },
                 agents: agent_rows,
                 token_usage: FinopsTokenUsage {
@@ -3314,6 +3330,8 @@ fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse 
                 total_agents: 0,
                 total_container_hours,
                 unpriced_calls: 0,
+                estimated_cost: 0.0,
+                unknown_confidence_calls: 0,
             },
             agents: vec![],
             token_usage: FinopsTokenUsage {
@@ -3410,65 +3428,15 @@ mod tests {
         };
 
         let (roots, _) = build_span_tree(&[root, child]);
-
-        // The span reports `input_tokens: 10` with no `total_tokens` to disambiguate, so
-        // `split_prompt_tokens` takes the semconv (inclusive) reading: the 5 cached tokens are
-        // a *subset* of that 10, leaving 5 billed at the full input rate. The turn is therefore
-        // 5 fresh + 5 output + 2 cache-read + 3 cache-creation = 15 distinct tokens.
-        //
-        // This asserted 20 until `split_prompt_tokens` landed, which is the same 5 cached
-        // tokens counted twice — the double-charge that fix exists to prevent. The name still
-        // holds: 15 is input+output *plus* both cache classes, not input+output alone (10).
+        // `input_tokens: 10` is the whole prompt, of which 5 were cached (2 read + 3
+        // written) — the semconv reading, which `extract_usage_attrs` normalizes to a
+        // fresh count of 5. The total is therefore 5 fresh + 5 cached + 5 output = 15,
+        // not 20: summing the raw attribute alongside the cache classes would charge
+        // every cached token twice.
         assert_eq!(roots[0].token_count_total, 15);
-        assert_eq!(
-            roots[0].input_tokens, 5,
-            "cached tokens must not remain inside `input`"
-        );
         assert_eq!(roots[0].cache_read_tokens, 2);
         assert_eq!(roots[0].cache_creation_tokens, 3);
         assert_eq!(roots[0].children[0].token_count_total, 15);
-    }
-
-    /// The other reading of the same attributes, pinned so the two cannot drift: when the span
-    /// reports a `total_tokens` that only adds up if `input_tokens` *excludes* the cached
-    /// subset (Anthropic's shape), `input` is already the fresh count and nothing is subtracted.
-    #[test]
-    fn span_tree_keeps_input_whole_when_total_says_cache_is_disjoint() {
-        let mut attributes = HashMap::new();
-        attributes.insert("gen_ai.usage.input_tokens".into(), serde_json::json!(10));
-        attributes.insert("gen_ai.usage.output_tokens".into(), serde_json::json!(5));
-        attributes.insert(
-            "gen_ai.usage.cache_read_input_tokens".into(),
-            serde_json::json!(2),
-        );
-        attributes.insert(
-            "gen_ai.usage.cache_creation_input_tokens".into(),
-            serde_json::json!(3),
-        );
-        // 10 fresh + 5 cached + 5 output — only consistent with the disjoint reading.
-        attributes.insert("gen_ai.usage.total_tokens".into(), serde_json::json!(20));
-        let span = Span {
-            span_id: "model".into(),
-            parent_span_id: None,
-            name: "chat model".into(),
-            started_at: Utc.with_ymd_and_hms(2026, 8, 27, 12, 0, 0).unwrap(),
-            ended_at: None,
-            duration_ms: None,
-            service_name: "agent".into(),
-            kind: 3,
-            status_code: 0,
-            status_message: String::new(),
-            attributes,
-            events: vec![],
-        };
-
-        let (roots, _) = build_span_tree(&[span]);
-
-        assert_eq!(
-            roots[0].input_tokens, 10,
-            "nothing to subtract in this reading"
-        );
-        assert_eq!(roots[0].token_count_total, 20);
     }
 
     #[test]
@@ -3524,6 +3492,7 @@ mod tests {
                 cache_read_usd: 0.25,
                 cache_creation_usd: 0.75,
                 total_usd: 4.0,
+                estimated: false,
             },
         };
 

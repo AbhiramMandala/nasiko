@@ -1,9 +1,16 @@
 //! Fire-and-forget usage logging to the `token_usage` table.
 //!
-//! Writes one row per LLM call; the DB cost trigger fills `cost_usd` from
-//! `model_pricing` (we leave it NULL). Failures are logged and swallowed — usage
-//! logging must never break or delay the response.
+//! Writes one row per LLM call, priced here in Rust through the platform's
+//! single cost engine. Failures are logged and swallowed — usage logging must
+//! never break or delay the response.
+//!
+//! Missing exact prices fall back through the shared engine. Pricing provenance
+//! records inferred rates so estimates are distinguishable from matched prices.
 
+use std::sync::Arc;
+
+use chrono::Utc;
+use nasiko_pricing::{PricingEngine, PromptConvention, RawUsage};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -38,25 +45,23 @@ pub struct UsageRecord {
     pub attribution_source: Option<AttributionSource>,
     /// Whether the platform's key paid for this call (vs. the owner's own secret).
     pub platform_paid: bool,
-    /// Pre-serialized `metadata.compress` block, or `None` when compression did not run.
-    ///
-    /// A `Value` rather than a typed struct so this module stays a pure DB concern and does not
-    /// depend on the compression module's types. `None` leaves the row's metadata byte-identical
-    /// to what it was before compression existed.
-    pub compress_metadata: Option<serde_json::Value>,
 }
 
 /// Spawn the usage write so it never blocks the response.
-pub fn spawn_log(db: PgPool, record: UsageRecord) {
+pub fn spawn_log(db: PgPool, pricing: Arc<PricingEngine>, record: UsageRecord) {
     tokio::spawn(async move {
-        if let Err(e) = log_usage(db, record).await {
+        if let Err(e) = log_usage(db, pricing.as_ref(), record).await {
             tracing::warn!(error = %e, "llm_usage write failed (swallowed)");
         }
     });
 }
 
-/// Insert one `token_usage` row. `cost_usd` is left NULL so the DB trigger computes it.
-pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
+/// Insert one priced `token_usage` row.
+pub async fn log_usage(
+    db: PgPool,
+    pricing: &PricingEngine,
+    record: UsageRecord,
+) -> Result<(), String> {
     // token_usage.user_id is NOT NULL + FK to users(id); without a valid owner we
     // cannot write a row, so skip (best-effort logging must never surface an error).
     let Ok(owner) = Uuid::parse_str(&record.owner_id) else {
@@ -64,6 +69,7 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
         return Ok(());
     };
     let agent = Uuid::parse_str(&record.agent_id).ok();
+    let cache_details = record.usage.as_ref().and_then(|u| u.cache_creation.clone());
     let (input, output, total, cache_read, cache_creation) = match record.usage {
         Some(mut u) => {
             // Lift OpenAI's nested prompt_tokens_details.cached_tokens into the
@@ -80,11 +86,45 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
         None => (None, None, None, None, None),
     };
 
-    let metadata = build_metadata(
-        record.platform_paid,
-        record.attribution_source,
-        record.compress_metadata,
-    );
+    // `normalize_openai_details` above has already made `prompt_tokens` disjoint
+    // from the cache counts (it subtracts for OpenAI's nested block; Anthropic
+    // reports them disjoint already, and the Gemini adapter subtracts at its own
+    // mapping site). So the prompt count reaching the engine is fresh, and
+    // declaring the convention here keeps that decision in one place rather than
+    // re-deriving the provider's semantics a second time.
+    let priced = pricing
+        .price_with_context(
+            Some(&record.provider),
+            &record.model,
+            RawUsage {
+                input: input.unwrap_or(0).max(0) as u64,
+                output: output.unwrap_or(0).max(0) as u64,
+                cache_read: cache_read.unwrap_or(0).max(0) as u64,
+                cache_creation: cache_creation.unwrap_or(0).max(0) as u64,
+                total: total.map(|t| t.max(0) as u64),
+            },
+            PromptConvention::Exclusive,
+            Utc::now(),
+            nasiko_pricing::PricingContext {
+                cache_creation_5m: cache_details
+                    .as_ref()
+                    .and_then(|c| c.ephemeral_5m_input_tokens)
+                    .and_then(|n| u64::try_from(n).ok()),
+                cache_creation_1h: cache_details
+                    .as_ref()
+                    .and_then(|c| c.ephemeral_1h_input_tokens)
+                    .and_then(|n| u64::try_from(n).ok()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let metadata = serde_json::json!({
+        "key_source": if record.platform_paid { "platform" } else { "user_secret" },
+        "attribution": record.attribution_source.map(|s| s.as_label()),
+        "pricing": priced.provenance(),
+        "cache_creation": cache_details,
+    });
 
     sqlx::query(
         r#"INSERT INTO token_usage
@@ -92,8 +132,9 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
                 input_tokens, output_tokens, total_tokens,
                 cache_read_input_tokens, cache_creation_input_tokens,
                 cached_tokens, reasoning_tokens,
-                latency_ms, streaming, finish_reason, session_id, metadata)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"#,
+                latency_ms, streaming, finish_reason, session_id, metadata,
+                cost_usd)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)"#,
     )
     .bind(owner)
     .bind(agent)
@@ -114,30 +155,11 @@ pub async fn log_usage(db: PgPool, record: UsageRecord) -> Result<(), String> {
     .bind(record.finish_reason)
     .bind(record.flow_id)
     .bind(metadata)
+    .bind(priced.cost.total_usd)
     .execute(&db)
     .await
     .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-/// The row's `metadata` JSONB.
-///
-/// Extracted so the shape is assertable without a database — `token_usage.metadata` is read back
-/// by `platform_paid_agent_usage` (`oss/server/src/router/usage_meta.rs`), so a change to
-/// `key_source` here silently breaks flow billing.
-fn build_metadata(
-    platform_paid: bool,
-    attribution_source: Option<AttributionSource>,
-    compress: Option<serde_json::Value>,
-) -> serde_json::Value {
-    let mut metadata = serde_json::json!({
-        "key_source": if platform_paid { "platform" } else { "user_secret" },
-        "attribution": attribution_source.map(|s| s.as_label()),
-    });
-    if let Some(compress) = compress {
-        metadata["compress"] = compress;
-    }
-    metadata
 }
 
 fn saturating_i32(value: i64) -> i32 {
@@ -146,37 +168,12 @@ fn saturating_i32(value: i64) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_metadata, saturating_i32};
+    use super::saturating_i32;
 
     #[test]
     fn usage_values_saturate_without_wrapping() {
         assert_eq!(saturating_i32(i64::MAX), i32::MAX);
         assert_eq!(saturating_i32(i64::MIN), i32::MIN);
         assert_eq!(saturating_i32(42), 42);
-    }
-
-    /// The zero-behaviour-change guard: with no compression, the row must be exactly what it was
-    /// before `compress_metadata` existed.
-    #[test]
-    fn metadata_without_compression_is_unchanged() {
-        assert_eq!(
-            build_metadata(true, None, None),
-            serde_json::json!({ "key_source": "platform", "attribution": null })
-        );
-        assert_eq!(
-            build_metadata(false, None, None),
-            serde_json::json!({ "key_source": "user_secret", "attribution": null })
-        );
-    }
-
-    #[test]
-    fn compression_stats_are_added_under_their_own_key() {
-        let stats = serde_json::json!({ "applied": true, "bytes_in": 100, "bytes_out": 40 });
-        let metadata = build_metadata(true, None, Some(stats.clone()));
-
-        assert_eq!(metadata["compress"], stats);
-        // The keys flow billing reads must survive alongside it.
-        assert_eq!(metadata["key_source"], "platform");
-        assert!(metadata.get("attribution").is_some());
     }
 }

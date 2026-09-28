@@ -205,6 +205,7 @@ impl ProviderClient for GeminiProvider {
                         total_tokens: um["totalTokenCount"].as_i64(),
                         cache_read_input_tokens: cached,
                         cache_creation_input_tokens: None,
+            cache_creation: None,
                         prompt_tokens_details: None,
                     });
                 }
@@ -514,6 +515,7 @@ fn from_gemini_response(body: &Value, model: &str) -> Result<ChatResponse, Provi
             total_tokens: u["totalTokenCount"].as_i64(),
             cache_read_input_tokens: cached,
             cache_creation_input_tokens: None,
+            cache_creation: None,
             prompt_tokens_details: None,
         }
     });
@@ -561,7 +563,6 @@ mod tests {
 
     fn resolved() -> ResolvedConfig {
         ResolvedConfig {
-            compress_enabled: false,
             provider: "gemini".into(),
             model: "gemini-1.5-pro".into(),
             litellm_model: "gemini/gemini-1.5-pro".into(),

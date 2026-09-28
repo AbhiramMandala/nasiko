@@ -208,6 +208,12 @@ pub struct SpanUsage {
     pub output: u64,
     pub cache_read: u64,
     pub cache_creation: u64,
+    pub cache_creation_5m: Option<u64>,
+    pub cache_creation_1h: Option<u64>,
+    pub speed: Option<String>,
+    pub service_tier: Option<String>,
+    pub inference_geo: Option<String>,
+    pub conflicting_observations: bool,
     pub model: Option<String>,
 }
 
@@ -227,7 +233,8 @@ impl SpanUsage {
 /// Prefer this over calling [`extract_token_attrs`] and [`extract_cache_token_attrs`]
 /// separately: costing charges `input` at the full rate and `cache_read` at the cache rate
 /// and sums them, so it needs an `input` that excludes the cached tokens. Instrumentations
-/// disagree about whether it already does — see [`split_prompt_tokens`].
+/// disagree about whether it already does. Known producers declare a prompt convention;
+/// legacy spans fall back to the shared engine's total-based inference.
 pub fn extract_usage_attrs(attrs: &HashMap<String, serde_json::Value>) -> SpanUsage {
     let (raw_input, output, model) = extract_token_attrs(attrs);
     let (cache_read, cache_creation) = extract_cache_token_attrs(attrs);
@@ -236,11 +243,49 @@ pub fn extract_usage_attrs(attrs: &HashMap<String, serde_json::Value>) -> SpanUs
         &["gen_ai.usage.total_tokens", "llm.usage.total_tokens"],
     );
 
+    use nasiko_pricing::{PromptConvention, RawUsage, normalize_usage};
+
+    let convention = match attrs
+        .get("nasiko.usage.prompt_convention")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("exclusive") => PromptConvention::Exclusive,
+        Some("inclusive") => PromptConvention::Inclusive,
+        _ => PromptConvention::Infer,
+    };
+    let usage = normalize_usage(
+        RawUsage {
+            input: raw_input,
+            output,
+            cache_read,
+            cache_creation,
+            total,
+        },
+        convention,
+    );
     SpanUsage {
-        input: split_prompt_tokens(raw_input, output, cache_read, cache_creation, total),
-        output,
-        cache_read,
-        cache_creation,
+        input: usage.input,
+        output: usage.output,
+        cache_read: usage.cache_read,
+        cache_creation: usage.cache_creation,
+        cache_creation_5m: read_u64(attrs, &["nasiko.usage.cache_creation_5m_tokens"]),
+        cache_creation_1h: read_u64(attrs, &["nasiko.usage.cache_creation_1h_tokens"]),
+        speed: attrs
+            .get("nasiko.usage.speed")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        service_tier: attrs
+            .get("nasiko.usage.service_tier")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        inference_geo: attrs
+            .get("nasiko.usage.inference_geo")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+        conflicting_observations: attrs
+            .get("nasiko.usage.conflicting_observations")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         model,
     }
 }
@@ -250,50 +295,6 @@ fn read_u64(attrs: &HashMap<String, serde_json::Value>, keys: &[&str]) -> Option
         v.as_u64()
             .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
     })
-}
-
-/// Return the prompt tokens billed at the **full** input rate, given a span's raw counts.
-///
-/// Instrumentations disagree about whether `gen_ai.usage.input_tokens` already contains the
-/// cached tokens:
-///
-/// * OpenAI, and the GenAI semconv, report the **total** prompt with the cached tokens as a
-///   subset of it (`input_tokens: 4732` of which `cache_read: 3968`).
-/// * Anthropic reports `input_tokens` **excluding** cache reads, as a disjoint count.
-///
-/// Costing computes `input × rate + cache_read × cache_rate` and sums them, so handing it an
-/// inclusive `input` charges every cached token twice. This picks the reading that cannot do
-/// that, and when the evidence is ambiguous it errs toward the inclusive reading — which
-/// under-charges at worst, where guessing the other way double-charges.
-fn split_prompt_tokens(
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_creation: u64,
-    total: Option<u64>,
-) -> u64 {
-    let cached = cache_read.saturating_add(cache_creation);
-    if cached == 0 {
-        return input;
-    }
-
-    // `total_tokens` settles it outright when the span reports one that adds up.
-    if let Some(total) = total {
-        if total == input.saturating_add(output) {
-            return input.saturating_sub(cached); // inclusive
-        }
-        if total == input.saturating_add(cached).saturating_add(output) {
-            return input; // exclusive — already the fresh count
-        }
-    }
-
-    // No usable total. `input` smaller than the cached subset cannot possibly contain it, so
-    // that reading is disjoint; otherwise take the semconv (inclusive) reading.
-    if input >= cached {
-        input - cached
-    } else {
-        input
-    }
 }
 
 impl TraceDetails {
@@ -306,7 +307,7 @@ impl TraceDetails {
     /// that sums the classes would count them twice.
     ///
     /// Cost is intentionally not computed here — resolve it through a
-    /// [`crate::pricing::PricingSource`] (see [`crate::pricing::compute_cost`]).
+    /// [`nasiko_pricing::PricingEngine`] (see [`crate::pricing::compute_cost`]).
     pub fn token_totals(&self) -> (u64, u64, Option<String>) {
         let mut seen = std::collections::HashSet::new();
         let mut input = 0u64;
@@ -476,6 +477,7 @@ pub struct TraceUsageRow {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub tool_call_count: u32,
+    pub cost_estimated: bool,
     pub cost_usd: f64,
     pub prompt_cost_usd: f64,
     pub completion_cost_usd: f64,

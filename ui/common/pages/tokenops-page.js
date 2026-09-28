@@ -44,10 +44,6 @@
  *       is no month-heatmap UI in this screen, and the table still sorts
  *       in-memory over the one dashboard payload rather than round-tripping a
  *       sort click — see the header note on `fetchFinopsAttributions`.
- *       Both are now in the generation scope even though this page skips them
- *       (surface/data-sources-overrides.json): their shapes were read off the
- *       Rust rather than off a consumer, so a generated surface can reach a
- *       month heatmap and a server-sorted table before this screen does.
  *
  *       Server has no dimension in the API at all and stays disabled — see
  *       `INERT_FILTERS`. Provider/Model/Org unit are real filters, confirmed
@@ -900,9 +896,13 @@ class TokenopsPage extends HTMLElement {
     const costPerOp = kpi('cost_per_operation', s.average_cost ?? 0);
     const latency = kpi('avg_latency_ms', undefined);
 
+    const confidence = [
+      s.estimated_cost > 0 ? `${fmtMoney(s.estimated_cost)} estimated` : '',
+      s.unknown_confidence_calls > 0 ? `${fmtCount(s.unknown_confidence_calls)} operations with unknown pricing confidence` : '',
+    ].filter(Boolean).join(' · ');
     const items = [
       { label: 'Total AI spend', value: fmtMoney(spend.current),
-        sub: `${fmtCount(s.total_operations)} operations`,
+        sub: confidence || `${fmtCount(s.total_operations)} operations`,
         ...deltaChip(spend.change_pct, 'down') },
       { label: 'Total tokens', value: fmtTokens(tokens.current),
         sub: 'Across all agents',

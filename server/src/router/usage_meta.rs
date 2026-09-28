@@ -15,18 +15,91 @@ use sqlx::PgPool;
 pub struct TurnUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cost_usd: f64,
     pub model: Option<String>,
-    /// True when any contributing turn reported a character-estimate
-    /// rather than exact provider counts (streamed turns under rig 0.11).
+    /// True when usage or any contributing price was estimated.
     pub estimated: bool,
 }
 
 impl TurnUsage {
-    pub fn add(&mut self, input_tokens: u64, output_tokens: u64, model: &str, estimated: bool) {
-        self.input_tokens += input_tokens;
-        self.output_tokens += output_tokens;
-        self.model.get_or_insert_with(|| model.to_string());
-        self.estimated |= estimated;
+    pub fn add(&mut self, call: &PricedTurn) {
+        self.input_tokens = self.input_tokens.saturating_add(call.usage.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(call.usage.output_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(call.usage.cache_read_tokens);
+        self.cache_creation_tokens = self
+            .cache_creation_tokens
+            .saturating_add(call.usage.cache_creation_tokens);
+        self.cost_usd += call.cost_usd;
+        self.model.get_or_insert_with(|| call.usage.model.clone());
+        self.estimated |= call.estimated;
+    }
+}
+
+/// A single priced call, shared by the live summary and delayed agent attribution.
+pub struct PricedTurn {
+    pub usage: nasiko_react_agent::CallUsage,
+    pub cost_usd: f64,
+    pub estimated: bool,
+    provenance: serde_json::Value,
+}
+
+impl PricedTurn {
+    pub async fn price(
+        engine: &nasiko_pricing::PricingEngine,
+        usage: nasiko_react_agent::CallUsage,
+    ) -> Self {
+        let priced = engine
+            .price(
+                usage.provider.as_deref(),
+                &usage.model,
+                nasiko_pricing::RawUsage {
+                    input: usage.input_tokens,
+                    output: usage.output_tokens,
+                    cache_read: usage.cache_read_tokens,
+                    cache_creation: usage.cache_creation_tokens,
+                    total: Some(usage.total_tokens),
+                },
+                nasiko_pricing::PromptConvention::Exclusive,
+                usage.started_at,
+            )
+            .await;
+        Self {
+            cost_usd: priced.cost.total_usd,
+            estimated: usage.estimated || priced.cost.estimated,
+            provenance: priced.provenance(),
+            usage,
+        }
+    }
+
+    pub async fn persist(
+        self,
+        tracker: &crate::usage::UsageTracker,
+        user_id: uuid::Uuid,
+        flow_id: &str,
+        agent_id: Option<uuid::Uuid>,
+    ) -> Result<uuid::Uuid, sqlx::Error> {
+        let count = |value: u64| value.min(i32::MAX as u64) as i32;
+        // Set the full total directly: the general-purpose builder also serves
+        // older callers whose input still includes cache and must not change here.
+        let mut row = crate::usage::TokenUsageBuilder::new(user_id, "orchestrator", self.usage.provider.as_deref().unwrap_or("unknown"), &self.usage.model)
+            .tokens(0, 0)
+            .cache_read_tokens(count(self.usage.cache_read_tokens))
+            .cache_creation_tokens(count(self.usage.cache_creation_tokens))
+            .cached_tokens(count(self.usage.cache_read_tokens))
+            .session_id(flow_id)
+            .streaming(self.usage.streaming)
+            .metadata(serde_json::json!({"key_source": "platform", "estimated": self.estimated,
+                "usage_estimated": self.usage.estimated, "started_at": self.usage.started_at, "pricing": self.provenance}))
+            .build();
+        row.input_tokens = count(self.usage.input_tokens);
+        row.output_tokens = count(self.usage.output_tokens);
+        row.total_tokens = count(self.usage.total_tokens);
+        row.agent_id = agent_id;
+        tracker.track_priced_tokens(row, self.cost_usd).await
     }
 }
 
@@ -86,33 +159,19 @@ impl UsageSummary {
 /// platform-paid `token_usage` rows agents wrote inside this flow.
 pub async fn summarize_flow_usage(
     db: &PgPool,
-    observability: &dyn ObservabilityProvider,
+    _observability: &dyn ObservabilityProvider,
     flow_id: &str,
     turns: &TurnUsage,
     duration_ms: i64,
 ) -> UsageSummary {
     let agents = platform_paid_agent_usage(db, flow_id).await;
 
-    let turn_cost = if turns.input_tokens + turns.output_tokens > 0 {
-        observability
-            .cost(
-                turns.model.as_deref(),
-                turns.input_tokens,
-                turns.output_tokens,
-            )
-            .await
-            .total_usd
-    } else {
-        0.0
-    };
-
     UsageSummary {
         input_tokens: turns.input_tokens + agents.input,
         output_tokens: turns.output_tokens + agents.output,
-        // Orchestrator turns report no cache split, so these are the agents' alone.
-        cache_read_tokens: agents.cache_read,
-        cache_creation_tokens: agents.cache_creation,
-        cost_usd: turn_cost + agents.cost,
+        cache_read_tokens: turns.cache_read_tokens + agents.cache_read,
+        cache_creation_tokens: turns.cache_creation_tokens + agents.cache_creation,
+        cost_usd: turns.cost_usd + agents.cost,
         model: turns.model.clone(),
         estimated: turns.estimated,
         duration_ms,
@@ -131,61 +190,35 @@ struct AgentUsage {
     cost: f64,
 }
 
-/// `token_usage` rows are written by a fire-and-forget spawned task
-/// (`nasiko_llm_router::usage::spawn_log`), deliberately so the LLM response
-/// back to the agent is never delayed by the DB write. For an agent whose
-/// whole turn is one direct LLM call with no further work (e.g. a minimal
-/// third-party-style agent with no tool loop or self-review), that insert
-/// can still be in flight when this query runs right after the turn
-/// completes — a genuinely platform-paid turn then reads back as zero and
-/// the client renders a duration-only summary. A short bounded retry costs
-/// nothing for the common case: an agent with any tool loop or extra work
-/// naturally gives the write enough time to land before its turn ends, so
-/// the first attempt already finds the row and every retry here is skipped.
-const ZERO_USAGE_RETRY_DELAYS_MS: [u64; 2] = [40, 100];
-
 async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> AgentUsage {
-    for (attempt, delay_ms) in std::iter::once(0)
-        .chain(ZERO_USAGE_RETRY_DELAYS_MS)
-        .enumerate()
-    {
-        if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-        }
+    let sums: Result<(i64, i64, i64, i64, f64), sqlx::Error> = sqlx::query_as(
+        r#"SELECT COALESCE(SUM(input_tokens), 0)::BIGINT,
+                  COALESCE(SUM(output_tokens), 0)::BIGINT,
+                  COALESCE(SUM(cache_read_input_tokens), 0)::BIGINT,
+                  COALESCE(SUM(cache_creation_input_tokens), 0)::BIGINT,
+                  COALESCE(SUM(cost_usd), 0)::FLOAT8
+           FROM token_usage
+           WHERE session_id = $1
+             AND operation_type = 'direct_llm'
+             AND metadata->>'key_source' = 'platform'"#,
+    )
+    .bind(flow_id)
+    .fetch_one(db)
+    .await;
 
-        let sums: Result<(i64, i64, i64, i64, f64), sqlx::Error> = sqlx::query_as(
-            r#"SELECT COALESCE(SUM(input_tokens), 0)::BIGINT,
-                      COALESCE(SUM(output_tokens), 0)::BIGINT,
-                      COALESCE(SUM(cache_read_input_tokens), 0)::BIGINT,
-                      COALESCE(SUM(cache_creation_input_tokens), 0)::BIGINT,
-                      COALESCE(SUM(cost_usd), 0)::FLOAT8
-               FROM token_usage
-               WHERE session_id = $1
-                 AND operation_type = 'direct_llm'
-                 AND metadata->>'key_source' = 'platform'"#,
-        )
-        .bind(flow_id)
-        .fetch_one(db)
-        .await;
-
-        match sums {
-            Ok((input, output, cache_read, cache_creation, cost)) if input > 0 || output > 0 => {
-                return AgentUsage {
-                    input: input.max(0) as u64,
-                    output: output.max(0) as u64,
-                    cache_read: cache_read.max(0) as u64,
-                    cache_creation: cache_creation.max(0) as u64,
-                    cost,
-                };
-            }
-            Ok(_) => continue,
-            Err(e) => {
-                tracing::warn!(error = %e, %flow_id, "flow usage aggregation failed; usage_meta omits agent rows");
-                return AgentUsage::default();
-            }
+    match sums {
+        Ok((input, output, cache_read, cache_creation, cost)) => AgentUsage {
+            input: input.max(0) as u64,
+            output: output.max(0) as u64,
+            cache_read: cache_read.max(0) as u64,
+            cache_creation: cache_creation.max(0) as u64,
+            cost,
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, %flow_id, "flow usage aggregation failed; usage_meta omits agent rows");
+            AgentUsage::default()
         }
     }
-    AgentUsage::default()
 }
 
 /// Persist the assistant reply with its usage columns so chips and the trace
@@ -223,20 +256,11 @@ pub async fn insert_assistant_message(
     } else {
         (None, None)
     };
-    // The tag `SessionHistory::fetch` filters on. Writing it is the whole point of taking
-    // `is_refusal`: without it the filter matches nothing, a refusal re-enters the next turn's
-    // context as prior assistant output, and the session teaches itself to keep refusing —
-    // the live failure that filter exists to prevent. NULL when not a refusal, so a normal
-    // row's metadata stays exactly what it was.
-    let metadata = is_refusal.then(
-        || serde_json::json!({ nasiko_orchestrator::session_history::REFUSAL_METADATA_KEY: true }),
-    );
-
     let result = sqlx::query(
         r#"INSERT INTO chat_messages
                (session_id, role, content, input_tokens, output_tokens, model,
-                duration_ms, cost_usd, usage_estimated, trace_id,
-                cache_read_tokens, cache_creation_tokens, metadata)
+                duration_ms, cost_usd, usage_estimated, trace_id, metadata,
+                cache_read_tokens, cache_creation_tokens)
            VALUES ($1, 'assistant', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"#,
     )
     .bind(session_id)
@@ -248,9 +272,19 @@ pub async fn insert_assistant_message(
     .bind(cost)
     .bind(estimated)
     .bind(trace_id)
+    // Built from the reader's own constant rather than spelled again here: the
+    // filter that consumes this tag lives in another crate, and a mismatch
+    // between the two spellings fails silently.
+    .bind(is_refusal.then(|| {
+        let mut m = serde_json::Map::new();
+        m.insert(
+            nasiko_orchestrator::session_history::REFUSAL_METADATA_KEY.to_string(),
+            serde_json::Value::Bool(true),
+        );
+        serde_json::Value::Object(m)
+    }))
     .bind(cache_read)
     .bind(cache_creation)
-    .bind(metadata)
     .execute(db)
     .await;
     if let Err(e) = result {
@@ -261,34 +295,6 @@ pub async fn insert_assistant_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The writer and the reader have to agree on one key across a crate boundary: this module
-    /// writes the tag, `SessionHistory`'s SQL filters on it. They were silently disconnected —
-    /// `is_refusal` was accepted and dropped, so nothing was ever tagged and the filter matched
-    /// nothing. Pin the contract from this side; `the_filter_reads_the_key_the_writer_writes`
-    /// pins it from the other.
-    #[test]
-    fn the_refusal_tag_this_module_writes_is_the_key_the_history_filter_reads() {
-        let tagged = serde_json::json!({
-            nasiko_orchestrator::session_history::REFUSAL_METADATA_KEY: true
-        });
-
-        assert_eq!(
-            tagged
-                .get("orchestrator_refusal")
-                .and_then(serde_json::Value::as_bool),
-            Some(true),
-            "the metadata this module writes must be readable by `metadata->>'orchestrator_refusal'`"
-        );
-    }
-
-    /// A normal turn must not gain a metadata object it never had, or every non-refusal row's
-    /// shape changes for no reason.
-    #[test]
-    fn a_non_refusal_writes_no_metadata_at_all() {
-        let metadata: Option<serde_json::Value> = false.then(|| serde_json::json!({}));
-        assert!(metadata.is_none());
-    }
 
     fn summary(input: u64, cache_read: u64, cache_creation: u64, output: u64) -> UsageSummary {
         UsageSummary {

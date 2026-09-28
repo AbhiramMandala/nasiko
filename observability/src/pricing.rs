@@ -1,151 +1,79 @@
-//! Model pricing.
+//! Cost reporting for the observability read path.
 //!
-//! The single source of truth for pricing is the `model_pricing` DB table
-//! (seeded at server boot from [`SEED_PRICING`], kept fresh by the LLM
-//! router's pricing-sync loop). The server injects a DB-backed
-//! [`PricingSource`] into [`crate::provider::TempoLokiProvider`]; the
-//! [`StaticPricing`] table below is the fallback for models missing from the
-//! DB, and the only hardcoded price list in the codebase.
+//! The arithmetic lives in `nasiko-pricing`, which the LLM gateway prices
+//! through as well — this module only adapts it to the shape the observability
+//! API already publishes, and owns the boot-time seeding of `model_pricing`.
+//!
+//! It used to carry a second cost engine of its own: a `PricingSource` trait, a
+//! hardcoded list-price table, and a `DbPricing` that looked rows up by exact
+//! model name at `now()`. That engine short-circuited on a database row with
+//! NULL cache columns instead of inheriting the missing rates, so cache reads on
+//! a partially-priced model billed at the full input rate; it had no notion of a
+//! model family, so a point release like `claude-opus-4-6` matched nothing; and
+//! it ignored the provider entirely, so a Bedrock-served model was costed
+//! against whichever other book happened to carry the same name. All three are
+//! fixed by having one implementation rather than two.
 
-use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use nasiko_pricing::{PricingEngine, PromptConvention, RawUsage};
 
-/// USD prices per **million** tokens: `(input_per_1m, output_per_1m)`.
-pub type PricePer1M = (f64, f64);
-
-/// Optional cache-write/cache-read USD prices per million tokens.
-pub type CachePricePer1M = (Option<f64>, Option<f64>);
-
-/// Unknown-model fallback: GPT-4o list price, so estimates are conservative
-/// rather than zero.
-pub const DEFAULT_PRICE_PER_1M: PricePer1M = (2.50, 10.00);
-
-/// Resolves `(input, output)` USD prices per million tokens for a model.
+/// One call to be costed: who served it, what it was, when it ran, and the four
+/// token classes.
 ///
-/// OSS server impl: `DbPricing` (queries the `model_pricing` table, falls back
-/// to [`StaticPricing`]). Return `None` when the model is unknown — callers
-/// fall back to [`DEFAULT_PRICE_PER_1M`] and log a warning.
-#[async_trait]
-pub trait PricingSource: Send + Sync {
-    async fn price_per_1m(&self, model: &str) -> Option<PricePer1M>;
+/// Carried as a struct rather than seven positional arguments because the
+/// provider and the timestamp were the two the old signature omitted, and their
+/// absence is what made Bedrock traffic and re-priced history wrong.
+#[derive(Debug, Clone, Copy)]
+pub struct CostRequest<'a> {
+    /// Provider label as the span reported it, used to prefer that provider's
+    /// own price row. `None` falls back to matching on the model name alone.
+    pub provider: Option<&'a str>,
+    pub model: Option<&'a str>,
+    /// When the call ran. `model_pricing` carries real price history, so an old
+    /// trace must be costed at the rates that were in effect then.
+    pub at: DateTime<Utc>,
+    /// Fresh prompt tokens — cache-exclusive, as `extract_usage_attrs` returns.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub context: nasiko_pricing::PricingContext<'a>,
+}
 
-    /// Resolves optional `(cache_creation, cache_read)` prices. Missing rates
-    /// are conservatively priced as direct input by [`compute_cost_with_cache`].
-    async fn cache_price_per_1m(&self, _model: &str) -> CachePricePer1M {
-        (None, None)
+impl<'a> CostRequest<'a> {
+    /// A request for one span's already-normalized usage.
+    pub fn from_usage(
+        provider: Option<&'a str>,
+        model: Option<&'a str>,
+        at: DateTime<Utc>,
+        usage: &'a crate::types::SpanUsage,
+    ) -> Self {
+        Self {
+            provider,
+            model,
+            at,
+            input_tokens: usage.input,
+            output_tokens: usage.output,
+            cache_read_tokens: usage.cache_read,
+            cache_creation_tokens: usage.cache_creation,
+            context: nasiko_pricing::PricingContext {
+                cache_creation_5m: usage.cache_creation_5m,
+                cache_creation_1h: usage.cache_creation_1h,
+                speed: usage.speed.as_deref(),
+                service_tier: usage.service_tier.as_deref(),
+                inference_geo: usage.inference_geo.as_deref(),
+                conflicting_observations: usage.conflicting_observations,
+            },
+        }
     }
 }
 
-/// Hardcoded fallback price list (published list prices as of 2025-07),
-/// matched by normalized substring so date-stamped variants
-/// (e.g. `gpt-4o-2024-11-20`) resolve to their base model.
-pub struct StaticPricing;
-
-#[async_trait]
-impl PricingSource for StaticPricing {
-    async fn price_per_1m(&self, model: &str) -> Option<PricePer1M> {
-        static_price_per_1m(model)
-    }
-
-    async fn cache_price_per_1m(&self, model: &str) -> CachePricePer1M {
-        static_cache_price_per_1m(model)
-    }
-}
-
-/// Cache-write/cache-read static rates where known.
-pub fn static_cache_price_per_1m(model: &str) -> CachePricePer1M {
-    let m = model.to_lowercase();
-    const TABLE: &[(&str, f64, f64)] = &[
-        ("openai.gpt-5.6-sol", 5.50, 0.44),
-        ("claude-opus-5", 18.75, 1.50),
-        ("claude-sonnet-5", 3.75, 0.30),
-        ("claude-opus-4", 18.75, 1.50),
-        ("claude-4-opus", 18.75, 1.50),
-        ("claude-sonnet-4", 3.75, 0.30),
-        ("claude-4-sonnet", 3.75, 0.30),
-        ("claude-3-5-sonnet", 3.75, 0.30),
-        ("claude-3.5-sonnet", 3.75, 0.30),
-        ("claude-3-5-haiku", 1.00, 0.08),
-        ("claude-3.5-haiku", 1.00, 0.08),
-        ("claude-haiku-4", 1.00, 0.08),
-        ("deepseek-chat", 0.014, 0.014),
-    ];
-
-    TABLE
-        .iter()
-        .find(|(name, _, _)| m.contains(name))
-        .map(|(_, creation, read)| (Some(*creation), Some(*read)))
-        .unwrap_or((None, None))
-}
-
-/// Substring-matched static price lookup, USD per million tokens.
-pub fn static_price_per_1m(model: &str) -> Option<PricePer1M> {
-    let m = model.to_lowercase();
-
-    // Order matters: more specific names first.
-    const TABLE: &[(&str, PricePer1M)] = &[
-        // OpenAI
-        ("openai.gpt-5.6-sol", (4.40, 22.00)),
-        ("gpt-4.1-nano", (0.10, 0.40)),
-        ("gpt-4.1-mini", (0.40, 1.60)),
-        ("gpt-4.1", (2.00, 8.00)),
-        ("gpt-4o-mini", (0.15, 0.60)),
-        ("gpt-4o", (2.50, 10.00)),
-        ("gpt-4-turbo", (10.00, 30.00)),
-        ("gpt-4-1106", (10.00, 30.00)),
-        ("gpt-4-0125", (10.00, 30.00)),
-        ("gpt-4", (30.00, 60.00)),
-        ("gpt-3.5", (0.50, 1.50)),
-        ("o3-mini", (1.10, 4.40)),
-        ("o3", (10.00, 40.00)),
-        ("o1-mini", (3.00, 12.00)),
-        ("o1", (15.00, 60.00)),
-        // Anthropic. Claude 5 rates are carried forward from the equivalent
-        // Claude 4 tier and are unverified — see
-        // oss/migrations/0006_seed_model_pricing.sql. They must stay above
-        // the generic "claude" entry, which would otherwise price Opus as
-        // Sonnet.
-        ("claude-opus-5", (15.00, 75.00)),
-        ("claude-sonnet-5", (3.00, 15.00)),
-        ("claude-opus-4", (15.00, 75.00)),
-        ("claude-4-opus", (15.00, 75.00)),
-        ("claude-sonnet-4", (3.00, 15.00)),
-        ("claude-4-sonnet", (3.00, 15.00)),
-        ("claude-3-5-sonnet", (3.00, 15.00)),
-        ("claude-3.5-sonnet", (3.00, 15.00)),
-        ("claude-3-5-haiku", (0.80, 4.00)),
-        ("claude-3.5-haiku", (0.80, 4.00)),
-        ("claude-haiku-4", (0.80, 4.00)),
-        ("claude-3-opus", (15.00, 75.00)),
-        ("claude-3-sonnet", (3.00, 15.00)),
-        ("claude-3-haiku", (0.25, 1.25)),
-        ("claude", (3.00, 15.00)),
-        // Google
-        ("gemini-2.5-pro", (1.25, 10.00)),
-        ("gemini-2.5-flash", (0.15, 0.60)),
-        ("gemini-2.0", (0.10, 0.40)),
-        ("gemini-1.5-pro", (1.25, 5.00)),
-        ("gemini-1.5-flash", (0.075, 0.30)),
-        ("gemini", (0.50, 1.50)),
-        // DeepSeek
-        ("deepseek-v4-flash", (0.14, 0.28)),
-        ("deepseek-chat", (0.14, 0.28)),
-        ("deepseek-reasoner", (0.55, 2.19)),
-        ("deepseek", (0.14, 0.28)),
-        // Meta / open-weight hosted
-        ("llama-3.3-70b", (0.59, 0.79)),
-        ("llama3.3-70b", (0.59, 0.79)),
-        ("llama", (0.20, 0.20)),
-        ("mistral", (0.20, 0.20)),
-        ("mixtral", (0.20, 0.20)),
-    ];
-
-    TABLE
-        .iter()
-        .find(|(name, _)| m.contains(name))
-        .map(|(_, price)| *price)
-}
-
-/// USD cost breakdown for a token count at a given price.
+/// USD cost broken down by token class.
+///
+/// Field names are `prompt`/`completion` rather than `input`/`output` because
+/// they are published that way by `/api/observability/*` (`cost_summary.prompt.cost`)
+/// and the UI reads those keys. The rename is a wire-format change, not a
+/// pricing one, so it is kept out of this seam.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CostBreakdown {
     pub prompt_usd: f64,
@@ -153,6 +81,10 @@ pub struct CostBreakdown {
     pub cache_read_usd: f64,
     pub cache_creation_usd: f64,
     pub total_usd: f64,
+    /// True when any contributing rate was inferred rather than looked up, so a
+    /// dashboard can report the estimated share instead of presenting a guess
+    /// as a measurement.
+    pub estimated: bool,
 }
 
 impl CostBreakdown {
@@ -164,59 +96,45 @@ impl CostBreakdown {
         self.total_usd = round6(
             self.prompt_usd + self.completion_usd + self.cache_read_usd + self.cache_creation_usd,
         );
+        self.estimated |= other.estimated;
     }
 }
 
-/// Compute a cost breakdown, resolving the price via `pricing` and falling
-/// back to [`DEFAULT_PRICE_PER_1M`] (with a warning) for unknown models.
-pub async fn compute_cost(
-    pricing: &dyn PricingSource,
-    model: Option<&str>,
-    input_tokens: u64,
-    output_tokens: u64,
-) -> CostBreakdown {
-    compute_cost_with_cache(pricing, model, input_tokens, output_tokens, 0, 0).await
-}
-
-/// Compute direct input/output plus cache-read/cache-creation cost.
-pub async fn compute_cost_with_cache(
-    pricing: &dyn PricingSource,
-    model: Option<&str>,
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_read_tokens: u64,
-    cache_creation_tokens: u64,
-) -> CostBreakdown {
-    let model = model.unwrap_or("");
-    let (in_p, out_p) = match pricing.price_per_1m(model).await {
-        Some(p) => p,
-        None => {
-            if input_tokens > 0
-                || output_tokens > 0
-                || cache_read_tokens > 0
-                || cache_creation_tokens > 0
-            {
-                tracing::warn!(
-                    model,
-                    "no pricing found for model — using default fallback price"
-                );
-            }
-            DEFAULT_PRICE_PER_1M
+impl From<nasiko_pricing::CostBreakdown> for CostBreakdown {
+    fn from(cost: nasiko_pricing::CostBreakdown) -> Self {
+        Self {
+            prompt_usd: cost.input_usd,
+            completion_usd: cost.output_usd,
+            cache_read_usd: cost.cache_read_usd,
+            cache_creation_usd: cost.cache_creation_usd,
+            total_usd: cost.total_usd,
+            estimated: cost.estimated,
         }
-    };
-    let (cache_creation_p, cache_read_p) = pricing.cache_price_per_1m(model).await;
-    let prompt = round6(input_tokens as f64 / 1_000_000.0 * in_p);
-    let completion = round6(output_tokens as f64 / 1_000_000.0 * out_p);
-    let cache_read = round6(cache_read_tokens as f64 / 1_000_000.0 * cache_read_p.unwrap_or(in_p));
-    let cache_creation =
-        round6(cache_creation_tokens as f64 / 1_000_000.0 * cache_creation_p.unwrap_or(in_p));
-    CostBreakdown {
-        prompt_usd: prompt,
-        completion_usd: completion,
-        cache_read_usd: cache_read,
-        cache_creation_usd: cache_creation,
-        total_usd: round6(prompt + completion + cache_read + cache_creation),
     }
+}
+
+/// Cost one call through the platform's single pricing engine.
+pub async fn compute_cost(engine: &PricingEngine, request: CostRequest<'_>) -> CostBreakdown {
+    engine
+        .price_with_context(
+            request.provider,
+            request.model.unwrap_or_default(),
+            RawUsage {
+                input: request.input_tokens,
+                output: request.output_tokens,
+                cache_read: request.cache_read_tokens,
+                cache_creation: request.cache_creation_tokens,
+                total: None,
+            },
+            // Span usage reaches us already split by `extract_usage_attrs`,
+            // which resolves the provider's prompt convention up front.
+            PromptConvention::Exclusive,
+            request.at,
+            request.context,
+        )
+        .await
+        .cost
+        .into()
 }
 
 pub(crate) fn round6(v: f64) -> f64 {
@@ -323,7 +241,7 @@ pub const SEED_PRICING: &[SeedPrice] = &[
 /// `(provider, model)` pair has NO currently-active pricing row, so
 /// operator-set prices and pricing-sync history always win and re-boots are
 /// idempotent. Best-effort — a failure is logged, not fatal (cost falls back
-/// to NULL / [`StaticPricing`]).
+/// to the shared engine's static book and inferred rates).
 pub async fn seed_model_pricing(db: &sqlx::PgPool) {
     let mut inserted = 0u32;
     for row in SEED_PRICING {
@@ -361,75 +279,68 @@ pub async fn seed_model_pricing(db: &sqlx::PgPool) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn static_lookup_matches_substring() {
-        assert_eq!(
-            static_price_per_1m("gpt-4o-2024-11-20"),
-            Some((2.50, 10.00))
-        );
-        assert_eq!(static_price_per_1m("GPT-4o-mini"), Some((0.15, 0.60)));
-        assert_eq!(static_price_per_1m("deepseek-v4-flash"), Some((0.14, 0.28)));
-        assert_eq!(static_price_per_1m("totally-unknown"), None);
+    fn priced(input: f64, output: f64, read: f64, creation: f64) -> nasiko_pricing::CostBreakdown {
+        nasiko_pricing::CostBreakdown {
+            input_usd: input,
+            output_usd: output,
+            cache_read_usd: read,
+            cache_creation_usd: creation,
+            total_usd: input + output + read + creation,
+            estimated: false,
+        }
     }
 
     #[test]
-    fn specific_names_win_over_prefixes() {
-        // gpt-4.1-nano must not match the bare gpt-4.1 entry
-        assert_eq!(static_price_per_1m("gpt-4.1-nano"), Some((0.10, 0.40)));
-        assert_eq!(
-            static_price_per_1m("claude-3-5-haiku-20241022"),
-            Some((0.80, 4.00))
-        );
+    fn the_engines_classes_map_onto_the_published_field_names() {
+        // `prompt`/`completion` is the wire spelling the UI reads; the engine
+        // speaks `input`/`output`. This mapping is the only place the two meet.
+        let cost: CostBreakdown = priced(1.0, 2.0, 0.5, 0.25).into();
+        assert_eq!(cost.prompt_usd, 1.0);
+        assert_eq!(cost.completion_usd, 2.0);
+        assert_eq!(cost.cache_read_usd, 0.5);
+        assert_eq!(cost.cache_creation_usd, 0.25);
+        assert_eq!(cost.total_usd, 3.75);
     }
 
     #[test]
-    fn gpt_5_6_sol_uses_bedrock_cache_rates() {
-        assert_eq!(static_price_per_1m("openai.gpt-5.6-sol"), Some((4.4, 22.0)));
-        assert_eq!(
-            static_cache_price_per_1m("openai.gpt-5.6-sol"),
-            (Some(5.5), Some(0.44))
-        );
+    fn accumulating_keeps_the_total_equal_to_its_parts() {
+        let mut total = CostBreakdown::default();
+        for _ in 0..3 {
+            total.add_assign(priced(1.0, 2.0, 0.5, 0.25).into());
+        }
+        let parts = total.prompt_usd
+            + total.completion_usd
+            + total.cache_read_usd
+            + total.cache_creation_usd;
+        assert!((total.total_usd - parts).abs() < 1e-9);
     }
 
-    #[tokio::test]
-    async fn compute_cost_known_model() {
-        let cost = compute_cost(&StaticPricing, Some("gpt-4o"), 1_000_000, 1_000_000).await;
-        assert_eq!(cost.prompt_usd, 2.50);
-        assert_eq!(cost.completion_usd, 10.00);
-        assert_eq!(cost.total_usd, 12.50);
+    #[test]
+    fn one_estimated_call_makes_the_running_total_an_estimate() {
+        let mut total: CostBreakdown = priced(1.0, 1.0, 0.0, 0.0).into();
+        assert!(!total.estimated);
+        let mut estimate = priced(1.0, 1.0, 0.0, 0.0);
+        estimate.estimated = true;
+        total.add_assign(estimate.into());
+        assert!(total.estimated);
     }
 
-    #[tokio::test]
-    async fn compute_cost_unknown_model_uses_default() {
-        let cost = compute_cost(&StaticPricing, None, 1_000_000, 0).await;
-        assert_eq!(cost.prompt_usd, DEFAULT_PRICE_PER_1M.0);
-    }
-
-    #[tokio::test]
-    async fn compute_cost_prices_all_four_token_classes() {
-        let cost = compute_cost_with_cache(
-            &StaticPricing,
-            Some("claude-sonnet-4"),
-            1_000_000,
-            1_000_000,
-            1_000_000,
-            1_000_000,
-        )
-        .await;
-        assert_eq!(cost.prompt_usd, 3.0);
-        assert_eq!(cost.completion_usd, 15.0);
-        assert_eq!(cost.cache_read_usd, 0.3);
-        assert_eq!(cost.cache_creation_usd, 3.75);
-        assert_eq!(cost.total_usd, 22.05);
-    }
-
-    #[tokio::test]
-    async fn missing_cache_rates_fall_back_to_input_rate() {
-        let cost =
-            compute_cost_with_cache(&StaticPricing, Some("gpt-4o"), 0, 0, 1_000_000, 1_000_000)
-                .await;
-        assert_eq!(cost.cache_read_usd, 2.5);
-        assert_eq!(cost.cache_creation_usd, 2.5);
-        assert_eq!(cost.total_usd, 5.0);
+    #[test]
+    fn a_span_usage_becomes_a_request_without_reinterpreting_its_classes() {
+        let usage = crate::types::SpanUsage {
+            input: 10,
+            output: 20,
+            cache_read: 30,
+            cache_creation: 40,
+            model: Some("gpt-4o".into()),
+            ..Default::default()
+        };
+        let at = Utc::now();
+        let request = CostRequest::from_usage(Some("openai"), Some("gpt-4o"), at, &usage);
+        assert_eq!(request.input_tokens, 10);
+        assert_eq!(request.output_tokens, 20);
+        assert_eq!(request.cache_read_tokens, 30);
+        assert_eq!(request.cache_creation_tokens, 40);
+        assert_eq!(request.provider, Some("openai"));
     }
 }
