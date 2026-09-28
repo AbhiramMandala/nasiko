@@ -45,6 +45,12 @@ pub struct UsageRecord {
     pub attribution_source: Option<AttributionSource>,
     /// Whether the platform's key paid for this call (vs. the owner's own secret).
     pub platform_paid: bool,
+    /// Pre-serialized `metadata.compress` block, or `None` when compression did not run.
+    ///
+    /// A `Value` rather than a typed struct so this module stays a pure DB concern and does not
+    /// depend on the compression module's types. `None` leaves the row's metadata byte-identical
+    /// to what it was before compression existed.
+    pub compress_metadata: Option<serde_json::Value>,
 }
 
 /// Spawn the usage write so it never blocks the response.
@@ -119,11 +125,12 @@ pub async fn log_usage(
         )
         .await;
 
-    let metadata = serde_json::json!({
-        "key_source": if record.platform_paid { "platform" } else { "user_secret" },
-        "attribution": record.attribution_source.map(|s| s.as_label()),
-        "pricing": priced.provenance(),
-        "cache_creation": cache_details,
+    let metadata = build_metadata(MetadataInputs {
+        platform_paid: record.platform_paid,
+        attribution_source: record.attribution_source,
+        pricing: priced.provenance(),
+        cache_creation: serde_json::to_value(&cache_details).unwrap_or(serde_json::Value::Null),
+        compress: record.compress_metadata,
     });
 
     sqlx::query(
@@ -162,18 +169,93 @@ pub async fn log_usage(
     Ok(())
 }
 
+/// What the row's `metadata` JSONB records about one call.
+///
+/// A struct rather than five parameters, and pre-serialized `Value`s rather than the pricing and
+/// compression types, so this module stays a pure DB concern.
+struct MetadataInputs {
+    platform_paid: bool,
+    attribution_source: Option<AttributionSource>,
+    /// Which rates priced the call, and whether each was matched or inferred.
+    pricing: serde_json::Value,
+    /// The provider's reported cache-creation split, or `Value::Null` when it reported none.
+    cache_creation: serde_json::Value,
+    /// `None` when compression did not run.
+    compress: Option<serde_json::Value>,
+}
+
+/// The row's `metadata` JSONB.
+///
+/// Extracted so the shape is assertable without a database — `token_usage.metadata` is read back
+/// by `platform_paid_agent_usage` (`oss/server/src/router/usage_meta.rs`), so a change to
+/// `key_source` here silently breaks flow billing.
+fn build_metadata(inputs: MetadataInputs) -> serde_json::Value {
+    let mut metadata = serde_json::json!({
+        "key_source": if inputs.platform_paid { "platform" } else { "user_secret" },
+        "attribution": inputs.attribution_source.map(|s| s.as_label()),
+        "pricing": inputs.pricing,
+        "cache_creation": inputs.cache_creation,
+    });
+    if let Some(compress) = inputs.compress {
+        metadata["compress"] = compress;
+    }
+    metadata
+}
+
 fn saturating_i32(value: i64) -> i32 {
     value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 #[cfg(test)]
 mod tests {
-    use super::saturating_i32;
+    use super::{MetadataInputs, build_metadata, saturating_i32};
+
+    /// A call that was priced but neither compressed nor cache-split.
+    fn inputs(platform_paid: bool) -> MetadataInputs {
+        MetadataInputs {
+            platform_paid,
+            attribution_source: None,
+            pricing: serde_json::json!({ "source": "Db", "estimated": false }),
+            cache_creation: serde_json::Value::Null,
+            compress: None,
+        }
+    }
 
     #[test]
     fn usage_values_saturate_without_wrapping() {
         assert_eq!(saturating_i32(i64::MAX), i32::MAX);
         assert_eq!(saturating_i32(i64::MIN), i32::MIN);
         assert_eq!(saturating_i32(42), 42);
+    }
+
+    /// The zero-behaviour-change guard: with no compression, the row carries exactly the billing
+    /// and pricing-provenance keys and nothing else.
+    #[test]
+    fn metadata_without_compression_carries_only_the_billing_keys() {
+        assert_eq!(
+            build_metadata(inputs(true)),
+            serde_json::json!({
+                "key_source": "platform",
+                "attribution": null,
+                "pricing": { "source": "Db", "estimated": false },
+                "cache_creation": null,
+            })
+        );
+        assert_eq!(build_metadata(inputs(false))["key_source"], "user_secret");
+    }
+
+    #[test]
+    fn compression_stats_are_added_under_their_own_key() {
+        let stats = serde_json::json!({ "applied": true, "bytes_in": 100, "bytes_out": 40 });
+        let metadata = build_metadata(MetadataInputs {
+            compress: Some(stats.clone()),
+            ..inputs(true)
+        });
+
+        assert_eq!(metadata["compress"], stats);
+        // The keys flow billing and cost attribution read must survive alongside it.
+        assert_eq!(metadata["key_source"], "platform");
+        assert!(metadata.get("attribution").is_some());
+        assert_eq!(metadata["pricing"]["source"], "Db");
     }
 }

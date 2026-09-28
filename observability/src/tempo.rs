@@ -234,6 +234,21 @@ impl TempoClient {
 // ---------------------------------------------------------------------------
 
 /// Canonical spelling for trace IDs from Tempo and the session index.
+///
+/// Tempo's `/api/search` endpoint returns `traceID` as a plain hex string with
+/// leading zero *nibbles* stripped (a real, observed Tempo behavior — unlike
+/// `/api/traces/{id}`'s OTLP JSON, which encodes IDs as base64 bytes that
+/// `otlp_id_to_hex` re-derives correctly via `hex::encode`, always exactly 32
+/// chars for a 128-bit trace ID). Without re-padding, a trace whose ID happens
+/// to start with `0` comes back as 31 (or fewer) hex chars — a different string
+/// than the same trace's ID everywhere else it's used (traceparent headers,
+/// `get_trace` calls), so it silently becomes a second, duplicate row wherever
+/// trace ID is used as a dedup/primary key (confirmed: this caused doubled rows,
+/// and inflated totals, in `trace_usage`).
+///
+/// Only strings that are actually hex of at most 32 chars are touched — anything
+/// else (a test fixture, or some future non-hex ID Tempo returns) is left alone
+/// rather than corrupted into a 32-char string that matches nothing.
 pub(crate) fn normalize_trace_id(id: &str) -> String {
     if !id.is_empty() && id.len() <= 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         format!("{id:0>32}").to_ascii_lowercase()
@@ -422,7 +437,28 @@ fn parse_otlp_trace(
 mod tests {
     use serde_json::json;
 
-    use super::{OtlpTraceResponse, parse_otlp_trace};
+    use super::{OtlpTraceResponse, normalize_trace_id, parse_otlp_trace};
+
+    #[test]
+    fn normalize_trace_id_restores_a_stripped_leading_zero() {
+        assert_eq!(
+            normalize_trace_id("81423c37451c04a19701dbf92626ee4"),
+            "081423c37451c04a19701dbf92626ee4"
+        );
+    }
+
+    #[test]
+    fn normalize_trace_id_leaves_a_full_length_id_unchanged() {
+        let full = "d505d94088a7d0fdc5c7a32bb790ee26";
+        assert_eq!(normalize_trace_id(full), full);
+    }
+
+    #[test]
+    fn normalize_trace_id_leaves_non_hex_ids_unchanged() {
+        // Not a real trace ID's shape (e.g. a test fixture) — must not be
+        // corrupted into a 32-char string that matches nothing real.
+        assert_eq!(normalize_trace_id("t-cheap"), "t-cheap");
+    }
 
     #[test]
     fn hex_span_ids_are_not_misdecoded_as_base64() {

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 dotenvy.workspace = true
+nasiko-coding-policy.workspace = true
 nasiko-agent-proxy.workspace = true
 nasiko-auth.workspace = true
 nasiko-flow.workspace = true
@@ -23,6 +24,7 @@ nasiko-oci.workspace = true
 nasiko-pricing.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker", "simulated"] }
 nasiko-react-agent.workspace = true
+nasiko-compress.workspace = true
 nasiko-orchestrator.workspace = true
 nasiko-types.workspace = true
 nasiko-utils.workspace = true

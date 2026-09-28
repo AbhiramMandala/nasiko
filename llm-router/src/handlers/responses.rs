@@ -781,6 +781,8 @@ impl AttemptGuard {
                 flow_id: routed.flow_id.clone(),
                 attribution_source: routed.attribution_source,
                 platform_paid: attempt.platform_paid,
+                // Never compressed: this surface does not go through `chat_core`.
+                compress_metadata: None,
             }),
         }
     }
@@ -848,6 +850,8 @@ fn log_response_usage(
             flow_id: routed.flow_id,
             attribution_source: routed.attribution_source,
             platform_paid: attempt.platform_paid,
+            // Never compressed: this surface does not go through `chat_core`.
+            compress_metadata: None,
         },
     );
 }
@@ -986,6 +990,7 @@ mod tests {
             _: Uuid,
         ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
             Ok(Some(AgentConfigResult {
+                compress_enabled: false,
                 config: Some(LLMConfig {
                     provider: self.provider.into(),
                     model: Some("resolved-model".into()),
@@ -1476,6 +1481,7 @@ mod tests {
             platform_paid: false,
             custom_endpoint: None,
             is_coding_agent: false,
+            compress_enabled: false,
         };
         let routed = RoutedRequest {
             agent_id: AGENT.into(),
@@ -1863,6 +1869,7 @@ mod tests {
                 platform_paid: true,
                 custom_endpoint: None,
                 is_coding_agent: false,
+                compress_enabled: false,
             },
             flow_id: None,
             attribution_source: None,

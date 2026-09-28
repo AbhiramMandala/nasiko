@@ -178,6 +178,48 @@ async fn list_sessions_cursor_round_trip() {
 
 #[tokio::test]
 #[serial]
+async fn list_sessions_includes_the_platforms_own_ses_prefixed_ids() {
+    // Every session the platform mints is `ses_<hex>` — the id carries an
+    // underscore, so a namespace test that keys on "has an underscore" hid the
+    // entire Sessions list. The prefix is reserved, not a surface.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let session = create_session(&server, uid, "plain chat").await;
+    let session_id = session["session_id"].as_str().unwrap().to_string();
+    assert!(
+        session_id.starts_with("ses_"),
+        "the platform still mints this prefix: {session_id}"
+    );
+
+    let page = list_sessions(&server, uid, "").await;
+    let listed: Vec<&str> = page["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["session_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, [session_id.as_str()]);
+
+    // ...and no surface may claim the prefix out from under it.
+    let refused = common::as_superuser(
+        server
+            .client
+            .get(server.url("/api/chat/sessions?surface=ses")),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(refused.status(), 400, "`ses` is reserved, not a surface");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn list_sessions_scoped_to_owner() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;

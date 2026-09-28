@@ -556,6 +556,7 @@ mod tests {
 
     fn resolved() -> ResolvedConfig {
         ResolvedConfig {
+            compress_enabled: false,
             provider: "anthropic".into(),
             model: "claude-3-5-sonnet-20241022".into(),
             litellm_model: "anthropic/claude-3-5-sonnet-20241022".into(),

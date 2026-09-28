@@ -206,6 +206,84 @@ async fn chat_core(
         flow_id,
         attribution_source,
     } = routed;
+
+    // ── compression seam ──────────────────────────────────────────────────────────────────
+    // After `resolve_routed_request`, not before it: `RequestSignals` (built at :159 from
+    // `req.messages`) feeds the classifier, the salience gate and the `conv_id` that keys the
+    // Redis decision cache, so compressing first could flip the selected model mid-conversation.
+    // Resolving first also puts `resolved` in scope, which is what makes the policy per-agent.
+    //
+    // Keep this to one statement — `hint` holds a shared borrow of `req` that ends at :165, and
+    // any later read of it would turn this `&mut req` into E0502.
+    let compress_policy = crate::compress::policy_for(&ctx.cfg, &resolved);
+    tracing::info!(
+        target: "nasiko::llm_router::compress",
+        %agent_id,
+        compress_enabled = resolved.compress_enabled,
+        kill_switch = ctx.cfg.compress_kill_switch,
+        policy_enabled = compress_policy.enabled,
+        "compress: policy for this request"
+    );
+
+    let recovery = ctx
+        .cfg
+        .compress_recovery_enabled
+        .then_some(crate::compress::Recovery {
+            min_bytes: ctx.cfg.compress_recovery_min_bytes,
+        });
+
+    let compression = crate::compress::apply(&mut req, &compress_policy, recovery);
+    if compression.messages_touched > 0 {
+        tracing::debug!(
+            target: "nasiko::llm_router::compress",
+            %agent_id,
+            applied = compression.applied,
+            dry_run = compression.dry_run,
+            level = compression.level,
+            bytes_in = compression.bytes_in,
+            bytes_out = compression.bytes_out,
+            messages_touched = compression.messages_touched,
+            elapsed_us = compression.elapsed_us,
+            "compress: tool results reduced"
+        );
+    }
+
+    // The markers naming these handles are already in `req`; the row has to exist before the
+    // request carrying them goes out (see `recovery`'s module docs). Only a flow-scoped request
+    // can be recovered, so one without a flow id stores nothing.
+    if !compression.originals.is_empty() {
+        match (flow_id.as_deref(), owner_id.parse::<uuid::Uuid>()) {
+            (Some(flow), Ok(owner)) => {
+                crate::recovery::persist(
+                    &ctx.db,
+                    &compression.originals,
+                    flow,
+                    owner,
+                    agent_id.parse().ok(),
+                )
+                .await
+            }
+            _ => tracing::debug!(
+                target: "nasiko::llm_router::recovery",
+                %agent_id,
+                count = compression.originals.len(),
+                "recovery: request is not flow-scoped; originals not stored"
+            ),
+        }
+    }
+
+    // ── brevity seam (IP-2) ───────────────────────────────────────────────────────────────
+    // After compression, so the size floor is judged on the bytes actually being sent, and so a
+    // compressed tool result cannot push a turn over the floor it would otherwise miss.
+    let brevity = crate::brevity::apply(&mut req, &ctx.cfg, &resolved);
+    tracing::debug!(
+        target: "nasiko::llm_router::brevity",
+        %agent_id,
+        applied = brevity.is_ok(),
+        skipped = ?brevity.err(),
+        "brevity: directive decision"
+    );
+
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id,
@@ -229,6 +307,10 @@ async fn chat_core(
         gen_ai.response.model = tracing::field::Empty,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
+        nasiko.compress.bytes_in = tracing::field::Empty,
+        nasiko.compress.bytes_out = tracing::field::Empty,
+        nasiko.compress.elapsed_us = tracing::field::Empty,
+        nasiko.brevity.applied = brevity.is_ok(),
         // The cache classes are recorded too, or the trace-derived cost of a
         // cached call is wrong in a way nothing downstream can detect: an
         // absent cache attribute is indistinguishable from a cache miss, so the
@@ -238,6 +320,11 @@ async fn chat_core(
         gen_ai.usage.total_tokens = tracing::field::Empty,
         nasiko.usage.prompt_convention = "exclusive",
     );
+    if compression.messages_touched > 0 {
+        llm_span.record("nasiko.compress.bytes_in", compression.bytes_in);
+        llm_span.record("nasiko.compress.bytes_out", compression.bytes_out);
+        llm_span.record("nasiko.compress.elapsed_us", compression.elapsed_us);
+    }
 
     let started = Instant::now();
     let platform_paid = resolved.platform_paid;
@@ -261,6 +348,7 @@ async fn chat_core(
             flow_id,
             attribution_source,
             platform_paid,
+            compress_metadata: compression.to_metadata(),
             span: llm_span.clone(),
         });
     }
@@ -293,6 +381,7 @@ async fn chat_core(
             flow_id,
             attribution_source,
             platform_paid,
+            compress_metadata: compression.to_metadata(),
         },
     );
 
@@ -456,6 +545,7 @@ struct StreamChatArgs<'a> {
     flow_id: Option<String>,
     attribution_source: Option<routing::attribution::AttributionSource>,
     platform_paid: bool,
+    compress_metadata: Option<serde_json::Value>,
     /// The call's `gen_ai` span, kept alive for the stream's lifetime so the
     /// usage that only arrives in a terminal chunk can still be recorded on it.
     /// Without this a streamed call produced a span with no token attributes at
@@ -480,6 +570,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         flow_id,
         attribution_source,
         platform_paid,
+        compress_metadata,
         span,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
@@ -496,6 +587,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         flow_id,
         attribution_source,
         platform_paid,
+        compress_metadata,
     };
 
     let body_stream = async_stream::stream! {
@@ -562,10 +654,13 @@ struct UsageGuard {
     flow_id: Option<String>,
     attribution_source: Option<routing::attribution::AttributionSource>,
     platform_paid: bool,
+    /// Taken in `drop`, which runs exactly once.
+    compress_metadata: Option<serde_json::Value>,
 }
 
 impl Drop for UsageGuard {
     fn drop(&mut self) {
+        let compress_metadata = self.compress_metadata.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
         usage::spawn_log(
@@ -586,6 +681,7 @@ impl Drop for UsageGuard {
                 flow_id: self.flow_id.clone(),
                 attribution_source: self.attribution_source,
                 platform_paid: self.platform_paid,
+                compress_metadata,
             },
         );
     }
@@ -724,6 +820,8 @@ mod tests {
                 flow_id: None,
                 attribution_source: None,
                 platform_paid: true,
+                // This test covers span lifetime, not compression.
+                compress_metadata: None,
             };
             drop(guard);
         });
@@ -740,6 +838,7 @@ mod tests {
     struct Store {
         config: Option<LLMConfig>,
         is_coding_agent: bool,
+        compress_enabled: bool,
     }
     #[async_trait]
     impl RegistryStore for Store {
@@ -751,6 +850,7 @@ mod tests {
                 config: self.config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: self.is_coding_agent,
+                compress_enabled: self.compress_enabled,
             }))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
@@ -859,6 +959,138 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
+    // ── compression: proves the per-agent toggle reaches the wire ─────────────────────────
+    //
+    // `compress::tests` covers the transform. These cover the wiring the toggle depends on:
+    // that `policy_for` reads the agent's own flag, and that what the provider receives is what
+    // compression produced — neither of which the unit tests can see.
+
+    /// A tool result big and repetitive enough to be worth compressing.
+    fn noisy_tool_result() -> String {
+        (0..300)
+            .map(|i| format!("2026-01-01T00:00:00Z INFO handled request {i}\n"))
+            .collect()
+    }
+
+    fn tool_transcript(result: &str) -> serde_json::Value {
+        json!({
+            "model": "gpt-4o",
+            "messages": [
+                { "role": "user", "content": "why did the deploy fail?" },
+                { "role": "assistant", "content": null, "tool_calls": [
+                    { "id": "call_1", "type": "function",
+                      "function": { "name": "read_logs", "arguments": "{}" } }
+                ]},
+                { "role": "tool", "tool_call_id": "call_1", "content": result },
+            ]
+        })
+    }
+
+    /// Mocks the provider, captures the body it actually received, and runs one request.
+    ///
+    /// The capture happens in `with_body_from_request` — the only hook mockito gives onto the
+    /// real outbound body, which is the whole point: asserting on `req` in-process would prove
+    /// nothing about what the provider is sent.
+    async fn provider_saw(compress_enabled: bool) -> String {
+        let seen = Arc::new(Mutex::new(String::new()));
+        let capture = Arc::clone(&seen);
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or_default();
+                *capture.lock().unwrap_or_else(|e| e.into_inner()) =
+                    String::from_utf8_lossy(body).into_owned();
+                json!({
+                    "id": "chatcmpl-x", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+                })
+                .to_string()
+                .into_bytes()
+            })
+            .create_async()
+            .await;
+
+        let ctx = ctx_with(server.url());
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled,
+        };
+        chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            tool_transcript(&noisy_tool_result()),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        mock.assert_async().await;
+        let body = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(!body.is_empty(), "provider was never called");
+        body
+    }
+
+    #[tokio::test]
+    async fn toggle_off_sends_the_tool_result_verbatim() {
+        let sent = provider_saw(false).await;
+        assert!(
+            sent.contains("handled request 150"),
+            "an agent with the toggle off must reach the provider unchanged"
+        );
+        assert!(!sent.contains("lines elided"));
+    }
+
+    #[tokio::test]
+    async fn toggle_on_compresses_the_tool_result_the_provider_receives() {
+        let sent = provider_saw(true).await;
+        assert!(
+            sent.contains("lines elided"),
+            "toggle on, but the provider received no elision marker: {}",
+            &sent[..sent.len().min(400)]
+        );
+        assert!(
+            !sent.contains("handled request 150"),
+            "middle noise survived"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_toggle_decides_and_one_agent_does_not_affect_another() {
+        let off = provider_saw(false).await;
+        let on = provider_saw(true).await;
+        assert!(
+            on.len() < off.len(),
+            "compressed payload ({}) is not smaller than uncompressed ({})",
+            on.len(),
+            off.len()
+        );
+        println!(
+            "wire bytes: off={} on={} ({:.1}%)",
+            off.len(),
+            on.len(),
+            (on.len() as f64 - off.len() as f64) / off.len() as f64 * 100.0
+        );
+    }
+
+    #[tokio::test]
+    async fn compression_never_disturbs_tool_call_threading() {
+        let sent = provider_saw(true).await;
+        assert!(sent.contains("call_1"), "tool_call_id lost");
+        assert!(sent.contains("read_logs"), "tool call name lost");
+        assert!(
+            sent.contains("why did the deploy fail?"),
+            "the user's own question was altered"
+        );
+    }
+
     #[tokio::test]
     async fn end_to_end_honors_request_model_when_no_config_and_returns_openai_shape() {
         // No llm_config ⇒ the request's own model ("gpt-4o") is honored (passthrough),
@@ -885,6 +1117,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
         let resp = chat_core(
@@ -930,6 +1163,7 @@ mod tests {
         let store = Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            compress_enabled: false,
         };
         // Anthropic Messages request shape: top-level system + max_tokens.
         let body = json!({
@@ -985,6 +1219,7 @@ mod tests {
         let store = Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            compress_enabled: false,
         };
         // Gemini Messages request shape: systemInstruction + contents.
         let body = json!({
@@ -1030,6 +1265,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "stream": true, "messages": [{ "role": "user", "content": "hi" }] });
         let resp = chat_core(
@@ -1060,6 +1296,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [] });
         let err = chat_core(
@@ -1098,6 +1335,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            compress_enabled: false,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1127,6 +1365,7 @@ mod tests {
         let mut ctx = ctx_with("http://unused".into());
         ctx.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
         let store = Store {
+            compress_enabled: false,
             // A configured model that is NOT one of openai's seeded tier models
             // (gpt-5.5 / gpt-5.4 / gpt-4o-mini) — if the classifier never fires, the
             // resolved model will be exactly this. If it does fire, it will be one of the
@@ -1190,6 +1429,7 @@ mod tests {
                 tier3_model: None,
             }),
             is_coding_agent: false,
+            compress_enabled: false,
         };
         let result = resolve_routed_request(
             &ctx,
@@ -1235,6 +1475,7 @@ mod tests {
                 tier3_model: None,
             }),
             is_coding_agent: false,
+            compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
         let err = chat_core(

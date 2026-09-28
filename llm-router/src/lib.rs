@@ -27,6 +27,8 @@ use sqlx::PgPool;
 use tower_http::decompression::RequestDecompressionLayer;
 
 pub mod auth;
+mod brevity;
+mod compress;
 pub mod config;
 pub mod error;
 pub mod handlers;
@@ -34,6 +36,7 @@ pub mod inbound;
 pub mod inject;
 pub mod ir;
 pub mod providers;
+pub mod recovery;
 pub mod resolver;
 pub mod routing;
 pub mod usage;

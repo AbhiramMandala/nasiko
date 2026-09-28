@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_observability::ObservabilityProvider;
-use nasiko_orchestrator::RoutingEngine;
+use nasiko_orchestrator::{RoutingEngine, TextEmbeddingCache, VectorStore};
 use nasiko_runtime::ContainerRuntime;
 use sqlx::PgPool;
 use tokio::sync::mpsc;
@@ -48,6 +49,11 @@ pub struct AppState {
     /// cell (`SwappableAgentDeletionHook::install`, not a plain reassignment) for the same reason
     /// `prompt_context` does — see that field's doc comment and `agent_lifecycle` module docs.
     pub agent_deletion_hook: Arc<SwappableAgentDeletionHook>,
+    /// PACMS candidate/query embedding cache for the history enrichment done
+    /// directly in `a2a_dispatch.rs` (shared across requests, like the one
+    /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
+    /// see `TextEmbeddingCache` docs).
+    pub history_embedding_cache: TextEmbeddingCache,
     /// Tempo+Loki observability provider with DB-backed model pricing.
     /// Always constructed — TEMPO_URL/LOKI_URL default to the in-cluster
     /// addresses; queries fail soft when the stack is absent.
@@ -84,6 +90,22 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The embedding client the chat handlers hand to
+    /// `context_selection::fetch_for_user`. Built per call (it is a thin
+    /// handle over the shared `history_embedding_cache`, not a connection),
+    /// so the two call sites don't each re-derive the provider settings.
+    pub fn history_vector_store(&self) -> VectorStore {
+        VectorStore::for_embedding(
+            self.config.openai_api_key.clone().unwrap_or_default(),
+            self.config
+                .openai_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com".into()),
+            self.config.embedding_model.clone(),
+            self.history_embedding_cache.clone(),
+        )
+    }
+
     pub async fn from_config(
         config: Config,
         auth: Arc<dyn AuthService>,
@@ -159,6 +181,7 @@ impl AppState {
             Arc::new(crate::agent_lifecycle::SwappableAgentDeletionHook::new(
                 Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook),
             ));
+        let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
             max_depth: config.flow_max_depth as u32,
@@ -260,6 +283,7 @@ impl AppState {
             orchestrator_policy,
             prompt_context,
             agent_deletion_hook,
+            history_embedding_cache,
             observability,
             github_svc,
             build_tx,
@@ -425,7 +449,8 @@ impl AppState {
         env
     }
 
-    /// Build the full environment for an agent container: platform-level vars + agent-specific secrets.
+    /// Build the full environment for an agent container: platform-level vars + agent-specific secrets
+    /// + feature flags from metadata.
     pub async fn agent_env(
         &self,
         agent_id: uuid::Uuid,
@@ -435,6 +460,58 @@ impl AppState {
             env.entry(key).or_insert(value);
         }
         env.entry("PORT".into()).or_insert_with(|| "8000".into());
+
+        // Inject feature flags from agents.metadata.features as `NASIKO_<KEY>` env vars.
+        // `metadata` is owner-writable through `PUT /api/agents/{id}`, so keys are filtered
+        // to identifier characters: anything else cannot form a valid env var name. Flags use
+        // `or_insert`, so an agent secret of the same name still wins.
+        if let Ok(metadata) = sqlx::query_scalar::<_, serde_json::Value>(
+            "SELECT metadata FROM agents WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(agent_id)
+        .fetch_one(&self.db)
+        .await
+            && let Some(features) = metadata.get("features").and_then(|f| f.as_object())
+        {
+            for (key, value) in features {
+                let Some(val) = value.as_str() else { continue };
+                if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    tracing::warn!(%agent_id, %key, "agent_env: skipping feature flag with non-identifier key");
+                    continue;
+                }
+                env.entry(format!("NASIKO_{}", key.to_uppercase()))
+                    .or_insert_with(|| val.to_string());
+            }
+        }
+
+        // A plain `agents` column, not a secret (see migration 0032) — the
+        // control plane also reads it at A2A dispatch time to inject the
+        // minimal-code ladder into the outgoing message (a2a_dispatch.rs), but
+        // the agent still needs its own copy at boot purely to gate
+        // self-review (wants_self_review requires minimal_code as one of its
+        // three conditions — see nasiko-coding-policy). That gate still needs
+        // a restart to pick up a change; the ladder injection itself does not.
+        let minimal_code_enabled: Option<bool> =
+            sqlx::query_scalar("SELECT minimal_code_enabled FROM agents WHERE id = $1")
+                .bind(agent_id)
+                .fetch_optional(&self.db)
+                .await
+                .ok()
+                .flatten();
+        // Always set explicitly (not just when true) — a pre-migration agent
+        // may still carry a stale CODING_AGENT_MINIMAL_CODE secret from
+        // before this column existed, and that must not leak through once
+        // the column says otherwise.
+        let minimal_code_enabled = minimal_code_enabled.unwrap_or(false);
+        tracing::info!(
+            %agent_id,
+            minimal_code_enabled,
+            "agent_env: injecting CODING_AGENT_MINIMAL_CODE"
+        );
+        env.insert(
+            "CODING_AGENT_MINIMAL_CODE".into(),
+            minimal_code_enabled.to_string(),
+        );
         env
     }
 }

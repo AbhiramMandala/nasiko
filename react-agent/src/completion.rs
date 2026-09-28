@@ -101,6 +101,10 @@ impl UsageModel {
                 platform_paid: true,
                 custom_endpoint: None,
                 is_coding_agent: false,
+                // Compression is a per-agent opt-in read from `agents.compress_enabled`.
+                // This is the orchestrator's own call against the provider, made from
+                // `OrchestratorConfig` with no agent row behind it, so nothing opted in.
+                compress_enabled: false,
             },
             identity,
         })
