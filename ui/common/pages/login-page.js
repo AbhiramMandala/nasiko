@@ -14,7 +14,7 @@ const GITHUB_ICON = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0
 const LOGO_ICON = `<svg viewBox="0 0 64 64" fill="none"><g fill="currentColor"><rect width="3.29" height="53.74" rx="1.64"/><rect x="5.52" width="3.29" height="58.45" rx="1.64"/><rect x="11.04" width="3.29" height="63.82" rx="1.64"/><rect x="16.56" width="3.29" height="63.82" rx="1.64"/><rect x="22.08" width="3.29" height="22.84" rx="1.64"/><rect x="27.6" width="3.29" height="22.84" rx="1.64"/><rect x="33.12" width="3.29" height="27.54" rx="1.64"/><rect x="38.63" width="3.29" height="32.25" rx="1.64"/><rect x="44.15" width="3.29" height="22.84" rx="1.64"/><rect x="49.56" y="6.03" width="3.35" height="16.74" rx="1.67"/><rect x="55.19" y="10.26" width="3.29" height="53.74" rx="1.64"/><rect x="60.71" y="14.82" width="3.29" height="49.04" rx="1.64"/><rect x="22.31" y="53.56" width="3.35" height="10.26" rx="1.67"/><rect x="27.89" y="53.56" width="3.29" height="10.08" rx="1.64"/><rect x="33.47" y="43.31" width="3.35" height="20.51" rx="1.67"/><rect x="39.05" y="47.87" width="3.35" height="15.96" rx="1.67"/><rect x="44.39" y="53.56" width="3.35" height="10.26" rx="1.67"/><rect x="49.97" y="53.56" width="3.35" height="10.26" rx="1.67"/></g></svg>`;
 
 /// How to present each IdP family that `/api/auth/oidc/status` can report.
-/// Keys are the slugs `ee/server/src/oidc.rs::provider_slug` emits; anything
+/// Keys are the slugs the EE OIDC `provider_slug` emits; anything
 /// unrecognised (including a slug added server-side before this table catches
 /// up) falls back to `generic`, so a new provider degrades to a working
 /// "Continue with SSO" button rather than an unlabelled one.

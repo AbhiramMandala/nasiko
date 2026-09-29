@@ -3,7 +3,7 @@
  *
  * One list, read from `generation-models.json`, shared by the Weave dock and
  * the Weave page, so both offer the same models and remember the same choice.
- * The same file is what `ee/server/src/weave_surface.rs` holds its allowlist
+ * The same file is what the EE Weave surface holds its allowlist
  * to, so a model offered here is a model the route accepts.
  *
  * What travels on the request is a KEY (`"haiku"`, `"sonnet"`), never a model

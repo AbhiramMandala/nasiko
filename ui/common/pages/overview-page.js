@@ -544,14 +544,14 @@ class OverviewPage extends HTMLElement {
 
   /**
    * Org unit is a real filter, but only on the dashboard endpoint and only on
-   * EE (`ee/server/src/finops_scope.rs` resolves it to `user_id`s; OSS has no
+   * EE (the EE FinOps scope resolver turns it into `user_id`s; OSS has no
    * org hierarchy and ignores it). One select, in the page filter bar beside
    * Myself/Org — the two page-level scopes sit together, and neither is
    * mistakable for one of Spend's panel-local filters. `org-unit-service.js` only
    * self-registers on the EE route path, so import it before calling.
    *
    * No client-side role gate: `/org/units` already requires `can_read_org`
-   * (manager-or-above — `ee/server/src/org_units.rs::list_units`), and that is
+   * (manager-or-above — the EE org-units listing), and that is
    * the whole rule. Any failure (absent module, unmounted route, a 403) leaves
    * the select disabled and says so in its title — the same way
    * `tokenops-page.js` handles the same filter.

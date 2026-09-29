@@ -215,7 +215,7 @@ const lineOf = (source, index) => source.slice(0, index).split('\n').length;
  *
  * Needed by any rule that looks for a CALL rather than an import. The three
  * false positives this was written for were all prose: a docblock example in
- * router.js, and two comments in ee/web explaining what app.js awaits. A rule
+ * router.js, and two comments in the EE web tree explaining what app.js awaits. A rule
  * that cannot tell a call from a sentence about a call is a rule people learn
  * to ignore.
  *
@@ -358,7 +358,7 @@ const rules = [
     id: 'one-boot-sequence',
     enforce: 'zero',
     why: 'Every SPA entry point boots the same way — error boundary, routes, exclusions, outlet, router.start, ' +
-         'route persistence — and there are four of them (ui/oss, ee/registry, ee/portal, ee/tenant). They used to ' +
+         'route persistence — and there are four of them (one per app shell). They used to ' +
          'hand-roll that sequence separately, which meant a change to it had to be made four times and was made ' +
          'once. core/create-app.js owns it now; an entry point supplies a config literal. ' +
          'Note what this rule can and cannot see. The enterprise edition manifest puts only two of its source ' +

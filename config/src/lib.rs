@@ -567,11 +567,11 @@ impl Config {
 /// base URL, for callers that append their own `/v1/...` path segment.
 ///
 /// `OPENAI_BASE_URL` is commonly written *with* the `/v1` — that is how
-/// `cp.nasiko.dev` and `ee/server/.env` have it — so appending `/v1/whatever`
+/// `cp.nasiko.dev` and typical deployment env files have it — so appending `/v1/whatever`
 /// to the raw value doubles up into `.../v1/v1/whatever`, which 404s.
 ///
 /// Deliberately a free function rather than normalization applied to
-/// [`Config::openai_base_url`] itself: `ee/artifact-registry` uses the opposite
+/// [`Config::openai_base_url`] itself: the artifact registry uses the opposite
 /// convention (base URL *includes* `/v1`, it appends bare `/embeddings`), so
 /// the stored value has to stay verbatim.
 pub fn openai_base_url_without_v1(base_url: &str) -> &str {

@@ -53,7 +53,7 @@ const BASE_ROUTES = [
   { path: '/resources',       tag: 'resources-page',           module: '/common/pages/resources-page.js',           title: 'Nasiko — Resources' },
   { path: '/design-system',   tag: 'design-system-page',       module: '/common/pages/design-system-page.js',       title: 'Nasiko — Design System' },
   // Weave. These three are EE features — the surface stream and the saved-view
-  // store are mounted by ee/server only — but they stay in BASE_ROUTES because
+  // store are mounted by the EE server only — but they stay in BASE_ROUTES because
   // gen-dsl-catalog.mjs parses this table into the allowlist of routes a
   // generated surface may link to, and hashes it into `catalogVersion`. Moving
   // them to /routes-ext.js drops /view and /custom-views out of that allowlist

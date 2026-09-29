@@ -1,5 +1,5 @@
 //! Live one-line terminal status animation, plus one-shot success/warning lines.
-//! Shared by `nasiko` (oss/cli) and `nasiko-ee` (ee/cli) so both CLIs get the
+//! Shared by `nasiko` (oss/cli) and `nasiko-ee` so both CLIs get the
 //! same look and feel.
 //!
 //! ```ignore

@@ -51,7 +51,7 @@ const PROVIDERS = [
 }));
 
 // Org unit dropdown source — flat `GET /api/org/units` shape
-// (`ee/server/src/org_units.rs::UNIT_COLUMNS`), `depth` 1 = a root unit.
+// (the EE org-units columns), `depth` 1 = a root unit.
 const ORG_UNITS = [
   { id: "ou-1", parent_id: null, name: "Nasiko Max", depth: 1, lead_id: null, lead_username: null, source: "manual", provider: null, external_id: null, idp_synced_at: null, member_count: 84, created_at: "2026-01-01T00:00:00Z" },
   { id: "ou-2", parent_id: "ou-1", name: "Engineering", depth: 2, lead_id: "u-1", lead_username: "satya", source: "manual", provider: null, external_id: null, idp_synced_at: null, member_count: 34, created_at: "2026-01-02T00:00:00Z" },

@@ -39,7 +39,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
  * The section this page belongs to.
  *
  * A section is the name a page gives itself; the control plane maps it to a
- * data-source scope (`SECTION_SCOPES` in ee/server/src/weave_surface.rs) and
+ * data-source scope (`SECTION_SCOPES` on the EE Weave surface) and
  * forwards THAT to Weave. The page never names a scope: the scope is the
  * security boundary of generation, and `weave_surface.rs` does not read a
  * `scope` key from the body at all, so a page cannot widen what it may

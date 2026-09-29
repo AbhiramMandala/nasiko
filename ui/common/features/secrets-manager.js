@@ -123,7 +123,7 @@ function toEntries(list) {
 /// How long a revealed value stays on screen before it re-masks itself. Short
 /// enough that a shared screen or a walked-away-from laptop doesn't leave a key
 /// sitting there, long enough to read it out or copy it. Matches the same
-/// decision in `ee/tenant/src/components/SecretField.jsx`.
+/// decision in the EE tenant UI's secret field.
 const AUTO_REMASK_MS = 30_000;
 
 /** Env-var shape — secrets land in container env, so shell identifier rules. */

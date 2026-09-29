@@ -1,6 +1,6 @@
 //! Builds a `nasiko_config::Config` for the bench harness, pointed at the
 //! in-process mock LLM and carrying a dummy (non-empty) `openai_api_key` —
-//! `ee/server::build_ee_app` panics at startup without one (the MAF worker
+//! the enterprise server's `build_ee_app` panics at startup without one (the MAF worker
 //! requires it), even though the worker itself sits idle unless flows are
 //! explicitly queued.
 

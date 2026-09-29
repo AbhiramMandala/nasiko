@@ -65,7 +65,8 @@ of these hold:
 Soft-deleted agents are always excluded. The `agent_acl` allowlist table additionally restricts
 which agents can call which other agents during inter-agent routing.
 
-**Files:** `oss/server/src/acl.rs`, `ee/auth/src/lib.rs`
+**File:** `oss/server/src/acl.rs` (the enterprise edition layers its grant matrix on top of this
+through the `AuthService` trait).
 
 ## Stage 1: Vector Semantic Shortlist
 
@@ -283,9 +284,8 @@ Session history depth is controlled by `max_router_history_messages` in the conf
 
 ## EE Additions
 
-**File:** `ee/orchestrator/src/routing.rs`
-
-`EeRoutingEngine` wraps `OssRoutingEngine`. Currently it delegates directly; a planned enhancement
+The enterprise edition supplies its own `RoutingEngine` implementation that wraps
+`OssRoutingEngine`. Currently it delegates directly; a planned enhancement
 (BACKEND-16) will pre-filter candidates via RBAC `can_access_agent()` checks before Stage 3 so
 that the LLM never sees agents the caller cannot reach.
 

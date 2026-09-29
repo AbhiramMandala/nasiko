@@ -105,7 +105,7 @@ export default {
     [{ method: 'GET', path: /^\/api\/mcp\/connectors\/[0-9a-f-]+\/consumers$/ },
       { data: consumers, status_code: 200, message: 'Connector consumers retrieved successfully' }],
     // Served only by EE — its mere presence is what turns on the Team and
-    // Department tabs. Bare `{teams, total}`, exactly as ee/server/src/teams.rs
+    // Department tabs. Bare `{teams, total}`, exactly as the EE teams route
     // answers it (no `data` envelope).
     [{ method: 'GET', path: /^\/api\/teams(\?|$)/ },
       { teams: [{ id: 't-001', name: 'Platform' }], total: 1 }],

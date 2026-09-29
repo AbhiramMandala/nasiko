@@ -71,7 +71,7 @@ function load(name) {
     pageGlobs: (raw.sources?.pages ?? []).map((g) => `${dir}/${g}`),
     // A mount may declare several candidate directories. One URL prefix really
     // can resolve to different directories in different binaries — `/components/`
-    // is `ee/components` under `ee/server` and `multi-tenant/web/components`
+    // is the EE components dir under the EE server and `multi-tenant/web/components`
     // under the multi-tenant surface, which embeds both — so a single value
     // would be correct for one binary and wrong for the other.
     mounts: Object.entries(raw.mounts ?? {}).map(([spec, sub]) => ({

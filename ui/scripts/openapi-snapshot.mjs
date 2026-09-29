@@ -47,7 +47,7 @@
  *
  * URL defaults to $NASIKO_OPENAPI_URL, then http://localhost:8082/api/ee/openapi.json.
  * The EE mount is the right one: it is the OSS spec with the EE paths merged
- * in (ee/server/src/openapi.rs), so it is a superset of /api/openapi.json.
+ * in (the EE OpenAPI module), so it is a superset of /api/openapi.json.
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';

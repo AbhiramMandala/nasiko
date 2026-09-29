@@ -416,7 +416,7 @@ class SettingsPage extends HTMLElement {
 
   async #load() {
     // Two routes, two structs: general settings (oss/server/src/settings.rs)
-    // and SSO (ee/server/src/sso_settings.rs) are unrelated on the wire, so
+    // and SSO (EE settings) are unrelated on the wire, so
     // this page — which shows both in one form — has to fetch both. OSS has
     // no OIDC login route, hence no /settings/oidc to fetch; skip it there
     // rather than throwing and blanking the whole page. `oidc` additionally

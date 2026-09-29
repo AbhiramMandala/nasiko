@@ -46,8 +46,9 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
 /// The page gate ([`require_page_auth`]) redirects unauthenticated page
 /// navigations to the login page of the mount that owns the requested path,
 /// so each frontend keeps its own sign-in flow. Mounts are wired once at the
-/// composition root (`AppState.ui_mounts`); OSS serves only [`UiMount::ROOT`],
-/// EE adds the Flutter app mount at `/app/`.
+/// composition root (`AppState.ui_mounts`); both editions currently serve
+/// only [`UiMount::ROOT`], and the slice exists so an additional frontend can
+/// be mounted under its own prefix without touching the gate.
 #[derive(Clone, Copy, Debug)]
 pub struct UiMount {
     /// Path prefix owning the mount, with a trailing slash (`"/"`, `"/app/"`).
@@ -132,7 +133,7 @@ fn is_gated_page(path: &str) -> bool {
 ///
 /// `pub`, not `pub(crate)`: this is the seam for out-of-crate mounts that sit in
 /// front of OSS routes and must authenticate before OSS middleware would.
-/// EE's catalog interceptor (`ee/server/src/catalog.rs`) is one, and it used to
+/// EE's catalog interceptor is one, and it used to
 /// carry its own transcription of this function — which then silently missed
 /// every rule added here, the caller-still-exists check below being the case
 /// that exposed it. Any new mount calls this; nothing re-implements it.
@@ -277,7 +278,9 @@ mod tests {
     /// OSS wiring: the root mount only.
     const ROOT_ONLY: &[UiMount] = &[UiMount::ROOT];
 
-    /// EE wiring: vanilla UI at `/` plus the ungated Flutter app at `/app/`.
+    /// A second frontend mounted under its own prefix and left ungated, so
+    /// the mount-resolution logic stays covered even though no edition wires
+    /// one today.
     const WITH_APP: &[UiMount] = &[
         UiMount::ROOT,
         UiMount {
@@ -321,7 +324,7 @@ mod tests {
 
     #[test]
     fn ungated_app_mount_serves_pages_without_a_session() {
-        // The Flutter SPA gates itself client-side, and its SSO callbacks
+        // An ungated mount gates itself client-side, and its SSO callbacks
         // land here with the token in the URL — no server-side redirect.
         assert_eq!(login_redirect_target(WITH_APP, "/app/"), None);
         assert_eq!(login_redirect_target(WITH_APP, "/app"), None);
@@ -331,7 +334,7 @@ mod tests {
             login_redirect_target(WITH_APP, "/app/agents/some-uuid"),
             None
         );
-        assert_eq!(login_redirect_target(WITH_APP, "/app/main.dart.js"), None);
+        assert_eq!(login_redirect_target(WITH_APP, "/app/bundle.js"), None);
         // Root-mount pages still go to the vanilla login.
         assert_eq!(
             login_redirect_target(WITH_APP, "/agents.html"),

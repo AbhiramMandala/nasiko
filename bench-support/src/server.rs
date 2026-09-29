@@ -146,7 +146,7 @@ where
         let _ = axum::serve(listener, app).await;
     });
 
-    // Defensive — mirrors `ee/server/tests/common::TestServer::start` — the
+    // Defensive — mirrors the enterprise server's `TestServer::start` — the
     // accept loop needs a tick to actually start polling the listener.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

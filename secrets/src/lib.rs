@@ -68,7 +68,7 @@ const SYSTEM_SCOPE: &[u8] = b"nasiko-system";
 const PLATFORM_SETTINGS_SCOPE: &[u8] = b"platform-settings-v1";
 
 /// HKDF `info` label for the tenant-backup-restore canary check
-/// (`ee/multi-tenant`'s stop/start lifecycle). Distinct from every other
+/// (the tenant stop/start lifecycle). Distinct from every other
 /// scope so it can never collide with a real secret.
 const BACKUP_CANARY_SCOPE: &[u8] = b"nasiko-backup-canary-v1";
 
@@ -111,9 +111,9 @@ impl SecretsCrypto {
         Self::derive(connector_id.as_bytes())
     }
 
-    /// Derive a tenant-scoped key from the master key. Used by `ee/multi-tenant`
-    /// to encrypt a tenant cluster's FinOps-poller service-account credential at
-    /// rest. Panics if the master key is missing/invalid; use
+    /// Derive a tenant-scoped key from the master key. Used by the multi-tenant
+    /// control plane to encrypt a tenant cluster's FinOps-poller service-account
+    /// credential at rest. Panics if the master key is missing/invalid; use
     /// [`try_for_tenant`](Self::try_for_tenant) on the request path.
     pub fn for_tenant(tenant_id: Uuid) -> Self {
         Self::derive(tenant_id.as_bytes())

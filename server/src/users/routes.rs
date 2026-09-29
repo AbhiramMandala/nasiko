@@ -81,7 +81,7 @@ pub(crate) async fn revoke_sessions(state: &AppState, user_id: Uuid) {
 }
 
 /// Full user orchestrator — list, get, and all management routes including role changes.
-/// Used by the OSS server. EE provides its own orchestrator (ee/server/src/users.rs)
+/// Used by the OSS server. EE provides its own orchestrator
 /// that merges management_router() and supplies EE-aware handlers + the cascade
 /// role-change endpoint.
 pub fn router() -> Router<AppState> {
@@ -108,7 +108,7 @@ pub fn router() -> Router<AppState> {
 /// so each can be overridden without causing a duplicate-route panic: EE wraps
 /// `change_role` with its leadership cascade, and wraps `update_user` to also
 /// accept `department_id`/`team_id` (EE-only columns `oss/server`'s `users`
-/// table doesn't have — see `ee/server/src/users.rs::ee_update_user`).
+/// table doesn't have — see the EE `ee_update_user` override).
 pub fn management_router() -> Router<AppState> {
     Router::new()
         .route("/users/admins", get(list_admins))
@@ -163,7 +163,7 @@ pub(crate) struct UserListResponse {
 }
 
 /// List users (superuser-only; EE additionally exposes a role/org-scoped
-/// listing at `/api/org/users` — see `ee/server/src/org_users.rs`).
+/// listing at `/api/org/users` — see the EE org-users routes).
 #[utoipa::path(
     get,
     path = "/api/users",
@@ -409,7 +409,7 @@ pub struct ChangeRoleRequest {
 
 /// Update a user's own-editable fields (superuser-only; EE overrides this
 /// route to additionally accept `department_id`/`team_id` — see
-/// `ee/server/src/users.rs::ee_update_user`). An `is_active: false`
+/// the EE `ee_update_user` override). An `is_active: false`
 /// transition here runs the same self-deactivate/last-admin guards as the
 /// dedicated `/deactivate` route.
 #[utoipa::path(
@@ -502,10 +502,10 @@ pub async fn update_user(
     }
 
     // Shared (edition-agnostic) columns only. department_id/team_id are
-    // EE-only columns (created by ee/migrations/1002) — naming them here made
+    // EE-only columns (created by an EE migration) — naming them here made
     // this statement fail on every pure-OSS database, 500ing all user
     // updates. Org placement is layered on by `ee_update_user`
-    // (ee/server/src/users.rs), which delegates the shared fields here first.
+    // (the EE users module), which delegates the shared fields here first.
     // UserRow's #[sqlx(default)] covers the columns RETURNING no longer names.
     let result = sqlx::query_as::<_, UserRow>(
         r#"UPDATE users SET
@@ -852,7 +852,7 @@ async fn valid_user_roles(state: &AppState) -> Result<Vec<String>, sqlx::Error> 
 
 /// Change a user's role and immediately revoke their live tokens. EE wraps
 /// this with a leadership-displacement cascade — see
-/// `ee/server/src/users.rs::ee_change_role`.
+/// the EE `ee_change_role` override.
 #[utoipa::path(
     put,
     path = "/api/users/{id}/role",
@@ -1004,7 +1004,7 @@ pub(crate) async fn list_admins(State(state): State<AppState>) -> impl IntoRespo
 // ─── GET /users/{id}/accessible-agents ──────────────────────────────────────
 
 /// Agents accessible to a user (owner ∪ public ∪ direct user-grant; EE's
-/// override in `ee/server/src/users.rs` additionally checks team/department
+/// EE override additionally checks team/department
 /// grants).
 #[utoipa::path(
     get,
@@ -1049,7 +1049,7 @@ pub(crate) async fn my_accessible_agents(
 // ─── GET /users/me ──────────────────────────────────────────────────────────
 
 /// The caller's own user record (superuser-only route; EE overrides this
-/// with the same EE-aware shape as `get_user` — see `ee/server/src/users.rs`).
+/// with the same EE-aware shape as `get_user` — see the EE users module).
 #[utoipa::path(
     get,
     path = "/api/users/me",
@@ -1108,7 +1108,7 @@ pub(crate) struct AccessibleAgentsResponse {
 
 async fn accessible_agents_impl(db: &sqlx::PgPool, user_id: Uuid) -> axum::response::Response {
     // OSS: owner, public, or a direct user grant.
-    // EE overrides this in ee/server/src/users.rs to also check team and department grants.
+    // EE overrides this to also check team and department grants.
     let rows = sqlx::query_as::<_, AccessibleAgent>(
         r#"SELECT DISTINCT a.id, a.name, a.description, a.status, a.owner_id, a.is_public
            FROM agents a

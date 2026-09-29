@@ -70,7 +70,7 @@ pub(crate) fn build_image_tag(registry: &str, name: &str, tag: &str) -> String {
 }
 
 /// Mints (or reuses) a per-agent OCI pull credential and attaches it to
-/// `spec` — deterministic secret name always set so `ee/k8s-runtime` can
+/// `spec` — deterministic secret name always set so the Kubernetes runtime can
 /// wire `imagePullSecrets` on every deploy, with the one-time plaintext seed
 /// set only when a NEW credential was just minted (see `nasiko-oci`'s
 /// `pull_credentials::get_or_create`). No-op outside the K8s runtime — these
@@ -108,7 +108,7 @@ pub(crate) async fn attach_pull_credential(
 ///
 /// `DeploymentStatus::endpoint` (as returned by both `deploy()` and `status()`)
 /// is only populated once the workload is observed actually `Running` at that
-/// exact instant — see `ee/k8s-runtime`'s `status()`. For Kubernetes, a fresh
+/// exact instant — see the Kubernetes runtime's `status()`. For Kubernetes, a fresh
 /// Deployment/Service apply is essentially never Ready yet by the time
 /// `deploy()` returns (scheduling, image pull, and readiness probes all take
 /// real time), so every caller that persisted `deploy_status.endpoint`
@@ -210,7 +210,7 @@ pub fn router() -> Router<AppState> {
     // `grants::router()` is deliberately NOT merged here: EE's `build_ee_app`
     // builds on top of this router and mounts its own richer grants router
     // (team/department grants + the live, CLI-consumed request shapes in
-    // ee/cli/src/access.rs) at the same paths. Merging both panics on route
+    // the enterprise CLI) at the same paths. Merging both panics on route
     // registration conflicts. The OSS-tier grants module IS live — the agent
     // card's "Access & security" tab consumes it — but it is mounted only in
     // the OSS-only composition root (`crate::build_app`), which EE never

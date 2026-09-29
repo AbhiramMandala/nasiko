@@ -395,7 +395,7 @@ async fn embed_text(
     text: &str,
 ) -> Result<Vec<f32>, RouterError> {
     // A `base_url` already ending in `/v1` (as `OPENAI_BASE_URL` is commonly
-    // configured, e.g. `ee/server/.env`) must not double up into
+    // configured in the deployment's env) must not double up into
     // `.../v1/v1/embeddings`.
     let url = format!(
         "{}/v1/embeddings",

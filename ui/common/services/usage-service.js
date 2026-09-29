@@ -11,7 +11,7 @@
  * handler (`oss/server/src/observability/handler.rs`): `model`/`provider`
  * really do filter `trace_usage` on every endpoint below except
  * `spend-calendar`'s neighbours that never declared them; `org_unit` is
- * EE-only (resolved to `user_id`s by `ee/server/src/finops_scope.rs`'s
+ * EE-only (resolved to `user_id`s by the EE FinOps scope resolver's
  * middleware) and reaches only `dashboard` — none of the other four handlers
  * read the `FinopsUserScope` extension it injects, so it is a no-op on them.
  * OSS ignores `org_unit` outright (no org hierarchy).

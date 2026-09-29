@@ -178,7 +178,7 @@ fn is_source_media_type(media_type: &str) -> bool {
 //
 // `docker_save`/`parse_docker_tar`/`build_oci_manifest`/`sha256_digest` are
 // pure conversion logic with no dependency on where the result gets pushed —
-// `ee/cli` reuses them (via `nasiko::oci::...`, since it already depends on
+// The enterprise CLI reuses them (via `nasiko::oci::...`, since it already depends on
 // this crate for `dispatch_agent_dev`/`dispatch_agent_ops`/`dispatch_registry`)
 // to publish images to the artifact registry, while `push_image` above keeps
 // pushing to this cluster's own OCI registry. Same conversion, different

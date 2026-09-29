@@ -14,8 +14,6 @@
 //! Selecting on role alone, with compression a pure function of the message's own content, makes
 //! each message render to identical bytes on every turn it appears in. The prefix stays stable
 //! from message 1, and tool results are where the JSON/logs/diffs live anyway.
-//!
-//! See `ee/docs/CAVEMAN_TOKEN_OPTIMIZATION_PRD_TRD.md` §14 R2.
 
 use std::time::Instant;
 

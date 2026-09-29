@@ -1132,8 +1132,8 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
     // Excludes `is_internal` agents unconditionally, including for the owning
     // superuser — this is the platform's only generic A2A entry point, and an
     // internal agent (e.g. Weave's dashboard-generator) must be reachable
-    // exclusively through its own dedicated route (`ee/server/src/weave_surface.rs`),
-    // never here, or the superuser-ACL-bypass would leak it into ordinary chat
+    // exclusively through its own dedicated route, never here, or the
+    // superuser-ACL-bypass would leak it into ordinary chat
     // history/usage tracking.
     sqlx::query_as::<_, AgentRow>(
         "SELECT id, name, status, minimal_code_enabled, skills \

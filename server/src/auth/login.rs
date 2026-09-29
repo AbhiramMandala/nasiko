@@ -201,12 +201,11 @@ struct SsoSessionQuery {
 /// web UI actually authenticates with, then lands the browser on the app root.
 ///
 /// Exists for SSO flows that authenticate a user out-of-band and then hand their
-/// *browser* to this control plane — marketplace SSO (`ee/tenant-do`) is the
+/// *browser* to this control plane — marketplace SSO is the
 /// first: it logs the user in over the API, holds a real session token, and has
 /// nowhere to put it, because a cookie can only be set by a response from this
-/// origin. Before this endpoint it redirected to `/app/?token=…`, which only the
-/// Flutter client could read; the vanilla UI has no URL-token path at all and
-/// simply showed the login page.
+/// origin. The UI has no URL-token path of its own, so without this endpoint
+/// such a hand-off simply lands on the login page.
 ///
 /// Grants nothing the token doesn't already carry — anyone holding it can call
 /// the API directly with `Authorization: Bearer` — and it is validated exactly
@@ -714,8 +713,8 @@ async fn token_validate(
         }
     }
 
-    // Fetch the user's actual role from the DB so the Flutter sidebar can
-    // gate admin-only tabs (access control) correctly. Fall back to
+    // Fetch the user's actual role from the DB so a client can gate
+    // admin-only navigation correctly. Fall back to
     // is_superuser-derived role on any error (user deleted, DB unavailable).
     let role: String =
         sqlx::query_scalar("SELECT role::text FROM users WHERE id = $1 AND deleted_at IS NULL")
@@ -734,7 +733,7 @@ async fn token_validate(
 
     Json(serde_json::json!({
         "valid": true,
-        // subject_id / subject_type are the fields the Flutter client reads.
+        // subject_id / subject_type identify the authenticated principal.
         "subject_id": identity.user_id,
         "subject_type": "user",
         "role": role,

@@ -84,8 +84,8 @@ pub struct AppState {
     /// connection. See `oss/server/src/hitl/continuation.rs`.
     pub continuation_events: crate::hitl::continuation::ContinuationRegistry,
     /// UI mounts for the page gate (`auth::require_page_auth`) — each frontend
-    /// prefix with its own login page. OSS serves the root mount only; the EE
-    /// composition root adds the Flutter app mount at `/app/`.
+    /// prefix with its own login page. Both editions serve the root mount only;
+    /// the slice exists so another frontend can be mounted under its own prefix.
     pub ui_mounts: &'static [crate::auth::UiMount],
 }
 

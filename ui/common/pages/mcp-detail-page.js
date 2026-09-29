@@ -402,7 +402,7 @@ class McpDetailPage extends HTMLElement {
       // `teams`/`departments` are two JSON keys for one grant type (`org_unit`
       // — migration 1040 collapsed team+department; `list_org_grant_consumers`
       // always dumps every unit into `teams` and leaves `departments` empty,
-      // see `ee/auth/src/mcp_authorizer.rs`), so the UI reads one merged list.
+      // see the EE MCP authorizer), so the UI reads one merged list.
       units: [...(consumers?.teams || []), ...(consumers?.departments || [])],
     };
     // `/consumers` answers with an empty list in OSS too, so it can't tell the
