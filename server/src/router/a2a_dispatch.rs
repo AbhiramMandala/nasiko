@@ -670,14 +670,7 @@ pub(crate) async fn orchestrator_stream(
         caller_uuid,
     );
 
-    // `A2aClient`'s own default is deliberately short — it is shared with agent
-    // card / discovery fetches, where a long hang is the wrong behaviour. This
-    // client makes real agent turns, including the `message/send` fallback taken
-    // by agents that reject `message/stream`, so it carries the agent budget.
     let a2a_client = nasiko_react_agent::A2aClient::new()
-        .with_timeout(std::time::Duration::from_secs(
-            state.config.agent_call_timeout_secs,
-        ))
         .with_headers(vec![("traceparent".to_string(), traceparent)]);
 
     // Each agent the orchestrator calls authenticates to /api/mcp with its own
@@ -1139,8 +1132,8 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
     // Excludes `is_internal` agents unconditionally, including for the owning
     // superuser — this is the platform's only generic A2A entry point, and an
     // internal agent (e.g. Weave's dashboard-generator) must be reachable
-    // exclusively through its own dedicated route, never here, or the
-    // superuser-ACL-bypass would leak it into ordinary chat
+    // exclusively through its own dedicated route (`ee/server/src/weave_surface.rs`),
+    // never here, or the superuser-ACL-bypass would leak it into ordinary chat
     // history/usage tracking.
     sqlx::query_as::<_, AgentRow>(
         "SELECT id, name, status, minimal_code_enabled, skills \
@@ -1320,13 +1313,11 @@ async fn agent_stream(
             .post(&endpoint)
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
-            // Agent turns can legitimately run past the shared client's short
-            // default (long tool calls, multi-step orchestration); override
+            // Agent turns can legitimately run past the shared client's default
+            // 60s timeout (long tool calls, multi-step orchestration); override
             // per-request instead of raising the global default for every caller
             // of `state.http_client`.
-            .timeout(std::time::Duration::from_secs(
-                state.config.agent_call_timeout_secs,
-            ))
+            .timeout(std::time::Duration::from_secs(600))
     };
 
     let response = build_agent_req()

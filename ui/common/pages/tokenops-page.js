@@ -53,7 +53,7 @@
  *       `INERT_FILTERS`. Provider/Model/Org unit are real filters, confirmed
  *       against `oss/server/src/observability/handler.rs`: `model`/`provider`
  *       filter `trace_usage` on every finops endpoint; `org_unit` is EE-only
- *       (the EE FinOps scope resolver turns it into `user_id`s) and only
+ *       (`ee/server/src/finops_scope.rs` resolves it to `user_id`s) and only
  *       `dashboard` reads it — the other four endpoints ignore it entirely,
  *       and OSS ignores it outright (no org hierarchy). Their options come
  *       from two catalogs that already exist for other pages, not a new
@@ -68,8 +68,8 @@
  *         back before it is sent, so picking "gemini" does not silently
  *         return zero rows. Delete that shim the day the backend exposes the
  *         raw value (or normalizes `trace_usage.provider` to match).
- *       `call('fetchOrgUnits')` → GET `/org/units` (flat, the EE
- *         org-units route) needs `can_read_org` (manager-or-above or
+ *       `call('fetchOrgUnits')` → GET `/org/units` (flat, `ee/server/src
+ *         /org_units.rs`) needs `can_read_org` (manager-or-above or
  *         superuser) — same gate the org chart itself uses — so a lower-role
  *         caller, or an OSS build where the route is not even mounted, sees
  *         the filter stay disabled rather than an empty or broken dropdown.
@@ -654,7 +654,7 @@ class TokenopsPage extends HTMLElement {
    * by `llm-service.js`, which every page's barrel import loads) groups
    * currently-effective models by provider. Org unit needs its own service
    * module dynamic-imported first: `org-unit-service.js` only self-registers
-   * on the SPA router path (the EE SPA data functions), and this
+   * on the SPA router path (`ee/web/services/data-functions.js`), and this
    * page is a standalone document outside that path, same as the other
    * standalone EE documents that import their own service script directly.
    * On an OSS build the import 404s; either way, `call('fetchOrgUnits')`

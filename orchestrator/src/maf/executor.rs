@@ -370,13 +370,13 @@ async fn continue_paused_step(
     // `register_flow` (execute_step's first-attempt insert) stamped `created_at` once, at the
     // original attempt — `ON CONFLICT DO NOTHING`, never touched again. The MCP gateway's
     // liveness check (`gateway.rs::flow_user`) requires `created_at` to be within
-    // `NASIKO_FLOW_TIMEOUT_SECS` (600s default) of `now()`, so a human who takes longer than that to
+    // `FLOW_TIMEOUT_SECS` (120s default) of `now()`, so a human who takes longer than that to
     // approve a paused tool call permanently strands this trace id: every retried `tools/call`
     // 403s as "not a live flow", the agent re-asks, and re-approving can never fix it, since
     // nothing ever refreshes this row. Reopen it here, same as every other HITL resume dispatch
     // site (`a2a_dispatch.rs`'s `dispatch_to_agent`, `hitl/mod.rs`'s `deliver`) — except also
     // resetting `created_at`, which those two don't (they aren't the traceparent this specific
-    // timeout-vs-human-latency bug was diagnosed against, but would have the same exposure).
+    // 120s-vs-human-latency bug was diagnosed against, but would have the same exposure).
     let _ = sqlx::query(
         "UPDATE flows SET status = 'running', completed_at = NULL, created_at = now() WHERE flow_id = $1",
     )
@@ -1267,8 +1267,6 @@ async fn post_a2a_request<T: serde::Serialize + ?Sized>(
     // with its own deploy-time MCP_GATEWAY_TOKEN, and the user binding rides
     // the forwarded traceparent + the flow_participants record written before
     // this call (docs/MCP_GATEWAY_AGENT_AUTH.md).
-    // No per-request timeout: `client` is the MAF worker's own, built with the
-    // platform's agent-call budget because agent A2A calls are all it makes.
     let resp = {
         let r = client
             .post(&url_jsonrpc)
@@ -1276,6 +1274,7 @@ async fn post_a2a_request<T: serde::Serialize + ?Sized>(
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", traceparent)
             .json(body)
+            .timeout(std::time::Duration::from_secs(300))
             .send()
             .await
             .map_err(|e| e.to_string())?;
@@ -1286,6 +1285,7 @@ async fn post_a2a_request<T: serde::Serialize + ?Sized>(
                 .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
                 .header("traceparent", traceparent)
                 .json(body)
+                .timeout(std::time::Duration::from_secs(300))
                 .send()
                 .await
                 .map_err(|e| e.to_string())?

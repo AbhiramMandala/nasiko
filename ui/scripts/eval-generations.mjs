@@ -1788,7 +1788,7 @@ export function check(kase, text) {
  *
  * Weave is no longer a process this script talks to. It is a deployed agent —
  * a normal `agents` row with `is_internal = true`, seeded by the control plane
- * from WEAVE_AGENT_IMAGE — and the EE Weave surface is the only
+ * from WEAVE_AGENT_IMAGE — and `ee/server/src/weave_surface.rs` is the only
  * way in: it resolves that agent, speaks A2A `message/stream` to it, and
  * translates the frames back into the same SSE contract this script already
  * reads. So the wire format below is unchanged; only the host and the auth
@@ -2174,7 +2174,7 @@ async function checkCatalogReachable() {
   } catch (err) {
     console.error(`eval: the catalog at ${url} did not answer — ${err.message}.\n`);
     console.error('Start the control plane with `just run`. It binds CP_BIND from');
-    console.error('the server env file, and both this check and the seeded agent read from it,');
+    console.error('ee/server/.env, and both this check and the seeded agent read from it,');
     console.error('so the port there is the one that has to be right.');
     if (viaDockerHost) {
       console.error(`\n(Tried ${hostUrl} from here — host.docker.internal only resolves`);
@@ -2619,11 +2619,11 @@ if (record && skipped.length === cases.length) {
   console.error('The generator answered nothing at all, including the prose-only cases, which');
   console.error('touch neither the catalog nor the DSL. That is a setup problem, not a model one.\n');
   console.error('Weave runs as an agent the control plane deploys, so its environment comes');
-  console.error('from the server env file by way of oss/server/src/seed.rs — not from any file in');
+  console.error('from ee/server/.env by way of oss/server/src/seed.rs — not from any file in');
   console.error('the Weave repo. Check, in this order:\n');
   console.error('  1. docker logs $(docker ps -qf name=weave) — the agent says why on the');
   console.error('     first request, and it is usually a model credential.');
-  console.error('  2. AWS_BEARER_TOKEN_BEDROCK in the server env file — the seed forwards it,');
+  console.error('  2. AWS_BEARER_TOKEN_BEDROCK in ee/server/.env — the seed forwards it,');
   console.error('     so a stale or rotated key here is silence there.');
   console.error('  3. WEAVE_FORCE_PULL=1 then restart, if the env changed since the agent');
   console.error('     was last deployed — a running container keeps the env it started with.');

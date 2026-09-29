@@ -27,7 +27,7 @@
 //! The content-type taxonomy and the "compress at the egress proxy, leave a recoverable
 //! breadcrumb" shape are Caveman's ideas (<https://github.com/juliusbrussee/caveman>). This is an
 //! independent implementation from the published behaviour description; no Caveman code is used
-//! or vendored — its engine is BSL-1.1.
+//! or vendored — its engine is BSL-1.1. See `ee/docs/CAVEMAN_TOKEN_OPTIMIZATION_PRD_TRD.md` §13.
 
 #![forbid(unsafe_code)]
 // I4 is a compiler rule here, not a review rule: `text` is the only module allowed to slice, and

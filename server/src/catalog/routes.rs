@@ -243,10 +243,10 @@ pub(crate) async fn register_coding_agent(
 /// `org_bind` carries the ids of agents reachable through an org-hierarchy grant
 /// (`team`/`department`/`organization`), as resolved by
 /// `AuthService::org_granted_agent_ids`. `EeAuthService::can_access_agent`
-/// (the EE auth service) grants access via team/department membership by joining on
+/// (ee/auth/src/lib.rs) grants access via team/department membership by joining on
 /// `users.team_id` / `users.department_id` — columns that only exist after the EE
 /// `1002_org_hierarchy` migration. This file is compiled into and shared by both
-/// the OSS and EE server binaries (the EE server wraps this crate's router rather
+/// the OSS and EE server binaries (`ee/server` wraps this crate's router rather
 /// than forking it — see `nasiko_server::build_app_with_user_router`), so a single
 /// static SQL string here cannot reference those EE-only columns; the trait
 /// resolves them per edition and hands back plain ids instead, which is what

@@ -1,6 +1,6 @@
 //! Builds a `nasiko_config::Config` for the bench harness, pointed at the
 //! in-process mock LLM and carrying a dummy (non-empty) `openai_api_key` —
-//! the enterprise server's `build_ee_app` panics at startup without one (the MAF worker
+//! `ee/server::build_ee_app` panics at startup without one (the MAF worker
 //! requires it), even though the worker itself sits idle unless flows are
 //! explicitly queued.
 
@@ -156,7 +156,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         context_k_medium: 5,
         context_k_high: 20,
         embedding_model: "mock-embedding".into(),
-        agent_call_timeout_secs: 600,
+        router_agent_timeout_secs: 60,
         github_callback_url: None,
         github_central_callback_url: None,
         docker_agent_network: None,
