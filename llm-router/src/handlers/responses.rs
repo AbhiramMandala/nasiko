@@ -783,6 +783,8 @@ impl AttemptGuard {
                 platform_paid: attempt.platform_paid,
                 // Never compressed: this surface does not go through `chat_core`.
                 compress_metadata: None,
+                // /v1/responses does not share chat_core, so IP-1/IP-2 never run here (PRD §9).
+                brevity_metadata: None,
             }),
         }
     }
@@ -852,6 +854,7 @@ fn log_response_usage(
             platform_paid: attempt.platform_paid,
             // Never compressed: this surface does not go through `chat_core`.
             compress_metadata: None,
+            brevity_metadata: None,
         },
     );
 }

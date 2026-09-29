@@ -276,6 +276,10 @@ async fn chat_core(
     // After compression, so the size floor is judged on the bytes actually being sent, and so a
     // compressed tool result cannot push a turn over the floor it would otherwise miss.
     let brevity = crate::brevity::apply(&mut req, &ctx.cfg, &resolved);
+    let brevity_metadata = Some(crate::brevity::to_metadata(
+        &brevity,
+        crate::brevity::DIRECTIVE.len(),
+    ));
     tracing::debug!(
         target: "nasiko::llm_router::brevity",
         %agent_id,
@@ -349,6 +353,7 @@ async fn chat_core(
             attribution_source,
             platform_paid,
             compress_metadata: compression.to_metadata(),
+            brevity_metadata: brevity_metadata.clone(),
             span: llm_span.clone(),
         });
     }
@@ -382,6 +387,7 @@ async fn chat_core(
             attribution_source,
             platform_paid,
             compress_metadata: compression.to_metadata(),
+            brevity_metadata: brevity_metadata.clone(),
         },
     );
 
@@ -551,6 +557,7 @@ struct StreamChatArgs<'a> {
     /// Without this a streamed call produced a span with no token attributes at
     /// all, so every trace-derived figure counted it as free.
     span: tracing::Span,
+    brevity_metadata: Option<serde_json::Value>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -572,6 +579,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         platform_paid,
         compress_metadata,
         span,
+        brevity_metadata,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
@@ -588,6 +596,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         attribution_source,
         platform_paid,
         compress_metadata,
+        brevity_metadata,
     };
 
     let body_stream = async_stream::stream! {
@@ -656,11 +665,13 @@ struct UsageGuard {
     platform_paid: bool,
     /// Taken in `drop`, which runs exactly once.
     compress_metadata: Option<serde_json::Value>,
+    brevity_metadata: Option<serde_json::Value>,
 }
 
 impl Drop for UsageGuard {
     fn drop(&mut self) {
         let compress_metadata = self.compress_metadata.take();
+        let brevity_metadata = self.brevity_metadata.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
         usage::spawn_log(
@@ -682,6 +693,7 @@ impl Drop for UsageGuard {
                 attribution_source: self.attribution_source,
                 platform_paid: self.platform_paid,
                 compress_metadata,
+                brevity_metadata,
             },
         );
     }
@@ -822,6 +834,7 @@ mod tests {
                 platform_paid: true,
                 // This test covers span lifetime, not compression.
                 compress_metadata: None,
+                brevity_metadata: None,
             };
             drop(guard);
         });

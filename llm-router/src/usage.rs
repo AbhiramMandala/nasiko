@@ -51,6 +51,12 @@ pub struct UsageRecord {
     /// depend on the compression module's types. `None` leaves the row's metadata byte-identical
     /// to what it was before compression existed.
     pub compress_metadata: Option<serde_json::Value>,
+    /// Pre-serialized `metadata.brevity` block (IP-2).
+    ///
+    /// Always `Some` once the layer exists, because "skipped, and why" is the answer most worth
+    /// having: IP-1 leaves a row only when it acted, so a missing block is ambiguous between
+    /// "off" and "nothing to do". This one always says which.
+    pub brevity_metadata: Option<serde_json::Value>,
 }
 
 /// Spawn the usage write so it never blocks the response.
@@ -131,6 +137,7 @@ pub async fn log_usage(
         pricing: priced.provenance(),
         cache_creation: serde_json::to_value(&cache_details).unwrap_or(serde_json::Value::Null),
         compress: record.compress_metadata,
+        brevity: record.brevity_metadata,
     });
 
     sqlx::query(
@@ -182,6 +189,8 @@ struct MetadataInputs {
     cache_creation: serde_json::Value,
     /// `None` when compression did not run.
     compress: Option<serde_json::Value>,
+    /// Always `Some` once the brevity layer exists: it records "skipped, and why" too.
+    brevity: Option<serde_json::Value>,
 }
 
 /// The row's `metadata` JSONB.
@@ -198,6 +207,9 @@ fn build_metadata(inputs: MetadataInputs) -> serde_json::Value {
     });
     if let Some(compress) = inputs.compress {
         metadata["compress"] = compress;
+    }
+    if let Some(brevity) = inputs.brevity {
+        metadata["brevity"] = brevity;
     }
     metadata
 }
@@ -218,6 +230,7 @@ mod tests {
             pricing: serde_json::json!({ "source": "Db", "estimated": false }),
             cache_creation: serde_json::Value::Null,
             compress: None,
+            brevity: None,
         }
     }
 

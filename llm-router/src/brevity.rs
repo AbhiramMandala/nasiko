@@ -14,6 +14,8 @@
 //!
 //! Carve-outs and the size floor follow the token-optimization design's IP-2 section.
 
+use serde_json::Value;
+
 use crate::config::GatewayConfig;
 use crate::ir::ChatRequest;
 use crate::resolver::ResolvedConfig;
@@ -47,6 +49,37 @@ pub(crate) enum Skipped {
     /// The agent has token optimization switched off. The per-agent switch governs the whole
     /// stack, not just payload compression, so one control starts and stops every layer.
     AgentOptedOut,
+}
+
+/// What IP-2 decided for one request, for `token_usage.metadata.brevity`.
+///
+/// Recorded whether or not it applied. A layer that leaves no trace when it declines is a layer
+/// nobody can measure — three test rounds could not tell "off" apart from "nothing to do".
+pub(crate) fn to_metadata(outcome: &Result<(), Skipped>, directive_bytes: usize) -> Value {
+    match outcome {
+        Ok(()) => serde_json::json!({
+            "applied": true,
+            "directive_bytes": directive_bytes,
+        }),
+        Err(reason) => serde_json::json!({
+            "applied": false,
+            "skipped": reason.as_label(),
+        }),
+    }
+}
+
+impl Skipped {
+    /// Stable string for the metadata block — changing one of these changes a queryable value,
+    /// so they are deliberately spelled out rather than derived from the variant name.
+    pub(crate) fn as_label(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::ToolContinuation => "tool_continuation",
+            Self::CodingAgent => "coding_agent",
+            Self::RequestTooSmall => "request_too_small",
+            Self::AgentOptedOut => "agent_opted_out",
+        }
+    }
 }
 
 /// Append the directive unless a carve-out applies. `Ok(())` means the request was modified.
@@ -211,6 +244,35 @@ mod tests {
         let last = r.messages.last().unwrap();
         assert_eq!(last.role, "system");
         assert_eq!(last.content.as_ref().unwrap().as_str().unwrap(), DIRECTIVE);
+    }
+
+    #[test]
+    fn every_outcome_is_recorded_even_when_the_layer_declines() {
+        // The reason this exists: IP-1 writes metadata only when it acted, so its absence is
+        // ambiguous between "switched off" and "nothing in scope". IP-2 always states which,
+        // so a run can be audited from the row alone.
+        let applied = to_metadata(&Ok(()), DIRECTIVE.len());
+        assert_eq!(applied["applied"], serde_json::json!(true));
+        assert_eq!(
+            applied["directive_bytes"],
+            serde_json::json!(DIRECTIVE.len())
+        );
+
+        for (reason, label) in [
+            (Skipped::Disabled, "disabled"),
+            (Skipped::ToolContinuation, "tool_continuation"),
+            (Skipped::CodingAgent, "coding_agent"),
+            (Skipped::RequestTooSmall, "request_too_small"),
+            (Skipped::AgentOptedOut, "agent_opted_out"),
+        ] {
+            let m = to_metadata(&Err(reason), DIRECTIVE.len());
+            assert_eq!(m["applied"], serde_json::json!(false));
+            assert_eq!(
+                m["skipped"],
+                serde_json::json!(label),
+                "label drifted for {reason:?}"
+            );
+        }
     }
 
     #[test]

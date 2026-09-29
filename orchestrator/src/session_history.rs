@@ -104,6 +104,7 @@ impl SessionHistory {
         // `chat_messages`; it just never becomes part of the next turn's prompt.
         // Nothing here writes that tag: it is set by whatever policy produced the
         // refusal, and with no policy configured no row ever carries it.
+        let (mut bytes_in, mut bytes_out, mut touched) = (0usize, 0usize, 0usize);
         let mut messages: Vec<ChatMessage> =
             sqlx::query_as::<_, (String, String)>(FETCH_HISTORY_SQL)
                 .bind(session_id)
@@ -112,11 +113,32 @@ impl SessionHistory {
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .map(|(role, content)| ChatMessage {
-                    role,
-                    content: nasiko_compress::compress(&content, compress).into_text(),
+                .map(|(role, content)| {
+                    let before = content.len();
+                    let content = nasiko_compress::compress(&content, compress).into_text();
+                    bytes_in += before;
+                    bytes_out += content.len();
+                    if content.len() < before {
+                        touched += 1;
+                    }
+                    ChatMessage { role, content }
                 })
                 .collect();
+
+        // IP-4 had no per-request record of any kind, so a run could not be told apart from one
+        // where it did nothing — the difference only showed up as a token delta two layers away.
+        // Emitted at INFO and keyed by session so a single run can be audited from the logs.
+        if touched > 0 {
+            tracing::info!(
+                target: "nasiko::orchestrator::history_compress",
+                session_id,
+                bytes_in,
+                bytes_out,
+                messages_touched = touched,
+                saved_pct = (100.0 * (bytes_in - bytes_out) as f64 / bytes_in.max(1) as f64),
+                "history compressed before selection"
+            );
+        }
         messages.reverse();
         messages
     }

@@ -101,6 +101,8 @@ async fn embeddings_core(
             attribution_source: Some(attribution.source),
             // Never compressed: this surface does not go through `chat_core`.
             compress_metadata: None,
+            // Embeddings are not chat completions; IP-2 never runs here.
+            brevity_metadata: None,
             platform_paid: resolved.platform_paid,
         },
     );
