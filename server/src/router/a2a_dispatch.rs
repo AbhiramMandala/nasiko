@@ -1136,16 +1136,7 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
     // never here, or the superuser-ACL-bypass would leak it into ordinary chat
     // history/usage tracking.
     sqlx::query_as::<_, AgentRow>(
-        "SELECT id, name, status, minimal_code_enabled, \
-                EXISTS ( \
-                  SELECT 1 FROM jsonb_array_elements(skills) s \
-                  WHERE s->>'id' ILIKE '%code%' \
-                     OR s->>'name' ILIKE '%code%' \
-                     OR EXISTS ( \
-                          SELECT 1 FROM jsonb_array_elements_text(COALESCE(s->'tags', '[]'::jsonb)) t \
-                          WHERE t ILIKE '%code%' \
-                        ) \
-                ) AS is_coding_agent_example \
+        "SELECT id, name, status, minimal_code_enabled, skills \
          FROM agents \
          WHERE (id::text = $1 OR name = $1) AND status = 'running' AND NOT is_internal",
     )
@@ -1282,18 +1273,19 @@ async fn agent_stream(
     // server-injected context (enterprise supplemental knowledge), and it is what the agent is
     // meant to receive. Building from `query` here silently dropped that injection — the
     // context was resolved on every dispatch and then thrown away.
-    let effective_query = if agent.is_coding_agent_example && agent.minimal_code_enabled {
-        let addendum = nasiko_coding_policy::minimal_code_addendum(prior_turn_count);
-        tracing::info!(
-            agent_id = %agent.id,
-            %context_id,
-            prior_turn_count,
-            "a2a_dispatch: injecting minimal-code ladder"
-        );
-        format!("{outbound_query}\n{addendum}")
-    } else {
-        outbound_query.to_string()
-    };
+    let effective_query =
+        if agent.minimal_code_enabled && crate::catalog::models::has_coding_skills(&agent.skills) {
+            let addendum = nasiko_coding_policy::minimal_code_addendum(prior_turn_count);
+            tracing::info!(
+                agent_id = %agent.id,
+                %context_id,
+                prior_turn_count,
+                "a2a_dispatch: injecting minimal-code ladder"
+            );
+            format!("{outbound_query}\n{addendum}")
+        } else {
+            outbound_query.to_string()
+        };
 
     // Streaming first (`message/stream`): agents that stream (all the Rust
     // seed agents, and python a2a-sdk servers) deliver live tokens and tool
@@ -2334,12 +2326,9 @@ struct AgentRow {
     /// dispatch so the minimal-code ladder injection below applies
     /// immediately when toggled, with no agent restart needed.
     minimal_code_enabled: bool,
-    /// Broad "does this look like a coding agent" signal (skill id/name/tags
-    /// containing "code") — matches the UI's own toggle-visibility check
-    /// (`#isCodingAgentExample`, ui/common/pages/agent-card-page.js), kept
-    /// permissive on purpose: this has to work for third-party agents we've
-    /// never seen, not just our own two examples' exact skill ids.
-    is_coding_agent_example: bool,
+    /// The agent card's skills, classified here rather than in SQL so the dispatch path and
+    /// the settings page share one answer — see [`catalog::models::has_coding_skills`].
+    skills: sqlx::types::Json<Vec<crate::catalog::models::Skill>>,
 }
 
 #[derive(Debug)]

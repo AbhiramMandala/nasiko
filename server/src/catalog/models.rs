@@ -61,6 +61,28 @@ pub struct Skill {
     pub examples: Vec<serde_json::Value>,
 }
 
+/// Whether an agent's card reads as code work, and so should be offered minimal-code mode.
+///
+/// The single implementation behind all three consumers: the A2A dispatch path (which decides
+/// whether to inject the ladder), the agent detail response (which decides whether the
+/// settings page renders the toggle), and through that response, the settings page itself.
+/// They previously each derived this for themselves — a Postgres `ILIKE '%code%'` and a
+/// mirrored JavaScript `/code/i` — and both were wrong in the same two ways, because a
+/// substring match on "code" misses `coding` entirely while matching `encode`.
+///
+/// `description` is deliberately not searched: it is prose, and matching it would classify a
+/// documentation agent that merely mentions code as a coding agent.
+pub fn has_coding_skills(skills: &[Skill]) -> bool {
+    skills.iter().any(|skill| {
+        nasiko_coding_policy::mentions_coding(&skill.id)
+            || nasiko_coding_policy::mentions_coding(&skill.name)
+            || skill
+                .tags
+                .iter()
+                .any(|tag| nasiko_coding_policy::mentions_coding(tag))
+    })
+}
+
 /// Lightweight projection returned by the by-skill discovery endpoint.
 #[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
 pub struct AgentSummary {

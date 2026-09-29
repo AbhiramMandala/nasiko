@@ -641,6 +641,13 @@ pub(crate) struct AgentDetailResponse {
     /// it here and the Settings toggle shows off regardless of the real value.
     #[serde(rename = "minimal_code_enabled")]
     minimal_code_enabled: bool,
+    /// Whether this agent's card reads as code work, and so should be offered minimal-code
+    /// mode at all. Served rather than re-derived in the browser: the settings page used to
+    /// run its own `/code/i` over the skills, mirroring a Postgres `ILIKE '%code%'` in the
+    /// dispatch path, and the two could disagree — which is exactly what happened, since both
+    /// missed `coding` (no "code" in it) while matching `encode`.
+    #[serde(rename = "has_coding_skills")]
+    has_coding_skills: bool,
     /// Owner-writable bag, and the home of `features.*` — the flags
     /// `AppState::agent_env` turns into `NASIKO_<KEY>` on the container.
     ///
@@ -774,6 +781,7 @@ pub(crate) async fn get_one(
         coding_agent_integration_id,
         compress_enabled: agent.compress_enabled,
         minimal_code_enabled: agent.minimal_code_enabled,
+        has_coding_skills: super::models::has_coding_skills(&agent.skills),
         metadata: agent.metadata.0.clone(),
         status: agent.status.clone(),
         version: agent.version.clone(),

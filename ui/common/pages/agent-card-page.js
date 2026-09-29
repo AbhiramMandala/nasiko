@@ -1481,20 +1481,21 @@ class AgentCardPage extends HTMLElement {
 
   /* ── Settings tab ──────────────────────────────────────────────────────── */
 
-  // Broad "does this look like a coding agent" signal — skill id/name/tags
-  // containing "code" — not `is_coding_agent` (that flag means something
-  // unrelated: an external CLI tool — Claude Code, Codex, Cursor — linked
-  // for LLM-router billing, never this container). Matches the server's own
-  // check at A2A dispatch time (oss/server/src/router/a2a_dispatch.rs,
-  // resolve_agent's is_coding_agent_example) — kept in sync deliberately:
-  // this only controls whether the toggle *shows up*, but it should show up
-  // for exactly the agents the server would actually apply it to. Broad on
-  // purpose — has to work for a third-party agent we've never seen, not
-  // just our own two examples' exact skill ids.
-  #isCodingAgentExample(a) {
-    const looksLikeCode = (s) =>
-      /code/i.test(s.id || '') || /code/i.test(s.name || '') || (s.tags || []).some((t) => /code/i.test(t));
-    return (a.skills || []).some(looksLikeCode);
+  // Whether to offer minimal-code mode at all — served by the agent detail response, not
+  // re-derived here. This used to be a local `/code/i` over the skills, mirroring a Postgres
+  // `ILIKE '%code%'` in the dispatch path; two copies of one rule, and both missed `coding`
+  // (which contains no "code") while matching `encode`. So the switch was hidden for exactly
+  // the agents that wanted it. The server now answers once — see
+  // `catalog::models::has_coding_skills`.
+  //
+  // Not `is_coding_agent`, which means something unrelated: an external CLI tool (Claude
+  // Code, Codex, Cursor) linked for LLM-router billing, never this container.
+  //
+  // `|| minimal_code_enabled` so an agent whose flag was set some other way (the API, or a
+  // card that has since been edited) can still be seen and switched off. A toggle that is on
+  // must never be invisible.
+  #offersMinimalCode(a) {
+    return a.has_coding_skills === true || a.minimal_code_enabled === true;
   }
 
   // Self-review is still a write-only secret (unlike minimal-code, it stays
@@ -1562,7 +1563,7 @@ class AgentCardPage extends HTMLElement {
               label="Token optimization"
               hint="Off by default. Your own messages are never changed."></app-switch>
           </section>
-          ${this.#isCodingAgentExample(a) ? `
+          ${this.#offersMinimalCode(a) ? `
           <section class="acp-section">
             <h2 class="acp-section-title">Coding agent behavior</h2>
             <app-switch id="acp-minimal-code" layout="settings"
