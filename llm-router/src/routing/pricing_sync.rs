@@ -332,10 +332,17 @@ async fn current_prices(
         .collect())
 }
 
+/// Whether a row was written by us (and may be replaced by a newer book) or by an
+/// operator (and must be preserved — a negotiated rate no public book carries).
+///
+/// `seed:` is the prefix every migration-seeded row carries, so correcting a seed
+/// rate needs no new literal here. The two bare sentences below predate it and
+/// still exist in deployed databases.
 fn sync_managed_note(note: Option<&str>) -> bool {
     note.is_some_and(|note| {
         note.starts_with("portkey pricing sync")
             || note.starts_with("openrouter pricing sync")
+            || note.starts_with("seed:")
             || note == "boot seed (static list)"
             || matches!(
                 note,
@@ -486,12 +493,13 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
     // price book gets real prices; most have none, which is expected and harmless.
     let custom = super::catalog::load_custom_providers(db).await;
     let mut providers = super::catalog::priceable_providers(cfg, &custom);
-    // Public price books need no inference key. Claude integrations need the
-    // Anthropic reference book even when actual hosting is unknown per call.
-    let has_claude: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM agents WHERE coding_agent_integration_id = 'claude' AND deleted_at IS NULL)",
-    ).fetch_one(db).await.unwrap_or(false);
-    if has_claude && !providers.iter().any(|(label, _)| label == "anthropic") {
+    // Public price books need no inference key, so coverage must not be gated on
+    // one. This was conditional on a Claude coding-agent row existing, which made
+    // the Anthropic book's coverage depend on *when* the integration was installed
+    // relative to a pass: install it a minute after boot and every Claude call was
+    // priced from the offline seed until the next tick, 24h later. Unconditional
+    // matches how OpenRouter's book is already fetched below.
+    if !providers.iter().any(|(label, _)| label == "anthropic") {
         providers.push(("anthropic".into(), "https://api.anthropic.com".into()));
     }
     for (label, api_base) in providers {

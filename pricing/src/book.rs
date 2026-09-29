@@ -95,14 +95,23 @@ fn static_row(model: &str) -> Option<PriceRow> {
         ("gpt-4", 30.00, 60.00, None, None),
         ("gpt-3.5", 0.50, 1.50, None, None),
         ("o3-mini", 1.10, 4.40, None, None),
-        ("o3", 10.00, 40.00, None, None),
-        ("o1-mini", 3.00, 12.00, None, None),
+        ("o3", 2.00, 8.00, Some(0.0), Some(0.50)),
+        ("o1-mini", 1.10, 4.40, Some(0.0), Some(0.55)),
         ("o1", 15.00, 60.00, None, None),
-        // Anthropic. Claude 5 rates are carried forward from the equivalent
-        // Claude 4 tier and are unverified — see oss/migrations/0006. They must
-        // stay above the generic `claude` entry, which would price Opus as Sonnet.
-        ("claude-opus-5", 15.00, 75.00, Some(18.75), Some(1.50)),
-        ("claude-sonnet-5", 3.00, 15.00, Some(3.75), Some(0.30)),
+        // Anthropic. Verified 2026-09-29 against Anthropic's published list
+        // prices and the Portkey book the pricing sync reads; the two agree.
+        // Order is load-bearing twice here. Anthropic re-priced mid-family at
+        // Opus 4.5 and Haiku 4.5, so those entries must precede the bare
+        // `claude-opus-4`/`claude-haiku-4` families they are substrings of —
+        // otherwise an Opus 4.8 call prices at 3x its true rate. And all of them
+        // must stay above the generic `claude` entry, which prices Opus as Sonnet.
+        ("claude-opus-5", 5.00, 25.00, Some(6.25), Some(0.50)),
+        ("claude-sonnet-5", 2.00, 10.00, Some(2.50), Some(0.20)),
+        ("claude-opus-4-5", 5.00, 25.00, Some(6.25), Some(0.50)),
+        ("claude-opus-4-6", 5.00, 25.00, Some(6.25), Some(0.50)),
+        ("claude-opus-4-7", 5.00, 25.00, Some(6.25), Some(0.50)),
+        ("claude-opus-4-8", 5.00, 25.00, Some(6.25), Some(0.50)),
+        ("claude-haiku-4-5", 1.00, 5.00, Some(1.25), Some(0.10)),
         ("claude-opus-4", 15.00, 75.00, Some(18.75), Some(1.50)),
         ("claude-4-opus", 15.00, 75.00, Some(18.75), Some(1.50)),
         ("claude-sonnet-4", 3.00, 15.00, Some(3.75), Some(0.30)),
@@ -118,14 +127,16 @@ fn static_row(model: &str) -> Option<PriceRow> {
         ("claude", 3.00, 15.00, Some(3.75), Some(0.30)),
         // Google
         ("gemini-2.5-pro", 1.25, 10.00, None, None),
-        ("gemini-2.5-flash", 0.15, 0.60, None, None),
+        // Read price listed, write price not — a listed read does not establish
+        // that writes are free, so the write stays unknown.
+        ("gemini-2.5-flash", 0.30, 2.50, None, Some(0.03)),
         ("gemini-2.0", 0.10, 0.40, None, None),
         ("gemini-1.5-pro", 1.25, 5.00, None, None),
         ("gemini-1.5-flash", 0.075, 0.30, None, None),
         ("gemini", 0.50, 1.50, None, None),
         // DeepSeek
-        ("deepseek-chat", 0.14, 0.28, Some(0.014), Some(0.014)),
-        ("deepseek-reasoner", 0.55, 2.19, None, None),
+        ("deepseek-chat", 0.14, 0.28, Some(0.0), Some(0.0028)),
+        ("deepseek-reasoner", 0.14, 0.28, Some(0.0), Some(0.0028)),
         ("deepseek", 0.14, 0.28, None, None),
         // Open-weight hosted
         ("llama-3.3-70b", 0.59, 0.79, None, None),
@@ -168,6 +179,50 @@ mod tests {
         assert_eq!(opus.input_per_1m, 15.00);
         let generic = static_row("claude-instant").expect("generic priced");
         assert_eq!(generic.input_per_1m, 3.00);
+    }
+
+    #[test]
+    fn a_point_release_priced_apart_from_its_family_wins_over_the_family() {
+        // Anthropic re-priced mid-family: Opus 4.5 onward is $5/$25, not the
+        // $15/$75 the bare `claude-opus-4` entry carries. Substring matching
+        // takes the first hit, so these only stay correct while they precede it.
+        for model in [
+            "claude-opus-4-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+        ] {
+            let row = static_row(model).expect("priced");
+            assert_eq!(row.input_per_1m, 5.00, "{model} fell through to Opus 4");
+            assert_eq!(row.output_per_1m, 25.00, "{model} fell through to Opus 4");
+        }
+        let haiku = static_row("claude-haiku-4-5").expect("priced");
+        assert_eq!(haiku.input_per_1m, 1.00);
+        assert_eq!(haiku.output_per_1m, 5.00);
+        // The families themselves are unchanged for the releases they do cover.
+        assert_eq!(static_row("claude-opus-4-1").unwrap().input_per_1m, 15.00);
+    }
+
+    #[test]
+    fn repriced_models_carry_their_current_rate_not_their_launch_rate() {
+        // Each of these was cut by its vendor after the table was written, and
+        // each sat at the launch rate until the 2026-09-29 audit. A free cache
+        // write is a real price here, not a missing one.
+        let o3 = static_row("o3").expect("priced");
+        assert_eq!((o3.input_per_1m, o3.output_per_1m), (2.00, 8.00));
+        let o1_mini = static_row("o1-mini").expect("priced");
+        assert_eq!((o1_mini.input_per_1m, o1_mini.output_per_1m), (1.10, 4.40));
+        let reasoner = static_row("deepseek-reasoner").expect("priced");
+        assert_eq!(
+            (reasoner.input_per_1m, reasoner.output_per_1m),
+            (0.14, 0.28)
+        );
+        assert_eq!(
+            static_row("deepseek-chat").unwrap().cache_read_per_1m,
+            Some(0.0028)
+        );
+        let flash = static_row("gemini-2.5-flash").expect("priced");
+        assert_eq!((flash.input_per_1m, flash.output_per_1m), (0.30, 2.50));
     }
 
     #[test]

@@ -182,6 +182,12 @@ macro_rules! seed {
 /// rows from the Portkey price book once provider keys are configured. VERIFY
 /// against current provider pricing before relying on cost figures.
 ///
+/// The Anthropic, OpenAI and DeepSeek rows were audited against the upstream
+/// book on 2026-09-29 (migration 0047 carries the same corrections for databases
+/// already seeded). The Gemini and Groq rows were not: Portkey keys Google by
+/// context tier (`gemini-2.5-pro-lte-128k`), so a bare name matches nothing
+/// there and these stay hand-maintained until the sync normalizes names.
+///
 /// Deliberately code, not a migration: price updates ship with the binary
 /// instead of requiring a new migration per price change.
 pub const SEED_PRICING: &[SeedPrice] = &[
@@ -193,14 +199,24 @@ pub const SEED_PRICING: &[SeedPrice] = &[
     seed!("openai", "gpt-4-turbo", 10.00, 30.00),
     seed!("openai", "gpt-3.5-turbo", 0.50, 1.50),
     seed!("openai", "o1-preview", 15.00, 60.00),
-    seed!("openai", "o1-mini", 3.00, 12.00),
-    seed!("openai", "o3", 10.00, 40.00),
+    seed!("openai", "o1-mini", 1.10, 4.40, 0.00, 0.55),
+    seed!("openai", "o3", 2.00, 8.00, 0.00, 0.50),
     seed!("openai", "o3-mini", 1.10, 4.40),
     seed!("openai", "text-embedding-3-small", 0.02, 0.00),
     seed!("openai", "text-embedding-3-large", 0.13, 0.00),
     seed!("anthropic", "claude-opus-4", 15.00, 75.00, 18.75, 1.50),
     seed!("anthropic", "claude-sonnet-4", 3.00, 15.00, 3.75, 0.30),
     seed!("anthropic", "claude-haiku-4", 0.80, 4.00, 1.00, 0.08),
+    // Anthropic re-priced mid-family, so the three rows above are not safe
+    // family fallbacks for every point release: `claude-opus-4-8` reduces to
+    // `claude-opus-4` and would price at 15/75 instead of 5/25, and
+    // `claude-haiku-4-5` at 0.80/4.00 instead of 1.00/5.00. Seeding the point
+    // releases keeps the family probe from ever being reached for them.
+    seed!("anthropic", "claude-opus-4-5", 5.00, 25.00, 6.25, 0.50),
+    seed!("anthropic", "claude-opus-4-6", 5.00, 25.00, 6.25, 0.50),
+    seed!("anthropic", "claude-opus-4-7", 5.00, 25.00, 6.25, 0.50),
+    seed!("anthropic", "claude-opus-4-8", 5.00, 25.00, 6.25, 0.50),
+    seed!("anthropic", "claude-haiku-4-5", 1.00, 5.00, 1.25, 0.10),
     seed!("anthropic", "claude-3-5-sonnet", 3.00, 15.00),
     seed!("anthropic", "claude-3-5-haiku", 0.80, 4.00),
     seed!(
@@ -223,16 +239,16 @@ pub const SEED_PRICING: &[SeedPrice] = &[
     // `token_usage.provider`, and `calculate_token_cost` matches (provider, model)
     // exactly, so a `google`-labelled row can never price a Gemini call.
     seed!("gemini", "gemini-2.5-pro", 1.25, 10.00),
-    seed!("gemini", "gemini-2.5-flash", 0.15, 0.60),
+    seed!("gemini", "gemini-2.5-flash", 0.30, 2.50),
     seed!("gemini", "gemini-1.5-pro", 1.25, 5.00),
     seed!("gemini", "gemini-1.5-flash", 0.075, 0.30),
     seed!("gemini", "gemini-2.0-flash", 0.10, 0.40),
     seed!("groq", "llama-3.3-70b-versatile", 0.59, 0.79),
     seed!("groq", "llama-3.1-8b-instant", 0.05, 0.08),
-    seed!("deepseek", "deepseek-chat", 0.14, 0.28, 0.014, 0.014),
-    seed!("deepseek", "deepseek-reasoner", 0.55, 2.19),
+    seed!("deepseek", "deepseek-chat", 0.14, 0.28, 0.00, 0.0028),
+    seed!("deepseek", "deepseek-reasoner", 0.14, 0.28, 0.00, 0.0028),
     seed!("deepseek", "deepseek-v4-flash", 0.14, 0.28),
-    seed!("deepseek", "deepseek-v4-pro", 0.55, 2.19),
+    seed!("deepseek", "deepseek-v4-pro", 0.435, 0.87, 0.00, 0.0036),
 ];
 
 /// Seed `model_pricing` from [`SEED_PRICING`] at server boot.
