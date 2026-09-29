@@ -2089,3 +2089,47 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
         },
     }
 }
+
+// ─── Coding-agent integrations ──────────────────────────────────────────────
+
+#[derive(Subcommand)]
+pub enum IntegrationSubCommands {
+    /// Show which coding agents are on this machine and their reporting status
+    Status,
+    /// Register a coding agent and start reporting its sessions to Nasiko
+    Install {
+        /// Agent to install (e.g. claude or opencode)
+        agent: String,
+        /// Report tokens, latency and cost, but omit conversation text from spans
+        #[arg(long)]
+        no_content: bool,
+    },
+    /// Stop reporting a coding agent's sessions and remove its hook
+    Uninstall {
+        /// Agent to uninstall (e.g. claude or opencode)
+        agent: String,
+    },
+    /// Export one session's new turns. Invoked by the installed hook, not by hand.
+    #[command(hide = true)]
+    Report {
+        #[arg(long)]
+        agent: String,
+    },
+    /// Validate and deliver queued coding-agent events
+    Sync,
+}
+
+pub fn dispatch_integration(cmd: IntegrationSubCommands) -> Result<()> {
+    match cmd {
+        IntegrationSubCommands::Status => commands::integration::status(),
+        IntegrationSubCommands::Install { agent, no_content } => {
+            commands::integration::install(commands::integration::InstallOptions {
+                agent_id: &agent,
+                no_content,
+            })
+        }
+        IntegrationSubCommands::Uninstall { agent } => commands::integration::uninstall(&agent),
+        IntegrationSubCommands::Report { agent } => commands::integration::report(&agent),
+        IntegrationSubCommands::Sync => commands::integration::sync(),
+    }
+}
