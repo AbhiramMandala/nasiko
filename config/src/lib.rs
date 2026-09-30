@@ -91,6 +91,11 @@ pub struct Config {
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
+    /// Wall-clock budget for one flow, from `NASIKO_FLOW_TIMEOUT_SECS`. The
+    /// platform's widest window: the flow guard enforces it, and both the MCP
+    /// gateway (`tools/call`) and the LLM router (token attribution) refuse to
+    /// serve a flow older than this, so nothing an agent turn depends on may
+    /// outlive it.
     pub flow_timeout_secs: i32,
     /// How long a HITL pause (`hitl_requests`) stays answerable before the dispatcher's poll
     /// loop expires it. `oss/hitl`'s own store applies this at row-creation time — see
@@ -176,7 +181,14 @@ pub struct Config {
     /// OpenAI-compatible model used for Stage 1 vector embeddings.
     /// Default: `text-embedding-3-small`. Stage 1 is skipped if `openai_api_key` is unset.
     pub embedding_model: String,
-    pub router_agent_timeout_secs: u64,
+    /// Wall-clock budget for a single agent HTTP hop — the A2A proxy, the
+    /// orchestrator's streaming and non-streaming agent calls, and the MAF
+    /// executor's. An agent turn can legitimately run for minutes (long tool
+    /// calls, multi-step orchestration), so this is deliberately far above the
+    /// shared `http_client` default, which stays short for embeddings, registry
+    /// probes and OAuth. Read from `AGENT_CALL_TIMEOUT_SECS`, falling back to
+    /// the former `ROUTER_AGENT_TIMEOUT_SECS`.
+    pub agent_call_timeout_secs: u64,
     pub github_callback_url: Option<String>,
     /// Central OAuth callback relay URL (multi-tenant deployments): used as the
     /// GitHub `redirect_uri` for both authorize and token exchange instead of
@@ -413,7 +425,11 @@ impl Config {
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
-            flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 120),
+            // Keep in step with `nasiko_flow::DEFAULT_FLOW_TIMEOUT_SECS` (this
+            // crate is a leaf and can't reference it): an agent turn may run
+            // the full `agent_call_timeout_secs`, so the flow that authorizes
+            // it has to live at least as long.
+            flow_timeout_secs: env_parse("NASIKO_FLOW_TIMEOUT_SECS", 600),
             hitl_request_ttl_days: env_parse("HITL_REQUEST_TTL_DAYS", 7),
             // Defaults match `nasiko_hitl::dispatcher::DispatcherConfig::default()` exactly, so
             // an unset env var changes nothing.
@@ -456,7 +472,11 @@ impl Config {
             context_k_medium: env_parse("CONTEXT_K_MEDIUM", 5),
             context_k_high: env_parse("CONTEXT_K_HIGH", 20),
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
-            router_agent_timeout_secs: env_parse("ROUTER_AGENT_TIMEOUT_SECS", 60),
+            agent_call_timeout_secs: std::env::var("AGENT_CALL_TIMEOUT_SECS")
+                .or_else(|_| std::env::var("ROUTER_AGENT_TIMEOUT_SECS"))
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(600),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
                 .ok()

@@ -437,34 +437,12 @@ where
         // and log line. Redact that one route; everything else is unchanged.
         .layer(TraceLayer::new_for_http().make_span_with(
             |req: &axum::http::Request<axum::body::Body>| {
-                let span = tracing::info_span!(
+                tracing::info_span!(
                     "request",
                     method = %req.method(),
                     uri = %mcp::redact_credential_uri(req.uri()),
                     version = ?req.version(),
-                );
-                // Adopt the caller's W3C trace context when it sends one, so this
-                // server span joins the flow that triggered it rather than rooting
-                // a trace of its own. Callers without a `traceparent` (a browser
-                // hitting the UI or the API) are unaffected and still start a root.
-                //
-                // Agent→server hops depend on this. The LLM router's `gen_ai.chat`
-                // span records the *resolved* provider and model, which is the only
-                // place the truth appears when an agent's config re-routes it — the
-                // agent labels its own span with the model it asked for. Rooted in a
-                // separate trace, that span is unreachable from the session view and
-                // from the span→`trace_usage` materializer, so traces and FinOps both
-                // fall back to the requested model and price the wrong one.
-                if let Some(cx) = req
-                    .headers()
-                    .get("traceparent")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(telemetry::remote_context_from_traceparent)
-                {
-                    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-                    span.set_parent(cx);
-                }
-                span
+                )
             },
         ))
 }
