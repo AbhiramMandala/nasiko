@@ -163,10 +163,21 @@ where
             base_url: state.config.openai_base_url.clone(),
             model: state.config.openai_model.clone(),
         };
+        // The MAF worker's client makes nothing but agent A2A calls, so it
+        // carries the agent-call budget at the client level rather than
+        // repeating a per-request override at each of the executor's call
+        // sites. Its own pool, deliberately: a background worker's traffic
+        // profile has no business sharing the request path's.
+        let maf_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(
+                state.config.agent_call_timeout_secs,
+            ))
+            .build()
+            .expect("failed to build MAF agent client");
         nasiko_orchestrator::maf::start_worker(
             state.db.clone(),
             state.redis.clone(),
-            state.http_client.clone(),
+            maf_client,
             state.observability.clone(),
             llm_config,
             state.hitl_store.clone(),
