@@ -16,6 +16,7 @@
  *   settings-service.js    — workspace settings, user search
  *   mcp-service.js         — MCP gateway (connectors, credentials, OAuth,
  *                            toolkits, connections, per-agent access)
+ *   chat-context-service.js — per-user PACMS budget + context strategy
  */
 
 import '/common/services/agents-service.js';
@@ -27,3 +28,4 @@ import '/common/services/llm-service.js';
 import '/common/services/usage-service.js';
 import '/common/services/settings-service.js';
 import '/common/services/mcp-service.js';
+import '/common/services/chat-context-service.js';

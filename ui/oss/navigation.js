@@ -56,6 +56,7 @@ const BASE_ITEMS = () => [
   { title: "Resources", url: "/resources", icon: "activity", module: "observability" },
   { title: "Builds", url: "/builds", icon: "cube", module: "agents" },
   { title: "Secrets", url: "/secrets", icon: "lock", module: "settings" },
+  { title: "Chat context", url: "/chat-context", icon: "message", module: "settings" },
   { title: "Settings", url: "/settings", icon: "settings", rail: true, module: "settings" },
 ];
 
@@ -140,6 +141,7 @@ const MODULE_NAVS = {
       { label: 'Security', items: [
         { label: 'Single sign-on', section: 'sso', url: '/settings' },
         { label: 'Secrets', url: '/secrets' },
+        { label: 'Chat context', url: '/chat-context' },
       ]},
     ],
   },
