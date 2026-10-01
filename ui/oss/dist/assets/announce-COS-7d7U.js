@@ -1,0 +1,1 @@
+import{n as e,r as t}from"./react-BufgJOhL.js";var n=t(()=>({text:``,seq:0}));function r(e){n.setState(t=>({text:e,seq:t.seq+1}),!0)}var i=()=>e(n);export{i as n,r as t};

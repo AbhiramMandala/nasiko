@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Start of Reo Javascript -->
+    <script type="text/javascript">
+      !function(){var e,t,n;e="f4cf7633edc0a46",t=function(){Reo.init({clientID:"f4cf7633edc0a46", source: "internal"})},(n=document.createElement("script")).src="https://static.reo.dev/"+e+"/reo.js",n.defer=!0,n.onload=t,document.head.appendChild(n)}();
+    </script>
+    <!-- End of Reo Javascript -->
+    <link rel="icon" type="image/svg+xml" href="/mark-nasiko.svg" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/assets/hanken-grotesk-latin-wght-normal-CaVRRdDk.woff2" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenRuntime UI Lab</title>
+    <script>
+      // Mode and colour theme before first paint (plans/feat-app-shell.md §5.2). The key names, theme
+      // ids and attribute duplicate common/src/app/shell/theme.ts, which can't be imported here; theme.test.ts
+      // checks they match. theme.ts takes over after boot (menu changes, following the OS on System).
+      (function () {
+        var theme = null, accent = null
+        try { theme = localStorage.getItem('openruntime.theme'); accent = localStorage.getItem('openruntime.accent') } catch (e) {}
+        if (theme !== 'light' && theme !== 'dark') theme = 'system'
+        if (['teal', 'indigo', 'plum', 'carbon'].indexOf(accent) < 0) accent = 'teal'
+        if (/\/login\/?$/.test(location.pathname)) accent = 'carbon'
+        var dark = theme === 'dark' || (theme === 'system' && !!window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        document.documentElement.classList.toggle('dark', dark)
+        document.documentElement.setAttribute('data-theme', accent)
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-CYrWelgL.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/react-DB-4Zxce.js">
+    <link rel="modulepreload" crossorigin href="/assets/useSelector-BhuG_OxD.js">
+    <link rel="modulepreload" crossorigin href="/assets/useRouter-DTQ3YH1D.js">
+    <link rel="modulepreload" crossorigin href="/assets/useMatch-_vyCOyLw.js">
+    <link rel="modulepreload" crossorigin href="/assets/jsx-runtime-BtH0gOTJ.js">
+    <link rel="modulepreload" crossorigin href="/assets/link-D61Qk7Vi.js">
+    <link rel="modulepreload" crossorigin href="/assets/root-DLTE-HSj.js">
+    <link rel="modulepreload" crossorigin href="/assets/useNavigate-uBOi-Njx.js">
+    <link rel="modulepreload" crossorigin href="/assets/lazyRouteComponent-R8J1K_3P.js">
+    <link rel="modulepreload" crossorigin href="/assets/not-found-DIgawKw1.js">
+    <link rel="modulepreload" crossorigin href="/assets/load-client-BEVeY1mt.js">
+    <link rel="modulepreload" crossorigin href="/assets/utils-CFSQr2KJ.js">
+    <link rel="modulepreload" crossorigin href="/assets/QueryErrorResetBoundary-BeO37-c8.js">
+    <link rel="modulepreload" crossorigin href="/assets/mutation--8V4fUQY.js">
+    <link rel="modulepreload" crossorigin href="/assets/reduced-motion-Rx7OXOZ3.js">
+    <link rel="modulepreload" crossorigin href="/assets/VisualElement-BJ34mnIh.js">
+    <link rel="modulepreload" crossorigin href="/assets/dist-BnDbZnOt.js">
+    <link rel="modulepreload" crossorigin href="/assets/dist-CvSA75z6.js">
+    <link rel="modulepreload" crossorigin href="/assets/compiler-runtime-BQsUoOzq.js">
+    <link rel="modulepreload" crossorigin href="/assets/utils-B6akH449.js">
+    <link rel="modulepreload" crossorigin href="/assets/dist-DFBYozVT.js">
+    <link rel="modulepreload" crossorigin href="/assets/dist-iBIO24tN.js">
+    <link rel="modulepreload" crossorigin href="/assets/dist-Ocj1n-b7.js">
+    <link rel="modulepreload" crossorigin href="/assets/dist-DiNRJvhx.js">
+    <link rel="modulepreload" crossorigin href="/assets/dist-CuFbzutX.js">
+    <link rel="modulepreload" crossorigin href="/assets/dist-avDI_wGY.js">
+    <link rel="modulepreload" crossorigin href="/assets/preload-helper-BZ1Pz5am.js">
+    <link rel="modulepreload" crossorigin href="/assets/client-CcbrYyfu.js">
+    <link rel="modulepreload" crossorigin href="/assets/queryOptions-Dfvzj6n2.js">
+    <link rel="modulepreload" crossorigin href="/assets/auth-DM3O1tIh.js">
+    <link rel="modulepreload" crossorigin href="/assets/session-BLGE_v2B.js">
+    <link rel="modulepreload" crossorigin href="/assets/schemas-SX0gW-5p.js">
+    <link rel="modulepreload" crossorigin href="/assets/copy-B02wBgp0.js">
+    <link rel="modulepreload" crossorigin href="/assets/search-MOzdqRMl.js">
+    <link rel="modulepreload" crossorigin href="/assets/name-BeJp13bq.js">
+    <link rel="modulepreload" crossorigin href="/assets/search-DMp6AjPb.js">
+    <link rel="modulepreload" crossorigin href="/assets/search-mpqxL5XM.js">
+    <link rel="modulepreload" crossorigin href="/assets/context-DBOIYM23.js">
+    <link rel="modulepreload" crossorigin href="/assets/search-swDeX8Uh.js">
+    <link rel="modulepreload" crossorigin href="/assets/search-D3E6LT7q.js">
+    <link rel="modulepreload" crossorigin href="/assets/search-B4cOiFvZ.js">
+    <link rel="modulepreload" crossorigin href="/assets/search-CI-sfWA5.js">
+    <link rel="modulepreload" crossorigin href="/assets/search-B5fuaKI_.js">
+    <link rel="modulepreload" crossorigin href="/assets/search-BMfg7oPR.js">
+    <link rel="modulepreload" crossorigin href="/assets/createLucideIcon-Cpszxddz.js">
+    <link rel="modulepreload" crossorigin href="/assets/triangle-alert-Bn4P28Rw.js">
+    <link rel="modulepreload" crossorigin href="/assets/button-CJRMogwW.js">
+    <link rel="modulepreload" crossorigin href="/assets/detect-aRc6WNtZ.js">
+    <link rel="modulepreload" crossorigin href="/assets/draftKeys-DCP3AweR.js">
+    <link rel="modulepreload" crossorigin href="/assets/react-BufgJOhL.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-TXpAgLWl.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

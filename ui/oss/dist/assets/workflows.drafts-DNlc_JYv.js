@@ -1,0 +1,1 @@
+import{n as e}from"./prefetch-D9cLnrq_.js";var t=({context:t,deps:n,preload:r})=>{r&&e(t.queryClient,n.sort)};export{t as loader};

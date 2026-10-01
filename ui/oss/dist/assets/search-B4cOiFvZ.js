@@ -1,0 +1,1 @@
+import{l as e,t,u as n}from"./schemas-SX0gW-5p.js";var r=[`yours`,`shared`,`toolkits`],i=[`all`,`available`,`connected`],a=e({q:n().max(200).optional().catch(void 0),view:t(r).optional().catch(void 0),tab:t(i).optional().catch(void 0)}),o=e({tab:n().trim().max(40).optional().catch(void 0),agent:n().uuid().optional().catch(void 0)});export{o as i,r as n,a as r,i as t};

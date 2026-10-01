@@ -1,0 +1,1 @@
+import{r as e}from"./api-ZlXqFMvy.js";var t=({context:t,params:n,preload:r})=>{r&&e(t.queryClient,n.sessionId)};export{t as loader};

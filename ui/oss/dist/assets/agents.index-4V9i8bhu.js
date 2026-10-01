@@ -1,0 +1,1 @@
+import{n as e}from"./prefetch-Cgulh3mE.js";var t=({context:t,preload:n})=>{n&&e(t.queryClient)};export{t as loader};

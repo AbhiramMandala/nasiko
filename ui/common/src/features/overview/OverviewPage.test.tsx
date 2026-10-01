@@ -1,0 +1,318 @@
+/**
+ * The Overview page (plans/feat-overview.md §14): each card renders from the pinned seed and fails on its own, the
+ * spend is said as fleet spend (eng R2), and the Fleet health counts match the Agents catalog filter (eng R1).
+ */
+import { screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
+import { afterEach, describe, expect, it } from 'vitest'
+import { clearChatRegistry } from '@/features/chat/registry'
+import { configureMocks } from '@/mocks/handlers'
+import { configureChatMock } from '@/mocks/chatStore'
+import { now, seed, setupPinnedSeed } from '@/test/pinnedSeed'
+import { renderApp } from '@/test/renderApp'
+import { recordRequests, server } from '@/test/setup'
+import { copy } from './copy'
+
+setupPinnedSeed()
+afterEach(() => {
+  configureMocks({ seed, now, loggedIn: true, superuser: null, variant: null })
+  configureChatMock({ waiting: false })
+  clearChatRegistry()
+})
+
+const card = (id: string) => document.querySelector(`[data-testid="${id}"]`) as HTMLElement
+const loaded = async () => {
+  await screen.findByRole('heading', { level: 1, name: copy.title })
+  await waitFor(() =>
+    expect(
+      within(card('overview-health')).getAllByRole('link', {
+        name: /^\d+ (healthy|watch|needs? action|unknown)/,
+      }),
+    ).toHaveLength(4),
+  )
+  await waitFor(() =>
+    expect(within(card('kpi-spend')).getByTestId('overview-mtd')).toBeInTheDocument(),
+  )
+}
+
+describe('Spend', () => {
+  it('says fleet spend with the scope note, and never "You\'ve spent" (eng R2)', async () => {
+    renderApp('/')
+    await loaded()
+    expect(card('kpi-spend')).toHaveTextContent(copy.spend.fleetThisMonth)
+    expect(card('overview-spend')).toHaveTextContent(copy.spend.scopeNote)
+    expect(document.body).not.toHaveTextContent(/You've spent/i)
+  })
+
+  it('stacks 30 days by the top drivers, whose own series come from the filtered timeseries', async () => {
+    const reqs = recordRequests()
+    renderApp('/')
+    await loaded()
+    const spend = card('overview-spend')
+    const fig = await within(spend).findByRole('figure', {}, { timeout: 5000 })
+    await userEvent.click(within(fig).getByRole('button', { name: copy.spend.showTable }))
+    const heads = within(fig)
+      .getAllByRole('columnheader')
+      .map((h) => h.textContent)
+    const filtered = reqs.urls.filter(
+      (u) => u.pathname.endsWith('/spend-timeseries') && u.searchParams.has('agent_id'),
+    )
+    // One filtered series per driver with spend, at most five (one per chart colour).
+    const k = new Set(filtered.map((u) => u.searchParams.get('agent_id'))).size
+    expect(k).toBeGreaterThan(0)
+    expect(k).toBeLessThanOrEqual(5)
+    // Day, the drivers (named as in the drivers table), Other, Total.
+    expect(heads).toHaveLength(k + 3)
+    const drivers = within(spend).getAllByTestId('spend-driver')
+    heads.slice(1, k + 1).forEach((h, i) => expect(drivers[i]).toHaveTextContent(h!))
+    reqs.stop()
+  })
+
+  it('keeps the other cards when the calendar fails', async () => {
+    server.use(
+      http.get(
+        '*/api/observability/finops/spend-calendar',
+        () => new HttpResponse('boom', { status: 500 }),
+      ),
+    )
+    renderApp('/')
+    await within(await screen.findByTestId('kpi-spend')).findByText(
+      copy.couldntCheck(copy.spend.what),
+    )
+    await waitFor(() =>
+      expect(within(card('overview-health')).getAllByRole('link').length).toBeGreaterThan(1),
+    )
+  })
+})
+
+describe('Fleet health', () => {
+  it('links each count to the catalog filtered by that rating, with the same number of agents (eng R1)', async () => {
+    renderApp('/')
+    await loaded()
+    const health = card('overview-health')
+    for (const r of ['watch', 'healthy'] as const) {
+      const link = within(health)
+        .getAllByRole('link')
+        .find((l) => l.getAttribute('href')?.includes(`health=${r}`))!
+      const n = Number(link.textContent!.match(/^\d+/)![0])
+      expect(link).toHaveAttribute('href', `/agents?health=${r}`)
+      if (r === 'watch') {
+        // The seed has agents to watch, so the parity check isn't trivially 0 = 0.
+        expect(n).toBeGreaterThan(0)
+        await userEvent.click(link)
+        await screen.findByRole('button', {
+          name: `Remove the Health: ${copy.rating.watch} filter`,
+        })
+        await waitFor(() =>
+          expect(within(screen.getByRole('main')).queryAllByRole('listitem')).toHaveLength(n),
+        )
+      }
+    }
+  })
+
+  it('shows Watch agents with a reason and a plain icon, never a tinted circle (design 9A)', async () => {
+    renderApp('/')
+    await loaded()
+    const health = card('overview-health')
+    const rows = (await within(health).findAllByRole('listitem')).filter((r) =>
+      r.textContent!.includes(copy.rating.watch),
+    )
+    expect(rows.length).toBeGreaterThan(0)
+    for (const row of rows) expect(row.textContent).toMatch(/ · /)
+    // The rows' severity mark is a plain icon; the tinted status badges are only the counts above them.
+    for (const row of rows)
+      expect(row.querySelector('[class*="rounded-full"][class*="bg-warning/"]')).toBeNull()
+  })
+})
+
+describe('Needs you', () => {
+  const needs = () => card('overview-needs')
+  const settled = async () => {
+    await loaded()
+    await waitFor(() => expect(within(needs()).queryByLabelText(copy.loading)).toBeNull(), {
+      timeout: 5000,
+    })
+  }
+
+  it('a superuser sees only requests provably theirs, with a link to each chat (eng R5)', async () => {
+    configureChatMock({ waiting: true })
+    renderApp('/')
+    await settled()
+    const rows = within(needs())
+      .getAllByRole('listitem')
+      .filter((li) => li.querySelector('[data-kind="request"]'))
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows)
+      expect(
+        within(r)
+          .getByRole('link', { name: /Review the request in/ })
+          .getAttribute('href'),
+      ).toMatch(/^\/chat\//)
+    expect(needs().querySelector('[data-kind="outside"]')).toBeNull()
+    // A row is one chat; a chat can hold several requests ("(+1 more)").
+    const waiting = rows.reduce(
+      (n, r) => n + 1 + Number(r.textContent!.match(/\(\+(\d+) more\)/)?.[1] ?? 0),
+      0,
+    )
+    expect(screen.getByTestId('headline-attention')).toHaveTextContent(
+      new RegExp(`${waiting} requests? (is|are) waiting for you`),
+    )
+  })
+
+  it('a normal user gets one "outside Chat" row for requests no chat claims (eng R5)', async () => {
+    configureMocks({ superuser: false })
+    configureChatMock({ waiting: true })
+    renderApp('/')
+    await settled()
+    expect(needs().querySelector('[data-kind="outside"]')).toHaveTextContent(copy.needs.outside(2))
+  })
+
+  it('a failed source adds a line and never says "Nothing needs you" (design 5A)', async () => {
+    server.use(http.get('/api/hitl/pending', () => new HttpResponse('boom', { status: 500 })))
+    renderApp('/')
+    await loaded()
+    expect(
+      await within(needs()).findByText(copy.couldntCheck(copy.needs.source.requests)),
+    ).toBeInTheDocument()
+    expect(within(needs()).queryByTestId('needs-empty')).toBeNull()
+    expect(screen.getByTestId('overview-headline')).not.toHaveTextContent(copy.needs.nothing)
+  })
+
+  it('always says when it last checked (design 8A)', async () => {
+    renderApp('/')
+    await settled()
+    expect(within(needs()).getByText(/^Checked /)).toBeInTheDocument()
+  })
+})
+
+describe('first run (design 7A)', () => {
+  it('shows the deploy card and fetches no finops or sessions with an empty fleet', async () => {
+    server.use(http.get('*/api/agents', () => HttpResponse.json([])))
+    const rec = recordRequests()
+    renderApp('/')
+    expect(
+      await screen.findByRole('heading', { level: 2, name: copy.firstRun.title }),
+    ).toBeInTheDocument()
+    expect(screen.getByTestId('overview-headline')).toHaveTextContent(copy.firstRun.headline)
+    expect(
+      within(card('overview-first-run')).getAllByRole('button', { name: /Copy/ }).length,
+    ).toBeGreaterThan(0)
+    expect(document.querySelector('[data-testid="overview-needs"]')).toBeNull()
+    // Let the first-run render's own requests start before judging them.
+    await within(card('overview-harnesses')).findByText(
+      /connected|No coding harnesses|Your own usage/,
+      {},
+      { timeout: 3000 },
+    )
+    rec.stop()
+    const paths = rec.urls.map((u) => u.pathname)
+    expect(paths.filter((p) => p.includes('/finops/'))).toEqual([])
+    expect(paths.filter((p) => p.includes('/session/'))).toEqual([])
+  })
+})
+
+describe('Recent sessions and the session checks (eng R7)', () => {
+  it('status-checks at most the newest 25 sessions', async () => {
+    const rec = recordRequests()
+    renderApp('/')
+    await loaded()
+    await within(card('overview-sessions')).findAllByTestId('recent-session')
+    await waitFor(
+      () => expect(within(card('overview-needs')).queryByLabelText(copy.loading)).toBeNull(),
+      { timeout: 5000 },
+    )
+    rec.stop()
+    const details = new Set(
+      rec.urls.map((u) => u.pathname).filter((p) => /\/session\/(?!list)[^/]+$/.test(p)),
+    )
+    expect(details.size).toBeGreaterThan(0)
+    expect(details.size).toBeLessThanOrEqual(25)
+  })
+
+  it('says the trace store is needed when the session list fails with a 503', async () => {
+    server.use(
+      http.get(
+        '*/api/observability/session/list',
+        () => new HttpResponse('Tempo is not configured', { status: 503 }),
+      ),
+    )
+    renderApp('/')
+    expect(
+      await within(await screen.findByTestId('overview-sessions')).findByText(
+        copy.sessions.traceStore,
+      ),
+    ).toBeInTheDocument()
+  })
+})
+
+describe('Coding harnesses', () => {
+  it('falls back to your own usage when the org endpoint is absent', async () => {
+    configureMocks({ variant: 'usage-404' })
+    renderApp('/')
+    expect(
+      await within(await screen.findByTestId('overview-harnesses')).findByText(
+        copy.harnesses.ownOnly,
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('labels cost as an estimate at API list price', async () => {
+    renderApp('/')
+    expect(
+      await within(await screen.findByTestId('overview-harnesses')).findByText(
+        copy.harnesses.costNote(30),
+      ),
+    ).toBeInTheDocument()
+  })
+})
+
+describe('Budgets', () => {
+  it('shows the card and Adjust budget when the server has budgets', async () => {
+    renderApp('/')
+    await loaded()
+    expect(
+      await within(card('overview-budget')).findByText(copy.budget.forecast, {}, { timeout: 5000 }),
+    ).toBeInTheDocument()
+    expect(
+      within(card('overview-actions')).getByRole('link', { name: copy.actions.adjustBudget }),
+    ).toHaveAttribute('href', '/router#router-budgets')
+  })
+
+  it('hides both on a server without budgets (a bare 404), and Recent sessions takes the row', async () => {
+    server.use(http.get('*/api/budgets', () => new HttpResponse(null, { status: 404 })))
+    renderApp('/')
+    await loaded()
+    await waitFor(() => expect(card('overview-budget')).toBeNull())
+    const actions = card('overview-actions')
+    expect(within(actions).queryByRole('link', { name: copy.actions.adjustBudget })).toBeNull()
+    expect(card('overview-sessions').className).toContain('@[1100px]/overview:col-span-4')
+  })
+})
+
+describe('structure (design 14A)', () => {
+  it('has one h1 and an h2 per card, each card a labelled section', async () => {
+    renderApp('/')
+    await loaded()
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    const ids = [
+      'overview-needs',
+      'overview-spend',
+      'overview-budget',
+      'overview-health',
+      'overview-sessions',
+      'overview-chats',
+      'overview-actions',
+    ]
+    for (const id of ids) {
+      const c = card(id)
+      expect(c.tagName).toBe('SECTION')
+      expect(within(c).getAllByRole('heading', { level: 2 })).toHaveLength(1)
+    }
+    // Priority order in the DOM (design 1A).
+    const order = [...document.querySelectorAll('section[data-testid^="overview-"]')].map((e) =>
+      e.getAttribute('data-testid'),
+    )
+    expect(order).toEqual(ids)
+  })
+})

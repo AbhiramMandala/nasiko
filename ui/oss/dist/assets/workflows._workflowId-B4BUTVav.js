@@ -1,0 +1,1 @@
+import{i as e}from"./prefetch-D9cLnrq_.js";var t=({context:t,params:n,deps:r,preload:i})=>{i&&e(t.queryClient,n.workflowId,r.run)};export{t as loader};

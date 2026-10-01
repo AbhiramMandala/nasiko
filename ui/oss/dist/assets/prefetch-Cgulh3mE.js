@@ -1,0 +1,1 @@
+import{i as e}from"./auth-DM3O1tIh.js";import{V as t,a as n,i as r,n as i,s as a}from"./api-aioV4yd3.js";var o=e=>void e.prefetchInfiniteQuery(r);function s(t,n){let r=t.getQueryData(e.queryKey),i=r?.is_superuser&&n.owner||r?.sub;i&&t.prefetchQuery(a(i))}function c(e,r){t(r)?e.prefetchQuery(i(r.toLowerCase())):e.prefetchQuery(n)}export{o as n,s as r,c as t};

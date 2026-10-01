@@ -1,5 +1,24 @@
 target/
+!target/x86_64-unknown-linux-musl/release/nasiko-cp
+!target/x86_64-unknown-linux-musl/release/nasiko-cp-cloud
+!target/x86_64-unknown-linux-musl/release/nasiko-registry
+!target/x86_64-unknown-linux-musl/release/nasiko-server-ee
+!target/x86_64-unknown-linux-musl/release/nasiko-tenant-server
+!target/x86_64-unknown-linux-musl/release/nasiko-ee
+!target/x86_64-unknown-linux-musl/release/nasiko-gateway-ee
+!target/x86_64-unknown-linux-musl/release/nasiko-server
+!target/x86_64-unknown-linux-musl/release/nasiko-gateway
+!target/x86_64-unknown-linux-musl/release/nasiko-docs-agent
+!target/x86_64-unknown-linux-musl/release/nasiko-nutrition-agent
+!target/x86_64-unknown-linux-musl/release/nasiko-paper-agent
 .git/
-.env
-*.md
-!README.md
+agents/
+registry/
+docs/
+*.zip
+
+# oss/server/Dockerfile compiles in-image (COPY . . + cargo build), so the UI
+# tree is part of the context. ui/oss/dist must stay — rust-embed bakes it in,
+# and excluding it would silently ship build.rs's "UI not built" placeholder.
+# node_modules must not: ~800 packages the Rust build never reads.
+ui/node_modules/

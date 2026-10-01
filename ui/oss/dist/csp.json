@@ -1,0 +1,6 @@
+{
+  "script-src": [
+    "'sha256-MLlaiMVpjxRUxUi3nz7YK0EE0xH4BZSrs4rAa6yqk+4='",
+    "'sha256-Jp8Dkwzh5pJDOfwH7W5e/z9kWsseAuHYpyqFUVVBNfM='"
+  ]
+}

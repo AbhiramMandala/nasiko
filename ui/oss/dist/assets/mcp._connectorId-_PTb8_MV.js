@@ -1,0 +1,1 @@
+import{n as e}from"./prefetch-BsLDx94h.js";var t=({context:t,params:n,preload:r})=>{r&&e(t.queryClient,n.connectorId)};export{t as loader};

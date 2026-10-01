@@ -1,0 +1,1 @@
+import{l as e,t}from"./schemas-SX0gW-5p.js";var n=[`7d`,`30d`,`90d`],r=e({range:t(n).optional().catch(void 0)}),i={"7d":7,"30d":30,"90d":90};export{i as n,r,n as t};

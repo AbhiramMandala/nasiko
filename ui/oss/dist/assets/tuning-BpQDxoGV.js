@@ -1,0 +1,1 @@
+var e=6048e5,t=6e5,n=12e4,r=29e3,i=.95,a=3e4,o=4e3,s=5e3,c=5e3;function l(e){if(!(typeof window<`u`&&typeof window.innerWidth==`number`&&window.innerWidth>0&&window.innerWidth<640))return e}export{i as a,r as c,a as i,t as l,s as n,o,n as r,e as s,c as t,l as u};

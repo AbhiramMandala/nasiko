@@ -1,0 +1,1 @@
+import{t as e}from"./api-CRal-jBh.js";var t=({context:t,preload:n})=>{n&&e(t.queryClient)};export{t as loader};
