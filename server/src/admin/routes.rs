@@ -702,7 +702,7 @@ async fn record_lifecycle_status(state: &AppState, name: &str, status: &str) {
     // - Bringing an agent UP may only touch the newest row. An agent-wide sweep
     //   would resurrect every historical row as `running`, which is not just a
     //   smudged history — EE's crash guardian polls *every* row in
-    //   ('starting','running') (ee/server/src/crash_guardian.rs), so each stale
+    //   ('starting','running') (the EE crash guardian), so each stale
     //   row becomes a phantom deployment it probes and can mark crashed.
     // - Taking one DOWN sweeps the agent, matching `destroy` above. Nothing of
     //   this agent's is running afterwards, so any row still claiming otherwise

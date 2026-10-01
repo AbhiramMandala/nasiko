@@ -81,24 +81,61 @@ struct ListSessionsParams {
     limit: i64,
     cursor: Option<String>,
     agent_id: Option<Uuid>,
-    /// Weave dock chats live in this same table under a `weave_`-prefixed
-    /// session id, but they belong to the dock's own history menu — not the
-    /// Sessions list, the Orchestrator nav tree or `nasiko sessions`. They are
-    /// excluded unless asked for by name.
-    #[serde(default)]
-    weave: bool,
+    /// An embedded surface — a feature with its own chat history menu — keeps
+    /// its sessions in this same table, namespaced as `<surface>_<contextId>`.
+    /// Those chats belong to that surface's menu, not the Sessions list, the
+    /// Orchestrator nav tree or `nasiko sessions`, so the general list leaves
+    /// them out and a surface asks for its own by name (`?surface=<name>`).
+    ///
+    /// Which surfaces exist is the edition's business, not this module's, so
+    /// "namespaced" has to be decidable here without knowing any surface's
+    /// name. An underscore alone does not decide it: a session the platform
+    /// mints carries the reserved [`PLATFORM_SESSION_PREFIX`], which is
+    /// therefore excluded from the namespace test rather than read as a
+    /// surface called "ses".
+    surface: Option<String>,
+}
+
+/// Prefix on every session id the platform mints itself — here in
+/// `create_session` and in `agent_proxy` for a message that arrives with no
+/// contextId. It is not a surface: these are the ordinary sessions the general
+/// list exists to show.
+const PLATFORM_SESSION_PREFIX: &str = "ses";
+
+/// A surface name is a path-safe slug and nothing else. Validating rather
+/// than escaping keeps the `LIKE` pattern below free of anything a caller
+/// could turn into a wildcard, and the name is bound as a parameter besides.
+/// The platform's own prefix is refused so no surface can claim it.
+fn valid_surface(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name != PLATFORM_SESSION_PREFIX
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 fn default_session_limit() -> i64 {
     50
 }
 
 /// Fixed predicate appended to each keyset variant's `WHERE`. `\_` escapes the
-/// `_` so `LIKE` matches the literal prefix, not any single character.
-fn weave_predicate(weave: bool) -> &'static str {
-    if weave {
-        r"AND cs.session_id LIKE 'weave\_%'"
-    } else {
-        r"AND cs.session_id NOT LIKE 'weave\_%'"
+/// `_` so `LIKE` matches the namespace separator literally rather than any
+/// single character.
+///
+/// Asking for a surface matches its prefix, which arrives as `$1`; asking for
+/// nothing returns the general list, which is every session no surface has
+/// claimed — including the platform's own `ses_*` ids, which are not a
+/// namespace. No caller input is interpolated either way; the only value in
+/// the text is this module's own constant.
+fn surface_predicate(surface: Option<&str>, bind: usize) -> String {
+    match surface {
+        // Appended after each variant's own binds, so the four keyset
+        // numberings below are untouched. Placeholder order in the text does
+        // not have to match their order in the statement.
+        Some(_) => format!(r"AND cs.session_id LIKE ${bind} || '\_%'"),
+        None => format!(
+            r"AND (cs.session_id NOT LIKE '%\_%' OR cs.session_id LIKE '{PLATFORM_SESSION_PREFIX}\_%')"
+        ),
     }
 }
 
@@ -141,7 +178,9 @@ const SESSION_LIST_SELECT: &str = r#"
                -- migration 041) and a genuine 0 stays 0. `NULLIF(SUM(...), 0)`
                -- would conflate those two, since SUM over all-NULL columns
                -- coalesces to 0.
-               SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0))
+               SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0)
+                   + COALESCE(m.cache_read_tokens, 0)
+                   + COALESCE(m.cache_creation_tokens, 0))
                    FILTER (
                        WHERE m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL
                    ) AS total_tokens,
@@ -169,67 +208,97 @@ async fn list_sessions(
 
     // Decode cursor into (timestamp, session_id) keyset anchor.
     let cursor_anchor = params.cursor.as_deref().and_then(decode_cursor);
-    let weave = weave_predicate(params.weave);
+
+    let surface = match params.surface.as_deref().map(str::trim) {
+        // `Some("")`, not a guard: clippy::redundant_guards, and the literal
+        // says the same thing in fewer moving parts. `str::trim` above means an
+        // all-whitespace value arrives here as the empty string too.
+        Some("") => None,
+        Some(name) if !valid_surface(name) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "surface must be a lowercase slug (a-z, 0-9, -)",
+            )
+                .into_response();
+        }
+        other => other,
+    };
 
     let query_result: Result<Vec<ChatSessionView>, _> = match (cursor_anchor, params.agent_id) {
         (None, None) => {
-            sqlx::query_as::<_, ChatSessionView>(&format!(
+            let scope = surface_predicate(surface, 3);
+            let sql = format!(
                 "{SESSION_LIST_SELECT}
-                 WHERE cs.user_id = $1 {weave}
+                 WHERE cs.user_id = $1 {scope}
                  ORDER BY cs.updated_at DESC, cs.session_id DESC
                  LIMIT $2"
-            ))
-            .bind(user_id)
-            .bind(fetch)
-            .fetch_all(&state.db)
-            .await
+            );
+            let mut q = sqlx::query_as::<_, ChatSessionView>(&sql)
+                .bind(user_id)
+                .bind(fetch);
+            if let Some(name) = surface {
+                q = q.bind(name);
+            }
+            q.fetch_all(&state.db).await
         }
 
         (None, Some(agent_id)) => {
-            sqlx::query_as::<_, ChatSessionView>(&format!(
+            let scope = surface_predicate(surface, 4);
+            let sql = format!(
                 "{SESSION_LIST_SELECT}
-                 WHERE cs.user_id = $1 AND cs.agent_id = $2 {weave}
+                 WHERE cs.user_id = $1 AND cs.agent_id = $2 {scope}
                  ORDER BY cs.updated_at DESC, cs.session_id DESC
                  LIMIT $3"
-            ))
-            .bind(user_id)
-            .bind(agent_id)
-            .bind(fetch)
-            .fetch_all(&state.db)
-            .await
+            );
+            let mut q = sqlx::query_as::<_, ChatSessionView>(&sql)
+                .bind(user_id)
+                .bind(agent_id)
+                .bind(fetch);
+            if let Some(name) = surface {
+                q = q.bind(name);
+            }
+            q.fetch_all(&state.db).await
         }
 
         (Some((cursor_ts, cursor_sid)), None) => {
-            sqlx::query_as::<_, ChatSessionView>(&format!(
+            let scope = surface_predicate(surface, 5);
+            let sql = format!(
                 "{SESSION_LIST_SELECT}
-                 WHERE cs.user_id = $1 {weave}
+                 WHERE cs.user_id = $1 {scope}
                    AND (cs.updated_at < $2 OR (cs.updated_at = $2 AND cs.session_id < $3))
                  ORDER BY cs.updated_at DESC, cs.session_id DESC
                  LIMIT $4"
-            ))
-            .bind(user_id)
-            .bind(cursor_ts)
-            .bind(cursor_sid)
-            .bind(fetch)
-            .fetch_all(&state.db)
-            .await
+            );
+            let mut q = sqlx::query_as::<_, ChatSessionView>(&sql)
+                .bind(user_id)
+                .bind(cursor_ts)
+                .bind(cursor_sid)
+                .bind(fetch);
+            if let Some(name) = surface {
+                q = q.bind(name);
+            }
+            q.fetch_all(&state.db).await
         }
 
         (Some((cursor_ts, cursor_sid)), Some(agent_id)) => {
-            sqlx::query_as::<_, ChatSessionView>(&format!(
+            let scope = surface_predicate(surface, 6);
+            let sql = format!(
                 "{SESSION_LIST_SELECT}
-                 WHERE cs.user_id = $1 AND cs.agent_id = $2 {weave}
+                 WHERE cs.user_id = $1 AND cs.agent_id = $2 {scope}
                    AND (cs.updated_at < $3 OR (cs.updated_at = $3 AND cs.session_id < $4))
                  ORDER BY cs.updated_at DESC, cs.session_id DESC
                  LIMIT $5"
-            ))
-            .bind(user_id)
-            .bind(agent_id)
-            .bind(cursor_ts)
-            .bind(cursor_sid)
-            .bind(fetch)
-            .fetch_all(&state.db)
-            .await
+            );
+            let mut q = sqlx::query_as::<_, ChatSessionView>(&sql)
+                .bind(user_id)
+                .bind(agent_id)
+                .bind(cursor_ts)
+                .bind(cursor_sid)
+                .bind(fetch);
+            if let Some(name) = surface {
+                q = q.bind(name);
+            }
+            q.fetch_all(&state.db).await
         }
     };
     let mut rows = match query_result {
@@ -353,7 +422,7 @@ async fn create_session(
                 }
             }
         }
-        _ => format!("ses_{}", Uuid::new_v4().simple()),
+        _ => format!("{PLATFORM_SESSION_PREFIX}_{}", Uuid::new_v4().simple()),
     };
 
     // tracing::info!(body = ?body, "Received create session request");
@@ -883,8 +952,8 @@ async fn send_message(
         r#"INSERT INTO chat_messages
                (session_id, role, content, file_parts, has_file_parts,
                 input_tokens, output_tokens, model, duration_ms, cost_usd,
-                usage_estimated, trace_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                usage_estimated, trace_id, cache_read_tokens, cache_creation_tokens)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
            RETURNING *"#,
     )
     .bind(&session_id)
@@ -899,6 +968,8 @@ async fn send_message(
     .bind(usage.and_then(|u| u.cost_usd))
     .bind(usage.and_then(|u| u.estimated))
     .bind(usage.and_then(|u| u.trace_id.as_deref()))
+    .bind(usage.and_then(|u| u.cache_read_tokens))
+    .bind(usage.and_then(|u| u.cache_creation_tokens))
     .fetch_one(&mut *tx)
     .await
     {

@@ -1,6 +1,6 @@
 {
   "_generated": "by ui/scripts/gen-dsl-catalog.mjs from design-system/catalog.json + surface/dsl-overrides.json — do not hand-edit",
-  "catalogVersion": "37837d7be89f",
+  "catalogVersion": "800a536f5eca",
   "contract": "The components a generated surface may name, and the only attributes it may set on each. Arguments are positional: paramOrder is the contract, and it changes whenever the underlying @attr order does. A component absent from here is either blocked (see blocked, with a reason) or does not exist.",
   "sourceCatalogVersion": "1.0",
   "componentCount": 42,
@@ -19,8 +19,7 @@
       "attributes": {
         "label": {
           "type": "string",
-          "required": true,
-          "description": "Header text (required)"
+          "description": "Header text. Required unless the header is slotted."
         },
         "open": {
           "type": "boolean",
@@ -31,10 +30,11 @@
           "type": "enum",
           "values": [
             "card",
-            "flat"
+            "flat",
+            "panel"
           ],
           "default": "card",
-          "description": "`card` (default) draws its own surface | `flat` drops the border and radius, for stacking inside a bordered list or nesting."
+          "description": "`card` (default) draws its own surface | `flat` drops the border and radius, for stacking inside a bordered list or nesting | `panel` is a sand well whose header is the well's own top: card padding, no row tinting, and the chevron trailing the header rather than leading it."
         },
         "disabled": {
           "type": "boolean",
@@ -42,6 +42,10 @@
         }
       },
       "slots": [
+        {
+          "name": "label",
+          "attribute": "data-slot"
+        },
         {
           "name": "meta",
           "attribute": "data-slot"
@@ -428,6 +432,10 @@
           "attribute": "data-slot"
         },
         {
+          "name": "meta",
+          "attribute": "data-slot"
+        },
+        {
           "name": "body",
           "attribute": "data-slot"
         },
@@ -577,6 +585,7 @@
       "paramOrder": [
         "placeholder",
         "no-attachments",
+        "submit-label",
         "transcription-callback",
         "aria-label",
         "action"
@@ -593,6 +602,10 @@
         "no-attachments": {
           "type": "boolean",
           "description": "Hide the file attachment button"
+        },
+        "submit-label": {
+          "type": "string",
+          "description": "Text on the submit button; without it the button is the round arrow icon. Used where the composer's action needs naming (\"Generate plan\") rather than being a generic send."
         },
         "transcription-callback": {
           "type": "string",
@@ -939,9 +952,9 @@
       "paramOrder": [
         "heading",
         "description",
+        "plain",
         "variant",
-        "inline",
-        "plain"
+        "inline"
       ],
       "attributes": {
         "heading": {
@@ -951,6 +964,10 @@
         "description": {
           "type": "string",
           "description": "Supporting description text"
+        },
+        "plain": {
+          "type": "boolean",
+          "description": "Drops the dashed well and its fill, for an empty state that is the whole page rather than a placeholder inside one."
         },
         "variant": {
           "type": "enum",
@@ -963,10 +980,6 @@
         "inline": {
           "type": "boolean",
           "description": "Drop the dashed frame and the surface fill, for use *inside* another component's box (a table body, a chart plot area, a stat strip) where the host already draws the container. Standalone page-level empty states leave it off and keep the frame."
-        },
-        "plain": {
-          "type": "boolean",
-          "description": "Drops the dashed well and its fill, for an empty state that is the whole page rather than a placeholder inside one."
         }
       },
       "slots": [
@@ -1040,7 +1053,7 @@
       "attributes": {
         "columns": {
           "type": "number",
-          "description": "Column count (integer) or CSS grid-template value (e.g. `auto-fit`)",
+          "description": "Column count or grid template. Fractional tracks shrink without overflowing and collapse below 600px of available width.",
           "templates": [
             "1fr 1fr",
             "2fr 1fr",
@@ -1087,31 +1100,18 @@
     },
     "app-input": {
       "element": "app-input",
-      "summary": "Text input with label, hint, character count and leading/trailing icon slots.",
+      "summary": "Free text the reader types or pastes — an agent id, a month as YYYY-MM, a name to look up. Its value has to be read back from the $state its own Action sets, or what is typed is discarded on the next repaint. Reach for AppSearch when the point is finding something in a list as you type, and AppSegmentedControl or AppSelect when the answer is one of a known few: a typed value the source matches exactly returns nothing for every near miss, with no error to say so.",
       "actionParam": true,
       "paramOrder": [
         "size",
         "state",
         "label",
         "hint",
-        "count",
         "required",
-        "reveal",
         "disabled",
-        "readonly",
         "type",
-        "name",
         "placeholder",
         "value",
-        "autocomplete",
-        "maxlength",
-        "inputmode",
-        "min",
-        "max",
-        "step",
-        "pattern",
-        "list",
-        "spellcheck",
         "aria-label",
         "action"
       ],
@@ -1149,25 +1149,13 @@
           "type": "string",
           "description": "Helper line below the box. Turns red in `state=\"error\"`."
         },
-        "count": {
-          "type": "string",
-          "description": "Right-aligned counter in the hint row, e.g. `12/100`."
-        },
         "required": {
           "type": "boolean",
           "description": "Renders the red `*` before the label."
         },
-        "reveal": {
-          "type": "boolean",
-          "description": "On `type=\"password\"`, adds a trailing show/hide button that flips the inner input between `password` and `text`. Opt-in rather than automatic: a field holding a *stored* secret (an API key already on the server) is not always one the viewer should be able to unmask, so the call site decides. Ignored on every other type."
-        },
         "disabled": {
           "type": "boolean",
           "description": ""
-        },
-        "readonly": {
-          "type": "boolean",
-          "description": "Same paint as `state=\"read-only\"`."
         },
         "type": {
           "type": "enum",
@@ -1184,51 +1172,11 @@
           "default": "text",
           "description": "`text` (default) | `password` | `email` | `number` | `search` | `url` | `tel` | `date`. Forwarded verbatim to the inner `<input>`."
         },
-        "name": {
-          "type": "string",
-          "description": ""
-        },
         "placeholder": {
           "type": "string",
           "description": ""
         },
         "value": {
-          "type": "string",
-          "description": ""
-        },
-        "autocomplete": {
-          "type": "string",
-          "description": ""
-        },
-        "maxlength": {
-          "type": "string",
-          "description": ""
-        },
-        "inputmode": {
-          "type": "string",
-          "description": ""
-        },
-        "min": {
-          "type": "string",
-          "description": ""
-        },
-        "max": {
-          "type": "string",
-          "description": ""
-        },
-        "step": {
-          "type": "string",
-          "description": ""
-        },
-        "pattern": {
-          "type": "string",
-          "description": ""
-        },
-        "list": {
-          "type": "string",
-          "description": ""
-        },
-        "spellcheck": {
           "type": "string",
           "description": ""
         },
@@ -2145,17 +2093,19 @@
               "value",
               "sub",
               "pct",
+              "hint",
               "format",
               "subFormat",
               "currency"
             ],
             "optional": [
+              "hint",
               "format",
               "subFormat",
               "currency"
             ]
           },
-          "description": "JSON array of metric objects: `{ label, value, sub, pct, format?, subFormat?, currency? }`. `sub` is the caption under the value; `pct` (a number) draws a severity meter and is omitted for metrics that have no ceiling. There is deliberately no per-metric colour: a value is a value, and the one that was tinted gold was drift, not meaning. `format` is per metric, not per strip, because a strip is precisely where a dollar figure sits next to a token count next to a latency — one attribute for all of them would be wrong for most of them. It takes the same names as `app-stat-card`'s (`currency`, `compact`, `duration`, `bytes`, `date`, …) and `currency` overrides the ISO code for that one metric. Omit it and the value is formatted by shape: a fractional number to two decimals, an ISO-8601 string as local time, a pre-built string verbatim. `sub` takes `subFormat` and the same treatment, so a caption that is just a number does not undo the work."
+          "description": "JSON array of metric objects: `{ label, value, sub, pct, hint?, format?, subFormat?, currency? }`. `hint` is a plain-text tooltip on the cell — for a value that is a sum, it is where the parts go, so the headline stays one number. `sub` is the caption under the value; `pct` (a number) draws a severity meter and is omitted for metrics that have no ceiling. There is deliberately no per-metric colour: a value is a value, and the one that was tinted gold was drift, not meaning. `format` is per metric, not per strip, because a strip is precisely where a dollar figure sits next to a token count next to a latency — one attribute for all of them would be wrong for most of them. It takes the same names as `app-stat-card`'s (`currency`, `compact`, `duration`, `bytes`, `date`, …) and `currency` overrides the ISO code for that one metric. Omit it and the value is formatted by shape: a fractional number to two decimals, an ISO-8601 string as local time, a pre-built string verbatim. `sub` takes `subFormat` and the same treatment, so a caption that is just a number does not undo the work."
         },
         "loading": {
           "type": "number",
@@ -2832,6 +2782,7 @@
     "/build",
     "/builds",
     "/chat",
+    "/chat-context",
     "/chats",
     "/custom-views",
     "/design-system",

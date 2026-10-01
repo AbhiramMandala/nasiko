@@ -76,8 +76,8 @@ pub struct DockerRuntimeConfig {
     /// `--writable` agent's subdirectory inside `agent_memory_volume` (Docker,
     /// unlike Kubernetes' `subPath`, does not create it automatically). Must
     /// have `mkdir` on its `PATH`. Default: `"alpine:3.21"` — override for
-    /// air-gapped or internal mirror setups (mirrors `ee/k8s-runtime`'s
-    /// `build_init_image` config, same rationale).
+    /// air-gapped or internal mirror setups (mirrors the Kubernetes runtime's
+    /// init-image config, same rationale).
     pub agent_memory_init_image: String,
 }
 
@@ -811,7 +811,7 @@ async fn create_and_start(
 ///
 /// It also hands the directory to uid 65534, the uid `--writable` agents run
 /// as (see `build_host_config`). Docker has no `fsGroup`, so this is the
-/// analogue of the pod-level `fsGroup: 65534` `ee/k8s-runtime` sets: a
+/// analogue of the pod-level `fsGroup: 65534` the Kubernetes runtime sets: a
 /// kubelet/daemon-created directory is root-owned, which a non-root agent
 /// cannot write to. The `chown` is guarded on the directory's current owner
 /// rather than run unconditionally — the same reasoning as Kubernetes'

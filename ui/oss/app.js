@@ -14,7 +14,6 @@
 import { createApp } from '/common/core/create-app.js';
 import { extensionChain } from '/common/core/extension-chain.js';
 import { dismissSplash } from '/common/features/app-splash.js';
-import { mountWeaveDock } from '/common/features/weave-dock/weave-dock.js';
 
 // ── Base route table ────────────────────────────────────────────────────
 // Each route maps a clean URL to a lazy-loaded page component.
@@ -51,15 +50,21 @@ const BASE_ROUTES = [
   { path: '/builds',          tag: 'builds-page',              module: '/common/pages/builds-page.js',              title: 'Nasiko — Builds' },
   { path: '/build',           tag: 'build-detail-page',        module: '/common/pages/build-detail-page.js',        title: 'Nasiko — Build' },
   { path: '/secrets',         tag: 'secrets-page',             module: '/common/pages/secrets-page.js',             title: 'Nasiko — Secrets' },
+  { path: '/chat-context',    tag: 'chat-context-page',        module: '/common/pages/chat-context-page.js',        title: 'Nasiko — Chat Context' },
   { path: '/settings',        tag: 'settings-page',            module: '/common/pages/settings-page.js',            title: 'Nasiko — Settings' },
   { path: '/setup-cli',       tag: 'setup-cli-page',           module: '/common/pages/setup-cli-page.js',           title: 'Nasiko — Set up CLI' },
   { path: '/resources',       tag: 'resources-page',           module: '/common/pages/resources-page.js',           title: 'Nasiko — Resources' },
-  { path: '/weave',           tag: 'weave-page',               module: '/common/pages/weave-page.js',               title: 'Nasiko — Weave' },
   { path: '/design-system',   tag: 'design-system-page',       module: '/common/pages/design-system-page.js',       title: 'Nasiko — Design System' },
-  // Weave's conversational output. `/view` is one generated screen (the page
-  // sets its own title from the view); `/custom-views` is the shelf of the ones
-  // the user saved. `/weave` above is untouched — it is the surface-runtime
-  // workbench, not the chat.
+  // Weave. These three are EE features — the surface stream and the saved-view
+  // store are mounted by the EE server only — but they stay in BASE_ROUTES because
+  // gen-dsl-catalog.mjs parses this table into the allowlist of routes a
+  // generated surface may link to, and hashes it into `catalogVersion`. Moving
+  // them to /routes-ext.js drops /view and /custom-views out of that allowlist
+  // and moves the catalog version. Everything else that surfaced Weave on OSS
+  // — the nav item, the page shell, the dock — is gone; see nav-ext.js and
+  // routes-ext.js. Closing this last gap needs the allowlist to learn about
+  // editions, which is its own change.
+  { path: '/weave',           tag: 'weave-page',               module: '/common/pages/weave-page.js',               title: 'Nasiko — Weave' },
   { path: '/view',            tag: 'generated-view-page',      module: '/common/pages/generated-view-page.js',      title: 'Nasiko — View' },
   { path: '/custom-views',    tag: 'custom-views-page',        module: '/common/pages/custom-views-page.js',        title: 'Nasiko — Custom Views' },
 ];
@@ -90,7 +95,25 @@ const routeChain = extensionChain(ROUTE_LAYERS, 'app');
 // page by pointing its own route at a different PATH, never by re-declaring one.
 async function loadExtensionRoutes() {
   const layers = await routeChain();
-  return { routes: () => layers.flatMap((ext) => ext.routes?.() ?? []) };
+  return {
+    routes: () => layers.flatMap((ext) => ext.routes?.() ?? []),
+    // Boot work folds the same way the route tables do, and for the same
+    // reason: the layers are collapsed into one object here, so an overlay
+    // that mounts something outside the outlet — the enterprise layer mounts
+    // Weave's dock — is only reached if this aggregate forwards the call.
+    // Base first, and a layer that throws is logged and skipped rather than
+    // stopping the layers above it from mounting.
+    onReady: async () => {
+      for (const ext of layers) {
+        if (!ext.onReady) continue;
+        try {
+          await ext.onReady();
+        } catch (err) {
+          console.error('[app] a route extension onReady() failed — continuing with the rest', err);
+        }
+      }
+    },
+  };
 }
 
 // ── Boot ────────────────────────────────────────────────────────────────
@@ -104,11 +127,19 @@ createApp({
   // A full page load: no app-header, and it does OAuth redirects.
   exclude: ['/login'],
   excludePrefix: ['/api/', '/v1/', '/v2/', '/auth/', '/common/', '/mcp/'],
-  onReady() {
-    // Weave's launcher + drawer. Mounted on <body>, outside the outlet, so a
-    // route swap — including the one the drawer itself triggers when it
-    // generates a view — never tears the conversation down.
-    mountWeaveDock();
+  async onReady() {
+    // The route extension gets the same seam for boot work that it has for
+    // routes: anything an edition mounts outside the outlet — a launcher, a
+    // drawer — belongs to whichever edition can actually serve it, not here.
+    // On OSS every layer in the chain is a no-op and nothing mounts.
+    //
+    // `loadExtensionRoutes` is memoised, so this is the module createApp
+    // already resolved, not a second fetch.
+    try {
+      await (await loadExtensionRoutes())?.onReady?.();
+    } catch (err) {
+      console.warn('[app] route extension onReady() failed', err);
+    }
     // Everything is wired — drop the splash screen and reveal the app.
     dismissSplash();
   },

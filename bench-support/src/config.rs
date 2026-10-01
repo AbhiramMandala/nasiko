@@ -1,6 +1,6 @@
 //! Builds a `nasiko_config::Config` for the bench harness, pointed at the
 //! in-process mock LLM and carrying a dummy (non-empty) `openai_api_key` —
-//! `ee/server::build_ee_app` panics at startup without one (the MAF worker
+//! the enterprise server's `build_ee_app` panics at startup without one (the MAF worker
 //! requires it), even though the worker itself sits idle unless flows are
 //! explicitly queued.
 
@@ -76,6 +76,9 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         mcp_manifest_ttl_seconds: 300,
         mcp_toolcount_ttl_seconds: 3600,
         seed_toolkits: vec![],
+        mcp_tool_search_mode: "none".into(),
+        mcp_tool_search_tool_limit: 15,
+        mcp_tool_search_meta_limit: 10,
         mcp_upload_max_bytes: 50 * 1024 * 1024,
         mcp_upload_default_port: 8080,
         mcp_servers_network: "nasiko-mcp-servers-net".into(),
@@ -142,9 +145,20 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         github_client_secret: None,
         router_shortlist_threshold: 15,
         router_shortlist_size: 10,
-        max_router_history_messages: 20,
+        pacms_history_pool_size: 150,
+        react_compress_enabled: false,
+        react_compress_min_bytes: 2048,
+        history_compress_enabled: false,
+        history_compress_min_bytes: 2048,
+        pacms_budget_low: 500,
+        pacms_budget_medium: 1000,
+        pacms_budget_high: 5000,
+        pacms_history_mandatory_recent: 3,
+        context_k_low: 1,
+        context_k_medium: 5,
+        context_k_high: 20,
         embedding_model: "mock-embedding".into(),
-        router_agent_timeout_secs: 60,
+        agent_call_timeout_secs: 600,
         github_callback_url: None,
         github_central_callback_url: None,
         docker_agent_network: None,

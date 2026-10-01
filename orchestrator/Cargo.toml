@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# Structural compression of history before selection (IP-4)
+nasiko-compress = { workspace = true }
 async-stream.workspace = true
 async-trait.workspace = true
 axum.workspace = true

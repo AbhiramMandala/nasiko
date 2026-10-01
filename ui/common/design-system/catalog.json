@@ -1160,7 +1160,7 @@
       "attributes": {
         "columns": {
           "type": "number",
-          "description": "Column count (integer) or CSS grid-template value (e.g. `auto-fit`)"
+          "description": "Column count or grid template. Fractional tracks shrink without overflowing and collapse below 600px of available width."
         },
         "gap": {
           "type": "enum",
@@ -2599,17 +2599,19 @@
               "value",
               "sub",
               "pct",
+              "hint",
               "format",
               "subFormat",
               "currency"
             ],
             "optional": [
+              "hint",
               "format",
               "subFormat",
               "currency"
             ]
           },
-          "description": "JSON array of metric objects: `{ label, value, sub, pct, format?, subFormat?, currency? }`. `sub` is the caption under the value; `pct` (a number) draws a severity meter and is omitted for metrics that have no ceiling. There is deliberately no per-metric colour: a value is a value, and the one that was tinted gold was drift, not meaning. `format` is per metric, not per strip, because a strip is precisely where a dollar figure sits next to a token count next to a latency — one attribute for all of them would be wrong for most of them. It takes the same names as `app-stat-card`'s (`currency`, `compact`, `duration`, `bytes`, `date`, …) and `currency` overrides the ISO code for that one metric. Omit it and the value is formatted by shape: a fractional number to two decimals, an ISO-8601 string as local time, a pre-built string verbatim. `sub` takes `subFormat` and the same treatment, so a caption that is just a number does not undo the work."
+          "description": "JSON array of metric objects: `{ label, value, sub, pct, hint?, format?, subFormat?, currency? }`. `hint` is a plain-text tooltip on the cell — for a value that is a sum, it is where the parts go, so the headline stays one number. `sub` is the caption under the value; `pct` (a number) draws a severity meter and is omitted for metrics that have no ceiling. There is deliberately no per-metric colour: a value is a value, and the one that was tinted gold was drift, not meaning. `format` is per metric, not per strip, because a strip is precisely where a dollar figure sits next to a token count next to a latency — one attribute for all of them would be wrong for most of them. It takes the same names as `app-stat-card`'s (`currency`, `compact`, `duration`, `bytes`, `date`, …) and `currency` overrides the ISO code for that one metric. Omit it and the value is formatted by shape: a fractional number to two decimals, an ISO-8601 string as local time, a pre-built string verbatim. `sub` takes `subFormat` and the same treatment, so a caption that is just a number does not undo the work."
         },
         "loading": {
           "type": "number",

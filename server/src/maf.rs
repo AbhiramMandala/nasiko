@@ -836,6 +836,61 @@ async fn list_mafs(
     }
 }
 
+/// Resolves a workflow step's auto-assigned agent (no explicit `agent_id`) — shared by
+/// `create_maf` and `update_maf` so the rule is encoded once, not twice: routes via the engine,
+/// requires a non-empty endpoint, and re-checks access on the result. That re-check is
+/// defense-in-depth against `agent_registry::get_agents_for_user`'s candidate query being (or
+/// becoming) too permissive — not the primary authorization mechanism, which is that query
+/// itself — since unlike the explicit-`agent_id` case, nothing else in this path validates the
+/// routing engine's pick before it's used. `None` on any failure (routing error, no endpoint, or
+/// access denied) so every caller falls through to the catalog fallback uniformly: an unusable
+/// or inaccessible routed candidate is not something the caller asked for by id, so there's
+/// nothing to explain to them — just try the next mechanism.
+/// `Ok(None)` is an ordinary miss — no route, no endpoint, or a result this caller cannot
+/// reach — and the caller falls through to the catalog fallback.
+///
+/// `Err(reason)` is an explicit refusal by the operator's routing policy, which must NEVER
+/// fall through: that fallback exists for "the router could not decide", and using it here
+/// would assign the step to an agent the policy just judged unable to do it, reinstating the
+/// exact behaviour the policy is there to remove. The two cannot share `None`, which is why
+/// this returns a `Result` rather than an `Option`.
+async fn route_with_access_check(
+    state: &AppState,
+    claims: &Claims,
+    user_id: Uuid,
+    task_description: &str,
+    policy: Option<&dyn nasiko_orchestrator::RoutingPolicy>,
+) -> Result<Option<(Uuid, String, String)>, String> {
+    let route_req = RouteRequest {
+        query: task_description.to_string(),
+        session_id: Uuid::new_v4().to_string(),
+        user_id,
+        file_parts: vec![],
+    };
+    let routed = match state
+        .routing_engine
+        .route(route_req, &state.db, policy)
+        .await
+    {
+        Ok(result) => match result.agent.url {
+            Some(endpoint) if !endpoint.is_empty() => {
+                Some((result.agent.id, result.agent.name, endpoint))
+            }
+            _ => None,
+        },
+        // Relayed verbatim rather than rephrased: this crate does not know what the policy
+        // checked for, so it cannot say what to do about it.
+        Err(nasiko_orchestrator::RouterError::PolicyRefused { reason }) => return Err(reason),
+        Err(_) => None,
+    };
+    Ok(match routed {
+        Some((id, name, endpoint)) if crate::acl::can_access_agent(state, claims, id).await => {
+            Some((id, name, endpoint))
+        }
+        _ => None,
+    })
+}
+
 // ─── 2. POST /maf/workflows ────────────────────────────────────────────────
 
 async fn create_maf(
@@ -889,7 +944,10 @@ async fn create_maf_from_steps(
         return bad_request("steps must not be empty");
     }
 
-    // Resolve any steps that lack an agent_id via the routing engine
+    // Resolve any steps that lack an agent_id via the routing engine. Resolved
+    // once here rather than once per step inside route(): the operator's policy
+    // is the same for every step of this request.
+    let policy = state.orchestrator_policy.routing_policy(&state.db).await;
     let mut resolved_steps: Vec<MafStep> = Vec::with_capacity(steps.len());
     for (idx, step) in steps.into_iter().enumerate() {
         if step.task_description.trim().is_empty() {
@@ -924,27 +982,27 @@ async fn create_maf_from_steps(
                 Err(e) => return internal_err(e),
             }
         } else {
-            // Auto-assign via routing engine
-            let route_req = RouteRequest {
-                query: step.task_description.clone(),
-                session_id: Uuid::new_v4().to_string(),
+            // Auto-assign via routing engine. An agent row with an empty `url` (registered but
+            // never deployed, or a seed whose URL was never backfilled) used to hard-fail the
+            // whole request with a 400, which is what made *every* workflow uncreatable on such
+            // a fleet — `route_with_access_check` treats that, a routing failure, and an
+            // inaccessible result all the same way: fall through to the catalog fallback below.
+            // An explicit policy refusal is the one case that must not: see the helper's docs.
+            let routed = match route_with_access_check(
+                state,
+                claims,
                 user_id,
-                file_parts: vec![],
-            };
-            // A routed agent is only usable if it actually has an endpoint. An
-            // agent row with an empty `url` (registered but never deployed, or
-            // a seed whose URL was never backfilled) used to hard-fail the
-            // whole request with a 400, which is what made *every* workflow
-            // uncreatable on such a fleet. Treat it exactly like a routing
-            // failure and fall through to the catalog fallback below.
-            let routed = match state.routing_engine.route(route_req, &state.db).await {
-                Ok(result) => match result.agent.url {
-                    Some(endpoint) if !endpoint.is_empty() => {
-                        Some((result.agent.id, result.agent.name, endpoint))
-                    }
-                    _ => None,
-                },
-                Err(_) => None,
+                &step.task_description,
+                policy.as_deref(),
+            )
+            .await
+            {
+                Ok(routed) => routed,
+                Err(reason) => {
+                    return bad_request(&format!(
+                        "step {idx}: the routing policy refused every agent for this task. {reason}"
+                    ));
+                }
             };
 
             match routed {
@@ -1459,6 +1517,9 @@ async fn update_maf(
             return bad_request("steps must not be empty");
         }
 
+        // Resolved once here rather than once per step inside route() — see
+        // create_maf's own note.
+        let policy = state.orchestrator_policy.routing_policy(&state.db).await;
         let mut resolved: Vec<MafStep> = Vec::with_capacity(steps.len());
         for (idx, step) in steps.iter().enumerate() {
             if step.task_description.trim().is_empty() {
@@ -1477,25 +1538,31 @@ async fn update_maf(
                     Err(e) => return internal_err(e),
                 }
             } else {
-                // Auto-assign via routing engine (same logic as create_maf)
-                let route_req = RouteRequest {
-                    query: step.task_description.clone(),
-                    session_id: Uuid::new_v4().to_string(),
+                // Auto-assign via routing engine — same helper as create_maf, so this stays in
+                // sync with it (this branch used to hard-400 on an empty endpoint instead of
+                // falling through to the catalog fallback like create_maf does, and never
+                // re-checked access on the routed result at all; both are now the same code).
+                // A policy refusal is propagated, not fallen back on — see the helper's docs.
+                let routed = match route_with_access_check(
+                    &state,
+                    &claims,
                     user_id,
-                    file_parts: vec![],
-                };
-                match state.routing_engine.route(route_req, &state.db).await {
-                    Ok(result) => {
-                        let ep = result.agent.url.unwrap_or_default();
-                        if ep.is_empty() {
-                            return bad_request(&format!(
-                                "step {idx}: auto-assigned agent '{}' has no endpoint",
-                                result.agent.name
-                            ));
-                        }
-                        (result.agent.id, result.agent.name, ep)
+                    &step.task_description,
+                    policy.as_deref(),
+                )
+                .await
+                {
+                    Ok(routed) => routed,
+                    Err(reason) => {
+                        return bad_request(&format!(
+                            "step {idx}: the routing policy refused every agent for this task. \
+                             {reason}"
+                        ));
                     }
-                    Err(_) => {
+                };
+                match routed {
+                    Some(agent) => agent,
+                    None => {
                         let catalog = match fetch_user_agents(&state.db, user_id).await {
                             Ok(v) => v,
                             Err(e) => return internal_err(e),

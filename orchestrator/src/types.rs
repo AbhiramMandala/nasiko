@@ -1,3 +1,5 @@
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -25,6 +27,20 @@ pub struct FilePart {
     pub filename: String,
     pub content_type: String,
     pub data: Vec<u8>,
+}
+
+impl FilePart {
+    /// Encode a raw file into the `FilePart` format stored in orchestrator types.
+    /// The `data` field becomes a base64 data URI: `data:<mime>;base64,<bytes>`.
+    pub fn encode(filename: String, bytes: &[u8], mime_type: String) -> Self {
+        let encoded = B64.encode(bytes);
+        let data_uri = format!("data:{};base64,{}", mime_type, encoded);
+        FilePart {
+            filename,
+            content_type: mime_type,
+            data: data_uri.into_bytes(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -63,4 +79,9 @@ pub struct RouterLogEntry {
     pub file_count: i32,
     /// UUID of token_usage record tracking the Stage 3 LLM selector call.
     pub selection_token_usage_id: Option<Uuid>,
+    /// `false` for a routing decision that ended in a refusal (the caller's
+    /// `RoutingPolicy` rejected every candidate) rather than an agent selection.
+    pub success: bool,
+    /// Set when `success` is `false`, to say why routing did not produce a pick.
+    pub error_message: Option<String>,
 }

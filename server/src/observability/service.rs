@@ -1312,7 +1312,7 @@ impl ObservabilityService {
             agent_id: agent_name,
             num_traces: Some(details.trace_count as u32),
             start_time: started_at.map(fmt_ts),
-            // Flutter's DateTime.parse requires a non-empty string — fall back
+            // Clients parsing this as a timestamp need a non-empty string — fall back
             // to start_time when no end time is known.
             end_time: ended_at.or(started_at).map(fmt_ts),
             duration_ms,

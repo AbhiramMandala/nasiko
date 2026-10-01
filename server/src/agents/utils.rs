@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use uuid::Uuid;
 
+use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::build::BuildStatus;
 
 /// Fetch the agent's card from its runtime endpoint and persist the fields
@@ -244,7 +247,17 @@ pub(crate) async fn fetch_agent_card_with_retry(
 /// - `agent_deployments` ON DELETE CASCADE  → deployment rows removed
 /// - `agent_versions`    ON DELETE CASCADE  → version history removed
 /// - `upload_status`     ON DELETE SET NULL → row survives; agent_id becomes NULL
-pub(crate) async fn delete_agent_or_mark_failed(db: &sqlx::PgPool, agent_id: Uuid) {
+///
+/// This is a real `DELETE`, not the soft-delete `oss/server/src/catalog/routes.rs::delete()`
+/// uses — so it never goes through that handler's own `agent_deletion_hook` call. It must fire
+/// the hook itself here, or enterprise-only, agent-keyed state with no FK to `agents` (e.g. an
+/// L1A domain set on this brand-new agent before its first build ever finished) would be left
+/// permanently orphaned with nothing left to clean it up.
+pub(crate) async fn delete_agent_or_mark_failed(
+    db: &sqlx::PgPool,
+    agent_id: Uuid,
+    deletion_hook: &Arc<SwappableAgentDeletionHook>,
+) {
     let has_prior_success: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM agent_builds WHERE agent_id = $1 AND status = 'success')",
     )
@@ -260,11 +273,20 @@ pub(crate) async fn delete_agent_or_mark_failed(db: &sqlx::PgPool, agent_id: Uui
                 .execute(db)
                 .await;
     } else {
-        let _ = sqlx::query("DELETE FROM agents WHERE id = $1")
+        let deleted = sqlx::query("DELETE FROM agents WHERE id = $1")
             .bind(agent_id)
             .execute(db)
-            .await;
-        tracing::info!(%agent_id, "deleted new-agent row after build failure (no prior successful builds)");
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .unwrap_or(false);
+        // Only fire the hook if the row was actually removed — a transient DB error on the
+        // DELETE above must not free enterprise-only, agent-keyed state (e.g. an L1A domain
+        // name) for an agent that still exists. Mirrors `catalog/routes.rs::delete()`'s
+        // `RETURNING` + existence check for the same reason.
+        if deleted {
+            deletion_hook.on_agent_deleted(agent_id).await;
+            tracing::info!(%agent_id, "deleted new-agent row after build failure (no prior successful builds)");
+        }
     }
 }
 

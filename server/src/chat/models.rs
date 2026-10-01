@@ -64,6 +64,11 @@ pub struct ChatMessage {
     // carry at most duration/trace.
     pub input_tokens: Option<i32>,
     pub output_tokens: Option<i32>,
+    /// Prompt tokens served from the provider cache. Separate from `input_tokens`, which
+    /// carries only the fresh portion — a chip that sums input+output alone under-reports
+    /// the prompt by whatever the cache served (migration 041).
+    pub cache_read_tokens: Option<i32>,
+    pub cache_creation_tokens: Option<i32>,
     pub model: Option<String>,
     pub duration_ms: Option<i32>,
     pub cost_usd: Option<rust_decimal::Decimal>,
@@ -134,6 +139,10 @@ pub struct SendMessage {
 pub struct MessageUsage {
     pub input_tokens: Option<i32>,
     pub output_tokens: Option<i32>,
+    #[serde(default)]
+    pub cache_read_tokens: Option<i32>,
+    #[serde(default)]
+    pub cache_creation_tokens: Option<i32>,
     pub model: Option<String>,
     pub duration_ms: Option<i32>,
     pub cost_usd: Option<rust_decimal::Decimal>,

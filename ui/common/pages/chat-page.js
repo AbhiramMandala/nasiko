@@ -1059,6 +1059,10 @@ class ChatPage extends HTMLElement {
       body.usage = {
         input_tokens: usage?.input_tokens ?? null,
         output_tokens: usage?.output_tokens ?? null,
+        // Without these the reloaded chip would disagree with the one just shown live,
+        // shrinking by whatever the provider cache served.
+        cache_read_tokens: usage?.cache_read_tokens ?? null,
+        cache_creation_tokens: usage?.cache_creation_tokens ?? null,
         model: usage?.model ?? null,
         duration_ms: usage?.duration_ms ?? null,
         cost_usd: usage?.cost_usd ?? null,
