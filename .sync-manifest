@@ -576,7 +576,6 @@ oci/src/routes/mod.rs
 oci/src/routes/tags.rs
 oci/src/storage.rs
 orchestrator/Cargo.toml
-orchestrator/src/agent_client.rs
 orchestrator/src/agent_registry.rs
 orchestrator/src/context_selection.rs
 orchestrator/src/engine.rs
@@ -597,7 +596,6 @@ orchestrator/src/selector.rs
 orchestrator/src/session_history.rs
 orchestrator/src/types.rs
 orchestrator/src/vector_store.rs
-orchestrator/tests/agent_client.rs
 orchestrator/tests/engine.rs
 orchestrator/tests/recall.rs
 orchestrator/tests/reranker.rs
@@ -1043,6 +1041,8 @@ ui/common/pages/build-detail-page.css
 ui/common/pages/build-detail-page.js
 ui/common/pages/builds-page.css
 ui/common/pages/builds-page.js
+ui/common/pages/chat-context-page.css
+ui/common/pages/chat-context-page.js
 ui/common/pages/chat-page.css
 ui/common/pages/chat-page.js
 ui/common/pages/custom-views-page.css
@@ -1098,6 +1098,7 @@ ui/common/pages/your-agents-page.js
 ui/common/services/agents-service.js
 ui/common/services/api.js
 ui/common/services/auth-service.js
+ui/common/services/chat-context-service.js
 ui/common/services/data-functions.js
 ui/common/services/flows-service.js
 ui/common/services/hitl.js
@@ -1201,6 +1202,7 @@ ui/oss/build.html
 ui/oss/build.preview.js
 ui/oss/builds.html
 ui/oss/builds.preview.js
+ui/oss/chat-context.html
 ui/oss/chat.html
 ui/oss/chat.preview.js
 ui/oss/common
