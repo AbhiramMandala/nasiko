@@ -13,7 +13,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Skeleton } from '@/components/ui/skeleton'
+import { PageLoader } from '@/components/shared/page-loader'
 import { ErrorState } from '@/features/observability/StateCard'
 import { useRollback, useVersions, useWatch } from '../api'
 import { CliCommand, LearnMore, Section } from '../components/bits'
@@ -68,7 +68,7 @@ export function VersionsTab({ agent }: { agent: AgentView }) {
         </div>
       ) : null}
       {versions.isPending ? (
-        <Skeleton className="h-24" />
+        <PageLoader label={copy.loadingVersions} inline className="min-h-64" />
       ) : versions.isError ? (
         <ErrorState error={versions.error} onRetry={() => void versions.refetch()} />
       ) : versions.data.length === 0 ? (

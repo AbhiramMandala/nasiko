@@ -245,13 +245,15 @@ export function nasikoApp(o: AppOptions): UserConfig {
       rolldownOptions: {
         output: {
           // visx (+ d3) is most of the chart pages' weight; its own chunk keeps it cacheable across page changes.
-          // Shared deps (React) must not be dragged in, or the entry would import the charts chunk.
+          // Shared deps (React) must not be dragged in, or the entry would import the charts chunk. So @visx/text's own
+          // CommonJS deps are listed: left out, rolldown parks them in a route chunk that imports charts, and the cycle
+          // breaks every page (check-budgets.ts fails on any chunk cycle).
           codeSplitting: {
             includeDependenciesRecursively: false,
             groups: [
               {
                 name: 'charts',
-                test: /node_modules[\\/](@visx|d3-)|common[\\/]src[\\/]components[\\/]charts[\\/]/,
+                test: /node_modules[\\/](@visx|d3-|reduce-css-calc|reduce-function-call|math-expression-evaluator|balanced-match)|common[\\/]src[\\/]components[\\/]charts[\\/]/,
               },
             ],
           },

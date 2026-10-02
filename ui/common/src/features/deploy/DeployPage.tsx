@@ -35,25 +35,28 @@ export function DeployPage({
         }
         className="gap-4"
       >
-        <TabsList
-          aria-label={copy.methods.label}
-          className="h-auto w-full justify-start @[768px]:w-fit"
-        >
-          {DEPLOY_METHODS.map((m) => {
-            const Icon = ICON[m]
-            return (
-              <TabsTrigger
-                key={m}
-                value={m}
-                className="min-w-0 flex-1 gap-2 px-2 py-2 @[480px]:px-4 @[768px]:flex-none pointer-coarse:min-h-11"
-              >
-                {/* Phones: words only, so the three tabs fit side by side without scrolling the page. */}
-                <Icon aria-hidden className="size-4 @max-[480px]:hidden" />
-                {copy.methods[m]}
-              </TabsTrigger>
-            )
-          })}
-        </TabsList>
+        {/* The method row stays put while the form scrolls under it (Sessions' sticky bar). */}
+        <div className="sticky top-0 z-20 -mx-4 bg-background/95 px-4 py-2 backdrop-blur">
+          <TabsList
+            aria-label={copy.methods.label}
+            className="h-auto w-full justify-start @[768px]:w-fit"
+          >
+            {DEPLOY_METHODS.map((m) => {
+              const Icon = ICON[m]
+              return (
+                <TabsTrigger
+                  key={m}
+                  value={m}
+                  className="min-w-0 flex-1 gap-2 px-2 py-2 @[480px]:px-4 @[768px]:flex-none pointer-coarse:min-h-11"
+                >
+                  {/* Phones: words only, so the three tabs fit side by side without scrolling the page. */}
+                  <Icon aria-hidden className="size-4 @max-[480px]:hidden" />
+                  {copy.methods[m]}
+                </TabsTrigger>
+              )
+            })}
+          </TabsList>
+        </div>
         <TabsContent value="upload">
           {me.data ? (
             <UploadTab

@@ -6,7 +6,7 @@ import { setupWorker } from 'msw/browser'
 import type { EnvConfig } from '@/lib/env'
 import { readAnchor, pinClock } from './anchor'
 import { editionHandlers } from '@edition/mocks'
-import { allHandlers, configureMocks, handlersFor } from './handlers'
+import { allHandlers, configureMocks, handlersFor, type MockOnboarding } from './handlers'
 import { generateSeed } from './seed'
 
 /** Mock-only key: the mock session was ended by a sign-out. */
@@ -19,6 +19,20 @@ function readMockSignedOut(): boolean | null {
   } catch {
     return null
   }
+}
+
+/** Mock-only key: the mock user's onboarding row, so a finished guide stays finished across reloads. */
+const MOCK_ONBOARDING_KEY = 'ui-lab:mock-onboarding'
+
+/** A first-time user unless a finished guide was stored; storage blocked: first-time on every load. */
+function readMockOnboarding(): MockOnboarding {
+  try {
+    const raw = localStorage.getItem(MOCK_ONBOARDING_KEY)
+    if (raw) return JSON.parse(raw) as MockOnboarding
+  } catch {
+    // Unreadable: start over.
+  }
+  return { persona: null, completed: false }
 }
 
 export async function startMocks(cfg: EnvConfig): Promise<void> {
@@ -52,6 +66,17 @@ export async function startMocks(cfg: EnvConfig): Promise<void> {
           else localStorage.setItem(MOCK_SIGNED_OUT_KEY, '1')
         } catch {
           // Storage blocked: the sign-out lasts until the next load.
+        }
+      },
+    })
+    // The demo starts as a first-time user (the guide opens on /); a picked persona survives a reload.
+    configureMocks({
+      onboarding: readMockOnboarding(),
+      persistOnboarding: (row) => {
+        try {
+          localStorage.setItem(MOCK_ONBOARDING_KEY, JSON.stringify(row))
+        } catch {
+          // Storage blocked: the row lasts until the next load.
         }
       },
     })

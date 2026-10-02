@@ -46,7 +46,11 @@ describe('a failed agent list', () => {
       await within(await card('overview-health')).findByText(copy.couldntLoad(copy.health.what)),
     ).toBeInTheDocument()
     expect(
-      await within(await card('kpi-spend')).findByTestId('overview-mtd', {}, { timeout: 5000 }),
+      await within(await card('overview-month')).findByTestId(
+        'overview-mtd',
+        {},
+        { timeout: 5000 },
+      ),
     ).toBeInTheDocument()
     expect(
       await within(await card('overview-needs')).findByText(
@@ -69,13 +73,18 @@ describe('Needs you waits for the ratings', () => {
     )
     renderApp('/')
     const needs = await card('overview-needs')
-    await waitFor(() => expect(within(needs).getByLabelText(copy.loading)).toBeInTheDocument())
+    // With rows, a labelled skeleton under them; with none (budgets hidden, so no seeded budget rows), the card skeleton.
+    const loading = () =>
+      within(needs).queryByLabelText(copy.loading) ?? within(needs).queryByText(copy.loading)
+    await waitFor(() => expect(loading()).toBeInTheDocument())
     await new Promise((r) => setTimeout(r, 500))
     expect(within(needs).queryByTestId('needs-empty')).toBeNull()
-    expect(within(needs).getByLabelText(copy.loading)).toBeInTheDocument()
+    expect(loading()).toBeInTheDocument()
   })
 
-  it('lists a stopped agent budget as the agent, never again as a budget row', async () => {
+  // Budgets hidden (no server support for /api/budgets yet, R-L10): un-skip with the commented budget code.
+
+  it.skip('lists a stopped agent budget as the agent, never again as a budget row', async () => {
     renderApp('/')
     const needs = await card('overview-needs')
     await waitFor(

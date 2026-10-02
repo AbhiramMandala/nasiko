@@ -328,6 +328,52 @@ describe('layout', () => {
     const panel = screen.getByTestId('login-showcase')
     expect(panel).toHaveAttribute('aria-hidden', 'true')
     expect(panel).toHaveClass('hidden', 'md:flex')
+    // The showcase leads the DOM (left column), the form follows; the form's lockup is the one named logo (the mark on
+    // the showcase's top plate is decorative).
+    const form = screen.getByLabelText('Username').closest('form')!
+    expect(panel.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(panel.querySelector('svg[role="img"]')).toBeNull()
+    expect(panel.querySelector('svg')).not.toBeNull()
+    expect(screen.getByRole('img', { name: 'Nasiko' })).toBeInTheDocument()
+  })
+
+  it('offers no password reset or remember-me the server cannot honour', async () => {
+    configureMocks({ loggedIn: false })
+    renderApp('/login')
+    await screen.findByRole('heading', { name: 'Sign in to Nasiko' })
+    expect(screen.queryByText(/forgot password/i)).toBeNull()
+    expect(screen.queryByText(/keep me signed in/i)).toBeNull()
+  })
+
+  it('shows and hides the password', async () => {
+    configureMocks({ loggedIn: false })
+    const user = userEvent.setup()
+    renderApp('/login')
+    const field = await screen.findByLabelText('Password')
+    const toggle = screen.getByRole('button', { name: 'Show password' })
+    expect(field).toHaveAttribute('type', 'password')
+    await user.click(toggle)
+    expect(field).toHaveAttribute('type', 'text')
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    await user.click(toggle)
+    expect(field).toHaveAttribute('type', 'password')
+  })
+
+  it('has no mode switch: the page follows the stored choice or the system', async () => {
+    configureMocks({ loggedIn: false })
+    renderApp('/login')
+    await screen.findByRole('heading', { name: 'Sign in to Nasiko' })
+    expect(screen.queryByRole('radiogroup', { name: 'Mode' })).toBeNull()
+  })
+
+  it('lands on the Overview when no redirect is given', async () => {
+    configureMocks({ loggedIn: false })
+    const user = userEvent.setup()
+    const { router } = renderApp('/login')
+    await user.type(await screen.findByLabelText('Username'), 'admin')
+    await user.type(screen.getByLabelText('Password'), 'x')
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'))
   })
 
   it('shows Carbon on the sign-in screen and the stored theme again after signing in', async () => {

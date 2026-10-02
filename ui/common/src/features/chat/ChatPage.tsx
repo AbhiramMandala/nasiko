@@ -1,13 +1,18 @@
 /**
  * Chat (plan §7): the rail plus either a new chat (`/chat`, `NewChatView.tsx`) or an existing one
- * (`/chat/$sessionId`, `SessionView.tsx`). Turns live in the registry (§6.2).
+ * (`/chat/$sessionId`, `SessionView.tsx`). Turns live in the registry (§6.2). The rail is the app sidebar's drill-in
+ * panel (`SidebarPanel`); with the sidebar collapsed it sits beside the chat from 1024 px, in a sheet below that.
  */
 import { useQuery } from '@tanstack/react-query'
 import { MessagesSquare } from 'lucide-react'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { use, useCallback, useMemo, useRef, useState } from 'react'
+import { SidebarPanel } from '@/app/shell/SidebarPanel'
+import { SidebarPanelContext } from '@/app/shell/panelSlot'
+import { DotBackground } from '@/components/aceternity/dot-background'
+import { PageLoader } from '@/components/shared/page-loader'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
-import { Skeleton } from '@/components/ui/skeleton'
+import { useSidebar } from '@/components/ui/sidebar'
 import { ErrorState } from '@/features/observability/StateCard'
 import { meQuery } from '@/lib/api/auth'
 import { useMediaQuery } from '@/lib/useMediaQuery'
@@ -32,7 +37,7 @@ export function ChatPage({ sessionId, search }: { sessionId?: string; search: Ch
         <ErrorState error={me.error} onRetry={() => void me.refetch()} />
       </div>
     )
-  if (!me.data) return <Skeleton className="m-4 h-40" aria-busy />
+  if (!me.data) return <PageLoader label={copy.loadingChat} />
   return (
     <ChatLayout
       userId={me.data.sub}
@@ -58,7 +63,9 @@ function ChatLayout({
   search: ChatSearch
 }) {
   const registry = useChatRegistry(userId)
-  // The chat rail is inline from 1024 px, a sheet below that (v1c DS5).
+  // In the sidebar while it can hold the rail; otherwise inline from 1024 px, a sheet below that (v1c DS5).
+  const inSidebar = use(SidebarPanelContext).target !== null
+  const { isMobile, setOpenMobile } = useSidebar()
   const wide = useMediaQuery('(min-width: 1024px)')
   const [railOpen, setRailOpen] = useState(false)
   const newChatRef = useRef<HTMLAnchorElement>(null)
@@ -73,7 +80,10 @@ function ChatLayout({
       username={username}
       userId={userId}
       waiting={waiting}
-      onNavigate={() => setRailOpen(false)}
+      onNavigate={() => {
+        setRailOpen(false)
+        setOpenMobile(false)
+      }}
     />
   )
   // Polls and signal changes re-render the rail, not the open chat: the views are memoised on stable props, and
@@ -81,44 +91,59 @@ function ChatLayout({
   const waitingChats = waiting.match.chats.length
   const openRail = useCallback(() => setRailOpen(true), [])
   const railButton = useMemo(
-    () => (wide ? null : <RailTrigger waitingChats={waitingChats} onOpen={openRail} />),
-    [wide, waitingChats, openRail],
+    () =>
+      wide || inSidebar ? null : <RailTrigger waitingChats={waitingChats} onOpen={openRail} />,
+    [wide, inSidebar, waitingChats, openRail],
   )
   const props: ViewProps = useMemo(
     () => ({ userId, registry, search, railButton, newChatRef, username }),
     [userId, registry, search, railButton, username],
   )
   return (
-    <div className="flex h-full min-h-0">
-      {wide ? (
-        <aside className="w-60 shrink-0 border-r border-border">{rail}</aside>
-      ) : (
-        <Sheet open={railOpen} onOpenChange={setRailOpen}>
-          <SheetContent side="left" className="w-[85vw] max-w-80 p-0">
-            <SheetTitle className="sr-only">{copy.chats}</SheetTitle>
-            {/* The sheet's close button sits top-right; start the list below it. */}
-            <div className="h-full min-h-0 pt-10">{rail}</div>
-            <ModalAnnouncer />
-          </SheetContent>
-        </Sheet>
+    <SidebarPanel
+      panel={
+        <>
+          {rail}
+          {/* The phone sheet is modal: the page's announcer is hidden while it is open. */}
+          {isMobile ? <ModalAnnouncer /> : null}
+        </>
+      }
+    >
+      {() => (
+        <div className="flex h-full min-h-0">
+          {inSidebar ? null : wide ? (
+            <aside className="w-60 shrink-0 border-r border-border">{rail}</aside>
+          ) : (
+            <Sheet open={railOpen} onOpenChange={setRailOpen}>
+              <SheetContent side="left" className="w-[85vw] max-w-80 p-0">
+                <SheetTitle className="sr-only">{copy.chats}</SheetTitle>
+                {/* The sheet's close button sits top-right; start the list below it. */}
+                <div className="h-full min-h-0 pt-10">{rail}</div>
+                <ModalAnnouncer />
+              </SheetContent>
+            </Sheet>
+          )}
+          {/* isolate: the dots' -z-10 stays inside the section, above the page background. */}
+          <section className="@container relative isolate flex min-w-0 flex-1 flex-col">
+            <DotBackground className="-z-10" />
+            {sessionId ? (
+              <SessionViewMemo key={sessionId} sessionId={sessionId} {...props} />
+            ) : (
+              <NewChatViewMemo
+                key={
+                  search.agent !== undefined
+                    ? `agent:${agentParamText(search.agent)}`
+                    : isAuto(search)
+                      ? 'auto'
+                      : 'choose'
+                }
+                {...props}
+              />
+            )}
+          </section>
+        </div>
       )}
-      <section className="@container flex min-w-0 flex-1 flex-col">
-        {sessionId ? (
-          <SessionViewMemo key={sessionId} sessionId={sessionId} {...props} />
-        ) : (
-          <NewChatViewMemo
-            key={
-              search.agent !== undefined
-                ? `agent:${agentParamText(search.agent)}`
-                : isAuto(search)
-                  ? 'auto'
-                  : 'choose'
-            }
-            {...props}
-          />
-        )}
-      </section>
-    </div>
+    </SidebarPanel>
   )
 }
 

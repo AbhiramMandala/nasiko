@@ -1,10 +1,11 @@
 /**
- * Recent sessions (plans/feat-overview.md §9): the five newest of the last 24 h, failures first, with the status marks
+ * Recent sessions (plans/feat-overview.md §9): the five newest of the last 7 days, failures first, with the status marks
  * from the same checks Needs you uses (the newest 25, eng review R7). Tempo errors say the trace store is needed.
  */
 import { Link } from '@tanstack/react-router'
 import { CircleAlert, CircleCheck, CircleDashed } from 'lucide-react'
 import { useRef } from 'react'
+import { EmptyState } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
 import {
   Table,
@@ -20,7 +21,7 @@ import { fmtMoney } from '@/lib/format'
 import { ApiError } from '@/lib/api/client'
 import type { NeedsYou } from '../api'
 import { copy } from '../copy'
-import { LAST_DAY, RECENT_SESSION_ROWS } from '../tuning'
+import { LAST_WEEK, RECENT_SESSION_ROWS } from '../tuning'
 import { Card, CardError, CardSkeleton, TOUCH } from './Card'
 
 const MARK: Partial<Record<Status, { Icon: typeof CircleCheck; tone: string; label: string }>> = {
@@ -58,7 +59,7 @@ export function RecentSessions({
       title={copy.sessions.title}
       to="/sessions"
       linkLabel={copy.sessions.link}
-      linkSearch={LAST_DAY}
+      linkSearch={LAST_WEEK}
       titleRef={titleRef}
       className={className}
     >
@@ -75,9 +76,7 @@ export function RecentSessions({
           titleRef={titleRef}
         />
       ) : !rows.length ? (
-        <p className="text-sm">
-          {copy.sessions.none} <OpenSessions />
-        </p>
+        <EmptyState title={copy.sessions.none} action={<OpenSessions />} className="py-6 md:py-6" />
       ) : (
         <Table className="table-fixed text-xs">
           <TableHeader>
@@ -122,7 +121,7 @@ export function RecentSessions({
                     <Link
                       to="/sessions/$sessionId"
                       params={{ sessionId: s.session_id }}
-                      search={LAST_DAY as never}
+                      search={LAST_WEEK as never}
                       className="underline-offset-4 hover:underline"
                     >
                       {s.first_input || s.session_id}
@@ -150,7 +149,7 @@ export function RecentSessions({
 function OpenSessions() {
   return (
     <Button asChild variant="link" size="sm" className={`h-auto px-0 ${TOUCH}`}>
-      <Link to="/sessions" search={LAST_DAY as never}>
+      <Link to="/sessions" search={LAST_WEEK as never}>
         {copy.sessions.open}
       </Link>
     </Button>

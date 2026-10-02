@@ -107,7 +107,7 @@ describe('another tab signs out', () => {
     const c = otherTab()
     c.postMessage({ type: 'signed-out', failed: false } satisfies SessionMessage)
     c.postMessage({ type: 'signed-in' } satisfies SessionMessage) // sentinel
-    await vi.waitFor(() => expect(page.assign).toHaveBeenCalledWith('/tokenops'))
+    await vi.waitFor(() => expect(page.assign).toHaveBeenCalledWith('/'))
     expect(page.replace).not.toHaveBeenCalled()
   })
 })
@@ -167,7 +167,7 @@ describe('another tab signs in', () => {
     const b = tab('/login?expired=true')
     otherTab().postMessage({ type: 'signed-in', sub: 'u1' } satisfies SessionMessage)
     await vi.waitFor(() => expect(a.page.assign).toHaveBeenCalledWith('/agents'))
-    await vi.waitFor(() => expect(b.page.assign).toHaveBeenCalledWith('/tokenops'))
+    await vi.waitFor(() => expect(b.page.assign).toHaveBeenCalledWith('/'))
   })
 
   it('is ignored while this tab signs out (its own flow decides)', async () => {

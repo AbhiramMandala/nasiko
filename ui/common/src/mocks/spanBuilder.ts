@@ -79,7 +79,10 @@ export const encodeTraceId = (id: string) => b64(`Trace:${id}`)
 
 // ─── personas ───────────────────────────────────────────────────────────────
 
-const PERSONA: Record<string, { asks: string[]; answer: string; tools: string[] }> = {
+const PERSONA: Record<
+  string,
+  { asks: string[]; answer: string; tools: string[]; everyTool?: boolean }
+> = {
   'seed-support-bot': {
     asks: [
       "Customer can't reset their password",
@@ -96,7 +99,18 @@ const PERSONA: Record<string, { asks: string[]; answer: string; tools: string[] 
       'What changed in the EU AI Act this month?',
     ],
     answer: 'Wrote a sourced summary with 6 citations.',
-    tools: ['tool.web_search', 'tool.fetch_url'],
+    // The long traces (8 steps, ~40 spans): every research run calls each tool once.
+    everyTool: true,
+    tools: [
+      'tool.web_search',
+      'tool.fetch_url',
+      'tool.extract_pdf',
+      'tool.web_search_followup',
+      'tool.fetch_url_secondary',
+      'tool.dedupe_sources',
+      'tool.extract_citations',
+      'tool.write_notes',
+    ],
   },
   'seed-code-reviewer': {
     asks: [
@@ -612,7 +626,11 @@ export function generateSpans(seed: Seed, traceId: string): GenSpan[] {
     spans.push(plan)
     llms.push(plan)
     cursor = plan.end + 20
-    const nTools = p.tools.length ? 1 + rint(p.tools.length + 1) : 0
+    const nTools = !p.tools.length
+      ? 0
+      : 'everyTool' in p && p.everyTool
+        ? p.tools.length
+        : 1 + rint(p.tools.length + 1)
     const r = rand()
     // ~6% of traces retry a flaky tool once (and recover); ~0.4% end with a failing tool.
     const retryOnce = nTools > 0 && r < 0.06

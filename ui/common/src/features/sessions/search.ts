@@ -1,9 +1,11 @@
 import { z } from 'zod'
 import { sharedSearchSchema } from '@/app/shell/context'
-import { isRealDate } from '@/lib/search'
+import { isRealDate, PRESETS } from '@/lib/search'
 
 /** Sessions search params: the shared context plus the page's own (see app/shell/context.ts). */
 export const sessionsSearchSchema = sharedSearchSchema.extend({
+  /** 7 days by default (TokenOps keeps 30d): the widest window session/list can search Tempo across. */
+  preset: z.enum(PRESETS).default('7d').catch('7d'),
   /** Day mode: that UTC day's sessions (the "follow the money" jump). */
   day: z.string().refine(isRealDate).optional().catch(undefined),
   lane: z.enum(['failing', 'slow', 'costly']).optional().catch(undefined),

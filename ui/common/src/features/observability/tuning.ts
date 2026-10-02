@@ -6,6 +6,9 @@
 /** Tempo's search limit (`max_duration`, 168 h by default). session/list searches from
  *  start_time to now, so any older start makes every row's trace lookup fail. */
 export const TEMPO_MAX_SEARCH_MS = 7 * 86_400_000
+/** A 7-day list starts this far inside that limit: the server searches to its own now, which runs ahead of the
+ *  page's frozen "now" by up to WINDOW_FREEZE_MS. */
+export const TEMPO_SAFETY_MS = 15 * 60_000
 
 /** Live day scan: pages of `SCAN_PAGE_SIZE` from `start_time = day start`, newest first. */
 export const SCAN_PAGE_SIZE = 100

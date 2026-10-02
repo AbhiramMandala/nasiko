@@ -5,6 +5,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { useRef } from 'react'
+import { EmptyState } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
 import { relTime } from '@/features/agents/format'
 import { displayStatus } from '@/features/agents/status'
@@ -57,12 +58,15 @@ export function RecentChats({
           titleRef={titleRef}
         />
       ) : !rows.length ? (
-        <p className="text-sm">
-          {copy.chats.none}{' '}
-          <Button asChild variant="link" size="sm" className={`h-auto px-0 ${TOUCH}`}>
-            <Link to="/chat">{copy.chats.start}</Link>
-          </Button>
-        </p>
+        <EmptyState
+          title={copy.chats.none}
+          action={
+            <Button asChild variant="outline" size="sm" className={TOUCH}>
+              <Link to="/chat">{copy.chats.start}</Link>
+            </Button>
+          }
+          className="py-6 md:py-6"
+        />
       ) : (
         <ul className="divide-y divide-border">
           {rows.map(({ row, who }) => (

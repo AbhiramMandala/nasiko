@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { copy } from '@/features/observability/copy'
+import { TEMPO_MAX_SEARCH_MS, TEMPO_SAFETY_MS } from '@/features/observability/tuning'
 import { configureMocks } from '@/mocks/handlers'
 import { observabilityData } from '@/mocks/observability'
 import { now, seed, setupPinnedSeed } from '@/test/pinnedSeed'
@@ -141,7 +142,17 @@ describe('Sessions: states', () => {
     configureMocks({ variant: 'empty' })
     renderApp('/sessions?preset=7d')
     expect(await screen.findByText(copy.emptyTitle)).toBeInTheDocument()
+    expect(screen.queryByTestId('page-loader')).toBeNull()
     expect(screen.getByRole('button', { name: 'Show the last 30 days' })).toBeInTheDocument()
+  })
+
+  it('filters that match nothing say so and offer to clear them', async () => {
+    renderApp('/sessions?live=paused&preset=24h&agent=no-such-agent')
+    expect(await screen.findByText(copy.noMatchTitle)).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'Sessions' })).toBeNull()
+    await userEvent.setup().click(screen.getByRole('button', { name: copy.clearFilters }))
+    const list = await screen.findByRole('list', { name: 'Sessions' })
+    expect(within(list).getAllByRole('link').length).toBeGreaterThan(0)
   })
 
   it('rows without trace data still list (each opens its own page), under a note with the fix', async () => {
@@ -152,21 +163,28 @@ describe('Sessions: states', () => {
     expect((await rows()).length).toBeGreaterThan(0)
   })
 
-  // 7d starts 168 h before a minute boundary and the server searches to its current second, so it
-  // is always over Tempo's limit (even with this minute-exact pinned clock).
-  it.each(['7d', '30d'])(
-    'a %s window explains the Tempo search limit, and points to 24h only',
-    async (preset) => {
-      configureMocks({ variant: 'tempo-down' })
-      renderApp(`/sessions?live=paused&preset=${preset}`)
-      expect(
-        await screen.findByText(new RegExp(copy.noTraceDataLongWindow.slice(0, 40))),
-      ).toBeInTheDocument()
-      expect(screen.getByText(/or pick 24h\./)).toBeInTheDocument()
-      expect(screen.queryByText(new RegExp(copy.noTraceData.slice(0, 40)))).toBeNull()
-      expect((await rows()).length).toBeGreaterThan(0)
-    },
-  )
+  it('a 30d window explains the Tempo search limit, and points to 7d', async () => {
+    configureMocks({ variant: 'tempo-down' })
+    renderApp('/sessions?live=paused&preset=30d')
+    expect(
+      await screen.findByText(new RegExp(copy.noTraceDataLongWindow.slice(0, 40))),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/or pick 7d\./)).toBeInTheDocument()
+    expect(screen.queryByText(new RegExp(copy.noTraceData.slice(0, 40)))).toBeNull()
+    expect((await rows()).length).toBeGreaterThan(0)
+  })
+
+  it("defaults to 7d, sent just inside Tempo's search limit", async () => {
+    const seen = recordRequests()
+    renderApp('/sessions?live=paused')
+    expect((await rows()).length).toBeGreaterThan(0)
+    seen.stop()
+    const list = seen.urls.find((u) => u.pathname.endsWith('/session/list'))
+    const start = Date.parse(list?.searchParams.get('start_time') ?? '')
+    const back = now() - start
+    expect(back).toBeLessThan(TEMPO_MAX_SEARCH_MS)
+    expect(back).toBeGreaterThan(TEMPO_MAX_SEARCH_MS - TEMPO_SAFETY_MS - 60_000)
+  })
 
   it('day mode judges the day it asks for, not the preset (today under 30d is a short search)', async () => {
     configureMocks({ variant: 'tempo-down' })

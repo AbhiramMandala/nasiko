@@ -1,7 +1,8 @@
 /**
  * The KPI row: Spend, Agent runs and Agents running over the page's range (the fourth tile, Harnesses used, is
  * `Harnesses.tsx`). Each label links to the page that owns the number. Spend and runs come from the fleet-wide
- * timeseries (the same series as the Spend chart), the month line from the fleet-wide calendar, agents from the directory.
+ * timeseries (the same series as the Spend chart), agents from the directory. The month line is the summary card's
+ * `MonthBar`.
  * Sparklines are decorative: the figures above them carry the numbers.
  */
 import { Link } from '@tanstack/react-router'
@@ -10,8 +11,8 @@ import type { ReactNode } from 'react'
 import { Delta } from '@/components/shared/delta'
 import { KpiTile } from '@/components/shared/kpi-tile'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { displayStatus, isHarness, type DisplayStatus } from '@/features/agents/status'
-import { FORECAST_MIN_DAYS } from '@/features/tokenops/forecast'
 import { seriesAt, type Series } from '@/lib/chart'
 import { POLARITY } from '@/lib/delta'
 import { fmtInt, fmtMoneyFloor, fmtMoneyShort } from '@/lib/format'
@@ -110,7 +111,7 @@ function Spark({
 }
 
 export function SpendTile({ spend }: { spend: Spend }) {
-  const { totals, summary } = spend
+  const { totals } = spend
   return (
     <KpiTile
       data-testid="kpi-spend"
@@ -136,27 +137,10 @@ export function SpendTile({ spend }: { spend: Spend }) {
       {spend.totalsError && !totals ? (
         <SourceFailed what={copy.spend.rangeWhat} onRetry={spend.retry} />
       ) : null}
-      {/* The month line: fleet month-to-date and its forecast, from the calendar (eng review R2: fleet spend). */}
-      {summary ? (
+      {totals ? (
         <p className="text-xs text-muted-foreground tabular-nums">
-          {summary.mtd === 0 ? (
-            copy.spend.noSpendYet
-          ) : (
-            <>
-              <span data-testid="overview-mtd">
-                {copy.kpi.thisMonth(fmtMoneyShort(summary.mtd))}
-              </span>
-              {' · '}
-              <span data-testid="overview-forecast">
-                {summary.show && summary.low !== null && summary.high !== null
-                  ? copy.kpi.forecast(fmtMoneyShort(summary.low), fmtMoneyShort(summary.high))
-                  : copy.spend.forecastFrom(FORECAST_MIN_DAYS)}
-              </span>
-            </>
-          )}
+          {copy.kpi.perDay(fmtMoneyShort(totals.spend / spend.rangeDays))}
         </p>
-      ) : spend.error ? (
-        <SourceFailed what={copy.spend.what} onRetry={spend.retry} />
       ) : null}
       <Spark
         points={spend.days.map((d) => ({ key: d.iso, value: d.spend }))}
@@ -278,11 +262,12 @@ export function AgentsTile({ fleet }: { fleet: FleetHealth }) {
         className="mt-auto grid grid-cols-[repeat(auto-fill,minmax(0.875rem,1fr))] gap-1"
       >
         {agents.map((a) => (
-          <span
-            key={a.id}
-            title={`${a.name} · ${a.status}`}
-            className={cn('h-6 rounded-xs', SQUARE[a.status])}
-          />
+          <Tooltip key={a.id}>
+            <TooltipTrigger asChild>
+              <span className={cn('h-6 rounded-xs', SQUARE[a.status])} />
+            </TooltipTrigger>
+            <TooltipContent>{`${a.name} · ${a.status}`}</TooltipContent>
+          </Tooltip>
         ))}
       </div>
     </KpiTile>

@@ -9,6 +9,7 @@ import { BarChart3, Eye, EyeOff, LineChart } from 'lucide-react'
 import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { spikeSentence } from '@/features/narrative/tokenops'
 import { Swatch } from '@/components/shared/chart-marks'
+import { EmptyState } from '@/components/shared/state-card'
 import { Delta } from '@/components/shared/delta'
 import { Button } from '@/components/ui/button'
 import {
@@ -217,7 +218,7 @@ export function Spend({
               </TableBody>
             </Table>
           ) : (
-            <p className="text-xs text-muted-foreground">{copy.spend.noDrivers(rangeDays)}</p>
+            <EmptyState title={copy.spend.noDrivers(rangeDays)} className="py-6 md:py-6" />
           )}
           <p className="text-xs text-muted-foreground">{copy.spend.scopeNote}</p>
         </div>

@@ -6,8 +6,8 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { MoreHorizontal } from 'lucide-react'
-import { useId, useMemo, useState } from 'react'
+import { Bot, MoreHorizontal } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -16,15 +16,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Field, FieldLabel } from '@/components/ui/field'
+// Owner picker hidden for now (header actions below).
+// import { Field, FieldLabel } from '@/components/ui/field'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+// import {
+//   Select,
+//   SelectContent,
+//   SelectItem,
+//   SelectTrigger,
+//   SelectValue,
+// } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
@@ -36,9 +37,11 @@ import {
 } from '@/components/ui/table'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PageHeader } from '@/components/shared/page-header'
+import { PageLoader } from '@/components/shared/page-loader'
+import { EmptyState } from '@/components/shared/state-card'
 import { DeployAgentButton } from '@/features/deploy/components/DeployAgentButton'
 import { copy as deployCopy } from '@/features/deploy/copy'
-import { ErrorState, StateCard } from '@/features/observability/StateCard'
+import { ErrorState } from '@/features/observability/StateCard'
 import { LogDrawer } from '@/features/sessions/LogDrawer'
 import { fmtInt, fmtMoney } from '@/lib/format'
 import { meQuery } from '@/lib/api/auth'
@@ -49,10 +52,10 @@ import {
   useDeployment,
   useOwnedAgents,
   useUsage24h,
-  useUsers,
+  // useUsers,
   useWatchesStep,
 } from './api'
-import { AgentLinkTo, FirstRunSteps, StatusBadge } from './components/bits'
+import { AgentLinkTo, AgentsNav, FirstRunSteps, StatusBadge } from './components/bits'
 import { CopyMenuItem } from '@/components/shared/copy-button'
 import { LifecycleButtons, StopDialog } from './components/lifecycle'
 import { relTime } from './format'
@@ -97,7 +100,7 @@ export function MyAgentsPage({
   const watching = useAnyWatching(ids)
   const q = useOwnedAgents(owner, watching)
   const usage = useUsage24h(!!owner)
-  const users = useUsers(superuser)
+  // const users = useUsers(superuser)
   const [logsFor, setLogsFor] = useState<Agent | null>(null)
 
   const rows = useMemo(
@@ -125,59 +128,67 @@ export function MyAgentsPage({
         ? harnesses.length
         : agents.filter((r) => r.display === t).length
 
-  const ownerId = useId()
+  // const ownerId = useId()
   const header = (
-    <PageHeader
-      title={
-        <>
-          {copy.mineTitle}
-          {q.data ? (
-            <span className="ml-2 text-base font-normal text-muted-foreground">
-              {agents.length}
-            </span>
-          ) : null}
-        </>
-      }
-      description={
-        <>
-          {copy.deployHint} <code className="font-mono">nasiko deploy</code>
-        </>
-      }
-      actions={
-        <>
-          <DeployAgentButton />
-          {superuser && users.data ? (
-            <Field orientation="horizontal" className="w-auto gap-2">
-              <FieldLabel htmlFor={ownerId} className="font-normal text-muted-foreground">
-                {copy.owner}
-              </FieldLabel>
-              <Select
-                value={owner ?? ''}
-                onValueChange={(v) => setSearch({ owner: v === me?.sub ? undefined : v })}
-              >
-                <SelectTrigger id={ownerId} size="sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {[...users.data.entries()].map(([id, name]) => (
-                    <SelectItem key={id} value={id}>
-                      {id === me?.sub ? `${name} (${copy.you})` : name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          ) : null}
-          <Link
-            to="/agents"
-            search={{}}
-            className="ml-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-          >
-            {copy.catalogTitle} →
-          </Link>
-        </>
-      }
-    />
+    <>
+      <PageHeader
+        title={
+          <>
+            {copy.mineTitle}
+            {q.data ? (
+              <span className="ml-2 text-base font-normal text-muted-foreground">
+                {agents.length}
+              </span>
+            ) : null}
+          </>
+        }
+        description={
+          <>
+            {copy.deployHint}{' '}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]">
+              nasiko deploy
+            </code>
+          </>
+        }
+        actions={
+          <>
+            <DeployAgentButton />
+            {/* Owner picker and Agents link hidden for now.
+            {superuser && users.data ? (
+              <Field orientation="horizontal" className="w-auto gap-2">
+                <FieldLabel htmlFor={ownerId} className="font-normal text-muted-foreground">
+                  {copy.owner}
+                </FieldLabel>
+                <Select
+                  value={owner ?? ''}
+                  onValueChange={(v) => setSearch({ owner: v === me?.sub ? undefined : v })}
+                >
+                  <SelectTrigger id={ownerId} size="sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[...users.data.entries()].map(([id, name]) => (
+                      <SelectItem key={id} value={id}>
+                        {id === me?.sub ? `${name} (${copy.you})` : name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            ) : null}
+            <Link
+              to="/agents"
+              search={{}}
+              className="ml-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            >
+              {copy.catalogTitle} →
+            </Link>
+            */}
+          </>
+        }
+      />
+      <AgentsNav current="/agents/mine" />
+    </>
   )
 
   const deleted = useRouterState({ select: (s) => s.location.state.agentDeleted })
@@ -201,11 +212,7 @@ export function MyAgentsPage({
       <div className="space-y-4">
         {header}
         {deletedNote}
-        <div className="space-y-2" aria-busy="true">
-          {Array.from({ length: 5 }, (_, i) => (
-            <Skeleton key={i} className="h-12" />
-          ))}
-        </div>
+        <PageLoader label={copy.loadingAgents} />
       </div>
     )
   if (q.isError && !q.data)
@@ -223,10 +230,15 @@ export function MyAgentsPage({
       {q.isError ? <p className="text-xs text-muted-foreground">{copy.couldntRefresh}</p> : null}
       {deletedNote}
       {rows.length === 0 ? (
-        <StateCard title={copy.noAgentsMine} action={<DeployAgentButton />}>
-          <p className="mb-2 text-xs text-muted-foreground">{deployCopy.entry.orCli}</p>
-          <FirstRunSteps />
-        </StateCard>
+        <>
+          <EmptyState icon={Bot} title={copy.noAgentsMine} action={<DeployAgentButton />}>
+            {copy.noAgentsMineHint}
+          </EmptyState>
+          <div>
+            <p className="mb-2 text-xs text-muted-foreground">{deployCopy.entry.orCli}</p>
+            <FirstRunSteps />
+          </div>
+        </>
       ) : (
         <>
           {attention.length ? (
@@ -318,7 +330,17 @@ export function MyAgentsPage({
               </Table>
             </div>
           ) : (
-            <StateCard title={copy.noAgentsInTab(tabLabel(tab))} />
+            <EmptyState
+              icon={Bot}
+              title={copy.noAgentsInTab(tabLabel(tab))}
+              action={
+                <Button size="sm" variant="outline" onClick={() => setSearch({ tab: undefined })}>
+                  {copy.showAllAgents}
+                </Button>
+              }
+            >
+              {copy.noAgentsInTabHint}
+            </EmptyState>
           )}
         </>
       )}

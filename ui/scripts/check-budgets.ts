@@ -61,7 +61,38 @@ export function check(dist: string, log: (line: string) => void = console.log): 
     if (i < 8 || (c.max !== null && c.size > c.max)) report(c.file, c.size, c.max)
   })
   log(`     ${lazy.length} lazy chunks checked`)
+  // Two chunks that import each other evaluate one before the other's bindings exist: a CommonJS dep that rolldown
+  // parks in a route chunk which imports `charts` broke every page ("m is not a function"). Any static cycle fails.
+  const cycle = findCycle(manifest)
+  if (cycle) {
+    ok = false
+    log(`FAIL chunk import cycle: ${cycle.map((k) => manifest[k]?.file ?? k).join(' → ')}`)
+  }
   return ok
+}
+
+/** The first static-import cycle among the manifest's chunks, as the keys along it (first key repeated last). */
+export function findCycle(manifest: Record<string, Pick<Chunk, 'imports'>>): string[] | null {
+  const done = new Set<string>()
+  const path: string[] = []
+  const visit = (key: string): string[] | null => {
+    const at = path.indexOf(key)
+    if (at >= 0) return [...path.slice(at), key]
+    if (done.has(key)) return null
+    path.push(key)
+    for (const next of manifest[key]?.imports ?? []) {
+      const found = visit(next)
+      if (found) return found
+    }
+    path.pop()
+    done.add(key)
+    return null
+  }
+  for (const key of Object.keys(manifest)) {
+    const found = visit(key)
+    if (found) return found
+  }
+  return null
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

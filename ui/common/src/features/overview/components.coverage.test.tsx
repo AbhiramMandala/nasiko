@@ -23,7 +23,7 @@ import { Budget } from './components/Budget'
 import { Harnesses } from './components/Harnesses'
 import { Headline } from './components/Headline'
 import { NeedsYou } from './components/NeedsYou'
-import { SpendTile } from './components/Kpis'
+import { MonthBar } from './components/MonthBar'
 import { Spend } from './components/Spend'
 import { copy } from './copy'
 import { mergeNeeds, type NeedsInput } from './needs'
@@ -100,7 +100,7 @@ describe('Needs you rows', () => {
     expect(within(list).getByText('Helper budget is over its limit')).toBeInTheDocument()
     expect(href(copy.needs.budgetsLabel('Helper'))).toBe('/router#router-budgets')
     expect(within(list).getByText(copy.needs.sessions(3, 25))).toBeInTheDocument()
-    expect(href(copy.needs.seeFailing)).toMatch(/^\/sessions\?(?=.*preset=24h)(?=.*lane=failing)/)
+    expect(href(copy.needs.seeFailing)).toMatch(/^\/sessions\?(?=.*preset=7d)(?=.*lane=failing)/)
     // Severity is said by an icon with a label, most urgent sources first.
     expect(
       within(list)
@@ -219,7 +219,7 @@ describe('Spend', () => {
     })
     const { unmount } = renderInRouter(
       <>
-        <SpendTile spend={empty} />
+        <MonthBar spend={empty} />
         <Spend now={Date.parse('2026-03-20T15:00:00Z')} spend={empty} />
       </>,
     )
@@ -227,7 +227,7 @@ describe('Spend', () => {
     expect(screen.queryByRole('figure')).toBeNull()
     expect(screen.getByText(copy.spend.noDrivers(30))).toBeInTheDocument()
     unmount()
-    renderInRouter(<SpendTile spend={spendData()} />)
+    renderInRouter(<MonthBar spend={spendData()} />)
     expect(await screen.findByTestId('overview-forecast')).toHaveTextContent(
       /^Forecast from day \d+$/,
     )

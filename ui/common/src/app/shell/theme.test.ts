@@ -69,22 +69,22 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('theme prefs', () => {
-  it('defaults to System and Teal with empty storage', () => {
-    expect(readPrefs()).toEqual({ theme: 'system', accent: 'teal' })
+  it('defaults to System and Carbon with empty storage', () => {
+    expect(readPrefs()).toEqual({ theme: 'system', accent: 'carbon' })
   })
 
   it('falls back to the defaults for unknown stored values', () => {
     localStorage.setItem(THEME_KEY, 'sepia')
     localStorage.setItem(ACCENT_KEY, 'magenta')
-    expect(readPrefs()).toEqual({ theme: 'system', accent: 'teal' })
+    expect(readPrefs()).toEqual({ theme: 'system', accent: 'carbon' })
   })
 
-  it('migrates the retired accent presets: indigo keeps its name, the rest read as Teal', () => {
+  it('migrates the retired accent presets: indigo keeps its name, the rest read as Carbon', () => {
     for (const [stored, expected] of [
       ['indigo', 'indigo'],
-      ['violet', 'teal'],
-      ['slate', 'teal'],
-      ['gold', 'teal'],
+      ['violet', 'carbon'],
+      ['slate', 'carbon'],
+      ['gold', 'carbon'],
       ['plum', 'plum'],
     ] as const) {
       localStorage.setItem(ACCENT_KEY, stored)
@@ -95,7 +95,7 @@ describe('theme prefs', () => {
   it('works when storage throws: defaults apply and choices last for the page', () => {
     vi.stubGlobal('localStorage', blocked())
     mockSystemDark(false)
-    expect(readPrefs()).toEqual({ theme: 'system', accent: 'teal' })
+    expect(readPrefs()).toEqual({ theme: 'system', accent: 'carbon' })
     expect(() => setTheme('dark')).not.toThrow()
     expect(html).toHaveClass('dark')
     setAccent('indigo')
@@ -107,7 +107,7 @@ describe('theme prefs', () => {
     applyTheme({ theme: 'dark', accent: 'plum' })
     expect(html).toHaveClass('dark')
     expect(html).toHaveAttribute('data-theme', 'plum')
-    applyTheme({ theme: 'light', accent: 'teal' })
+    applyTheme({ theme: 'light', accent: 'carbon' })
     expect(html).not.toHaveClass('dark')
   })
 
@@ -149,7 +149,7 @@ describe('pre-paint script (index.html)', () => {
   it('knows the same presets and themes, with the same defaults', () => {
     const list = /\[([^\]]+)\]\.indexOf\(accent\)/.exec(page)![1]!
     expect(list.split(',').map((s) => s.trim().replace(/'/g, ''))).toEqual(ACCENTS.map((a) => a.id))
-    expect(page).toContain("accent = 'teal'")
+    expect(page).toContain("accent = 'carbon'")
     expect(page).toContain("theme = 'system'")
     for (const t of THEMES.filter((x) => x.id !== 'system')) expect(page).toContain(`'${t.id}'`)
   })
@@ -212,7 +212,7 @@ describe('other tabs, edge cases', () => {
     localStorage.clear()
     window.dispatchEvent(new StorageEvent('storage', { key: null }))
     expect(html).not.toHaveClass('dark')
-    expect(readPrefs()).toEqual({ theme: 'system', accent: 'teal' })
+    expect(readPrefs()).toEqual({ theme: 'system', accent: 'carbon' })
     stop()
   })
 })
@@ -226,7 +226,7 @@ describe('initTheme without matchMedia', () => {
   it('treats System as light, follows other tabs, and stops on unsubscribe', () => {
     const stop = initTheme()
     expect(html).not.toHaveClass('dark')
-    expect(html.getAttribute('data-theme')).toBe('teal')
+    expect(html.getAttribute('data-theme')).toBe('carbon')
     localStorage.setItem(THEME_KEY, 'dark')
     localStorage.setItem(ACCENT_KEY, 'indigo')
     window.dispatchEvent(new StorageEvent('storage', { key: THEME_KEY }))

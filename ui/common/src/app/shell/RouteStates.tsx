@@ -5,9 +5,9 @@
 import { useQueryErrorResetBoundary } from '@tanstack/react-query'
 import { useRouter, type ErrorComponentProps } from '@tanstack/react-router'
 import { useEffect } from 'react'
+import { PageLoader } from '@/components/shared/page-loader'
 import { StateCard } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
-import { Spinner } from '@/components/ui/spinner'
 import { ApiError } from '@/lib/api/client'
 import { copy } from './copy'
 
@@ -52,10 +52,5 @@ export function RouteError({ error, reset }: ErrorComponentProps) {
 }
 
 export function RoutePending() {
-  return (
-    // Not a live region (the Spinner's default role): the page that loads announces its own state.
-    <div aria-busy="true" className="flex justify-center py-16 text-muted-foreground">
-      <Spinner role="img" aria-label={copy.routeError.loading} className="size-5" />
-    </div>
-  )
+  return <PageLoader label={copy.routeError.loading} />
 }

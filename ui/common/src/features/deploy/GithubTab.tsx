@@ -5,9 +5,10 @@
  * with `?version=`, sent as `version_override`.
  */
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AlertTriangle, ExternalLink, Lock } from 'lucide-react'
+import { AlertTriangle, ExternalLink, FolderGit2, Lock, SearchX } from 'lucide-react'
 import { useId, useMemo, useState } from 'react'
 import { CopyButton } from '@/components/shared/copy-button'
+import { PageLoader } from '@/components/shared/page-loader'
 import { PanelError } from '@/components/shared/panel'
 import { SearchInput } from '@/components/shared/search-input'
 import { EmptyState, StateCard } from '@/components/shared/state-card'
@@ -29,6 +30,7 @@ import {
   useGithubUser,
 } from './api'
 import { copy } from './copy'
+import type { DeployStarted } from './UploadTab'
 import { filterRepos, useGithubConnect } from './github'
 import { nameFromFile, nameProblem, uploadCommand } from './name'
 import type { DeploySearch } from './search'
@@ -47,9 +49,11 @@ const GITHUB_REPO_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/
 export function GithubTab({
   search,
   setSearch,
+  onStarted,
 }: {
   search: DeploySearch
   setSearch: (patch: Partial<DeploySearch>) => void
+  onStarted?: (to: DeployStarted) => void
 }) {
   const configured = useGithubConfigured()
   const on = configured.data === true
@@ -59,7 +63,8 @@ export function GithubTab({
   const { state: connectState, connect } = useGithubConnect()
   const logout = useGithubLogout()
 
-  if (configured.isPending) return <Skeleton className="h-64 w-full" />
+  if (configured.isPending)
+    return <PageLoader label={copy.github.loading} inline className="min-h-64" />
   if (configured.isError)
     return (
       <PanelError
@@ -150,7 +155,13 @@ export function GithubTab({
         <Card className="gap-4 p-4">
           {connection}
           {connected ? (
-            <RepoPicker search={search} setSearch={setSearch} repos={repos} login={login} />
+            <RepoPicker
+              search={search}
+              setSearch={setSearch}
+              repos={repos}
+              login={login}
+              onStarted={onStarted}
+            />
           ) : null}
         </Card>
         <div className="@max-[768px]/github:order-first">
@@ -171,11 +182,13 @@ function RepoPicker({
   setSearch,
   repos,
   login,
+  onStarted,
 }: {
   search: DeploySearch
   setSearch: (patch: Partial<DeploySearch>) => void
   repos: ReturnType<typeof useGithubRepos>
   login: string
+  onStarted?: (to: DeployStarted) => void
 }) {
   const ids = useId()
   const navigate = useNavigate()
@@ -216,18 +229,17 @@ function RepoPicker({
         agent_name: name,
         ...(override ? { version_override: override } : {}),
       },
-      { onSuccess: (buildId) => void navigate({ to: '/builds/$buildId', params: { buildId } }) },
+      {
+        onSuccess: (buildId) =>
+          onStarted
+            ? onStarted({ buildId })
+            : void navigate({ to: '/builds/$buildId', params: { buildId } }),
+      },
     )
   }
 
   if (repos.isPending)
-    return (
-      <div className="flex flex-col gap-2" aria-busy="true">
-        {Array.from({ length: 4 }, (_, i) => (
-          <Skeleton key={i} className="h-12 w-full" />
-        ))}
-      </div>
-    )
+    return <PageLoader label={copy.github.loadingRepos} inline className="min-h-64" />
   if (repos.isError)
     return (
       <PanelError
@@ -236,7 +248,22 @@ function RepoPicker({
         what={copy.github.what}
       />
     )
-  if (!all.length) return <EmptyState title={copy.github.noRepos(login)} />
+  if (!all.length)
+    return (
+      <EmptyState
+        icon={FolderGit2}
+        title={copy.github.noRepos(login)}
+        action={
+          <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
+            <Link to="/deploy" search={{ method: 'upload' }}>
+              {copy.github.useUpload}
+            </Link>
+          </Button>
+        }
+      >
+        {copy.github.noReposHint}
+      </EmptyState>
+    )
 
   return (
     <form
@@ -299,6 +326,7 @@ function RepoPicker({
         </ScrollArea>
       ) : (
         <EmptyState
+          icon={SearchX}
           title={copy.github.noMatch(q)}
           action={
             <Button
@@ -311,7 +339,9 @@ function RepoPicker({
               {copy.github.clearSearch}
             </Button>
           }
-        />
+        >
+          {copy.github.noMatchHint}
+        </EmptyState>
       )}
       <p className="text-xs text-muted-foreground">{copy.github.shown(all.length)}</p>
       {pickError ? (
@@ -327,6 +357,7 @@ function RepoPicker({
             <Input
               id={`${ids}-branch`}
               value={branch}
+              placeholder={picked.default_branch}
               autoComplete="off"
               spellCheck={false}
               onChange={(e) => {
@@ -351,6 +382,7 @@ function RepoPicker({
             <Input
               id={`${ids}-name`}
               value={name}
+              placeholder={copy.deploy.namePlaceholder}
               autoComplete="off"
               spellCheck={false}
               onChange={(e) => {

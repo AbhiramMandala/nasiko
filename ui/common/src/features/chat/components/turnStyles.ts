@@ -30,3 +30,14 @@ export const STEP_CHIP = cn(
 /** A `<details>`-style trigger on `<Button variant="ghost" size="xs">` inside `CollapsibleTrigger`: a chevron that turns when open. */
 export const DISCLOSE =
   'h-auto justify-start px-0 text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground has-[>svg]:px-0 dark:hover:bg-transparent [&>svg]:transition-transform data-[state=open]:[&>svg]:rotate-90 motion-reduce:[&>svg]:transition-none'
+
+/**
+ * A chat rail row (Chats, Waiting): a plain two-line row like the sidebar's own items, no box. Hover is the neutral
+ * fill; the open chat takes the theme's tint (`RAIL_ROW_ACTIVE`), with its secondary line in `--accent-foreground`
+ * (`--muted-foreground` is under 4.5:1 on Carbon's tint).
+ */
+export const RAIL_ROW =
+  'flex min-h-11 items-center gap-2.5 rounded-md px-2 py-1.5 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background'
+export const RAIL_ROW_ACTIVE = 'bg-accent text-accent-foreground hover:bg-accent'
+/** The shared `EmptyState` sized for the 240 px rail (Chats, Waiting, Recorded views). */
+export const RAIL_EMPTY = 'mt-1 gap-3 px-3 py-6 md:px-3 md:py-6'

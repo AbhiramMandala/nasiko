@@ -63,6 +63,9 @@ export const copy = {
 
   emptyTitle: 'No sessions in this window',
   emptyBody: 'Try a wider time window.',
+  noMatchTitle: 'No sessions match these filters',
+  noMatchBody: 'Clear the agent, lane and status filters to see every session in this view.',
+  clearFilters: 'Clear filters',
   sparseLive:
     'Sessions come from chat traffic: run `nasiko chat <agent>` against a deployed agent, or use mock data with `npm run dev`.',
   noTraceData:
@@ -72,7 +75,7 @@ export const copy = {
   noTraceDataLongWindow:
     'Trace details are missing for this window, most likely because the server searches Tempo across all of it and Tempo refuses searches of 7 days or more.',
   noTraceDataLongWindowFix:
-    'Open a session to see its trace, or pick 24h. If 24h is empty too, the trace store may be down (README › Live data).',
+    'Open a session to see its trace, or pick 7d. If 7d is empty too, the trace store may be down (README › Live data).',
   notConfigured: "Observability isn't configured on this server.",
   notConfiguredFix:
     'Set TEMPO_URL and LOKI_URL on nasiko-server (README › Live data) and restart it.',
@@ -86,7 +89,9 @@ export const copy = {
     `Is nasiko-server running at ${apiUrl}? Run \`just run-stack\` in nasiko-cloud-rs.`,
 
   traceNotFound: 'Trace not found, or not visible to you.',
-  noTraces: 'No traces recorded for this session.',
+  noTraces: 'No traces recorded for this session',
+  noTracesBody:
+    'The agent may not export traces, or they are still on their way: check back in a minute.',
   stillCollecting: 'Still collecting spans…',
   captureOff:
     'Content capture is off for this agent (OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT).',

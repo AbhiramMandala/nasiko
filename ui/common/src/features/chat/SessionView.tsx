@@ -6,8 +6,8 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { PageLoader } from '@/components/shared/page-loader'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useAgentsDirectory } from '@/features/agents/api'
 import { StateCard } from '@/features/observability/StateCard'
@@ -550,10 +550,7 @@ function SessionView({
       ) : null}
 
       {history.isPending ? (
-        <div className={cn(CHAT_COLUMN, 'space-y-4 py-6')} aria-busy>
-          <Skeleton className="ml-auto h-10 w-2/3" />
-          <Skeleton className="h-24" />
-        </div>
+        <PageLoader label={copy.loadingChat} inline className="min-h-0" />
       ) : (
         <Transcript
           contentKey={contentKey}

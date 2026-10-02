@@ -166,7 +166,7 @@ export function ConfigSheet({
         if (!o) onClose()
       }}
     >
-      <SheetContent className="w-full gap-0 sm:max-w-sheet" onCloseAutoFocus={returnFocus}>
+      <SheetContent className="w-full gap-0 sm:max-w-sheet-lg" onCloseAutoFocus={returnFocus}>
         {mode ? (
           <Editor
             key={

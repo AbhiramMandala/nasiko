@@ -8,7 +8,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { RotateCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
+import { PageLoader } from '@/components/shared/page-loader'
 import { EmptyState, StateCard } from '@/components/shared/state-card'
 import { Section } from '@/features/agents/components/bits'
 import { meQuery } from '@/lib/api/auth'
@@ -28,7 +28,7 @@ export function AgentMcpTab({ agentId }: { agentId: string }) {
     <Section title={copy.agentMcpTitle}>
       <p className="text-sm text-muted-foreground">{copy.agentMcpSub}</p>
       {list.isPending || (servers.isPending && !servers.isError) ? (
-        <Skeleton className="h-40" />
+        <PageLoader label={copy.loadingCatalog} inline className="min-h-64" />
       ) : list.isError ? (
         <StateCard
           tone="error"

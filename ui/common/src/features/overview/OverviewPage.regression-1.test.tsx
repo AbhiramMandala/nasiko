@@ -9,7 +9,7 @@ import { renderApp } from '@/test/renderApp'
 setupPinnedSeed()
 
 describe('Overview → Sessions links (ISSUE-003)', () => {
-  it('opens Sessions on the 24 h window from the card title, its rows and its empty-state link', async () => {
+  it('opens Sessions on the 7-day window from the card title, its rows and its empty-state link', async () => {
     renderApp('/')
     const card = await screen.findByTestId('overview-sessions')
     await waitFor(() =>
@@ -19,6 +19,6 @@ describe('Overview → Sessions links (ISSUE-003)', () => {
       .getAllByRole('link')
       .map((a) => a.getAttribute('href') ?? '')
     expect(hrefs.length).toBeGreaterThan(1)
-    for (const h of hrefs) expect(h).toMatch(/[?&]preset=24h/)
+    for (const h of hrefs) expect(h).toMatch(/[?&]preset=7d/)
   })
 })

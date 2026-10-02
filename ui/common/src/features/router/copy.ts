@@ -6,6 +6,7 @@ import { CONFIG_CACHE_SECONDS, SPEND_DAYS } from './tuning'
 
 export const copy = {
   title: 'LLM router',
+  loading: 'Loading the LLM router',
   howItWorks: 'How routing works',
   howTitle: 'How a call is routed',
   howSteps: [
@@ -44,6 +45,11 @@ export const copy = {
     `${provider}, ${yourKey ? 'your key' : 'platform key'}`,
   filterNames: { attached: 'Attached', default: 'Your default', none: 'No config' },
   summaryNone: (n: string) => `${n} no config (platform key)`,
+  kpiAgents: 'Your agents',
+  kpiAgentsNote: 'Show all',
+  kpiNoDefault: 'No default config',
+  kpiAttachedNote: 'A config of their own',
+  kpiNoneNote: 'Platform key',
   filteredBy: (what: string) => `Showing agents: ${what}`,
   clearFilter: 'Show all',
   foldedTitle: (n: string) => `${n} agents on your default`,
@@ -53,7 +59,8 @@ export const copy = {
   foldedHide: 'Hide',
   foldedSpend: (money: string, calls: string) => `${money} · ${calls} calls in 30 days`,
   searchAgents: 'Search agents',
-  searchNone: (q: string) => `No agents match “${q}”.`,
+  searchNone: (q: string) => `No agents match “${q}”`,
+  searchNoneText: 'Try another name.',
 
   // Your agents
   agentsTitle: 'Your agents',
@@ -69,10 +76,11 @@ export const copy = {
   readingRouting: 'Reading routing…',
   couldntRead: 'Couldn’t read routing',
   retry: 'Retry',
-  noAgents:
-    'You don’t own any agents yet. Other users’ agents show their routing on their agent page.',
+  noAgents: 'You don’t own any agents yet',
+  noAgentsText: 'Other users’ agents show their routing on their agent page.',
   toAgents: 'Go to Agents',
-  noneInFilter: 'No agents match this filter.',
+  noneInFilter: 'No agents match this filter',
+  noneInFilterText: 'None of your agents has this kind of routing.',
   updatedMarker: (at: string, by: string) => `Updated ${at} · applies by about ${by}`,
   spendValue: (money: string, calls: string) => `${money} · ${calls} calls`,
   spendNone: 'No routed calls',
@@ -109,8 +117,9 @@ export const copy = {
   configsTitle: 'Your configs',
   newConfig: 'New config',
   setADefault: 'Set a default',
-  noConfigs:
-    'No configs yet. Until you add one, every agent uses the platform key and the model each request names.',
+  noConfigs: 'No configs yet',
+  noConfigsText:
+    'Until you add one, every agent uses the platform key and the model each request names.',
   createFirst: 'Create your first config',
   usedBy: (n: string) => `Used by ${n}`,
   configActions: (name: string) => `Actions for ${name}`,
@@ -135,7 +144,7 @@ export const copy = {
     `The router can’t call ${p}: it isn’t built in or a registered custom provider.`,
   registryTitle: 'Models the router picks per tier',
   registryWayOut: 'Superusers change these with nasiko model-registry set.',
-  registryEmpty: 'No tier models set.',
+  registryEmpty: 'No tier models set',
   tierLabels: ['Advanced reasoning', 'Balanced', 'Fast responses'] as const,
   catalogFailed: 'Couldn’t load the provider catalog',
   customProviders: 'Custom providers',
@@ -271,8 +280,9 @@ export const copy = {
   budgetsSubtitle: (reset: string) =>
     `Router-metered spend this UTC month (token_usage). Covers routed calls only · resets ${reset}`,
   newBudget: 'New budget',
-  noBudgets:
-    'No budgets yet. A budget alerts you as spend crosses its marks, and can stop an agent’s calls at 100%.',
+  noBudgets: 'No budgets yet',
+  noBudgetsText:
+    'A budget alerts you as spend crosses its marks, and can stop an agent’s calls at 100%.',
   createFirstBudget: 'Create a budget',
   budgetsFailed: 'Couldn’t load budgets',
   budgetsMissing: 'Budgets need a newer OpenRuntime server',
@@ -312,7 +322,7 @@ export const copy = {
     `${name ? `${name} is` : 'Your budget is'} on Alert only. Calls resume within about a minute.`,
   alertsTitle: 'Alerts',
   alertsSubtitle: 'In-app, one per budget per mark per month. Email and webhooks are server work.',
-  noAlerts: 'No alerts this month or last.',
+  noAlerts: 'No alerts this month or last',
   alertCrossed: (label: string, pct: number, amount: string, stopped: boolean) =>
     `${label} crossed ${pct}% (${amount})${stopped ? ' · calls stopped' : ''}`,
   viewBudget: 'View budget',

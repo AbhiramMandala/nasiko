@@ -4,7 +4,7 @@
  */
 import { RotateCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
+import { PageLoader } from '@/components/shared/page-loader'
 import { CopyButton } from '@/components/shared/copy-button'
 import { Section } from '@/features/agents/components/bits'
 import { useBuildLogs, useBuildStatus } from '../api'
@@ -54,7 +54,7 @@ export function LogsTab({ connector: c }: { connector: ConnectorDetail }) {
         </p>
       ) : null}
       {logs.isPending ? (
-        <Skeleton className="h-48" />
+        <PageLoader label={copy.loadingLogs} inline className="min-h-64" />
       ) : logs.isError ? (
         <p role="alert" className="text-sm text-destructive">
           {copy.logsFailed}: {reason(logs.error)}

@@ -1,6 +1,7 @@
 // The shared composites (plan §8 Phase 1), one story each. Every story runs as a browser test with axe
 // (`npm run test:stories`), in light and dark.
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { Bot } from 'lucide-react'
 import { useState } from 'react'
 import { expect, userEvent, within } from 'storybook/test'
 import { Badge } from '@/components/ui/badge'
@@ -11,6 +12,7 @@ import { DataTable, type DataTableColumn } from './data-table'
 import { Delta } from './delta'
 import { Disclosure } from './disclosure'
 import { KpiTile } from './kpi-tile'
+import { PageLoader } from './page-loader'
 import { PageHeader } from './page-header'
 import { Panel, PanelEmpty, PanelError, PanelSkeleton } from './panel'
 import { SearchInput } from './search-input'
@@ -55,8 +57,19 @@ export const States: Story = {
       <EmptyState title="No sessions in this window">
         Pick a longer window, or check that agents export traces.
       </EmptyState>
+      <EmptyState
+        icon={Bot}
+        title="No agents yet"
+        action={<Button size="sm">Deploy an agent</Button>}
+      >
+        Deploy one from a zip, GitHub or a registry and it shows up here.
+      </EmptyState>
     </div>
   ),
+}
+
+export const Loader: Story = {
+  render: () => <PageLoader label="Loading agents" />,
 }
 
 export const Panels: Story = {

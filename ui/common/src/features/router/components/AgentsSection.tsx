@@ -6,8 +6,9 @@
  */
 import { Link } from '@tanstack/react-router'
 import { m } from 'motion/react'
-import { ChevronRight, RotateCw, Search } from 'lucide-react'
+import { Bot, ChevronRight, RotateCw, Search, SearchX } from 'lucide-react'
 import { useId, useState } from 'react'
+import { EmptyState } from '@/components/shared/state-card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -22,7 +23,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { AgentLinkTo, AgentMark } from '@/features/agents/components/bits'
 import { isHarness } from '@/features/agents/status'
 import type { Agent } from '@/features/agents/types'
-import { StateCard } from '@/features/observability/StateCard'
 import { fmtInt, fmtLocalTime, fmtMoney } from '@/lib/format'
 import { transitions } from '@/lib/motion'
 import { cn } from '@/lib/utils'
@@ -138,20 +138,30 @@ export function AgentsSection({
         </div>
       ) : null}
       {rows.length > 0 && visible.length === 0 ? (
-        <StateCard title={copy.searchNone(query.trim())} />
+        <EmptyState icon={SearchX} title={copy.searchNone(query.trim())}>
+          {copy.searchNoneText}
+        </EmptyState>
       ) : rows.length === 0 ? (
-        <StateCard
-          title={filterLabel ? copy.noneInFilter : copy.noAgents}
-          action={
-            filterLabel ? undefined : (
+        filterLabel ? (
+          // The filter line above already offers Show all.
+          <EmptyState icon={SearchX} title={copy.noneInFilter}>
+            {copy.noneInFilterText}
+          </EmptyState>
+        ) : (
+          <EmptyState
+            icon={Bot}
+            title={copy.noAgents}
+            action={
               <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
                 <Link to="/agents" search={{}}>
                   {copy.toAgents}
                 </Link>
               </Button>
-            )
-          }
-        />
+            }
+          >
+            {copy.noAgentsText}
+          </EmptyState>
+        )
       ) : (
         <div className="rounded-lg border border-border bg-card">
           <Table aria-label={copy.agentsTitle} className="max-md:block md:table-fixed">

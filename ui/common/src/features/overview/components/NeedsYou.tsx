@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 import type { NeedsYou as NeedsYouData } from '../api'
 import { copy } from '../copy'
 import type { NeedRow, Severity } from '../needs'
-import { CHECKED_TICK_MS, LAST_DAY, NEEDS_VISIBLE_ROWS } from '../tuning'
+import { CHECKED_TICK_MS, LAST_WEEK, NEEDS_VISIBLE_ROWS } from '../tuning'
 import { Card, CardError, CardSkeleton, SourceFailed, TOUCH } from './Card'
 
 /** `detail` colours the row's reason: action and watch say why in their own tone; a waiting request stays quiet. */
@@ -236,7 +236,7 @@ function Row({ row, now, userId }: { row: NeedRow; now: number; userId: string }
         <Action>
           <Link
             to="/sessions"
-            search={{ ...LAST_DAY, lane: 'failing' } as never}
+            search={{ ...LAST_WEEK, lane: 'failing' } as never}
             aria-label={copy.needs.seeFailing}
           >
             {copy.needs.seeSessions}

@@ -58,7 +58,7 @@ describe('catalog', () => {
     await waitFor(() => expect(cards()).toHaveLength(1))
     await userEvent.clear(box)
     await userEvent.type(box, 'zzz-no-such-agent')
-    expect(await screen.findByText('No agents match this search.')).toBeInTheDocument()
+    expect(await screen.findByText('No agents match this search')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Clear search' }))
     await waitFor(() => expect(cards()).toHaveLength(live.length))
   })
@@ -114,7 +114,7 @@ describe('catalog', () => {
   it('an empty server shows the three first-run commands with this origin', async () => {
     server.use(http.get('/api/agents', () => HttpResponse.json([])))
     renderApp('/agents')
-    expect(await screen.findByText('No agents yet.')).toBeInTheDocument()
+    expect(await screen.findByText('No agents yet')).toBeInTheDocument()
     expect(screen.getByText(`nasiko connect ${window.location.origin}`)).toBeInTheDocument()
     expect(screen.getByText('nasiko new openai my-agent')).toBeInTheDocument()
     expect(screen.getByText('nasiko deploy ./my-agent')).toBeInTheDocument()

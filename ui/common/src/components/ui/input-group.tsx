@@ -1,6 +1,8 @@
 /**
  * shadcn `input-group` (new-york-v4), with local edits to re-apply after any `shadcn add input-group`:
  * - focus is the one app style: a 2 px `--ring` with a 2 px page-coloured offset (DESIGN.md "Focus"), not the 3 px glow.
+ * - the inner control drops `ring-offset` with its ring: in Tailwind v4 `ring-0` keeps the offset width, which painted a
+ *   2 px page-coloured band over the group border.
  */
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
@@ -138,7 +140,7 @@ function InputGroupInput({
     <Input
       data-slot="input-group-control"
       className={cn(
-        "flex-1 rounded-none border-0 bg-transparent shadow-none focus-visible:ring-0 dark:bg-transparent",
+        "flex-1 rounded-none border-0 bg-transparent shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
         className
       )}
       {...props}
@@ -154,7 +156,7 @@ function InputGroupTextarea({
     <Textarea
       data-slot="input-group-control"
       className={cn(
-        "flex-1 resize-none rounded-none border-0 bg-transparent py-3 shadow-none focus-visible:ring-0 dark:bg-transparent",
+        "flex-1 resize-none rounded-none border-0 bg-transparent py-3 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
         className
       )}
       {...props}

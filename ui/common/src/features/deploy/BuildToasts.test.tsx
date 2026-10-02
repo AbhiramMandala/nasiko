@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 describe('Background follow', () => {
-  it('counts the build on the Builds item, then toasts once when it finishes elsewhere', async () => {
+  it('counts the build on the Agents item (Builds is its sub-page), then toasts once when it finishes elsewhere', async () => {
     const { router } = renderApp('/deploy?method=github')
     const rows = await screen.findAllByTestId('repo-row', {}, { timeout: 5000 })
     await userEvent.click(
@@ -30,14 +30,14 @@ describe('Background follow', () => {
     const id = router.state.location.pathname.split('/').pop()!
 
     await router.navigate({ to: '/agents' })
-    expect(await screen.findByTestId('nav-count-builds')).toHaveTextContent('1')
-    expect(screen.getByRole('link', { name: /Builds, 1 in progress/ })).toBeInTheDocument()
+    expect(await screen.findByTestId('nav-count-agents')).toHaveTextContent('1')
+    expect(screen.getByRole('link', { name: /^Agents, 1 build in progress/ })).toBeInTheDocument()
 
     deployMockState().advance(id, 'success', 'completed')
     await pollOnce()
     expect(await screen.findByText(copy.build.running('fresh-agent'))).toBeInTheDocument()
     expect(screen.getByRole('button', { name: copy.build.chat })).toBeInTheDocument()
-    expect(screen.queryByTestId('nav-count-builds')).toBeNull()
+    expect(screen.queryByTestId('nav-count-agents')).toBeNull()
     await pollOnce()
     expect(screen.getAllByText(copy.build.running('fresh-agent'))).toHaveLength(1)
   })
