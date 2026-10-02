@@ -1,40 +1,20 @@
-# `**/target/`, not `target/`: Docker anchors a leading-path pattern to the
-# context root, so plain `target/` misses every nested one. The pre-commit hook
-# runs `cd oss && cargo build --workspace` to regenerate the public lockfile,
-# which leaves an oss/target/ that reached ~95 GB on one machine — and Docker
-# was shipping all of it into the build context on every image build.
+# Build context for the public repo's images (server/Dockerfile and friends).
 #
-# The negations below stay anchored to the root target/ on purpose: that is
-# where `just release*` stages the binaries the enterprise Dockerfiles copy.
-**/target/
-!target/x86_64-unknown-linux-musl/release/nasiko-cp
-!target/x86_64-unknown-linux-musl/release/nasiko-cp-cloud
-!target/x86_64-unknown-linux-musl/release/nasiko-registry
-!target/x86_64-unknown-linux-musl/release/nasiko-server-ee
-!target/x86_64-unknown-linux-musl/release/nasiko-tenant-server
-!target/x86_64-unknown-linux-musl/release/nasiko-ee
-!target/x86_64-unknown-linux-musl/release/nasiko-gateway-ee
-!target/x86_64-unknown-linux-musl/release/nasiko-server
-!target/x86_64-unknown-linux-musl/release/nasiko-gateway
-!target/x86_64-unknown-linux-musl/release/nasiko-docs-agent
-!target/x86_64-unknown-linux-musl/release/nasiko-nutrition-agent
-!target/x86_64-unknown-linux-musl/release/nasiko-paper-agent
+# `target/` is anchored to the context root, which is right here: the public
+# repo has no nested oss/ for it to miss. The private repo's root
+# .dockerignore needs `**/target/` instead, for exactly that reason.
+target/
 .git/
+.env
 
-# Installed packages, never read by a Rust build. server/Dockerfile's node
-# stage runs its own `npm ci` from the lockfile rather than taking these.
+# Installed packages. server/Dockerfile's node stage runs its own `npm ci`
+# from the lockfile rather than taking whatever a developer has on disk, and
+# ui/node_modules is ~430 MB of context otherwise.
 **/node_modules/
 
-# Agent scratch space and git worktrees.
-.claude/
+# Build output. The UI bundle is produced inside the image, never copied in.
+**/dist/
+coverage/
 
-agents/
-registry/
-docs/
-*.zip
-
-# oss/server/Dockerfile compiles in-image (COPY . . + cargo build), so the UI
-# tree is part of the context. ui/oss/dist must stay — rust-embed bakes it in,
-# and excluding it would silently ship build.rs's "UI not built" placeholder.
-# node_modules must not: ~800 packages the Rust build never reads.
-ui/node_modules/
+*.md
+!README.md
