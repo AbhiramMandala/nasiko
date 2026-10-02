@@ -1,1 +1,0 @@
-import{a as e,h as t,m as n,o as r}from"./api-CKug1wZj.js";var i=(e,t=`recent`)=>void e.prefetchQuery(n({mode:`deployed`,sort:t})),a=(e,t=`all`)=>void e.prefetchQuery(n({mode:`drafts`,sort:t})),o=e=>void e.prefetchQuery(r);function s(n,r,i){n.prefetchQuery(t(r)),i&&n.prefetchQuery(e(i))}export{s as i,a as n,o as r,i as t};

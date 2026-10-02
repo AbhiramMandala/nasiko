@@ -1,1 +1,0 @@
-import{t as e}from"./jsx-runtime-BtH0gOTJ.js";import{t}from"./compiler-runtime-BQsUoOzq.js";import{t as n}from"./ChatPage-DBR5YDda.js";import{z as r}from"./index-CYrWelgL.js";var i=t(),a=e();function o(){let e=(0,i.c)(2),t=r.useSearch(),o;return e[0]===t?o=e[1]:(o=(0,a.jsx)(n,{search:t}),e[0]=t,e[1]=o),o}export{o as component};

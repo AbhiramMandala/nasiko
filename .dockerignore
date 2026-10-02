@@ -1,4 +1,12 @@
-target/
+# `**/target/`, not `target/`: Docker anchors a leading-path pattern to the
+# context root, so plain `target/` misses every nested one. The pre-commit hook
+# runs `cd oss && cargo build --workspace` to regenerate the public lockfile,
+# which leaves an oss/target/ that reached ~95 GB on one machine — and Docker
+# was shipping all of it into the build context on every image build.
+#
+# The negations below stay anchored to the root target/ on purpose: that is
+# where `just release*` stages the binaries the enterprise Dockerfiles copy.
+**/target/
 !target/x86_64-unknown-linux-musl/release/nasiko-cp
 !target/x86_64-unknown-linux-musl/release/nasiko-cp-cloud
 !target/x86_64-unknown-linux-musl/release/nasiko-registry
@@ -12,6 +20,14 @@ target/
 !target/x86_64-unknown-linux-musl/release/nasiko-nutrition-agent
 !target/x86_64-unknown-linux-musl/release/nasiko-paper-agent
 .git/
+
+# Installed packages, never read by a Rust build. server/Dockerfile's node
+# stage runs its own `npm ci` from the lockfile rather than taking these.
+**/node_modules/
+
+# Agent scratch space and git worktrees.
+.claude/
+
 agents/
 registry/
 docs/

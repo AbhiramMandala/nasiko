@@ -1,1 +1,0 @@
-import{i as e,n as t,t as n}from"./api-B6IeDjnV.js";function r(n){n.prefetchQuery(t),n.prefetchQuery(e)}var i=(e,t)=>void e.prefetchQuery(n(t));export{i as n,r as t};

@@ -1,1 +1,0 @@
-import{t as e}from"./prefetch-Cgulh3mE.js";var t=({context:t,params:n,preload:r})=>{r&&e(t.queryClient,n.agentId)};export{t as loader};

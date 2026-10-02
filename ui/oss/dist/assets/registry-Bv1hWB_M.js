@@ -1,1 +1,0 @@
-var e=`registry.nasiko.dev`,t=e=>e.trim().replace(/^https?:\/\//,``);function n(e){let n=t(e),r=/^([a-z0-9.-]+(?::\d+)?)\/([a-z0-9._-]+(?:\/[a-z0-9._-]+)+)(?::([\w.-]{1,128}))?$/i.exec(n);if(!r)return null;let[,i=``,a=``,o=`latest`]=r;return!i.includes(`.`)&&!i.includes(`:`)&&i!==`localhost`?null:{host:i,repo:a,tag:o}}export{t as n,n as r,e as t};

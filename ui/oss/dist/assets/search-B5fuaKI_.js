@@ -1,1 +1,0 @@
-import{l as e,u as t}from"./schemas-SX0gW-5p.js";var n=[`general`,`limits`,`registry`],r=e({section:t().max(40).optional().catch(void 0)});export{r as n,n as t};

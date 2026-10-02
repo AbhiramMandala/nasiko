@@ -1,1 +1,0 @@
-var e={fast:150,base:180,standard:200,panelIn:220,panelOut:160,typeChar:60,eraseChar:30,typeHold:1500},t=`easeOut`,n=e=>e/1e3,r={collapse:{duration:n(e.base),ease:t},fade:{duration:n(e.fast),ease:t},panelIn:{duration:n(e.panelIn),ease:t},panelOut:{duration:n(e.panelOut),ease:t},disclosure:{duration:n(e.standard),ease:t},morph:{}};r.disclosure;export{r as n,e as t};

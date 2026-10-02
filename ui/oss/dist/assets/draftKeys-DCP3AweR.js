@@ -1,1 +1,0 @@
-var e=`ui-lab:chat-draft:`;function t(){try{let e=globalThis.localStorage;if(!e)return;for(let t=e.length-1;t>=0;t--){let n=e.key(t);n?.startsWith(`ui-lab:chat-draft:`)&&e.removeItem(n)}}catch{}}export{t as n,e as t};

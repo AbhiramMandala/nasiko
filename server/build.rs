@@ -14,10 +14,11 @@
 //! one source of truth, and keeps working if the crate ever moves again.
 //!
 //! The same hard-error is why this file writes a placeholder: `ui/oss/dist` is
-//! a Vite build output. It is committed and published, so a normal checkout has
-//! it — but a tree where it has been cleaned must still `cargo check` without
-//! requiring anyone to install Node first. A real `npm run build` overwrites
-//! the placeholder.
+//! a Vite build output and is not committed, so a fresh clone does not have it.
+//! A Rust-only contributor must still be able to `cargo check` without
+//! installing Node, and `server/Dockerfile` builds the real bundle in a node
+//! stage for anyone running the image. `just build-ui` overwrites the
+//! placeholder locally.
 
 use std::path::{Path, PathBuf};
 

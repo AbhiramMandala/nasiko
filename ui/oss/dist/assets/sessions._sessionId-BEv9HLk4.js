@@ -1,1 +1,0 @@
-import{n as e}from"./api-DuTwmwQA.js";var t=({context:t,params:n,preload:r})=>{r&&e(t.queryClient,n.sessionId)};export{t as loader};
