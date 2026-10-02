@@ -175,7 +175,7 @@ mod tests {
     /// stored persona fails to decode (500) or a valid one fails to insert.
     #[test]
     fn persona_matches_migration_enum() {
-        let migration = include_str!("../../migrations/0048_user_onboarding.sql");
+        let migration = include_str!("../../migrations/0051_user_onboarding.sql");
         let body = migration
             .split_once("user_persona AS ENUM (")
             .and_then(|(_, rest)| rest.split_once(')'))
