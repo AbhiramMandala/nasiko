@@ -22,6 +22,7 @@ export const MOCKABLE = [
   'spend-calendar',
   'providers',
   'top-traces',
+  'savings',
   'observability',
   'harnesses',
   'chat',

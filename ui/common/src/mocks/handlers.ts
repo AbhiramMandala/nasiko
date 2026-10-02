@@ -29,6 +29,7 @@ import {
   dashboard,
   dayDrilldown,
   MockHttpError,
+  savings,
   spendCalendar,
   spendTimeseries,
   topTraces,
@@ -1137,6 +1138,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       respond(() => topTraces(getFinopsSeed(), params(request), nowFn())),
     ),
   ],
+  savings: [http.get(`${FINOPS}/savings`, () => respond(() => savings()))],
   observability: [
     // `owner=` lists are the Harnesses live fallback's (harnesses group): pass them through, so
     // VITE_NASIKO_MOCK=observability alone never answers them from the harness seed.

@@ -23,6 +23,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { LeaveGuard } from '@/components/shared/leave-guard'
 import { useSecretMutations, useSecrets, useUpdateAgent } from '../api'
+import { BetaBadge } from '@/components/shared/beta-badge'
 import { ErrorNote, LearnMore, Section } from '../components/bits'
 import { DeleteAgentDialog } from '../components/dialogs'
 import { copy } from '../copy'
@@ -244,7 +245,7 @@ const shown = (saved: boolean, pending: boolean) => (pending ? !saved : saved)
 function Features({ agent }: { agent: AgentView }) {
   const update = useUpdateAgent(agent.id)
   return (
-    <Section title={copy.features} subtitle={copy.featuresHint}>
+    <Section title={copy.features} subtitle={copy.featuresHint} action={<BetaBadge />}>
       <FlagRow
         label={copy.promptComments}
         hint={
@@ -271,7 +272,11 @@ function Features({ agent }: { agent: AgentView }) {
 function TokenOptimization({ agent }: { agent: AgentView }) {
   const update = useUpdateAgent(agent.id)
   return (
-    <Section title={copy.tokenOptimization} subtitle={copy.tokenOptimizationIntro}>
+    <Section
+      title={copy.tokenOptimization}
+      subtitle={copy.tokenOptimizationIntro}
+      action={<BetaBadge />}
+    >
       <FlagRow
         label={copy.tokenOptimization}
         hint={copy.tokenOptimizationHint}
@@ -287,6 +292,16 @@ function TokenOptimization({ agent }: { agent: AgentView }) {
 /**
  * `CODING_AGENT_SELF_REVIEW` (nasiko-coding-policy `self_review_enabled`) is an agent secret, and unset reads as on.
  * So the switch writes "false" to turn it off and removes the secret to turn it on: the secret listed means off.
+ *
+ * That agent-side default makes self-review **opt-out**, which is the wrong shape for a switch that
+ * costs an extra model turn on every edit. Turning the ladder on therefore also writes `false` when
+ * no explicit choice has been recorded, so the extra turn is something you ask for rather than
+ * something that starts happening because you enabled a different feature. The switch becomes
+ * available at that moment, and reads off because it genuinely is off.
+ *
+ * Changing the default in `coding-policy` would have been the tidier fix, but it is read by
+ * vendored copies inside each agent image (`vendor/coding-policy/`), so already-deployed agents
+ * would keep the old default until rebuilt — the two would disagree, and the switch would lie.
  */
 // ponytail: a value of "true" set from the CLI reads as off here; exact once the server stores it as a column like minimal_code_enabled.
 const SELF_REVIEW_SECRET = 'CODING_AGENT_SELF_REVIEW'
@@ -300,14 +315,22 @@ function CodingBehavior({ agent }: { agent: AgentView }) {
   const reviewSaved = secrets.isSuccess && !secrets.data.some((s) => s.name === SELF_REVIEW_SECRET)
   const reviewError = review.set.error ?? review.remove.error
   return (
-    <Section title={copy.codingBehavior}>
+    <Section title={copy.codingBehavior} action={<BetaBadge />}>
       <FieldGroup className="gap-5">
         <FlagRow
           label={copy.minimalCode}
           hint={copy.minimalCodeHint}
           checked={minimalOn}
-          disabled={minimal.isPending}
-          onCheckedChange={(on) => minimal.mutate({ minimal_code_enabled: on })}
+          disabled={minimal.isPending || reviewPending}
+          onCheckedChange={(on) => {
+            minimal.mutate({ minimal_code_enabled: on })
+            // `reviewSaved` means no secret is stored, which the agent reads as self-review ON.
+            // Pin it off as the ladder goes on, so enabling one feature never silently enables a
+            // second one that costs an extra model turn per edit.
+            if (on && reviewSaved) {
+              review.set.mutate({ name: SELF_REVIEW_SECRET, value: 'false' })
+            }
+          }}
         />
         {/* A child of Minimal-code mode: the agent only reviews when the ladder is on (wants_self_review), so it
             reads off and can't be changed while the parent is off. */}

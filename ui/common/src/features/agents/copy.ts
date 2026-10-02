@@ -226,7 +226,7 @@ export const copy = {
     'Checks for existing code, the standard library, or an installed dependency before writing new code. Applies immediately, no restart needed.',
   selfReview: 'Self-review',
   selfReviewHint:
-    'Adds a review turn that catches duplicated or unnecessary code. Needs Minimal-code mode. Restart the agent to apply.',
+    'Adds a review turn that catches duplicated or unnecessary code — one extra model call per edit, so it is off until you ask for it. Needs Minimal-code mode. Restart the agent to apply.',
   dangerZone: 'Danger zone',
   deleteThisAgent: 'Delete this agent',
   deleteAgent: 'Delete agent',

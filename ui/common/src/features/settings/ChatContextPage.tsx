@@ -8,6 +8,7 @@ import { useId, useState } from 'react'
 import { Controller, useForm } from 'react-hook-form'
 import { toast } from 'sonner'
 import { LeaveGuard } from '@/components/shared/leave-guard'
+import { BetaBadge } from '@/components/shared/beta-badge'
 import { PageHeader } from '@/components/shared/page-header'
 import { PageLoader } from '@/components/shared/page-loader'
 import { PanelError } from '@/components/shared/panel'
@@ -34,7 +35,7 @@ export function ChatContextPage() {
   const [saves, setSaves] = useState(0)
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title={copy.label} description={copy.sub} />
+      <PageHeader title={copy.label} description={copy.sub} actions={<BetaBadge />} />
       {ctx.isPending ? (
         <PageLoader label={copy.loading} />
       ) : ctx.isError ? (

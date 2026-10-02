@@ -293,6 +293,42 @@ describe('settings', () => {
     expect(within(section).queryByText(/next time the agent is deployed/)).toBeNull()
   })
 
+  it('leaves self-review off, but usable, when minimal-code mode goes on', async () => {
+    // The agent reads an unset CODING_AGENT_SELF_REVIEW as ON, so enabling the ladder used to
+    // silently start an extra model call on every edit. Enabling one feature must not enable a
+    // second one you did not ask for.
+    const rec = recordRequestBodies()
+    renderApp(url(2, 'settings'))
+    const section = await screen.findByRole('region', { name: 'Coding agent behavior' })
+    const ladder = within(section).getByRole('switch', { name: 'Minimal-code mode' })
+    const review = within(section).getByRole('switch', { name: 'Self-review' })
+    expect(review).toBeDisabled()
+
+    await userEvent.click(ladder)
+    await waitFor(() => expect(review).toBeEnabled())
+    expect(review).not.toBeChecked()
+
+    await rec.flush()
+    rec.stop()
+    // Pinned off explicitly, because absent means on to the agent.
+    const put = rec.requests.find((r) => r.method === 'POST' && String(r.url).includes('secrets'))
+    expect(put?.body).toMatchObject({ name: 'CODING_AGENT_SELF_REVIEW', value: 'false' })
+  })
+
+  it('marks every optimisation switch as beta, with the same caveat in each place', async () => {
+    // These change what a model receives and what we claim they saved. Someone deciding whether to
+    // flip one deserves to know the behaviour is young — and that it is reversible. Worded once so
+    // three sections cannot drift into three different degrees of caution.
+    renderApp(url(1, 'settings'))
+    const features = await screen.findByRole('region', { name: 'Features' })
+    const tokens = screen.getByRole('region', { name: 'Token optimization' })
+    for (const section of [features, tokens]) {
+      const badge = within(section).getByLabelText(/^Beta\./)
+      expect(badge).toHaveTextContent('Beta')
+      expect(badge).toHaveAccessibleName(/safe to turn on or off at any time/)
+    }
+  })
+
   it('feature switches save at once; coding behaviour shows only for a code-work card', async () => {
     const rec = recordRequestBodies()
     renderApp(url(1, 'settings'))
@@ -319,16 +355,18 @@ describe('settings', () => {
     expect(review).not.toBeChecked()
     expect(review).toBeDisabled()
     await userEvent.click(minimal)
-    // Unset means on (nasiko-coding-policy `self_review_enabled`), so it reads on once the parent is.
+    // Unset means on to the agent (nasiko-coding-policy `self_review_enabled`), so enabling the
+    // ladder pins the secret to "false": the extra review turn is asked for, never inherited.
     await waitFor(() => expect(review).toBeEnabled())
+    expect(review).not.toBeChecked()
+    expect(await screen.findByText('CODING_AGENT_SELF_REVIEW')).toBeInTheDocument()
+    // Removing the secret is what turns it on, so the round trip still works from here.
+    await userEvent.click(review)
+    await waitFor(() => expect(screen.queryByText('CODING_AGENT_SELF_REVIEW')).toBeNull())
     expect(review).toBeChecked()
     await userEvent.click(review)
     await waitFor(() => expect(review).not.toBeChecked())
     expect(await screen.findByText('CODING_AGENT_SELF_REVIEW')).toBeInTheDocument()
-    await waitFor(() => expect(review).toBeEnabled())
-    await userEvent.click(review)
-    await waitFor(() => expect(screen.queryByText('CODING_AGENT_SELF_REVIEW')).toBeNull())
-    expect(review).toBeChecked()
     await userEvent.click(minimal)
     await waitFor(() => expect(review).toBeDisabled())
     expect(review).not.toBeChecked()
