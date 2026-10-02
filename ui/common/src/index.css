@@ -302,8 +302,11 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --foreground: oklch(0.145 0 0);
-  /* Lab: 0.556 was 4.3:1 on --muted, the hover fill of rows with a secondary line (chat rail); 0.54 is 4.6:1. */
-  --muted-foreground: oklch(0.54 0 0);
+  /* Lab: 0.556 was 4.3:1 on --muted, the hover fill of rows with a secondary line (chat rail); 0.54 is 4.6:1.
+     0.54 then failed on --accent, which is a step deeper than --muted (0.94 vs 0.97): 4.2:1, caught by axe on the
+     trace waterfall's duration label. Tuned against --accent instead, the darkest fill muted text sits on, so every
+     muted-on-hover case clears AA rather than the next one being found the same way. 0.52 is 4.7:1 there. */
+  --muted-foreground: oklch(0.52 0 0);
   --primary: oklch(0.205 0 0);
   --primary-hover: oklch(0.3 0 0);
   --primary-foreground: oklch(0.985 0 0);
